@@ -4,6 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { CLOUD_HOURS_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -40,6 +41,7 @@ export function CloudSizeButton({
   onSetDefault,
   disabled = false,
   hoursLeftMilli = null,
+  words = CLOUD_HOURS_WORDS,
 }: {
   tiers: readonly CloudTier[];
   tierId: CloudTierId;
@@ -49,13 +51,15 @@ export function CloudSizeButton({
   disabled?: boolean;
   /** The account's hours left (plan and earned), for "lasts N h here"; null before the account is read. */
   hoursLeftMilli?: number | null;
+  /** The account's words (hours or credits, `cloudUnitWords`); hours before the account is read. */
+  words?: CloudUnitWords;
 }) {
   const [open, setOpen] = useState(false);
   const portalContainer = usePortalContainer();
   const idBase = useId();
   const current = tiers.find((tier) => tier.id === tierId) ?? null;
   const label = current?.label ?? "Small";
-  const currentFacts = current ? cloudTierFacts(current) : null;
+  const currentFacts = current ? cloudTierFacts(current, words) : null;
   return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen} modal={false}>
       <SmartTooltip
@@ -109,7 +113,7 @@ export function CloudSizeButton({
             }}
           >
             {tiers.map((tier) => {
-              const facts = cloudTierFacts(tier);
+              const facts = cloudTierFacts(tier, words);
               // One line per size (B14-14); what it runs is in the row's hover
               // text, and in its description for the keyboard and screen readers.
               const shape = `${tier.cpu} CPU · ${tier.memoryGb} GB`;
@@ -117,7 +121,7 @@ export function CloudSizeButton({
               // Hours as time at this size (Small reads "Unlimited", never a multiplier); a bigger size waits for the account.
               const usesHours = cloudTierUsesHours(tier);
               const hoursAt = usesHours && hoursLeftMilli == null ? null : cloudTierHoursAt(tier, hoursLeftMilli ?? 0);
-              const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${usesHours && hoursAt ? ` Your hours last ${hoursAt} here.` : ""}`;
+              const about = `${facts.specs.join(", ")}. ${runs}. ${facts.rateLine}.${usesHours && hoursAt ? ` Your ${words.noun} last ${hoursAt} here.` : ""}`;
               const aboutId = `${idBase}-${tier.id}`;
               return (
                 <DropdownMenu.RadioItem
@@ -153,7 +157,7 @@ export function CloudSizeButton({
             </DropdownMenu.Item>
           ) : (
             <div className="px-2 py-1.5 text-[10.5px] leading-snug text-muted-fg/60">
-              Hours count only while the computer is awake. New lanes start on {label}.
+              {words.Noun} count only while the computer is awake. New lanes start on {label}.
             </div>
           )}
         </DropdownMenu.Content>

@@ -11,6 +11,7 @@ import {
   formatCloudHours,
   type CloudAccountState,
 } from "../../../shared/adeCloud";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
@@ -50,9 +51,10 @@ function hoursLeftPct(state: CloudAccountState): number {
   return totalMilli > 0 ? (leftMilli / totalMilli) * 100 : 0;
 }
 
-/** "ADE Cloud 43.8 h of 100 h left" for the control's title. */
+/** "ADE Cloud 43.8 h of 100 h left" (credits: "ADE Cloud 43.8 of 100 credits left") for the control's title. */
 export function headerCloudTitle(state: CloudAccountState): string {
   const { leftMilli, totalMilli } = hoursOf(state);
+  if (cloudUnitWords(state).credits) return `ADE Cloud ${formatCloudHours(leftMilli)} of ${formatCloudHours(totalMilli)} credits left`;
   return `ADE Cloud ${formatCloudHours(leftMilli)} h of ${formatCloudHours(totalMilli)} h left`;
 }
 
@@ -101,6 +103,7 @@ export function HeaderCloudRing({ state }: { state: CloudAccountState }) {
 export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountState; onNavigate: () => void }) {
   const pct = hoursLeftPct(state);
   const hours = hoursOf(state);
+  const words = cloudUnitWords(state);
   const computers = cloudAccountComputers(state);
   // Free with sponsored cards off (the server's rule on): Small uses hours too, so the hours are for every size.
   const smallUsesHours = cloudSmallUsesHours(cloudCatalogOf(state));
@@ -119,15 +122,19 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
         <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>{state.billing.cancelAtPeriodEnd ? "Plan ends" : "Resets"} {formatCloudDate(state.billing.periodEnd)}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)} h</span>
-        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>left of {formatCloudHours(hours.totalMilli)} h{smallUsesHours ? "" : " for bigger computers"}</span>
+        <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{words.credits ? formatCloudHours(hours.leftMilli) : `${formatCloudHours(hours.leftMilli)} h`}</span>
+        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>
+          {words.credits
+            ? `of ${formatCloudHours(hours.totalMilli)} credits left`
+            : `left of ${formatCloudHours(hours.totalMilli)} h${smallUsesHours ? "" : " for bigger computers"}`}
+        </span>
       </div>
       <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>
         <span>{`${computers.total} of ${computers.limit} computers`}, {state.computers.awake} awake</span>
-        <span>{smallUsesHours ? "Small computers use hours" : "Small computers unlimited"}</span>
-        {hours.earnedMilli > 0 ? <span>Includes {formatCloudHours(hours.earnedMilli)} h earned</span> : null}
-        {state.extraHours.available ? <span>Extra hours {state.extraHours.enabled ? "on" : "off"}</span> : null}
+        <span>{smallUsesHours ? `Small computers use ${words.noun}` : "Small computers unlimited"}</span>
+        {hours.earnedMilli > 0 ? <span>Includes {words.short(hours.earnedMilli)} earned</span> : null}
+        {state.extraHours.available ? <span>{words.extra} {state.extraHours.enabled ? "on" : "off"}</span> : null}
       </div>
       <div className="flex items-center gap-1.5 pt-0.5">
         <button type="button" className="kit-btn" data-size="sm" onClick={() => open()}>
@@ -135,7 +142,7 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
         </button>
         {canInvite ? (
           <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => open("cloud-invite")}>
-            <Gift size={12} /> Invite friends, get hours
+            <Gift size={12} /> Invite friends, get {words.noun}
           </button>
         ) : null}
       </div>

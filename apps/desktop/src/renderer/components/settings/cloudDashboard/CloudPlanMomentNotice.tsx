@@ -10,7 +10,7 @@ export function CloudPlanMomentFacts({ moment }: { moment: CloudPlanMoment }) {
   return (
     <span className="adecd-moment-facts">
       {moment.computers != null ? <span><b className="kit-num" data-face="ui">{moment.computers}</b> cloud computers</span> : null}
-      <span><b className="kit-num" data-face="ui">{formatCloudHours(moment.includedMilli)}</b> hours</span>
+      <span><b className="kit-num" data-face="ui">{formatCloudHours(moment.includedMilli)}</b> {moment.noun}</span>
       <span>Renews <b>{formatCloudDate(moment.renewsAt)}</b></span>
     </span>
   );

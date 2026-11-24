@@ -536,6 +536,7 @@ export function createWebCloudNamespace(
       return fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).then(() => true, () => false);
     },
     setExtraPhoneMinutes: (choice) => billing.setExtraPhoneMinutes(choice),
+    setPhoneProvider: (provider) => billing.setPhoneProvider(provider),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };
 }

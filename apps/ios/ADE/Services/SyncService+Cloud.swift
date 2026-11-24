@@ -193,6 +193,37 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// `on`, else nothing of it shows. Older servers sent `soon`.
   struct Phone: Decodable, Equatable {
     let access: String
+    /// Under credits (`CloudPhoneAccount.credits`): the credits the iPhone
+    /// used this period, in thousandths. The computers' share is the rest of
+    /// `hours.usedMilli`. Nil on hours, and from an older server.
+    let creditsUsedMilli: Int?
+    /// A tester's pick of who runs their phones (`auto`, `nomac`, `revyl`):
+    /// sent only to accounts on the iPhone's beta list, which may change it
+    /// (`POST /cloud/phone/provider`). Nil for everyone else.
+    let providerChoice: String?
+
+    private enum CodingKeys: String, CodingKey { case access, creditsUsedMilli, providerChoice }
+
+    init(access: String, creditsUsedMilli: Int? = nil, providerChoice: String? = nil) {
+      self.access = access
+      self.creditsUsedMilli = creditsUsedMilli
+      self.providerChoice = providerChoice
+    }
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      access = try c.decode(String.self, forKey: .access)
+      creditsUsedMilli = c.lenient(Int.self, forKey: .creditsUsedMilli)
+      providerChoice = c.lenient(String.self, forKey: .providerChoice).flatMap { nonEmptyTrimmed($0) }
+    }
+  }
+
+  /// Credits (`CloudAccountState.credits`): `hours` is then one balance of
+  /// credits, the same thousandths (a Medium computer uses one an hour), and
+  /// the ADE Cloud iPhone draws from it at `phoneMilliPerMinute` a minute.
+  /// Absent while the server's switch doesn't reach the account: hours.
+  struct Credits: Decodable, Equatable {
+    let phoneMilliPerMinute: Int
   }
 
   struct RecentUse: Decodable, Equatable {
@@ -386,7 +417,10 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// entries, which decode with only an id and a date.
   let dueForDeletion: [IdleCleanup]
   let referral: CloudPhoneReferral?
-  let phone: Phone?
+  /// `var` so a read that started before a provider pick keeps the pick (`AccountCloudStore.setPhoneProvider`).
+  var phone: Phone?
+  /// Present: the account counts in credits (`CloudBalanceWords`). Absent: hours.
+  let credits: Credits?
   /// Sponsored cards in this account's ADE Cloud chats (`CloudSponsoredState`).
   /// Absent while the server's switch doesn't reach the account: nothing
   /// shows. A consent answer replaces it (`AccountCloudStore.noteSponsored`).
@@ -394,7 +428,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
 
   private enum CodingKeys: String, CodingKey {
     case plan, planId, hours, extraHours, disk, computers, recentUse, billing, catalog
-    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, sponsored
+    case earnedHours, freePlan, planCleanup, planCleanupDone, timedWakesCancelled, dueForDeletion, referral, phone, credits, sponsored
   }
 
   init(from decoder: Decoder) throws {
@@ -416,6 +450,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
     dueForDeletion = c.lenient([IdleCleanup].self, forKey: .dueForDeletion) ?? []
     referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
     phone = c.lenient(Phone.self, forKey: .phone)
+    // A rate of 0 or less is no rate: read as hours rather than divide by it.
+    credits = c.lenient(Credits.self, forKey: .credits).flatMap { $0.phoneMilliPerMinute > 0 ? $0 : nil }
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
   }
 
@@ -435,8 +471,11 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// older server's `soon`, no answer) shows nothing of it.
   var phoneOn: Bool { phone?.access == "on" }
 
-  /// Out of hours for this period, as the server counts it.
+  /// Out of hours (or credits) for this period, as the server counts it.
   var outOfHours: Bool { hours.state == "zero" }
+
+  /// The account counts in credits: one balance the ADE Cloud iPhone draws from too.
+  var usesCredits: Bool { credits != nil }
 
   /// `free`, `plus`, `pro` or `max` (`cloudPlanIdOf`): a paid account of an older server is Plus.
   var currentPlanId: String {

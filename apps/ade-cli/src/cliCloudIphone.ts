@@ -170,6 +170,7 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   status: () => ({ action: "getStatus", args: {}, timeoutMs: 20_000, label: "cloud iPhone status" }),
   start: (args) => {
     const device = flag(args, "--device");
+    // Old scripts pass --needs: still sent (the brain refuses a phone that lacks one), never a way to pick a phone.
     const needs = (flag(args, "--needs") ?? "").split(/[,\s]+/).filter(Boolean);
     return { action: "start", args: { ...(device ? { device } : {}), ...(needs.length ? { needs } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "start the cloud iPhone" };
   },
@@ -303,7 +304,8 @@ function foregroundText(value: Record<string, unknown>): string {
 
 /**
  * What this cloud iPhone (or with none running, a new one) can and can't do
- * beyond the basics, in words, each with its name for `start --needs`.
+ * beyond the basics, in words. A start does not pick a phone by them (the
+ * server's order does), so nothing here promises one that can.
  */
 export function cloudPhoneAbilityLines(value: { abilities?: unknown; lacks?: unknown }, running: boolean): string {
   if (!Array.isArray(value.abilities)) return ""; // an older account server says nothing about abilities
@@ -311,7 +313,7 @@ export function cloudPhoneAbilityLines(value: { abilities?: unknown; lacks?: unk
   const cannot = Array.isArray(value.lacks) ? cloudPhoneAbilitiesOf(value.lacks) : CLOUD_PHONE_ABILITIES.filter((ability) => !can.includes(ability));
   const words = (list: readonly (typeof CLOUD_PHONE_ABILITIES)[number][]) => list.map((ability) => (CLOUD_PHONE_ABILITY_WORDS[ability] === ability ? ability : `${CLOUD_PHONE_ABILITY_WORDS[ability]} (${ability})`)).join("; ");
   const subject = running ? "This cloud iPhone" : "A new cloud iPhone";
-  return `${can.length ? `${subject} can also: ${words(can)}\n` : ""}${cannot.length ? `${subject} can't: ${words(cannot)}\n` : ""}${!running && can.length ? "A command that needs one starts a phone that has it; or ade apple start --needs <name>,<name>.\n" : ""}`;
+  return `${can.length ? `${subject} can also: ${words(can)}\n` : ""}${cannot.length ? `${subject} can't: ${words(cannot)}\n` : ""}`;
 }
 
 /** How a phone of `recent` ended, as a person reads it. */

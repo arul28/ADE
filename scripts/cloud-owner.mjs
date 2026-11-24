@@ -17,8 +17,8 @@ Accounts (an email, or a Clerk user id that starts with user_):
   limits <account> [--computers N] [--hours N] [--phone-minutes N]
                                          its own computer limit, monthly hours and iPhone minutes
                                          this period (none: clear them; no option: clear all three)
-  phone <account> <nomac|revyl|both|off> on the ADE Cloud iPhone's beta list with that provider
-                                         (both: the default provider first, then the other), or off it; not a test
+  phone <account> <on|off>               on the ADE Cloud iPhone's beta list, or off it; not a test
+                                         (a tester picks their own provider in an ADE beta app)
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
   reset <account>                        back to the real plan: every test field cleared
 
@@ -27,7 +27,8 @@ Accounts (an email, or a Clerk user id that starts with user_):
 
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
-  set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on
+  set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
+                                         cloud_credits off|testers|all (testers: the iPhone beta list)
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
@@ -120,7 +121,7 @@ function printAccount({ account }) {
     account.test
       ? `  Test:       ${[account.test.plan && `acts as ${account.test.plan}`, account.test.computers != null && `${account.test.computers} computers`, account.test.hours != null && `${account.test.hours} hours`, account.test.phoneMinutes != null && `${account.test.phoneMinutes} iPhone minutes`].filter(Boolean).join(" · ")} · ends ${when(account.test.until)}${account.test.note ? ` · "${account.test.note}"` : ""}`
       : "  Test:       none",
-    `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list: ${account.phone.listed}` : " · not on the beta list"} · ${account.phone.usedMinutes} of ${account.phone.minutes} minutes used${account.phone.minutes !== account.phone.planMinutes ? ` (plan: ${account.phone.planMinutes})` : ""}${account.phone.extraOn ? " · extra minutes on" : ""}`,
+    `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list (provider: ${account.phone.listed})` : " · not on the beta list"} · ${account.credits ? `${account.phone.usedMinutes} minutes used, from credits` : `${account.phone.usedMinutes} of ${account.phone.minutes} minutes used${account.phone.minutes !== account.phone.planMinutes ? ` (plan: ${account.phone.planMinutes})` : ""}${account.phone.extraOn ? " · extra minutes on" : ""}`}`,
     `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} hours (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses hours" : "unlimited"}`,
     `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"}`,
   ];
@@ -167,7 +168,7 @@ switch (command) {
     break;
   }
   case "phone": {
-    if (!["nomac", "revyl", "both", "off"].includes(rest[1])) fail(`phone takes nomac, revyl, both or off.\n\n${USAGE}`);
+    if (!["on", "off"].includes(rest[1])) fail(`phone takes on or off.\n\n${USAGE}`);
     printAccount(await call("account", { ...accountRef(rest[0]), phone: rest[1] }));
     break;
   }

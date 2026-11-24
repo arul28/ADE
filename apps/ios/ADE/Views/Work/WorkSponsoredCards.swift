@@ -104,7 +104,7 @@ struct WorkSponsoredReplySlot: View {
       if store.holder == sessionId {
         switch showing {
         case .consent:
-          WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true)
+          WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, words: CloudBalanceWords(accountStore.account))
         case .ad(let ad):
           WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
             store.hide(turnKey: turnKey)
@@ -224,6 +224,8 @@ private func workSponsoredOpen(_ value: String?) {
 /// computers use hours, so the card says that up front.
 struct WorkSponsoredConsentCard: View {
   var smallNeedsCards = false
+  /// The account's unit (hours or credits).
+  var words: CloudBalanceWords = .hours
   @State private var busy = false
   @State private var error: String?
 
@@ -237,7 +239,7 @@ struct WorkSponsoredConsentCard: View {
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
       Text((smallNeedsCards
-        ? "Free shows one sponsored card under a finished reply in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool."
+        ? "Free shows one sponsored card under a finished reply in ADE Cloud chats. Without them, \(words.smallWithoutCards). An agent may also recommend a sponsored tool."
         : "A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool.")
         + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older. You can change this in Settings › ADE Cloud.")
         .font(.system(size: 12.5))
@@ -274,7 +276,7 @@ struct WorkSponsoredConsentCard: View {
   private var answers: some View {
     WorkSponsoredCTA(title: "Show sponsored cards") { answer(CloudSponsoredState.granted) }
       .disabled(busy)
-    WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my hours" : "No thanks") { answer(CloudSponsoredState.declined) }
+    WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my \(words.unit)" : "No thanks") { answer(CloudSponsoredState.declined) }
       .disabled(busy)
   }
 

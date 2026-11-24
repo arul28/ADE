@@ -3,8 +3,12 @@ import SwiftUI
 #if DEBUG
 /// Fixture screens for screenshots on any device and fold, with no machine:
 ///
-/// - `-adePreviewScreen duo-cloud`: the ADE Cloud page (the dashboard);
+/// - `-adePreviewScreen duo-cloud`: the ADE Cloud page (the dashboard), on hours;
+/// - `duo-cloud-credits`: the same page under credits (the server's credits
+///   switch on), for an iPhone tester: the bar split Computers / iPhone, and
+///   the tester provider pick (Debug and Beta builds only);
 /// - `duo-cloud-plans`: the same page scrolled to the plans and sizes;
+/// - `duo-cloud-credits-plans`: the plans and sizes under credits;
 /// - `duo-cloud-upgraded`: the page a moment after a checkout from Free ("You're on Plus");
 /// - `duo-cloud-invite`: the invite card (link, Copy, Share, counts, the code box);
 /// - `duo-cloud-limits`: what agents may do alone;
@@ -13,7 +17,7 @@ import SwiftUI
 /// - `duo-provider-signin`: the sign-in sheet at its approve step.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-credits", "duo-cloud-plans", "duo-cloud-credits-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
     "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
   ]
 
@@ -35,7 +39,8 @@ enum CloudPreviews {
     default:
       break
     }
-    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON.utf8)) else { return nil }
+    let credits = name.hasPrefix("duo-cloud-credits")
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON(credits: credits).utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
     // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
     // Only the fixture account's entry changes: every other account's record on this device stays.
@@ -90,14 +95,14 @@ enum CloudPreviews {
       return AnyView(NavigationStack {
         ScrollView {
           if let referral = store.account?.referral {
-            CloudInviteCard(referral: referral, syncService: sync, onChanged: {}).padding(16)
+            CloudInviteCard(referral: referral, syncService: sync, words: CloudBalanceWords(store.account), onChanged: {}).padding(16)
           }
         }
         .background(ADEColor.pageBackground.ignoresSafeArea())
         .navigationTitle("ADE Cloud")
         .navigationBarTitleDisplayMode(.inline)
       })
-    case "duo-cloud-plans":
+    case "duo-cloud-plans", "duo-cloud-credits-plans":
       return AnyView(NavigationStack {
         ScrollView {
           VStack(spacing: 16) {
@@ -133,9 +138,15 @@ enum CloudPreviews {
 
   private static var nowMs: Double { fixtureNow.timeIntervalSince1970 * 1000 }
 
-  private static var listJSON: String {
+  /// The fixture's computers and account. `credits`: the account under
+  /// credits, with the ADE Cloud iPhone on, 15 of its 117.5 used credits
+  /// spent on the iPhone, and the account on the iPhone's tester list.
+  private static func listJSON(credits: Bool) -> String {
     let hour = 3_600_000.0
     let day = 86_400_000.0
+    let phone = credits
+      ? #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto","minutes":{"included":497,"used":15,"left":482},"state":"none"},"credits":{"phoneMilliPerMinute":1000}"#
+      : #"{"access":"off","minutes":null,"state":"ok"}"#
     return """
     {"state":"ok","runningCount":1,"machines":[
       {"instanceId":"zodqsue74s","name":"ADE Cloud computer","machineKey":"mk1","state":"running","type":"box",
@@ -166,7 +177,7 @@ enum CloudPreviews {
       "extraHours":{"available":true,"enabled":false,"usedMilli":0},
       "disk":{"usedGb":17.6,"limitGb":null},
       "computers":{"total":4,"awake":1,"limit":10},
-      "phone":{"access":"off","minutes":null,"state":"ok"},
+      "phone":\(phone),
       "recentUse":{"days":7,"usedMilli":63000},
       "billing":{"periodStart":1793491200000,"periodEnd":1796083200000,"cancelAtPeriodEnd":false,"nextPlanId":null,"notice":null},
       "earnedHours":{"leftMilli":40000,"usedThisPeriodMilli":0,"grantedMilli":40000},

@@ -89,6 +89,8 @@ struct CloudNewComputerSizePick {
   let tiers: [CloudPhoneTier]
   let picked: String?
   let pick: (String?) -> Void
+  /// The account's unit, hours or credits.
+  let words: CloudBalanceWords
   /// The account's hours left, so each size says how long they last on it.
   var leftMilli: Int? = nil
 }
@@ -110,7 +112,7 @@ struct CloudNewComputerSizeMenu: View {
           } label: {
             Label {
               Text(tier.label)
-              Text("\(tier.specs.joined(separator: ", ")). \(tier.hoursLine(leftMilli: pick.leftMilli)).")
+              Text("\(tier.specs.joined(separator: ", ")). \(tier.hoursLine(leftMilli: pick.leftMilli, words: pick.words)).")
             } icon: {
               Image(systemName: tier.id == currentId ? "checkmark" : tier.symbol)
             }
@@ -156,11 +158,15 @@ struct CloudDeletedComputerFacts: Equatable {
   /// Why ADE can't make a new computer for the lane now; nil when it can.
   /// The one text the line and the composer both show.
   var blocked: String? = nil
+  /// The account's unit (hours or credits), for the Why? sentence.
+  var words: CloudBalanceWords = .hours
 
   /// Nothing known beyond the delete.
   static let unknown = CloudDeletedComputerFacts(fate: cloudComputerFateSentence(nil, deletedAt: nil))
 
-  static let whySentence = "ADE Cloud deletes a computer that isn't used for a while, or to fit your plan, so it doesn't use your hours and disk. Your chats and the work that isn't on GitHub stay on your account. A new computer gets them back."
+  var whySentence: String {
+    "ADE Cloud deletes a computer that isn't used for a while, or to fit your plan, so it doesn't use your \(words.unit) and disk. Your chats and the work that isn't on GitHub stay on your account. A new computer gets them back."
+  }
 
   var title: String {
     blocked == nil ? "This lane's ADE Cloud computer was deleted" : "ADE can't make a new computer for this lane"
@@ -206,7 +212,8 @@ func cloudDeletedComputerFacts(
       branch: kept?.branchName,
       sizeLabel: cloudQueueSizeLabel(account: store.account),
       viaQueue: true,
-      blocked: store.doingRefusal
+      blocked: store.doingRefusal,
+      words: CloudBalanceWords(store.account)
     )
   }
   return CloudDeletedComputerFacts(
@@ -214,7 +221,8 @@ func cloudDeletedComputerFacts(
     branch: kept.branchName,
     sizeLabel: cloudKeptLaneRestartTier(kept, account: store.account)?.label,
     viaQueue: false,
-    blocked: cloudKeptLaneRestartProblem(kept)
+    blocked: cloudKeptLaneRestartProblem(kept),
+    words: CloudBalanceWords(store.account)
   )
 }
 

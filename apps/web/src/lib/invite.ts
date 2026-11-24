@@ -9,7 +9,7 @@
  * `apps/account-directory/src/cloud/contract.ts`, named next to it. Change
  * both together.
  */
-import { CLOUD_SMALL_UNLIMITED_SHORT, INVITE_RULES } from "./cloudPricing";
+import { CLOUD_SMALL_UNLIMITED_SHORT, INVITE_RULES, UNIT } from "./cloudPricing";
 
 /** `CLOUD_INVITE_CODE_LENGTH` (8) characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L); `parseCloudInviteCode` reads a code the same way. */
 const INVITE_CODE = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
@@ -29,8 +29,10 @@ export const inviteAppLink = (code: string): string => `ade://invite/${code}`;
 
 /** What every plan includes, the free one too: "Unlimited Small computers". */
 export const FREE_OFFER = CLOUD_SMALL_UNLIMITED_SHORT;
-/** What an invite adds for both people: hours for the computers bigger than Small. */
-export const INVITE_REWARD_HOURS = INVITE_RULES.rewardHours;
+/** What an invite adds for both people: hours (or credits) for the computers bigger than Small. */
+const INVITE_REWARD_HOURS = INVITE_RULES.rewardHours;
+/** "10 extra cloud hours for bigger computers", or "10 extra cloud credits …" under credits. */
+export const INVITE_REWARD_LINE = `${INVITE_REWARD_HOURS} extra cloud ${INVITE_REWARD_HOURS === 1 ? UNIT.one : UNIT.many} for ${UNIT.spenders}`;
 /** Days after signing up that a friend's code can still be entered. */
 export const INVITE_ENTER_DAYS = INVITE_RULES.enterDays;
 

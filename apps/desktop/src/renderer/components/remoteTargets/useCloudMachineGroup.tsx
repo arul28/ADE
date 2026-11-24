@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { UserMinus } from "@phosphor-icons/react";
 import { cloudCatalogOf, cloudMachineSelfUpdating, type CloudMachine } from "../../../shared/adeCloud";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { accountMachinePresence, machineIsAwake } from "../../../shared/machinePresence";
 import type { AdeAccountMachine, RemoteRuntimeTarget } from "../../../shared/types";
@@ -136,6 +137,7 @@ export function useCloudMachineGroup(args: {
     <CloudBoxStrip
       box={ctx.box}
       catalog={cloudCatalogOf(cloudResult?.account)}
+      words={cloudUnitWords(cloudResult?.account)}
       work={ctx.work}
       pending={cloudActions.pendingById[ctx.box.instanceId] ?? null}
       approvalUrl={cloudActions.approvalById[ctx.box.instanceId] ?? null}
@@ -229,7 +231,7 @@ export function useCloudMachineGroup(args: {
     if (!showCloudGroup) return null;
     return (
       <div className="ade-cx-section" data-machine-group="cloud">
-        <CloudGroupHead boxes={cloudGroupBoxes} loading={cloudMachines.loading} />
+        <CloudGroupHead boxes={cloudGroupBoxes} loading={cloudMachines.loading} account={cloudAccount} />
         <CloudGroupBanners
           result={cloudResult}
           loadError={cloudMachines.loadError}

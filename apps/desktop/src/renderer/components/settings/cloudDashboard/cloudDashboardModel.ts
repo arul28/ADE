@@ -6,7 +6,6 @@ import {
   cloudHoursLeftMilli,
   cloudPlanIdOf,
   formatCloudDate,
-  formatCloudHoursRate,
   type CloudAccountState,
   type CloudDiskUsage,
   type CloudIdleCleanupEntry,
@@ -14,7 +13,8 @@ import {
   type CloudMachine,
 } from "../../../../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../../../../shared/cloudLaneLaunch";
-import { cloudTierOfMachine, cloudTierRank, cloudTierRateLabel, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
+import { cloudTierHoursAt, cloudTierOfMachine, cloudTierRank, cloudTiers, type CloudTier } from "../../../../shared/cloudTiers";
+import { cloudUnitWords, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { formatAgo } from "../../../lib/format";
 
 /**
@@ -23,8 +23,15 @@ import { formatAgo } from "../../../lib/format";
  * computer: disk parts and work come from the computer's own last report.
  */
 
-/** A size's rate as a label beside its name: "Uses 2.5 hours an hour". */
-const rateLabelOf = (phrase: string | null): string | null => (phrase ? capitalizeCloudPhrase(phrase) : null);
+/**
+ * A size's rate as a label beside its name: "Uses 2.5 hours an hour", or in
+ * credits the rate table's shorter words ("2.5 credits an hour", "No credits").
+ */
+function rateLabelOf(rate: number | null, words: CloudUnitWords): string | null {
+  if (rate == null) return null;
+  if (words.credits) return rate > 0 ? `${words.count(rate)} an hour` : "No credits";
+  return capitalizeCloudPhrase(words.rate(rate));
+}
 
 /** A lane not used for this long gets the "not used for a long time" mark. */
 const CLOUD_LANE_OLD_MS = 14 * 86_400_000;
@@ -88,6 +95,7 @@ export function dashLanes(input: {
   now: number;
 }): DashLane[] {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
+  const words = cloudUnitWords(input.account);
   const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
   // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
@@ -100,7 +108,7 @@ export function dashLanes(input: {
         name: machine.lane?.laneName ?? noLaneName(machine),
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: rateLabelOf(tier ? cloudTierRateLabel(tier) : machine.hoursRate != null ? formatCloudHoursRate(machine.hoursRate) : null),
+        rateLabel: rateLabelOf(tier ? tier.multiplierMilli / 1000 : machine.hoursRate ?? null, words),
         diskGb: machine.resources?.diskGb ?? 0,
         state: stateOf(machine),
         lastActiveAt,
@@ -125,7 +133,7 @@ export function dashLanes(input: {
         name: lane.laneName,
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: rateLabelOf(tier ? cloudTierRateLabel(tier) : null),
+        rateLabel: rateLabelOf(tier ? tier.multiplierMilli / 1000 : null, words),
         diskGb: 0,
         state: "none",
         lastActiveAt: null,
@@ -159,12 +167,13 @@ export function planName(account: CloudAccountState): string {
 }
 
 /**
- * "At this pace your hours last until Nov 24", from the hours the meter
- * charged over the last days, counting earned hours (used after the plan's).
- * Null when the server doesn't send them, or nothing was used (no pace to
- * read). Dates are UTC (`formatCloudDate`): the period ends at midnight UTC.
+ * "At this pace your hours last until Nov 24.", from the hours (or credits)
+ * the meter charged over the last days, counting earned ones (used after the
+ * plan's). Null when the server doesn't send them, or nothing was used (no
+ * pace to read). Dates are UTC (`formatCloudDate`): the period ends at
+ * midnight UTC.
  */
-export function hoursForecast(account: CloudAccountState, now: number): string | null {
+export function hoursForecast(account: CloudAccountState, now: number, words: CloudUnitWords = cloudUnitWords(account)): string | null {
   const recent = account.recentUse;
   if (!recent || recent.days <= 0 || recent.usedMilli <= 0) return null;
   // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
@@ -173,8 +182,64 @@ export function hoursForecast(account: CloudAccountState, now: number): string |
   const left = cloudHoursLeftMilli(account);
   if (left <= 0) return null;
   const endsAt = now + (left / perDay) * 86_400_000;
-  if (endsAt >= account.billing.periodEnd) return "At this pace your hours last until they reset";
-  return `At this pace your hours last until ${formatCloudDate(endsAt)}`;
+  if (endsAt >= account.billing.periodEnd) return `At this pace your ${words.noun} last until they reset.`;
+  return `At this pace your ${words.noun} last until ${formatCloudDate(endsAt)}.`;
+}
+
+/** One part of the hero's bar: what used the plan, or what is left. */
+/**
+ * One part of the hero's bar. `milli` is its share of the plan's bar; `shownMilli`
+ * is the exact number the legend shows (the period's whole use, past the plan too),
+ * so the legend never shows the bar's proportional split as if it were counted.
+ */
+export type HeroBarPart = { key: "computers" | "phone" | "used" | "left"; label: string; milli: number; shownMilli: number };
+
+/**
+ * The hero's balance, as the bar and its legend show it: the whole plan,
+ * split by what used it (credits: computers and the iPhone; hours: one used
+ * part) and what is left. Thousandths, clamped so the parts fill the plan.
+ */
+export function heroBalanceParts(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): HeroBarPart[] {
+  const { includedMilli, leftMilli } = account.hours;
+  const plan = Math.max(0, includedMilli);
+  const left = Math.min(plan, Math.max(0, leftMilli));
+  const used = Math.max(0, plan - left);
+  if (!words.credits) return [{ key: "used", label: "Used", milli: used, shownMilli: used }, { key: "left", label: "Left", milli: left, shownMilli: left }];
+  // `phone.creditsUsedMilli` and `hours.usedMilli` count the whole period, past
+  // the plan too, while the bar is the plan only. Which credits fell inside
+  // the plan isn't known, so the bar splits the plan's used part in proportion
+  // to what each used over the period (never below 0, always summing to
+  // `used`), and the legend shows the exact period totals (Computers 600 +
+  // iPhone 50 past a 600 plan: the bar 554 / 46, the legend 600 / 50).
+  const phoneTotal = Math.max(0, account.phone?.creditsUsedMilli ?? 0);
+  const periodTotal = Math.max(phoneTotal, account.hours.usedMilli);
+  const phone = periodTotal > 0 ? Math.round((used * phoneTotal) / periodTotal) : 0;
+  const computersTotal = Math.max(0, account.hours.usedMilli - phoneTotal);
+  return [
+    { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersTotal },
+    { key: "phone", label: "iPhone", milli: phone, shownMilli: phoneTotal },
+    { key: "left", label: "Left", milli: left, shownMilli: left },
+  ];
+}
+
+/**
+ * "About 418 iPhone minutes, or 418 hours on a Medium computer.": what the
+ * credits left buy, in credits mode only (null in hours mode). The iPhone
+ * part only for an account that has it.
+ */
+export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): string | null {
+  if (!words.credits) return null;
+  // The plan's own credits left, the hero's big number (earned ones are shown apart).
+  const left = Math.max(0, account.hours.leftMilli);
+  const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
+  const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
+  const onMedium = mediumHours ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
+  const phoneOn = account.phone?.access === "on" && words.phoneMilliPerMinute != null;
+  const minutes = phoneOn ? Math.floor(left / words.phoneMilliPerMinute!) : null;
+  const onPhone = minutes != null ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
+  if (onPhone && onMedium) return `About ${onPhone}, or ${onMedium}.`;
+  if (onMedium) return `About ${onMedium}.`;
+  return onPhone ? `About ${onPhone}.` : null;
 }
 
 /** Why a lane has no computer, in a few words (the row's tooltip), or null for one that never had one here. */

@@ -7,6 +7,7 @@ import { formatBytes } from "../../lib/format";
 import type { LaneTemplate } from "../../../shared/types";
 import { capitalizeCloudPhrase } from "../../../shared/adeCloud";
 import { cloudTierRateLabel, cloudTierShapeLabel, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import type { CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import type { AdeCloudLaneChoice } from "./useAdeCloudLaneTarget";
 import type { CreateLaneMode } from "./CreateLaneDialog";
@@ -366,8 +367,8 @@ export function LaneTemplateChip({
 }
 
 /** "4 CPU · 8 GB · Uses 1 hour an hour" for a size row. */
-function cloudTierDetail(tier: CloudTier): string {
-  return `${cloudTierShapeLabel(tier)} · ${capitalizeCloudPhrase(cloudTierRateLabel(tier))}`;
+function cloudTierDetail(tier: CloudTier, words?: CloudUnitWords): string {
+  return `${cloudTierShapeLabel(tier)} · ${capitalizeCloudPhrase(cloudTierRateLabel(tier, words))}`;
 }
 
 /**
@@ -383,6 +384,7 @@ export function LaneCloudSizeChip({
   defaultTier,
   onChoose,
   onSetDefault,
+  words,
 }: {
   popover: ComposerPopoverState;
   tiers: readonly CloudTier[];
@@ -390,6 +392,8 @@ export function LaneCloudSizeChip({
   defaultTier: CloudTierId;
   onChoose: (tier: CloudTierId) => void;
   onSetDefault: (tier: CloudTierId) => void;
+  /** The account's words (hours or credits) for each size's rate. */
+  words: CloudUnitWords;
 }) {
   const close = () => popover.onOpenChange(false);
   const current = tiers.find((tier) => tier.id === tierId) ?? null;
@@ -400,7 +404,7 @@ export function LaneCloudSizeChip({
         <button type="button" className="cl-field" aria-label={`Computer size, ${current?.label ?? "Small"}`}>
           <span className="cl-tile" data-tone="cloud"><CloudSizeIcon tier={tierId} size={16} /></span>
           <span className="cl-field-text">{current?.label ?? "Small"}</span>
-          {current ? <span className="cl-field-meta">{cloudTierDetail(current)}</span> : null}
+          {current ? <span className="cl-field-meta">{cloudTierDetail(current, words)}</span> : null}
           <CaretUpDown size={12} className="cl-field-caret" />
         </button>
       )}
@@ -411,7 +415,7 @@ export function LaneCloudSizeChip({
             key={tier.id}
             icon={<span className="cl-tile" data-tone="cloud"><CloudSizeIcon tier={tier.id} size={15} /></span>}
             title={tier.id === defaultTier ? <>{tier.label} <span className="cl-item-default">Default</span></> : tier.label}
-            sub={tier.type === "vm" ? `${cloudTierDetail(tier)} · Android and Docker` : cloudTierDetail(tier)}
+            sub={tier.type === "vm" ? `${cloudTierDetail(tier, words)} · Android and Docker` : cloudTierDetail(tier, words)}
             selected={tier.id === tierId}
             onSelect={() => {
               onChoose(tier.id);

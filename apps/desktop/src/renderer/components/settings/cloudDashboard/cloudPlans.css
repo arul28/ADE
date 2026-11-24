@@ -148,6 +148,14 @@
 }
 .adecd-howto-item p { margin: 0; font-size: 11.5px; line-height: 1.5; color: var(--kit-text-3); }
 .adecd-howto-item p b { font-weight: 600; color: var(--kit-text-2); }
+/* Credits: what each thing uses, one row each. */
+.adecd-howto-rates { grid-row: span 2; }
+.adecd-howto-rates > div { min-width: 0; flex: 1; }
+.adecd-rates { width: 100%; margin-top: 6px; border-collapse: collapse; font-size: 11.5px; line-height: 1.5; }
+.adecd-rates th, .adecd-rates td { padding: 3px 0; border-top: 1px solid var(--kit-rule); vertical-align: baseline; }
+.adecd-rates tr:first-child th, .adecd-rates tr:first-child td { border-top: 0; }
+.adecd-rates th { font-weight: 500; text-align: left; color: var(--kit-text-2); padding-right: 12px; }
+.adecd-rates td { text-align: right; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
 .adecd-howto-notes {
   display: flex;
   flex-direction: column;
@@ -163,6 +171,7 @@
   .adecd-howto-items { grid-template-columns: 1fr; }
   .adecd-howto-item:nth-child(2n) { border-left: 0; }
   .adecd-howto-item + .adecd-howto-item { border-top: 1px solid var(--kit-rule); }
+  .adecd-howto-rates { grid-row: auto; }
 }
 
 /* Extra Linux hours, extra Linux disk and extra iPhone minutes: tiles in the cards' language. */

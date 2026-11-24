@@ -12,6 +12,7 @@ import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import type { AgentChatFileRef, AgentChatProvider, ChatLaunchChatArgs, ChatLaunchLaneConfig, OpenProjectBinding } from "../../../shared/types";
 import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
 import { cloudTierHoursAt, cloudTiers, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { adeCloudDoBlock, useAdeCloudAccess, useAdeCloudEnabled } from "../../state/cloudAccess";
@@ -164,14 +165,15 @@ export function useAdeCloudDraft({
   // Hours left now (the plan's and earned ones), and the Run on row's line: the
   // size a new lane gets and how long those hours last at it.
   const hoursLeftMilli = account ? cloudHoursLeftMilli(account) : null;
+  const words = useMemo(() => cloudUnitWords(account), [account]);
   const runOnLine = useMemo(() => {
     const tier = tiers.find((entry) => entry.id === tierId) ?? null;
     if (!account || !tier) return null;
     // Small never uses hours: it stays unlimited, also at 0 hours left (`cloudTierHoursAt` says so).
     if (!cloudTierUsesHours(tier)) return `${tier.label} · ${cloudTierHoursAt(tier, 0).toLowerCase()}`;
-    if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no hours left`;
+    if (cloudOutOfHours(account) && hoursLeftMilli === 0) return `${tier.label} · no ${words.noun} left`;
     return `${tier.label} · ${cloudTierHoursAt(tier, hoursLeftMilli ?? 0)} left at this size`;
-  }, [account, hoursLeftMilli, tierId, tiers]);
+  }, [account, hoursLeftMilli, tierId, tiers, words]);
 
   return {
     /**
@@ -206,6 +208,8 @@ export function useAdeCloudDraft({
     resetTier,
     setDefaultTier,
     hoursLeftMilli,
+    /** The account's words: hours, or credits once the server sends `credits`. */
+    words,
     runOnLine,
     refresh: machines.refresh,
   };

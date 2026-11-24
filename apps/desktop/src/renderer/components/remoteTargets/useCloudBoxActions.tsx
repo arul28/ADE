@@ -27,7 +27,8 @@ import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
 import { cloudBoxWork, type CloudBoxWork } from "./cloudMachineModel";
 import type { MachineAction } from "./MachineActionsMenu";
-import { useCloudMachines } from "./useCloudMachines";
+import { useCloudMachines, watchedCloudMachines } from "./useCloudMachines";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 
 /** What one box is doing in the list right now, shown on its card. */
 export type CloudBoxPending = CloudMachineActionKind | "remove" | "copy" | "move" | "reconnect";
@@ -358,7 +359,8 @@ export function useCloudBoxActions(args: {
   const copyBox = useCallback(async (ctx: CloudBoxContext) => {
     const copyMachine = window.ade.cloud?.copyMachine;
     if (!copyMachine) return;
-    const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate) : null;
+    // The cards that offer Copy keep the list watched, so its account gives the words.
+    const rate = ctx.box.hoursRate != null ? formatCloudHoursRate(ctx.box.hoursRate, cloudUnitWords(watchedCloudMachines()?.account)) : null;
     const ok = await confirmDialog({
       title: `Copy ${ctx.name}?`,
       message: `ADE makes a new computer with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It ${rate} while awake` : ""}. A big disk takes a few minutes.`,
@@ -560,7 +562,9 @@ function CloudResizeDialog({
   const [picked, setPicked] = useState<CloudShapeId | null>(null);
   const choice = picked ?? CLOUD_SHAPES.find((shape) => shape.id !== current)?.id ?? null;
   const kind = cloudMachineKindOf(box.type);
-  const catalog = cloudCatalogOf(useCloudMachines(true).result?.account);
+  const account = useCloudMachines(true).result?.account;
+  const catalog = cloudCatalogOf(account);
+  const words = cloudUnitWords(account);
   const running = work.runningChats > 0;
   return (
     <Dialog
@@ -585,7 +589,7 @@ function CloudResizeDialog({
         ) : null}
         <div role="radiogroup" aria-label="Size" className="ade-cx-cloud-shapes">
           {CLOUD_SHAPES.map((shape) => {
-            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog)));
+            const rate = capitalizeCloudPhrase(formatCloudHoursRate(cloudHoursRate(kind, shape.id, catalog), words));
             const isCurrent = shape.id === current;
             return (
               <button

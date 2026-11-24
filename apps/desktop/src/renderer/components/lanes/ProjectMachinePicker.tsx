@@ -192,6 +192,7 @@ function ProjectMachinePickerDialog({
             defaultTier={adeCloud.defaultTier}
             onChoose={adeCloud.chooseTier}
             onSetDefault={adeCloud.setDefaultTier}
+            words={adeCloud.words}
           />
           <span className={cloudProblem ? "text-[color:var(--kit-warn)]" : undefined}>
             {cloudProblem ?? `A new ${adeCloud.tiers.find((tier) => tier.id === adeCloud.tierId)?.label ?? "Small"} computer for this lane.`}

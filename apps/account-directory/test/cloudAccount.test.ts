@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
+import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/gravity";
@@ -80,6 +81,8 @@ function sqliteD1() {
     all: async <T>() => ({ success: true, results: db.prepare(sql).all(...params) as T[] }),
     apply: () => {
       if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
+      // As in D1, a read in a batch answers its rows.
+      if (/^\s*select\b/i.test(sql)) return { success: true, results: db.prepare(sql).all(...params), meta: { changes: 0 } };
       return { success: true, meta: { changes: Number(db.prepare(sql).run(...params).changes) } };
     },
   });
@@ -3988,8 +3991,8 @@ describe("ADE Cloud iPhone minutes", () => {
     });
   }
 
-  /** A phone NoMac settled: `minutes` billed, started at `startedAt`. */
-  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended"): void {
+  /** A phone NoMac settled: `minutes` billed, started at `startedAt` (`credits`: started under credits, its minutes in the hours). */
+  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended", credits = false): void {
     harness.insert("cloud_phones", {
       phone_id: id,
       user_id: OWNER,
@@ -4002,6 +4005,8 @@ describe("ADE Cloud iPhone minutes", () => {
       cost_micros: minutes * 15_000,
       free: 0,
       updated_at: startedAt,
+      credits: credits ? 1 : 0,
+      credited_milli: credits ? minutes * 1000 : 0,
     });
   }
 
@@ -4042,6 +4047,14 @@ describe("ADE Cloud iPhone minutes", () => {
       after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
     },
     {
+      // Its minutes are in the hours (extra hours bill what goes past them): never billed a second time as iPhone minutes.
+      name: "a phone started under credits bills no iPhone minutes",
+      seed: () => { seedPhoneAccount(); seedPhone("ses_a", 312, PERIOD + HOUR, "ended", true); },
+      act: async () => {},
+      reports: [],
+      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
+    },
+    {
       name: "a failed payment is left alone until it is paid (its period may come back)",
       seed: () => { seedPhoneAccount({ stripe_status: "past_due", phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 400, OLD_PERIOD + HOUR); },
       act: async () => {},
@@ -4063,6 +4076,151 @@ describe("ADE Cloud iPhone minutes", () => {
     await reportExtraPhoneMinutes(harness.env, clock);
     expect(meterReports()).toEqual(reports);
     expect(account()).toEqual(after);
+  });
+
+  it("under credits, a phone's billed minutes land in the account's hours once, and the account says credits", async () => {
+    seedPhoneAccount();
+    harness.env.CLOUD_CREDITS = "all";
+    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock });
+    seedPhone("ses_c", 0, clock - 10 * 60_000, "live", true);
+    const usedBefore = Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli);
+    const at = (ms: number) => new Date(ms).toISOString();
+    // NoMac has billed 2 minutes 5 seconds so far: 3 whole minutes, 3 credits.
+    const session = { id: "ses_c", state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(clock - 10 * 60_000), ready_at: at(clock - 10 * 60_000), cost: { billed_seconds: 125, accrued_microunits: "2000" } };
+    const inner = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/simulator/sessions/ses_c")) return new Response(JSON.stringify({ session }), { status: 200, headers: { "content-type": "application/json" } });
+      return inner(input, init);
+    });
+    // Read twice: the second answer is the same, and adds nothing.
+    expect((await harness.send(OWNER, "GET", "/cloud/phone")).status).toBe(200);
+    expect((await harness.send(OWNER, "GET", "/cloud/phone")).status).toBe(200);
+    expect(Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli)).toBe(usedBefore + 3000);
+    expect(harness.row("select credited_milli from cloud_phones where phone_id = 'ses_c'").credited_milli).toBe(3000);
+    await reportExtraPhoneMinutes(harness.env, clock);
+    expect(meterReports()).toEqual([]);
+    const state = await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState;
+    expect(state.credits).toEqual({ phoneMilliPerMinute: 1000 });
+    // Its time so far counts (10 minutes running), past what NoMac has billed.
+    expect(state.phone?.creditsUsedMilli).toBe(10_000);
+    // The balance counts the 7 minutes NoMac hasn't billed yet too, so a computer can't spend them.
+    const included = Number(harness.row("select included_milli from cloud_accounts where user_id = ?", OWNER).included_milli);
+    expect(state.hours.leftMilli).toBe(Math.max(0, included - usedBefore - 10_000));
+  });
+
+  /** NoMac answers the live phone `id` as running, ready at `readyAt`, with `billedSeconds` billed. */
+  function liveNomacPhone(id: string, readyAt: number, billedSeconds: number): void {
+    const at = (ms: number) => new Date(ms).toISOString();
+    const session = { id, state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(readyAt), ready_at: at(readyAt), cost: { billed_seconds: billedSeconds, accrued_microunits: "0" } };
+    const inner = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith(`/simulator/sessions/${id}`)) {
+        const ended = init?.method === "DELETE" ? { ...session, state: "ended", ended_at: at(clock) } : session;
+        return new Response(JSON.stringify({ session: ended }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return inner(input, init);
+    });
+  }
+
+  it.each([
+    // Started on iPhone minutes before the flip: the account's spent credits don't stop it.
+    { name: "a phone started before credits keeps its own minutes", credits: false, outcome: "running" },
+    { name: "a phone started under credits stops when the credits are spent", credits: true, outcome: "stopped" },
+  ])("a running phone is held to what it started on: $name", async ({ credits, outcome }) => {
+    seedPhoneAccount({ phone_extra_enabled: 0, extra_enabled: 0 });
+    harness.env.CLOUD_CREDITS = "all";
+    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock - HOUR });
+    // Every credit is spent.
+    harness.exec("update cloud_accounts set used_milli = included_milli + 1000 where user_id = ?", OWNER);
+    seedPhone("ses_r", 0, clock - 5 * 60_000, "live", credits);
+    liveNomacPhone("ses_r", clock - 5 * 60_000, 0);
+    expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe(outcome);
+  });
+
+  /** A signed NoMac delivery saying phone `id` (labelled for OWNER) is ready, started at `startedAt`. */
+  async function nomacReady(id: string, startedAt: number): Promise<Response> {
+    harness.env.NOMAC_WEBHOOK_SECRET = "whsec_test";
+    const at = (ms: number) => new Date(ms).toISOString();
+    const raw = JSON.stringify({ id: `evt_${id}`, type: "phone.ready", data: { session: { id, state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(startedAt), ready_at: at(startedAt) } } });
+    const t = Math.floor(clock / 1000);
+    const v1 = createHmac("sha256", "whsec_test").update(`${t}.${raw}`).digest("hex");
+    return handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
+  }
+
+  it.each([
+    // A start whose answer was lost, its phone found later by NoMac's webhook: billed as that start decided,
+    // whatever the switch or the beta list say by then.
+    { name: "a tester's start under testers, then taken off the list: credits", start: 1, listedLater: false, flips: [["testers", -2 * HOUR]], expected: 1 },
+    { name: "a start on iPhone minutes, then on the list under all: iPhone minutes", start: 0, listedLater: true, flips: [["testers", -2 * HOUR], ["all", -1 * 60_000]], expected: 0 },
+    // No record of its start (one from before it was kept): the switch in force when it started, from the change log.
+    { name: "no start record, all at its start and off since: credits", start: null, listedLater: false, flips: [["all", -2 * HOUR], ["off", -1 * 60_000]], expected: 1 },
+    { name: "no start record, off at its start and all since: iPhone minutes", start: null, listedLater: false, flips: [["off", -2 * HOUR], ["all", -1 * 60_000]], expected: 0 },
+  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, listedLater, flips, expected }) => {
+    seedPhoneAccount(start == null ? {} : { phone_start_credits: start, phone_start_credits_at: clock - 10 * 60_000 });
+    harness.env.CLOUD_CREDITS = "all";
+    flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
+    harness.insert("cloud_settings", { key: "cloud_credits", value: flips.at(-1)?.[0] ?? "off", updated_at: clock - 60_000 });
+    if (listedLater) harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock - 60_000 });
+    expect((await nomacReady("ses_lost", clock - 9 * 60_000)).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(expected);
+  });
+
+  it("a retry after a lost start keeps the first attempt's billing and allowance, though the account joined credits between", async () => {
+    seedPhoneAccount();
+    harness.env.CLOUD_CREDITS = "all";
+    harness.insert("cloud_settings", { key: "cloud_credits", value: "testers", updated_at: clock - HOUR });
+    // Not on the list: the first attempt is on iPhone minutes, and NoMac's answer is lost.
+    phoneStartNetwork("down");
+    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(502);
+    // Now a tester (credits reach the account), every credit spent; the retry is held to that start's minutes
+    // (not refused for credits) and gets the phone that start made.
+    harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock });
+    harness.exec("update cloud_accounts set used_milli = included_milli + 1000, extra_enabled = 0 where user_id = ?", OWNER);
+    phoneStartNetwork("ok");
+    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_new'").credits).toBe(0);
+  });
+
+  it("a new phone after the last one ended is billed by what reaches the account now", async () => {
+    seedPhoneAccount();
+    harness.env.CLOUD_CREDITS = "all";
+    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock - HOUR });
+    // Started on iPhone minutes before the flip; NoMac now says it has ended.
+    seedPhone("ses_prev", 0, clock - 30 * 60_000, "live", false);
+    const at = (ms: number) => new Date(ms).toISOString();
+    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const fresh = { id: "ses_next", state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(clock), ready_at: at(clock) };
+    const inner = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/simulator/sessions/ses_prev")) return reply(200, { session: { id: "ses_prev", state: "ended", label: `ade:${OWNER}`, device: "iphone", created_at: at(clock - 30 * 60_000), ended_at: at(clock - 60_000), end_reason: "idle" } });
+      if (url === "https://nomac.app/api/v1/simulator/sessions" && init?.method === "POST") return reply(201, { session: fresh, reused: false });
+      if (url.endsWith("/simulator/sessions/ses_next/token")) return reply(200, { token: "nmp_test", expires_at: at(clock + HOUR) });
+      if (url.endsWith("/simulator/sessions/ses_next")) return reply(200, { session: fresh });
+      return inner(input, init);
+    });
+    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_next'").credits).toBe(1);
+  });
+
+  it("a period's turn charges a running credits phone's unbilled minutes to the period that ends, once", async () => {
+    // Free, every plan credit used, 40 earned: the 20 minutes the phone ran draw 20 earned at the turn.
+    harness.env.NOMAC_API_KEY = "nmk_test";
+    harness.env.CLOUD_PHONE_ACCESS = "all";
+    // Ten minutes into December: the phone started at 23:50 on November 30.
+    clock = Date.UTC(2026, 11, 1, 0, 10);
+    seedAccount(harness, OWNER, { plan: "free", period_start: Date.UTC(2026, 10, 1), period_end: Date.UTC(2026, 11, 1), used_milli: 50_000, earned_granted_milli: 40_000, earned_used_milli: 0 });
+    harness.exec("update cloud_accounts set included_milli = 50000 where user_id = ?", OWNER);
+    seedPhone("ses_t", 0, clock - 20 * 60_000, "live", true);
+    expect((await harness.send(OWNER, "GET", "/cloud/account")).status).toBe(200);
+    const after = () => harness.row("select a.earned_used_milli, a.used_milli, p.credited_milli from cloud_accounts a join cloud_phones p on p.user_id = a.user_id where a.user_id = ?", OWNER);
+    expect(after()).toEqual({ earned_used_milli: 20_000, used_milli: 0, credited_milli: 20_000 });
+    // NoMac's later answer for those minutes adds nothing to the new period.
+    liveNomacPhone("ses_t", clock - 20 * 60_000, 21 * 60);
+    expect((await harness.send(OWNER, "GET", "/cloud/phone")).status).toBe(200);
+    expect(after()).toMatchObject({ earned_used_milli: 20_000, used_milli: 0 });
   });
 
   /**
@@ -4097,30 +4255,36 @@ describe("ADE Cloud iPhone minutes", () => {
     return asked;
   }
 
-  /** A paid account on the beta list (`lock`: its provider; `none`: not on it), both providers set up. */
-  function seedPhoneTester(lock: "nomac" | "revyl" | "both" | "none", revylSwitch: "on" | "off"): void {
-    seedPhoneAccount();
+  /**
+   * An account on the beta list (`pick`: the tester's own provider pick, `auto` for the fixed order;
+   * `none`: not on it), paid unless `free`, both providers set up.
+   */
+  function seedPhoneTester(pick: "nomac" | "revyl" | "auto" | "none", revylSwitch: "on" | "off", { free = false }: { free?: boolean } = {}): void {
+    seedPhoneAccount(free ? { plan: "free", stripe_status: null, stripe_subscription_id: null, phone_extra_enabled: 0 } : {});
     harness.env.CLOUD_PHONE_ACCESS = "beta";
     harness.env.REVYL_PARTNER_API_KEY = "rvl_test";
     harness.env.CLOUD_PHONE_REVYL = revylSwitch;
-    if (lock !== "none") harness.insert("cloud_phone_beta", { user_id: OWNER, email: "tester@example.com", added_at: clock, provider: lock === "both" ? null : lock });
+    if (pick !== "none") harness.insert("cloud_phone_beta", { user_id: OWNER, email: "tester@example.com", added_at: clock, provider: pick === "auto" ? null : pick });
   }
 
   const startPhone = (needs?: string[]) => harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac", "revyl"], ...(needs ? { needs } : {}) });
 
   it.each([
-    { name: "the router starts on NoMac first", lock: "both", revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1 },
-    { name: "a definite NoMac refusal hands the start to Revyl", lock: "both", revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_unavailable", asked: ["nomac", "revyl"], phones: 0 },
-    { name: "a NoMac 5xx may hide a phone it made: no second start", lock: "both", revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a NoMac timeout may hide a phone it made: no second start", lock: "both", revyl: "on", nomac: "timeout", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a NoMac lock never falls back to Revyl", lock: "nomac", revyl: "on", nomac: "refused", needs: undefined, status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a Revyl lock with Revyl switched off starts nothing", lock: "revyl", revyl: "off", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: [], phones: 0 },
-    { name: "a need only Revyl has goes to Revyl alone", lock: "both", revyl: "on", nomac: "ok", needs: ["perf"], status: 503, code: "phone_unavailable", asked: ["revyl"], phones: 0 },
-    { name: "a lock that lacks the need is refused", lock: "nomac", revyl: "on", nomac: "ok", needs: ["perf"], status: 409, code: "phone_cant", asked: [], phones: 0 },
-    { name: "a need no startable provider has is refused", lock: "both", revyl: "off", nomac: "ok", needs: ["perf"], status: 409, code: "phone_cant", asked: [], phones: 0 },
-    { name: "an account off the beta list starts nothing", lock: "none", revyl: "on", nomac: "ok", needs: undefined, status: 403, code: "phone_not_on_account", asked: [], phones: 0 },
-  ] as const)("which provider starts the phone: $name", async ({ lock, revyl, nomac, needs, status, code, asked, phones }) => {
-    seedPhoneTester(lock, revyl);
+    { name: "a paid plan starts on NoMac first", pick: "auto", free: false, revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1 },
+    { name: "a definite NoMac refusal hands a paid start to Revyl", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_unavailable", asked: ["nomac", "revyl"], phones: 0 },
+    { name: "a NoMac 5xx may hide a phone it made: no second start", pick: "auto", free: false, revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a NoMac timeout may hide a phone it made: no second start", pick: "auto", free: false, revyl: "on", nomac: "timeout", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a free plan's phone is NoMac's alone", pick: "auto", free: true, revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1 },
+    { name: "a free plan NoMac refuses is told it is busy, never sent to Revyl", pick: "auto", free: true, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_busy", asked: ["nomac"], phones: 0 },
+    { name: "a free plan's lost NoMac answer is not called busy", pick: "auto", free: true, revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a need never picks the provider: one the first can't do starts nothing", pick: "auto", free: false, revyl: "on", nomac: "ok", needs: ["perf"], status: 409, code: "phone_lacks", asked: [], phones: 0 },
+    { name: "a fallback that can't do a need is left out", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: ["tests"], status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a tester's NoMac pick never falls back to Revyl", pick: "nomac", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
+    { name: "a tester's Revyl pick goes to Revyl, on a free plan too", pick: "revyl", free: true, revyl: "on", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: ["revyl"], phones: 0 },
+    { name: "a tester's Revyl pick with Revyl switched off starts nothing", pick: "revyl", free: false, revyl: "off", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: [], phones: 0 },
+    { name: "an account off the beta list starts nothing", pick: "none", free: false, revyl: "on", nomac: "ok", needs: undefined, status: 403, code: "phone_not_on_account", asked: [], phones: 0 },
+  ] as const)("which provider starts the phone: $name", async ({ pick, free, revyl, nomac, needs, status, code, asked, phones }) => {
+    seedPhoneTester(pick, revyl, { free });
     const calls = phoneStartNetwork(nomac);
     const response = await startPhone(needs ? [...needs] : undefined);
     expect(response.status).toBe(status);
@@ -4130,7 +4294,7 @@ describe("ADE Cloud iPhone minutes", () => {
   });
 
   it("a second start while one runs for the account is told to try again, and then gets the same phone", async () => {
-    seedPhoneTester("both", "on");
+    seedPhoneTester("auto", "on");
     let during: Response | null = null;
     const calls = phoneStartNetwork("ok", async () => {
       during ??= await startPhone();
@@ -4146,14 +4310,14 @@ describe("ADE Cloud iPhone minutes", () => {
   });
 
   it("a start whose answer was lost keeps the next starts on that provider until one finds its phone", async () => {
-    seedPhoneTester("both", "on");
+    seedPhoneTester("auto", "on");
     const calls = phoneStartNetwork("timeout");
     expect((await startPhone()).status).toBe(502);
-    // Only Revyl has `perf`, but NoMac may be bringing a phone up: no second phone elsewhere.
-    const elsewhere = await startPhone(["perf"]);
-    expect(elsewhere.status).toBe(503);
-    expect((await elsewhere.json() as { error: { code: string } }).error.code).toBe("phone_unavailable");
     expect(calls).toEqual(["nomac"]);
+    // NoMac may be bringing a phone up: the next start goes there alone, even past a refusal (never on to Revyl).
+    const held = phoneStartNetwork("refused");
+    expect((await startPhone()).status).toBe(400);
+    expect(held).toEqual(["nomac"]);
     // A plain start goes back to NoMac alone; once it answers, the route is free again.
     calls.length = 0;
     phoneStartNetwork("ok");
@@ -4162,7 +4326,7 @@ describe("ADE Cloud iPhone minutes", () => {
   });
 
   it("a live phone its provider can't answer for blocks a new start, even one that would go elsewhere", async () => {
-    seedPhoneTester("both", "on");
+    seedPhoneTester("auto", "on");
     seedPhone("ses_live", 0, clock - 60_000, "live");
     const calls = phoneStartNetwork("ok");
     const answering = globalThis.fetch;

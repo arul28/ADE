@@ -25,6 +25,7 @@ import {
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
 import { CLOUD_SMALL_UNLIMITED_SENTENCE, cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { cloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
@@ -1119,6 +1120,7 @@ export type FormatterId =
   | "cloud-hours"
   | "cloud-invite"
   | "cloud-result"
+  | "cloud-phone-provider"
   | "cloud-lanes"
   | "cloud-lane"
   | "cloud-lane-git"
@@ -5214,7 +5216,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Computers
 
-    $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
+    $ ade cloud hours --text                      Plan, hours (or credits) left, reset date, earned ones
+    $ ade cloud phone-provider <auto|nomac|revyl> Testers only: who runs your ADE Cloud iPhones (the next one
+                                                    starts there). Anyone else is refused by ADE Cloud.
     $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
@@ -22034,7 +22038,14 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "machines":
       return cloudStep("list", "list", {}, "cloud-list");
     case "hours":
+    case "credits":
       return cloudStep("hours", "hours", {}, "cloud-hours");
+    // A tester's pick of who runs their ADE Cloud iPhones: the account's, from any folder.
+    case "phone-provider": {
+      const provider = firstPositional(args)?.toLowerCase();
+      if (provider !== "auto" && provider !== "nomac" && provider !== "revyl") throw new CliUsageError("ade cloud phone-provider <auto|nomac|revyl>");
+      return cloudStep("phone provider", "phone_provider", { provider }, "cloud-phone-provider");
+    }
     case "invite":
     case "invites": {
       const verb = firstPositional(args);
@@ -22187,7 +22198,7 @@ function buildCloudPlan(args: string[]): CliPlan {
       // Ready machines are gone: a new lane gets its own computer when it starts.
       throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
     default:
-      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, lanes, chats, sessions, backups, jobs, project, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
+      throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, lanes, chats, sessions, backups, jobs, project, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, phone-provider, prepare-stop, push-work, work-state.`);
   }
 }
 
@@ -22230,13 +22241,14 @@ function formatCloudList(value: unknown): string {
   const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
   const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
   const lines: string[] = [];
+  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
+  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits"> | null);
   if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
-    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate) : "—";
+    const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate, words) : "—";
     lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${rate}  ${sleep}  (${String(box.instanceId)})`);
   }
-  const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
   if (account) lines.push(formatCloudAccount(account));
   return lines.join("\n");
 }
@@ -22251,16 +22263,23 @@ function formatCloudAccount(value: unknown): string {
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
   const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
-  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left for bigger computers, resets ${resets}`;
+  const words = cloudUnitWords(account as Pick<CloudAccountState, "credits">);
+  const left = words.credits
+    ? `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} credits left, resets ${resets}`
+    : `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left for bigger computers, resets ${resets}`;
   // Cloud computers asleep or not, of the plan's limit.
   const counted = isRecord(account.computers)
     ? cloudAccountComputers({ computers: account.computers as CloudAccountState["computers"], catalog, plan: account.plan === "paid" ? "paid" : "free", planId })
     : null;
   const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
-  const smallLine = `\n${CLOUD_SMALL_UNLIMITED_SENTENCE}${computers}`;
+  // Credits: one balance, which the ADE Cloud iPhone draws from too.
+  const unitLine = words.credits && words.phoneMilliPerMinute != null
+    ? ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ADE Cloud iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`
+    : "";
+  const smallLine = `\n${words.credits ? "Unlimited Small computers. They never use your credits." : CLOUD_SMALL_UNLIMITED_SENTENCE}${unitLine}${computers}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
-  const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
+  const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned ${words.noun} left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
   // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
@@ -22268,7 +22287,8 @@ function formatCloudAccount(value: unknown): string {
   const githubLine = github && github.state !== "ok" && github.sentence
     ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
     : "";
-  return (hours.state === "zero" ? `${plan}: out of hours for bigger computers (Small keeps working). ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
+  const out = words.credits ? "out of credits (Small keeps working; bigger computers and the iPhone stop)" : "out of hours for bigger computers (Small keeps working)";
+  return (hours.state === "zero" ? `${plan}: ${out}. ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */
@@ -22288,6 +22308,15 @@ function formatCloudInvite(value: unknown): string {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);
   }
   return lines.join("\n");
+}
+
+/** `ade cloud phone-provider`: the pick the server saved (testers only; anyone else gets the server's refusal as the error). */
+function formatCloudPhoneProvider(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const provider = isRecord(raw) && typeof raw.provider === "string" ? raw.provider : null;
+  if (!provider) return JSON.stringify(raw, null, 2);
+  const name = provider === "nomac" ? "NoMac" : provider === "revyl" ? "Revyl" : "Auto (the usual order)";
+  return `Cloud iPhone provider: ${name}. The next cloud iPhone starts there; a running one keeps its own.`;
 }
 
 function formatCloudResult(value: unknown): string {
@@ -41223,6 +41252,8 @@ function formatTextOutput(
       return formatCloudInvite(value);
     case "cloud-result":
       return formatCloudResult(value);
+    case "cloud-phone-provider":
+      return formatCloudPhoneProvider(value);
     case "cloud-lanes":
       return formatCloudLanes(value);
     case "cloud-lane":

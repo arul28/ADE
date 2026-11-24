@@ -223,6 +223,7 @@ struct CloudLaneStateLines: View {
           tiers: tiers,
           picked: store.newComputerSizes[key],
           pick: { store.pickNewComputerSize(machineKey: key, sizeId: $0) },
+          words: CloudBalanceWords(store.account),
           leftMilli: store.account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) }
         )
       },
@@ -448,7 +449,7 @@ struct CloudLaneStateLinesContent: View {
           .accessibilityValue(whyOpen ? "Open" : "Closed")
           .adeInspectable("CloudLane.Why")
           if whyOpen {
-            Text(CloudDeletedComputerFacts.whySentence)
+            Text(deleted.whySentence)
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)

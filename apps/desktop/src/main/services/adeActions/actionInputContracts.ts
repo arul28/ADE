@@ -225,6 +225,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "no input",
       example: "ade cloud invite --text",
     },
+    phone_provider: {
+      description: "A tester's pick of who runs the account's ADE Cloud iPhones: auto (the usual order), nomac or revyl. Account level: no project, no pin. Only an account on the iPhone's beta list may pick; anyone else is refused (phone_not_on_account) with the server's sentence. A running phone keeps its own; the next one starts there. Returns {ok: true, provider}.",
+      input: "object { provider: \"auto\" | \"nomac\" | \"revyl\" }",
+      example: "ade cloud phone-provider revyl",
+    },
     invite_redeem: {
       description: `Enter a friend's ADE Cloud invite for this account: the invite link or its 8-character code. Once per account, never changed, within ${CLOUD_REFERRAL_ENTER_DAYS} days of making the account. Returns {ok: true, rewarded, referral} or {ok: false, reason (${CLOUD_INVITE_REFUSAL_REASONS.join(" | ")}), message}. The person's own call from the ADE app (Settings › Account, desktop or phone): an agent, an ADE MCP app and the CLI are refused.`,
       input: "object { code: string (the link https://ade-app.dev/invite/<CODE>, ade://invite/<CODE>, or the bare code) }",

@@ -22,6 +22,7 @@ import {
   type CloudFreeRecord,
   type CloudMoveRecord,
   type CloudPhoneCallRequest,
+  type CloudPhoneProviderChoice,
   type CloudPhoneStart,
   type CloudPhoneState,
   type CloudPhoneView,
@@ -591,6 +592,13 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async phoneView(input): Promise<CloudPhoneView> {
       return await request("POST", CLOUD_PATHS.phoneView, { body: { control: input.control } }) as CloudPhoneView;
+    },
+
+    async setPhoneProvider(provider: CloudPhoneProviderChoice): Promise<{ ok: true; provider: CloudPhoneProviderChoice }> {
+      const answer = record(await request("POST", CLOUD_PATHS.phoneProvider, { body: { provider } }));
+      const picked = answer?.provider;
+      if (answer?.ok !== true || (picked !== "auto" && picked !== "nomac" && picked !== "revyl")) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { ok: true, provider: picked };
     },
 
     async phoneStop(): Promise<{ stopped: boolean }> {

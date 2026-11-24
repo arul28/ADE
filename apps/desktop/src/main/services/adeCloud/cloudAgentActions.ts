@@ -95,6 +95,7 @@ import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import type { CloudDiskGrowAnswer, CloudDiskGrowHost } from "./cloudDiskGrowHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierOfShape, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
@@ -104,6 +105,7 @@ import { buildSponsoredPickCard } from "../../../shared/sponsoredPick";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
+import { isCloudPhoneProviderChoice, type CloudPhoneProviderChoiceAnswer } from "../../../shared/cloudPhone";
 import { cloudAgentLimitsChanges, type CloudAgentLimitsStore } from "./cloudSleep";
 
 /**
@@ -724,7 +726,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const yes = await approve(approval, {
         action: "spend",
         title: `Make "${name}" on ADE Cloud`,
-        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}`,
+        body: `A ${shape.label}${kind === "vm" ? " full computer" : " computer"} (${shape.cpu} CPU, ${shape.memoryGb} GB). ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account), cloudUnitWords(account))}`,
         confirm: "Make it",
         newMachine: true,
         makesComputer: true,
@@ -766,7 +768,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       await approve(approval, {
         action: "spend",
         title: `Resize "${box.name ?? box.instanceId}" to ${shape.label}`,
-        body: `It restarts to change size: files stay, running chats, terminals and processes stop. ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account))}`,
+        body: `It restarts to change size: files stay, running chats, terminals and processes stop. ${describeCloudHoursUse(cloudMachineKindOf(box.type), shape.id, cloudCatalogOf(account), cloudUnitWords(account))}`,
         confirm: "Resize",
         shape: shapeId,
         tierChange: true,
@@ -778,13 +780,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
 
     async copy(rawArgs?: unknown) {
       const args = record(rawArgs);
-      const { box } = await resolveMachine(text(args, "machine"));
+      const { box, all } = await resolveMachine(text(args, "machine"));
       const name = text(args, "name") ?? `${box.name ?? box.instanceId} copy`;
       const shapeId = shapeArg(args);
       const approval = readApproval(args);
       await outsideAgentCheck(approval, await newComputerCheck(cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(null)))?.id ?? null));
       if (cannotMake()) throw new Error(NO_DESKTOP);
-      const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
+      const rate = box.hoursRate != null ? formatCloudHoursRate(box.hoursRate, cloudUnitWords(all.account)) : null;
       const yes = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
@@ -927,11 +929,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
       // The size a default Small may move to, in the catalog's own words (Medium uses hours, Small none).
       const moveUpTier = mayMoveUp ? cloudTier(catalog, CLOUD_AUTO_SIZE.to) : null;
-      const moveUpRate = moveUpTier ? cloudTierRateLabel(moveUpTier) : null;
+      const words = cloudUnitWords(account);
+      const moveUpRate = moveUpTier ? cloudTierRateLabel(moveUpTier, words) : null;
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` ${describeCloudHoursUse(kind, shape.id, catalog, words)}` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${moveUpTier?.label ?? CLOUD_AUTO_SIZE.toLabel}${moveUpRate ? ` (it ${moveUpRate})` : ""} instead and remembers that.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
@@ -995,7 +998,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const computerName = (box as CloudLaneMachine).lane?.laneName ?? box.name ?? box.instanceId;
       const card = buildCloudTierRequestCard(
         { requestId, instanceId: box.instanceId, computerName, fromSizeId: from?.id ?? null, toSizeId: to.id, reason: clipReason(reason), chatSessionId },
-        { from: from?.label ?? null, to: to.label, rate: cloudTierRateLabel(to) },
+        { from: from?.label ?? null, to: to.label, rate: cloudTierRateLabel(to, cloudUnitWords(all.account)) },
       );
       await deps.approvals.postCard(chatSessionId, card);
       logger.info?.("cloud.tier_requested", { instanceId: box.instanceId, toSizeId: to.id, fromSizeId: from?.id ?? null });
@@ -1276,6 +1279,18 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const code = text(record(rawArgs), "code");
       if (!code) throw new Error("Pass the invite link or its 8-character code.");
       return await deps.machines.redeemInvite(code);
+    },
+
+    /**
+     * A tester's pick of who runs their ADE Cloud iPhones (`ade cloud
+     * phone-provider auto|nomac|revyl`): the account's, so no pin and any
+     * folder. The server refuses anyone not on the iPhone's beta list, and its
+     * sentence is the error, so no one else learns a provider's name.
+     */
+    async phone_provider(rawArgs?: unknown): Promise<CloudPhoneProviderChoiceAnswer> {
+      const provider = text(record(rawArgs), "provider")?.toLowerCase() ?? null;
+      if (!isCloudPhoneProviderChoice(provider)) throw new Error("Pass provider: auto, nomac or revyl.");
+      return await deps.machines.setPhoneProvider(provider);
     },
 
     /** What agents may do alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */

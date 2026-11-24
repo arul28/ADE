@@ -139,31 +139,6 @@ struct CloudSky: View {
   }
 }
 
-/// A small frosted pill on the sky ("Renews Dec 13", "Extra hours on").
-struct CloudSkyChip: View {
-  let text: String
-  var tone: Tone = .plain
-
-  enum Tone { case plain, lamp, warn, crit }
-
-  var body: some View {
-    let color: Color = switch tone {
-    case .plain: CloudBrandColor.skyText2
-    case .lamp: CloudBrandColor.lamp
-    case .warn: Color(red: 0.988, green: 0.827, blue: 0.302)
-    case .crit: Color(red: 0.988, green: 0.647, blue: 0.647)
-    }
-    Text(text)
-      .font(.system(size: 11.5, weight: .medium))
-      .foregroundStyle(color)
-      .lineLimit(1)
-      .padding(.horizontal, 9)
-      .frame(height: 22)
-      .background(tone == .plain ? CloudBrandColor.glass : color.opacity(0.12), in: Capsule())
-      .overlay(Capsule().strokeBorder(tone == .plain ? CloudBrandColor.glassEdge : color.opacity(0.4), lineWidth: 0.75))
-  }
-}
-
 /// The plan's name beside "ADE Cloud": a serif italic in gold.
 struct CloudPlanWord: View {
   let text: String

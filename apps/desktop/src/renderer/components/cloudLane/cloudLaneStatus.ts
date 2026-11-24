@@ -9,6 +9,7 @@ import {
   type CloudMachineState,
 } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { cloudTierOfMachine, cloudTierRateLabel, cloudTiers } from "../../../shared/cloudTiers";
 import { formatAgo } from "../../lib/format";
 import { usageLeftLevel } from "../usage/usageDesign";
@@ -108,6 +109,7 @@ export function cloudLaneStatusModel(input: {
   now: number;
 }): CloudLaneStatusModel {
   const { power, box, status, account, now } = input;
+  const words = cloudUnitWords(account);
   const awakeSince = power === "awake" ? status?.awakeSince ?? box?.awakeSinceMs ?? null : null;
   const stateText = power === "awake" && awakeSince != null && awakeSince <= now
     ? `Awake · up ${formatUptime(now - awakeSince)}`
@@ -116,7 +118,7 @@ export function cloudLaneStatusModel(input: {
   let sizeText: string | null = null;
   if (box?.resources) {
     const tier = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)));
-    const phrase = tier ? cloudTierRateLabel(tier) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate) : null;
+    const phrase = tier ? cloudTierRateLabel(tier, words) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate, words) : null;
     const rate = phrase ? capitalizeCloudPhrase(phrase) : null;
     sizeText = [tier?.label, `${box.resources.cpu} CPU`, `${box.resources.memoryGb} GB`, rate].filter(Boolean).join(" · ");
   }
@@ -136,7 +138,7 @@ export function cloudLaneStatusModel(input: {
         const left = cloudHoursLeftMilli(account);
         const included = Math.max(1, account.hours.includedMilli);
         return {
-          text: `${formatCloudHours(left)}h left · ${heroPeriodChip(account).text}`,
+          text: `${words.credits ? words.milli(left) : `${formatCloudHours(left)}h`} left · ${heroPeriodChip(account).text}`,
           tone: usageLeftLevel((left / included) * 100) ?? null,
         };
       })()
