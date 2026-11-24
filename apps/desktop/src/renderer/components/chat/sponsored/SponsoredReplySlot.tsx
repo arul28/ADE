@@ -125,14 +125,15 @@ function SponsoredReplySlotOn({
   const outlets = useContext(SponsoredOutletsContext);
   const wantedPlace = !outlets || format === "below_reply" ? null : format === "above_prompt" ? "dock" : "inline";
   const target = useSponsoredOutlet(outlets, wantedPlace, turn?.turnId ?? null);
-  // A reply that ends without text (a tool call last) has no end to draw into: its card goes under the reply.
+  // A reply that ends without text (a tool call last) has no end to draw into: its card goes under the
+  // reply, and stays there even if an end mounts later (the card was asked for that placement).
   const [noInlineHost, setNoInlineHost] = useState<string | null>(null);
   useEffect(() => {
     if (wantedPlace !== "inline" || target || !turnKey) return;
     const timer = window.setTimeout(() => setNoInlineHost(turnKey), INLINE_HOST_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [wantedPlace, target, turnKey]);
-  const place = wantedPlace === "inline" && !target && noInlineHost === turnKey ? null : wantedPlace;
+  const place = wantedPlace === "inline" && noInlineHost === turnKey ? null : wantedPlace;
   const shownFormat: CloudSponsoredFormat = place ? format : "below_reply";
   const targetReady = place === null || target !== null;
 

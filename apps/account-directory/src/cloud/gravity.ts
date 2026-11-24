@@ -729,13 +729,20 @@ async function handleHide(request: Request, env: GravityEnv, userId: string, now
   const chatId = shortString(body.chatId, 160);
   const turnId = shortString(body.turnId, 160);
   if (!chatId || !ROW_ID.test(chatId) || !turnId || !ROW_ID.test(turnId)) return badRequest("Name the chat and its reply.");
-  const hidden = await env.DB.prepare(`
-    update cloud_sponsored_turns set hidden_at = ?
-    where user_id = ? and chat_id = ? and turn_id = ? and ad_json is not null and hidden_at is null and created_at >= ?
-    returning format
-  `).bind(now, userId, chatId, turnId, now - TURN_TTL_MS).first<{ format: string | null }>();
-  if (hidden) await count(env, now, userId, [`ad_hide:${isSponsoredFormat(hidden.format) ? hidden.format : "below_reply"}`]);
-  return json({ ok: true, counted: Boolean(hidden) });
+  // The counts and the reply's mark in one transaction: a hide is counted exactly when it is marked.
+  const unhidden = "user_id = ? and chat_id = ? and turn_id = ? and ad_json is not null and hidden_at is null and created_at >= ?";
+  const since = now - TURN_TTL_MS;
+  const countHide = (who: string) => env.DB.prepare(`
+    insert into cloud_sponsored_days (day, user_id, kind, count)
+    select ?, ?, 'ad_hide:' || coalesce(format, 'below_reply'), 1 from cloud_sponsored_turns where ${unhidden}
+    on conflict (day, user_id, kind) do update set count = count + 1
+  `).bind(utcDay(now), who, userId, chatId, turnId, since);
+  const results = await env.DB.batch([
+    countHide(userId),
+    countHide(ALL),
+    env.DB.prepare(`update cloud_sponsored_turns set hidden_at = ? where ${unhidden}`).bind(now, userId, chatId, turnId, since),
+  ]);
+  return json({ ok: true, counted: (results[2]?.meta?.changes ?? 0) > 0 });
 }
 
 /** One of Gravity's Index answers as a pick, or null. */
