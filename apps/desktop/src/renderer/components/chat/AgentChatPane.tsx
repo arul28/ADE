@@ -11438,7 +11438,15 @@ export function AgentChatPane({
     const derivationEventsBySession = new Map<string, AgentChatEventEnvelope[]>();
     const queuedBySession = new Map<string, AgentChatEventEnvelope[]>();
 
+    // A steer the host queues again (a restored queue, a refused inline
+    // offer) is held once more, so its chip shows again.
+    const requeuedSteerIds: string[] = [];
     for (const envelope of queued) {
+      const event = envelope.event;
+      if (event.type === "user_message" && event.steerId && event.deliveryState === "queued") requeuedSteerIds.push(event.steerId);
+      else if (event.type === "queue_recovery" && event.state === "restored") {
+        for (const steer of event.restoredSteers ?? []) requeuedSteerIds.push(steer.steerId);
+      }
       const sessionId = envelope.sessionId;
       const sessionQueue = queuedBySession.get(sessionId);
       if (sessionQueue) sessionQueue.push(envelope);
@@ -11485,6 +11493,14 @@ export function AgentChatPane({
       touchedSessionIds.add(sessionId);
     }
 
+    if (requeuedSteerIds.length) {
+      setRefusedSteerIds((current) => {
+        if (!requeuedSteerIds.some((steerId) => current.has(steerId))) return current;
+        const kept = new Set(current);
+        for (const steerId of requeuedSteerIds) kept.delete(steerId);
+        return kept;
+      });
+    }
     if (!touchedSessionIds.size) return;
 
     // Commit the ref immediately so subsequent flushes see the latest events.
@@ -22179,7 +22195,12 @@ export function AgentChatPane({
                 try {
                   await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.moveSteer({ sessionId: selectedSessionId, steerId, toIndex }, chatPin));
                 } catch (error) {
-                  setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  if (isSteerNoLongerQueuedError(error)) {
+                    setRefusedSteerIds((current) => new Set(current).add(steerId));
+                    showToast({ tone: "info", title: "That message is no longer queued." });
+                  } else {
+                    setError(`Couldn't reorder the queued message: ${error instanceof Error ? error.message : String(error)}`);
+                  }
                   throw error;
                 }
               }

@@ -1694,6 +1694,31 @@ function stripCrrMetadata(
   changeTag: string | null = null,
 ): { droppedTriggerCount: number; deletedMetadataCount: number } {
   const dbVersionFloor = readCrsqlDbVersion(db);
+  // One step: a stop between the clock's drop and the floor's write would
+  // leave db_version rewound. A savepoint nests inside a caller's transaction.
+  // cr-sqlite only rewinds db_version when the drop commits, so the floor is
+  // written whatever the version reads here; it is never above the current one.
+  runStatement(db, "savepoint crr_strip_metadata");
+  try {
+    const stripped = stripCrrMetadataSteps(db, tableName, logger, changeTag);
+    if (dbVersionFloor != null && rawHasTable(db, "crsql_master")) {
+      runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
+    }
+    runStatement(db, "release crr_strip_metadata");
+    return stripped;
+  } catch (error) {
+    runStatement(db, "rollback to crr_strip_metadata");
+    runStatement(db, "release crr_strip_metadata");
+    throw error;
+  }
+}
+
+function stripCrrMetadataSteps(
+  db: DatabaseSyncType,
+  tableName: string,
+  logger: Logger | undefined,
+  changeTag: string | null,
+): { droppedTriggerCount: number; deletedMetadataCount: number } {
   let deletedMetadataCount = 0;
   if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
     deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
@@ -1709,9 +1734,6 @@ function stripCrrMetadata(
   const droppedTriggerCount = dropCrrTriggers(db, tableName, logger);
   runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_clock`)}`);
   runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
-  if (dbVersionFloor != null && (readCrsqlDbVersion(db) ?? 0) < dbVersionFloor && rawHasTable(db, "crsql_master")) {
-    runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
-  }
   return { droppedTriggerCount, deletedMetadataCount };
 }
 
