@@ -4617,6 +4617,7 @@ extension AgentChatEvent {
     case cancelledUuids
     case steerIds
     case recoveryId
+    case restoredSteers
     case messageCount
     case expiresAt
     case stopMode
@@ -4900,14 +4901,19 @@ extension AgentChatEvent {
       let stopMode = try container.decode(String.self, forKey: .stopMode)
       let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
       let recoveryId = try container.decode(String.self, forKey: .recoveryId)
+      var detail: [String: RemoteJSONValue] = [
+        "messageCount": .number(Double(messageCount)),
+        "expiresAt": .string(expiresAt),
+        "stopMode": .string(stopMode),
+      ]
+      // A restore names the steers it put back, so the queue shows them again.
+      if let restoredSteers = try container.decodeIfPresent([RemoteJSONValue].self, forKey: .restoredSteers) {
+        detail["restoredSteers"] = .array(restoredSteers)
+      }
       self = .systemNotice(
         noticeKind: .queueRecovery,
         message: state,
-        detail: .object([
-          "messageCount": .number(Double(messageCount)),
-          "expiresAt": .string(expiresAt),
-          "stopMode": .string(stopMode),
-        ]),
+        detail: .object(detail),
         turnId: turnId,
         steerId: recoveryId
       )

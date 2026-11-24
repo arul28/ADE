@@ -1318,6 +1318,8 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
           queuedSteerIdsByText[normalizedText]?.remove(consumed)
         }
       }
+    case .systemNotice(let kind, let message, let detail, _, _) where workIsRestoredQueueRecovery(kind: kind, message: message):
+      for steer in workRestoredQueueSteers(from: detail) { resolvedSteerIds.remove(steer.steerId) }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
         resolvedSteerIds.insert(steerId)
@@ -2303,6 +2305,25 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
           queuedSteerIdsByText[normalizedText]?.remove(consumed)
         }
       }
+    case .systemNotice(let kind, let message, let detail, let turnId, _) where workIsRestoredQueueRecovery(kind: kind, message: message):
+      // A restored queue puts its steers back at the end, even after their
+      // cancel notices, as `deriveRuntimeState` does on desktop.
+      for steer in workRestoredQueueSteers(from: detail) {
+        resolved.remove(steer.steerId)
+        order.removeAll { $0 == steer.steerId }
+        order.append(steer.steerId)
+        let normalizedText = normalizedQueuedSteerText(steer.text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steer.steerId)
+        }
+        queue[steer.steerId] = WorkPendingSteerModel(
+          id: steer.steerId,
+          text: steer.text,
+          attachments: steer.attachments,
+          turnId: turnId,
+          timestamp: envelope.timestamp
+        )
+      }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
         queue.removeValue(forKey: steerId)
@@ -2318,6 +2339,23 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+func workIsRestoredQueueRecovery(kind: String, message: String) -> Bool {
+  kind == "queue_recovery" && message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "restored"
+}
+
+/// The steers a restored `queue_recovery` put back (`restoredSteers` in its detail).
+func workRestoredQueueSteers(from detail: String?) -> [(steerId: String, text: String, attachments: [AgentChatFileRef]?)] {
+  guard let restored = workJSONObject(from: detail)?["restoredSteers"] as? [[String: Any]] else { return [] }
+  return restored.compactMap { steer in
+    guard let steerId = steer["steerId"] as? String, !steerId.isEmpty else { return nil }
+    let attachments = (steer["attachments"] as? [[String: Any]])?.compactMap { ref -> AgentChatFileRef? in
+      guard let path = ref["path"] as? String, let type = ref["type"] as? String else { return nil }
+      return AgentChatFileRef(path: path, type: type, url: ref["url"] as? String)
+    }
+    return (steerId, steer["text"] as? String ?? "", attachments?.isEmpty == false ? attachments : nil)
+  }
 }
 
 /// Mirrors `isSettledSteerDeliveryState` in apps/desktop/src/shared/chatTranscript.ts.

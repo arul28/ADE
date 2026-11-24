@@ -8,6 +8,7 @@ import { codedError, isCodedError, isErrnoLikeCode } from "../../../shared/coded
 import { carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { StorageNotAnsweringError } from "./unansweringRoots";
 import type { Logger } from "../logging/logger";
+import { captureError, captureProblem } from "../../../shared/sentry/capture";
 import { isSqliteBusyOrLockedError, isSqliteIoError, sqliteErrorClass } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
@@ -2830,6 +2831,14 @@ function makeCrrAwareDb({
   const alterAsPlainTable = (db: DatabaseSyncType, tableName: string, sql: string, params: SqlValue[], reason: string): void => {
     stripCrrMetadata(db, tableName, logger);
     logger?.warn("db.crr_alter_metadata_reset", { tableName, reason });
+    // Rare, and it resets the table's column versions, so a repeat must reach
+    // an issue (the warn line above only lands in Logs).
+    captureProblem("CRR table sync metadata reset for an ALTER", {
+      level: "warning",
+      fingerprint: ["db", "crr_alter_metadata_reset"],
+      tags: { table: tableName },
+      extra: { reason },
+    });
     runStatement(db, sql, params);
     try {
       getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
@@ -2837,6 +2846,7 @@ function makeCrrAwareDb({
       if (isSqliteBusyOrLockedError(error)) throw error;
       // `ensureCrrTables` converts it on the next open, or reports why it can't.
       logger?.warn("db.crr_alter_reconvert_failed", { tableName, error: error instanceof Error ? error.message : String(error) });
+      captureError(error, { level: "warning", fingerprint: ["db", "crr_alter_reconvert_failed"], tags: { table: tableName } });
     }
   };
   return {

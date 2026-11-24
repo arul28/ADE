@@ -6,6 +6,8 @@ import {
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { captureError } from "../../../shared/sentry/capture";
 import { writeFileAtomic } from "../state/durableFile";
 import type {
   DesktopPairedMachineEndpointState,
@@ -1497,6 +1499,13 @@ export class DesktopPairedMachineStore {
     // The shared writer waits out the antivirus or indexer that holds a
     // just-written file on Windows; a bare rename failed there with EPERM.
     writeFileAtomic(this.path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600, renameOnly: true });
+    // Mode 0600 means nothing on Windows; the file holds machine tokens, so it
+    // gets an owner-only ACL there. A failed ACL keeps the saved pairing.
+    try {
+      securePrivatePath(this.path);
+    } catch (error) {
+      captureError(error, { level: "warning", fingerprint: ["private_file_acl", "paired_machines"] });
+    }
   }
 }
 

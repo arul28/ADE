@@ -765,14 +765,16 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           steerIds: (eventDict["steerIds"] as? [Any] ?? []).compactMap { $0 as? String }
         )
       case "queue_recovery":
+        var recoveryDetail: [String: Any] = [
+          "messageCount": eventDict["messageCount"] ?? 0,
+          "expiresAt": eventDict["expiresAt"] ?? "",
+          "stopMode": eventDict["stopMode"] ?? "",
+        ]
+        if let restoredSteers = eventDict["restoredSteers"] { recoveryDetail["restoredSteers"] = restoredSteers }
         event = .systemNotice(
           kind: "queue_recovery",
           message: stringValue(eventDict["state"]),
-          detail: optionalString(prettyPrintedJSONString([
-            "messageCount": eventDict["messageCount"] ?? 0,
-            "expiresAt": eventDict["expiresAt"] ?? "",
-            "stopMode": eventDict["stopMode"] ?? "",
-          ])),
+          detail: optionalString(prettyPrintedJSONString(recoveryDetail)),
           turnId: turnId,
           steerId: optionalString(eventDict["recoveryId"])
         )
