@@ -187,7 +187,12 @@ export function hoursForecast(account: CloudAccountState, now: number, words: Cl
 }
 
 /** One part of the hero's bar: what used the plan, or what is left. */
-export type HeroBarPart = { key: "computers" | "phone" | "used" | "left"; label: string; milli: number };
+/**
+ * One part of the hero's bar. `milli` is its share of the plan's bar; `shownMilli`
+ * is the exact number the legend shows (the period's whole use, past the plan too),
+ * so the legend never shows the bar's proportional split as if it were counted.
+ */
+export type HeroBarPart = { key: "computers" | "phone" | "used" | "left"; label: string; milli: number; shownMilli: number };
 
 /**
  * The hero's balance, as the bar and its legend show it: the whole plan,
@@ -199,19 +204,21 @@ export function heroBalanceParts(account: CloudAccountState, words: CloudUnitWor
   const plan = Math.max(0, includedMilli);
   const left = Math.min(plan, Math.max(0, leftMilli));
   const used = Math.max(0, plan - left);
-  if (!words.credits) return [{ key: "used", label: "Used", milli: used }, { key: "left", label: "Left", milli: left }];
+  if (!words.credits) return [{ key: "used", label: "Used", milli: used, shownMilli: used }, { key: "left", label: "Left", milli: left, shownMilli: left }];
   // `phone.creditsUsedMilli` and `hours.usedMilli` count the whole period, past
   // the plan too, while the bar is the plan only. Which credits fell inside
-  // the plan isn't known, so the plan's used part is split in proportion to
-  // what each used over the period: the parts never go below 0 and always
-  // sum to `used` (Computers 600 + iPhone 50 past a 600 plan reads 554 / 46).
+  // the plan isn't known, so the bar splits the plan's used part in proportion
+  // to what each used over the period (never below 0, always summing to
+  // `used`), and the legend shows the exact period totals (Computers 600 +
+  // iPhone 50 past a 600 plan: the bar 554 / 46, the legend 600 / 50).
   const phoneTotal = Math.max(0, account.phone?.creditsUsedMilli ?? 0);
   const periodTotal = Math.max(phoneTotal, account.hours.usedMilli);
   const phone = periodTotal > 0 ? Math.round((used * phoneTotal) / periodTotal) : 0;
+  const computersTotal = Math.max(0, account.hours.usedMilli - phoneTotal);
   return [
-    { key: "computers", label: "Computers", milli: used - phone },
-    { key: "phone", label: "iPhone", milli: phone },
-    { key: "left", label: "Left", milli: left },
+    { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersTotal },
+    { key: "phone", label: "iPhone", milli: phone, shownMilli: phoneTotal },
+    { key: "left", label: "Left", milli: left, shownMilli: left },
   ];
 }
 

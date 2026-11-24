@@ -441,7 +441,7 @@ function CloudHero({
   const planTotal = held ? cloudCatalogOf(account).plans.free.includedMilli : hours.includedMilli;
   const barParts = parts.filter((part) => part.milli > 0);
   const barTotal = Math.max(1, hours.includedMilli);
-  const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.milli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
+  const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.shownMilli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
   const extra = account.extraHours;
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
   const stopsWhen = words.credits
@@ -473,7 +473,7 @@ function CloudHero({
           </div>
           <ul className="adecd-legend" aria-hidden="true">
             {parts.map((part) => (
-              <li key={part.key} data-part={part.key}><i />{part.label} <b className="kit-num">{formatCloudHours(part.milli)}</b></li>
+              <li key={part.key} data-part={part.key}><i />{part.label} <b className="kit-num">{formatCloudHours(part.shownMilli)}</b></li>
             ))}
           </ul>
           <ul className="adecd-hours-notes">
