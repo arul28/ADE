@@ -37,6 +37,8 @@ import "./sponsored.css";
 
 const ANSWER_CACHE_LIMIT = 50;
 const NOT_CLOUD_RETRY_MS = 12_000;
+/** How long a finished reply's end may take to mount before an inline card goes under the reply instead. */
+const INLINE_HOST_WAIT_MS = 1_500;
 
 const answers = new Map<string, Promise<CloudSponsoredAdAnswer>>();
 const viewedAds = new Set<string>();
@@ -113,20 +115,36 @@ function SponsoredReplySlotOn({
   const [hidden, setHidden] = useState(() => (turnKey ? hiddenTurns.has(turnKey) : false));
   useEffect(() => setHidden(turnKey ? hiddenTurns.has(turnKey) : false), [turnKey]);
 
+  // The latest finished reply, kept while the next one runs: the docked card stays only if it is that reply's.
+  const [lastTurnKey, setLastTurnKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (turnKey) setLastTurnKey(turnKey);
+  }, [turnKey]);
+
   // Where the card draws: the dock, the reply's end, or (no such place in this pane) under the reply.
   const outlets = useContext(SponsoredOutletsContext);
-  const place = !outlets || format === "below_reply" ? null : format === "above_prompt" ? "dock" : "inline";
+  const wantedPlace = !outlets || format === "below_reply" ? null : format === "above_prompt" ? "dock" : "inline";
+  const target = useSponsoredOutlet(outlets, wantedPlace, turn?.turnId ?? null);
+  // A reply that ends without text (a tool call last) has no end to draw into: its card goes under the reply.
+  const [noInlineHost, setNoInlineHost] = useState<string | null>(null);
+  useEffect(() => {
+    if (wantedPlace !== "inline" || target || !turnKey) return;
+    const timer = window.setTimeout(() => setNoInlineHost(turnKey), INLINE_HOST_WAIT_MS);
+    return () => window.clearTimeout(timer);
+  }, [wantedPlace, target, turnKey]);
+  const place = wantedPlace === "inline" && !target && noInlineHost === turnKey ? null : wantedPlace;
   const shownFormat: CloudSponsoredFormat = place ? format : "below_reply";
-  const target = useSponsoredOutlet(outlets, place, turn?.turnId ?? null);
   const targetReady = place === null || target !== null;
 
-  // The place under the reply, card included: a card shows only while it is
-  // on screen. The reply's end sits just above it; the dock is always on
-  // screen while the pane is.
+  // A card shows only while its place is on screen: under the reply (the
+  // region, card included), the reply's end (the outlet itself), or the dock,
+  // which is on screen while the pane is.
   const regionRef = useRef<HTMLDivElement | null>(null);
+  const targetRef = useMemo(() => ({ current: target }), [target]);
   const wanted = fresh && !hidden && visible;
   const onScreen = useOnScreen(regionRef, 0, wanted);
-  const seen = place === "dock" ? wanted : onScreen;
+  const targetOnScreen = useOnScreen(targetRef, 0, wanted && place === "inline");
+  const seen = place === "dock" ? wanted : place === "inline" ? targetOnScreen : onScreen;
 
   // Someone is watching this computer's chat: the Index may answer its agents.
   useSponsoredViewer(instanceId, consent === "granted" && visible);
@@ -172,7 +190,7 @@ function SponsoredReplySlotOn({
   if (wanted && onScreen && consent === null) showing = "consent";
   else if (wanted && seen && adShown && targetReady) showing = "ad";
   // The docked card stays while the next reply runs, and gives way to that reply's own.
-  else if (place === "dock" && turnActive && target && visible && ad && !hiddenTurns.has(ad.key)) showing = "ad";
+  else if (place === "dock" && turnActive && target && visible && ad && ad.key === lastTurnKey && !hiddenTurns.has(ad.key)) showing = "ad";
 
   useEffect(() => {
     if (showing) holdSponsoredPlace(slotId);

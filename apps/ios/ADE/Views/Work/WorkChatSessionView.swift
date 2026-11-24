@@ -2700,7 +2700,7 @@ struct WorkChatSessionView: View {
             instanceId: sponsoredChatInstanceId,
             sessionId: session.id,
             turnActive: showsStreamingStatus,
-            finishedTurnId: sponsoredSlotTurn?.turnId,
+            turn: sponsoredSlotTurn,
             slot: sponsoredSlot
           )
           WorkChatComposerCard(

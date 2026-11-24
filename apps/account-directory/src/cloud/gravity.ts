@@ -583,10 +583,16 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
 /** A reply's ask is being answered: the row is claimed, Gravity's answer not in yet. */
 const PENDING_TURN = "pending";
 
-async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, now: number): Promise<CloudSponsoredAdAnswer | null> {
-  const row = await env.DB.prepare("select ad_json, reason, created_at from cloud_sponsored_turns where user_id = ? and chat_id = ? and turn_id = ?")
-    .bind(userId, chatId, turnId).first<{ ad_json: string | null; reason: string | null; created_at: number }>();
+/**
+ * The reply's saved answer. One asked for another placement (the reply opened
+ * on another surface, or the format changed) is no card here: its tracking
+ * links count for that placement, and the inline length limit may not hold.
+ */
+async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, placementId: string, now: number): Promise<CloudSponsoredAdAnswer | null> {
+  const row = await env.DB.prepare("select ad_json, reason, created_at, placement_id from cloud_sponsored_turns where user_id = ? and chat_id = ? and turn_id = ?")
+    .bind(userId, chatId, turnId).first<{ ad_json: string | null; reason: string | null; created_at: number; placement_id: string | null }>();
   if (!row || now - row.created_at > TURN_TTL_MS) return null;
+  if (row.placement_id && row.placement_id !== placementId) return { ad: null, reason: "no_fill" };
   if (!row.ad_json) {
     const reason = !row.reason || row.reason === PENDING_TURN ? "no_fill" : row.reason as CloudSponsoredNoAdReason;
     return { ad: null, reason };
@@ -603,20 +609,20 @@ async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId:
  * Claims a reply before Gravity is asked: of two screens asking at once, only
  * the one that wrote the row asks. False when another ask holds it.
  */
-async function claimTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, now: number): Promise<boolean> {
+async function claimTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, format: CloudSponsoredFormat, placementId: string, now: number): Promise<boolean> {
   const [, claim] = await env.DB.batch([
     env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),
     env.DB.prepare(`
-      insert into cloud_sponsored_turns (user_id, chat_id, turn_id, ad_json, reason, created_at) values (?, ?, ?, null, ?, ?)
+      insert into cloud_sponsored_turns (user_id, chat_id, turn_id, ad_json, reason, created_at, format, placement_id) values (?, ?, ?, null, ?, ?, ?, ?)
       on conflict (user_id, chat_id, turn_id) do nothing
-    `).bind(userId, chatId, turnId, PENDING_TURN, now),
+    `).bind(userId, chatId, turnId, PENDING_TURN, now, format, placementId),
   ]);
   return (claim?.meta?.changes ?? 0) === 1;
 }
 
-async function saveTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, answer: CloudSponsoredAdAnswer, format: CloudSponsoredFormat): Promise<void> {
-  await env.DB.prepare("update cloud_sponsored_turns set ad_json = ?, reason = ?, format = ? where user_id = ? and chat_id = ? and turn_id = ?")
-    .bind(answer.ad ? JSON.stringify(answer.ad) : null, answer.ad ? null : answer.reason ?? "no_fill", format, userId, chatId, turnId).run();
+async function saveTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, answer: CloudSponsoredAdAnswer): Promise<void> {
+  await env.DB.prepare("update cloud_sponsored_turns set ad_json = ?, reason = ? where user_id = ? and chat_id = ? and turn_id = ?")
+    .bind(answer.ad ? JSON.stringify(answer.ad) : null, answer.ad ? null : answer.reason ?? "no_fill", userId, chatId, turnId).run();
 }
 
 /** Gravity didn't answer: the claim goes, so a later ask for this reply may try again. */
@@ -654,14 +660,17 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const copy = await env.DB.prepare("select parent_chat_id from cloud_chat_copies where user_id = ? and chat_id = ? and instance_id = ? limit 1")
     .bind(userId, chatId, computer.instance_id).first<{ parent_chat_id: string | null }>();
   if (!copy || copy.parent_chat_id) return none("not_cloud");
+  const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
+  const slot = PLACEMENTS[format];
+  const placementId = `ade-${surfaceOf(body.surface, device)}-${slot.slug}`;
   // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.
-  const stored = await readTurn(env, userId, chatId, turnId, now);
+  const stored = await readTurn(env, userId, chatId, turnId, placementId, now);
   // A real ad saved before ads went back to test ads still keeps to the countries, tester or not.
   if (stored?.ad && !stored.ad.test && outsideCountryList(env, requestCountry(request))) return none("country");
   if (stored) return json(stored);
   const messages = readMessages(body.messages, 2);
   if (!messages.length) return none("no_fill");
-  if (!(await claimTurn(env, userId, chatId, turnId, now))) return none("no_fill");
+  if (!(await claimTurn(env, userId, chatId, turnId, format, placementId, now))) return none("no_fill");
   if (!(await reserveRequest(env, now, userId, "ad", switches))) {
     await releaseTurn(env, userId, chatId, turnId);
     return none("limit");
@@ -669,8 +678,6 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
 
   const live = switches.live;
   const ip = clientIp(request);
-  const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
-  const slot = PLACEMENTS[format];
   // The A/B test's counts: requests, fills and hides per format.
   await count(env, now, userId, [`ad_request:${format}`]);
   const hashedEmail = hashedEmailFor(device, consent.email_hash);
@@ -693,7 +700,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     messages,
     [{
       placement: slot.placement,
-      placement_id: `ade-${surfaceOf(body.surface, device)}-${slot.slug}`,
+      placement_id: placementId,
       ...(slot.maxChars ? { max_ad_text_chars: slot.maxChars } : {}),
     }],
     { apiKey: env.GRAVITY_API_KEY, production: live, supportsSpec: false, timeoutMs: REQUEST_TIMEOUT_MS },
@@ -707,7 +714,7 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const ad = adOfGravity(result.ads[0], !live);
   const answer: CloudSponsoredAdAnswer = ad ? { ad } : { ad: null, reason: "no_fill" };
   if (ad) await count(env, now, userId, ["ad_fill", `ad_fill:${format}`]);
-  await saveTurn(env, userId, chatId, turnId, answer, format);
+  await saveTurn(env, userId, chatId, turnId, answer);
   return json(answer);
 }
 

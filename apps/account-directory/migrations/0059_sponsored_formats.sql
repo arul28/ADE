@@ -15,7 +15,9 @@ create table if not exists cloud_sponsored_formats (
 );
 create index if not exists idx_cloud_sponsored_formats_format on cloud_sponsored_formats(format, source);
 
--- The format a reply's card was asked in, and when the person hid it: the
+-- The format and Gravity placement a reply's card was asked in (a saved answer
+-- is read back only for the same placement), and when the person hid it: the
 -- A/B test counts hides per format once per reply (`POST /cloud/sponsored/hide`).
 alter table cloud_sponsored_turns add column format text;
 alter table cloud_sponsored_turns add column hidden_at integer;
+alter table cloud_sponsored_turns add column placement_id text;

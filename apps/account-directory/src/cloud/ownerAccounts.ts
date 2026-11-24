@@ -328,7 +328,7 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
     ok: true,
     settings,
     ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
-    inForce: { gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
   });
 }
 

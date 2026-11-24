@@ -14,8 +14,8 @@ import UIKit
 
 // MARK: - Where the slot is on screen
 
-/// A card a chat's slot answered for a format drawn away from the slot: the
-/// dock above the prompt box, or the end of the reply.
+/// A card answered for a format drawn away from the slot under the reply:
+/// the dock above the prompt box, or the end of the reply.
 struct WorkSponsoredPlacedAd: Equatable {
   let turnKey: String
   let turnId: String
@@ -32,10 +32,11 @@ struct WorkSponsoredPlacedAd: Equatable {
 /// bottom gutter, so its place follows from the distance to the bottom.
 /// Held by the chat as `@State`, so a change redraws only the sponsored views.
 ///
-/// Also the hand-off between the one asker (`WorkSponsoredReplySlot`) and the
-/// two places it can draw into besides itself: the slot publishes the card
-/// (`placed`), and the dock above the prompt box (`WorkSponsoredDockSlot`) or
-/// the reply's end (`WorkSponsoredInlineOutlet`) draws it.
+/// Also the hand-off between the slot (`WorkSponsoredReplySlot`) and the
+/// reply's end (`WorkSponsoredInlineOutlet`): the slot publishes an inline
+/// card (`placed`) and the reply's row draws it. The dock above the prompt
+/// box asks for its own card (`WorkSponsoredDockSlot`): it is always on
+/// screen, while the slot's cell may not exist during scrollback.
 @MainActor
 final class WorkSponsoredSlotModel: ObservableObject {
   /// Some of the slot is on screen: a card may be asked for.
@@ -44,8 +45,7 @@ final class WorkSponsoredSlotModel: ObservableObject {
   @Published private(set) var halfOnScreen = false
   /// The chat screen is on screen (not covered by a pushed screen or gone).
   @Published private(set) var chatVisible = false
-  /// The latest card answered for the dock or the reply's end. The dock keeps
-  /// it while the next turn runs; that turn's own card replaces it.
+  /// The latest inline card answered for the reply's end.
   @Published private(set) var placed: WorkSponsoredPlacedAd?
   /// The end of the reply the inline line goes at is on screen.
   @Published private(set) var inlineOnScreen = false
@@ -117,12 +117,13 @@ final class WorkSponsoredSlotModel: ObservableObject {
 
 // MARK: - The slot under the last reply
 
-/// The one part that asks for a finished reply's sponsored card, in the
-/// account's format (`CloudSponsoredState.format`): it draws a card under the
-/// reply itself, or hands it to the dock above the prompt box or the reply's
-/// end (`WorkSponsoredSlotModel.placed`). Where the chat has no such place
-/// (a sign-in card stands in for the prompt box, no reply row to end), the
-/// card shows under the reply. The one-time question is always asked here.
+/// Asks for a finished reply's sponsored card in the account's format
+/// (`CloudSponsoredState.format`): it draws a card under the reply itself, or
+/// hands an inline one to the reply's end (`WorkSponsoredSlotModel.placed`).
+/// The docked format asks from the dock (`WorkSponsoredDockSlot`). Where the
+/// chat has no such place (a sign-in card stands in for the prompt box, no
+/// reply row to end), the card shows under the reply. The one-time question
+/// is always asked here.
 /// Asks only while the app is in front, the turn finished well (and in the
 /// last day), and the card's place is on screen; once per turn per app run.
 /// At most one card in the whole app (`CloudSponsoredStore.holder`).
@@ -137,8 +138,6 @@ struct WorkSponsoredReplySlot: View {
   var inlineHostRowId: String? = nil
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
-
-  private static let notCloudRetry: Duration = .seconds(12)
 
   private enum Showing: Equatable {
     case consent
@@ -211,9 +210,9 @@ struct WorkSponsoredReplySlot: View {
     .task(id: Self.shownKey(showing, holds: store.holder == sessionId)) {
       slot.setShownKey(Self.shownKey(showing, holds: store.holder == sessionId))
     }
-    // The dock or the reply's end draws this turn's card.
+    // The reply's end draws this turn's inline card.
     .task(id: "\(turnKey)|\(format.rawValue)|\(store.ads[turnKey]?.id ?? "")") {
-      guard format != .belowReply, let ad = store.ads[turnKey] else { return }
+      guard format == .inline, let ad = store.ads[turnKey] else { return }
       slot.place(WorkSponsoredPlacedAd(turnKey: turnKey, turnId: turn.turnId, ad: ad, format: format))
     }
     .onDisappear { store.release(sessionId) }
@@ -228,73 +227,92 @@ struct WorkSponsoredReplySlot: View {
     }
   }
 
-  /// One ask per turn; a `not_cloud` answer (the computer hadn't saved the
-  /// chat's copy yet) is asked once more ~12 s later, never more.
   private func askIfWanted() async {
-    // No ask while another sponsored unit holds the one place.
-    guard sponsored?.granted == true, wanted, seen, !placeTaken, store.ads[turnKey] == nil else { return }
-    let key = turnKey
-    let format = shownFormat
-    let ask: @MainActor () async -> CloudSponsoredAdAnswer = { [instanceId, sessionId, turn] in
-      guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return .unavailable }
-      // Apple's tracking prompt, once, before the first card; the card is asked for whatever the answer.
-      _ = await CloudSponsoredTracking.askOnce()
-      do {
-        return try await client.sponsoredAd(instanceId: instanceId, chatId: sessionId, turn: turn, device: .current, format: format)
-      } catch {
-        cloudSponsoredLog.notice("sponsored ad ask failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-        return .unavailable
-      }
-    }
-    while !Task.isCancelled {
-      let answer = await store.askAd(turnKey: key, ask: ask)
-      guard answer.shownAd == nil, answer.reason == "not_cloud" else { return }
-      try? await Task.sleep(for: Self.notCloudRetry)
-      guard !Task.isCancelled, store.takeNotCloudRetry(turnKey: key) else { return }
-      store.forgetAnswer(turnKey: key)
-    }
+    // No ask while another sponsored unit holds the one place; the dock asks for its own.
+    guard sponsored?.granted == true, wanted, seen, !placeTaken, shownFormat != .abovePrompt, store.ads[turnKey] == nil else { return }
+    await workSponsoredAsk(instanceId: instanceId, sessionId: sessionId, turn: turn, format: shownFormat, store: store)
   }
 }
 
-/// Whether a card the slot placed may show now: the account still shows
-/// cards and said yes, the app is in front, the chat is on screen, and the
-/// person didn't hide that turn's card.
+/// One ask per turn (`CloudSponsoredStore.askAd`); a `not_cloud` answer (the
+/// computer hadn't saved the chat's copy yet) is asked once more ~12 s later,
+/// never more.
+@MainActor
+private func workSponsoredAsk(instanceId: String, sessionId: String, turn: CloudSponsoredTurn, format: CloudSponsoredFormat, store: CloudSponsoredStore) async {
+  let key = CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turn.turnId)
+  let ask: @MainActor () async -> CloudSponsoredAdAnswer = {
+    guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return .unavailable }
+    // Apple's tracking prompt, once, before the first card; the card is asked for whatever the answer.
+    _ = await CloudSponsoredTracking.askOnce()
+    do {
+      return try await client.sponsoredAd(instanceId: instanceId, chatId: sessionId, turn: turn, device: .current, format: format)
+    } catch {
+      cloudSponsoredLog.notice("sponsored ad ask failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+      return .unavailable
+    }
+  }
+  while !Task.isCancelled {
+    let answer = await store.askAd(turnKey: key, ask: ask)
+    guard answer.shownAd == nil, answer.reason == "not_cloud" else { return }
+    try? await Task.sleep(for: workSponsoredNotCloudRetry)
+    guard !Task.isCancelled, store.takeNotCloudRetry(turnKey: key) else { return }
+    store.forgetAnswer(turnKey: key)
+  }
+}
+
+private let workSponsoredNotCloudRetry: Duration = .seconds(12)
+
+/// Whether a card drawn away from the slot may show now: the account still
+/// shows cards in that format and said yes, the app is in front, the chat is
+/// on screen, and the person didn't hide that turn's card.
 @MainActor
 private func workSponsoredPlacedAllowed(_ placed: WorkSponsoredPlacedAd, slot: WorkSponsoredSlotModel, store: CloudSponsoredStore, account: AccountCloudStore) -> Bool {
-  guard let sponsored = account.account?.sponsored, sponsored.ads, sponsored.granted else { return false }
+  guard let sponsored = account.account?.sponsored, sponsored.ads, sponsored.granted,
+        (sponsored.format ?? .belowReply) == placed.format else { return false }
   return store.appActive && slot.chatVisible && !store.hiddenTurns.contains(placed.turnKey)
 }
 
 // MARK: - The dock above the prompt box
 
 /// Directly above the prompt box: the latest finished reply's card, as one
-/// row as wide as the prompt box. It stays while the next turn runs and
-/// gives way to that reply's own card (or to nothing, when it gets none).
-/// Draws nothing (and takes no room) otherwise, and outside ADE Cloud chats.
+/// row as wide as the prompt box. It asks for that card itself (the dock is
+/// on screen whenever the chat is, even scrolled back), stays while the next
+/// turn runs, and gives way to that reply's own card, or to nothing when it
+/// gets none. Draws nothing (and takes no room) otherwise, and outside ADE
+/// Cloud chats.
 struct WorkSponsoredDockSlot: View {
   /// The ADE Cloud lane computer of a chat that may show cards; nil elsewhere.
   let instanceId: String?
   let sessionId: String
   /// A turn runs now: the previous reply's card stays.
   let turnActive: Bool
-  /// The turn the slot asks for now (finished, fresh), or nil.
-  let finishedTurnId: String?
+  /// The latest finished turn (fresh), or nil while one runs.
+  let turn: CloudSponsoredTurn?
   @ObservedObject var slot: WorkSponsoredSlotModel
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
+  /// The latest finished reply's card, kept while the next turn runs.
+  @State private var kept: WorkSponsoredPlacedAd?
 
   private var placeId: String { CloudSponsoredStore.placeId(sessionId: sessionId, format: .abovePrompt) }
+  private var turnKey: String? { turn.map { CloudSponsoredStore.turnKey(chatId: sessionId, turnId: $0.turnId) } }
+  private var sponsored: CloudSponsoredState? { accountStore.account?.sponsored }
+
+  private var wanted: Bool {
+    guard instanceId != nil, let sponsored, sponsored.ads, sponsored.granted, sponsored.format == .abovePrompt,
+          let turn, let turnKey else { return false }
+    return turn.isFresh() && !store.hiddenTurns.contains(turnKey) && store.appActive && slot.chatVisible
+  }
 
   private var shown: WorkSponsoredPlacedAd? {
-    guard instanceId != nil, let placed = slot.placed, placed.format == .abovePrompt,
-          placed.turnKey.hasPrefix("\(sessionId):"),
-          placed.turnId == finishedTurnId || turnActive,
-          workSponsoredPlacedAllowed(placed, slot: slot, store: store, account: accountStore) else { return nil }
-    return placed
+    guard instanceId != nil, let kept, kept.turnId == turn?.turnId || turnActive,
+          workSponsoredPlacedAllowed(kept, slot: slot, store: store, account: accountStore) else { return nil }
+    return kept
   }
 
   var body: some View {
     let shown = shown
+    let wanted = wanted
     VStack(spacing: 0) {
       // Drawn at once (the hold below follows): the chat's own units never show together.
       if let shown, store.placeFree(forChat: sessionId) {
@@ -309,6 +327,19 @@ struct WorkSponsoredDockSlot: View {
     .animation(.easeInOut(duration: 0.18), value: shown?.turnKey)
     .task(id: "\(shown?.turnKey ?? "")|\(store.holder ?? "")") {
       if shown != nil { store.hold(placeId) } else { store.release(placeId) }
+    }
+    // A newly finished reply replaces the kept card with its own, or with none.
+    .task(id: "\(turnKey ?? "")|\(turnKey.flatMap { store.ads[$0]?.id } ?? "")") {
+      guard let turn, let turnKey else { return }
+      if let ad = store.ads[turnKey] {
+        kept = WorkSponsoredPlacedAd(turnKey: turnKey, turnId: turn.turnId, ad: ad, format: .abovePrompt)
+      } else if kept?.turnKey != turnKey {
+        kept = nil
+      }
+    }
+    .task(id: "\(turnKey ?? "")|\(wanted)|\(store.placeFree(forChat: sessionId))") {
+      guard wanted, let instanceId, let turn, let turnKey, store.placeFree(forChat: sessionId), store.ads[turnKey] == nil else { return }
+      await workSponsoredAsk(instanceId: instanceId, sessionId: sessionId, turn: turn, format: .abovePrompt, store: store)
     }
     .onDisappear { store.release(placeId) }
   }

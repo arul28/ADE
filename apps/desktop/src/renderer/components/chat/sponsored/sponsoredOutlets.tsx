@@ -64,12 +64,16 @@ export function useSponsoredOutlet(outlets: SponsoredOutlets | null, place: "doc
   return useSyncExternalStore(outlets?.subscribe ?? noOutlet, read, read);
 }
 
-/** The end of a finished turn's last reply: an inline card's sentence goes here. Takes no room while empty. */
+/**
+ * The end of a finished turn's last reply: an inline card's sentence goes
+ * here. A block with no height while empty, so the slot can tell when it is
+ * on screen.
+ */
 export function SponsoredInlineOutlet({ turnId }: { turnId: string }) {
   const outlets = useContext(SponsoredOutletsContext);
   const ref = useCallback((element: HTMLDivElement | null) => outlets?.setInline(turnId, element), [outlets, turnId]);
   if (!outlets) return null;
-  return <div ref={ref} className="contents" />;
+  return <div ref={ref} />;
 }
 
 /** Above the prompt box: the docked card goes here. Takes no room while empty. */
