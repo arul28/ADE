@@ -74,7 +74,7 @@ import { readBoundedBody, sha256Hex } from "../sinkUtils";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute, unsureStartHeld } from "./phoneRoute";
+import { PHONE_PROVIDERS, UNSURE_START_MS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { sendCloudEmail } from "./email";
@@ -906,34 +906,39 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
     const routed = routeOf(env, { picked, free: accountRules(context.account) === "free" }, drives);
     if (routed instanceof Response) return routed;
-    const route = heldToUnsureStart(routed, context.account, now);
-    if (route instanceof Response) {
-      logCloud("cloud.phone_start_refused", { userId, code: "phone_start_unsure", provider: context.account.phone_start_unsure ?? null });
-      return route;
-    }
-    // Needs never pick the provider: the route's first must do them all, and a fallback that can't is
-    // left out, so no billed phone starts that can't do what was asked.
-    const lacking = cloudPhoneLacks(route.order[0], needs);
-    if (lacking.length) {
-      logCloud("cloud.phone_start_refused", { userId, code: "phone_lacks", needs: lacking, provider: route.order[0] });
-      return fail("phone_lacks", `The ADE Cloud iPhone can't ${abilityWords(lacking)}.`, 409);
-    }
-    route.order = route.order.filter((provider) => cloudPhoneLacks(provider, needs).length === 0);
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
     const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
     // What this start decides about billing, saved with the claim: a phone found later with no row is billed so.
-    // A retry of a start whose answer was lost may get that start's phone back from the provider: it keeps the
-    // first attempt's decision (and its time), whatever reaches the account now.
-    const retry = unsureStartHeld(context.account, now) && context.account.phone_start_credits != null;
-    const startCredits = retry ? context.account.phone_start_credits === 1 : context.credits != null;
-    const claimed = await env.DB.prepare(`update cloud_accounts set phone_start_claim = ?, phone_start_credits = ?,
-      phone_start_credits_at = case when ? then phone_start_credits_at else ? end
+    // A retry of a start whose answer was lost may get that start's phone back from the provider: in the same
+    // write, it keeps that start's decision (and its time), whatever reaches the account now.
+    const retryHeldSql = "phone_start_unsure is not null and phone_start_unsure_at > ? and phone_start_credits is not null";
+    const since = now - UNSURE_START_MS;
+    const claimed = await env.DB.prepare(`update cloud_accounts set phone_start_claim = ?,
+      phone_start_credits = case when ${retryHeldSql} then phone_start_credits else ? end,
+      phone_start_credits_at = case when ${retryHeldSql} then phone_start_credits_at else ? end
       where user_id = ? and (phone_start_claim is null or phone_start_claim < ?)`)
-      .bind(now, startCredits ? 1 : 0, retry ? 1 : 0, now, userId, now - PHONE_START_CLAIM_MS).run();
+      .bind(now, since, context.credits != null ? 1 : 0, since, now, userId, now - PHONE_START_CLAIM_MS).run();
     if ((claimed.meta?.changes ?? 0) !== 1) return startingElsewhere();
     let begun: Awaited<ReturnType<typeof startOnRoute>>;
     try {
+      // Read after the claim: a start that lost its answer while this one waited holds the route and the billing.
+      const held = await env.DB.prepare("select phone_start_unsure, phone_start_unsure_at, phone_start_credits from cloud_accounts where user_id = ?")
+        .bind(userId).first<Pick<AccountRow, "phone_start_unsure" | "phone_start_unsure_at" | "phone_start_credits">>();
+      const startCredits = held?.phone_start_credits === 1;
+      const route = heldToUnsureStart(routed, held ?? {}, now);
+      if (route instanceof Response) {
+        logCloud("cloud.phone_start_refused", { userId, code: "phone_start_unsure", provider: held?.phone_start_unsure ?? null });
+        return route;
+      }
+      // Needs never pick the provider: the route's first must do them all, and a fallback that can't is
+      // left out, so no billed phone starts that can't do what was asked.
+      const lacking = cloudPhoneLacks(route.order[0], needs);
+      if (lacking.length) {
+        logCloud("cloud.phone_start_refused", { userId, code: "phone_lacks", needs: lacking, provider: route.order[0] });
+        return fail("phone_lacks", `The ADE Cloud iPhone can't ${abilityWords(lacking)}.`, 409);
+      }
+      route.order = route.order.filter((provider) => cloudPhoneLacks(provider, needs).length === 0);
       // A start that finished between this request's read and its claim: its phone is the answer next time.
       const another = await env.DB.prepare("select 1 from cloud_phones where user_id = ? and state = 'live' limit 1").bind(userId).first();
       if (another) return startingElsewhere();

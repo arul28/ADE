@@ -88,7 +88,7 @@ export function nextAbilities(env: CloudEnv, picked: CloudPhoneProvider | null):
  * nobody drove has ended on its idle limit (a start's few minutes plus
  * `CLOUD_PHONE_IDLE_SECONDS`).
  */
-const UNSURE_START_MS = 15 * 60_000;
+export const UNSURE_START_MS = 15 * 60_000;
 
 /** The account's lost start (migration 0057): the provider and when. */
 type UnsureStart = { phone_start_unsure?: string | null; phone_start_unsure_at?: number | null };
