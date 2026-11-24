@@ -13,6 +13,8 @@ struct CloudPlansCard: View {
   var tiers: [CloudPhoneTier] = []
   /// A plan that just landed ("You're on Plus"): its card is marked New and glows.
   var newPlanId: String? = nil
+  /// The account server's own read wins over the page's: a yes or no lands there first.
+  @ObservedObject private var accountStore = AccountCloudStore.shared
 
   private struct Column: Identifiable {
     let id: String
@@ -54,13 +56,19 @@ struct CloudPlansCard: View {
     }
   }
 
+  /// Where the ad switch reaches this account (`sponsored` is sent), Free's
+  /// Small is unlimited only with sponsored cards on (`CloudPlans.tsx`).
+  private var freeSmallNeedsCards: Bool {
+    (accountStore.account.map { $0.sponsored } ?? account.sponsored) != nil
+  }
+
   /// The ADE Cloud iPhone's minutes show only while it is on for the account.
   private var showsSimulatorMinutes: Bool { account.phoneOn && columns.contains { $0.facts.phoneMinutes != nil } }
 
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", cloudSmallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : cloudSmallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       howRow("clock", "Hours run the bigger sizes", "and renew every month. \(cloudHourUnitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
@@ -125,7 +133,7 @@ struct CloudPlansCard: View {
         }
       }
       VStack(alignment: .leading, spacing: 6) {
-        fact("infinity", "Unlimited Small", current: current)
+        fact("infinity", column.id == "free" && freeSmallNeedsCards ? "Unlimited Small with cards" : "Unlimited Small", current: current)
         if current, let old = oldTermsHours(column), let end {
           fact("clock", "\(cloudHours(old)) h until \(cloudDate(end))\(staysOn ? ", then \(cloudHours(column.facts.includedMilli))" : "")", current: current)
         } else {
@@ -221,7 +229,7 @@ struct CloudPlansCard: View {
     var parts: [String] = []
     if let computers = computerLimit(column) {
       parts.append(cloudComputersPhrase(computers))
-      parts.append("unlimited Small computers")
+      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards" : "unlimited Small computers")
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) hours a month")
     } else {
       parts.append("\(cloudHours(column.facts.includedMilli)) computer hours a month")
