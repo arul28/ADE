@@ -347,7 +347,11 @@ describe("kvDb migrations - legacy upgrade paths", () => {
     first.get("select crsql_as_table('pull_requests') as ok");
     first.run("alter table pull_requests drop column merged_head_sha");
     first.get("select crsql_as_crr('pull_requests') as ok");
+    // Its clock holds the database's newest changes, well past every other table's.
+    for (let edit = 0; edit < 20; edit += 1) first.run("update pull_requests set title = ? where id = 'pr-1'", [`edit ${edit}`]);
     first.run("drop table pull_requests__crsql_pks");
+    // What a peer has already been sent: the repair's writes must come after it.
+    const syncedVersion = Number(first.get<{ v: number }>("select crsql_db_version() as v")?.v);
     first.close();
 
     const reopened = await openKvDb(dbPath, createLogger());
@@ -357,9 +361,11 @@ describe("kvDb migrations - legacy upgrade paths", () => {
       // A CRR again, with the row's clock: it still syncs.
       expect(reopened.get<{ count: number }>("select count(1) as count from pull_requests__crsql_pks")?.count).toBe(1);
       reopened.run("update pull_requests set title = 'renamed' where id = 'pr-1'");
-      expect(reopened.get<{ count: number }>(
-        "select count(1) as count from crsql_changes where [table] = 'pull_requests' and cid = 'title'",
-      )?.count).toBe(1);
+      const titleChange = reopened.get<{ count: number; version: number }>(
+        "select count(1) as count, max(db_version) as version from crsql_changes where [table] = 'pull_requests' and cid = 'title'",
+      );
+      expect(titleChange?.count).toBe(1);
+      expect(Number(titleChange?.version)).toBeGreaterThan(syncedVersion);
     } finally {
       reopened.close();
     }

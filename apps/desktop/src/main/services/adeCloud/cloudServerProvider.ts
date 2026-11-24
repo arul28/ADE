@@ -27,6 +27,7 @@ import {
   type CloudPhoneView,
   type CloudReferralSummary,
   readCloudSponsoredPick,
+  isCloudRefusalCode,
   type CloudSponsoredIndexAnswer,
   type CloudSponsoredIndexRequest,
 } from "../../../../../account-directory/src/cloud/contract";
@@ -247,10 +248,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       // server's failure: the account server reports its own, and every
       // client that met it would report it again. A 500 stays reported.
       if (response.status === 502 || response.status === 503 || response.status === 504) throw markExpected(failure, "network");
-      // A 409 with the server's own code is a refusal it words for the person
-      // ("Update ADE to use your ADE Cloud iPhone.", a plan limit), shown as
-      // is: an answer, not a defect (ADE-DESKTOP-EF, ADE-BRAIN-9B).
-      if (response.status === 409 && code) throw markExpected(failure, "user");
+      // A refusal the server words for the person ("Update ADE to use your ADE
+      // Cloud iPhone.", out of hours, a plan limit), shown as is: an answer,
+      // not a defect (ADE-DESKTOP-EF, ADE-BRAIN-9B).
+      if (isCloudRefusalCode(code)) throw markExpected(failure, "user");
       throw failure;
     }
     return body;

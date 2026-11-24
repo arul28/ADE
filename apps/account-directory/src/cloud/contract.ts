@@ -1396,6 +1396,9 @@ export const CLOUD_REFUSAL_CODES = {
   too_many_messages: 429,
   /** A queued message a claim already took (sent, sending, or cancelled). */
   message_taken: 409,
+  /** The ADE Cloud iPhone: this client can't drive the account's provider, or none has what the start needs. */
+  phone_needs_update: 409,
+  phone_cant: 409,
 } as const;
 export type CloudRefusalCode = keyof typeof CLOUD_REFUSAL_CODES;
 export const isCloudRefusalCode = (code: unknown): code is CloudRefusalCode =>

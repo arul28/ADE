@@ -4894,6 +4894,9 @@ export function AgentChatPane({
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
   const [pendingSteersBySession, setPendingSteersBySession] = useState<Record<string, PendingSteerEntry[]>>({});
+  // Steers the host said it no longer holds. No event resolves them, so the
+  // transcript would rebuild their chips on every load and live event.
+  const [refusedSteerIds, setRefusedSteerIds] = useState<ReadonlySet<string>>(() => new Set());
   const [modelId, setModelId] = useState<string>("");
   const [modelPickerOpenRequest, setModelPickerOpenRequest] = useState<{
     key: number;
@@ -7732,7 +7735,11 @@ export function AgentChatPane({
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
   // Steers wait for a turn; an asleep computer runs none.
-  const pendingSteers = selectedSessionId && selectedSessionId !== restingChatSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : NO_PENDING_STEERS;
+  const sessionPendingSteers = selectedSessionId && selectedSessionId !== restingChatSessionId ? (pendingSteersBySession[selectedSessionId] ?? NO_PENDING_STEERS) : NO_PENDING_STEERS;
+  const pendingSteers = useMemo(
+    () => (refusedSteerIds.size ? sessionPendingSteers.filter((steer) => !refusedSteerIds.has(steer.steerId)) : sessionPendingSteers),
+    [refusedSteerIds, sessionPendingSteers],
+  );
   /* The exact preset the composer is showing: a running chat's own preset (or
      the pick still waiting for Send), or the draft's. The launch must read its
      source-model ladder, not the harness's ladder, or a picked level is lost
@@ -22160,11 +22167,8 @@ export function AgentChatPane({
                 if (isSteerNoLongerQueuedError(error)) {
                   // Sent or dropped before the click landed: the chip is stale,
                   // and leaving it up only invites the same refusal again.
-                  setPendingSteersBySession((current) => ({
-                    ...current,
-                    [sessionId]: (current[sessionId] ?? []).filter((entry) => entry.steerId !== steerId),
-                  }));
-                  setError("That message was already sent, so it can't go back to the composer.");
+                  setRefusedSteerIds((current) => new Set(current).add(steerId));
+                  showToast({ tone: "info", title: "That message is no longer queued." });
                   return;
                 }
                 setError(`Couldn't move the queued message back to the composer: ${error instanceof Error ? error.message : String(error)}`);

@@ -1677,21 +1677,42 @@ function dropCrrTriggers(db: DatabaseSyncType, tableName: string, logger?: Logge
 
 /**
  * Turn a CRR back into a plain table: its triggers, clock and pks tables and
- * its `crsql_master` rows go; its rows stay. Safe on partial metadata, where
- * `crsql_as_table` itself can refuse.
+ * its `crsql_master` rows go; its rows stay. With a `changeTag`, its
+ * `crsql_changes` rows go too (see `deleteCrsqlChangesRowsIfAllowed`). Safe on
+ * partial metadata and on a table that is gone, where `crsql_as_table` refuses.
+ *
+ * cr-sqlite derives db_version from the clock tables that remain, so dropping
+ * the clock that held the newest change rewinds it, and peers whose watermark
+ * is past the rewound value would never be sent the next local writes. The
+ * old version is kept as a floor, which the bundled cr-sqlite (0.16.3) reads
+ * from `pre_compact_dbversion`, as it does after its own compaction.
  */
-function stripCrrMetadata(db: DatabaseSyncType, tableName: string, logger?: Logger): void {
+function stripCrrMetadata(
+  db: DatabaseSyncType,
+  tableName: string,
+  logger?: Logger,
+  changeTag: string | null = null,
+): { droppedTriggerCount: number; deletedMetadataCount: number } {
+  const dbVersionFloor = readCrsqlDbVersion(db);
+  let deletedMetadataCount = 0;
   if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
-    runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
+    deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
+  }
+  if (changeTag && rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
+    deletedMetadataCount += deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, changeTag);
   }
   try {
     getRow(db, "select crsql_as_table(?) as ok", [tableName]);
   } catch {
     // Table may not be registered enough for crsql_as_table; shadow cleanup below still applies.
   }
-  dropCrrTriggers(db, tableName, logger);
+  const droppedTriggerCount = dropCrrTriggers(db, tableName, logger);
   runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_clock`)}`);
   runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
+  if (dbVersionFloor != null && (readCrsqlDbVersion(db) ?? 0) < dbVersionFloor && rawHasTable(db, "crsql_master")) {
+    runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
+  }
+  return { droppedTriggerCount, deletedMetadataCount };
 }
 
 /** Strip CRR triggers/metadata so row deletes stay local (no replicated tombstones). */
@@ -1703,10 +1724,7 @@ function deleteAllRowsWithoutCrrReplication(
   if (!rawHasTable(db, tableName)) return;
 
   if (rawHasTable(db, `${tableName}__crsql_clock`) || rawHasTable(db, `${tableName}__crsql_pks`) || listCrrTriggers(db, tableName).length > 0) {
-    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "local-only-table-wipe");
-    }
-    stripCrrMetadata(db, tableName, logger);
+    stripCrrMetadata(db, tableName, logger, "local-only-table-wipe");
   }
 
   runStatement(db, `delete from ${quoteIdentifier(tableName)}`);
@@ -1799,8 +1817,6 @@ function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void 
   const masterHasTableNames = rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name");
   const changesHasTableNames = rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table");
   for (const tableName of LOCAL_ONLY_CRR_EXCLUDED_TABLES) {
-    const clockTableName = `${tableName}__crsql_clock`;
-    const pksTableName = `${tableName}__crsql_pks`;
     const { hasClock: hasClockTable, hasPks: hasPksTable, triggerCount } = crrTableState(crrSchema, tableName);
     const hasMasterRows = masterHasTableNames
       && Boolean(getRow(db, "select 1 as present from crsql_master where tbl_name = ? limit 1", [tableName]));
@@ -1811,23 +1827,12 @@ function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void 
       continue;
     }
 
-    let deletedMetadataCount = 0;
-    if (hasMasterRows) {
-      deletedMetadataCount += runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]).changes;
-    }
-    if (hasChangesRows) {
-      deletedMetadataCount += deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, "excluded-table-metadata");
-    }
-
-    try {
-      getRow(db, "select crsql_as_table(?) as ok", [tableName]);
-    } catch {
-      // Older or partial CRR metadata may not be registered enough for
-      // crsql_as_table; explicit shadow-table cleanup below is still safe.
-    }
-    const droppedTriggerCount = dropCrrTriggers(db, tableName, logger);
-    runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
-    runStatement(db, `drop table if exists ${quoteIdentifier(pksTableName)}`);
+    const { droppedTriggerCount, deletedMetadataCount } = stripCrrMetadata(
+      db,
+      tableName,
+      logger,
+      hasChangesRows ? "excluded-table-metadata" : null,
+    );
 
     logger?.info("db.crr_excluded_metadata_removed", {
       tableName,
@@ -1902,21 +1907,7 @@ function dropLegacyUnifiedMemoriesSchema(db: DatabaseSyncType, logger?: Logger):
   }
 
   if (hasBaseTable) {
-    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
-      runStatement(db, "delete from crsql_master where tbl_name = ?", [baseTable]);
-    }
-    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      deleteCrsqlChangesRowsIfAllowed(db, baseTable, logger, "legacy-unified-memories");
-    }
-    try {
-      getRow(db, "select crsql_as_table(?) as ok", [baseTable]);
-    } catch {
-      // The table may not be CRR-registered at runtime (older partial state); the
-      // explicit shadow + trigger cleanup below covers that case.
-    }
-    dropCrrTriggers(db, baseTable, logger);
-    runStatement(db, `drop table if exists ${quoteIdentifier(`${baseTable}__crsql_clock`)}`);
-    runStatement(db, `drop table if exists ${quoteIdentifier(`${baseTable}__crsql_pks`)}`);
+    stripCrrMetadata(db, baseTable, logger, "legacy-unified-memories");
     try {
       runStatement(db, `drop table if exists ${quoteIdentifier(baseTable)}`);
     } catch (error) {
@@ -1991,35 +1982,10 @@ function dropRetiredTables(
   const presentTables = existingRetiredTables(db, tableNames);
   if (presentTables.length === 0) return presentTables;
 
-  // cr-sqlite derives db_version from the clock tables that remain, so dropping
-  // the clock that held the newest change rewinds it, and peers whose watermark
-  // is past the rewound value would never be sent the next local writes.
-  const dbVersionFloor = readCrsqlDbVersion(db);
-
+  // `stripCrrMetadata` keeps db_version from rewinding.
   for (const tableName of tableNames) {
-    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
-      runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
-    }
-    if (rawHasTable(db, "crsql_changes") && rawHasColumn(db, "crsql_changes", "table")) {
-      deleteCrsqlChangesRowsIfAllowed(db, tableName, logger, changeTag);
-    }
-    if (rawHasTable(db, tableName)) {
-      try {
-        getRow(db, "select crsql_as_table(?) as ok", [tableName]);
-      } catch {
-        // Partial legacy CRR state is covered by the explicit cleanup below.
-      }
-    }
-    dropCrrTriggers(db, tableName, logger);
-    runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_clock`)}`);
-    runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
+    stripCrrMetadata(db, tableName, logger, changeTag);
     runStatement(db, `drop table if exists ${quoteIdentifier(tableName)}`);
-  }
-
-  // The bundled cr-sqlite (0.16.3) reads this key as a floor, as it does after
-  // its own compaction.
-  if (dbVersionFloor != null && (readCrsqlDbVersion(db) ?? 0) < dbVersionFloor && rawHasTable(db, "crsql_master")) {
-    runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
   }
 
   return presentTables;
@@ -2815,30 +2781,44 @@ function makeCrrAwareDb({
   isCrsqliteLoaded: () => boolean;
   logger?: Logger;
 }): MigrationDb {
-  // A table whose sync metadata is broken loses it, then takes the ALTER as a
-  // plain table; `ensureCrrTables` makes it a CRR again after the migration,
-  // and `crsql_as_crr` gives every existing row a fresh clock. Without this a
-  // project whose one table is broken never opens: cr-sqlite's
-  // `crsql_commit_alter` fails ("failed compacting tables post alteration"),
-  // rolls the ALTER back with its own savepoint, and the next open repeats it.
+  // A table whose sync metadata is broken loses it, takes the ALTER as a plain
+  // table, and becomes a CRR again at once. Without this a project whose one
+  // table is broken never opens: cr-sqlite's `crsql_commit_alter` fails
+  // ("failed compacting tables post alteration"), rolls the ALTER back, and
+  // the next open repeats it.
+  //
+  // `crsql_as_crr` gives every row a fresh clock at column version 1, and the
+  // table's tombstones are gone. A peer holding a higher version of a cell
+  // keeps its value until this machine writes that cell past it. The old
+  // versions can't be kept: they are keyed through the pks table, which is
+  // missing or broken here.
   const alterAsPlainTable = (db: DatabaseSyncType, tableName: string, sql: string, params: SqlValue[], reason: string): void => {
     stripCrrMetadata(db, tableName, logger);
     logger?.warn("db.crr_alter_metadata_reset", { tableName, reason });
     runStatement(db, sql, params);
+    try {
+      getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
+    } catch (error) {
+      if (isSqliteBusyOrLockedError(error)) throw error;
+      // `ensureCrrTables` converts it on the next open, or reports why it can't.
+      logger?.warn("db.crr_alter_reconvert_failed", { tableName, error: error instanceof Error ? error.message : String(error) });
+    }
   };
   return {
     run: (sql: string, params: SqlValue[] = []) => {
       const db = getDb();
       const alterTable = parseAlterTableTarget(sql);
       if (alterTable && isCrsqliteLoaded()) {
-        const hasClock = rawHasTable(db, `${alterTable}__crsql_clock`);
-        const hasPks = rawHasTable(db, `${alterTable}__crsql_pks`);
-        // cr-sqlite's alter needs both: either one alone always fails its commit.
-        if (hasClock !== hasPks) {
-          alterAsPlainTable(db, alterTable, sql, params, hasClock ? "pks_table_missing" : "clock_table_missing");
-          return;
-        }
-        if (hasClock) {
+        if (rawHasTable(db, `${alterTable}__crsql_clock`)) {
+          // cr-sqlite's alter compacts the clock against the pks table; with
+          // the clock alone its commit always fails.
+          if (!rawHasTable(db, `${alterTable}__crsql_pks`)) {
+            alterAsPlainTable(db, alterTable, sql, params, "pks_table_missing");
+            return;
+          }
+          // A failed commit rolls back the whole transaction, not only its own
+          // savepoint, so inside a caller's transaction the fallback can't run.
+          const inCallerTransaction = db.isTransaction;
           getRow(db, "select crsql_begin_alter(?) as ok", [alterTable]);
           try {
             runStatement(db, sql, params);
@@ -2852,7 +2832,7 @@ function makeCrrAwareDb({
             getRow(db, "select crsql_commit_alter(?) as ok", [alterTable]);
           } catch (error) {
             // A lock is the sibling process: the open waits and runs again.
-            if (isSqliteBusyOrLockedError(error)) throw error;
+            if (isSqliteBusyOrLockedError(error) || inCallerTransaction) throw error;
             alterAsPlainTable(db, alterTable, sql, params, error instanceof Error ? error.message : String(error));
           }
           return;
