@@ -181,6 +181,8 @@ describe("redactedCommandForLog", () => {
     ["a chat answer by --text", ["chat", "respond", "chat-1", "--text", "hunter10 token=x"], "hunter10", "chat respond chat-1 --text"],
     ["a chat answer by --answer=", ["chat", "answer", "chat-1", "--answer=1=hunter11"], "hunter11", "chat answer chat-1"],
     ["a chat answer map", ["chat", "respond", "chat-1", "--answers-json", "{\"q1\":\"hunter12\"}"], "hunter12", "chat respond chat-1 --answers-json"],
+    ["a chat answer by an alias", ["chats", "respond", "chat-1", "--text", "hunter13"], "hunter13", "chats respond chat-1 --text"],
+    ["a chat answer after a flag", ["--json", "work", "answer", "chat-1", "--text", "hunter14"], "hunter14", "--json work answer chat-1 --text"],
   ])("never logs the value: %s", (_label, args, secret, kept) => {
     const line = redactedCommandForLog(args);
     expect(line).not.toContain(secret);

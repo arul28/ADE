@@ -853,15 +853,19 @@ export function redactedCommandForLog(rawArgs: readonly string[]): string {
   // Every word after `secrets set <key>` (the verb is the first word that is
   // not a flag), or after a Passwords or secret action
   // (`actions run passwords.saveSecret --arg value=…`), can be a value.
-  const verbOf = (command: string): string =>
-    args[0] === command ? (args.find((word, index) => index > 0 && !word.startsWith("-")) ?? "").toLowerCase() : "";
-  const verbAt = args[0] === "secrets" || args[0] === "secret" ? args.findIndex((word, index) => index > 0 && !word.startsWith("-")) : -1;
+  // The command and its verb are the first two words that are not flags, as the CLI reads
+  // them, and an alias (`chats`, `work`, `secret`) is the command it names.
+  const commandAt = args.findIndex((word) => !word.startsWith("-"));
+  const command = (args[commandAt] ?? "").toLowerCase();
+  const verbAt = commandAt < 0 ? -1 : args.findIndex((word, index) => index > commandAt && !word.startsWith("-"));
+  const verb = (args[verbAt] ?? "").toLowerCase();
+  const isSecrets = command === "secrets" || command === "secret";
   // Dotted (`passwords.saveSecret`) or split (`passwords saveSecret`): the values follow the action.
   const secretAction = args.findIndex((word, index) => args[index - 1] === "run" && /^(?:passwords|project_secret)(?:\.|$)/.test(word));
-  const valuesFrom = verbAt > 0 && SECRET_VALUE_VERBS.has(args[verbAt]!.toLowerCase())
+  const valuesFrom = isSecrets && verbAt > 0 && SECRET_VALUE_VERBS.has(verb)
     ? verbAt + 2
     : secretAction >= 0 ? secretAction + (args[secretAction]!.includes(".") ? 1 : 2) : Number.POSITIVE_INFINITY;
-  const answering = verbOf("chat") === "respond" || verbOf("chat") === "answer";
+  const answering = (command === "chat" || command === "chats" || command === "work") && (verb === "respond" || verb === "answer");
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
     if (index >= valuesFrom) {
