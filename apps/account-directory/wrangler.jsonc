@@ -125,7 +125,7 @@
   // `gravity_ads` setting may go: `off`, a hard off; `testers`; `all`),
   // GRAVITY_LIVE (`1` lets the `gravity_live` setting send real ads; anything
   // else keeps Gravity's free test ads), GRAVITY_COUNTRIES (default `US,CA,GB,AU`),
-  // GRAVITY_PLACEMENT_ID (default `ade_reply`) and GRAVITY_DAILY_LIMIT (live
+  // and GRAVITY_DAILY_LIMIT (live
   // requests a day, default 900 under self-serve's 1,000). Turning ads on is
   // the owner's call, asked for on its own.
   //

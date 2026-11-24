@@ -31,18 +31,22 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// a no (or no answer) has them use hours, at half a Medium-hour an hour.
   /// Nil while the server's rule is off. The question and Settings say so.
   let smallNeedsCards: Bool?
+  /// Where this account's cards show, as the server assigns it. An older
+  /// server sends nothing, and an unknown value reads the same: under the reply.
+  let format: CloudSponsoredFormat
 
   static let granted = "granted"
   static let declined = "declined"
 
-  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply) {
     self.ads = ads
     self.consent = consent
     self.test = test
     self.smallNeedsCards = smallNeedsCards
+    self.format = format
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -51,12 +55,36 @@ struct CloudSponsoredState: Decodable, Equatable {
     consent = raw == Self.granted || raw == Self.declined ? raw : nil
     test = c.lenient(Bool.self, forKey: .test) ?? false
     smallNeedsCards = c.lenient(Bool.self, forKey: .smallNeedsCards)
+    format = c.lenient(String.self, forKey: .format).flatMap(CloudSponsoredFormat.init(rawValue:)) ?? .belowReply
   }
 
   var granted: Bool { consent == Self.granted }
   /// The server's rule is on: a no has Free's Small computers use hours.
   var smallUsesHoursWithoutCards: Bool { smallNeedsCards == true }
 }
+
+/// The places a sponsored card can show (`CloudSponsoredFormat`), one per
+/// account at a time. Each is display only: nothing of a card reaches the agent.
+enum CloudSponsoredFormat: String, Equatable {
+  /// A card under the finished reply.
+  case belowReply = "below_reply"
+  /// A one-row card docked above the prompt box: the latest reply's card.
+  case abovePrompt = "above_prompt"
+  /// One linked "Sponsored" sentence at the end of the finished reply.
+  case inline
+
+  /// Where it shows, as the one-time question says it.
+  var placeSentence: String {
+    switch self {
+    case .belowReply: return "one sponsored card under a finished reply"
+    case .abovePrompt: return "one sponsored card above the prompt box after a finished reply"
+    case .inline: return "one sponsored line at the end of a finished reply"
+    }
+  }
+}
+
+/// The app a card shows in (`CloudSponsoredSurface`): each surface and format is its own Gravity placement.
+let cloudSponsoredSurface = "ios"
 
 /// One card (`CloudSponsoredAd`). A card whose click link isn't Gravity's
 /// never shows (`CloudSponsoredAdAnswer.shownAd`).
@@ -200,12 +228,16 @@ func cloudGravityURL(_ value: String?) -> URL? {
 extension CloudServerClient {
   private struct ConsentBody: Encodable { let consent: String }
   private struct SeenBody: Encodable { let instanceId: String; let device: CloudSponsoredDevice }
+  private struct HideBody: Encodable { let chatId: String; let turnId: String }
   private struct AdBody: Encodable {
     let instanceId: String
     let chatId: String
     let turnId: String
     let messages: [CloudSponsoredMessage]
     let device: CloudSponsoredDevice
+    /// The format the card is drawn in (the fallback when the account's place isn't on screen).
+    let format: String
+    let surface: String
   }
 
   /// `PUT /cloud/sponsored/consent`: the account's answer, on every device at
@@ -222,10 +254,19 @@ extension CloudServerClient {
     _ = try await send("POST", "cloud/sponsored/seen", body: body)
   }
 
-  /// `POST /cloud/sponsored/ad`: one card under a finished reply. Asking again
-  /// for the same turn answers the same card.
-  func sponsoredAd(instanceId: String, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice) async throws -> CloudSponsoredAdAnswer {
-    let body = try JSONEncoder().encode(AdBody(instanceId: instanceId, chatId: chatId, turnId: turn.turnId, messages: turn.messages, device: device))
+  /// `POST /cloud/sponsored/hide`: the person hid this reply's card (an
+  /// account call; counted once per reply for the formats' A/B test).
+  func sponsoredHide(chatId: String, turnId: String) async throws {
+    _ = try await send("POST", "cloud/sponsored/hide", body: try JSONEncoder().encode(HideBody(chatId: chatId, turnId: turnId)))
+  }
+
+  /// `POST /cloud/sponsored/ad`: one card for a finished reply, in the
+  /// format it will be drawn in. Asking again for the same turn answers the same card.
+  func sponsoredAd(instanceId: String, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice, format: CloudSponsoredFormat) async throws -> CloudSponsoredAdAnswer {
+    let body = try JSONEncoder().encode(AdBody(
+      instanceId: instanceId, chatId: chatId, turnId: turn.turnId, messages: turn.messages, device: device,
+      format: format.rawValue, surface: cloudSponsoredSurface
+    ))
     return try decode(CloudSponsoredAdAnswer.self, from: try await send("POST", "cloud/sponsored/ad", body: body))
   }
 }
@@ -365,6 +406,9 @@ final class CloudSponsoredStore: ObservableObject {
   @Published private(set) var holder: String?
   /// Cards answered this run, by `chatId:turnId`.
   @Published private(set) var ads: [String: CloudSponsoredAd] = [:]
+  /// The format each turn's card was asked in: a card shows only in that
+  /// format, since its placement (and the inline length limit) came with it.
+  @Published private(set) var askedFormats: [String: CloudSponsoredFormat] = [:]
   /// Turns whose card the person hid this run.
   @Published private(set) var hiddenTurns: Set<String> = []
   /// Sponsored picks (`sponsored_pick` cards, by card id) folded with Not now this run.
@@ -425,6 +469,7 @@ final class CloudSponsoredStore: ObservableObject {
       if answerOrder.count > Self.answerLimit {
         let oldest = answerOrder.removeFirst()
         answers[oldest] = nil
+        askedFormats[oldest] = nil
       }
     }
     let resets = resetCount
@@ -446,13 +491,40 @@ final class CloudSponsoredStore: ObservableObject {
     return true
   }
 
+  /// The format a turn's first ask uses; a later ask for that turn keeps it.
+  func noteAsked(turnKey: String, format: CloudSponsoredFormat) {
+    if askedFormats[turnKey] == nil { askedFormats[turnKey] = format }
+  }
+
+  /// Whether this turn's card may draw in `format`: asked in it, or never asked here (a fixture).
+  func shows(turnKey: String, in format: CloudSponsoredFormat) -> Bool {
+    (askedFormats[turnKey] ?? format) == format
+  }
+
   func forgetAnswer(turnKey: String) {
     answers[turnKey] = nil
     answerOrder.removeAll { $0 == turnKey }
   }
 
-  func hide(turnKey: String) {
-    hiddenTurns.insert(turnKey)
+  /// The person hid this reply's card. The server counts it once per reply,
+  /// under the format it was asked in, for the formats' A/B test.
+  func hide(chatId: String, turnId: String) {
+    let key = Self.turnKey(chatId: chatId, turnId: turnId)
+    guard !hiddenTurns.contains(key) else { return }
+    hiddenTurns.insert(key)
+    // The card goes at once; the report is retried a few times (the server counts a reply once).
+    Task {
+      for delay in [0, 5, 30] as [UInt64] {
+        if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
+        guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { continue }
+        do {
+          try await client.sponsoredHide(chatId: chatId, turnId: turnId)
+          return
+        } catch {
+          cloudSponsoredLog.notice("sponsored hide report failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+        }
+      }
+    }
   }
 
   func setPickFolded(_ cardId: String, _ folded: Bool) {
@@ -470,6 +542,19 @@ final class CloudSponsoredStore: ObservableObject {
 
   func release(_ slotId: String) {
     if holder == slotId { holder = nil }
+  }
+
+  /// The place id of a chat's card drawn away from its slot (the dock above
+  /// the prompt box, the end of the reply). A chat's slot and its card are
+  /// one unit: the slot still asks while its own card holds the place.
+  static func placeId(sessionId: String, format: CloudSponsoredFormat) -> String {
+    format == .belowReply ? sessionId : "\(sessionId)#\(format.rawValue)"
+  }
+
+  /// The one place is free for this chat: nobody holds it, or one of the chat's own cards does.
+  func placeFree(forChat sessionId: String) -> Bool {
+    guard let holder else { return true }
+    return holder == sessionId || holder.hasPrefix("\(sessionId)#")
   }
 
   /// Gravity's view link, once per card per run, only on Gravity's own host.
@@ -553,6 +638,7 @@ final class CloudSponsoredStore: ObservableObject {
     answerOrder = []
     retriedNotCloud = []
     ads = [:]
+    askedFormats = [:]
     hiddenTurns = []
     foldedPicks = []
     holder = nil

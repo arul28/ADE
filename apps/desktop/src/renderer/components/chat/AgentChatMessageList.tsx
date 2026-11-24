@@ -345,6 +345,7 @@ import { withChatPin } from "./chatMachinePin";
 import { CtoFreshContextDivider, CtoToolChips } from "./cto/CtoToolChips";
 import { CtoWorkingLine } from "./cto/CtoWorkingLine";
 import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
+import { SponsoredInlineOutlet } from "./sponsored/sponsoredOutlets";
 
 /**
  * A line that opens a scene fence, as `chatScene.ts`'s scanner reads one: up to
@@ -3562,6 +3563,8 @@ function renderEvent(
               ? undefined
               : envelope.sceneScopeKey ?? envelope.key}
           />
+          {/* A finished turn's last reply: an inline sponsored line may end it (ADE Cloud chats only). */}
+          {options?.turnEndText && event.turnId ? <SponsoredInlineOutlet turnId={event.turnId} /> : null}
           {/* Hover actions sit in their own line under the prose, never on it:
               pinned over the text's top-right corner they covered the end of a
               short line (interim narration) and the first line of a long one.

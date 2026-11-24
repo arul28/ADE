@@ -128,3 +128,67 @@
 .ade-sponsored-fine { margin-left: auto; font-size: 11px; color: var(--kit-text-3); }
 .ade-sponsored-folded { margin: 0; font-size: 11.5px; color: var(--kit-text-3); }
 .ade-sponsored-folded .ade-sponsored-link { margin-left: 6px; }
+
+/* Above the prompt box: one row, the composer's width, the latest reply's card. */
+.ade-sponsored--dock {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 6px 6px 6px 10px;
+}
+.ade-sponsored--dock .ade-sponsored-hide { margin-left: 0; }
+.ade-sponsored-dock-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ade-sponsored-dock-line {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-sponsored-dock-line:hover .ade-sponsored-dock-title { text-decoration: underline; text-underline-offset: 2px; }
+.ade-sponsored-dock-line:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.ade-sponsored-dock-title { font-weight: 600; color: var(--color-fg); }
+.ade-sponsored-dock-text { color: var(--kit-text-2); }
+
+/* The reply's last sentence: same size as the reply, quieter, marked Sponsored. */
+.ade-sponsored-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: 6px 0 0;
+  color: var(--kit-text-2);
+}
+.ade-sponsored-inline-tag {
+  flex: none;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-sponsored-inline-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--color-fg) 35%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.ade-sponsored-inline-link:hover { text-decoration-color: currentColor; }
+.ade-sponsored-inline-link:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
+.ade-sponsored-inline-link svg { display: inline; margin-left: 2px; vertical-align: -1px; color: var(--kit-text-3); }
+.ade-sponsored-inline .ade-sponsored-hide { align-self: center; width: 18px; height: 18px; margin-left: 0; }

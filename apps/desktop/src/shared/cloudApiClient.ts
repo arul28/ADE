@@ -110,6 +110,7 @@ import {
   type CloudSponsoredAdRequest,
   type CloudSponsoredConsent,
   type CloudSponsoredSeenRequest,
+  type CloudSponsoredHideRequest,
   type CloudSponsoredState,
 } from "../../../account-directory/src/cloud/contract";
 
@@ -251,6 +252,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     setSponsoredConsent: (consent: CloudSponsoredConsent) => request<CloudSponsoredState>("PUT", CLOUD_PATHS.sponsoredConsent, { body: { consent } }),
     /** A person has a chat or terminal of this ADE Cloud computer open. */
     sponsoredSeen: (input: CloudSponsoredSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredSeen, { body: input }),
+    sponsoredHide: (input: CloudSponsoredHideRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredHide, { body: input }),
     /** One card under a finished reply, or none (always a 200). */
     sponsoredAd: (input: CloudSponsoredAdRequest) => request<CloudSponsoredAdAnswer>("POST", CLOUD_PATHS.sponsoredAd, { body: input, timeoutMs: 10_000 }),
     listComputers: async () => (await request<{ data: CloudInstance[] }>("GET", CLOUD_PATHS.instances)).data,

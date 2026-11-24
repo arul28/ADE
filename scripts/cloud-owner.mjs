@@ -20,6 +20,8 @@ Accounts (an email, or a Clerk user id that starts with user_):
   phone <account> <on|off>               on the ADE Cloud iPhone's beta list, or off it; not a test
                                          (a tester picks their own provider in an ADE beta app)
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
+  ad-format <account> <below_reply|above_prompt|inline|switch>
+                                         where this account's sponsored cards show (switch: gravity_format's)
   reset <account>                        back to the real plan: every test field cleared
 
   Options for act-as and limits: --days N (how long the test lasts, default 7, at most 90),
@@ -28,7 +30,11 @@ Accounts (an email, or a Clerk user id that starts with user_):
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
   set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
+                                         gravity_format below_reply|above_prompt|inline|split,
+                                         gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
+                                         (under the reply - inline - above the prompt box)
                                          cloud_credits off|testers|all (testers: the iPhone beta list)
+  ab [--days N]                          the sponsored formats' A/B scoreboard (default 14 days)
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
@@ -60,6 +66,7 @@ const COMMAND_OPTIONS = {
   "act-as": ["days", "note"],
   limits: ["computers", "hours", "phone-minutes", "days", "note"],
   set: ["note"],
+  ab: ["days"],
 };
 
 function readOptions(command, args) {
@@ -123,7 +130,7 @@ function printAccount({ account }) {
       : "  Test:       none",
     `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list (provider: ${account.phone.listed})` : " · not on the beta list"} · ${account.credits ? `${account.phone.usedMinutes} minutes used, from credits` : `${account.phone.usedMinutes} of ${account.phone.minutes} minutes used${account.phone.minutes !== account.phone.planMinutes ? ` (plan: ${account.phone.planMinutes})` : ""}${account.phone.extraOn ? " · extra minutes on" : ""}`}`,
     `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} hours (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses hours" : "unlimited"}`,
-    `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"}`,
+    `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"} · format ${account.sponsored.format ?? "the switch's"}`,
   ];
   if (account.log.length) {
     lines.push("  Changes:");
@@ -172,6 +179,12 @@ switch (command) {
     printAccount(await call("account", { ...accountRef(rest[0]), phone: rest[1] }));
     break;
   }
+  case "ad-format": {
+    const formats = ["below_reply", "above_prompt", "inline", "switch"];
+    if (!formats.includes(rest[1])) fail(`ad-format takes ${formats.join(", ")}.\n\n${USAGE}`);
+    printAccount(await call("account", { ...accountRef(rest[0]), adFormat: rest[1] === "switch" ? null : rest[1] }));
+    break;
+  }
   case "tester": {
     if (rest[1] !== "on" && rest[1] !== "off") fail(`tester takes on or off.\n\n${USAGE}`);
     printAccount(await call("account", { ...accountRef(rest[0]), tester: rest[1] === "on" }));
@@ -183,6 +196,31 @@ switch (command) {
   case "settings":
     printSettings(await call("settings", {}));
     break;
+  case "ab": {
+    const days = options.days === undefined ? undefined : Number(options.days);
+    if (days !== undefined && !Number.isInteger(days)) fail("--days is a whole number.");
+    const report = await call("ab", days === undefined ? {} : { days });
+    const pct = (value) => (value == null ? "-" : `${(value * 100).toFixed(1)}%`);
+    console.log(`Format switch: ${report.format} · split ${report.split} (under the reply - inline - above the prompt box) · last ${report.days} days (since ${report.since})`);
+    console.table(report.arms.map((arm) => ({
+      format: arm.name,
+      weight: `${arm.weight}%`,
+      accounts: arm.accounts,
+      "said yes": arm.granted,
+      "said no": arm.declined,
+      asked: arm.requests,
+      filled: arm.fills,
+      "fill rate": pct(arm.fillRate),
+      hidden: arm.hides,
+      "hidden/card": pct(arm.hidesPerCard),
+      views: arm.gravity?.impressions ?? "-",
+      clicks: arm.gravity?.clicks ?? "-",
+      CTR: pct(arm.gravity?.ctr),
+      revenue: arm.gravity ? `$${arm.gravity.revenue.toFixed(2)}` : "-",
+    })));
+    if (!report.gravityReadable) console.log("Gravity's placement report couldn't be read: views, clicks and revenue are missing.");
+    break;
+  }
   case "set":
     if (!rest[0] || !rest[1]) fail(`set takes a key and a value.\n\n${USAGE}`);
     printSettings(await call("settings", { key: rest[0], value: rest[1], ...(options.note ? { note: options.note } : {}) }));

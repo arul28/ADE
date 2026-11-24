@@ -107,11 +107,12 @@ export async function deleteCloudAccount(
     env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),
-    // Sponsored cards (`gravity.ts`): the answer, the watch rows, the cards. The account's day counts go; the totals stay.
+    // Sponsored cards (`gravity.ts`): the answer, the watch rows, the cards, the format. The account's day counts go; the totals stay.
     env.DB.prepare("delete from cloud_sponsored_consent where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_testers where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_turns where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_sponsored_formats where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_days where user_id = ?").bind(userId),
     // The owner's change log of the account test tool (`ownerAccounts.ts`).
     env.DB.prepare("delete from cloud_owner_log where user_id = ?").bind(userId),

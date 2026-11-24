@@ -1,6 +1,7 @@
 import { creditsMode } from "./credits";
-import { gravitySwitches, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
+import { gravitySwitches, isSponsoredFormat, sponsoredAbReport, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
 import { fail, json } from "./http";
+import { CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
 import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";
 import { enforcePhoneAllowance, includedPhoneMinutes, periodPhones, phoneAccess, phoneCreditsFor, phoneExtraOn, phoneUsageOf } from "./phones";
 import { CLOUD_PLANS, isPaidPlanId } from "./plans";
@@ -43,7 +44,7 @@ import {
  * touches billing: Stripe, extra hours, the period and its roll keep the real
  * plan. It ends by itself at `test_until` (`expireAccountTests`).
  *
- * - `POST /cloud/owner/account` `{ email | userId, plan?, computers?, hours?, phoneMinutes?, phone?, days?, note?, tester?, reset? }`:
+ * - `POST /cloud/owner/account` `{ email | userId, plan?, computers?, hours?, phoneMinutes?, phone?, adFormat?, days?, note?, tester?, reset? }`:
  *   changes what is given, then answers the account as `show` does. Only an
  *   email or userId: just `show`. `plan: null` (and `computers`, `hours`,
  *   `phoneMinutes`) clears that one; `reset: true` clears every test field.
@@ -52,12 +53,24 @@ import {
  *   changed. A tester picks their phones' provider in an ADE beta app. A test
  *   plan leaves the iPhone minutes the real plan's; `phoneMinutes` sets them
  *   (iPhone minutes only: under credits the phone draws from the hours).
+ *   `adFormat` (`below_reply`, `above_prompt`, `inline`, or null for the
+ *   `gravity_format` switch's) is where the account's sponsored cards show:
+ *   not a test either, it stays until changed.
+ * - `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard.
  * - `POST /cloud/owner/settings` `{ key?, value?, note? }`: sets one switch,
  *   or with no key lists them all with their deploy ceilings.
  */
 
 export const OWNER_ACCOUNT_PATH = "/cloud/owner/account";
 export const OWNER_SETTINGS_PATH = "/cloud/owner/settings";
+export const OWNER_AB_PATH = "/cloud/owner/ab";
+
+/** `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard (`sponsoredAbReport`). */
+export async function handleOwnerAb(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
+  const days = body.days === undefined ? 14 : body.days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) return fail("bad_request", "days is a whole number from 1 to 365.", 400);
+  return json({ ok: true, ...(await sponsoredAbReport(env, now, days)) });
+}
 
 /** How long a test lasts when the owner names no length, and the longest one. */
 const DEFAULT_TEST_DAYS = 7;
@@ -127,7 +140,7 @@ const hoursOf = (milli: number): number => Math.round(milli / 100) / 10;
 
 /** What the owner reads about an account: the real plan, the test, and what is in force. */
 async function describeAccount(env: CloudEnv, account: AccountRow, email: string | null, now: number) {
-  const [tester, consent, log, phoneRow, phoneUse, phone] = await Promise.all([
+  const [tester, consent, log, phoneRow, phoneUse, phone, adFormat] = await Promise.all([
     env.DB.prepare("select 1 as listed from cloud_sponsored_testers where user_id = ?").bind(account.user_id).first<{ listed: number }>(),
     env.DB.prepare("select consent, decided_at from cloud_sponsored_consent where user_id = ?").bind(account.user_id).first<{ consent: string; decided_at: number }>(),
     env.DB.prepare("select at, action, detail from cloud_owner_log where user_id = ? order by at desc, id desc limit ?")
@@ -135,6 +148,7 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
     env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(account.user_id).first<{ provider: string | null }>(),
     periodPhones(env, account.user_id, account.period_start),
     phoneAccess(env, account.user_id),
+    env.DB.prepare("select format, source from cloud_sponsored_formats where user_id = ?").bind(account.user_id).first<{ format: string; source: string }>(),
   ]);
   const credits = await phoneCreditsFor(env, account, now);
   const phoneMinutes = phoneUsageOf(env, account, phoneUse, now, false, credits);
@@ -182,6 +196,10 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
       mode: (await gravitySwitches(env)).mode,
       tester: Boolean(tester),
       consent: consent?.consent ?? null,
+      // The owner's choice for this account, or null: the `gravity_format` switch's.
+      format: adFormat?.source === "owner" ? adFormat.format : null,
+      // Its arm of the A/B test, once ads reached it under `split`.
+      abArm: adFormat?.source === "split" ? adFormat.format : null,
     },
     log: (log.results ?? []).map((row) => ({ at: row.at, action: row.action, detail: safeJson(row.detail) })),
   };
@@ -211,6 +229,10 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     return fail("bad_request", `phone is one of ${PHONE_CHOICES.join(", ")}.`, 400);
   }
   const phoneChoice = body.phone as PhoneChoice | undefined;
+  if (body.adFormat !== undefined && body.adFormat !== null && !isSponsoredFormat(body.adFormat)) {
+    return fail("bad_request", `adFormat is one of ${CLOUD_SPONSORED_FORMATS.join(", ")}, or null.`, 400);
+  }
+  const adFormat = body.adFormat as CloudSponsoredFormat | null | undefined;
   const reset = body.reset === true;
 
   // A userId must name an account ADE Cloud knows (a typo makes no row); an
@@ -255,11 +277,18 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
       .bind(who.userId, now, ...guardBinds));
   }
   if (tester === false) statements.push(env.DB.prepare(`delete from cloud_sponsored_testers where ${guard("user_id = ?")}`).bind(who.userId, ...guardBinds));
+  if (adFormat) {
+    // Over the account's A/B arm too: an account the owner set leaves the test.
+    statements.push(env.DB.prepare(`insert into cloud_sponsored_formats (user_id, format, source, set_at) select ?, ?, 'owner', ? where ${guard("true")}
+      on conflict (user_id) do update set format = excluded.format, source = excluded.source, set_at = excluded.set_at`).bind(who.userId, adFormat, now, ...guardBinds));
+  }
+  if (adFormat === null) statements.push(env.DB.prepare(`delete from cloud_sponsored_formats where ${guard("user_id = ? and source = 'owner'")}`).bind(who.userId, ...guardBinds));
   const testChanged = statements.length > 0;
   if (testChanged) {
     const detail = {
       ...(reset ? {} : { ...change, ...(Object.keys(change).length ? { days } : {}) }),
       ...(tester === undefined ? {} : { tester }),
+      ...(adFormat === undefined ? {} : { adFormat }),
       ...(note ? { note } : {}),
     };
     statements.push(env.DB.prepare(`insert into cloud_owner_log (at, action, user_id, detail) select ?, ?, ?, ? where ${guard("true")}`)
@@ -304,7 +333,7 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
     ok: true,
     settings,
     ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off", cloud_credits: env.CLOUD_CREDITS?.trim() || "off" },
-    inForce: { gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", cloud_credits: await creditsMode(env, settings) },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", cloud_credits: await creditsMode(env, settings) },
   });
 }
 

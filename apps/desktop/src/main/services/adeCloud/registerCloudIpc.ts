@@ -26,7 +26,7 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
-import { isGravityUrl, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
+import { isGravityUrl, type CloudSponsoredAdAnswer, type CloudSponsoredAdRequest, type CloudSponsoredHideRequest, type CloudSponsoredSeenRequest, type CloudSponsoredState } from "../../../shared/adeCloud";
 import { CloudApiError, createCloudApiClient } from "../../../shared/cloudApiClient";
 import { CLOUD_CHAT_MESSAGE_ID_PATTERN, type CloudChatSendAnswer } from "../../../shared/adeCloudMachine";
 import { isCloudTierId } from "../../../shared/cloudTiers";
@@ -297,6 +297,16 @@ export function registerCloudIpc(args: {
       await accountApi().sponsoredSeen(arg);
     } catch (error) {
       logger.info("cloud.sponsored_seen_failed", { error: getErrorMessage(error) });
+    }
+  });
+  // A hidden card, for the formats' A/B test: an account call, no machine pin.
+  ipcMain.handle(IPC.cloudSponsoredHide, async (event, arg: CloudSponsoredHideRequest | undefined): Promise<void> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredHide)) return;
+    if (!arg || typeof arg.chatId !== "string" || typeof arg.turnId !== "string") return;
+    try {
+      await accountApi().sponsoredHide({ chatId: arg.chatId, turnId: arg.turnId });
+    } catch (error) {
+      logger.info("cloud.sponsored_hide_failed", { error: getErrorMessage(error) });
     }
   });
   ipcMain.handle(IPC.cloudSponsoredAd, async (event, arg: CloudSponsoredAdRequest | undefined): Promise<CloudSponsoredAdAnswer> => {

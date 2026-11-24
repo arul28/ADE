@@ -316,6 +316,16 @@ final class WorkChatTranscriptScroller {
     controller?.scrollRowIntoView(id: id, reason: reason)
   }
 
+  /// How far the content's end is below a row's bottom edge (its cell, margins
+  /// included), or nil while the row isn't in the list. A layout lookup, no
+  /// measuring: read on a geometry pass to place something drawn in that row.
+  func contentBelowRow(id: String) -> CGFloat? {
+    guard let controller, controller.isViewLoaded, let collectionView = controller.collectionView,
+          let indexPath = controller.dataSource?.indexPath(for: id),
+          let frame = collectionView.layoutAttributesForItem(at: indexPath)?.frame else { return nil }
+    return max(0, collectionView.contentSize.height - frame.maxY)
+  }
+
   /// A new session (or the same one re-seeded): open following, at the tail.
   func resetForNewSession() {
     controller?.resetForNewSession()

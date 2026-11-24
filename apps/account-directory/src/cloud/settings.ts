@@ -15,6 +15,18 @@ export const CLOUD_SETTINGS = {
   /** Real ads and real Index picks instead of Gravity's test ads; held under `GRAVITY_LIVE` (`1`). */
   gravity_live: ["off", "on"],
   /**
+   * Where sponsored cards show (`CloudSponsoredFormat`): one format for
+   * everyone, or `split`, each account held to one of the three by its id. An
+   * account the owner set (`cloud_sponsored_formats`) keeps its own.
+   */
+  gravity_format: ["below_reply", "above_prompt", "inline", "split"],
+  /**
+   * The split's weights in percent, in the order under the reply, inline,
+   * above the prompt box. Only new accounts follow a change: an account keeps
+   * the arm it was first given (`cloud_sponsored_formats`).
+   */
+  gravity_format_split: ["70-20-10", "80-15-5", "60-25-15", "50-30-20", "34-33-33"],
+  /**
    * Credits (`credits.ts`): one balance for computers and the ADE Cloud
    * iPhone, and the word "credits" on every surface. `testers` reaches the
    * accounts on the iPhone's beta list. Held under `CLOUD_CREDITS`.

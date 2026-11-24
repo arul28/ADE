@@ -60,6 +60,8 @@ export type {
   CloudSponsoredAdRequest,
   CloudSponsoredConsent,
   CloudSponsoredDevice,
+  CloudSponsoredFormat,
+  CloudSponsoredHideRequest,
   CloudSponsoredIndexAnswer,
   CloudSponsoredIndexRequest,
   CloudSponsoredMessage,
@@ -67,6 +69,7 @@ export type {
   CloudSponsoredPick,
   CloudSponsoredSeenRequest,
   CloudSponsoredState,
+  CloudSponsoredSurface,
 } from "../../../account-directory/src/cloud/contract";
 export { CLOUD_SPONSORED_MESSAGE_MAX_CHARS, CLOUD_SPONSORED_NEED_MAX_CHARS, isGravityUrl } from "../../../account-directory/src/cloud/contract";
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */

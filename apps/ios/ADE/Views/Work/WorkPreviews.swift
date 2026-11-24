@@ -501,6 +501,9 @@ private enum WorkPreviewData {
   WorkPreviewSessionListScreen()
 }
 
+/// The session id of the fixture chat `workPreviewChatSessionView` renders.
+let workPreviewChatSessionId = WorkPreviewData.chatSummary.sessionId
+
 /// The fixture chat every chat preview renders. `laneTools`, when given, fills
 /// the badge row's lane tool chips instead of polling a brain. `compactFirst`
 /// turns it into an idle Claude chat whose 5-minute cache has expired, so the

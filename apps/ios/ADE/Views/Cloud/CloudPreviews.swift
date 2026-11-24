@@ -19,6 +19,15 @@ enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-credits", "duo-cloud-plans", "duo-cloud-credits-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
     "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
+    "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
+  ]
+
+  /// The three sponsored formats, each in the real chat screen (transcript,
+  /// turn-end line, prompt box) over the same fixture turn and ad.
+  private static let sponsoredFormatScreens: [String: CloudSponsoredFormat] = [
+    "duo-cloud-sponsored-ad-below": .belowReply,
+    "duo-cloud-sponsored-ad-above-prompt": .abovePrompt,
+    "duo-cloud-sponsored-ad-inline": .inline,
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -55,13 +64,16 @@ enum CloudPreviews {
       // `duo-cloud-sponsored-small`: unanswered while the server's `smallNeedsCards` rule is on.
       var account = list.account
       let unanswered = name == "duo-cloud-sponsored-consent" || name == "duo-cloud-sponsored-small"
+      let format = sponsoredFormatScreens[name]
       account?.sponsored = CloudSponsoredState(
         ads: true,
         consent: unanswered ? nil : CloudSponsoredState.granted,
         test: true,
-        smallNeedsCards: name == "duo-cloud-sponsored-small" ? true : nil
+        smallNeedsCards: name == "duo-cloud-sponsored-small" ? true : nil,
+        format: format ?? .belowReply
       )
       AccountCloudStore.shared.seedPreview(access: nil, account: account)
+      if format != nil { return AnyView(CloudSponsoredFormatChatFixture()) }
       if name == "duo-cloud-sponsored-settings" {
         return AnyView(NavigationStack {
           ScrollView { CloudSponsoredCard(pageAccount: account).padding(16) }
@@ -320,6 +332,80 @@ private struct CloudSponsoredChatFixture: View {
         )
       )
     }
+  }
+}
+
+/// One finished turn in the real chat screen of an ADE Cloud chat, with the
+/// account's format (`CloudSponsoredState.format`) drawing the turn's card:
+/// under the reply, docked above the prompt box, or as the reply's last line.
+/// The real slot, transcript and prompt box; the card is a Gravity test ad.
+private struct CloudSponsoredFormatChatFixture: View {
+  private static let turnId = "turn-db"
+
+  private static var transcript: [WorkChatEnvelope] {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    func at(_ secondsAgo: Int, _ sequence: Int, _ event: WorkChatEvent) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: workPreviewChatSessionId,
+        timestamp: formatter.string(from: Date().addingTimeInterval(TimeInterval(-secondsAgo))),
+        sequence: sequence,
+        event: event
+      )
+    }
+    return [
+      at(260, 1, .userMessage(
+        text: "Give every preview deploy its own Postgres database, so a PR never touches shared data.",
+        attachments: nil, turnId: turnId, steerId: nil, deliveryState: "delivered", processed: true
+      )),
+      at(200, 2, .fileChange(
+        path: "scripts/preview-db.ts",
+        diff: "+ await createDatabase(`preview_${branch}`)\n+ await migrate(url)",
+        kind: "added", status: .completed, itemId: "file-db-1", turnId: turnId
+      )),
+      at(150, 3, .fileChange(
+        path: ".github/workflows/preview.yml",
+        diff: "+ DATABASE_URL: ${{ steps.db.outputs.url }}",
+        kind: "modified", status: .completed, itemId: "file-db-2", turnId: turnId
+      )),
+      at(60, 4, .assistantText(
+        text: "Done. Each preview deploy now gets its own database:\n\n- `scripts/preview-db.ts` creates one named after the branch and runs the migrations.\n- The preview workflow passes its `DATABASE_URL` to the deploy.\n- Closing the PR drops it.\n\nI ran it on this branch, and the preview came up with its own seeded data.",
+        turnId: turnId, itemId: "msg-db"
+      )),
+      at(58, 5, .done(
+        status: "completed",
+        summary: "Preview databases per PR.",
+        usage: WorkUsageSummary(turnCount: 1, inputTokens: 21_300, outputTokens: 2_480, cacheReadTokens: 11_200, cacheCreationTokens: 640, costUsd: 0.071),
+        turnId: turnId,
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5"
+      )),
+    ]
+  }
+
+  @State private var chat: WorkChatSessionView = {
+    var view = workPreviewChatSessionView(transcript: CloudSponsoredFormatChatFixture.transcript)
+    view.sponsoredInstanceId = "zodqsue74s"
+    return view
+  }()
+
+  var body: some View {
+    NavigationStack { chat }
+      .onAppear {
+        CloudSponsoredStore.shared.seedPreview(
+          turnKey: CloudSponsoredStore.turnKey(chatId: workPreviewChatSessionId, turnId: Self.turnId),
+          ad: CloudSponsoredAd(
+            id: "fixture-neon",
+            brand: "Neon",
+            title: "Serverless Postgres with branching",
+            text: "Spin up a database branch for every pull request.",
+            cta: "Try Neon",
+            clickUrl: "https://trygravity.ai/c/fixture-neon",
+            impUrl: nil,
+            test: true
+          )
+        )
+      }
   }
 }
 
