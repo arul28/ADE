@@ -137,7 +137,7 @@ function SponsoredReplySlotOn({
   const holder = useSponsoredPlaceHolder();
   const placeFree = holder === null || holder === slotId;
 
-  const [ad, setAd] = useState<{ key: string; ad: CloudSponsoredAd } | null>(null);
+  const [ad, setAd] = useState<{ key: string; turnId: string; ad: CloudSponsoredAd } | null>(null);
   // A chat's first reply can be asked about before its computer saved the
   // chat's copy (`not_cloud`): one more ask a little later, never more.
   const [askAgain, setAskAgain] = useState<string | null>(null);
@@ -152,7 +152,7 @@ function SponsoredReplySlotOn({
     void askOnce(turnKey, () => askAd(input))
       .then((answer) => {
         if (!live) return;
-        if (answer.ad && isGravityUrl(answer.ad.clickUrl)) setAd({ key: turnKey, ad: answer.ad });
+        if (answer.ad && isGravityUrl(answer.ad.clickUrl)) setAd({ key: turnKey, turnId: turn.turnId, ad: answer.ad });
         else if (answer.reason === "not_cloud" && askAgain !== turnKey) {
           timer = window.setTimeout(() => {
             answers.delete(turnKey);
@@ -182,8 +182,11 @@ function SponsoredReplySlotOn({
   const holds = holder === slotId;
 
   const hide = () => {
-    if (ad) hiddenTurns.add(ad.key);
+    if (!ad) return;
+    hiddenTurns.add(ad.key);
     setHidden(true);
+    // Counted once per reply for the formats' A/B test; nothing else is sent.
+    void window.ade?.cloud?.sponsoredHide?.({ chatId: sessionId, turnId: ad.turnId }).catch(() => undefined);
   };
 
   let card: React.ReactNode = null;

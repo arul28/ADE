@@ -35,6 +35,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 | `phone <account> nomac\|revyl\|both\|off` | On the ADE Cloud iPhone's beta list with that provider (`both`: the router, which tries the default provider first (`CLOUD_PHONE_PROVIDER`, NoMac today), then the other when the first refuses or the command needs something only the other has), or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access) |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `ad-format <account> below_reply\|above_prompt\|inline\|switch` | Where this account's sponsored cards show: under the reply, docked above the prompt box, or one linked sentence at the end of the reply (`switch`: whatever `gravity_format` says). Not a test: it stays until changed |
+| `ab [--days N]` | The format A/B scoreboard (default 14 days): per format its weight, accounts held to it, how many said yes or no, cards asked and filled, hides per card, and Gravity's views, clicks, CTR and revenue for that format's placements |
 | `reset <account>` | Back to the real plan |
 
 `act-as` and `limits` take `--days N` (default 7, at most 90) and
@@ -76,6 +77,7 @@ minutes on is refused (409) while test iPhone minutes are set.
 | `gravity_ads` | `off`, `testers`, `all` | `GRAVITY_ADS` | Sponsored cards, the Index and the Free rule: nobody, the testers list, or every Free account |
 | `gravity_live` | `off`, `on` | `GRAVITY_LIVE=1` | Real ads instead of Gravity's free test ads |
 | `gravity_format` | `below_reply`, `above_prompt`, `inline`, `split` | none | Where cards show for every account; `split` holds each account to one of the three by its id (the same on every machine). An account set with `ad-format` keeps its own |
+| `gravity_format_split` | `70-20-10`, `80-15-5`, `60-25-15`, `50-30-20`, `34-33-33` | none | Under `split`, the share of new accounts for under the reply, inline and above the prompt box, in that order. An account keeps the format it was first given (`cloud_sponsored_formats`), so a change moves only accounts ads reach for the first time |
 
 ```bash
 node scripts/cloud-owner.mjs settings

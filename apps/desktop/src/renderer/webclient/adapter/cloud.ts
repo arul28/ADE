@@ -524,6 +524,9 @@ export function createWebCloudNamespace(
     sponsoredSeen: async (input) => {
       await accountClient.cloudApi()?.sponsoredSeen(input).catch(() => undefined);
     },
+    sponsoredHide: async (input) => {
+      await accountClient.cloudApi()?.sponsoredHide(input).catch(() => undefined);
+    },
     sponsoredAd: async (input) => {
       const api = accountClient.cloudApi();
       if (!api) return { ad: null, reason: "unavailable" };

@@ -30,7 +30,10 @@ Accounts (an email, or a Clerk user id that starts with user_):
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
   set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
-                                         gravity_format below_reply|above_prompt|inline|split
+                                         gravity_format below_reply|above_prompt|inline|split,
+                                         gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
+                                         (under the reply - inline - above the prompt box)
+  ab [--days N]                          the sponsored formats' A/B scoreboard (default 14 days)
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
@@ -62,6 +65,7 @@ const COMMAND_OPTIONS = {
   "act-as": ["days", "note"],
   limits: ["computers", "hours", "phone-minutes", "days", "note"],
   set: ["note"],
+  ab: ["days"],
 };
 
 function readOptions(command, args) {
@@ -191,6 +195,31 @@ switch (command) {
   case "settings":
     printSettings(await call("settings", {}));
     break;
+  case "ab": {
+    const days = options.days === undefined ? undefined : Number(options.days);
+    if (days !== undefined && !Number.isInteger(days)) fail("--days is a whole number.");
+    const report = await call("ab", days === undefined ? {} : { days });
+    const pct = (value) => (value == null ? "-" : `${(value * 100).toFixed(1)}%`);
+    console.log(`Format switch: ${report.format} · split ${report.split} (under the reply - inline - above the prompt box) · last ${report.days} days (since ${report.since})`);
+    console.table(report.arms.map((arm) => ({
+      format: arm.name,
+      weight: `${arm.weight}%`,
+      accounts: arm.accounts,
+      "said yes": arm.granted,
+      "said no": arm.declined,
+      asked: arm.requests,
+      filled: arm.fills,
+      "fill rate": pct(arm.fillRate),
+      hidden: arm.hides,
+      "hidden/card": pct(arm.hidesPerCard),
+      views: arm.gravity?.impressions ?? "-",
+      clicks: arm.gravity?.clicks ?? "-",
+      CTR: pct(arm.gravity?.ctr),
+      revenue: arm.gravity ? `$${arm.gravity.revenue.toFixed(2)}` : "-",
+    })));
+    if (!report.gravityReadable) console.log("Gravity's placement report couldn't be read: views, clicks and revenue are missing.");
+    break;
+  }
   case "set":
     if (!rest[0] || !rest[1]) fail(`set takes a key and a value.\n\n${USAGE}`);
     printSettings(await call("settings", { key: rest[0], value: rest[1], ...(options.note ? { note: options.note } : {}) }));

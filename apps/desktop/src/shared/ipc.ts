@@ -1232,6 +1232,7 @@ export const IPC = {
   /** Sponsored cards (account level, no pin): the answer to the one-time question, a viewer's presence, one card per finished reply. */
   cloudSponsoredConsent: "ade.cloud.sponsoredConsent",
   cloudSponsoredSeen: "ade.cloud.sponsoredSeen",
+  cloudSponsoredHide: "ade.cloud.sponsoredHide",
   cloudSponsoredAd: "ade.cloud.sponsoredAd",
   /** Reports a card's view to Gravity once half of it was on screen (the page itself may not reach outside hosts). */
   cloudSponsoredViewed: "ade.cloud.sponsoredViewed",

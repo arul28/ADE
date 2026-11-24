@@ -228,6 +228,7 @@ func cloudGravityURL(_ value: String?) -> URL? {
 extension CloudServerClient {
   private struct ConsentBody: Encodable { let consent: String }
   private struct SeenBody: Encodable { let instanceId: String; let device: CloudSponsoredDevice }
+  private struct HideBody: Encodable { let chatId: String; let turnId: String }
   private struct AdBody: Encodable {
     let instanceId: String
     let chatId: String
@@ -251,6 +252,12 @@ extension CloudServerClient {
   func sponsoredSeen(instanceId: String, device: CloudSponsoredDevice) async throws {
     let body = try JSONEncoder().encode(SeenBody(instanceId: instanceId, device: device))
     _ = try await send("POST", "cloud/sponsored/seen", body: body)
+  }
+
+  /// `POST /cloud/sponsored/hide`: the person hid this reply's card (an
+  /// account call; counted once per reply for the formats' A/B test).
+  func sponsoredHide(chatId: String, turnId: String) async throws {
+    _ = try await send("POST", "cloud/sponsored/hide", body: try JSONEncoder().encode(HideBody(chatId: chatId, turnId: turnId)))
   }
 
   /// `POST /cloud/sponsored/ad`: one card for a finished reply, in the
@@ -485,8 +492,16 @@ final class CloudSponsoredStore: ObservableObject {
     answerOrder.removeAll { $0 == turnKey }
   }
 
-  func hide(turnKey: String) {
-    hiddenTurns.insert(turnKey)
+  /// The person hid this reply's card. The server counts it once per reply,
+  /// under the format it was asked in, for the formats' A/B test.
+  func hide(chatId: String, turnId: String) {
+    let key = Self.turnKey(chatId: chatId, turnId: turnId)
+    guard !hiddenTurns.contains(key) else { return }
+    hiddenTurns.insert(key)
+    Task {
+      guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return }
+      try? await client.sponsoredHide(chatId: chatId, turnId: turnId)
+    }
   }
 
   func setPickFolded(_ cardId: String, _ folded: Bool) {

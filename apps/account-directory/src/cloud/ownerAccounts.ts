@@ -1,4 +1,4 @@
-import { gravitySwitches, isSponsoredFormat, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
+import { gravitySwitches, isSponsoredFormat, sponsoredAbReport, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
 import { fail, json } from "./http";
 import { CLOUD_PHONE_PROVIDERS, CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
 import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";
@@ -54,12 +54,21 @@ import {
  *   `adFormat` (`below_reply`, `above_prompt`, `inline`, or null for the
  *   `gravity_format` switch's) is where the account's sponsored cards show:
  *   not a test either, it stays until changed.
+ * - `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard.
  * - `POST /cloud/owner/settings` `{ key?, value?, note? }`: sets one switch,
  *   or with no key lists them all with their deploy ceilings.
  */
 
 export const OWNER_ACCOUNT_PATH = "/cloud/owner/account";
 export const OWNER_SETTINGS_PATH = "/cloud/owner/settings";
+export const OWNER_AB_PATH = "/cloud/owner/ab";
+
+/** `POST /cloud/owner/ab` `{ days? }`: the sponsored formats' A/B scoreboard (`sponsoredAbReport`). */
+export async function handleOwnerAb(env: GravityEnv, body: Record<string, unknown>, now: number): Promise<Response> {
+  const days = body.days === undefined ? 14 : body.days;
+  if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 365) return fail("bad_request", "days is a whole number from 1 to 365.", 400);
+  return json({ ok: true, ...(await sponsoredAbReport(env, now, days)) });
+}
 
 /** How long a test lasts when the owner names no length, and the longest one. */
 const DEFAULT_TEST_DAYS = 7;
@@ -137,7 +146,7 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
     env.DB.prepare("select provider from cloud_phone_beta where user_id = ?").bind(account.user_id).first<{ provider: string | null }>(),
     periodPhones(env, account.user_id, account.period_start),
     phoneAccess(env, account.user_id),
-    env.DB.prepare("select format from cloud_sponsored_formats where user_id = ?").bind(account.user_id).first<{ format: string }>(),
+    env.DB.prepare("select format, source from cloud_sponsored_formats where user_id = ?").bind(account.user_id).first<{ format: string; source: string }>(),
   ]);
   const phoneMinutes = phoneUsageOf(env, account, phoneUse, now);
   const testing = hasAccountTest(account);
@@ -183,7 +192,9 @@ async function describeAccount(env: CloudEnv, account: AccountRow, email: string
       tester: Boolean(tester),
       consent: consent?.consent ?? null,
       // The owner's choice for this account, or null: the `gravity_format` switch's.
-      format: adFormat?.format ?? null,
+      format: adFormat?.source === "owner" ? adFormat.format : null,
+      // Its arm of the A/B test, once ads reached it under `split`.
+      abArm: adFormat?.source === "split" ? adFormat.format : null,
     },
     log: (log.results ?? []).map((row) => ({ at: row.at, action: row.action, detail: safeJson(row.detail) })),
   };
@@ -262,10 +273,11 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
   }
   if (tester === false) statements.push(env.DB.prepare(`delete from cloud_sponsored_testers where ${guard("user_id = ?")}`).bind(who.userId, ...guardBinds));
   if (adFormat) {
-    statements.push(env.DB.prepare(`insert into cloud_sponsored_formats (user_id, format, set_at) select ?, ?, ? where ${guard("true")}
-      on conflict (user_id) do update set format = excluded.format, set_at = excluded.set_at`).bind(who.userId, adFormat, now, ...guardBinds));
+    // Over the account's A/B arm too: an account the owner set leaves the test.
+    statements.push(env.DB.prepare(`insert into cloud_sponsored_formats (user_id, format, source, set_at) select ?, ?, 'owner', ? where ${guard("true")}
+      on conflict (user_id) do update set format = excluded.format, source = excluded.source, set_at = excluded.set_at`).bind(who.userId, adFormat, now, ...guardBinds));
   }
-  if (adFormat === null) statements.push(env.DB.prepare(`delete from cloud_sponsored_formats where ${guard("user_id = ?")}`).bind(who.userId, ...guardBinds));
+  if (adFormat === null) statements.push(env.DB.prepare(`delete from cloud_sponsored_formats where ${guard("user_id = ? and source = 'owner'")}`).bind(who.userId, ...guardBinds));
   const testChanged = statements.length > 0;
   if (testChanged) {
     const detail = {

@@ -13,7 +13,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredConsent, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
@@ -5199,6 +5199,8 @@ declare global {
          */
         setSponsoredConsent?: (consent: CloudSponsoredConsent) => Promise<CloudSponsoredState | null>;
         sponsoredSeen?: (input: CloudSponsoredSeenRequest) => Promise<void>;
+        /** The person hid a reply's card: counted for the formats' A/B test. */
+        sponsoredHide?: (input: CloudSponsoredHideRequest) => Promise<void>;
         sponsoredAd?: (input: CloudSponsoredAdRequest) => Promise<CloudSponsoredAdAnswer>;
         /** A card's view link, once half of the card was on screen. */
         /** True once Gravity has the view; false when it should be sent again. */

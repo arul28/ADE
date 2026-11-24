@@ -1100,6 +1100,8 @@ struct WorkChatSessionView: View {
   /// The card the sponsored slot last placed, as a key: the reply row an
   /// inline line ends is re-measured (a new row revision) when it changes.
   @State var sponsoredPlacedKey: String?
+  /// What the slot under the reply draws, as a key: its row is re-measured when it changes.
+  @State var sponsoredShownKey: String?
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -2040,6 +2042,7 @@ struct WorkChatSessionView: View {
       // Where the card can draw besides under the reply.
       hasher.combine(sponsoredDockAvailable)
       hasher.combine(sponsoredInlineHost?.rowId)
+      hasher.combine(sponsoredShownKey)
       rows.append(
         WorkChatTranscriptRow(id: "chat-sponsored", kind: .sponsored, revision: hasher.finalize())
       )
@@ -3573,6 +3576,9 @@ struct WorkChatSessionView: View {
       .onReceive(sponsoredSlot.$placed) { placed in
         let key = placed?.key
         if sponsoredPlacedKey != key { sponsoredPlacedKey = key }
+      }
+      .onReceive(sponsoredSlot.$shownKey) { key in
+        if sponsoredShownKey != key { sponsoredShownKey = key }
       }
     )
   }

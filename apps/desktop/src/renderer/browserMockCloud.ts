@@ -686,6 +686,7 @@ export function applyBrowserMockCloud(ade: any): void {
       return state.sponsored ?? null;
     },
     sponsoredSeen: async () => undefined,
+    sponsoredHide: async () => undefined,
     sponsoredViewed: async () => true,
     sponsoredAd: async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 600));

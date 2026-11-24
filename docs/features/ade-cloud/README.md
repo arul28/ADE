@@ -694,8 +694,8 @@ subagent's (`cloud_chat_copies`). Chats on the person's own machine never get a
 card, whatever the plan.
 
 - **Formats:** the `gravity_format` switch (`below_reply` default,
-  `above_prompt`, `inline`, or `split` for an A/B test held per account by
-  its id; migration `0059` keeps an owner's choice per account) names where
+  `above_prompt`, `inline`, or `split` for an A/B test; migration `0059`
+  keeps an owner's choice per account) names where
   an account's card shows: under the finished reply, docked above the prompt
   box (the latest reply's card, kept while the next reply runs), or one linked
   "Sponsored" sentence at the end of the reply. The state carries `format`;
@@ -707,6 +707,16 @@ card, whatever the plan.
   always shows under the reply. Desktop draws the other two through the
   pane's outlets (`sponsoredOutlets.tsx`); a pane without them gets the card
   under the reply.
+- **Format A/B test:** under `split`, an account is given a format the first
+  time ads reach it, by a hash of its id and the `gravity_format_split`
+  weights (default `70-20-10`: under the reply, inline, above the prompt box),
+  and keeps it (`cloud_sponsored_formats`, source `split`; an owner's
+  `ad-format` choice, source `owner`, wins). Each ad request, fill and hide
+  is counted per format in `cloud_sponsored_days` (`ad_request:<format>`,
+  `ad_fill:<format>`, `ad_hide:<format>`); a hide (`POST
+  /cloud/sponsored/hide`) counts once per reply. `GET /cloud/owner/ab`
+  (`cloud-owner.mjs ab`) joins those counts with Gravity's per-placement
+  views, clicks and revenue, and the daily report has a formats line.
 - **Reply card** (`renderer/components/chat/sponsored/`, iOS
   `WorkSponsoredCards.swift`): at most one, under a finished reply, asked for
   only while the pane and that spot are on screen. The server claims the reply

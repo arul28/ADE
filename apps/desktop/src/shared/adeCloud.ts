@@ -60,6 +60,7 @@ export type {
   CloudSponsoredConsent,
   CloudSponsoredDevice,
   CloudSponsoredFormat,
+  CloudSponsoredHideRequest,
   CloudSponsoredIndexAnswer,
   CloudSponsoredIndexRequest,
   CloudSponsoredMessage,

@@ -201,7 +201,8 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
   const switches = await gravitySwitches(env, settings);
   const reason = await blockedReason(env, account, country, switches);
   if (reason === "off") return undefined;
-  const [consent, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings)]);
+  // An account joins the A/B test's arm only once ads reach it.
+  const [consent, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings, now, reason == null)]);
   // A no is asked again once it is SPONSORED_REASK_MS old, or when it came
   // before the ad switch last changed (when Small began to need cards). Until
   // the person answers, it still counts as a no: no cards, Small uses hours.
@@ -220,18 +221,40 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
 }
 
 /**
- * Where the account's cards show: the owner's choice for it
- * (`cloud_sponsored_formats`), else the `gravity_format` switch. `split` holds
- * each account to one format by its id, the same on every machine and every
- * day, so a person never sees the formats change under them.
+ * Where the account's cards show: the owner's choice for it, else the
+ * `gravity_format` switch. Under `split`, the account's arm of the A/B test:
+ * the one it was first given (kept in `cloud_sponsored_formats`), or, the
+ * first time ads reach it (`assign`), one drawn by its id at the split's
+ * weights and kept, the same on every machine.
  */
-async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: CloudSettings): Promise<CloudSponsoredFormat> {
-  const set = await env.DB.prepare("select format from cloud_sponsored_formats where user_id = ?").bind(userId).first<{ format: string }>();
-  if (isSponsoredFormat(set?.format)) return set.format;
+async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: CloudSettings, now: number, assign: boolean): Promise<CloudSponsoredFormat> {
+  const row = await env.DB.prepare("select format, source from cloud_sponsored_formats where user_id = ?").bind(userId).first<{ format: string; source: string }>();
+  if (row?.source === "owner" && isSponsoredFormat(row.format)) return row.format;
   if (settings.gravity_format !== "split") return settings.gravity_format;
+  if (row?.source === "split" && isSponsoredFormat(row.format)) return row.format;
+  const format = splitArm(userId, settings.gravity_format_split);
+  if (assign) {
+    await env.DB.prepare("insert into cloud_sponsored_formats (user_id, format, source, set_at) values (?, ?, 'split', ?) on conflict (user_id) do nothing")
+      .bind(userId, format, now).run();
+  }
+  return format;
+}
+
+/** The split's arms in the order its weights are written: under the reply, inline, above the prompt box. */
+const SPLIT_ARMS: readonly CloudSponsoredFormat[] = ["below_reply", "inline", "above_prompt"];
+
+/** The arm an account's id falls in at these weights: a stable bucket from 0 to 99. */
+export function splitArm(userId: string, weights: string): CloudSponsoredFormat {
   let hash = 0x811c9dc5;
   for (const char of `ade-ad-format:${userId}`) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
-  return CLOUD_SPONSORED_FORMATS[hash % CLOUD_SPONSORED_FORMATS.length]!;
+  const bucket = hash % 100;
+  let edge = 0;
+  const parts = weights.split("-").map(Number);
+  for (const [index, arm] of SPLIT_ARMS.entries()) {
+    edge += parts[index] ?? 0;
+    if (bucket < edge) return arm;
+  }
+  return SPLIT_ARMS[0]!;
 }
 
 export const isSponsoredFormat = (value: unknown): value is CloudSponsoredFormat =>
@@ -477,6 +500,7 @@ export async function routeSponsored(request: Request, path: string, env: Gravit
   if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredIndex) return request.method === "POST" ? handleIndex(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredHide) return request.method === "POST" ? handleHide(request, env, userId, now) : notFound();
   return null;
 }
 
@@ -590,9 +614,9 @@ async function claimTurn(env: GravityEnv, userId: string, chatId: string, turnId
   return (claim?.meta?.changes ?? 0) === 1;
 }
 
-async function saveTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, answer: CloudSponsoredAdAnswer): Promise<void> {
-  await env.DB.prepare("update cloud_sponsored_turns set ad_json = ?, reason = ? where user_id = ? and chat_id = ? and turn_id = ?")
-    .bind(answer.ad ? JSON.stringify(answer.ad) : null, answer.ad ? null : answer.reason ?? "no_fill", userId, chatId, turnId).run();
+async function saveTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, answer: CloudSponsoredAdAnswer, format: CloudSponsoredFormat): Promise<void> {
+  await env.DB.prepare("update cloud_sponsored_turns set ad_json = ?, reason = ?, format = ? where user_id = ? and chat_id = ? and turn_id = ?")
+    .bind(answer.ad ? JSON.stringify(answer.ad) : null, answer.ad ? null : answer.reason ?? "no_fill", format, userId, chatId, turnId).run();
 }
 
 /** Gravity didn't answer: the claim goes, so a later ask for this reply may try again. */
@@ -647,6 +671,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const ip = clientIp(request);
   const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
   const slot = PLACEMENTS[format];
+  // The A/B test's counts: requests, fills and hides per format.
+  await count(env, now, userId, [`ad_request:${format}`]);
   const hashedEmail = hashedEmailFor(device, consent.email_hash);
   const result = await gravityAds(
     {
@@ -680,9 +706,29 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   }
   const ad = adOfGravity(result.ads[0], !live);
   const answer: CloudSponsoredAdAnswer = ad ? { ad } : { ad: null, reason: "no_fill" };
-  if (ad) await count(env, now, userId, ["ad_fill"]);
-  await saveTurn(env, userId, chatId, turnId, answer);
+  if (ad) await count(env, now, userId, ["ad_fill", `ad_fill:${format}`]);
+  await saveTurn(env, userId, chatId, turnId, answer, format);
   return json(answer);
+}
+
+/**
+ * The person hid a reply's card: counted once per reply, under the format it
+ * was asked in, for the A/B test. Only a reply that got a card counts; the
+ * answer is always a 200, and nothing is kept but the count.
+ */
+async function handleHide(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+  const body = await readJson(request);
+  if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
+  const chatId = shortString(body.chatId, 160);
+  const turnId = shortString(body.turnId, 160);
+  if (!chatId || !ROW_ID.test(chatId) || !turnId || !ROW_ID.test(turnId)) return badRequest("Name the chat and its reply.");
+  const hidden = await env.DB.prepare(`
+    update cloud_sponsored_turns set hidden_at = ?
+    where user_id = ? and chat_id = ? and turn_id = ? and ad_json is not null and hidden_at is null and created_at >= ?
+    returning format
+  `).bind(now, userId, chatId, turnId, now - TURN_TTL_MS).first<{ format: string | null }>();
+  if (hidden) await count(env, now, userId, [`ad_hide:${isSponsoredFormat(hidden.format) ? hidden.format : "below_reply"}`]);
+  return json({ ok: true, counted: Boolean(hidden) });
 }
 
 /** One of Gravity's Index answers as a pick, or null. */
@@ -831,6 +877,87 @@ export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Pr
   ]);
 }
 
+/* ---- The formats' A/B test ---- */
+
+const FORMAT_WORDS: Record<CloudSponsoredFormat, string> = { below_reply: "under the reply", inline: "inline", above_prompt: "above the prompt box" };
+
+/** Which format one of Gravity's placement rows is, by its id (`ade-<surface>-<slug>`) or its type. */
+function formatOfPlacement(entry: Record<string, unknown>): CloudSponsoredFormat | null {
+  const key = String(entry.placement_id ?? entry.slug ?? entry.placement ?? "");
+  for (const [format, slot] of Object.entries(PLACEMENTS) as [CloudSponsoredFormat, (typeof PLACEMENTS)[CloudSponsoredFormat]][]) {
+    if (key === slot.placement || key.endsWith(`-${slot.slug}`)) return format;
+  }
+  return null;
+}
+
+/**
+ * The A/B scoreboard for the last `days` UTC days: each format's accounts
+ * (its arm of the split, and their answers), ADE's own counts (card requests,
+ * cards filled, cards hidden), and Gravity's per-placement report (views,
+ * clicks, revenue), which pays on its own numbers. Gravity's part is null
+ * when its report can't be read.
+ */
+export async function sponsoredAbReport(env: GravityEnv, now: number, days: number) {
+  const settings = await readCloudSettings(env);
+  const since = utcDay(now - (days - 1) * 24 * 60 * 60_000);
+  const [counts, arms] = await Promise.all([
+    env.DB.prepare("select kind, sum(count) as total from cloud_sponsored_days where user_id = ? and day >= ? and kind like 'ad_%:%' group by kind")
+      .bind(ALL, since).all<{ kind: string; total: number }>(),
+    env.DB.prepare(`
+      select f.format, f.source, count(*) as accounts,
+        coalesce(sum(c.consent = 'granted'), 0) as granted, coalesce(sum(c.consent = 'declined'), 0) as declined
+      from cloud_sponsored_formats f left join cloud_sponsored_consent c on c.user_id = f.user_id
+      group by f.format, f.source
+    `).all<{ format: string; source: string; accounts: number; granted: number; declined: number }>(),
+  ]);
+  const total = new Map((counts.results ?? []).map((row) => [row.kind, row.total]));
+  let gravity: Record<string, unknown>[] | null = null;
+  if (env.GRAVITY_API_KEY?.trim()) {
+    gravity = await fetch(`${PLATFORM_URL}/publisher-dashboard/placements?days=${days}`, {
+      headers: { "x-api-key": env.GRAVITY_API_KEY.trim(), accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    }).then(async (response) => {
+      const body = response.ok ? await response.json() as { placements?: unknown } : null;
+      return Array.isArray(body?.placements) ? body.placements as Record<string, unknown>[] : null;
+    }).catch(() => null);
+  }
+  const weights = settings.gravity_format_split.split("-").map(Number);
+  const ratio = (part: number, whole: number) => (whole > 0 ? Math.round((part / whole) * 1000) / 1000 : null);
+  return {
+    format: settings.gravity_format,
+    split: settings.gravity_format_split,
+    days,
+    since,
+    gravityReadable: gravity != null,
+    arms: SPLIT_ARMS.map((format, index) => {
+      const arm = (arms.results ?? []).filter((row) => row.format === format);
+      const inTest = arm.find((row) => row.source === "split");
+      const requests = total.get(`ad_request:${format}`) ?? 0;
+      const fills = total.get(`ad_fill:${format}`) ?? 0;
+      const hides = total.get(`ad_hide:${format}`) ?? 0;
+      const placements = gravity?.filter((entry) => formatOfPlacement(entry) === format) ?? null;
+      const sum = (field: string) => (placements ?? []).reduce((acc, entry) => acc + (typeof entry[field] === "number" ? entry[field] as number : 0), 0);
+      const impressions = sum("impressions");
+      const clicks = sum("clicks");
+      return {
+        format,
+        name: FORMAT_WORDS[format],
+        weight: weights[index] ?? 0,
+        accounts: inTest?.accounts ?? 0,
+        granted: inTest?.granted ?? 0,
+        declined: inTest?.declined ?? 0,
+        ownerSet: arm.find((row) => row.source === "owner")?.accounts ?? 0,
+        requests,
+        fills,
+        fillRate: ratio(fills, requests),
+        hides,
+        hidesPerCard: ratio(hides, fills),
+        gravity: placements ? { impressions, clicks, ctr: ratio(clicks, impressions), revenue: Math.round(sum("revenue") * 100) / 100 } : null,
+      };
+    }),
+  };
+}
+
 /**
  * Lines for the owner's daily report: ADE's own counts of the day, and what
  * Gravity says the day paid (ads and the Index), against `freeCostMicros`, the
@@ -847,6 +974,9 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
   const lines = [
     `Sponsored (${mode}${live ? ", live" : ", test ads"}): ${n("ad_request")} ad requests, ${n("ad_fill")} filled; ${n("index_request")} Index searches, ${n("index_pick")} picks.`,
   ];
+  const byFormat = SPLIT_ARMS.filter((format) => n(`ad_request:${format}`) > 0)
+    .map((format) => `${FORMAT_WORDS[format]} ${n(`ad_request:${format}`)} asked, ${n(`ad_fill:${format}`)} filled, ${n(`ad_hide:${format}`)} hidden`);
+  if (byFormat.length) lines.push(`Formats (${(await readCloudSettings(env)).gravity_format}): ${byFormat.join("; ")}.`);
   if (!env.GRAVITY_API_KEY?.trim()) return lines;
   const key = env.GRAVITY_API_KEY.trim();
   const read = async (url: string): Promise<Record<string, unknown> | null> => {

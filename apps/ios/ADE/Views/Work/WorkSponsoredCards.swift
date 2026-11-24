@@ -51,6 +51,11 @@ final class WorkSponsoredSlotModel: ObservableObject {
   @Published private(set) var inlineOnScreen = false
   /// At least half of the inline line is on screen: its view counts.
   @Published private(set) var inlineHalfOnScreen = false
+  /// What the slot under the reply draws now ("consent", "ad:<id>", or nil).
+  /// The chat folds it into that row's revision, so the row is measured
+  /// again when a card appears or goes: a cached height kept from before the
+  /// card drew the card over the turn's footer and under the prompt box.
+  @Published private(set) var shownKey: String?
   /// The slot's own height, as it last drew. Not published: geometry reads it.
   var height: CGFloat = 0
   /// The inline line's height, as it last drew (0 while it isn't drawn).
@@ -63,6 +68,10 @@ final class WorkSponsoredSlotModel: ObservableObject {
 
   func setChatVisible(_ visible: Bool) {
     if chatVisible != visible { chatVisible = visible }
+  }
+
+  func setShownKey(_ key: String?) {
+    if shownKey != key { shownKey = key }
   }
 
   func place(_ next: WorkSponsoredPlacedAd) {
@@ -185,7 +194,7 @@ struct WorkSponsoredReplySlot: View {
           WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format)
         case .ad(let ad):
           WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
-            store.hide(turnKey: turnKey)
+            store.hide(chatId: sessionId, turnId: turn.turnId)
           }
         case nil:
           EmptyView()
@@ -198,6 +207,10 @@ struct WorkSponsoredReplySlot: View {
     .task(id: "\(showing != nil)|\(store.holder ?? "")") {
       if showing != nil { store.hold(sessionId) } else { store.release(sessionId) }
     }
+    // The row under the reply is measured again whenever what it draws changes.
+    .task(id: Self.shownKey(showing, holds: store.holder == sessionId)) {
+      slot.setShownKey(Self.shownKey(showing, holds: store.holder == sessionId))
+    }
     // The dock or the reply's end draws this turn's card.
     .task(id: "\(turnKey)|\(format.rawValue)|\(store.ads[turnKey]?.id ?? "")") {
       guard format != .belowReply, let ad = store.ads[turnKey] else { return }
@@ -205,6 +218,14 @@ struct WorkSponsoredReplySlot: View {
     }
     .onDisappear { store.release(sessionId) }
     .accessibilityElement(children: .contain)
+  }
+
+  private static func shownKey(_ showing: Showing?, holds: Bool) -> String? {
+    guard holds, let showing else { return nil }
+    switch showing {
+    case .consent: return "consent"
+    case .ad(let ad): return "ad:\(ad.id)"
+    }
   }
 
   /// One ask per turn; a `not_cloud` answer (the computer hadn't saved the
@@ -278,7 +299,7 @@ struct WorkSponsoredDockSlot: View {
       // Drawn at once (the hold below follows): the chat's own units never show together.
       if let shown, store.placeFree(forChat: sessionId) {
         WorkSponsoredDockCard(ad: shown.ad, test: accountStore.account?.sponsored?.test == true) {
-          store.hide(turnKey: shown.turnKey)
+          store.hide(chatId: sessionId, turnId: shown.turnId)
         }
         .padding(.bottom, 8)
         .transition(.opacity)
@@ -323,7 +344,7 @@ struct WorkSponsoredInlineOutlet: View {
       // Drawn at once, so the row measures with it (the hold below follows).
       if let shown, store.placeFree(forChat: sessionId) {
         WorkSponsoredInlineLine(ad: shown.ad, test: accountStore.account?.sponsored?.test == true, slot: slot) {
-          store.hide(turnKey: shown.turnKey)
+          store.hide(chatId: sessionId, turnId: shown.turnId)
         }
         .padding(.top, 8)
       }

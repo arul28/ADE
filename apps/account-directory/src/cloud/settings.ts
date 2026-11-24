@@ -20,6 +20,12 @@ export const CLOUD_SETTINGS = {
    * account the owner set (`cloud_sponsored_formats`) keeps its own.
    */
   gravity_format: ["below_reply", "above_prompt", "inline", "split"],
+  /**
+   * The split's weights in percent, in the order under the reply, inline,
+   * above the prompt box. Only new accounts follow a change: an account keeps
+   * the arm it was first given (`cloud_sponsored_formats`).
+   */
+  gravity_format_split: ["70-20-10", "80-15-5", "60-25-15", "50-30-20", "34-33-33"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

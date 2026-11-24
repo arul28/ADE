@@ -269,6 +269,7 @@ export const CLOUD_PATHS = {
   sponsoredSeen: "/cloud/sponsored/seen",
   sponsoredAd: "/cloud/sponsored/ad",
   sponsoredIndex: "/cloud/sponsored/index",
+  sponsoredHide: "/cloud/sponsored/hide",
 } as const;
 
 /** `/cloud/chats/:machine/:chat/messages[/:msg]`: the person's queue for an existing cloud chat. */
@@ -3304,6 +3305,8 @@ export type CloudSponsoredAd = {
   favicon: string | null;
   test: boolean;
 };
+/** `POST /cloud/sponsored/hide`: the person hid this reply's card (counted once per reply, per format, for the A/B test). */
+export type CloudSponsoredHideRequest = { chatId: string; turnId: string };
 /** Why no card: the answer is still a 200, and a client shows nothing either way. */
 export type CloudSponsoredNoAdReason = "off" | "plan" | "country" | "consent" | "not_cloud" | "limit" | "no_fill" | "unavailable";
 export type CloudSponsoredAdAnswer = { ad: CloudSponsoredAd | null; reason?: CloudSponsoredNoAdReason };
