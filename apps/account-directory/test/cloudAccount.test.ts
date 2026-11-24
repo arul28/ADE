@@ -5,8 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
-import { enforcePhoneAllowance } from "../src/cloud/phones";
-import { creditsAtStart } from "../src/cloud/credits";
+import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/gravity";
@@ -82,6 +81,8 @@ function sqliteD1() {
     all: async <T>() => ({ success: true, results: db.prepare(sql).all(...params) as T[] }),
     apply: () => {
       if (fault?.(sql, params)) throw new Error("D1_ERROR: injected");
+      // As in D1, a read in a batch answers its rows.
+      if (/^\s*select\b/i.test(sql)) return { success: true, results: db.prepare(sql).all(...params), meta: { changes: 0 } };
       return { success: true, meta: { changes: Number(db.prepare(sql).run(...params).changes) } };
     },
   });
@@ -4138,18 +4139,54 @@ describe("ADE Cloud iPhone minutes", () => {
     expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe(outcome);
   });
 
+  /** A signed NoMac delivery saying phone `id` (labelled for OWNER) is ready, started at `startedAt`. */
+  async function nomacReady(id: string, startedAt: number): Promise<Response> {
+    harness.env.NOMAC_WEBHOOK_SECRET = "whsec_test";
+    const at = (ms: number) => new Date(ms).toISOString();
+    const raw = JSON.stringify({ id: `evt_${id}`, type: "phone.ready", data: { session: { id, state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(startedAt), ready_at: at(startedAt) } } });
+    const t = Math.floor(clock / 1000);
+    const v1 = createHmac("sha256", "whsec_test").update(`${t}.${raw}`).digest("hex");
+    return handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
+  }
+
   it.each([
-    // A start whose answer was lost, recovered after the switch moved: billed as it started.
-    { name: "testers then all: a tester's phone started under testers counts in credits", flips: [["testers", -2 * HOUR], ["all", HOUR]], listed: true, expected: true },
-    { name: "off then all after the start: it keeps iPhone minutes", flips: [["off", -2 * HOUR], ["all", HOUR]], listed: false, expected: false },
-    { name: "all, then off after the start: it counts in credits", flips: [["all", -2 * HOUR], ["off", HOUR]], listed: false, expected: true },
-    { name: "never set: iPhone minutes", flips: [], listed: true, expected: false },
-  ] as const)("a recovered phone is billed by the switch at its start: $name", async ({ flips, listed, expected }) => {
+    // A start whose answer was lost, its phone found later by NoMac's webhook: billed as that start decided,
+    // whatever the switch or the beta list say by then.
+    { name: "a tester's start under testers, then taken off the list: credits", start: 1, listedLater: false, flips: [["testers", -2 * HOUR]], expected: 1 },
+    { name: "a start on iPhone minutes, then on the list under all: iPhone minutes", start: 0, listedLater: true, flips: [["testers", -2 * HOUR], ["all", -1 * 60_000]], expected: 0 },
+    // No record of its start (one from before it was kept): the switch in force when it started, from the change log.
+    { name: "no start record, all at its start and off since: credits", start: null, listedLater: false, flips: [["all", -2 * HOUR], ["off", -1 * 60_000]], expected: 1 },
+    { name: "no start record, off at its start and all since: iPhone minutes", start: null, listedLater: false, flips: [["off", -2 * HOUR], ["all", -1 * 60_000]], expected: 0 },
+  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, listedLater, flips, expected }) => {
+    seedPhoneAccount(start == null ? {} : { phone_start_credits: start, phone_start_credits_at: clock - 10 * 60_000 });
+    harness.env.CLOUD_CREDITS = "all";
+    flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
+    harness.insert("cloud_settings", { key: "cloud_credits", value: flips.at(-1)?.[0] ?? "off", updated_at: clock - 60_000 });
+    if (listedLater) harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock - 60_000 });
+    expect((await nomacReady("ses_lost", clock - 9 * 60_000)).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(expected);
+  });
+
+  it("a new phone after the last one ended is billed by what reaches the account now", async () => {
     seedPhoneAccount();
     harness.env.CLOUD_CREDITS = "all";
-    if (listed) harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock - DAY });
-    flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
-    expect(await creditsAtStart(harness.env, OWNER, clock)).toBe(expected);
+    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock - HOUR });
+    // Started on iPhone minutes before the flip; NoMac now says it has ended.
+    seedPhone("ses_prev", 0, clock - 30 * 60_000, "live", false);
+    const at = (ms: number) => new Date(ms).toISOString();
+    const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const fresh = { id: "ses_next", state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(clock), ready_at: at(clock) };
+    const inner = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/simulator/sessions/ses_prev")) return reply(200, { session: { id: "ses_prev", state: "ended", label: `ade:${OWNER}`, device: "iphone", created_at: at(clock - 30 * 60_000), ended_at: at(clock - 60_000), end_reason: "idle" } });
+      if (url === "https://nomac.app/api/v1/simulator/sessions" && init?.method === "POST") return reply(201, { session: fresh, reused: false });
+      if (url.endsWith("/simulator/sessions/ses_next/token")) return reply(200, { token: "nmp_test", expires_at: at(clock + HOUR) });
+      if (url.endsWith("/simulator/sessions/ses_next")) return reply(200, { session: fresh });
+      return inner(input, init);
+    });
+    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_next'").credits).toBe(1);
   });
 
   it("a period's turn charges a running credits phone's unbilled minutes to the period that ends, once", async () => {

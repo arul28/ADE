@@ -1,5 +1,5 @@
 import { authenticate } from "../callerToken";
-import { unsettledPhoneMilli } from "./credits";
+import { liveUsedWithPhones } from "./credits";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
@@ -437,7 +437,7 @@ async function getAccountContext(env: CloudEnv, userId: string, now: number): Pr
   const account = await loadAccount(env, userId, now);
   const computers = await listComputers(env, userId);
   // A running credits phone's unbilled minutes are spent already: a computer can't use them too.
-  const liveUsed = liveUsedMilli(account, computers, now) + await unsettledPhoneMilli(env, account, now);
+  const liveUsed = await liveUsedWithPhones(env, account, computers, now);
   // A Small that uses hours on Free (no sponsored cards, `smallUsesNoHours`) stops at 0 like any other size.
   const smallFree = await smallUsesNoHours(env, account);
   return {

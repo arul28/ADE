@@ -278,6 +278,9 @@ export type AccountRow = {
   /** A phone start whose answer was lost: the provider and when (migration 0057, `heldToUnsureStart`). */
   phone_start_unsure?: string | null;
   phone_start_unsure_at?: number | null;
+  /** The latest phone start's billing (1 credits, 0 iPhone minutes) and when it began (migration 0060). */
+  phone_start_credits?: number | null;
+  phone_start_credits_at?: number | null;
   /** When the ADE account was created (Clerk), for the invite code's 30-day window. */
   account_created_at: number | null;
   /** Unused since Pricing v2 (Cloud 7's old plan terms, migration 0033): every new period writes 0. */

@@ -22,7 +22,7 @@
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import type { PhoneRow } from "./phones";
 import { heldUnder, isCloudSettingValue, readCloudSettings, type CloudSettings } from "./settings";
-import type { AccountRow, CloudEnv } from "./store";
+import { liveUsedMilli, type AccountRow, type CloudEnv, type ComputerRow } from "./store";
 
 /** What a running iPhone uses: one credit (a thousand thousandths) a minute. */
 export const PHONE_CREDIT_MILLI_PER_MINUTE = 1000;
@@ -112,6 +112,18 @@ export async function unsettledPhoneMilliByUser(env: Pick<CloudEnv, "DB">, accou
   const rows = await env.DB.prepare(`${LIVE_CREDIT_PHONES_SQL} and user_id in (select value from json_each(?))`)
     .bind(JSON.stringify(accounts.map((account) => account.user_id))).all<CreditPhone>();
   return unsettledOf(rows.results ?? [], accounts, now);
+}
+
+/**
+ * The account's hours used now (`liveUsedMilli` of `computers`) with its
+ * running credits phones' unsettled use, `used_milli` and the phones' marks
+ * from one read (`accountWithUnsettledPhones`), so a phone's save between
+ * two reads is counted once. `account` is the caller's (already loaded and
+ * rolled); its row is read again only for those two numbers.
+ */
+export async function liveUsedWithPhones(env: Pick<CloudEnv, "DB">, account: AccountRow, computers: ComputerRow[], now: number): Promise<number> {
+  const read = await accountWithUnsettledPhones(env, account.user_id, now);
+  return liveUsedMilli(read.account ?? account, computers, now) + read.unsettledMilli;
 }
 
 /** One account's `unsettledPhoneMilliByUser`. */

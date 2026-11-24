@@ -262,11 +262,33 @@ async function updatePhone(env: CloudEnv, session: PhoneSession, now: number): P
     return { userId: known.user_id, wasEnded: known.state === "ended" };
   }
   const userId = userIdOfLabel(session.label);
-  const account = userId ? await env.DB.prepare("select plan, stripe_status from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<Pick<AccountRow, "plan" | "stripe_status">>() : null;
+  const account = userId
+    ? await env.DB.prepare("select plan, stripe_status, phone_start_credits, phone_start_credits_at from cloud_accounts where user_id = ? and deleted_at is null")
+      .bind(userId).first<Pick<AccountRow, "plan" | "stripe_status" | "phone_start_credits" | "phone_start_credits_at">>()
+    : null;
   if (!userId || !account) return null;
-  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await creditsAtStart(env, userId, isoMs(session.created_at) ?? now) }))) return null;
+  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await recoveredCredits(env, userId, account, isoMs(session.created_at) ?? now) }))) return null;
   logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
   return { userId, wasEnded: false };
+}
+
+/** How far a provider's clock may sit before ours: a phone from the latest start may say it began a little earlier. */
+const START_CLOCK_SLACK_MS = 5 * 60_000;
+
+/**
+ * Whether a phone found with no row counts in credits: what the start that
+ * made it decided (saved with its claim), when it is from the account's
+ * latest start; else (one from before that record) the switch at its start.
+ */
+async function recoveredCredits(
+  env: CloudEnv,
+  userId: string,
+  account: Pick<AccountRow, "phone_start_credits" | "phone_start_credits_at">,
+  startedAt: number,
+): Promise<boolean> {
+  const at = account.phone_start_credits_at;
+  if (at != null && account.phone_start_credits != null && startedAt >= at - START_CLOCK_SLACK_MS) return account.phone_start_credits === 1;
+  return creditsAtStart(env, userId, startedAt);
 }
 
 /** The phones an account started in `[since, before)`. Billing counts only their settled minutes (`settledPhoneMinutes`). */
@@ -629,7 +651,8 @@ async function phoneContext(env: CloudEnv, userId: string, now: number): Promise
   const newest = await env.DB.prepare("select phone_id from cloud_phones where user_id = ? order by created_at desc limit 1").bind(userId).first<{ phone_id: string }>();
   // A running phone is held to what it started on (minutes or credits), whatever the switch says now; a
   // new one, to what reaches the account now. Read after the live phone's save: its new minutes are in by then.
-  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null, counts: liveRow ? liveRow.credits === 1 : undefined });
+  const stillLive = liveRow != null && (live != null || unreadLiveRowId != null);
+  const credits = await phoneCreditsFor(env, account, now, { reload: liveRow != null, counts: stillLive ? liveRow.credits === 1 : undefined });
   return { account, label, usage: phoneUsageOf(env, account, rows, now, false, credits), live, lastPhoneId: newest?.phone_id ?? null, liveRowId: unreadLiveRowId, rows, credits };
 }
 
@@ -832,7 +855,10 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     if (!(await stopPhone(env, userId, context.live.session.id, now, "period_changed"))) {
       return fail("phone_unavailable", "Your ADE Cloud iPhone from last period couldn't be stopped yet. Try again in a moment.", 503);
     }
-    context.live = null;
+    // The new phone is held to what reaches the account now, not to the stopped one's billing.
+    const fresh = await phoneContext(env, userId, now);
+    if (fresh instanceof Response) return fresh;
+    context = { ...fresh, live: null };
   }
   let session = context.live?.session ?? null;
   let reused = Boolean(session);
@@ -894,8 +920,10 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
     const startingElsewhere = (): Response => fail("phone_starting", "Your ADE Cloud iPhone is starting. Try again in a moment.", 409);
-    const claimed = await env.DB.prepare("update cloud_accounts set phone_start_claim = ? where user_id = ? and (phone_start_claim is null or phone_start_claim < ?)")
-      .bind(now, userId, now - PHONE_START_CLAIM_MS).run();
+    // With the claim, what this start decided about billing: a phone found later with no row is billed so.
+    const claimed = await env.DB.prepare(`update cloud_accounts set phone_start_claim = ?, phone_start_credits = ?, phone_start_credits_at = ?
+      where user_id = ? and (phone_start_claim is null or phone_start_claim < ?)`)
+      .bind(now, context.credits != null ? 1 : 0, now, userId, now - PHONE_START_CLAIM_MS).run();
     if ((claimed.meta?.changes ?? 0) !== 1) return startingElsewhere();
     let begun: Awaited<ReturnType<typeof startOnRoute>>;
     try {

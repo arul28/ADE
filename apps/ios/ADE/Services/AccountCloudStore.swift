@@ -734,6 +734,11 @@ final class AccountCloudStore: ObservableObject {
     providerSaves &+= 1
     savedProvider = provider
     savedProviderPending = true
+    // The server took it: every screen shows it now, even if the reread below fails.
+    if var current = account, let phone = current.phone, phone.providerChoice != provider {
+      current.phone = CloudPhoneAccount.Phone(access: phone.access, creditsUsedMilli: phone.creditsUsedMilli, providerChoice: provider)
+      account = current
+    }
     let saves = sponsoredSaves
     let pickSaves = providerSaves
     guard var next = await readAccount(client), generation == accountGeneration else { return nil }
