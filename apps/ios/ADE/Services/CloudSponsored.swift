@@ -406,6 +406,9 @@ final class CloudSponsoredStore: ObservableObject {
   @Published private(set) var holder: String?
   /// Cards answered this run, by `chatId:turnId`.
   @Published private(set) var ads: [String: CloudSponsoredAd] = [:]
+  /// The format each turn's card was asked in: a card shows only in that
+  /// format, since its placement (and the inline length limit) came with it.
+  @Published private(set) var askedFormats: [String: CloudSponsoredFormat] = [:]
   /// Turns whose card the person hid this run.
   @Published private(set) var hiddenTurns: Set<String> = []
   /// Sponsored picks (`sponsored_pick` cards, by card id) folded with Not now this run.
@@ -466,6 +469,7 @@ final class CloudSponsoredStore: ObservableObject {
       if answerOrder.count > Self.answerLimit {
         let oldest = answerOrder.removeFirst()
         answers[oldest] = nil
+        askedFormats[oldest] = nil
       }
     }
     let resets = resetCount
@@ -487,6 +491,16 @@ final class CloudSponsoredStore: ObservableObject {
     return true
   }
 
+  /// The format a turn's first ask uses; a later ask for that turn keeps it.
+  func noteAsked(turnKey: String, format: CloudSponsoredFormat) {
+    if askedFormats[turnKey] == nil { askedFormats[turnKey] = format }
+  }
+
+  /// Whether this turn's card may draw in `format`: asked in it, or never asked here (a fixture).
+  func shows(turnKey: String, in format: CloudSponsoredFormat) -> Bool {
+    (askedFormats[turnKey] ?? format) == format
+  }
+
   func forgetAnswer(turnKey: String) {
     answers[turnKey] = nil
     answerOrder.removeAll { $0 == turnKey }
@@ -498,9 +512,18 @@ final class CloudSponsoredStore: ObservableObject {
     let key = Self.turnKey(chatId: chatId, turnId: turnId)
     guard !hiddenTurns.contains(key) else { return }
     hiddenTurns.insert(key)
+    // The card goes at once; the report is retried a few times (the server counts a reply once).
     Task {
-      guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return }
-      try? await client.sponsoredHide(chatId: chatId, turnId: turnId)
+      for delay in [0, 5, 30] as [UInt64] {
+        if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
+        guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { continue }
+        do {
+          try await client.sponsoredHide(chatId: chatId, turnId: turnId)
+          return
+        } catch {
+          cloudSponsoredLog.notice("sponsored hide report failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+        }
+      }
     }
   }
 
@@ -615,6 +638,7 @@ final class CloudSponsoredStore: ObservableObject {
     answerOrder = []
     retriedNotCloud = []
     ads = [:]
+    askedFormats = [:]
     hiddenTurns = []
     foldedPicks = []
     holder = nil

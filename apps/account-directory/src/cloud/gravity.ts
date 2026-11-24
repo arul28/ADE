@@ -233,11 +233,13 @@ async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: Clou
   if (settings.gravity_format !== "split") return settings.gravity_format;
   if (row?.source === "split" && isSponsoredFormat(row.format)) return row.format;
   const format = splitArm(userId, settings.gravity_format_split);
-  if (assign) {
-    await env.DB.prepare("insert into cloud_sponsored_formats (user_id, format, source, set_at) values (?, ?, 'split', ?) on conflict (user_id) do nothing")
-      .bind(userId, format, now).run();
-  }
-  return format;
+  if (!assign) return format;
+  const written = await env.DB.prepare("insert into cloud_sponsored_formats (user_id, format, source, set_at) values (?, ?, 'split', ?) on conflict (user_id) do nothing")
+    .bind(userId, format, now).run();
+  if ((written.meta?.changes ?? 0) > 0) return format;
+  // Another write got there first (the owner's choice, or another screen's split): that one holds.
+  const saved = await env.DB.prepare("select format from cloud_sponsored_formats where user_id = ?").bind(userId).first<{ format: string }>();
+  return isSponsoredFormat(saved?.format) ? saved.format : format;
 }
 
 /** The split's arms in the order its weights are written: under the reply, inline, above the prompt box. */
@@ -585,14 +587,15 @@ const PENDING_TURN = "pending";
 
 /**
  * The reply's saved answer. One asked for another placement (the reply opened
- * on another surface, or the format changed) is no card here: its tracking
- * links count for that placement, and the inline length limit may not hold.
+ * on another surface, the format changed, or it was saved before placements
+ * were) is no card here: its tracking links count for that placement, and
+ * the inline length limit may not hold.
  */
 async function readTurn(env: GravityEnv, userId: string, chatId: string, turnId: string, placementId: string, now: number): Promise<CloudSponsoredAdAnswer | null> {
   const row = await env.DB.prepare("select ad_json, reason, created_at, placement_id from cloud_sponsored_turns where user_id = ? and chat_id = ? and turn_id = ?")
     .bind(userId, chatId, turnId).first<{ ad_json: string | null; reason: string | null; created_at: number; placement_id: string | null }>();
   if (!row || now - row.created_at > TURN_TTL_MS) return null;
-  if (row.placement_id && row.placement_id !== placementId) return { ad: null, reason: "no_fill" };
+  if (row.placement_id !== placementId) return { ad: null, reason: "no_fill" };
   if (!row.ad_json) {
     const reason = !row.reason || row.reason === PENDING_TURN ? "no_fill" : row.reason as CloudSponsoredNoAdReason;
     return { ad: null, reason };
@@ -988,7 +991,7 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
   const lines = [
     `Sponsored (${mode}${live ? ", live" : ", test ads"}): ${n("ad_request")} ad requests, ${n("ad_fill")} filled; ${n("index_request")} Index searches, ${n("index_pick")} picks.`,
   ];
-  const byFormat = SPLIT_ARMS.filter((format) => n(`ad_request:${format}`) > 0)
+  const byFormat = SPLIT_ARMS.filter((format) => n(`ad_request:${format}`) + n(`ad_fill:${format}`) + n(`ad_hide:${format}`) > 0)
     .map((format) => `${FORMAT_WORDS[format]} ${n(`ad_request:${format}`)} asked, ${n(`ad_fill:${format}`)} filled, ${n(`ad_hide:${format}`)} hidden`);
   if (byFormat.length) lines.push(`Formats (${(await readCloudSettings(env)).gravity_format}): ${byFormat.join("; ")}.`);
   if (!env.GRAVITY_API_KEY?.trim()) return lines;

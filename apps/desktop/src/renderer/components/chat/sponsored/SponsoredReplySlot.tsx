@@ -43,6 +43,8 @@ const INLINE_HOST_WAIT_MS = 1_500;
 const answers = new Map<string, Promise<CloudSponsoredAdAnswer>>();
 const viewedAds = new Set<string>();
 const hiddenTurns = new Set<string>();
+/** Replies whose inline card went under the reply (no end to draw into): kept for the run, so a remount asks and draws the same. */
+const belowReplyTurns = new Set<string>();
 
 function askOnce(key: string, ask: () => Promise<CloudSponsoredAdAnswer>): Promise<CloudSponsoredAdAnswer> {
   const known = answers.get(key);
@@ -129,11 +131,16 @@ function SponsoredReplySlotOn({
   // reply, and stays there even if an end mounts later (the card was asked for that placement).
   const [noInlineHost, setNoInlineHost] = useState<string | null>(null);
   useEffect(() => {
-    if (wantedPlace !== "inline" || target || !turnKey) return;
-    const timer = window.setTimeout(() => setNoInlineHost(turnKey), INLINE_HOST_WAIT_MS);
+    if (wantedPlace !== "inline" || target || !turnKey || belowReplyTurns.has(turnKey)) return;
+    const timer = window.setTimeout(() => {
+      belowReplyTurns.add(turnKey);
+      if (belowReplyTurns.size > ANSWER_CACHE_LIMIT) belowReplyTurns.delete(belowReplyTurns.values().next().value as string);
+      setNoInlineHost(turnKey);
+    }, INLINE_HOST_WAIT_MS);
     return () => window.clearTimeout(timer);
   }, [wantedPlace, target, turnKey]);
-  const place = wantedPlace === "inline" && noInlineHost === turnKey ? null : wantedPlace;
+  const fellBack = turnKey !== null && (noInlineHost === turnKey || belowReplyTurns.has(turnKey));
+  const place = wantedPlace === "inline" && fellBack ? null : wantedPlace;
   const shownFormat: CloudSponsoredFormat = place ? format : "below_reply";
   const targetReady = place === null || target !== null;
 
@@ -219,7 +226,7 @@ function SponsoredReplySlotOn({
     <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
       <div aria-hidden className="h-px w-full" />
       {holds && showing === "consent" ? <SponsoredConsentCard smallNeedsCards={smallNeedsCards} format={shownFormat} /> : null}
-      {card && target ? createPortal(card, target) : card}
+      {card && place && target ? createPortal(card, target) : card}
     </div>
   );
 }

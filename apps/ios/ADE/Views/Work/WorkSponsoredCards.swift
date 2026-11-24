@@ -150,6 +150,8 @@ struct WorkSponsoredReplySlot: View {
   /// The format the card is drawn (and asked) in: the account's, or under
   /// the reply when the chat has no place for it.
   private var shownFormat: CloudSponsoredFormat {
+    // A turn already asked for stays in the format it was asked in.
+    if let asked = store.askedFormats[turnKey] { return asked }
     switch sponsored?.format ?? .belowReply {
     case .belowReply: return .belowReply
     case .abovePrompt: return dockAvailable ? .abovePrompt : .belowReply
@@ -240,6 +242,7 @@ struct WorkSponsoredReplySlot: View {
 @MainActor
 private func workSponsoredAsk(instanceId: String, sessionId: String, turn: CloudSponsoredTurn, format: CloudSponsoredFormat, store: CloudSponsoredStore) async {
   let key = CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turn.turnId)
+  store.noteAsked(turnKey: key, format: format)
   let ask: @MainActor () async -> CloudSponsoredAdAnswer = {
     guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return .unavailable }
     // Apple's tracking prompt, once, before the first card; the card is asked for whatever the answer.
@@ -331,7 +334,7 @@ struct WorkSponsoredDockSlot: View {
     // A newly finished reply replaces the kept card with its own, or with none.
     .task(id: "\(turnKey ?? "")|\(turnKey.flatMap { store.ads[$0]?.id } ?? "")") {
       guard let turn, let turnKey else { return }
-      if let ad = store.ads[turnKey] {
+      if let ad = store.ads[turnKey], store.shows(turnKey: turnKey, in: .abovePrompt) {
         kept = WorkSponsoredPlacedAd(turnKey: turnKey, turnId: turn.turnId, ad: ad, format: .abovePrompt)
       } else if kept?.turnKey != turnKey {
         kept = nil
