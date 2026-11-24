@@ -11,7 +11,8 @@
   background: color-mix(in srgb, var(--color-fg) 2%, transparent);
   color: var(--color-fg);
   font-size: 12.5px;
-  max-width: 34rem;
+  /* As wide as the chat column, so it lines up with the prompt box below. */
+  width: 100%;
 }
 .ade-sponsored-head {
   display: flex;
@@ -96,6 +97,8 @@
   margin-top: 4px;
   flex-wrap: wrap;
 }
+/* The ad's call to action sits on the right, under the hide button. */
+.ade-sponsored-actions--end { justify-content: flex-end; }
 .ade-sponsored-cta {
   display: inline-flex;
   align-items: center;

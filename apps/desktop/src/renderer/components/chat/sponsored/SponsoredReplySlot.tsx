@@ -242,7 +242,7 @@ function SponsoredAdCard({ ad, test, onHide }: { ad: CloudSponsoredAd; test: boo
         {ad.title}
       </button>
       <p className="ade-sponsored-text">{ad.text}</p>
-      <div className="ade-sponsored-actions">
+      <div className="ade-sponsored-actions ade-sponsored-actions--end">
         <button type="button" className="ade-sponsored-cta" onClick={open}>
           {ad.cta ?? "Learn more"}
           <ArrowUpRight size={12} weight="bold" aria-hidden />
