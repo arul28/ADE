@@ -20,6 +20,8 @@ Accounts (an email, or a Clerk user id that starts with user_):
   phone <account> <nomac|revyl|both|off> on the ADE Cloud iPhone's beta list with that provider
                                          (both: the default provider first, then the other), or off it; not a test
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
+  ad-format <account> <below_reply|above_prompt|inline|switch>
+                                         where this account's sponsored cards show (switch: gravity_format's)
   reset <account>                        back to the real plan: every test field cleared
 
   Options for act-as and limits: --days N (how long the test lasts, default 7, at most 90),
@@ -27,7 +29,8 @@ Accounts (an email, or a Clerk user id that starts with user_):
 
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
-  set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on
+  set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
+                                         gravity_format below_reply|above_prompt|inline|split
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
 
@@ -122,7 +125,7 @@ function printAccount({ account }) {
       : "  Test:       none",
     `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list: ${account.phone.listed}` : " · not on the beta list"} · ${account.phone.usedMinutes} of ${account.phone.minutes} minutes used${account.phone.minutes !== account.phone.planMinutes ? ` (plan: ${account.phone.planMinutes})` : ""}${account.phone.extraOn ? " · extra minutes on" : ""}`,
     `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} hours (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses hours" : "unlimited"}`,
-    `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"}`,
+    `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"} · format ${account.sponsored.format ?? "the switch's"}`,
   ];
   if (account.log.length) {
     lines.push("  Changes:");
@@ -169,6 +172,12 @@ switch (command) {
   case "phone": {
     if (!["nomac", "revyl", "both", "off"].includes(rest[1])) fail(`phone takes nomac, revyl, both or off.\n\n${USAGE}`);
     printAccount(await call("account", { ...accountRef(rest[0]), phone: rest[1] }));
+    break;
+  }
+  case "ad-format": {
+    const formats = ["below_reply", "above_prompt", "inline", "switch"];
+    if (!formats.includes(rest[1])) fail(`ad-format takes ${formats.join(", ")}.\n\n${USAGE}`);
+    printAccount(await call("account", { ...accountRef(rest[0]), adFormat: rest[1] === "switch" ? null : rest[1] }));
     break;
   }
   case "tester": {

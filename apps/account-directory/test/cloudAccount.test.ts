@@ -5195,14 +5195,14 @@ describe("sponsored cards", () => {
     setting("gravity_ads", "off");
     expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toBeUndefined();
     setting("gravity_ads", "all");
-    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true, smallNeedsCards: true });
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "granted", test: true, smallNeedsCards: true, format: "below_reply" });
     // A no on one machine is the answer on every machine.
     expect(await (await send(OWNER, "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE })).json()).toEqual({ ok: true });
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(harness.row("select consent, email_hash from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "declined", email_hash: null });
     // A no keeps nothing of where the person watched from.
     expect(harness.rows("select * from cloud_sponsored_viewers")).toEqual([]);
-    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true, smallNeedsCards: true });
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true, smallNeedsCards: true, format: "below_reply" });
   });
 
   const owner = (path: string, body: Row, bearer = "owner-token-test") => handleCloudRequest(new Request(`https://directory.test/cloud/owner/${path}`, {

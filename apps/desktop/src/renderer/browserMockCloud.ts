@@ -618,6 +618,11 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "small") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true }, catalog: smallRate(null) };
   }
+  // `&mockSponsoredFormat=below_reply|above_prompt|inline`: where the card shows (the server's `format`).
+  const formatParam = param("mockSponsoredFormat");
+  if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
+    state = { ...state, sponsored: { ...state.sponsored, format: formatParam } };
+  }
   // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
   // (once per tab, as a real checkout coming back is seen once).
   if (scenario === "upgraded") {

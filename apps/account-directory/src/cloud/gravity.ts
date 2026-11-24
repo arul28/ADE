@@ -5,14 +5,18 @@ import {
   isGravityUrl,
   CLOUD_SPONSORED_CONSENTS,
   CLOUD_SPONSORED_DEVICE_TYPES,
+  CLOUD_SPONSORED_FORMATS,
   CLOUD_SPONSORED_MESSAGE_MAX_CHARS,
   CLOUD_SPONSORED_NEED_MAX_CHARS,
   CLOUD_SPONSORED_OSES,
+  CLOUD_SPONSORED_SURFACES,
   CLOUD_SPONSORED_TRACKING,
   type CloudSponsoredAd,
   type CloudSponsoredAdAnswer,
   type CloudSponsoredConsent,
   type CloudSponsoredDevice,
+  type CloudSponsoredFormat,
+  type CloudSponsoredSurface,
   type CloudSponsoredIndexAnswer,
   type CloudSponsoredMessage,
   type CloudSponsoredNoAdReason,
@@ -75,10 +79,8 @@ export type GravityEnv = CloudEnv & {
   GRAVITY_ADS?: string;
   /** `1` lets the `gravity_live` setting turn on real ads and real Index picks. Anything else: Gravity's test ads only. */
   GRAVITY_LIVE?: string;
-  /** Countries (ISO alpha-2, comma-separated) where cards show. Default `US,CA`. */
+  /** Countries (ISO alpha-2, comma-separated) where cards show. Default `US,CA,GB,AU`. */
   GRAVITY_COUNTRIES?: string;
-  /** Gravity's id of the reply placement. Default `ade_reply`. */
-  GRAVITY_PLACEMENT_ID?: string;
   /** Live requests a UTC day, ads and Index together, before ADE stops asking. Default 900 (self-serve allows 1,000). */
   GRAVITY_DAILY_LIMIT?: string;
 };
@@ -102,6 +104,18 @@ const ALL = "*";
 const INDEX_CONTEXT_MESSAGES = 6;
 /** Where Gravity fills real ads (Gravity, 2026-11-24): the US, Canada, the UK and Australia. */
 const DEFAULT_COUNTRIES = ["US", "CA", "GB", "AU"];
+
+/**
+ * Gravity's placement for each format, and the slug part of its id: each
+ * surface and format is its own registered placement, `ade-<surface>-<slug>`
+ * (registered 2026-11-24 with Gravity's placements API), so Gravity reports
+ * each one apart. An inline sentence keeps its ad text short.
+ */
+const PLACEMENTS: Record<CloudSponsoredFormat, { placement: "below_response" | "bottom_page" | "inline_response"; slug: string; maxChars?: number }> = {
+  below_reply: { placement: "below_response", slug: "below" },
+  above_prompt: { placement: "bottom_page", slug: "above-prompt" },
+  inline: { placement: "inline_response", slug: "inline", maxChars: 120 },
+};
 
 type Mode = CloudSettingValue<"gravity_ads">;
 type Switches = { mode: Mode; live: boolean };
@@ -187,7 +201,7 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
   const switches = await gravitySwitches(env, settings);
   const reason = await blockedReason(env, account, country, switches);
   if (reason === "off") return undefined;
-  const consent = await readConsent(env, account.user_id);
+  const [consent, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings)]);
   // A no is asked again once it is SPONSORED_REASK_MS old, or when it came
   // before the ad switch last changed (when Small began to need cards). Until
   // the person answers, it still counts as a no: no cards, Small uses hours.
@@ -199,9 +213,34 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     ads: reason == null,
     consent: answer,
     test: !switches.live,
+    format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
     ...(shownPlanIdOf(account) === "free" ? { smallNeedsCards: true } : {}),
   };
+}
+
+/**
+ * Where the account's cards show: the owner's choice for it
+ * (`cloud_sponsored_formats`), else the `gravity_format` switch. `split` holds
+ * each account to one format by its id, the same on every machine and every
+ * day, so a person never sees the formats change under them.
+ */
+async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: CloudSettings): Promise<CloudSponsoredFormat> {
+  const set = await env.DB.prepare("select format from cloud_sponsored_formats where user_id = ?").bind(userId).first<{ format: string }>();
+  if (isSponsoredFormat(set?.format)) return set.format;
+  if (settings.gravity_format !== "split") return settings.gravity_format;
+  let hash = 0x811c9dc5;
+  for (const char of `ade-ad-format:${userId}`) hash = Math.imul(hash ^ char.charCodeAt(0), 0x01000193) >>> 0;
+  return CLOUD_SPONSORED_FORMATS[hash % CLOUD_SPONSORED_FORMATS.length]!;
+}
+
+export const isSponsoredFormat = (value: unknown): value is CloudSponsoredFormat =>
+  typeof value === "string" && (CLOUD_SPONSORED_FORMATS as readonly string[]).includes(value);
+
+/** The app that asks for a card; an older client names none, and its device says which. */
+function surfaceOf(value: unknown, device: CloudSponsoredDevice): CloudSponsoredSurface {
+  if (typeof value === "string" && (CLOUD_SPONSORED_SURFACES as readonly string[]).includes(value)) return value as CloudSponsoredSurface;
+  return device.os === "ios" ? "ios" : "desktop";
 }
 
 /* ---- Free's Small computers: unlimited with sponsored cards ---- */
@@ -606,6 +645,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
 
   const live = switches.live;
   const ip = clientIp(request);
+  const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
+  const slot = PLACEMENTS[format];
   const hashedEmail = hashedEmailFor(device, consent.email_hash);
   const result = await gravityAds(
     {
@@ -624,7 +665,11 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
       headers: ip ? { "x-forwarded-for": ip } : {},
     },
     messages,
-    [{ placement: "below_response", placement_id: env.GRAVITY_PLACEMENT_ID?.trim() || "ade_reply" }],
+    [{
+      placement: slot.placement,
+      placement_id: `ade-${surfaceOf(body.surface, device)}-${slot.slug}`,
+      ...(slot.maxChars ? { max_ad_text_chars: slot.maxChars } : {}),
+    }],
     { apiKey: env.GRAVITY_API_KEY, production: live, supportsSpec: false, timeoutMs: REQUEST_TIMEOUT_MS },
   ).catch(() => null);
   if (!result || (result.status !== 200 && result.status !== 204 && result.status !== 202)) {

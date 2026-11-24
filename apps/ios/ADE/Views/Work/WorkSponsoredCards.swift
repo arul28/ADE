@@ -14,11 +14,28 @@ import UIKit
 
 // MARK: - Where the slot is on screen
 
+/// A card a chat's slot answered for a format drawn away from the slot: the
+/// dock above the prompt box, or the end of the reply.
+struct WorkSponsoredPlacedAd: Equatable {
+  let turnKey: String
+  let turnId: String
+  let ad: CloudSponsoredAd
+  let format: CloudSponsoredFormat
+
+  /// Changes whenever another card (or format) is placed.
+  var key: String { "\(turnKey)|\(ad.id)|\(format.rawValue)" }
+}
+
 /// Where the place under a chat's last reply sits in the transcript, from the
 /// transcript's own geometry (`WorkChatTranscriptGeometry`): a hosted cell is
 /// not told when its scroll view moves. The slot is the row just above the
 /// bottom gutter, so its place follows from the distance to the bottom.
-/// Held by the chat as `@State`, so a change redraws only the slot.
+/// Held by the chat as `@State`, so a change redraws only the sponsored views.
+///
+/// Also the hand-off between the one asker (`WorkSponsoredReplySlot`) and the
+/// two places it can draw into besides itself: the slot publishes the card
+/// (`placed`), and the dock above the prompt box (`WorkSponsoredDockSlot`) or
+/// the reply's end (`WorkSponsoredInlineOutlet`) draws it.
 @MainActor
 final class WorkSponsoredSlotModel: ObservableObject {
   /// Some of the slot is on screen: a card may be asked for.
@@ -27,11 +44,29 @@ final class WorkSponsoredSlotModel: ObservableObject {
   @Published private(set) var halfOnScreen = false
   /// The chat screen is on screen (not covered by a pushed screen or gone).
   @Published private(set) var chatVisible = false
+  /// The latest card answered for the dock or the reply's end. The dock keeps
+  /// it while the next turn runs; that turn's own card replaces it.
+  @Published private(set) var placed: WorkSponsoredPlacedAd?
+  /// The end of the reply the inline line goes at is on screen.
+  @Published private(set) var inlineOnScreen = false
+  /// At least half of the inline line is on screen: its view counts.
+  @Published private(set) var inlineHalfOnScreen = false
   /// The slot's own height, as it last drew. Not published: geometry reads it.
   var height: CGFloat = 0
+  /// The inline line's height, as it last drew (0 while it isn't drawn).
+  var inlineHeight: CGFloat = 0
+  /// The transcript row whose reply ends the finished turn, and that turn:
+  /// where an inline line goes. Set by the chat as it builds its rows (the
+  /// cells of that apply read it, and its geometry pass measures that row);
+  /// not published.
+  var inlineHost: (rowId: String, turnId: String)?
 
   func setChatVisible(_ visible: Bool) {
     if chatVisible != visible { chatVisible = visible }
+  }
+
+  func place(_ next: WorkSponsoredPlacedAd) {
+    if placed != next { placed = next }
   }
 
   #if DEBUG
@@ -46,29 +81,51 @@ final class WorkSponsoredSlotModel: ObservableObject {
   /// bottom. `tail`: the gutter row under the slot. `visibleHeight`: the
   /// transcript between the header and the composer.
   func update(distanceFromBottom: CGFloat, tail: CGFloat, visibleHeight: CGFloat) {
-    let height = max(1, self.height)
-    // Measured from the visible bottom, down positive.
-    let bottom = distanceFromBottom - tail
+    let next = Self.visibility(bottom: distanceFromBottom - tail, height: height, visibleHeight: visibleHeight)
+    if onScreen != next.onScreen { onScreen = next.onScreen }
+    if halfOnScreen != next.half { halfOnScreen = next.half }
+  }
+
+  /// The inline line's place: `below` is how far the content's end is below
+  /// the line's bottom edge (nil while its row isn't in the transcript).
+  func updateInline(distanceFromBottom: CGFloat, below: CGFloat?, visibleHeight: CGFloat) {
+    let next = below.map {
+      Self.visibility(bottom: distanceFromBottom - $0, height: inlineHeight, visibleHeight: visibleHeight)
+    } ?? (onScreen: false, half: false)
+    if inlineOnScreen != next.onScreen { inlineOnScreen = next.onScreen }
+    if inlineHalfOnScreen != next.half { inlineHalfOnScreen = next.half }
+  }
+
+  /// `bottom`: the thing's bottom edge measured from the visible bottom, down positive.
+  private static func visibility(bottom: CGFloat, height measured: CGFloat, visibleHeight: CGFloat) -> (onScreen: Bool, half: Bool) {
+    let height = max(1, measured)
     let top = bottom - height
     let shown = max(0, min(0, bottom) - max(-visibleHeight, top))
-    let nextOnScreen = visibleHeight > 0 && top <= 0 && bottom >= -visibleHeight
-    let nextHalf = nextOnScreen && self.height > 1 && shown >= height * 0.5
-    if onScreen != nextOnScreen { onScreen = nextOnScreen }
-    if halfOnScreen != nextHalf { halfOnScreen = nextHalf }
+    let onScreen = visibleHeight > 0 && top <= 0 && bottom >= -visibleHeight
+    return (onScreen, onScreen && measured > 1 && shown >= height * 0.5)
   }
 }
 
 // MARK: - The slot under the last reply
 
-/// One sponsored card under a finished reply, or the one-time question.
+/// The one part that asks for a finished reply's sponsored card, in the
+/// account's format (`CloudSponsoredState.format`): it draws a card under the
+/// reply itself, or hands it to the dock above the prompt box or the reply's
+/// end (`WorkSponsoredSlotModel.placed`). Where the chat has no such place
+/// (a sign-in card stands in for the prompt box, no reply row to end), the
+/// card shows under the reply. The one-time question is always asked here.
 /// Asks only while the app is in front, the turn finished well (and in the
-/// last day), and the place under the reply is on screen; once per turn per
-/// app run. At most one card in the whole app (`CloudSponsoredStore.holder`).
+/// last day), and the card's place is on screen; once per turn per app run.
+/// At most one card in the whole app (`CloudSponsoredStore.holder`).
 struct WorkSponsoredReplySlot: View {
   let instanceId: String
   let sessionId: String
   let turn: CloudSponsoredTurn
   @ObservedObject var slot: WorkSponsoredSlotModel
+  /// The prompt box is on screen, so a docked card has its place.
+  var dockAvailable = false
+  /// The transcript row whose reply ends this turn, so an inline line has its place.
+  var inlineHostRowId: String? = nil
   @ObservedObject private var store = CloudSponsoredStore.shared
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
@@ -82,29 +139,50 @@ struct WorkSponsoredReplySlot: View {
   private var turnKey: String { CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turn.turnId) }
   private var sponsored: CloudSponsoredState? { accountStore.account?.sponsored }
 
+  /// The format the card is drawn (and asked) in: the account's, or under
+  /// the reply when the chat has no place for it.
+  private var shownFormat: CloudSponsoredFormat {
+    switch sponsored?.format ?? .belowReply {
+    case .belowReply: return .belowReply
+    case .abovePrompt: return dockAvailable ? .abovePrompt : .belowReply
+    case .inline: return inlineHostRowId != nil ? .inline : .belowReply
+    }
+  }
+
+  /// The card's place is on screen: the dock always is while the chat is.
+  private var seen: Bool {
+    switch shownFormat {
+    case .belowReply: return slot.onScreen
+    case .abovePrompt: return true
+    case .inline: return slot.inlineOnScreen
+    }
+  }
+
   private var wanted: Bool {
     guard let sponsored, sponsored.ads, sponsored.consent != CloudSponsoredState.declined else { return false }
     return turn.isFresh() && !store.hiddenTurns.contains(turnKey) && store.appActive && slot.chatVisible
   }
 
   /// Another sponsored unit (a pick card, another chat's card) holds the one place.
-  private var placeTaken: Bool { store.holder != nil && store.holder != sessionId }
+  private var placeTaken: Bool { !store.placeFree(forChat: sessionId) }
 
   private var showing: Showing? {
     guard wanted, let sponsored else { return nil }
+    // The question is always asked under the reply.
     if sponsored.consent == nil { return .consent }
     // A card shows, and holds the place, only while its spot is on screen.
-    if sponsored.granted, slot.onScreen, let ad = store.ads[turnKey] { return .ad(ad) }
+    if sponsored.granted, shownFormat == .belowReply, slot.onScreen, let ad = store.ads[turnKey] { return .ad(ad) }
     return nil
   }
 
   var body: some View {
     let showing = showing
+    let format = shownFormat
     VStack(alignment: .leading, spacing: 0) {
       if store.holder == sessionId {
         switch showing {
         case .consent:
-          WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true)
+          WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format)
         case .ad(let ad):
           WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
             store.hide(turnKey: turnKey)
@@ -116,9 +194,14 @@ struct WorkSponsoredReplySlot: View {
     }
     .frame(maxWidth: .infinity, minHeight: 1, alignment: .leading)
     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { slot.height = $0 }
-    .task(id: "\(turnKey)|\(sponsored?.granted == true)|\(wanted)|\(slot.onScreen)|\(placeTaken)") { await askIfWanted() }
+    .task(id: "\(turnKey)|\(sponsored?.granted == true)|\(wanted)|\(seen)|\(placeTaken)|\(format.rawValue)") { await askIfWanted() }
     .task(id: "\(showing != nil)|\(store.holder ?? "")") {
       if showing != nil { store.hold(sessionId) } else { store.release(sessionId) }
+    }
+    // The dock or the reply's end draws this turn's card.
+    .task(id: "\(turnKey)|\(format.rawValue)|\(store.ads[turnKey]?.id ?? "")") {
+      guard format != .belowReply, let ad = store.ads[turnKey] else { return }
+      slot.place(WorkSponsoredPlacedAd(turnKey: turnKey, turnId: turn.turnId, ad: ad, format: format))
     }
     .onDisappear { store.release(sessionId) }
     .accessibilityElement(children: .contain)
@@ -128,14 +211,15 @@ struct WorkSponsoredReplySlot: View {
   /// chat's copy yet) is asked once more ~12 s later, never more.
   private func askIfWanted() async {
     // No ask while another sponsored unit holds the one place.
-    guard sponsored?.granted == true, wanted, slot.onScreen, !placeTaken, store.ads[turnKey] == nil else { return }
+    guard sponsored?.granted == true, wanted, seen, !placeTaken, store.ads[turnKey] == nil else { return }
     let key = turnKey
+    let format = shownFormat
     let ask: @MainActor () async -> CloudSponsoredAdAnswer = { [instanceId, sessionId, turn] in
       guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return .unavailable }
       // Apple's tracking prompt, once, before the first card; the card is asked for whatever the answer.
       _ = await CloudSponsoredTracking.askOnce()
       do {
-        return try await client.sponsoredAd(instanceId: instanceId, chatId: sessionId, turn: turn, device: .current)
+        return try await client.sponsoredAd(instanceId: instanceId, chatId: sessionId, turn: turn, device: .current, format: format)
       } catch {
         cloudSponsoredLog.notice("sponsored ad ask failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
         return .unavailable
@@ -148,6 +232,108 @@ struct WorkSponsoredReplySlot: View {
       guard !Task.isCancelled, store.takeNotCloudRetry(turnKey: key) else { return }
       store.forgetAnswer(turnKey: key)
     }
+  }
+}
+
+/// Whether a card the slot placed may show now: the account still shows
+/// cards and said yes, the app is in front, the chat is on screen, and the
+/// person didn't hide that turn's card.
+@MainActor
+private func workSponsoredPlacedAllowed(_ placed: WorkSponsoredPlacedAd, slot: WorkSponsoredSlotModel, store: CloudSponsoredStore, account: AccountCloudStore) -> Bool {
+  guard let sponsored = account.account?.sponsored, sponsored.ads, sponsored.granted else { return false }
+  return store.appActive && slot.chatVisible && !store.hiddenTurns.contains(placed.turnKey)
+}
+
+// MARK: - The dock above the prompt box
+
+/// Directly above the prompt box: the latest finished reply's card, as one
+/// row as wide as the prompt box. It stays while the next turn runs and
+/// gives way to that reply's own card (or to nothing, when it gets none).
+/// Draws nothing (and takes no room) otherwise, and outside ADE Cloud chats.
+struct WorkSponsoredDockSlot: View {
+  /// The ADE Cloud lane computer of a chat that may show cards; nil elsewhere.
+  let instanceId: String?
+  let sessionId: String
+  /// A turn runs now: the previous reply's card stays.
+  let turnActive: Bool
+  /// The turn the slot asks for now (finished, fresh), or nil.
+  let finishedTurnId: String?
+  @ObservedObject var slot: WorkSponsoredSlotModel
+  @ObservedObject private var store = CloudSponsoredStore.shared
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+
+  private var placeId: String { CloudSponsoredStore.placeId(sessionId: sessionId, format: .abovePrompt) }
+
+  private var shown: WorkSponsoredPlacedAd? {
+    guard instanceId != nil, let placed = slot.placed, placed.format == .abovePrompt,
+          placed.turnKey.hasPrefix("\(sessionId):"),
+          placed.turnId == finishedTurnId || turnActive,
+          workSponsoredPlacedAllowed(placed, slot: slot, store: store, account: accountStore) else { return nil }
+    return placed
+  }
+
+  var body: some View {
+    let shown = shown
+    VStack(spacing: 0) {
+      // Drawn at once (the hold below follows): the chat's own units never show together.
+      if let shown, store.placeFree(forChat: sessionId) {
+        WorkSponsoredDockCard(ad: shown.ad, test: accountStore.account?.sponsored?.test == true) {
+          store.hide(turnKey: shown.turnKey)
+        }
+        .padding(.bottom, 8)
+        .transition(.opacity)
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .animation(.easeInOut(duration: 0.18), value: shown?.turnKey)
+    .task(id: "\(shown?.turnKey ?? "")|\(store.holder ?? "")") {
+      if shown != nil { store.hold(placeId) } else { store.release(placeId) }
+    }
+    .onDisappear { store.release(placeId) }
+  }
+}
+
+// MARK: - The end of the reply
+
+/// At the end of a finished turn's last reply, in the reply's own row: the
+/// inline format's one linked sentence, once the slot placed one for this
+/// turn. Takes no room otherwise. Not toggled as the reply scrolls in and out
+/// (that would change the row's height under the reader); the ask waited for
+/// the reply's end to be on screen, and the view counts only once half the
+/// line is.
+struct WorkSponsoredInlineOutlet: View {
+  let sessionId: String
+  let turnId: String
+  @ObservedObject var slot: WorkSponsoredSlotModel
+  @ObservedObject private var store = CloudSponsoredStore.shared
+  @ObservedObject private var accountStore = AccountCloudStore.shared
+
+  private var placeId: String { CloudSponsoredStore.placeId(sessionId: sessionId, format: .inline) }
+
+  private var shown: WorkSponsoredPlacedAd? {
+    guard let placed = slot.placed, placed.format == .inline, placed.turnId == turnId,
+          placed.turnKey == CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turnId),
+          workSponsoredPlacedAllowed(placed, slot: slot, store: store, account: accountStore) else { return nil }
+    return placed
+  }
+
+  var body: some View {
+    let shown = shown
+    VStack(alignment: .leading, spacing: 0) {
+      // Drawn at once, so the row measures with it (the hold below follows).
+      if let shown, store.placeFree(forChat: sessionId) {
+        WorkSponsoredInlineLine(ad: shown.ad, test: accountStore.account?.sponsored?.test == true, slot: slot) {
+          store.hide(turnKey: shown.turnKey)
+        }
+        .padding(.top, 8)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { slot.inlineHeight = $0 }
+    .task(id: "\(shown?.turnKey ?? "")|\(store.holder ?? "")") {
+      if shown != nil { store.hold(placeId) } else { store.release(placeId) }
+    }
+    .onDisappear { store.release(placeId) }
   }
 }
 
@@ -174,15 +360,21 @@ private struct WorkSponsoredFrame<Content: View>: View {
 /// The brand's first letter on a small tile: no outside images.
 private struct WorkSponsoredMonogram: View {
   let name: String
+  var size: CGFloat = 16
 
   var body: some View {
     Text(name.first.map { String($0).uppercased() } ?? "·")
-      .font(.system(size: 10, weight: .semibold))
+      .font(.system(size: size * 0.62, weight: .semibold))
       .foregroundStyle(ADEColor.textSecondary)
-      .frame(width: 16, height: 16)
-      .background(ADEColor.textPrimary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+      .frame(width: size, height: size)
+      .background(ADEColor.textPrimary.opacity(0.08), in: RoundedRectangle(cornerRadius: size / 4, style: .continuous))
       .accessibilityHidden(true)
   }
+}
+
+/// "Sponsored", or "Sponsored · test" for Gravity's test ads.
+private func workSponsoredLabel(test: Bool, ad: CloudSponsoredAd) -> String {
+  test || ad.test ? "Sponsored · test" : "Sponsored"
 }
 
 /// A small outline button ("Learn more", "Open site", "Use it").
@@ -224,6 +416,8 @@ private func workSponsoredOpen(_ value: String?) {
 /// computers use hours, so the card says that up front.
 struct WorkSponsoredConsentCard: View {
   var smallNeedsCards = false
+  /// Where the cards show, so the question names the place.
+  var format: CloudSponsoredFormat = .belowReply
   @State private var busy = false
   @State private var error: String?
 
@@ -237,8 +431,8 @@ struct WorkSponsoredConsentCard: View {
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
       Text((smallNeedsCards
-        ? "Free shows one sponsored card under a finished reply in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool."
-        : "A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool.")
+        ? "Free shows \(format.placeSentence) in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool."
+        : "A Free chat on ADE Cloud can show \(format.placeSentence), and an agent may recommend a sponsored tool.")
         + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older. You can change this in Settings › ADE Cloud.")
         .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
@@ -359,6 +553,130 @@ struct WorkSponsoredAdCard: View {
     .task(id: "\(ad.id)|\(slot.halfOnScreen)|\(store.appActive)") {
       if slot.halfOnScreen, store.appActive { store.noteViewed(ad) }
     }
+  }
+}
+
+/// The docked card above the prompt box: one row as wide as the prompt box.
+/// The brand's mark, the brand and "Sponsored" over the title and text on one
+/// line, the call to action, and hide. Floats over the thread like the other
+/// rows above the prompt box, so it carries its own glass. On screen whenever
+/// it draws (the chat is on screen), so its view counts once it shows.
+struct WorkSponsoredDockCard: View {
+  let ad: CloudSponsoredAd
+  let test: Bool
+  @ObservedObject private var store = CloudSponsoredStore.shared
+  let onHide: () -> Void
+
+  var body: some View {
+    HStack(spacing: 10) {
+      Button { workSponsoredOpen(ad.clickUrl) } label: {
+        HStack(spacing: 10) {
+          WorkSponsoredMonogram(name: ad.brand, size: 28)
+          VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 4) {
+              Text(ad.brand)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+              Text("· \(workSponsoredLabel(test: test, ad: ad))")
+                .font(.system(size: 11.5))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+                .layoutPriority(1)
+            }
+            (Text(ad.title).fontWeight(.semibold).foregroundStyle(ADEColor.textPrimary)
+              + Text(ad.text.isEmpty ? "" : " — \(ad.text)").foregroundStyle(ADEColor.textSecondary))
+              .font(.system(size: 13))
+              .lineLimit(1)
+              .truncationMode(.tail)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(ad.title). \(ad.text)")
+      WorkSponsoredCTA(title: ad.cta ?? "Learn more", external: true) { workSponsoredOpen(ad.clickUrl) }
+        .fixedSize()
+      Button(action: onHide) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 28, height: 28)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .padding(.leading, -4)
+      .accessibilityLabel("Hide this card")
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 6)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Sponsored: \(ad.brand)")
+    .task(id: "\(ad.id)|\(store.appActive)") {
+      if store.appActive { store.noteViewed(ad) }
+    }
+  }
+}
+
+/// The inline format: one linked sentence at the end of the reply, in the
+/// reply's own flow and size, quieter. A small "Sponsored · brand" tag, the
+/// ad's text as an underlined link to Gravity's tracked link, then hide. Its
+/// view counts once half of it is on screen.
+struct WorkSponsoredInlineLine: View {
+  let ad: CloudSponsoredAd
+  let test: Bool
+  @ObservedObject var slot: WorkSponsoredSlotModel
+  @ObservedObject private var store = CloudSponsoredStore.shared
+  let onHide: () -> Void
+
+  /// The hide mark's link: handled here, never opened.
+  private static let hideURL = URL(string: "ade-sponsored:hide")!
+
+  /// One run of text, so it wraps as the reply's own last sentence does: the
+  /// tag, the ad's text as an underlined link (with its arrow), then hide.
+  private var sentence: AttributedString {
+    var tag = AttributedString("\(workSponsoredLabel(test: test, ad: ad)) · \(ad.brand)\u{2002}")
+    tag.font = .caption
+    tag.foregroundColor = ADEColor.textMuted
+    var link = AttributedString(ad.text)
+    link.link = URL(string: ad.clickUrl)
+    link.foregroundColor = ADEColor.textSecondary
+    link.underlineStyle = Text.LineStyle(pattern: .solid, color: ADEColor.textSecondary.opacity(0.4))
+    var arrow = AttributedString("\u{2009}\u{2197}\u{FE0E}")
+    arrow.link = URL(string: ad.clickUrl)
+    arrow.font = .caption.weight(.semibold)
+    arrow.foregroundColor = ADEColor.textMuted
+    var gap = AttributedString("\u{2002}")
+    gap.font = .caption
+    var hide = AttributedString("\u{2009}\u{2715}\u{2009}")
+    hide.link = Self.hideURL
+    hide.font = .caption.weight(.semibold)
+    hide.foregroundColor = ADEColor.textMuted
+    return tag + link + arrow + gap + hide
+  }
+
+  var body: some View {
+    Text(sentence)
+      .font(WorkChatTypography.body)
+      .tint(ADEColor.textSecondary)
+      .multilineTextAlignment(.leading)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .environment(\.openURL, OpenURLAction { url in
+        if url == Self.hideURL { onHide() } else { workSponsoredOpen(url.absoluteString) }
+        return .handled
+      })
+      .accessibilityLabel("Sponsored, \(ad.brand): \(ad.text)")
+      .accessibilityAddTraits(.isLink)
+      .accessibilityAction { workSponsoredOpen(ad.clickUrl) }
+      .accessibilityAction(named: "Hide this sponsored line", onHide)
+      .task(id: "\(ad.id)|\(slot.inlineHalfOnScreen)|\(store.appActive)") {
+        if slot.inlineHalfOnScreen, store.appActive { store.noteViewed(ad) }
+      }
   }
 }
 

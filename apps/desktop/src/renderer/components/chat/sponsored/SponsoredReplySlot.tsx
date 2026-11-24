@@ -1,20 +1,27 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ArrowUpRight, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
-import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent } from "../../../../shared/adeCloud";
+import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent, type CloudSponsoredFormat } from "../../../../shared/adeCloud";
 import { setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Button } from "../../ui/Button";
 import { holdSponsoredPlace, releaseSponsoredPlace, useOnScreen, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
+import { SponsoredOutletsContext, useSponsoredOutlet } from "./sponsoredOutlets";
 import { SPONSORED_TURN_FRESH_MS, lastFinishedTurn, sponsoredDevice } from "./sponsoredTurn";
 import { useDocumentVisible, useSponsoredViewer } from "./useSponsoredViewer";
 import "./sponsored.css";
 
 /**
- * One sponsored card under a finished reply, in a Free-plan chat on an ADE
- * Cloud computer only (`docs/plans/pricing-v2-and-gravity.md`).
+ * One sponsored card for a finished reply, in a Free-plan chat on an ADE
+ * Cloud computer only (`docs/plans/pricing-v2-and-gravity.md`). The server
+ * names the format (`CloudSponsoredFormat`): a card under the reply, a card
+ * docked above the prompt box, or one linked sentence at the end of the
+ * reply. This slot asks for all three; the other two draw into the pane's
+ * outlets (`sponsoredOutlets.tsx`), and a pane without them gets the card
+ * under the reply. Nothing of a card ever reaches the agent.
  *
  * The account server decides everything (`gravity.ts`): the switch, the plan,
  * the country, the account's answer, and that the chat's computer is one of
@@ -75,6 +82,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
       consent={sponsored.consent}
       test={sponsored.test}
       smallNeedsCards={sponsored.smallNeedsCards === true}
+      format={sponsored.format ?? "below_reply"}
     />
   );
 }
@@ -88,12 +96,14 @@ function SponsoredReplySlotOn({
   consent,
   test,
   smallNeedsCards,
+  format,
 }: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId"> & {
   instanceId: string;
   sessionId: string;
   consent: CloudSponsoredConsent | null;
   test: boolean;
   smallNeedsCards: boolean;
+  format: CloudSponsoredFormat;
 }) {
   const visible = useDocumentVisible() && paneVisible;
   // The scan runs only between turns; while one streams there is no card.
@@ -103,10 +113,20 @@ function SponsoredReplySlotOn({
   const [hidden, setHidden] = useState(() => (turnKey ? hiddenTurns.has(turnKey) : false));
   useEffect(() => setHidden(turnKey ? hiddenTurns.has(turnKey) : false), [turnKey]);
 
-  // The place under the reply, card included: a card shows only while it is on screen.
+  // Where the card draws: the dock, the reply's end, or (no such place in this pane) under the reply.
+  const outlets = useContext(SponsoredOutletsContext);
+  const place = !outlets || format === "below_reply" ? null : format === "above_prompt" ? "dock" : "inline";
+  const shownFormat: CloudSponsoredFormat = place ? format : "below_reply";
+  const target = useSponsoredOutlet(outlets, place, turn?.turnId ?? null);
+  const targetReady = place === null || target !== null;
+
+  // The place under the reply, card included: a card shows only while it is
+  // on screen. The reply's end sits just above it; the dock is always on
+  // screen while the pane is.
   const regionRef = useRef<HTMLDivElement | null>(null);
   const wanted = fresh && !hidden && visible;
   const onScreen = useOnScreen(regionRef, 0, wanted);
+  const seen = place === "dock" ? wanted : onScreen;
 
   // Someone is watching this computer's chat: the Index may answer its agents.
   useSponsoredViewer(instanceId, consent === "granted" && visible);
@@ -122,13 +142,14 @@ function SponsoredReplySlotOn({
   // chat's copy (`not_cloud`): one more ask a little later, never more.
   const [askAgain, setAskAgain] = useState<string | null>(null);
   useEffect(() => {
-    if (consent !== "granted" || !wanted || !onScreen || !placeFree || !turn || !turnKey) return;
+    if (consent !== "granted" || !wanted || !seen || !targetReady || !placeFree || !turn || !turnKey) return;
     if (ad?.key === turnKey) return;
     const askAd = window.ade?.cloud?.sponsoredAd;
     if (!askAd) return;
     let live = true;
     let timer: number | null = null;
-    void askOnce(turnKey, () => askAd({ instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice() }))
+    const input = { instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice(), format: shownFormat, surface: "desktop" as const };
+    void askOnce(turnKey, () => askAd(input))
       .then((answer) => {
         if (!live) return;
         if (answer.ad && isGravityUrl(answer.ad.clickUrl)) setAd({ key: turnKey, ad: answer.ad });
@@ -143,12 +164,15 @@ function SponsoredReplySlotOn({
       live = false;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [consent, wanted, onScreen, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain]);
+  }, [consent, wanted, seen, targetReady, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain, shownFormat]);
 
   const adShown = ad !== null && ad.key === turnKey;
   let showing: "consent" | "ad" | null = null;
+  // The question is always asked under the reply.
   if (wanted && onScreen && consent === null) showing = "consent";
-  else if (wanted && onScreen && adShown) showing = "ad";
+  else if (wanted && seen && adShown && targetReady) showing = "ad";
+  // The docked card stays while the next reply runs, and gives way to that reply's own.
+  else if (place === "dock" && turnActive && target && visible && ad && !hiddenTurns.has(ad.key)) showing = "ad";
 
   useEffect(() => {
     if (showing) holdSponsoredPlace(slotId);
@@ -158,24 +182,38 @@ function SponsoredReplySlotOn({
   const holds = holder === slotId;
 
   const hide = () => {
-    if (turnKey) hiddenTurns.add(turnKey);
+    if (ad) hiddenTurns.add(ad.key);
     setHidden(true);
   };
+
+  let card: React.ReactNode = null;
+  if (holds && showing === "ad" && ad) {
+    if (shownFormat === "inline") card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
+    else if (shownFormat === "above_prompt") card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
+    else card = <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} />;
+  }
 
   return (
     <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
       <div aria-hidden className="h-px w-full" />
-      {holds && showing === "consent" ? <SponsoredConsentCard smallNeedsCards={smallNeedsCards} /> : null}
-      {holds && showing === "ad" && ad ? <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} /> : null}
+      {holds && showing === "consent" ? <SponsoredConsentCard smallNeedsCards={smallNeedsCards} format={shownFormat} /> : null}
+      {card && target ? createPortal(card, target) : card}
     </div>
   );
 }
+
+/** Where each format shows, as the one-time question says it. */
+const FORMAT_PLACE: Record<CloudSponsoredFormat, string> = {
+  below_reply: "one sponsored card under a finished reply",
+  above_prompt: "one sponsored card above the prompt box after a finished reply",
+  inline: "one sponsored line at the end of a finished reply",
+};
 
 /**
  * The one-time question. While the server's `smallNeedsCards` rule is on, a
  * no has Free's Small computers use hours, so the card says that up front.
  */
-function SponsoredConsentCard({ smallNeedsCards }: { smallNeedsCards: boolean }) {
+function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: boolean; format: CloudSponsoredFormat }) {
   const [busy, setBusy] = useState(false);
   const answer = (consent: CloudSponsoredConsent) => {
     setBusy(true);
@@ -191,8 +229,8 @@ function SponsoredConsentCard({ smallNeedsCards }: { smallNeedsCards: boolean })
       <p className="ade-sponsored-title">{smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported"}</p>
       <p className="ade-sponsored-text">
         {smallNeedsCards
-          ? "Free shows one sponsored card under a finished reply in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool."
-          : "A Free chat on ADE Cloud can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool."}{" "}
+          ? `Free shows ${FORMAT_PLACE[format]} in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool.`
+          : `A Free chat on ADE Cloud can show ${FORMAT_PLACE[format]}, and an agent may recommend a sponsored tool.`}{" "}
         To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the
         agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards
         are for people 18 or older. You can change this in Settings › ADE Cloud.
@@ -212,10 +250,12 @@ function SponsoredConsentCard({ smallNeedsCards }: { smallNeedsCards: boolean })
   );
 }
 
-function SponsoredAdCard({ ad, test, onHide }: { ad: CloudSponsoredAd; test: boolean; onHide: () => void }) {
-  const cardRef = useRef<HTMLElement | null>(null);
+type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };
+
+/** Gravity's view link, once, when half of the card is on screen in a visible window. Returns the card's opener. */
+function useSponsoredView(ref: React.RefObject<HTMLElement | null>, ad: CloudSponsoredAd): () => void {
   const visible = useDocumentVisible();
-  const halfOnScreen = useOnScreen(cardRef, 0.5, true);
+  const halfOnScreen = useOnScreen(ref, 0.5, true);
   useEffect(() => {
     if (!halfOnScreen || !visible || !ad.impUrl || viewedAds.has(ad.id)) return;
     viewedAds.add(ad.id);
@@ -225,18 +265,73 @@ function SponsoredAdCard({ ad, test, onHide }: { ad: CloudSponsoredAd; test: boo
       if (!delivered) viewedAds.delete(ad.id);
     }, () => viewedAds.delete(ad.id));
   }, [halfOnScreen, visible, ad.id, ad.impUrl]);
-  const open = () => {
+  return () => {
     if (isGravityUrl(ad.clickUrl)) openExternalUrl(ad.clickUrl);
   };
+}
+
+const sponsoredLabel = (test: boolean, ad: CloudSponsoredAd) => (test || ad.test ? "Sponsored · test" : "Sponsored");
+
+function SponsoredHide({ onHide, label }: { onHide: () => void; label: string }) {
+  return (
+    <button type="button" className="ade-sponsored-hide" aria-label={label} title="Hide" onClick={onHide}>
+      <X size={12} weight="bold" />
+    </button>
+  );
+}
+
+/** One linked sentence at the end of the reply: the ad's text, marked Sponsored. */
+function SponsoredInlineLine({ ad, test, onHide }: SponsoredCardProps) {
+  const lineRef = useRef<HTMLParagraphElement | null>(null);
+  const open = useSponsoredView(lineRef, ad);
+  return (
+    <p ref={lineRef} className="ade-sponsored-inline" aria-label={`Sponsored: ${ad.brand}`}>
+      <span className="ade-sponsored-inline-tag">{sponsoredLabel(test, ad)} · {ad.brand}</span>
+      <button type="button" className="ade-sponsored-inline-link" onClick={open}>
+        {ad.text}
+        <ArrowUpRight size={11} weight="bold" aria-hidden />
+      </button>
+      <SponsoredHide onHide={onHide} label="Hide this sponsored line" />
+    </p>
+  );
+}
+
+/** A one-row card docked above the prompt box: the latest reply's. */
+function SponsoredDockCard({ ad, test, onHide }: SponsoredCardProps) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const open = useSponsoredView(cardRef, ad);
+  return (
+    <section ref={cardRef} className="ade-sponsored ade-sponsored--dock" aria-label={`Sponsored: ${ad.brand}`}>
+      <span className="ade-sponsored-mark" aria-hidden>{ad.brand.slice(0, 1).toUpperCase()}</span>
+      <div className="ade-sponsored-dock-copy">
+        <div className="ade-sponsored-head">
+          <span className="ade-sponsored-brand">{ad.brand}</span>
+          <span className="ade-sponsored-label">{sponsoredLabel(test, ad)}</span>
+        </div>
+        <button type="button" className="ade-sponsored-dock-line" onClick={open} title={`${ad.title} — ${ad.text}`}>
+          <span className="ade-sponsored-dock-title">{ad.title}</span>
+          <span className="ade-sponsored-dock-text"> — {ad.text}</span>
+        </button>
+      </div>
+      <button type="button" className="ade-sponsored-cta" onClick={open}>
+        {ad.cta ?? "Learn more"}
+        <ArrowUpRight size={12} weight="bold" aria-hidden />
+      </button>
+      <SponsoredHide onHide={onHide} label="Hide this card" />
+    </section>
+  );
+}
+
+function SponsoredAdCard({ ad, test, onHide }: SponsoredCardProps) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const open = useSponsoredView(cardRef, ad);
   return (
     <section ref={cardRef} className="ade-sponsored" aria-label={`Sponsored: ${ad.brand}`}>
       <div className="ade-sponsored-head">
         <span className="ade-sponsored-mark" aria-hidden>{ad.brand.slice(0, 1).toUpperCase()}</span>
         <span className="ade-sponsored-brand">{ad.brand}</span>
-        <span className="ade-sponsored-label">{test || ad.test ? "Sponsored · test" : "Sponsored"}</span>
-        <button type="button" className="ade-sponsored-hide" aria-label="Hide this card" title="Hide" onClick={onHide}>
-          <X size={12} weight="bold" />
-        </button>
+        <span className="ade-sponsored-label">{sponsoredLabel(test, ad)}</span>
+        <SponsoredHide onHide={onHide} label="Hide this card" />
       </div>
       <button type="button" className="ade-sponsored-title ade-sponsored-open" onClick={open}>
         {ad.title}

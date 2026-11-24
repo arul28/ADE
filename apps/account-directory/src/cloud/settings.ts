@@ -14,6 +14,12 @@ export const CLOUD_SETTINGS = {
   gravity_ads: ["off", "testers", "all"],
   /** Real ads and real Index picks instead of Gravity's test ads; held under `GRAVITY_LIVE` (`1`). */
   gravity_live: ["off", "on"],
+  /**
+   * Where sponsored cards show (`CloudSponsoredFormat`): one format for
+   * everyone, or `split`, each account held to one of the three by its id. An
+   * account the owner set (`cloud_sponsored_formats`) keeps its own.
+   */
+  gravity_format: ["below_reply", "above_prompt", "inline", "split"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

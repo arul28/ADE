@@ -1,5 +1,6 @@
 import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { SponsoredReplySlot } from "./sponsored/SponsoredReplySlot";
+import { SponsoredDockOutlet, SponsoredOutletsContext, useNewSponsoredOutlets } from "./sponsored/sponsoredOutlets";
 import { msToNextBeat } from "../../lib/workBeat";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
@@ -7427,6 +7428,8 @@ export function AgentChatPane({
   // A subagent's transcript, or a chat ADE started under another one: nobody's to show a card in.
   const isSubagentView = subagentView != null || Boolean(selectedSession?.orchestrationParentSessionId) || selectedSession?.spawnKind === "subagent";
   const chatCloudInstanceId = chatCloudLane?.instanceId ?? null;
+  // The dock above the prompt box and the reply ends a sponsored card may draw into (`sponsoredOutlets.tsx`).
+  const sponsoredOutlets = useNewSponsoredOutlets();
   const sponsoredSlot = useMemo(
     () => (isSubagentView ? null : (
       <SponsoredReplySlot
@@ -22402,6 +22405,8 @@ export function AgentChatPane({
   const composerBannerStyle = layoutVariant === "grid-tile"
     ? { width: "100%", marginBottom: 6 }
     : { width: "100%", maxWidth: "var(--chat-column,52rem)", margin: "0 auto 6px" };
+  // A sponsored card docked above the prompt box (ADE Cloud chats whose format is `above_prompt`); empty otherwise.
+  const sponsoredDock = isSubagentView ? null : <SponsoredDockOutlet outlets={sponsoredOutlets} style={composerBannerStyle} />;
   const crossMachineMoveBanner = selectedSessionId && renderedSessionId === selectedSessionId && !chatScope ? (
     <CrossMachineHandoffBanner
       key={`move:${selectedSessionId}`}
@@ -22573,6 +22578,7 @@ export function AgentChatPane({
         </div>
       ) : null}
       {claudeModUi}
+      {sponsoredDock}
       {composerElement}
     </div>
   );
@@ -22953,6 +22959,7 @@ export function AgentChatPane({
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
                       <ChatTerminalRevealContext.Provider value={subagentView ? false : chatTerminalVisible ? revealCodeBlockTerminal : null}>
+                      <SponsoredOutletsContext.Provider value={isSubagentView ? null : sponsoredOutlets}>
                       <LiveChatMessageList
                         liveTranscript={subagentView ? null : liveTranscript}
                         key={renderedSessionId ?? "chat-draft"}
@@ -23048,6 +23055,7 @@ export function AgentChatPane({
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
                         onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
+                      </SponsoredOutletsContext.Provider>
                       </ChatTerminalRevealContext.Provider>
                       </SceneReplyContext.Provider>
                     </ThreadEntityProvider>
@@ -23063,6 +23071,7 @@ export function AgentChatPane({
                         {crossMachineBatchApprovalBanner}
                         {crossMachineArrivalBanner}
                                           {claudeModUi}
+                        {sponsoredDock}
                         {composerElement}
                       </div>
                     ) : null}

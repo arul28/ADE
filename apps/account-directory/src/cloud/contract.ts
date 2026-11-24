@@ -3213,7 +3213,24 @@ export type CloudSponsoredState = {
    * Absent while that rule is off. The question and Settings say so.
    */
   smallNeedsCards?: boolean;
+  /**
+   * Where this account's cards show (`CloudSponsoredFormat`), as the server
+   * assigns it. Absent (an older server): under the reply.
+   */
+  format?: CloudSponsoredFormat;
 };
+/**
+ * The three places a sponsored card can show, one per account at a time:
+ * - `below_reply`: a card under the finished reply (Gravity `below_response`).
+ * - `above_prompt`: a banner held above the prompt box, the latest reply's card (Gravity `bottom_page`).
+ * - `inline`: one linked "Sponsored" sentence at the end of the finished reply (Gravity `inline_response`).
+ * Each is display only: nothing of a card is ever sent to the agent.
+ */
+export type CloudSponsoredFormat = "below_reply" | "above_prompt" | "inline";
+export const CLOUD_SPONSORED_FORMATS = ["below_reply", "above_prompt", "inline"] as const satisfies readonly CloudSponsoredFormat[];
+/** The app a card shows in: each surface and format is its own Gravity placement. */
+export type CloudSponsoredSurface = "desktop" | "web" | "ios";
+export const CLOUD_SPONSORED_SURFACES = ["desktop", "web", "ios"] as const satisfies readonly CloudSponsoredSurface[];
 export type CloudSponsoredConsent = "granted" | "declined";
 export const CLOUD_SPONSORED_CONSENTS: readonly CloudSponsoredConsent[] = ["granted", "declined"];
 
@@ -3254,6 +3271,10 @@ export type CloudSponsoredAdRequest = {
   turnId: string;
   messages: CloudSponsoredMessage[];
   device: CloudSponsoredDevice;
+  /** The format the client shows the card in (the state's `format`). Absent (an older client): `below_reply`. */
+  format?: CloudSponsoredFormat;
+  /** The app asking. Absent (an older client): `ios` for an iPhone or iPad, else `desktop`. */
+  surface?: CloudSponsoredSurface;
 };
 /**
  * Gravity's own hosts: a card's view and click links must be on one of them,

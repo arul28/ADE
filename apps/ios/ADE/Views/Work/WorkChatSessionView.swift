@@ -1097,6 +1097,9 @@ struct WorkChatSessionView: View {
   /// Where the place under the last reply sits on screen. `@State`, not
   /// observed: only the slot redraws when it moves.
   @State var sponsoredSlot = WorkSponsoredSlotModel()
+  /// The card the sponsored slot last placed, as a key: the reply row an
+  /// inline line ends is re-measured (a new row revision) when it changes.
+  @State var sponsoredPlacedKey: String?
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -1958,6 +1961,10 @@ struct WorkChatSessionView: View {
   /// place, for as long as this id is in the list.
   var transcriptRows: [WorkChatTranscriptRow] {
     var rows: [WorkChatTranscriptRow] = []
+    let sponsoredTurn = sponsoredSlotTurn
+    let sponsoredInlineHost = sponsoredTurn.flatMap { sponsoredInlineHost(for: $0) }
+    // A cache for the cells this apply configures, not state: nothing observes it.
+    sponsoredSlot.inlineHost = sponsoredInlineHost
     if sessionOverviewHasContent {
       var hasher = Hasher()
       hasher.combine(errorMessageSnapshot)
@@ -2000,11 +2007,20 @@ struct WorkChatSessionView: View {
       for index in entries.indices {
         let entry = entries[index]
         let base = rowRevisions[entry.id] ?? workChatTranscriptRowRevision(entry)
+        var revision = workChatTranscriptRowRevision(entry, base: base, inputs: inputs)
+        if entry.id == sponsoredInlineHost?.rowId {
+          // The reply that ends the finished turn carries the inline sponsored line's place.
+          var hasher = Hasher()
+          hasher.combine(revision)
+          hasher.combine("sponsored-inline")
+          hasher.combine(sponsoredPlacedKey)
+          revision = hasher.finalize()
+        }
         rows.append(
           WorkChatTranscriptRow(
             id: entry.id,
             kind: .entry(index: index),
-            revision: workChatTranscriptRowRevision(entry, base: base, inputs: inputs)
+            revision: revision
           )
         )
       }
@@ -2018,9 +2034,14 @@ struct WorkChatSessionView: View {
         )
       )
     }
-    if let sponsored = sponsoredSlotTurn {
+    if let sponsored = sponsoredTurn {
+      var hasher = Hasher()
+      hasher.combine(sponsored.turnId)
+      // Where the card can draw besides under the reply.
+      hasher.combine(sponsoredDockAvailable)
+      hasher.combine(sponsoredInlineHost?.rowId)
       rows.append(
-        WorkChatTranscriptRow(id: "chat-sponsored", kind: .sponsored, revision: sponsored.turnId.hashValue)
+        WorkChatTranscriptRow(id: "chat-sponsored", kind: .sponsored, revision: hasher.finalize())
       )
     }
     if showsStreamingStatus {
@@ -2136,11 +2157,24 @@ struct WorkChatSessionView: View {
     case .entry(let index):
       let entries = visibleTimelineRenderEntries
       if index < entries.count {
-        timelineRenderEntryView(
-          for: entries[index],
-          streamingAssistantMessageId: streamingAssistantMessageId,
-          maxUserBubbleWidth: maxUserBubbleWidth
-        )
+        let entry = entries[index]
+        if let host = sponsoredSlot.inlineHost, host.rowId == entry.id {
+          // The finished turn's last reply: an inline sponsored line may end it.
+          VStack(alignment: .leading, spacing: 0) {
+            timelineRenderEntryView(
+              for: entry,
+              streamingAssistantMessageId: streamingAssistantMessageId,
+              maxUserBubbleWidth: maxUserBubbleWidth
+            )
+            WorkSponsoredInlineOutlet(sessionId: session.id, turnId: host.turnId, slot: sponsoredSlot)
+          }
+        } else {
+          timelineRenderEntryView(
+            for: entry,
+            streamingAssistantMessageId: streamingAssistantMessageId,
+            maxUserBubbleWidth: maxUserBubbleWidth
+          )
+        }
       }
     case .cloudHeld(let messageId):
       if let cloudHeld, let message = cloudHeld.messages.first(where: { $0.messageId == messageId }) {
@@ -2150,7 +2184,14 @@ struct WorkChatSessionView: View {
       streamingStatusSection
     case .sponsored:
       if let instanceId = sponsoredChatInstanceId, let turn = sponsoredSlotTurn {
-        WorkSponsoredReplySlot(instanceId: instanceId, sessionId: session.id, turn: turn, slot: sponsoredSlot)
+        WorkSponsoredReplySlot(
+          instanceId: instanceId,
+          sessionId: session.id,
+          turn: turn,
+          slot: sponsoredSlot,
+          dockAvailable: sponsoredDockAvailable,
+          inlineHostRowId: sponsoredSlot.inlineHost?.rowId
+        )
       }
     case .tail:
       Color.clear
@@ -2166,6 +2207,35 @@ struct WorkChatSessionView: View {
     guard let sponsoredInstanceId, !isPersonalChat, chatSummaryContext.isAvailable,
           chatSummaryContext.spawnKind != .subagent, chatSummaryContext.orchestrationParentSessionId == nil else { return nil }
     return sponsoredInstanceId
+  }
+
+  /// The prompt box is on screen (no sign-in card stands in for it), so a
+  /// sponsored card can dock above it.
+  var sponsoredDockAvailable: Bool { shownProviderSignIn == nil }
+
+  /// The transcript row whose reply ends the finished turn: the inline
+  /// sponsored line goes at its end. Scans back from the last row only to
+  /// that turn's last reply; nil when the turn's last text isn't a reply row.
+  func sponsoredInlineHost(for turn: CloudSponsoredTurn) -> (rowId: String, turnId: String)? {
+    func own(_ turnId: String?) -> Bool {
+      let id = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      return id.isEmpty || id == turn.turnId
+    }
+    for entry in visibleTimelineRenderEntries.reversed() {
+      switch entry.payload {
+      case .assistantMarkdownBlock(let model):
+        return own(model.turnId) ? (entry.id, turn.turnId) : nil
+      case .assistantMonospaced(let model):
+        return own(model.turnId) ? (entry.id, turn.turnId) : nil
+      case .userSegment:
+        return nil
+      case .entry(let timelineEntry):
+        guard case .message(let message) = timelineEntry.payload else { continue }
+        if message.role == "assistant" { return own(message.turnId) ? (entry.id, turn.turnId) : nil }
+        if message.role == "user" { return nil }
+      }
+    }
+    return nil
   }
 
   /// The finished turn the sponsored slot goes under, scanned only between
@@ -2620,77 +2690,88 @@ struct WorkChatSessionView: View {
         )
         .id(signIn.key)
       } else {
-        WorkChatComposerCard(
-          chatSummary: chatSummaryContext,
-          contextMeter: composerContextMeter,
-          compactFirstOffer: composerCompactFirstOffer,
-          compactFirstChoice: $compactFirstChoice,
-          onCompactContext: { [onSend, $errorMessage] in
-            Task { @MainActor in
-              // Most send failures set their own message; the rest (a send
-              // already in flight) would otherwise fail silently.
-              if await !onSend("/compact", [], .queue), $errorMessage.wrappedValue == nil {
-                $errorMessage.wrappedValue = "Couldn’t start compacting. Try again."
+        VStack(spacing: 0) {
+          // An ADE Cloud chat's sponsored card docked above the prompt box
+          // (the `above_prompt` format); takes no room otherwise.
+          WorkSponsoredDockSlot(
+            instanceId: sponsoredChatInstanceId,
+            sessionId: session.id,
+            turnActive: showsStreamingStatus,
+            finishedTurnId: sponsoredSlotTurn?.turnId,
+            slot: sponsoredSlot
+          )
+          WorkChatComposerCard(
+            chatSummary: chatSummaryContext,
+            contextMeter: composerContextMeter,
+            compactFirstOffer: composerCompactFirstOffer,
+            compactFirstChoice: $compactFirstChoice,
+            onCompactContext: { [onSend, $errorMessage] in
+              Task { @MainActor in
+                // Most send failures set their own message; the rest (a send
+                // already in flight) would otherwise fail silently.
+                if await !onSend("/compact", [], .queue), $errorMessage.wrappedValue == nil {
+                  $errorMessage.wrappedValue = "Couldn’t start compacting. Try again."
+                }
               }
-            }
-          },
-          sessionId: session.id,
-          isPersonalChat: isPersonalChat,
-          laneId: session.laneId,
-          dictationTargetId: "work-chat:\(session.id)",
-          awaitingInputGate: hasPendingInputGate,
-          composerPlaceholder: composerPlaceholderText,
-          canCompose: canCompose,
-          canAttach: canAttach,
-          canSend: canSend && !composerSettingMutationInFlight,
-          attachmentsAvailable: attachmentsAvailable,
-          // A chat on a sleeping ADE Cloud computer takes files too: they go
-          // to the account with the held message.
-          canUploadAttachments: (isLive && attachmentsAvailable)
-            || syncServiceReference.service?.chatSendsThroughCloudAccount(sessionId: session.id) == true,
-          sending: sending && !sendWillQueue,
-          settingsMutationInFlight: composerSettingMutationInFlight,
-          codexFastModeOverride: pendingCodexFastMode,
-          composerDraftRestore: composerDraftRestore,
-          draftPersistenceKey: WorkComposerDraftStore.chatKey(sessionId: session.id),
-          compact: compactComposer,
-          liveRedirectOnlySends: liveRedirectOnlySends,
-          // Show Stop while a live turn has current transcript activity. The
-          // broader live hint can lag after `done`; this stricter gate keeps the
-          // composer from showing Stop after the completed-turn separator appears.
-          showInterrupt: shouldShowInterruptControl,
-          activeSendModesAvailable: activeSendModesAvailable,
-          queueAwareStopAvailable: queueAwareStopAvailable,
-          interruptInFlight: actionInFlight,
-          onInterrupt: { mode in
-            await runSessionAction {
-              await onInterrupt(mode)
-            }
-          },
-          onOpenModelPicker: !chatSummaryContext.isAvailable
-            || chatSummaryContext.isSideChat
-            || (isPersonalChat && (
-              !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
-            ))
-            ? nil
-            : { modelPickerPresented = true },
-          onSelectRuntimeMode: !chatSummaryContext.isAvailable
-            || chatSummaryContext.isSideChat
-            || (isPersonalChat && !personalSessionUpdatesAvailable)
-            ? nil
-            : { mode in
-            runComposerSettingMutation {
-              await onSelectRuntimeMode(mode)
-            }
-          },
-          onSend: onSend,
-          onSendWithCompaction: onSendWithCompaction,
-          onSent: {
-            transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
-          },
-          hasSendableThreadComments: hasSendableThreadComments,
-          sendGate: crossMachineSendGate
-        )
+            },
+            sessionId: session.id,
+            isPersonalChat: isPersonalChat,
+            laneId: session.laneId,
+            dictationTargetId: "work-chat:\(session.id)",
+            awaitingInputGate: hasPendingInputGate,
+            composerPlaceholder: composerPlaceholderText,
+            canCompose: canCompose,
+            canAttach: canAttach,
+            canSend: canSend && !composerSettingMutationInFlight,
+            attachmentsAvailable: attachmentsAvailable,
+            // A chat on a sleeping ADE Cloud computer takes files too: they go
+            // to the account with the held message.
+            canUploadAttachments: (isLive && attachmentsAvailable)
+              || syncServiceReference.service?.chatSendsThroughCloudAccount(sessionId: session.id) == true,
+            sending: sending && !sendWillQueue,
+            settingsMutationInFlight: composerSettingMutationInFlight,
+            codexFastModeOverride: pendingCodexFastMode,
+            composerDraftRestore: composerDraftRestore,
+            draftPersistenceKey: WorkComposerDraftStore.chatKey(sessionId: session.id),
+            compact: compactComposer,
+            liveRedirectOnlySends: liveRedirectOnlySends,
+            // Show Stop while a live turn has current transcript activity. The
+            // broader live hint can lag after `done`; this stricter gate keeps the
+            // composer from showing Stop after the completed-turn separator appears.
+            showInterrupt: shouldShowInterruptControl,
+            activeSendModesAvailable: activeSendModesAvailable,
+            queueAwareStopAvailable: queueAwareStopAvailable,
+            interruptInFlight: actionInFlight,
+            onInterrupt: { mode in
+              await runSessionAction {
+                await onInterrupt(mode)
+              }
+            },
+            onOpenModelPicker: !chatSummaryContext.isAvailable
+              || chatSummaryContext.isSideChat
+              || (isPersonalChat && (
+                !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
+              ))
+              ? nil
+              : { modelPickerPresented = true },
+            onSelectRuntimeMode: !chatSummaryContext.isAvailable
+              || chatSummaryContext.isSideChat
+              || (isPersonalChat && !personalSessionUpdatesAvailable)
+              ? nil
+              : { mode in
+              runComposerSettingMutation {
+                await onSelectRuntimeMode(mode)
+              }
+            },
+            onSend: onSend,
+            onSendWithCompaction: onSendWithCompaction,
+            onSent: {
+              transcriptScroller.scrollToLatest(animated: true, reason: "composer-sent")
+            },
+            hasSendableThreadComments: hasSendableThreadComments,
+            sendGate: crossMachineSendGate
+          )
+        }
         .overlay(alignment: .topTrailing) {
           // No row to sit in: the button floats where the row would be, over
           // the thread, without reserving the band.
@@ -2863,6 +2944,13 @@ struct WorkChatSessionView: View {
         distanceFromBottom: geometry.distanceFromBottom,
         // Below the card: its cell's bottom margin, then the gutter cell with both of its margins.
         tail: tailGutterHeight + WorkChatTranscriptController.rowSpacing * 1.5,
+        visibleHeight: transcriptVisibleHeight
+      )
+      // The end of the reply an inline line goes at: its row's bottom, less the cell's margin.
+      let inlineBelow = sponsoredSlot.inlineHost.flatMap { transcriptScroller.contentBelowRow(id: $0.rowId) }
+      sponsoredSlot.updateInline(
+        distanceFromBottom: geometry.distanceFromBottom,
+        below: inlineBelow.map { $0 + WorkChatTranscriptController.rowSpacing / 2 },
         visibleHeight: transcriptVisibleHeight
       )
     }
@@ -3482,6 +3570,10 @@ struct WorkChatSessionView: View {
       .environment(\.workChatAttachGitHubIssue, onAttachGitHubIssue.map(WorkChatAttachIssueAction.init))
       // Someone watches this ADE Cloud chat: the Index may answer its agent.
       .background(WorkSponsoredViewerBeacon(instanceId: sponsoredChatInstanceId, slot: sponsoredSlot))
+      .onReceive(sponsoredSlot.$placed) { placed in
+        let key = placed?.key
+        if sponsoredPlacedKey != key { sponsoredPlacedKey = key }
+      }
     )
   }
 

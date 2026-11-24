@@ -527,7 +527,8 @@ export function createWebCloudNamespace(
     sponsoredAd: async (input) => {
       const api = accountClient.cloudApi();
       if (!api) return { ad: null, reason: "unavailable" };
-      return api.sponsoredAd(input).catch(() => ({ ad: null, reason: "unavailable" as const }));
+      // This browser is the web surface: its own Gravity placements.
+      return api.sponsoredAd({ ...input, surface: "web" }).catch(() => ({ ad: null, reason: "unavailable" as const }));
     },
     // This page may reach Gravity itself (`_headers`: `connect-src https:`).
     sponsoredViewed: async (impUrl) => {

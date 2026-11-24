@@ -693,6 +693,20 @@ the chat runs on one of the account's own live ADE Cloud computers and is not a
 subagent's (`cloud_chat_copies`). Chats on the person's own machine never get a
 card, whatever the plan.
 
+- **Formats:** the `gravity_format` switch (`below_reply` default,
+  `above_prompt`, `inline`, or `split` for an A/B test held per account by
+  its id; migration `0059` keeps an owner's choice per account) names where
+  an account's card shows: under the finished reply, docked above the prompt
+  box (the latest reply's card, kept while the next reply runs), or one linked
+  "Sponsored" sentence at the end of the reply. The state carries `format`;
+  the ad request says the format it draws in and its surface (`desktop`,
+  `web`, `ios`), and the server sends Gravity the registered placement
+  `ade-<surface>-<below|above-prompt|inline>` (`below_response`,
+  `bottom_page`, `inline_response`; inline asks for at most 120 characters),
+  so Gravity reports each surface and format apart. The one-time question
+  always shows under the reply. Desktop draws the other two through the
+  pane's outlets (`sponsoredOutlets.tsx`); a pane without them gets the card
+  under the reply.
 - **Reply card** (`renderer/components/chat/sponsored/`, iOS
   `WorkSponsoredCards.swift`): at most one, under a finished reply, asked for
   only while the pane and that spot are on screen. The server claims the reply
