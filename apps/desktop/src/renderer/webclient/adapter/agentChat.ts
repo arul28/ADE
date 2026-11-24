@@ -1,6 +1,7 @@
 import type { DeletedChatListResult, DeletedChatRemoveResult, DeletedChatReopenResult } from "../../../shared/types/deletedChats";
 import type { AgentCliTypeArgs, AgentCliTypeResult, ExternalSessionDetail } from "../../../shared/types";
 import type { ChatMentionSuggestResult } from "../../../shared/types/chatMentions";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../../../shared/types/deviceSources";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type {
@@ -276,6 +277,16 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("parallelLaunchState.set", pin);
         await call("chat.setParallelLaunchState", args, undefined, false);
       },
+    },
+    // The chat's device choice per kind (`ade devices use`), kept by its brain: without these the tools
+    // pane can't see that a chat uses the ADE Cloud iPhone, and shows the lane's own simulator instead.
+    getDeviceSources: async (args: { sessionId: string }, pin?: RuntimePinArg) => {
+      guardPin("getDeviceSources", pin);
+      return await callRequired<ChatDeviceSourcesResult>("chat.getDeviceSources", args, "Chat", true);
+    },
+    setDeviceSource: async (args: ChatSetDeviceSourceArgs, pin?: RuntimePinArg) => {
+      guardPin("setDeviceSource", pin);
+      return await callRequiredMutation<ChatDeviceSourcesResult>("chat.setDeviceSource", args);
     },
     getRootFullAccess: async (pin?: RuntimePinArg) => {
       guardPin("getRootFullAccess", pin);

@@ -219,7 +219,8 @@ function MachineRow({
       <span className="mr-1 shrink-0 font-sans text-[12px] text-muted-fg">
         {rowLabel(asking, viewOnly)}
       </span>
-      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
+      {/* The chips keep their width (scrolling only past the row's); the note gets what is left and truncates. */}
+      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-[0_1_auto] items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {able.map((machine) => {
           const chosen = Boolean(tile.machine && sameMachineKey(tile.machine.key, machine.key));
           const busy = Boolean(pendingMachineKey && sameMachineKey(pendingMachineKey, machine.key));
@@ -261,7 +262,7 @@ function MachineRow({
         ) : null}
       </div>
       {note ? (
-        <span className="ml-auto shrink-0 truncate pl-2 font-sans text-[11.5px] text-muted-fg/70" title={note}>
+        <span className="ml-auto min-w-0 flex-[1_1_0%] truncate pl-2 text-right font-sans text-[11.5px] text-muted-fg/70" title={note}>
           {note}
         </span>
       ) : null}
