@@ -80,6 +80,21 @@ function selectableDescriptors(
 }
 
 let inventoryCache: CacheEntry | null = null;
+/**
+ * The registry holds a borrowed project's models, not `inventoryCache`'s: a
+ * read served from `inventoryCache` must load its own back first, or a launch
+ * naming one of its ids is refused.
+ */
+let registryBorrowed = false;
+function loadRegistry(descriptors: ModelDescriptor[], borrowed = false): void {
+  replaceDynamicOpenCodeModelDescriptors(descriptors);
+  registryBorrowed = borrowed;
+}
+/** `inventoryCache` answers a read: its models must be the ones the registry knows. */
+function registryFor(cache: CacheEntry): CacheEntry {
+  if (registryBorrowed) loadRegistry(cache.registryDescriptors);
+  return cache;
+}
 const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
 /**
  * The local models the last probe saw. Other shared-server users (auth) build
@@ -352,7 +367,7 @@ export function __setOpenCodeInventoryPersistencePathForTests(filePath: string |
 
 /** Adopt a persisted entry as the in-memory cache and load its models into the registry. */
 function hydrateFromPersisted(projectRoot: string, entry: PersistedInventoryEntry): CacheEntry {
-  replaceDynamicOpenCodeModelDescriptors(entry.registryDescriptors);
+  loadRegistry(entry.registryDescriptors);
   inventoryCache = {
     cachedAt: entry.savedAt,
     projectRoot,
@@ -808,7 +823,7 @@ export async function probeOpenCodeProviderInventory(args: {
   discoveredLocalModels?: DiscoveredLocalModelEntry[];
 }): Promise<OpenCodeInventoryResult> {
   if (!resolveOpenCodeBinaryPath()) {
-    replaceDynamicOpenCodeModelDescriptors([]);
+    loadRegistry([]);
     inventoryCache = null;
     return { modelIds: [], providers: [], error: null, descriptors: [] };
   }
@@ -829,6 +844,7 @@ export async function probeOpenCodeProviderInventory(args: {
         ? cache.configFingerprint === fp && Date.now() - cache.cachedAt < ERROR_TTL_MS
         : isUsable(cache))
     ) {
+      registryFor(cache);
       return {
         modelIds: cache.modelIds,
         providers: cache.providers,
@@ -896,7 +912,7 @@ export async function probeOpenCodeProviderInventory(args: {
         lease.release();
       }
       const inventory = buildInventory(listed);
-      replaceDynamicOpenCodeModelDescriptors(inventory.registryDescriptors);
+      loadRegistry(inventory.registryDescriptors);
       inventoryCache = {
         cachedAt: Date.now(),
         projectRoot: args.projectRoot,
@@ -929,7 +945,7 @@ export async function probeOpenCodeProviderInventory(args: {
           descriptors: selectableDescriptors(hydrated),
         };
       }
-      replaceDynamicOpenCodeModelDescriptors([]);
+      loadRegistry([]);
       inventoryCache = {
         cachedAt: Date.now(),
         projectRoot: args.projectRoot,
@@ -972,6 +988,7 @@ export function peekOpenCodeInventoryCache(args: {
     && inventoryCache.projectRoot === args.projectRoot
     && (inventoryCache.passiveConfigFingerprint === fp || inventoryCache.configFingerprint === fp)
   ) {
+    registryFor(inventoryCache);
     return {
       modelIds: inventoryCache.modelIds,
       providers: inventoryCache.providers,
@@ -979,10 +996,47 @@ export function peekOpenCodeInventoryCache(args: {
       descriptors: selectableDescriptors(inventoryCache),
     };
   }
-  const persisted = readPersistedInventoryFile().entries[args.projectRoot];
-  if (!persisted || persisted.passiveConfigFingerprint !== fp) return null;
-  const hydrated = hydrateFromPersisted(args.projectRoot, persisted);
-  return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null, descriptors: selectableDescriptors(hydrated) };
+  const entries = readPersistedInventoryFile().entries;
+  const persisted = entries[args.projectRoot];
+  if (persisted && persisted.passiveConfigFingerprint === fp) {
+    const hydrated = hydrateFromPersisted(args.projectRoot, persisted);
+    return { modelIds: hydrated.modelIds, providers: hydrated.providers, error: null, descriptors: selectableDescriptors(hydrated) };
+  }
+  return borrowSameConfigInventory(args.projectRoot, fp, entries);
+}
+
+/** OpenCode's own project config files: a project with one may list other models. */
+const OPENCODE_PROJECT_CONFIG_NAMES = ["opencode.json", "opencode.jsonc", ".opencode"];
+
+/**
+ * A project this brain never probed (new, re-added or moved) reads the
+ * inventory of a project with the same ADE config: the models come from the
+ * machine's OpenCode sign-ins and that config, not from the folder. Without
+ * this, the catalog and picker list no OpenCode model until a chat starts
+ * OpenCode there. The borrowed list only draws: it is not stored for this
+ * project, so the next probe still asks the server.
+ */
+function borrowSameConfigInventory(
+  projectRoot: string,
+  fp: string,
+  entries: Record<string, PersistedInventoryEntry>,
+): ReturnType<typeof peekOpenCodeInventoryCache> {
+  const hasOwnConfig = (root: string) => OPENCODE_PROJECT_CONFIG_NAMES.some((name) => fs.existsSync(path.join(root, name)));
+  if (hasOwnConfig(projectRoot)) return null;
+  // A source with its own OpenCode config may list models this project doesn't have.
+  const live = inventoryCache && inventoryCache.passiveConfigFingerprint === fp && inventoryCache.modelIds.length
+    && !hasOwnConfig(inventoryCache.projectRoot)
+    ? registryFor(inventoryCache)
+    : null;
+  const saved = live ? null : Object.entries(entries)
+    .filter(([, entry]) => entry.passiveConfigFingerprint === fp && entry.modelIds.length > 0)
+    .sort(([, a], [, b]) => b.savedAt - a.savedAt)
+    .find(([root]) => !hasOwnConfig(root))?.[1] ?? null;
+  const source = live ?? saved;
+  if (!source) return null;
+  // The registry must know these ids, or a launch naming one is refused.
+  if (!live) loadRegistry(source.registryDescriptors, true);
+  return { modelIds: source.modelIds, providers: source.providers, error: null, descriptors: selectableDescriptors(source) };
 }
 
 /**

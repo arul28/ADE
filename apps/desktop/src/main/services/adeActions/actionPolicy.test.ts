@@ -135,6 +135,9 @@ describe("isAllowedAdeAction", () => {
       ["cloud", "invite_redeem"],
       // Sharing the gh sign-in hands it to every computer of the account.
       ["github", "setGhAccountSharing"],
+      // A secret's value, and a copy that moves another project's values into this one.
+      ["project_secret", "get"],
+      ["project_secret", "copy"],
     ] as const) {
       expect(isAllowedAdeAction(domain, action), action).toBe(true);
       expect(isUserOnlyAdeAction(domain, action), action).toBe(true);

@@ -63,6 +63,7 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
+import type { TrackedCliTurnEndedEvent } from "../../desktop/src/main/services/pty/cliTurnSignals";
 import { terminalShellPreferenceStoreFor } from "../../desktop/src/main/services/pty/terminalShells";
 import { createProjectSearchService } from "../../desktop/src/main/services/search/searchServiceWiring";
 import type { SearchService } from "../../desktop/src/main/services/search/searchService";
@@ -117,6 +118,7 @@ import {
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService, flushAllQueuedTranscriptWrites, listMachineProviderAccountChatLoad } from "../../desktop/src/main/services/chat/agentChatService";
 import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
+import { trackedCliIdentity } from "../../desktop/src/main/services/chat/cliSessionLifecycle";
 import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
@@ -422,6 +424,15 @@ import { readMachineIdFile } from "./services/sync/machineIdFile";
 import { cloudDiskGrowHost } from "../../desktop/src/main/services/adeCloud/cloudDiskGrowHost";
 import { logSlowProjectOpen } from "./services/projects/projectFilesystemKind";
 import { createPhaseClock, type PhaseClock } from "../../desktop/src/shared/phaseClock";
+import {
+  noteChatDeletedForMcp,
+  noteChatEventForMcp,
+  noteCliTurnEndedForMcp,
+  notePrChangesForMcp,
+  notePrEventForMcp,
+  registerMcpChatSource,
+  findTurnFinalReply,
+} from "./services/remoteMcp/remoteMcpEventHub";
 
 /** One warm-runtime budget for every project scope this brain opens. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -1334,6 +1345,8 @@ export async function createAdeRuntime(args: {
       displayName: project.displayName,
       baseRef
     });
+    /** The id ADE MCP lists this project by (the registry's), so its events match a `project` filter and show its name. */
+    const mcpProjectId = syncRuntimeOptions?.registryProjectId ?? projectId;
 
     // Product analytics is machine-scoped and lazy: constructing the service
     // performs no network work, and a missing build token makes it a no-op. The
@@ -2097,6 +2110,37 @@ export async function createAdeRuntime(args: {
       terminalShellPreferences: terminalShellPreferenceStoreFor(resolveMachineAdeLayout().adeDir, logger),
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
+    });
+    // A provider CLI's turn ends reach ADE MCP Events from its terminal, not from chat events.
+    // One guessed from quiet output counts only once the CLI's input box is back, as for the chat
+    // service. The PTY tells it once, so a box still coming back is checked again for a few
+    // seconds; a new turn or the CLI's own report of the end stops the check.
+    const cliEndChecks = new Map<string, ReturnType<typeof setTimeout>>();
+    const stopCliEndCheck = (sessionId: string): void => {
+      const timer = cliEndChecks.get(sessionId);
+      if (timer) clearTimeout(timer);
+      cliEndChecks.delete(sessionId);
+    };
+    const noteCliEndWhenReady = (event: TrackedCliTurnEndedEvent, checksLeft: number): void => {
+      cliEndChecks.delete(event.sessionId);
+      if (ptyService.canAcceptScheduledTurn(event.sessionId) === true) {
+        noteCliTurnEndedForMcp(mcpProjectId, event);
+        return;
+      }
+      if (checksLeft <= 0) return;
+      const timer = setTimeout(() => noteCliEndWhenReady(event, checksLeft - 1), 500);
+      timer.unref?.();
+      cliEndChecks.set(event.sessionId, timer);
+    };
+    teardown.push(ptyService.onTrackedCliTurnEnded((event) => {
+      stopCliEndCheck(event.sessionId);
+      if (event.source === "heuristic") noteCliEndWhenReady(event, 10);
+      else noteCliTurnEndedForMcp(mcpProjectId, event);
+    }));
+    teardown.push(ptyService.onTrackedCliTurnStarted((event) => stopCliEndCheck(event.sessionId)));
+    teardown.push(() => {
+      for (const timer of cliEndChecks.values()) clearTimeout(timer);
+      cliEndChecks.clear();
     });
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
@@ -3350,6 +3394,7 @@ export async function createAdeRuntime(args: {
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
           feedDemoTrackFromChatEvent(event);
+          noteChatEventForMcp(mcpProjectId, event);
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId, event.event.status);
@@ -3363,7 +3408,11 @@ export async function createAdeRuntime(args: {
             chatBrowserLifecycleHolder.current?.(event.sessionId, "running");
           }
         },
-        onChatDeleted: (sessionId) => cloudChatUploader?.noteChatDeleted(sessionId),
+        onChatDeleted: (sessionId, chat, options) => {
+          // A CLI's transcript is its terminal, never uploaded as a chat.
+          if (options?.surface !== "cli") cloudChatUploader?.noteChatDeleted(sessionId);
+          noteChatDeletedForMcp(mcpProjectId, sessionId, chat);
+        },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3457,6 +3506,27 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    if (agentChatService) {
+      // ADE MCP Events read a chat's name and final reply only when an app asks.
+      const chats = agentChatService;
+      teardown.push(registerMcpChatSource(mcpProjectId, {
+        identity: async (sessionId) => {
+          const summary = await chats.getSessionSummary(sessionId);
+          if (summary) {
+            return { title: summary.title ?? null, laneId: summary.laneId ?? null, parentSessionId: summary.orchestrationParentSessionId?.trim() || null };
+          }
+          // A tracked provider CLI has no chat summary; its row says which chat started it.
+          return trackedCliIdentity(sessionService.get(sessionId));
+        },
+        finalReply: (sessionId, turnId, sinceMs, untilMs, beforeMs) => findTurnFinalReply(
+          (limit, since) => chats.readTranscript(sessionId, limit, since),
+          turnId,
+          sinceMs,
+          untilMs,
+          beforeMs,
+        ),
+      }));
+    }
     // The CTO's account copy: written here while this machine is the CTO's
     // home, and what a new home restores it from (ctoAccountCopyService.ts).
     let ctoOriginCache: { at: number; scope: string | null } | null = null;
@@ -4110,6 +4180,7 @@ export async function createAdeRuntime(args: {
     // history was never compacted, even with no paired device.
     const emitPrEvent = (event: PrEventPayload): void => {
       pushEvent("runtime", { type: "pr_event", event });
+      notePrEventForMcp(mcpProjectId, event);
       if (event.type === "pr-chat-watch-changed") agentChatService?.notifyPrWatchChanged(event.sessionId);
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
@@ -4231,7 +4302,9 @@ export async function createAdeRuntime(args: {
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementService.processSnapshot(snapshot),
-      onPullRequestsChanged: async ({ prs, changedPrs, changes }) => {
+      onPullRequestsChanged: async ({ prs, changedPrs, changes, polledAt }) => {
+        // After this poll's notifications: ADE MCP Events tell the changes they left out.
+        notePrChangesForMcp(mcpProjectId, polledAt, changes);
         if (changedPrs.length > 0) {
           // Poll results must not start another hot-refresh window; doing so
           // turns active CI into an unbounded high-frequency GitHub API loop.

@@ -2043,7 +2043,8 @@ describe("ADE CLI", () => {
     expect(list.formatText!(shown)).toContain("1 project whose folder is gone is hidden");
     const all = expectExecutePlan(buildCliPlan(["projects", "list", "--include-missing"]));
     expect(all.shapeResult!({ result: listed })).toEqual(listed);
-    expect(buildCliPlan(["project", "add", "/tmp/project"])).toEqual({
+    const added = expectExecutePlan(buildCliPlan(["project", "add", "/tmp/project"]));
+    expect(added).toMatchObject({
       kind: "execute",
       label: "projects add",
       machineOnly: true,
@@ -2061,6 +2062,19 @@ describe("ADE CLI", () => {
         },
       ],
     });
+    // A folder the system can empty is warned about (never refused); a permanent one is not.
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const inTmp = added.shapeResult!({ result: { id: "p1", rootPath: "/tmp/project" } }) as Record<string, unknown>;
+      expect(inTmp.id).toBe("p1");
+      expect(String(inTmp.warning)).toContain("/tmp/project");
+      expect(stderr).toHaveBeenCalledTimes(1);
+      const kept = { id: "p2", rootPath: "/Users/someone/code/app" };
+      expect(added.shapeResult!({ result: kept })).toEqual(kept);
+      expect(stderr).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+    }
     expect(buildCliPlan(["projects", "remove", "project_abc"])).toEqual({
       kind: "execute",
       label: "projects remove",
@@ -17419,8 +17433,9 @@ describe("--machine targeting", () => {
   it("refuses --machine on a command that can only run here, and keeps it on a targetable one", () => {
     // Left in place, the flag used to be ignored and the answer read as the
     // other machine's.
+    // The refusal names what does run there.
     expect(() => extractMachineTargeting(parseCliArgs(["providers", "accounts", "list", "--machine", "Studio"])))
-      .toThrow(/runs on this machine only/);
+      .toThrow(/providers status --machine/);
     const targeted = extractMachineTargeting(parseCliArgs(["lanes", "list", "--machine", "Studio"]));
     expect(targeted.command).toEqual(["lanes", "list"]);
     expect(targeted.options.machine).toBe("Studio");
@@ -17451,8 +17466,10 @@ describe("--machine targeting", () => {
     // A value that happens to read `--machine` is a value, not targeting.
     const secret = extractMachineTargeting(parseCliArgs(["secrets", "set", "TOKEN", "--value", "--machine"]));
     expect(secret.command).toEqual(["secrets", "set", "TOKEN", "--value", "--machine"]);
-    expect(() => extractMachineTargeting(parseCliArgs(["secrets", "list", "--machine", "Studio"])))
-      .toThrow(/runs on this machine only/);
+    // `secrets list|copy` read or copy that machine's copy of the project; the rest stay here.
+    expect(extractMachineTargeting(parseCliArgs(["secrets", "list", "--machine", "Studio"])).options.machine).toBe("Studio");
+    expect(() => extractMachineTargeting(parseCliArgs(["secrets", "set", "TOKEN", "--value", "x", "--machine", "Studio"])))
+      .toThrow(/secrets list --machine/);
   });
 });
 

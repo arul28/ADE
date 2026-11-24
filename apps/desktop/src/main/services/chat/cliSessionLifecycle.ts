@@ -1,4 +1,4 @@
-import type { AgentChatCliLaunchProvider, AgentChatPermissionMode, AgentChatTranscriptEntry } from "../../../shared/types/chat";
+import type { AgentChatCliLaunchProvider, AgentChatIdentity, AgentChatPermissionMode, AgentChatTranscriptEntry } from "../../../shared/types/chat";
 import type { ExternalSessionDetail } from "../../../shared/types/externalSessionDetail";
 import { isExternalSessionProvider, type ExternalSessionProvider } from "../../../shared/types/externalSessions";
 import {
@@ -133,6 +133,22 @@ export function agentCliRowTitle(title: string | null | undefined, toolType: str
   const name = agentCliDisplayName(toolType);
   if (trimmed && !(name && GENERIC_TERMINAL_TITLES.has(trimmed.toLowerCase()))) return trimmed;
   return name ?? (trimmed || null);
+}
+
+/**
+ * A tracked CLI's name, lane and parent chat, as a chat summary gives them for
+ * a chat. A CLI has no summary; a chat that started it as a worker is in its
+ * resume metadata. Null for a row that is not a tracked CLI.
+ */
+export function trackedCliIdentity(
+  row: TerminalSessionSummary | null | undefined,
+): AgentChatIdentity | null {
+  if (!row || !isTrackedAgentCliRow(row)) return null;
+  return {
+    title: agentCliRowTitle(row.goal ?? row.title, row.toolType),
+    laneId: row.laneId ?? null,
+    parentSessionId: row.resumeMetadata?.orchestrationParentSessionId?.trim() || null,
+  };
 }
 
 function withTimeout(work: Promise<unknown>, ms: number): Promise<void> {

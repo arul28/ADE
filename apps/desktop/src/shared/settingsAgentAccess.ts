@@ -79,6 +79,8 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "agents.provider.kimi",
     "agents.provider.grok",
     "agents.provider.copilot",
+    "agents.provider.devin",
+    "agents.provider.antigravity",
     "agents.harnesses",
     "integrations.github",
     "integrations.linear",

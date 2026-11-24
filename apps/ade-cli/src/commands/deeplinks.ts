@@ -34,10 +34,10 @@ export type DeeplinkCliResult = {
   exitCode: number;
 };
 
-export type LinkEnvelopeContext = {
-  targetKind: "lane" | "session" | "commit";
-  laneId: string;
-};
+export type LinkEnvelopeContext =
+  | { targetKind: "lane" | "session" | "commit"; laneId: string; sessionId?: string }
+  /** A session link with no `--lane`: the resolver finds the session's lane. */
+  | { targetKind: "session"; laneId?: undefined; sessionId: string };
 
 export type DeeplinkCommandOptions = {
   resolveEnvelope?: (
@@ -339,7 +339,7 @@ function buildLinkPlan(args: string[]): LinkPlan {
     const laneId = flags.valued.get("lane");
     return plan(
       laneId ? { kind: "session", sessionId, laneId } : { kind: "session", sessionId },
-      laneId ? { targetKind: "session", laneId } : undefined,
+      laneId ? { targetKind: "session", laneId, sessionId } : { targetKind: "session", sessionId },
     );
   }
   if (verb === "file") {

@@ -134,7 +134,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["update", new Set(["status"])],
   ["tools", new Set(["status"])],
   ["secrets", new Set(["list"])],
-  ["providers", new Set(["actions"])],
+  ["providers", new Set(["actions", "status"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
   // Where each model can run, and the saved Custom providers: what a launch
@@ -832,29 +832,58 @@ export function splitCommandLine(line: string): string[] | null {
   return words;
 }
 
-/** A flag whose value is a credential (`--api-key sk-…`). */
-const SECRET_FLAG_NAME = /token|secret|password|api[-_]?key|credential/i;
+/** A flag whose value is a credential (`--api-key sk-…`, `secrets set NAME --value …`). */
+const SECRET_FLAG_NAME = /token|secret|password|api[-_]?key|credential|value/i;
+/**
+ * `chat respond` flags that carry an answer. The log can't tell a secret
+ * question from another, so every typed answer is left out; a picked option shows.
+ */
+const ANSWER_FLAGS: ReadonlySet<string> = new Set(["--answer", "--answers-json", "--text", "--message", "--response"]);
+/** `ade secrets` verbs whose later words can hold a value (`set` has the CLI's aliases `put` and `add`). */
+const SECRET_VALUE_VERBS: ReadonlySet<string> = new Set(["set", "put", "add", "request"]);
 
 /**
  * The words safe to keep in the activity log. Values that look like they set a
  * secret are replaced, and the whole line is bounded.
  */
-export function redactedCommandForLog(args: readonly string[]): string {
+export function redactedCommandForLog(rawArgs: readonly string[]): string {
+  // Read as the policy reads it: the program name dropped (models often add it).
+  const args = rawArgs[0] === "ade" ? rawArgs.slice(1) : rawArgs;
   const out: string[] = [];
-  const secretCommand = args[0] === "secrets" && (args[1] === "set" || args[1] === "request");
+  // Every word after `secrets set <key>` (the verb is the first word that is
+  // not a flag), or after a Passwords or secret action
+  // (`actions run passwords.saveSecret --arg value=…`), can be a value.
+  // The command and its verb are the first two words that are not flags, as the CLI reads
+  // them, and an alias (`chats`, `work`, `secret`) is the command it names.
+  const commandAt = args.findIndex((word) => !word.startsWith("-"));
+  const command = (args[commandAt] ?? "").toLowerCase();
+  const verbAt = commandAt < 0 ? -1 : args.findIndex((word, index) => index > commandAt && !word.startsWith("-"));
+  const verb = (args[verbAt] ?? "").toLowerCase();
+  const isSecrets = command === "secrets" || command === "secret";
+  // Dotted (`passwords.saveSecret`) or split (`passwords saveSecret`): the values follow the action.
+  const secretAction = args.findIndex((word, index) => args[index - 1] === "run" && /^(?:passwords|project_secret)(?:\.|$)/.test(word));
+  const valuesFrom = isSecrets && verbAt > 0 && SECRET_VALUE_VERBS.has(verb)
+    ? verbAt + 2
+    : secretAction >= 0 ? secretAction + (args[secretAction]!.includes(".") ? 1 : 2) : Number.POSITIVE_INFINITY;
+  const answering = (command === "chat" || command === "chats" || command === "work") && (verb === "respond" || verb === "answer");
   for (let index = 0; index < args.length; index += 1) {
     const word = args[index]!;
-    if (secretCommand && index >= 3) {
+    if (index >= valuesFrom) {
       out.push("[redacted]");
-      continue;
-    }
-    if (/(?:token|secret|password|api[-_]?key)=/i.test(word)) {
-      out.push(word.replace(/=.*/, "=[redacted]"));
       continue;
     }
     const previous = args[index - 1] ?? "";
-    if (previous.startsWith("-") && SECRET_FLAG_NAME.test(previous)) {
+    if (previous.startsWith("-") && (SECRET_FLAG_NAME.test(previous) || (answering && ANSWER_FLAGS.has(previous)))) {
       out.push("[redacted]");
+      continue;
+    }
+    const flag = word.split("=", 1)[0]!;
+    if (answering && word.includes("=") && ANSWER_FLAGS.has(flag)) {
+      out.push(`${flag}=[redacted]`);
+      continue;
+    }
+    if (/(?:token|secret|password|api[-_]?key|value)=/i.test(word)) {
+      out.push(word.replace(/=.*/, "=[redacted]"));
       continue;
     }
     out.push(/\s/.test(word) ? JSON.stringify(word) : word);

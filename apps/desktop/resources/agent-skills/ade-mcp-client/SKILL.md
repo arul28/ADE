@@ -17,7 +17,7 @@ Cloudflare front refuses default library user agents (Python's urllib) with
 ## 1. Find the machine and project
 
 1. `machines_list`: pick one with `online: true` and `serving: true`. Pass its
-   `key` as `machine`. A name works when it is unique.
+   `key` as `machine`. Its name or `hostname` (`Mac.lan`) works when unique.
 2. `projects_list` with that `machine`: pass its `projectId` as `project`.
 3. A device there: `["devices","--text"]` through the `ade` tool with that
    `machine` lists them; device commands take `--lane <lane there>`.
@@ -105,8 +105,18 @@ It lasts 7 days. The machine must be awake to send it. If it can't be armed,
 the chat still starts, and the answer says `notify: {armed: false}`. A Grok Bot or other
 routine that starts from a webhook URL and key fits this directly.
 
+**Every chat at once: `events_poll`.** It returns what happened on every
+machine since `cursor`: turns ended (with the final reply), chats waiting on
+an answer, answers, deleted chats and PR changes. Omit `cursor` the first
+time, then pass back the answer's `cursor`. A client with MCP Events support
+gets the same through `events/poll`, or `events/subscribe` for signed
+webhooks.
+
 When a chat waits on the person, `inbox` shows the question and `chat_respond`
-answers it, if the person told you to.
+answers it, if the person told you to. With full access that is approvals,
+questions, and a secret card (its answer is saved to the project's secrets,
+not to the chat). Screen-control consent stays with the person: they answer it
+in ADE.
 
 A chat that is gone says why: `state: "deleted"` with `deletedAt` and
 `reopenable` (null when ADE could not check), or `state: "not_found"`.
@@ -115,6 +125,11 @@ A chat that is gone says why: `state: "deleted"` with `deletedAt` and
 
 - `chat_read` for what it said, `diff_changes` and `diff_patch` for what it
   changed, `prs_*` for its pull request.
+- A watcher that relays reports: `chat_read` with `final: true` gives only the
+  last reply. Each message has `timestamp`, `turnId` and `messageId`: keep the
+  last `messageId` you relayed, and pass its `timestamp` as `since` next time.
+  `before: 0` gives the newest page and a `nextCursor`; pass that as `before`
+  for older messages.
 - `proof_review` with `session` returns the image inline. A video comes as a
   sheet of key frames. A tall page comes one page at a time: the result says
   `page` and `pages`, and `page: 2` shows the next. `y_from` and `y_to` cut any
@@ -132,5 +147,9 @@ chunk at the wrong offset is refused and names the file's real size.
 
 - Secrets an agent printed are removed from what `chat_read` returns, but don't
   ask an agent to print one.
+- Secrets, with full access, through the `ade` tool: `["secrets","list"]`,
+  `["secrets","get","NAME"]`, `["secrets","set","NAME","--stdin"]` with the
+  value as `stdin`, and `["secrets","request","NAME","--reason","…"]` to ask
+  the person with a card. Read only can list names, never values.
 - A machine that is offline can't answer; the error names the ones that can.
 - Lane scratch files belong in `.ade/tmp`.

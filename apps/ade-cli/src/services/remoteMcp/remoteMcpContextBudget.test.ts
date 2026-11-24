@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RemoteMcpConnectionSummary, RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
 import type { RemoteMcpMachineRouter } from "./remoteMcpForward";
+import type { RemoteMcpEvents } from "./remoteMcpEvents";
 import { createRemoteMcpProtocol } from "./remoteMcpProtocol";
 
 /**
@@ -32,6 +33,8 @@ async function measure(scope: RemoteMcpScope): Promise<{ instructions: number; t
     listProjects: () => [],
     record: () => {},
     machines,
+    // A brain serves Events too; only its presence shapes the list.
+    events: {} as RemoteMcpEvents,
   });
   const connection = { id: "budget", label: "budget", scope } as RemoteMcpConnectionSummary;
   const init = await protocol.handleRpc(connection, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} });

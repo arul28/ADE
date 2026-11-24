@@ -217,7 +217,9 @@ export function readAgentSpawnLineage(
   if (options.allowSpawnType === false) {
     return { kind: "dropped", droppedAmbientParentSessionId: ambientParentSessionId };
   }
-  if (!orchestrationParentSessionId && requestedSpawnKind) {
+  // `--type peer` with no parent is a plain top-level chat (nobody to report
+  // to), exactly like `--no-report` with no parent; only `subagent` needs one.
+  if (!orchestrationParentSessionId && requestedSpawnKind === "subagent") {
     throw new CliUsageError(
       options.missingParentMessage ?? SPAWN_PARENT_REQUIRED_MESSAGE,
     );
@@ -547,6 +549,16 @@ export function normalizeLaunchArgs(
     // `--type` is in `readAgentSpawnLineage`. A shell keeps no lineage, so the
     // shell rule below still refuses the parent itself.
     if (merged.spawnKind === undefined && merged.provider !== "shell") merged.spawnKind = "subagent";
+  }
+  // A parentless `peer` (`--arg spawnKind=peer`) is a top-level chat, the same
+  // as the flag reader treats `--type peer` with no parent. A shell keeps its
+  // refusal below.
+  if (
+    merged.spawnKind === "peer"
+    && merged.orchestrationParentSessionId === undefined
+    && merged.provider !== "shell"
+  ) {
+    delete merged.spawnKind;
   }
 
   assertMergedLaunchArgs(merged, options);

@@ -96,6 +96,8 @@ export function createChatRouter(deps: {
   machines: RemoteMcpMachineRouter;
   onlineMachinesSentence: () => Promise<string>;
   onlyMachineRefusal: (only: NonNullable<RemoteMcpConnectionSummary["onlyMachine"]>) => string;
+  /** A result's project line and `structuredContent.project` rewritten to name this project. */
+  relabelProject: (result: RemoteMcpToolResult, projectId: string) => Promise<RemoteMcpToolResult>;
   warn?: (event: string, data?: Record<string, unknown>) => void;
 }) {
   /** Connection and chat id → where it answered, so the next call goes straight there. */
@@ -106,6 +108,9 @@ export function createChatRouter(deps: {
     // Oldest first: a long-lived brain keeps the most recent few hundred.
     while (chatHomes.size > MAX_CHAT_HOMES) chatHomes.delete(chatHomes.keys().next().value!);
   };
+
+  /** Remembered per connection: one app's lookups never steer another's. */
+  const chatHomeKey = (call: ChatCall): string => `${call.connection.id}:${call.sessionId}`;
 
   /** Where `sessionId` is (`ade chat locate`); null when the lookup itself failed. */
   const locateChat = async (call: ChatCall, onlyThisMachine: boolean): Promise<LocatedChat | null> => {
@@ -190,10 +195,30 @@ export function createChatRouter(deps: {
     return { result: first, projectId: null };
   };
 
+  /**
+   * This computer keeps every project's chats in one store, so a chat answers
+   * in whichever project the call ran in: the default, the last opened one.
+   * Its result then named that project, not the chat's. One local lookup
+   * (`chat locate --this-machine`) names the chat's own, which the result is
+   * labeled with and later calls run in. The call is not run again, so a send
+   * goes once. The project is remembered, so the next call needs no lookup.
+   */
+  const inOwnProject = async (call: ChatCall, result: RemoteMcpToolResult): Promise<RemoteMcpToolResult> => {
+    if (nonEmptyString(call.input.project) || result.isError) return result;
+    const homeKey = chatHomeKey(call);
+    const known = chatHomes.get(homeKey);
+    const located = known?.machineKey === null ? null : await locateChat(call, true);
+    const projectId = known?.machineKey === null ? known.projectId : located?.machine?.isThisMachine ? located.projectId : null;
+    if (!projectId) return result;
+    rememberChatHome(homeKey, { machineKey: null, projectId });
+    const ranIn = nonEmptyString(asRecord(asRecord(result.structuredContent).project).id);
+    return ranIn === projectId ? result : await deps.relabelProject(result, projectId);
+  };
+
   /** A chat call that may reach only this computer: a call forwarded here, or one that named this computer. */
   const callHere = async (call: ChatCall): Promise<RemoteMcpToolResult> => {
     const first = await deps.callTool(call.connection, call.params);
-    if (!isChatMiss(call.name, first)) return first;
+    if (!isChatMiss(call.name, first)) return await inOwnProject(call, first);
     const located = await locateChat(call, true);
     const here = await answerHere(call, first, located);
     // Located here, and the tool still finds nothing: never a bare null.
@@ -209,8 +234,7 @@ export function createChatRouter(deps: {
     if (call.context.via) return labeled(await callHere(call));
     const projectGiven = nonEmptyString(input.project);
     const withProject = (projectId: string | null) => (projectId && !projectGiven ? { ...input, project: projectId } : input);
-    // Remembered per connection: one app's lookups never steer another's.
-    const homeKey = `${connection.id}:${call.sessionId}`;
+    const homeKey = chatHomeKey(call);
     const home = chatHomes.get(homeKey);
     if (home && (!only || home.machineKey === null || only.machineKey === home.machineKey)) {
       if (home.machineKey === null) {
@@ -229,7 +253,7 @@ export function createChatRouter(deps: {
       chatHomes.delete(homeKey);
     }
     const first = await deps.callTool(connection, call.params);
-    if (!isChatMiss(name, first)) return labeled(first);
+    if (!isChatMiss(name, first)) return labeled(await inOwnProject(call, first));
     const located = await locateChat(call, false);
     const here = await answerHere(call, first, located);
     if (here) {

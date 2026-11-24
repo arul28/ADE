@@ -376,6 +376,45 @@ function activityCaller(session: SessionState): "agent" | "person" {
 }
 
 /**
+ * The person's own secret and password actions that an app with full ADE MCP
+ * access may also take for them: read a secret's value, copy another
+ * project's secrets, read or save a saved login or secret. The person chose
+ * full access in Settings → ADE MCP ("works like you"). A chat's own agent
+ * still may not: it is not that app.
+ */
+const ADE_MCP_PERSON_SECRET_ACTIONS: ReadonlySet<string> = new Set([
+  "project_secret.get",
+  "project_secret.copy",
+  "passwords.revealValue",
+  "passwords.saveLogin",
+  "passwords.saveSecret",
+]);
+
+/**
+ * A command this brain's ADE MCP runner started for a full-access connection
+ * and still runs, with no chat of its own: an outside app acting for the
+ * person. The connection id is only an environment claim any shell can set,
+ * so the caller's process must also be one the runner started for that
+ * connection (`isRunningRemoteRun`).
+ */
+function isVerifiedAdeMcpWriteRun(session: SessionState, callerCtx: { chatSessionId?: string | null }): boolean {
+  const stampedChatSessionId = stampedChatSessionIdOf(session, callerCtx);
+  const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
+  const claimedConnection = asOptionalTrimmedString(session.identity.remoteMcpConnectionId);
+  return !stampedChatSessionId
+    && Boolean(claimedConnection)
+    && callerHasRoleAtLeast(session.identity.role, "cto")
+    && isSyntheticCallerId(session.identity.callerId)
+    && Number.isInteger(callerPid)
+    && isRunningRemoteRun(callerPid, claimedConnection);
+}
+
+/** The chat a caller runs in, from its resolved context or its session stamp; null for none. */
+function stampedChatSessionIdOf(session: SessionState, callerCtx: { chatSessionId?: string | null }): string | null {
+  return asOptionalTrimmedString(callerCtx.chatSessionId) ?? asOptionalTrimmedString(session.identity.chatSessionId) ?? null;
+}
+
+/**
  * Whether the caller is a person's client rather than an agent.
  *
  * A CTO acting through its action caller (`CTO_REMOTE_CLIENT_NAME`, from
@@ -6991,7 +7030,11 @@ async function runTool(args: {
     let undoBrowserActivityOnFailure: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
-    if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
+    if (
+      isUserOnlyAdeAction(domain, action)
+      && !mayUseUserOnlyActions(session)
+      && !(ADE_MCP_PERSON_SECRET_ACTIONS.has(`${domain}.${action}`) && isVerifiedAdeMcpWriteRun(session, callerCtx))
+    ) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
         `${domain}.${action} is limited to user clients${androidUserOnlyReason(domain, action)}`,
@@ -7140,17 +7183,8 @@ async function runTool(args: {
       // A caller with a chat is that chat's agent, asked in its chat: it never
       // takes the unattended ADE MCP path. The run, and the connection it was
       // started for, are this brain's own records.
-      const stampedChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
-        ?? asOptionalTrimmedString(session.identity.chatSessionId)
-        ?? null;
-      const callerPid = Number(/:(\d+)$/.exec(session.identity.callerId ?? "")?.[1] ?? Number.NaN);
-      const claimedConnection = asOptionalTrimmedString(session.identity.remoteMcpConnectionId);
-      const viaAdeMcp = !stampedChatSessionId
-        && Boolean(claimedConnection)
-        && callerHasRoleAtLeast(session.identity.role, "cto")
-        && isSyntheticCallerId(session.identity.callerId)
-        && Number.isInteger(callerPid)
-        && isRunningRemoteRun(callerPid, claimedConnection);
+      const stampedChatSessionId = stampedChatSessionIdOf(session, callerCtx);
+      const viaAdeMcp = isVerifiedAdeMcpWriteRun(session, callerCtx);
       const { approval: _ignoredApproval, ...cloudArgs } = rawObjectArgs;
       scopedObjectArgs = {
         ...cloudArgs,

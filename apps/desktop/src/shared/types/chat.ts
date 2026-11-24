@@ -6926,6 +6926,9 @@ export type AgentChatDeleteArgs = {
   sessionId: string;
 };
 
+/** A chat's (or a tracked CLI's) name, lane, and the chat that started it: what a deleted chat leaves behind. */
+export type AgentChatIdentity = { title: string | null; laneId: string | null; parentSessionId: string | null };
+
 export type AgentChatDeleteResult = {
   /**
    * Settings › Recently deleted holds the chat, so Undo can bring it back.

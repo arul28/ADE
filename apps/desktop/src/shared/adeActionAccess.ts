@@ -346,7 +346,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "list", "get",
     ],
     write: [
-      "set", "delete", "request", "exec",
+      "set", "copy", "delete", "request", "exec",
     ],
   },
   // Passwords: agents read summaries (sites, usernames, never a value). The

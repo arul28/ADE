@@ -471,6 +471,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { name: string, value: string, storage?: \"account\" | \"device\" }",
       example: "ade secrets set STRIPE_API_KEY --value sk_test_...",
     },
+    copy: {
+      description: "Copy another project's own secrets into this project in one call, never returning a value. `from` is that project's folder on this machine or its repository (owner/name, GitHub URL). Every check runs before the first write. A name this project already has is skipped and reported unless `overwrite`. Each secret keeps its place (account or this computer only). Returns {from, copied, replaced, skipped} (names). Only the person (the desktop) or an ADE MCP app with full access may copy; a chat's agent is refused, because a copy would move another project's values into this one.",
+      input: "object { from: string, names?: string[], overwrite?: boolean }",
+      example: "ade secrets copy --from owner/other-repo --names STRIPE_API_KEY,SENTRY_DSN",
+    },
     delete: {
       description: "Delete one of this project's own secrets (a secret for every project is left alone).",
       input: "object { name: string, confirmName: string }",

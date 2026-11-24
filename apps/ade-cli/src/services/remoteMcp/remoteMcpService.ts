@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import os from "node:os";
 import type { AccountProjectView } from "../../../../desktop/src/shared/accountProject";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import {
@@ -66,6 +67,7 @@ import {
   type RemoteMcpVault,
 } from "./remoteMcpStore";
 import { createRemoteMcpProtocol, type JsonRpcMessage, type RemoteMcpProject } from "./remoteMcpProtocol";
+import { createRemoteMcpEvents } from "./remoteMcpEvents";
 
 /**
  * ADE MCP: one MCP server for the person's ADE account, reached through ADE
@@ -435,13 +437,15 @@ export function createRemoteMcpService(args: {
     const reason = notServingReasonHere();
     const desired = {
       name: args.machineName(),
+      hostname: os.hostname().trim().slice(0, 253),
       endpointKey: endpoint.endpointKey,
       version: remoteMcpAdeVersion(),
       serving: reason === null,
       reason,
     };
     const same = (entry: ReturnType<typeof readRemoteMcpMachineEntry>) => Boolean(entry
-      && entry.name === desired.name && entry.endpointKey === desired.endpointKey && entry.version === desired.version
+      && entry.name === desired.name && entry.hostname === desired.hostname
+      && entry.endpointKey === desired.endpointKey && entry.version === desired.version
       && entry.reported?.serving === desired.serving && (entry.reported?.reason ?? null) === desired.reason);
     const current = readRemoteMcpMachineEntry(args.settings, endpoint.machineKey);
     if (same(current)) return;
@@ -458,6 +462,7 @@ export function createRemoteMcpService(args: {
     writeRemoteMcpMachineEntry(args.settings, {
       machineKey: endpoint.machineKey,
       name: desired.name,
+      hostname: desired.hostname,
       endpointKey: desired.endpointKey,
       version: desired.version,
       included: existing?.included ?? true,
@@ -544,6 +549,7 @@ export function createRemoteMcpService(args: {
     observeRelayConnection();
     announceIfChanged();
     void maintain();
+    events.refresh();
   };
 
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -616,6 +622,19 @@ export function createRemoteMcpService(args: {
     logger: args.logger,
   });
 
+  // Webhook subscriptions ride the account vault; each computer sends its own chats' events.
+  const events = createRemoteMcpEvents({
+    machines,
+    listProjects: args.listProjects,
+    vault: args.vault,
+    connection: (id) => store.list().find((connection) => connection.id === id) ?? null,
+    servingHere: serving,
+    syncSoon: () => void syncVault(),
+    record,
+    warn: (event, data) => args.logger?.warn?.(event, data),
+    now,
+  });
+
   const protocol = createRemoteMcpProtocol({
     machineName: args.machineName,
     listProjects: args.listProjects,
@@ -623,6 +642,7 @@ export function createRemoteMcpService(args: {
     record,
     warn: (event, data) => args.logger?.warn?.(event, data),
     machines,
+    events,
   });
 
   const callReplays = createRemoteMcpReplayGuard<Record<string, unknown> | null>({ ttlMs: CALL_REPLAY_TTL_MS, now });
@@ -888,6 +908,7 @@ export function createRemoteMcpService(args: {
       const ok = writeRemoteMcpMachineEntry(args.settings, {
         machineKey,
         name: existing?.name ?? listed?.name ?? "",
+        hostname: existing?.hostname ?? "",
         endpointKey: existing?.endpointKey ?? "",
         version: existing?.version ?? "",
         included: input.included,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HELP_BY_COMMAND } from "../../cli";
-import { checkRemoteAdeCommand } from "./remoteMcpCommandPolicy";
+import { checkRemoteAdeCommand, redactedCommandForLog } from "./remoteMcpCommandPolicy";
 
 /**
  * What an outside AI app may run through ADE MCP. Read only must never reach a
@@ -160,4 +160,33 @@ describe("checkRemoteAdeCommand", () => {
       expect(verdict.ok ? "" : verdict.reason).not.toMatch(/isn't enabled for ADE MCP/);
     },
   );
+});
+
+/**
+ * The activity log (`remote-mcp/activity.jsonl`, shown in Settings) keeps every
+ * command an app ran, refused ones too. A secret's value must never be in it,
+ * however the command is spelled; the secret's name and the command stay.
+ */
+describe("redactedCommandForLog", () => {
+  it.each([
+    ["the program name first, the value after --value", ["ade", "secrets", "set", "STRIPE_KEY", "--value", "sk_live_1"], "sk_live_1", "secrets set STRIPE_KEY"],
+    ["the `put` alias, the value as a word", ["secrets", "put", "STRIPE_KEY", "sk_live_2"], "sk_live_2", "secrets put STRIPE_KEY"],
+    ["the `add` alias, --value=", ["secrets", "add", "STRIPE_KEY", "--value=sk_live_3"], "sk_live_3", "secrets add STRIPE_KEY"],
+    ["a flag before the verb", ["secrets", "--json", "set", "STRIPE_KEY", "sk_live_4"], "sk_live_4", "secrets --json set"],
+    ["the `secret` spelling", ["secret", "set", "STRIPE_KEY", "sk_live_5"], "sk_live_5", "secret set STRIPE_KEY"],
+    ["every word after a request's name", ["secrets", "request", "STRIPE_KEY", "--reason", "sk_live_6"], "sk_live_6", "secrets request STRIPE_KEY"],
+    ["a Passwords action", ["ade", "actions", "run", "passwords.saveSecret", "--arg", "value=sk_live_7"], "sk_live_7", "actions run passwords.saveSecret"],
+    ["a token flag on any command", ["prs", "create", "--token", "ghp_8"], "ghp_8", "prs create --token"],
+    ["a split Passwords action", ["actions", "run", "passwords", "saveSecret", "--input-json", "{\"value\":\"sk_live_9\"}"], "sk_live_9", "actions run passwords saveSecret"],
+    ["a chat answer by --text", ["chat", "respond", "chat-1", "--text", "hunter10 token=x"], "hunter10", "chat respond chat-1 --text"],
+    ["a chat answer by --answer=", ["chat", "answer", "chat-1", "--answer=1=hunter11"], "hunter11", "chat answer chat-1"],
+    ["a chat answer map", ["chat", "respond", "chat-1", "--answers-json", "{\"q1\":\"hunter12\"}"], "hunter12", "chat respond chat-1 --answers-json"],
+    ["a chat answer by an alias", ["chats", "respond", "chat-1", "--text", "hunter13"], "hunter13", "chats respond chat-1 --text"],
+    ["a chat answer after a flag", ["--json", "work", "answer", "chat-1", "--text", "hunter14"], "hunter14", "--json work answer chat-1 --text"],
+  ])("never logs the value: %s", (_label, args, secret, kept) => {
+    const line = redactedCommandForLog(args);
+    expect(line).not.toContain(secret);
+    expect(line).toContain("[redacted]");
+    expect(line.startsWith(kept)).toBe(true);
+  });
 });

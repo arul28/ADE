@@ -640,7 +640,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       .slice(0, integer(input, "limit", 30, 200))
       .map((chat) => ({ ...pick(chat, CHAT_FIELDS), link: chatLink(nonEmptyString(chat.sessionId), nonEmptyString(chat.laneId), context) })),
   },
-  // result: the CLI's transcript read (messages, newest last)
+  // result: the CLI's transcript read ({ entries: [{ role, text, timestamp, turnId, messageId }], truncated,
+  //           totalEntries, turnFailures?, nextCursor? }, newest last)
   {
     name: "chat_read",
     title: "Read a chat",
@@ -650,19 +651,39 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       session: SESSION,
       limit: LIMIT(100, 20),
       max_chars: { type: "integer", minimum: 500, maximum: 50000, description: "Default 8000." },
+      since: { type: "string", description: "ISO time: messages from then on." },
+      before: { type: "integer", minimum: 0, description: "Pages: 0 is the newest, then `nextCursor`." },
+      final: { type: "boolean", description: "Only the last reply." },
     },
     required: ["session"],
     build: (input) => {
       const session = word(input, "session");
       if ("error" in session) return session;
+      const since = optionalWord(input, "since");
+      if ("error" in since) return since;
+      const before = typeof input.before === "number" && Number.isFinite(input.before) && input.before >= 0
+        ? Math.floor(input.before)
+        : null;
+      // `--page` alone is the newest page; `--cursor` an older one. A page
+      // takes no `--since` (the CLI refuses both), so paging wins.
+      const page = before === null ? [] : before === 0 ? ["--page"] : ["--cursor", String(before)];
       return {
         argv: [
           "chat", "read", session.value,
           "--limit", String(integer(input, "limit", 20, 100)),
           "--max-chars", String(Math.max(500, integer(input, "max_chars", 8000, 50_000))),
+          ...(since.value && before === null ? [freeText("--since", since.value)] : []),
+          ...page,
           "--json",
         ],
       };
+    },
+    shape: (value, input) => {
+      if (input.final !== true) return value;
+      const record = unwrap(value);
+      if (!isRecord(record) || !Array.isArray(record.entries)) return value;
+      const last = record.entries.filter(isRecord).reverse().find((entry) => entry.role === "assistant");
+      return { ...record, entries: last ? [last] : [] };
     },
   },
   // result: the CLI's turn status ({ sessionId, phase: running|waiting|blocked|idle, currentTool, ask, subagents, … })

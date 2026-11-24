@@ -360,7 +360,7 @@ function formatChatInbox(value: unknown): string {
       if ((item.questions?.length ?? 0) > 1 || question.question !== item.text) {
         lines.push(`  ${index + 1}. ${question.header ? `[${question.header}] ` : ""}${question.question}`);
       }
-      if (question.secret) lines.push("     (secret: answer it in ADE)");
+      if (question.secret) lines.push("     (secret: the person answers it, in ADE or through an app with full ADE MCP access)");
       question.options?.forEach((option, optionIndex) => {
         lines.push(`     ${optionIndex + 1}) ${option.label}${option.recommended ? " (recommended)" : ""}${option.description ? ` — ${option.description}` : ""}`);
       });
