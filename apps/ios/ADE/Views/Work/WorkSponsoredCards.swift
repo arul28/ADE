@@ -163,7 +163,8 @@ private struct WorkSponsoredFrame<Content: View>: View {
     VStack(alignment: .leading, spacing: 5, content: content)
       .padding(.horizontal, 12)
       .padding(.vertical, 10)
-      .frame(maxWidth: 520, alignment: .leading)
+      // As wide as the chat column, so it lines up with the composer below.
+      .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.textPrimary.opacity(0.02), in: shape)
       .overlay(shape.strokeBorder(ADEKit.edge, lineWidth: 0.75))
       .padding(.top, 2)
@@ -348,7 +349,9 @@ struct WorkSponsoredAdCard: View {
           .lineSpacing(1.5)
           .fixedSize(horizontal: false, vertical: true)
       }
+      // The call to action sits on the right, under the hide button.
       WorkSponsoredCTA(title: ad.cta ?? "Learn more", external: true) { workSponsoredOpen(ad.clickUrl) }
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.top, 4)
     }
     .accessibilityElement(children: .contain)

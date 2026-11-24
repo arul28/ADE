@@ -99,7 +99,7 @@ no cards to show there, so Small keeps using hours.
 
 ### Countries
 
-Cards go only to viewers in `GRAVITY_COUNTRIES` (default `US,CA`), read from
+Cards go only to viewers in `GRAVITY_COUNTRIES` (default `US,CA,GB,AU`, where Gravity fills real ads), read from
 Cloudflare's `cf.country` for the viewer's own connection; where the ADE Cloud
 computer runs does not matter. While ads are test ads (`gravity_live` off), an
 account on the testers list skips that check for cards, so the owner can test

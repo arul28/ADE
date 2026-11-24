@@ -50,7 +50,7 @@ import {
  *   held under the deploy variable `GRAVITY_ADS` (`off` there is a hard off);
  * - the Free plan (a paid plan, a `past_due` one too, never sees one), or
  *   the account test tool's plan (`shownPlanIdOf`);
- * - the person's country (`GRAVITY_COUNTRIES`, US and Canada by default);
+ * - the person's country (`GRAVITY_COUNTRIES`, by default US, CA, GB and AU);
  * - the account's yes to the one-time question (`cloud_sponsored_consent`);
  * - a chat on one of the account's own ADE Cloud computers: never a chat on
  *   the person's own machine, whatever the plan.
@@ -100,7 +100,8 @@ const DEFAULT_DAILY_LIMIT = 900;
 const TURN_TTL_MS = 24 * 60 * 60_000;
 const ALL = "*";
 const INDEX_CONTEXT_MESSAGES = 6;
-const DEFAULT_COUNTRIES = ["US", "CA"];
+/** Where Gravity fills real ads (Gravity, 2026-11-24): the US, Canada, the UK and Australia. */
+const DEFAULT_COUNTRIES = ["US", "CA", "GB", "AU"];
 
 type Mode = CloudSettingValue<"gravity_ads">;
 type Switches = { mode: Mode; live: boolean };
