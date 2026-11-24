@@ -243,6 +243,8 @@ struct WorkSponsoredReplySlot: View {
 private func workSponsoredAsk(instanceId: String, sessionId: String, turn: CloudSponsoredTurn, format: CloudSponsoredFormat, store: CloudSponsoredStore) async {
   let key = CloudSponsoredStore.turnKey(chatId: sessionId, turnId: turn.turnId)
   store.noteAsked(turnKey: key, format: format)
+  // A turn asked before keeps that format: the card is drawn only in the format it was asked in.
+  let format = store.askedFormats[key] ?? format
   let ask: @MainActor () async -> CloudSponsoredAdAnswer = {
     guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else { return .unavailable }
     // Apple's tracking prompt, once, before the first card; the card is asked for whatever the answer.
@@ -265,13 +267,16 @@ private func workSponsoredAsk(instanceId: String, sessionId: String, turn: Cloud
 
 private let workSponsoredNotCloudRetry: Duration = .seconds(12)
 
-/// Whether a card drawn away from the slot may show now: the account still
-/// shows cards in that format and said yes, the app is in front, the chat is
-/// on screen, and the person didn't hide that turn's card.
+/// Whether a card drawn away from the slot may show now: the store still
+/// holds it (an account change clears the store, so another account's card
+/// never draws), the account still shows cards in that format and said yes,
+/// the app is in front, the chat is on screen, and the person didn't hide
+/// that turn's card.
 @MainActor
 private func workSponsoredPlacedAllowed(_ placed: WorkSponsoredPlacedAd, slot: WorkSponsoredSlotModel, store: CloudSponsoredStore, account: AccountCloudStore) -> Bool {
   guard let sponsored = account.account?.sponsored, sponsored.ads, sponsored.granted,
-        (sponsored.format ?? .belowReply) == placed.format else { return false }
+        (sponsored.format ?? .belowReply) == placed.format,
+        store.ads[placed.turnKey]?.id == placed.ad.id else { return false }
   return store.appActive && slot.chatVisible && !store.hiddenTurns.contains(placed.turnKey)
 }
 

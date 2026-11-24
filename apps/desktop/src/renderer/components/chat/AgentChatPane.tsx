@@ -7433,6 +7433,7 @@ export function AgentChatPane({
   const sponsoredSlot = useMemo(
     () => (isSubagentView ? null : (
       <SponsoredReplySlot
+        key={renderedSessionId ?? "none"}
         instanceId={chatCloudInstanceId}
         sessionId={renderedSessionId}
         events={selectedEventsForDisplay}

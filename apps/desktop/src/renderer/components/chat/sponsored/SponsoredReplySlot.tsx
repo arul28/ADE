@@ -45,6 +45,18 @@ const viewedAds = new Set<string>();
 const hiddenTurns = new Set<string>();
 /** Replies whose inline card went under the reply (no end to draw into): kept for the run, so a remount asks and draws the same. */
 const belowReplyTurns = new Set<string>();
+/**
+ * The format each reply's card was asked in. A reply keeps it for the run,
+ * through a format change or a remount: its card's placement (and the inline
+ * length limit) came with that ask. A new format applies to later replies.
+ */
+const askedFormats = new Map<string, CloudSponsoredFormat>();
+
+function noteAsked(turnKey: string, format: CloudSponsoredFormat): void {
+  if (askedFormats.has(turnKey)) return;
+  askedFormats.set(turnKey, format);
+  if (askedFormats.size > ANSWER_CACHE_LIMIT) askedFormats.delete(askedFormats.keys().next().value as string);
+}
 
 function askOnce(key: string, ask: () => Promise<CloudSponsoredAdAnswer>): Promise<CloudSponsoredAdAnswer> {
   const known = answers.get(key);
@@ -125,7 +137,8 @@ function SponsoredReplySlotOn({
 
   // Where the card draws: the dock, the reply's end, or (no such place in this pane) under the reply.
   const outlets = useContext(SponsoredOutletsContext);
-  const wantedPlace = !outlets || format === "below_reply" ? null : format === "above_prompt" ? "dock" : "inline";
+  const turnFormat = (turnKey ? askedFormats.get(turnKey) : undefined) ?? format;
+  const wantedPlace = !outlets || turnFormat === "below_reply" ? null : turnFormat === "above_prompt" ? "dock" : "inline";
   const target = useSponsoredOutlet(outlets, wantedPlace, turn?.turnId ?? null);
   // A reply that ends without text (a tool call last) has no end to draw into: its card goes under the
   // reply, and stays there even if an end mounts later (the card was asked for that placement).
@@ -141,7 +154,7 @@ function SponsoredReplySlotOn({
   }, [wantedPlace, target, turnKey]);
   const fellBack = turnKey !== null && (noInlineHost === turnKey || belowReplyTurns.has(turnKey));
   const place = wantedPlace === "inline" && fellBack ? null : wantedPlace;
-  const shownFormat: CloudSponsoredFormat = place ? format : "below_reply";
+  const shownFormat: CloudSponsoredFormat = place ? turnFormat : "below_reply";
   const targetReady = place === null || target !== null;
 
   // A card shows only while its place is on screen: under the reply (the
@@ -163,7 +176,7 @@ function SponsoredReplySlotOn({
   const holder = useSponsoredPlaceHolder();
   const placeFree = holder === null || holder === slotId;
 
-  const [ad, setAd] = useState<{ key: string; turnId: string; ad: CloudSponsoredAd } | null>(null);
+  const [ad, setAd] = useState<{ key: string; turnId: string; format: CloudSponsoredFormat; ad: CloudSponsoredAd } | null>(null);
   // A chat's first reply can be asked about before its computer saved the
   // chat's copy (`not_cloud`): one more ask a little later, never more.
   const [askAgain, setAskAgain] = useState<string | null>(null);
@@ -174,11 +187,13 @@ function SponsoredReplySlotOn({
     if (!askAd) return;
     let live = true;
     let timer: number | null = null;
-    const input = { instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice(), format: shownFormat, surface: "desktop" as const };
+    noteAsked(turnKey, shownFormat);
+    const askedFormat = askedFormats.get(turnKey) ?? shownFormat;
+    const input = { instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice(), format: askedFormat, surface: "desktop" as const };
     void askOnce(turnKey, () => askAd(input))
       .then((answer) => {
         if (!live) return;
-        if (answer.ad && isGravityUrl(answer.ad.clickUrl)) setAd({ key: turnKey, turnId: turn.turnId, ad: answer.ad });
+        if (answer.ad && isGravityUrl(answer.ad.clickUrl)) setAd({ key: turnKey, turnId: turn.turnId, format: askedFormat, ad: answer.ad });
         else if (answer.reason === "not_cloud" && askAgain !== turnKey) {
           timer = window.setTimeout(() => {
             answers.delete(turnKey);
@@ -192,13 +207,13 @@ function SponsoredReplySlotOn({
     };
   }, [consent, wanted, seen, targetReady, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain, shownFormat]);
 
-  const adShown = ad !== null && ad.key === turnKey;
+  const adShown = ad !== null && ad.key === turnKey && ad.format === shownFormat;
   let showing: "consent" | "ad" | null = null;
   // The question is always asked under the reply.
   if (wanted && onScreen && consent === null) showing = "consent";
   else if (wanted && seen && adShown && targetReady) showing = "ad";
   // The docked card stays while the next reply runs, and gives way to that reply's own.
-  else if (place === "dock" && turnActive && target && visible && ad && ad.key === lastTurnKey && !hiddenTurns.has(ad.key)) showing = "ad";
+  else if (place === "dock" && turnActive && target && visible && ad && ad.format === "above_prompt" && ad.key === lastTurnKey && !hiddenTurns.has(ad.key)) showing = "ad";
 
   useEffect(() => {
     if (showing) holdSponsoredPlace(slotId);
@@ -217,8 +232,8 @@ function SponsoredReplySlotOn({
 
   let card: React.ReactNode = null;
   if (holds && showing === "ad" && ad) {
-    if (shownFormat === "inline") card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
-    else if (shownFormat === "above_prompt") card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
+    if (ad.format === "inline") card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
+    else if (ad.format === "above_prompt") card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
     else card = <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} />;
   }
 

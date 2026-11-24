@@ -234,8 +234,12 @@ async function sponsoredFormatOf(env: GravityEnv, userId: string, settings: Clou
   if (row?.source === "split" && isSponsoredFormat(row.format)) return row.format;
   const format = splitArm(userId, settings.gravity_format_split);
   if (!assign) return format;
-  const written = await env.DB.prepare("insert into cloud_sponsored_formats (user_id, format, source, set_at) values (?, ?, 'split', ?) on conflict (user_id) do nothing")
-    .bind(userId, format, now).run();
+  // Never for an account being deleted: its deletion may already have cleared this table.
+  const written = await env.DB.prepare(`
+    insert into cloud_sponsored_formats (user_id, format, source, set_at)
+    select ?, ?, 'split', ? where not exists (select 1 from cloud_accounts where user_id = ? and deleted_at is not null)
+    on conflict (user_id) do nothing
+  `).bind(userId, format, now, userId).run();
   if ((written.meta?.changes ?? 0) > 0) return format;
   // Another write got there first (the owner's choice, or another screen's split): that one holds.
   const saved = await env.DB.prepare("select format from cloud_sponsored_formats where user_id = ?").bind(userId).first<{ format: string }>();
@@ -682,7 +686,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const live = switches.live;
   const ip = clientIp(request);
   // The A/B test's counts: requests, fills and hides per format.
-  await count(env, now, userId, [`ad_request:${format}`]);
+  // A failed count never holds the reply's claim: the ad is asked for all the same.
+  await count(env, now, userId, [`ad_request:${format}`]).catch(() => reportCloudFailure("cloud.sponsored.count_failed", {}));
   const hashedEmail = hashedEmailFor(device, consent.email_hash);
   const result = await gravityAds(
     {
