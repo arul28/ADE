@@ -144,7 +144,8 @@ function SponsoredReplySlotOn({
   // reply, and stays there even if an end mounts later (the card was asked for that placement).
   const [noInlineHost, setNoInlineHost] = useState<string | null>(null);
   useEffect(() => {
-    if (wantedPlace !== "inline" || target || !turnKey || belowReplyTurns.has(turnKey)) return;
+    // Only before the reply asked: an inline card already asked for waits for its end to scroll back in.
+    if (wantedPlace !== "inline" || target || !turnKey || belowReplyTurns.has(turnKey) || askedFormats.has(turnKey)) return;
     const timer = window.setTimeout(() => {
       belowReplyTurns.add(turnKey);
       if (belowReplyTurns.size > ANSWER_CACHE_LIMIT) belowReplyTurns.delete(belowReplyTurns.values().next().value as string);
