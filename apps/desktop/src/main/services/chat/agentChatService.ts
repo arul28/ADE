@@ -84391,7 +84391,14 @@ export function createAgentChatService(args: {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
     },
     runCheck: async (schedule) => {
-      const run = await runRoutineCheck(schedule.check ?? "");
+      const run = await runRoutineCheck(schedule.check ?? "").catch((error: unknown) => {
+        // The scheduler turns a throw into a failed check (one wake); keep the cause in the logs.
+        logger.warn("agent_chat.scheduled_work_check_threw", {
+          scheduleId: schedule.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      });
       logger.info("agent_chat.scheduled_work_check_ran", {
         scheduleId: schedule.id,
         sessionId: schedule.sessionId,
