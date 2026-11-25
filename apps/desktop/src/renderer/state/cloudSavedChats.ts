@@ -7,7 +7,9 @@
  * wakes it; a saved copy never wakes anything.
  */
 
+import { CLOUD_COMPUTER_MOVING_CODE } from "../../../../account-directory/src/cloud/contract";
 import { parseAgentChatTranscript } from "../../shared/chatTranscript";
+import { codedError, parseCodedErrorMessage } from "../../shared/codedError";
 import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
@@ -23,6 +25,7 @@ import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
+import { personErrorText } from "../lib/format";
 
 /** Whether a store machine id is a saved chat's computer this window has no connection to. */
 export function isSavedChatsMachineId(machineId: string): boolean {
@@ -31,6 +34,14 @@ export function isSavedChatsMachineId(machineId: string): boolean {
 
 /** What a chat on a deleted cloud computer says when something is sent or asked of it. */
 export const SAVED_CHAT_COMPUTER_GONE_MESSAGE = "This computer was deleted. Its chats are saved here, but it can't answer anymore.";
+
+/**
+ * A send with files, context or thread comments while a move holds the chat's
+ * computer: the account's queue takes text only, so they stay in the box. The
+ * chat pane says it before the send (`chatAccountQueueRoute`); a send the
+ * computer refused for its move says it after (`withSavedChatReads`).
+ */
+export const CHAT_MOVE_HOLDS_FILES_MESSAGE = "Files and comments can't go while this chat's computer moves. They stay here; send them once the move is done.";
 
 export type SavedChatLocation = {
   /** The machine the chat lives on now: a send goes there. */
@@ -361,15 +372,31 @@ export type SavedChatQueueTarget = Pick<SavedChatLocation, "machineKey" | "chatI
  */
 export const CLOUD_SEND_ANSWER_WAIT_MS = 10_000;
 
+/**
+ * The account key the queue addresses a chat by: the computer its saved copy
+ * names (`saved`, the caller's `savedChatLocation` from an earlier read), else
+ * the ADE Cloud computer behind its connection (`pin`). Null for a chat on no
+ * ADE Cloud computer this window knows.
+ */
+export function chatQueueMachineKey(pin: OpenProjectBinding | null | undefined, saved: SavedChatLocation | null): string | null {
+  if (saved && !saved.computerGone) return saved.machineKey;
+  return pin?.kind === "remote" ? cloudConnectionMachineKey(pin.targetId) : null;
+}
+
 /** The queue target for a send to a chat on an ADE Cloud connection, or null. */
 function cloudConnectionQueueTarget(pin: OpenProjectBinding | null | undefined, sessionId: string): SavedChatQueueTarget | null {
   if (pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) return null;
-  // A saved copy from an earlier read names the chat's computer.
   const saved = savedChatLocation(pin, sessionId, () => false);
-  if (saved) return saved.computerGone ? null : saved;
-  const machineKey = cloudConnectionMachineKey(pin.targetId);
-  // The server reads the chat's agent and model from its saved copy.
-  return machineKey ? { machineKey, chatId: sessionId, row: { provider: null, model: null } } : null;
+  // A deleted computer's chat takes no send (`send` says so before this).
+  if (saved?.computerGone) return null;
+  const machineKey = chatQueueMachineKey(pin, saved);
+  // With no saved copy here, the server reads the chat's agent and model from its own.
+  return machineKey ? { machineKey, chatId: sessionId, row: saved?.row ?? { provider: null, model: null } } : null;
+}
+
+/** Files, context or thread comments ride this send: the account's queue takes text only. */
+function sendCarriesFiles(args: Parameters<AgentChatApi["send"]>[0]): boolean {
+  return (args.attachments?.length ?? 0) > 0 || (args.contextAttachments?.length ?? 0) > 0 || args.includeThreadComments === true;
 }
 
 /**
@@ -382,6 +409,26 @@ const NOT_LISTED_REFUSAL = "UnsupportedRemoteCommandError";
 
 function refusedBeforeSend(error: unknown): boolean {
   return error instanceof Error && (error.message === RECONNECTING_REFUSAL || error.name === NOT_LISTED_REFUSAL);
+}
+
+/**
+ * The chat's computer refused the send because a move to a new computer holds
+ * it (`computer_moving`), wherever that move was started: the account's queue
+ * takes the message, holds it and hands it to the new computer.
+ */
+function refusedForMove(error: unknown): boolean {
+  return parseCodedErrorMessage(error).code === CLOUD_COMPUTER_MOVING_CODE;
+}
+
+/**
+ * A move refusal as the person reads it, for callers that show a send's
+ * `error.message` as it is (the chat pane): `message` (the computer's
+ * sentence from `personErrorText`, or a line of ADE's own), with its code
+ * kept on the error, not in the text, so it still classifies as an expected
+ * outcome.
+ */
+function moveRefusal(message: string): Error {
+  return codedError(message, CLOUD_COMPUTER_MOVING_CODE);
 }
 
 /**
@@ -440,6 +487,9 @@ export function withSavedChatReads(
    * repeated id without sending again, so a direct copy that did arrive never
    * runs twice; the direct call then ends on its own. What the queue can't
    * take (`unsupported`: an older server or image, files) goes as before.
+   * A send the computer refused because a move holds it (`refusedForMove`)
+   * goes to the queue too; what the queue can't take stays with the person,
+   * with the computer's sentence.
    */
   const sendToCloudComputer = async (
     target: SavedChatQueueTarget,
@@ -462,7 +512,7 @@ export function withSavedChatReads(
     clearTimeout(timer);
     if (first?.ok) return first.value;
     // Refused for a reason of its own (a turn already running, a bad argument): the queue changes nothing.
-    if (first && !refusedBeforeSend(first.error) && !isRemoteMachineAwayError(first.error)) throw first.error;
+    if (first && !refusedBeforeSend(first.error) && !isRemoteMachineAwayError(first.error) && !refusedForMove(first.error)) throw first.error;
     let queued: "sent" | "unsupported";
     try {
       queued = await queueSend(target, args);
@@ -478,12 +528,28 @@ export function withSavedChatReads(
     // call refused before it left wakes the computer and goes again.
     const settled = first ?? await direct;
     if (settled.ok) return settled.value;
+    // Nothing was sent: the computer's own sentence, without its code. Files
+    // and comments read the line the pane shows for them during a move.
+    if (refusedForMove(settled.error)) {
+      throw moveRefusal(sendCarriesFiles(args) ? CHAT_MOVE_HOLDS_FILES_MESSAGE : personErrorText(settled.error));
+    }
     let refused = true;
     return wakeOnRefusal(pin, args.sessionId, (callPin) => {
       if (!refused) return api.send(args, callPin);
       refused = false;
       return Promise.reject(settled.error);
     });
+  };
+  /**
+   * A send whose computer a move holds, on any path (no queue here, a computer
+   * reached by its key): it fails with the computer's sentence, never its code.
+   */
+  const withMoveSentence = async <T>(send: () => Promise<T>): Promise<T> => {
+    try {
+      return await send();
+    } catch (error) {
+      throw refusedForMove(error) ? moveRefusal(personErrorText(error)) : error;
+    }
   };
   /** A failed apply of the waiting picks does not stop the message: the send goes on. */
   const picksNotApplied = (error: unknown): void => {
@@ -514,7 +580,7 @@ export function withSavedChatReads(
         ? savedChatSummary(location)
         : readOr(args.sessionId, () => api.getSummary(args, pin), async (gone) => savedChatSummary(gone));
     },
-    send: async (args, pin) => {
+    send: (args, pin) => withMoveSentence(async () => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
       // A computer this window never connected to (another desktop made it):
@@ -546,7 +612,7 @@ export function withSavedChatReads(
       const result = await api.send(args, reachedPin);
       reach.reached(location);
       return result;
-    },
+    }),
     // The chat's settings go with a send (the model, the mode): the first call
     // of a send that a sleeping computer refuses. A saved chat on a computer
     // this window never connected to has no connection to refuse it: its
@@ -582,6 +648,20 @@ export function withSavedChatReads(
       return api.delete(args, pin);
     },
   };
+  /**
+   * A write that goes with a send (`ChatSendReach`): to a resting ADE Cloud
+   * chat's computer by its machine key, as `send` goes there, else with the
+   * pin as it is, a computer that refused it before it left woken first.
+   */
+  const forSend: ChatSendReach = async (sessionId, pin, run) => {
+    const location = locate(sessionId, pin);
+    if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
+    if (location && reach && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+      const reachedPin = await reach.pinFor(location);
+      if (reachedPin) return run(reachedPin);
+    }
+    return wakeOnRefusal(pin, sessionId, run);
+  };
   // Not `{ ...api, ...savedReads }`: the web client's chat API is a Proxy with
   // no own keys (`webclient/adapter/federated.ts`), so a spread copied nothing
   // and every other method, `onEvent` first, was undefined there. The chat
@@ -589,11 +669,35 @@ export function withSavedChatReads(
   // empty object, not `api`: the desktop's API is frozen by the context
   // bridge, and a Proxy may not answer a frozen target's property with
   // another value.
-  return new Proxy({} as AgentChatApi, {
+  const wrappedApi = new Proxy({} as AgentChatApi, {
     get: (_target, property) =>
       (Object.hasOwn(savedReads, property)
         ? savedReads[property as keyof typeof savedReads]
         : Reflect.get(api, property)),
     has: (_target, property) => Object.hasOwn(savedReads, property) || Reflect.has(api, property),
   });
+  sendReaches.set(wrappedApi, forSend);
+  return wrappedApi;
+}
+
+/**
+ * Runs a write that goes with a send on the machine the send goes to. For a
+ * chat whose ADE Cloud computer rests, that is its computer reached by its
+ * machine key (the send wakes it anyway); for any other chat, the pin as it
+ * is. What this device kept while the computer rested goes there this way
+ * right before the message (`prepareDeviceHeldForSend`): each file copied
+ * (`stageHeldAttachments`), each comment and comment change handed over
+ * (`handOverHeldThreadComments`).
+ */
+export type ChatSendReach = <T>(
+  sessionId: string,
+  pin: OpenProjectBinding,
+  run: (pin: OpenProjectBinding) => Promise<T>,
+) => Promise<T>;
+
+const sendReaches = new WeakMap<object, ChatSendReach>();
+
+/** The send reach of a pane's chat API (`withSavedChatReads`), or null for an API without one. */
+export function chatSendReach(api: AgentChatApi | null | undefined): ChatSendReach | null {
+  return api ? sendReaches.get(api) ?? null : null;
 }

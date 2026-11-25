@@ -35,6 +35,7 @@ export default defineConfig({
     "main/piSdkWorker": "src/main/services/chat/piSdkWorker.ts",
     "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
     "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorkerEntry.ts",
+    "main/providerInlineImageWorker": "src/main/services/chat/providerInlineImageWorkerEntry.ts",
     "main/loginImportReadWorker":
       "src/main/services/builtInBrowser/loginImport/loginImportReadWorkerEntry.ts",
     "main/messagesReadWorker": "src/main/services/messages/messagesReadWorkerEntry.ts",

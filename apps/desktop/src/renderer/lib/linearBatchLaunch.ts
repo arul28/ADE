@@ -37,6 +37,7 @@ import {
 } from "../../shared/modelRegistry";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../components/shared/ModelPicker/modelCatalog";
 import type { NativeControlState } from "./draftLaunchJobs";
+import { personErrorText } from "./format";
 import type { HarnessPresetBody } from "../../shared/harnessPresets";
 import { githubIssueDetailToLaneIssue, type GitHubIssueDetail } from "../components/issues/githubIssueStore";
 import {
@@ -772,7 +773,7 @@ export async function runBatchLaunch(
       // event for this session instead of claiming the agent is already ready.
       options.onItem(issueIdentity, { sessionId: session.id, status: "initializing-agent" });
     } catch (error) {
-      let detail = error instanceof Error ? error.message : String(error);
+      let detail = personErrorText(error);
       // If the agent launch failed but we created the lane this run, roll the
       // lane back so retries don't pile up orphan lanes for the same issue.
       // Existing-lane launches are left untouched. If the rollback itself fails,

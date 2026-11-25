@@ -4875,6 +4875,26 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
           ...(typeof agentChatService.emitAdeCard === "function"
             ? { postCard: (chatSessionId: string, card: AdeCardPayload) => agentChatService.emitAdeCard({ sessionId: chatSessionId, card }) }
             : {}),
+          ...(typeof agentChatService.readAdeCard === "function"
+            ? { readCard: async (chatSessionId: string, cardId: string) => agentChatService.readAdeCard({ sessionId: chatSessionId, cardId }) }
+            : {}),
+          // ADE's words to the agent (the answer to its size request): a wake
+          // marked as ADE's own, which waits for a running turn to end.
+          ...(typeof agentChatService.messageSession === "function"
+            ? {
+                tellAgent: async (chatSessionId: string, text: string) => {
+                  await agentChatService.messageSession({
+                    sessionId: chatSessionId,
+                    kind: "wake",
+                    text,
+                    metadata: { hostContinuation: { reason: "card_answer" } },
+                  });
+                },
+              }
+            : {}),
+          ...(typeof agentChatService.queueAgentNote === "function"
+            ? { noteForNextTurn: (chatSessionId: string, note: string) => agentChatService.queueAgentNote({ sessionId: chatSessionId, note }) }
+            : {}),
           notice: (chatSessionId, message) => {
             try {
               agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });

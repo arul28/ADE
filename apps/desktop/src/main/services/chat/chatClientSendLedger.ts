@@ -31,6 +31,27 @@ export function normalizeClientSendId(value: unknown): string | null {
   return id.length ? id : null;
 }
 
+/**
+ * A send that reached the host this much after the person pressed Enter was
+ * held on the way (its computer woke, its ADE started). Below it the host's
+ * own time is as good, and two computers' clocks can differ by a few seconds.
+ */
+const HELD_SEND_MIN_MS = 5_000;
+/** Longer than any wake or start wait: a send time older than this is a client clock that is off. */
+const HELD_SEND_MAX_MS = 60 * 60_000;
+
+/**
+ * The person's send time to write on the message (`user_message.sentAt`), or
+ * null when the send was not held: no client time, a time in the future, one
+ * within a few seconds of `receivedAtMs`, or one too old to be a wait.
+ */
+export function heldSendSentAt(clientSubmittedAtMs: unknown, receivedAtMs: number): string | null {
+  if (typeof clientSubmittedAtMs !== "number" || !Number.isFinite(clientSubmittedAtMs)) return null;
+  const heldMs = receivedAtMs - clientSubmittedAtMs;
+  if (heldMs < HELD_SEND_MIN_MS || heldMs > HELD_SEND_MAX_MS) return null;
+  return new Date(Math.round(clientSubmittedAtMs)).toISOString();
+}
+
 export type ClientSendLedger = {
   /**
    * Run `send` once per `(sessionId, clientSendId)`. The id is normalized
@@ -43,6 +64,8 @@ export type ClientSendLedger = {
     clientSendId: unknown,
     send: () => Promise<T>,
     whenTakenWithoutResult: () => T,
+    /** `sentAt`: when the person sent it, for a send held on the way (`user_message.sentAt`). */
+    extras?: { sentAt?: string | null },
   ): Promise<T>;
   /** The running send for this chat wrote the user's message. */
   noteMessageWritten(sessionId: string): void;
@@ -52,11 +75,17 @@ export type ClientSendLedger = {
    * with an id, for another chat, or after the first claim.
    */
   claimSendId(sessionId: string): string | null;
+  /**
+   * The running send's `sentAt` for this chat (the `extras` of `run`), read
+   * with the claim of its id so it lands on the same message. Null outside a
+   * send, for another chat, or for a send that was not held.
+   */
+  sentAtOf(sessionId: string): string | null;
   /** Runs `work` outside any send, so a message it writes (a `/compact` before the send) is not the send's. */
   outsideSend<T>(work: () => T): T;
 };
 
-type SendScope = { sessionId: string; id: string; written: boolean; claimed: boolean };
+type SendScope = { sessionId: string; id: string; written: boolean; claimed: boolean; sentAt: string | null };
 
 type LedgerEntry =
   | { state: "running"; settled: Promise<void> }
@@ -98,6 +127,7 @@ export function createClientSendLedger(options: {
       clientSendId: unknown,
       send: () => Promise<T>,
       whenTakenWithoutResult: () => T,
+      extras?: { sentAt?: string | null },
     ): Promise<T> {
       const id = normalizeClientSendId(clientSendId);
       if (!id) return send();
@@ -115,7 +145,7 @@ export function createClientSendLedger(options: {
       }
       let settle = (): void => {};
       put(key, { state: "running", settled: new Promise<void>((resolve) => { settle = resolve; }) });
-      const scope: SendScope = { sessionId, id, written: false, claimed: false };
+      const scope: SendScope = { sessionId, id, written: false, claimed: false, sentAt: extras?.sentAt ?? null };
       try {
         const value = await scopes.run(scope, send);
         put(key, { state: "taken", at: now(), result: { value } });
@@ -137,6 +167,10 @@ export function createClientSendLedger(options: {
       if (!scope || scope.sessionId !== sessionId || scope.claimed) return null;
       scope.claimed = true;
       return scope.id;
+    },
+    sentAtOf(sessionId) {
+      const scope = scopes.getStore();
+      return scope && scope.sessionId === sessionId ? scope.sentAt : null;
     },
     outsideSend(work) {
       return scopes.exit(work);

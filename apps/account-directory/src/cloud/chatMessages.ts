@@ -25,9 +25,10 @@ import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, laun
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { cloudSizeForTier } from "./plans";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
-import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
+import { logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
 import { cliSessionCopy } from "./sessionCopies";
+import { MOVE_HOLDS_MESSAGES_SQL, MOVE_JOB_KIND, moveMessageRouteOf } from "./moves";
 
 /**
  * The person's queue for an existing cloud chat (CONTRACTS 3.1). A send to a
@@ -45,6 +46,13 @@ import { cliSessionCopy } from "./sessionCopies";
  * A send can also go to a saved CLI session (`cloud_session_copies`, kind
  * `cli`): its session id takes the chat id's place, and the computer types
  * the text into the CLI. A shell takes no messages.
+ *
+ * While a move of the chat's computer to the other kind runs (`moves.ts`),
+ * a send is kept here and nothing wakes or takes it (`wake.state:
+ * "moving"`): the move stops the old computer's ADE and would cut its turn.
+ * The new computer sends it once it has the lane, and a later send to the
+ * old address goes on to the new computer (`queueComputerOf`). A move that
+ * fails or is cancelled leaves it to the old computer.
  *
  * The text is sealed with the user's key. No text reaches a log line.
  */
@@ -230,11 +238,21 @@ async function readRow(env: CloudEnv, userId: string, machineKey: string, chatId
 export type ChatWake = {
   /**
    * Runs every check a start runs (block, outside agents on the free plan,
-   * hours at the computer's size, the awake cap, the idle cleanup's claim,
-   * an image too old to drain), and records the use. A response when the
-   * send must not be stored; else what the wake will be. Nothing wakes yet.
+   * credits for the computer's size, an update in progress, an image too old to
+   * drain, a past-due computer, the awake cap, the idle cleanup's claim), and
+   * records the use. A response when the send must not be stored; else what
+   * the wake will be. Nothing wakes yet.
    */
   check: (computer: ComputerRow, asker: { outsideAgent: boolean }) => Promise<Response | { state: "awake" | "waking" }>;
+  /**
+   * A send a move holds: nothing wakes this computer and the new one sends
+   * it. Only the plan's refusals run (the account's block, outside agents on
+   * the free plan, credits for the computer's size); the wake's checks (an
+   * update in progress, the queue feature, past due, the awake cap, the idle
+   * cleanup's claim) are about a wake that never happens. A response when the
+   * send must not be stored, else null.
+   */
+  heldCheck: (computer: ComputerRow, asker: { outsideAgent: boolean }) => Promise<Response | null>;
   /** After the row is stored: wakes it when asleep, then asks it to drain. Runs after the answer. */
   wakeAndDrain: (computer: ComputerRow) => Promise<void>;
   /** A launch that continues the chat on a new computer (`startServerLaunch` with the router's deps). */
@@ -255,6 +273,8 @@ type TargetFacts = { provider: string | null; model: string | null; laneName: st
 /** What a send goes to: a saved chat, or a saved CLI session (its session id in `chat_id`). */
 type QueueTarget = Pick<CopyRow, "machine_key" | "chat_id" | "instance_id" | "project_key" | "lane_id"> & {
   kind: "chat" | "cli";
+  /** A chat with no saved copy yet, on a computer a move took (`movedChatTarget`): the insert has no copy to find. */
+  bare?: true;
   facts: (keys: UserKeys) => Promise<TargetFacts>;
 };
 
@@ -285,7 +305,8 @@ function chatTarget(chat: CopyRow): QueueTarget {
 /**
  * The target a send names: the saved chat, or the row a fork restore moved
  * it to (an older client still names the old machine key), or a saved CLI
- * session with that id.
+ * session with that id, or a chat with no saved copy on a computer a move
+ * took (`movedChatTarget`).
  */
 async function resolveTarget(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<QueueTarget | null> {
   const direct = await copyRow(env, userId, machineKey, chatId);
@@ -303,7 +324,7 @@ async function resolveTarget(env: CloudEnv, userId: string, machineKey: string, 
     order by case when machine_key = ? then 0 else 1 end, updated_at desc limit 1
   `).bind(userId, chatId, machineKey)
     .first<{ machine_key: string; session_id: string; instance_id: string | null; project_key: string | null; lane_id: string | null }>();
-  if (!cli) return null;
+  if (!cli) return await movedChatTarget(env, userId, machineKey, chatId);
   return {
     kind: "cli",
     machine_key: cli.machine_key,
@@ -327,6 +348,64 @@ async function liveComputerOf(env: CloudEnv, userId: string, chat: QueueTarget):
   if (!chat.instance_id) return null;
   return await env.DB.prepare("select * from cloud_computers where user_id = ? and instance_id = ? and deleted_at is null")
     .bind(userId, chat.instance_id).first<ComputerRow>();
+}
+
+/**
+ * A chat with no saved copy yet on a computer a move took or takes (the
+ * move's save writes the copy while it makes the new computer, and a busy
+ * chat may never have rested before): a send still has a place by the old
+ * computer's address for as long as the move's record lasts. The computer
+ * finds the chat by its id. A shell's id stays refused.
+ */
+async function movedChatTarget(env: CloudEnv, userId: string, machineKey: string, chatId: string): Promise<QueueTarget | null> {
+  const move = await env.DB.prepare(`
+    select j.source_machine_key, j.source_instance_id, c.lane_id from cloud_jobs j
+      left join cloud_computers c on c.instance_id = j.source_instance_id
+    where j.user_id = ? and j.kind = ? and lower(j.source_machine_key) = lower(?)
+      and not exists (select 1 from cloud_session_copies s where s.user_id = ? and s.session_id = ?)
+    order by j.created_at desc limit 1
+  `).bind(userId, MOVE_JOB_KIND, machineKey, userId, chatId)
+    .first<{ source_machine_key: string | null; source_instance_id: string | null; lane_id: string | null }>();
+  if (!move?.source_machine_key) return null;
+  return {
+    kind: "chat",
+    bare: true,
+    // The key as the account stored it: every later read matches it exactly.
+    machine_key: move.source_machine_key,
+    chat_id: chatId,
+    instance_id: move.source_instance_id,
+    project_key: null,
+    lane_id: move.lane_id,
+    facts: async () => ({ provider: null, model: null, laneName: null, projectId: null }),
+  };
+}
+
+/** A move from a computer a move made, and so on: the queue follows at most this many. */
+const MOVE_HOPS = 4;
+
+/**
+ * The live computer a message to this chat goes to, and whether a move of
+ * it holds the message (`moveMessageRouteOf`): held from the move's making
+ * until the new computer has the lane, then (and after the move, also when
+ * the old computer is gone) on to the new computer. Null with no computer:
+ * the chat's computer is gone.
+ */
+async function queueComputerOf(env: CloudEnv, userId: string, chat: QueueTarget): Promise<{ computer: ComputerRow | null; held: boolean }> {
+  let computer = await liveComputerOf(env, userId, chat);
+  let from: { instanceId: string | null; machineKey: string | null } = {
+    instanceId: computer?.instance_id ?? chat.instance_id,
+    machineKey: computer?.machine_key ?? chat.machine_key,
+  };
+  for (let hop = 0; hop < MOVE_HOPS; hop += 1) {
+    const route = await moveMessageRouteOf(env, userId, from);
+    if (route?.kind === "held") return { computer, held: true };
+    if (route?.kind !== "moved") break;
+    const target = await ownedComputer(env, userId, route.targetInstanceId);
+    if (!target) break;
+    computer = target;
+    from = { instanceId: target.instance_id, machineKey: target.machine_key };
+  }
+  return { computer, held: false };
 }
 
 export async function routeChatMessages(
@@ -555,10 +634,12 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   // The same id again is the same message: its answer, with no second wake.
   const repeat = await readRow(env, userId, chat.machine_key, chat.chat_id, messageId);
   if (repeat) {
-    const computer = repeat.via_launch ? null : await liveComputerOf(env, userId, chat);
+    const routed = repeat.via_launch ? null : await queueComputerOf(env, userId, chat);
     const wake: CloudWakeOutcome = repeat.via_launch
       ? { state: "launching", launchId: repeat.launch_id }
-      : { state: computer && computer.status === "running" ? "awake" : "waking" };
+      : routed?.held
+        ? { state: "moving" }
+        : { state: routed?.computer && routed.computer.status === "running" ? "awake" : "waking" };
     return json({ message: await messageOf(env, keys, repeat), wake } satisfies CloudChatMessageAddResult, 200);
   }
 
@@ -571,22 +652,36 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
 
   // `origin: "mcp"`: an outside agent (ADE MCP) sending; on the free plan it can't wake or start a computer.
   const input: SendInput = { messageId, text, attachments, provider, modelId, settings, sizeId, outsideAgent: body.origin === "mcp" };
-  const computer = await liveComputerOf(env, userId, chat);
+  // The chat's computer, or the one a move took its lane to; `held` while a move of it runs.
+  const { computer, held } = await queueComputerOf(env, userId, chat);
+  if (held && !computer) return fail("computer_busy", "This chat's computer is moving to a new one. Send the message again in a minute.", 409);
   if (computer) {
     // Every refusal runs before the row is written: a refused send stores nothing.
-    const checked = await deps.wake.check(computer, { outsideAgent: input.outsideAgent === true });
+    // A held send runs only the plan's refusals: no wake happens (`heldCheck`).
+    const asker = { outsideAgent: input.outsideAgent === true };
+    const checked = held
+      ? (await deps.wake.heldCheck(computer, asker)) ?? { state: "moving" as const }
+      : await deps.wake.check(computer, asker);
     if (checked instanceof Response) return checked;
-    const inserted = await insertRow(env, keys, userId, chat, input, { instanceId: computer.instance_id, launchId: null, viaLaunch: false, copyAt: chat.kind }, now);
+    const where: InsertWhere = { instanceId: computer.instance_id, launchId: null, viaLaunch: false };
+    // A chat with no saved copy has none for the insert to find.
+    const inserted = chat.bare
+      ? await insertRow(env, keys, userId, chat, input, where, now)
+      : await insertRow(env, keys, userId, chat, input, { ...where, copyAt: chat.kind }, now);
     // The chat moved to another machine since it was read: nothing is queued, and a send again reaches it there.
     if (!inserted) return fail("chat_moved", "This chat moved to another machine just as the message was sent. Send it again.", 409);
     const { row, created } = inserted;
-    const work = deps.wake.wakeAndDrain(computer).catch((error: unknown) => {
-      logCloud("cloud.chat_message_wake_failed", { userId, instanceId: computer.instance_id, error: error instanceof Error ? error.message : "unknown" });
-    });
-    if (deps.waitUntil) deps.waitUntil(work);
-    else await work;
-    logCloud("cloud.chat_message_queued", { userId, instanceId: computer.instance_id, wake: checked.state });
-    return json({ message: await messageOf(env, keys, row), wake: { state: checked.state } } satisfies CloudChatMessageAddResult, created ? 201 : 200);
+    // A move holds it: nothing wakes the old computer or asks it to send, and the move hands it on.
+    if (!held) {
+      const work = deps.wake.wakeAndDrain(computer).catch((error: unknown) => {
+        logCloud("cloud.chat_message_wake_failed", { userId, instanceId: computer.instance_id, error: error instanceof Error ? error.message : "unknown" });
+      });
+      if (deps.waitUntil) deps.waitUntil(work);
+      else await work;
+    }
+    const wake: CloudWakeOutcome = { state: checked.state };
+    logCloud("cloud.chat_message_queued", { userId, instanceId: computer.instance_id, wake: wake.state });
+    return json({ message: await messageOf(env, keys, row), wake } satisfies CloudChatMessageAddResult, created ? 201 : 200);
   }
   return await sendThroughLaunch(env, keys, userId, chat, input, deps);
 }
@@ -730,8 +825,10 @@ export async function routeComputerMessages(request: Request, env: CloudEnv, com
   if (rest.length === 0) {
     if (request.method !== "GET") return messageNotFound();
     // Queued messages and ones this computer claimed but never finished (a restart mid-send), oldest first.
+    // A move of this computer holds its queued ones: the new computer sends them (`moves.ts`).
     const rows = (await env.DB.prepare(`
       select * from cloud_chat_messages where instance_id = ? and user_id = ? and via_launch = 0 and state in ${OPEN_STATES}
+        and not (state = 'queued' and ${MOVE_HOLDS_MESSAGES_SQL})
       order by created_at, seq limit ?
     `).bind(computer.instance_id, computer.user_id, CLOUD_CHAT_MESSAGES_LIST_MAX).all<ChatMessageRow>()).results ?? [];
     return json({ messages: await Promise.all(rows.map((row) => computerMessageOf(env, keys, row))) });
@@ -744,14 +841,18 @@ export async function routeComputerMessages(request: Request, env: CloudEnv, com
   if (rest.length === 2) {
     if (rest[1] !== "claim" || request.method !== "POST") return messageNotFound();
     // One conditional write: a message is claimed once; the same claim again gets it back.
+    // A queued one a move of this computer holds is not its to take (a list read before the move began).
     const claimed = await env.DB.prepare(`
       update cloud_chat_messages set state = 'sending', claim_id = ?, claimed_at = coalesce(claimed_at, ?), updated_at = ?
       where user_id = ? and instance_id = ? and message_id = ? and via_launch = 0
-        and (state = 'queued' or (state in ('sending', 'waiting_for_sign_in') and claim_id = ?))
+        and ((state = 'queued' and not ${MOVE_HOLDS_MESSAGES_SQL}) or (state in ('sending', 'waiting_for_sign_in') and claim_id = ?))
     `).bind(claimId, now, now, computer.user_id, computer.instance_id, messageId, claimId).run();
     const stored = await computerRow(env, computer, messageId);
     if (!stored) return messageNotFound();
-    if ((claimed.meta?.changes ?? 0) < 1) return fail("message_taken", "This message was already sent, claimed or cancelled.", 409, { state: stored.state });
+    if ((claimed.meta?.changes ?? 0) < 1) {
+      const why = stored.state === "queued" ? "This message waits for this computer's move to end." : "This message was already sent, claimed or cancelled.";
+      return fail("message_taken", why, 409, { state: stored.state });
+    }
     return json(await computerMessageOf(env, keys, stored));
   }
   if (request.method !== "PUT") return messageNotFound();

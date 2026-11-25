@@ -7,7 +7,7 @@ import { openIssueRef } from "../../lib/issueNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
 import { ipcErrorMessage, isConnectionTroubleText } from "../../lib/format";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
-import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES, maxBase64EncodedLength } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { memoWithLatestHandlers, useLatestCallback, useStateSkippingSameValue } from "../../lib/stableIdentity";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
@@ -204,6 +204,7 @@ import {
   draftAttachmentSource,
   rememberDraftAttachmentSource,
 } from "./draftAttachmentSources";
+import { holdAttachmentBytes, isHeldAttachmentPath, releaseHeldAttachments } from "./heldChatAttachments";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
@@ -3486,6 +3487,11 @@ function AgentChatComposerImpl({
     options?: { chipPlacement?: AttachmentChipPlacement; retryPending?: ChatAttachmentPendingImage },
   ) => Promise<void> | void>(() => {});
   const chatRuntimeScope = useChatRuntimeScope();
+  // The chat's ADE Cloud computer rests: what the box writes before a send
+  // stays on this device, so it never wakes the computer. A pasted, dropped
+  // or picked file is kept here until the send copies it there
+  // (`heldChatAttachments.ts`); Up-arrow history skips its stash on the machine.
+  const holdWritesOnDevice = chatRuntimeScope.machineRests && Boolean(sessionId);
   const attachmentMachineBinding = composerMachineBinding ?? (projectChatPane ? chatRuntimeScope.binding : null);
   const latestComposerMachineBindingRef = useRef(attachmentMachineBinding);
   latestComposerMachineBindingRef.current = attachmentMachineBinding;
@@ -4329,6 +4335,8 @@ function AgentChatComposerImpl({
 
   const handleRemoveAttachment = useCallback((path: string) => {
     clearPreviewForPath(path);
+    // A file kept on this device and taken out of the box: its bytes go.
+    if (isHeldAttachmentPath(path)) releaseHeldAttachments([path]);
     onRemoveAttachment(path);
   }, [clearPreviewForPath, onRemoveAttachment]);
 
@@ -4573,16 +4581,27 @@ function AgentChatComposerImpl({
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
               pin: attachmentApiPin,
+              // The chat's computer rests: the bytes wait here for the send.
+              holdOnDevice: holdWritesOnDevice,
             });
           }
 
-          if (sessionSwitched()) break;
+          // Not attached after all: bytes held for it may go.
+          const notAttached = () => {
+            if (isHeldAttachmentPath(staged.path)) releaseHeldAttachments([staged.path]);
+          };
+          if (sessionSwitched()) {
+            notAttached();
+            break;
+          }
           if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+            notAttached();
             if (pendingImage) dropPendingImageAttachment(pendingImage.id);
             setAttachError(`"${sourceAttachmentName}" was not attached because the selected machine changed. Attach it again.`);
             break;
           }
           if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
+            notAttached();
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
             continue;
           }
@@ -4739,17 +4758,31 @@ function AgentChatComposerImpl({
       return;
     }
     try {
-      const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
-        data: image.data,
-        filename,
-      }, chatPin));
-      if (attachmentSessionEpochRef.current !== ownerEpoch) return;
+      // The chat's computer rests: the picture waits here for the send, up to
+      // the ceiling a copy to a resting computer has (the larger one is copied
+      // at once, as before, and refused or fitted there).
+      const heldPath = holdWritesOnDevice && image.data.length <= maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)
+        ? holdAttachmentBytes({ data: image.data, filename, mimeType: image.mimeType || null })
+        : null;
+      const { path: tempPath } = heldPath
+        ? { path: heldPath }
+        : await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
+          data: image.data,
+          filename,
+        }, chatPin));
+      // Not attached after all: bytes held for it may go.
+      const notAttached = () => {
+        if (heldPath) releaseHeldAttachments([heldPath]);
+      };
+      if (attachmentSessionEpochRef.current !== ownerEpoch) return notAttached();
       if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+        notAttached();
         dropPendingImageAttachment(pendingImage.id);
         setAttachError("Clipboard image was not attached because the selected machine changed. Paste it again.");
         return;
       }
       if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
+        notAttached();
         cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
         return;
       }
@@ -7105,7 +7138,10 @@ function AgentChatComposerImpl({
   const stashDraftBeforeHistory = useCallback((currentText: string) => {
     if (!currentText.trim() && attachments.length === 0) return;
     promptHistoryDraftBeforeRef.current = currentText;
-    if (typeof agentChatApiRef.current?.drafts?.create === "function") {
+    // The stash is a saved draft on the chat's machine, deleted when the
+    // browse ends: a write that would wake a resting computer. The text is
+    // kept here either way.
+    if (!holdWritesOnDevice && typeof agentChatApiRef.current?.drafts?.create === "function") {
       const stashHandle = draftsRef.current;
       if (stashHandle) {
         promptHistoryStashRef.current = {
@@ -7114,7 +7150,7 @@ function AgentChatComposerImpl({
         };
       }
     }
-  }, [attachments.length]);
+  }, [attachments.length, holdWritesOnDevice]);
 
   const restorePromptHistoryDraft = useCallback(() => {
     const promptHistoryStash = promptHistoryStashRef.current;

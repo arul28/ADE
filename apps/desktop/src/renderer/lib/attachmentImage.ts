@@ -1,6 +1,7 @@
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { useAppStore } from "../state/appStore";
 import { effectiveRuntimeBinding } from "./chatMachineRouting";
+import { heldAttachmentImageDataUrl, isHeldAttachmentPath } from "../components/chat/heldChatAttachments";
 
 /**
  * Read a chat attachment image as a data URL on the machine that owns it.
@@ -17,6 +18,8 @@ import { effectiveRuntimeBinding } from "./chatMachineRouting";
  *   exist", "not an image", too large) is final: asking again only fails again.
  * - Never read a remote-owned path here. That path names a file on the other
  *   machine, and on this computer it is missing or, worse, a different file.
+ * - A file kept on this device while its chat's computer rests (an `ade-held:`
+ *   stand-in, `heldChatAttachments.ts`) is read from here, never from a machine.
  */
 export async function readAttachmentImageDataUrl(
   path: string,
@@ -38,6 +41,7 @@ export async function readAttachmentImageDataUrl(
     reader?: ((path: string) => Promise<{ dataUrl: string }>) | null;
   },
 ): Promise<{ dataUrl: string }> {
+  if (isHeldAttachmentPath(path)) return heldAttachmentImageDataUrl(path);
   const version = options?.version ? `\u0000${options.version}` : "";
   const reader = options?.reader;
   // The pin names the machine a personal chat lives on: the same path on two

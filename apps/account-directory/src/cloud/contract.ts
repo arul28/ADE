@@ -1443,9 +1443,25 @@ export const CLOUD_BLOCKED_READ_ROUTES = [
  * the message now), `waking` (the server woke it; it claims the message when
  * it is up), `launching` (its computer was deleted: the server started
  * launch `launchId` for the same lane, which restores the chat in the same
- * row and sends this message; show its setup card).
+ * row and sends this message; show its setup card), `moving` (a move of the
+ * chat's computer to the other kind runs: the server holds the message and
+ * the new computer sends it once the lane is there; a move that fails or is
+ * cancelled leaves it to the old computer). An older server never answers
+ * `moving`; an older client reads it as `waking`.
  */
-export type CloudWakeOutcome = { state: "awake" | "waking" | "launching"; launchId?: string | null };
+export type CloudWakeOutcome = { state: "awake" | "waking" | "launching" | "moving"; launchId?: string | null };
+
+/**
+ * A move of a computer (`moves.ts`) marks the old one from the making of the
+ * new one (`moveOutMarkCommand`): the move stops its ADE and would cut a turn
+ * started then. That ADE refuses a chat send from another device with
+ * `CLOUD_COMPUTER_MOVING_CODE`, and the sender's ADE sends the message to the
+ * account's queue instead, which the move holds and hands to the new
+ * computer. A sender that can't (an older ADE, files with the message) shows
+ * the sentence.
+ */
+export const CLOUD_COMPUTER_MOVING_CODE = "computer_moving";
+export const CLOUD_COMPUTER_MOVING_SENTENCE = "This ADE Cloud computer is moving to a new one, and a turn started now would be cut. Send again once the move is done.";
 
 /* ---- The message queue for an existing cloud chat ---- */
 
@@ -2324,7 +2340,24 @@ export type CloudMoveRequest = {
   timing?: "now" | "idle";
   /** False: the caller saved the chats itself just before, so the move doesn't stop them again. Left out is true. */
   save?: boolean;
+  /**
+   * The agent's size request the person confirmed with this move (its card's
+   * id) and the chat that asked, by id and runtime pin: the client that
+   * follows the move tells that chat how it ended. Kept on the record as
+   * given (`CloudMoveChatPin`); the server reads none of them. Left out:
+   * none, and nobody is told.
+   */
+  requestId?: string | null;
+  requestedByChat?: string | null;
+  requestedByChatPin?: CloudMoveChatPin | null;
 };
+
+/**
+ * A chat's runtime pin (`OpenProjectBinding`) as a move keeps it: its short
+ * text fields only (kind, target, project, folder, names, origin), never an
+ * icon. A client rebuilds the pin from it field by field.
+ */
+export type CloudMoveChatPin = Record<string, unknown>;
 
 /**
  * - `making`: waiting for the agent (with `timing: "idle"`) or making the new computer.
@@ -2362,6 +2395,28 @@ export type CloudMoveRecord = {
   projects?: string[];
   /** Whether a cancel is still possible (before the copy starts). */
   cancellable?: boolean;
+  /**
+   * The chats' save on the old computer, which runs while the new computer is
+   * made: `running`, then `done`, or `warning` when it failed or ran past its
+   * time (the move goes on; the saved copy may be a few minutes old). Null
+   * when this move doesn't save (`save: false`, an asleep computer) or hasn't
+   * started it, and once a move that ended before it did. Left out by an
+   * older server, which saves after the new computer signed in.
+   */
+  saveState?: "running" | "done" | "warning" | null;
+  /**
+   * The copy itself began: the old computer is paused and hands its files
+   * over. `copying` reads from the new computer's sign-in on, while the old
+   * one may still save; a cancel works until this is true. Left out by an
+   * older server.
+   */
+  copyStarted?: boolean;
+  /** When the move started: `now`, or once the agent was `idle` (`CloudMoveRequest.timing`). Left out by an older server. */
+  timing?: "now" | "idle";
+  /** The size request the move answers (`CloudMoveRequest`); all three or none. Left out by an older server. */
+  requestId?: string | null;
+  requestedByChat?: string | null;
+  requestedByChatPin?: CloudMoveChatPin | null;
   createdAt: number;
   updatedAt: number;
 };

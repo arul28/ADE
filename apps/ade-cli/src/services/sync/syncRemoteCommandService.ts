@@ -81,6 +81,8 @@ import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/c
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
+import { cloudMoveSendRefusal } from "../power/cloudMoveMark";
+import { resolveMachineAdeDir } from "../projects/machineLayout";
 import {
   decodeCrossMachineDestinationPreflightArgs,
 } from "../../../../desktop/src/shared/crossMachineHandoff";
@@ -5491,6 +5493,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // Its kickoff is a turn the move would cut, like `chat.send` (`cloudMoveMark.ts`).
+    // A new chat has no queue: the launch fails with the sentence.
+    const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
+    if (moving) throw moving;
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatLaunchArgs(payload);
     const session = await agentChatService.launchHeadless(await resolveChatCreateModel(agentChatService, parsed));
@@ -5784,6 +5790,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload, context) => {
+    // A move of this ADE Cloud computer holds it (`cloudMoveMark.ts`): the turn
+    // would be cut. `computer_moving` tells ADE Web to queue it on the account.
+    const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
+    if (moving) throw moving;
     // A paired controller sends what its user typed, like `chat.steer`.
     const sendArgs = withExpectedTurn(
       withGuestAgentNote({ ...parseAgentChatSendArgs(payload), sentByUser: true }, context),
@@ -6965,9 +6975,13 @@ const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set([
   "access", "status", "list", "hours", "limits", "make_status", "cloud_sign_in_status", "referral",
   "saved_chats_list", "saved_chats_read",
 ]);
-/** `invite_redeem`: the person enters someone's invite from their own phone (a controlling device only). */
+/**
+ * `invite_redeem`: the person enters someone's invite from their own phone (a controlling device only).
+ * `tier_request_answer`: the person's answer to an agent's size request card in a chat of this machine.
+ */
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
   "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits", "invite_redeem",
+  "tier_request_answer",
 ]);
 
 /**

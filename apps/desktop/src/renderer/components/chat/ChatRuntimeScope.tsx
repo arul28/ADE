@@ -72,6 +72,13 @@ export type ChatRuntimeScope = ChatMachineScope & {
    * proof filing, for one, is chat-scoped and had been drilled three deep.
    */
   sessionId: string | null;
+  /**
+   * The chat's ADE Cloud computer rests. What the chat's box and comments
+   * write before a send then stays on this device (`heldChatAttachments.ts`,
+   * `threadCommentsHeldOnDevice.ts`) until the send carries it there, so
+   * writing never wakes the computer. False outside a chat pane.
+   */
+  machineRests: boolean;
 };
 
 const FALLBACK_SCOPE: ChatRuntimeScope = {
@@ -80,6 +87,7 @@ const FALLBACK_SCOPE: ChatRuntimeScope = {
   binding: null,
   laneId: null,
   sessionId: null,
+  machineRests: false,
   lane: null,
   laneWorktreePath: null,
   rootPath: null,
@@ -318,6 +326,8 @@ export type ChatRuntimeScopeProviderProps = {
   laneId: string | null;
   /** The session the pane is rendering, not the one it has selected. */
   sessionId: string | null;
+  /** The chat's ADE Cloud computer rests, as the pane reads it (`machineIsCloudResting`). */
+  machineRests?: boolean;
   children: React.ReactNode;
 };
 
@@ -326,10 +336,11 @@ export function ChatRuntimeScopeProvider({
   binding,
   laneId,
   sessionId,
+  machineRests = false,
   children,
 }: ChatRuntimeScopeProviderProps) {
   const machineScope = useChatRuntimeScopeForPin(pin, laneId, binding);
-  const scope = useMemo(() => ({ ...machineScope, sessionId }), [machineScope, sessionId]);
+  const scope = useMemo(() => ({ ...machineScope, sessionId, machineRests }), [machineRests, machineScope, sessionId]);
   return (
     <ChatRuntimeScopeContext.Provider value={scope}>
       {children}

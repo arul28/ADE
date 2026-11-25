@@ -26,6 +26,7 @@ import { ThreadMediaActions } from "./ThreadMediaActions";
 import {
   ThreadCommentEditor,
   ThreadCommentListItem,
+  threadCommentError,
   threadCommentErrorText,
   type ThreadCommentError,
   useThreadCommentActions,
@@ -39,10 +40,12 @@ import {
   THREAD_COMMENT_FOCUS_EVENT,
   threadCommentsApi,
   discardUnsavedDraftBody,
+  holdThreadCommentOnDevice,
   keepUnsavedDraftBody,
   readUnsavedDraftBody,
   unsavedDraftKey,
 } from "./threadCommentsStore";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { withChatPin } from "./chatMachinePin";
 
 const HIGHLIGHT_PENDING = "ade-thread-comment";
@@ -159,6 +162,8 @@ export function ThreadCommentLayer({
   onCreateIssue?: (text: string) => void;
 }) {
   const actions = useThreadCommentActions(sessionId, pin);
+  // The chat's ADE Cloud computer rests: a new comment stays on this device.
+  const { machineRests } = useChatRuntimeScope();
   const [draft, setDraft] = useState<Draft | null>(null);
   // Read from callbacks that outlive a render (closing the box keeps its text).
   const draftRef = useRef(draft);
@@ -518,6 +523,17 @@ export function ThreadCommentLayer({
       anchor: saving.anchor,
       body,
     };
+    // The chat's ADE Cloud computer rests: the comment stays on this device
+    // until a send carries it, so writing it never wakes the computer.
+    if (machineRests) {
+      try {
+        holdThreadCommentOnDevice(sessionId, fields);
+        discardDraft();
+      } catch (error) {
+        setDraftError(threadCommentError(error));
+      }
+      return;
+    }
     const loaded = threadCommentListLoaded(sessionId);
     const settle = addLocalThreadComment(sessionId, fields);
     discardDraft();

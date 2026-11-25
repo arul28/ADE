@@ -3302,6 +3302,8 @@ export async function createAdeRuntime(args: {
           ? {
             hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
             supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
+            // Without it the prompt names a macOS screen on a Linux or Windows brain.
+            seatHostPlatform: () => macDesktopService.seatHostPlatform(),
           }
           : null,
         laneService,

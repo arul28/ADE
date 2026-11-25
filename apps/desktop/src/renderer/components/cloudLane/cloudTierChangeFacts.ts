@@ -4,7 +4,7 @@ import {
   type CloudMachine,
 } from "../../../shared/adeCloud";
 import { androidFirstStartNeedMb } from "../../../shared/androidDisk";
-import { cloudTierFacts, cloudTiers, type CloudTier } from "../../../shared/cloudTiers";
+import { cloudTierFacts, cloudTierHoldsDisk, cloudTiers, type CloudTier } from "../../../shared/cloudTiers";
 
 /**
  * What a size change means for the lane's disk, in plain words, from data
@@ -42,6 +42,10 @@ const roundGb = (gb: number) => Math.max(0, Math.floor(gb * 10) / 10);
 export function tierChangeDiskLine(input: { to: CloudTier; move: boolean; currentGb: number | null }): string | null {
   const { to, move, currentGb } = input;
   const max = to.diskMaxGb;
+  // A move keeps the old disk too, so the same rule holds for it.
+  if (!cloudTierHoldsDisk(to, currentGb)) {
+    return `${to.label} holds a disk of up to ${max} GB, and this computer's disk is ${currentGb} GB. A disk can't shrink, so pick a size that holds it.`;
+  }
   if (move) return max != null ? `The new computer's disk can grow to ${max} GB at ${to.label}.` : null;
   if (currentGb == null) return max != null ? `The disk keeps its size; ${to.label} lets it grow to ${max} GB.` : null;
   if (max != null && max > currentGb) return `Disk stays ${currentGb} GB; ${to.label} lets it grow to ${max} GB.`;

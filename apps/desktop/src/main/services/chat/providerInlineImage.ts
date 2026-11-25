@@ -1,9 +1,6 @@
-import { PNG } from "pngjs";
-import { decode as decodeJpeg, encode as encodeJpeg } from "jpeg-js";
 import {
   MAX_PROVIDER_INLINE_IMAGE_BYTES,
   MAX_PROVIDER_INLINE_IMAGE_EDGE_PX,
-  PROVIDER_INLINE_IMAGE_TARGET_EDGE_PX,
   formatAttachmentSize,
 } from "../../../shared/chatAttachmentLimits";
 import { sniffImageMimeType } from "../../../shared/imageSniff";
@@ -11,6 +8,14 @@ import { captureError } from "../../../shared/sentry/capture";
 import { getImageAttachmentMediaType } from "../../../shared/types/chat";
 import { gifDimensions, imageDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
+import {
+  MAX_DECODE_PIXELS,
+  encodeDisplayCopy,
+  fitDecodableImage,
+  type CodecDisplayResult,
+  type CodecFitResult,
+} from "./providerInlineImageCodec";
+import { encodeDisplayCopyOffThread, fitDecodableImageOffThread } from "./providerInlineImageWorkerPool";
 
 /**
  * Fits an image to what a model provider accepts inline, so an attachment can
@@ -25,7 +30,9 @@ import type { Logger } from "../logging/logger";
  *
  * The codecs are pure JavaScript (pngjs, jpeg-js) on purpose: this runs in the
  * Node brain, the Electron main process and the SDK worker processes, on
- * macOS, Windows and Linux, with no native module to ship or rebuild.
+ * macOS, Windows and Linux, with no native module to ship or rebuild. The
+ * header checks run here; the decode and re-encode run on a worker thread
+ * (`providerInlineImageWorkerPool.ts`), or in-process when none can start.
  */
 
 export type ProviderInlineImageFit =
@@ -40,17 +47,6 @@ export type ProviderInlineImageFit =
     };
   }
   | { kind: "omit"; reason: string };
-
-/**
- * Largest image ADE will decode to downscale: 25 MP is about 100 MB of RGBA. A
- * 6K display capture is ~20 MP, so those still fit; anything bigger is omitted.
- */
-const MAX_DECODE_PIXELS = 25_000_000;
-/** Smallest long edge worth sending; below this the hint is more useful. */
-const MIN_FITTED_EDGE_PX = 512;
-const JPEG_QUALITIES = [85, 70] as const;
-
-type Rgba = { width: number; height: number; data: Uint8Array; hasAlpha: boolean };
 
 /** Image formats every provider path may safely send as image bytes. */
 export const PROVIDER_IMAGE_BYTE_MEDIA_TYPES = new Set([
@@ -101,7 +97,7 @@ export async function fitImageForProviderInline(
   mediaType: string,
   options?: FitImageOptions,
 ): Promise<ProviderInlineImageFit> {
-  const fit = await fitImage(bytes, mediaType);
+  const { fit, offThread } = await fitImage(bytes, mediaType);
   if (fit.kind === "omit") {
     options?.logger?.warn("agent_chat.inline_image_omitted", {
       provider: options?.provider,
@@ -109,20 +105,29 @@ export async function fitImageForProviderInline(
       reason: fit.reason,
     });
   } else if (fit.resized) {
-    options?.logger?.info("agent_chat.inline_image_resized", { provider: options?.provider, ...fit.resized });
+    options?.logger?.info("agent_chat.inline_image_resized", {
+      provider: options?.provider,
+      ...fit.resized,
+      offThread,
+    });
   }
   return fit;
 }
 
-async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<ProviderInlineImageFit> {
+/** A fit, and whether a worker thread ran the codec (for the log line). */
+type FitOutcome = { fit: ProviderInlineImageFit; offThread: boolean };
+
+const inProcess = (fit: ProviderInlineImageFit): FitOutcome => ({ fit, offThread: false });
+
+async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<FitOutcome> {
   const mediaType = normalizeImageMediaType(declaredMediaType);
   if (!mediaType || !PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has(mediaType)) {
-    return { kind: "omit", reason: `unsupported image MIME type ${declaredMediaType}` };
+    return inProcess({ kind: "omit", reason: `unsupported image MIME type ${declaredMediaType}` });
   }
   const dims = imageDimensions(bytes) ?? gifOrWebpDimensions(bytes);
   const longEdge = dims ? Math.max(dims.width, dims.height) : 0;
   if (bytes.byteLength <= MAX_PROVIDER_INLINE_IMAGE_BYTES && longEdge <= MAX_PROVIDER_INLINE_IMAGE_EDGE_PX) {
-    return { kind: "inline", data: bytes, mediaType };
+    return inProcess({ kind: "inline", data: bytes, mediaType });
   }
 
   const describe = (): string => {
@@ -135,55 +140,49 @@ async function fitImage(bytes: Buffer, declaredMediaType: string): Promise<Provi
   const isPng = actualMediaType === "image/png";
   const isJpeg = actualMediaType === "image/jpeg";
   if (!dims || (!isPng && !isJpeg)) {
-    return {
+    return inProcess({
       kind: "omit",
       reason: `${describe()}, over the ${formatAttachmentSize(MAX_PROVIDER_INLINE_IMAGE_BYTES)} / ${MAX_PROVIDER_INLINE_IMAGE_EDGE_PX} px inline limit and not a PNG or JPEG ADE can resize`,
-    };
+    });
   }
   if (dims.width * dims.height > MAX_DECODE_PIXELS) {
-    return { kind: "omit", reason: `${describe()}, too large to resize` };
+    return inProcess({ kind: "omit", reason: `${describe()}, too large to resize` });
   }
   // pngjs inflates an interlaced image whole, with no size cap, so it is not
   // decoded. IHDR's interlace method is the byte at offset 28.
   if (isPng && bytes[28] === 1) {
-    return { kind: "omit", reason: `${describe()}, an interlaced PNG ADE does not resize` };
+    return inProcess({ kind: "omit", reason: `${describe()}, an interlaced PNG ADE does not resize` });
   }
 
   try {
-    // Yield once before the synchronous decode so queued I/O gets a turn.
-    await yieldToEventLoop();
-    const decoded = isPng ? decodePng(bytes) : decodeJpegRgba(bytes);
-    let edge = Math.min(PROVIDER_INLINE_IMAGE_TARGET_EDGE_PX, Math.max(decoded.width, decoded.height));
-    // The starting edge is always tried, even below MIN_FITTED_EDGE_PX, so a
-    // small PNG bloated by metadata is re-encoded instead of omitted. Only the
-    // further shrinking stops at the floor.
-    for (;;) {
-      const scaled = await resizeToLongEdge(decoded, edge);
-      for (const candidate of encodeCandidates(scaled, isPng)) {
-        // Each encode is synchronous and can run for tens of milliseconds on a
-        // large image, so the loop yields before each one.
-        await yieldToEventLoop();
-        const encoded = candidate();
-        if (encoded.data.byteLength <= MAX_PROVIDER_INLINE_IMAGE_BYTES) {
-          return {
-            kind: "inline",
-            data: encoded.data,
-            mediaType: encoded.mediaType,
-            resized: {
-              from: { bytes: bytes.byteLength, width: dims.width, height: dims.height },
-              to: { bytes: encoded.data.byteLength, width: scaled.width, height: scaled.height },
-            },
-          };
-        }
-      }
-      edge = Math.floor(edge * 0.75);
-      if (edge < MIN_FITTED_EDGE_PX) break;
+    const { fitted, offThread } = await fitDecodable(bytes, isPng);
+    if (fitted.kind === "too-big") {
+      return { fit: { kind: "omit", reason: `${describe()}, could not be resized under the ${formatAttachmentSize(MAX_PROVIDER_INLINE_IMAGE_BYTES)} inline limit` }, offThread };
     }
-    return { kind: "omit", reason: `${describe()}, could not be resized under the ${formatAttachmentSize(MAX_PROVIDER_INLINE_IMAGE_BYTES)} inline limit` };
+    return {
+      fit: {
+        kind: "inline",
+        data: fitted.data,
+        mediaType: fitted.mediaType,
+        resized: {
+          from: { bytes: bytes.byteLength, width: dims.width, height: dims.height },
+          to: { bytes: fitted.data.byteLength, width: fitted.width, height: fitted.height },
+        },
+      },
+      offThread,
+    };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { kind: "omit", reason: `${describe()}, could not be resized (${message})` };
+    return inProcess({ kind: "omit", reason: `${describe()}, could not be resized (${message})` });
   }
+}
+
+/** The decode and re-encode, on a worker when one runs; a codec failure throws either way. */
+async function fitDecodable(bytes: Buffer, isPng: boolean): Promise<{ fitted: CodecFitResult; offThread: boolean }> {
+  const worker = await fitDecodableImageOffThread(bytes, isPng);
+  if (!worker) return { fitted: await fitDecodableImage(bytes, isPng, yieldToEventLoop), offThread: false };
+  if (!worker.ok) throw worker.error;
+  return { fitted: worker.result, offThread: true };
 }
 
 /**
@@ -207,15 +206,9 @@ export async function encodeDisplayImage(
   if (Math.max(dims.width, dims.height) <= maxEdgePx) return null;
   if (isPng && bytes[28] === 1) return null;
   try {
-    await yieldToEventLoop();
-    const decoded = isPng ? decodePng(bytes) : decodeJpegRgba(bytes);
-    if (decoded.hasAlpha) return null;
-    await yieldToEventLoop();
-    const scaled = await resizeToLongEdge(decoded, Math.min(maxEdgePx, Math.max(decoded.width, decoded.height)));
-    await yieldToEventLoop();
-    const data = encodeJpegRgba(scaled, quality);
-    if (data.byteLength > bytes.byteLength * 0.8) return null;
-    return { data, mediaType: "image/jpeg", width: scaled.width, height: scaled.height };
+    const copy = await displayCopy(bytes, isPng, maxEdgePx, quality);
+    if (!copy) return null;
+    return { data: copy.data, mediaType: "image/jpeg", width: copy.width, height: copy.height };
   } catch (error) {
     // The copy is only a faster way to show the picture; the original is
     // served instead. Reported, so a codec that fails on real pictures is
@@ -223,6 +216,13 @@ export async function encodeDisplayImage(
     captureError(error, { fingerprint: ["artifact-display-copy", "encode"] });
     return null;
   }
+}
+
+async function displayCopy(bytes: Buffer, isPng: boolean, maxEdgePx: number, quality: number): Promise<CodecDisplayResult> {
+  const offThread = await encodeDisplayCopyOffThread(bytes, isPng, maxEdgePx, quality);
+  if (!offThread) return encodeDisplayCopy(bytes, isPng, maxEdgePx, quality, yieldToEventLoop);
+  if (!offThread.ok) throw offThread.error;
+  return offThread.result;
 }
 
 function yieldToEventLoop(): Promise<void> {
@@ -235,223 +235,4 @@ function yieldToEventLoop(): Promise<void> {
  */
 function gifOrWebpDimensions(bytes: Buffer): ImageDimensions | null {
   return gifDimensions(bytes) ?? webpDimensions(bytes);
-}
-
-function decodePng(bytes: Buffer): Rgba {
-  const png = PNG.sync.read(bytes);
-  // macOS screenshots carry an alpha channel that is opaque everywhere; writing
-  // them back as RGB saves a quarter of the raw bytes.
-  return { width: png.width, height: png.height, data: png.data, hasAlpha: png.alpha && hasTransparency(png.data) };
-}
-
-function hasTransparency(data: Uint8Array): boolean {
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i]! < 255) return true;
-  }
-  return false;
-}
-
-function decodeJpegRgba(bytes: Buffer): Rgba {
-  const decoded = decodeJpeg(bytes, {
-    useTArray: true,
-    formatAsRGBA: true,
-    maxResolutionInMP: MAX_DECODE_PIXELS / 1_000_000,
-    maxMemoryUsageInMB: 1024,
-  });
-  const rgba: Rgba = { width: decoded.width, height: decoded.height, data: decoded.data, hasAlpha: false };
-  // jpeg-js ignores EXIF, and the re-encoded JPEG carries none, so a phone
-  // photo would arrive sideways unless the orientation is baked into pixels.
-  return applyExifOrientation(rgba, jpegExifOrientation(bytes));
-}
-
-/**
- * PNG keeps screenshot text crisp, so a PNG source tries PNG first. JPEG is
- * the fallback for photos, where PNG at the same size stays too big.
- */
-function encodeCandidates(
-  image: Rgba,
-  sourceIsPng: boolean,
-): Array<() => { data: Buffer; mediaType: string }> {
-  const candidates: Array<() => { data: Buffer; mediaType: string }> = [];
-  if (sourceIsPng) {
-    candidates.push(() => ({ data: encodePng(image), mediaType: "image/png" }));
-  }
-  for (const quality of JPEG_QUALITIES) {
-    candidates.push(() => ({ data: encodeJpegRgba(image, quality), mediaType: "image/jpeg" }));
-  }
-  return candidates;
-}
-
-function encodePng(image: Rgba): Buffer {
-  const png = new PNG({ width: image.width, height: image.height });
-  png.data = Buffer.from(image.data.buffer, image.data.byteOffset, image.data.byteLength);
-  return PNG.sync.write(png, {
-    colorType: image.hasAlpha ? 6 : 2,
-    inputColorType: 6,
-    inputHasAlpha: true,
-    deflateLevel: 6,
-  });
-}
-
-function encodeJpegRgba(image: Rgba, quality: number): Buffer {
-  // JPEG has no alpha: composite onto white, or transparent pixels turn black.
-  const data = image.hasAlpha ? flattenOntoWhite(image.data) : image.data;
-  return encodeJpeg({ width: image.width, height: image.height, data }, quality).data;
-}
-
-function flattenOntoWhite(src: Uint8Array): Uint8Array {
-  const out = new Uint8Array(src.length);
-  for (let i = 0; i < src.length; i += 4) {
-    const a = src[i + 3]! / 255;
-    const bg = 255 * (1 - a);
-    out[i] = Math.round(src[i]! * a + bg);
-    out[i + 1] = Math.round(src[i + 1]! * a + bg);
-    out[i + 2] = Math.round(src[i + 2]! * a + bg);
-    out[i + 3] = 255;
-  }
-  return out;
-}
-
-type AxisWeights = { start: number; weights: Float64Array };
-
-/** Area-average weights mapping `srcSize` samples onto `dstSize` samples. */
-function axisWeights(srcSize: number, dstSize: number): AxisWeights[] {
-  const scale = srcSize / dstSize;
-  const out: AxisWeights[] = [];
-  for (let i = 0; i < dstSize; i += 1) {
-    const from = i * scale;
-    const to = Math.min(srcSize, (i + 1) * scale);
-    const start = Math.floor(from);
-    const end = Math.min(srcSize, Math.ceil(to));
-    const weights = new Float64Array(Math.max(1, end - start));
-    for (let j = start; j < end; j += 1) {
-      weights[j - start] = (Math.min(j + 1, to) - Math.max(j, from)) / scale;
-    }
-    out.push({ start, weights });
-  }
-  return out;
-}
-
-/**
- * Box-filter downscale with premultiplied alpha. Never upscales. Works one
- * output row at a time, so memory beyond the output stays at two float rows.
- * Yields every 64 rows so one large resize does not hold the event loop.
- */
-async function resizeToLongEdge(image: Rgba, longEdge: number): Promise<Rgba> {
-  const scale = longEdge / Math.max(image.width, image.height);
-  if (scale >= 1) return image;
-  const width = Math.max(1, Math.round(image.width * scale));
-  const height = Math.max(1, Math.round(image.height * scale));
-  const xw = axisWeights(image.width, width);
-  const yw = axisWeights(image.height, height);
-  const src = image.data;
-  const out = new Uint8Array(width * height * 4);
-  const row = new Float64Array(width * 4);
-  const acc = new Float64Array(width * 4);
-  for (let y = 0; y < height; y += 1) {
-    if (y % 64 === 0) await yieldToEventLoop();
-    acc.fill(0);
-    const { start: sy0, weights: wy } = yw[y]!;
-    for (let k = 0; k < wy.length; k += 1) {
-      const rowWeight = wy[k]!;
-      if (rowWeight <= 0) continue;
-      const rowOffset = (sy0 + k) * image.width * 4;
-      for (let x = 0; x < width; x += 1) {
-        const { start: sx0, weights: wx } = xw[x]!;
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let a = 0;
-        for (let m = 0; m < wx.length; m += 1) {
-          const p = rowOffset + (sx0 + m) * 4;
-          const w = wx[m]! * src[p + 3]!;
-          r += src[p]! * w;
-          g += src[p + 1]! * w;
-          b += src[p + 2]! * w;
-          a += w;
-        }
-        row[x * 4] = r;
-        row[x * 4 + 1] = g;
-        row[x * 4 + 2] = b;
-        row[x * 4 + 3] = a;
-      }
-      for (let i = 0; i < row.length; i += 1) acc[i] += row[i]! * rowWeight;
-    }
-    const outOffset = y * width * 4;
-    for (let x = 0; x < width; x += 1) {
-      const a = acc[x * 4 + 3]!;
-      const o = outOffset + x * 4;
-      if (a > 0) {
-        out[o] = Math.min(255, Math.round(acc[x * 4]! / a));
-        out[o + 1] = Math.min(255, Math.round(acc[x * 4 + 1]! / a));
-        out[o + 2] = Math.min(255, Math.round(acc[x * 4 + 2]! / a));
-      }
-      out[o + 3] = Math.min(255, Math.round(a));
-    }
-  }
-  return { width, height, data: out, hasAlpha: image.hasAlpha };
-}
-
-/** EXIF orientation (1–8) from a JPEG's APP1 segment; 1 when absent. */
-function jpegExifOrientation(bytes: Buffer): number {
-  let offset = 2;
-  while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
-    const marker = bytes[offset + 1]!;
-    if (marker === 0xda || marker === 0xd9) break;
-    const length = bytes.readUInt16BE(offset + 2);
-    if (length < 2) break;
-    const segment = offset + 4;
-    if (marker === 0xe1 && segment + 14 <= bytes.length && bytes.toString("latin1", segment, segment + 6) === "Exif\0\0") {
-      const tiff = segment + 6;
-      const little = bytes.toString("latin1", tiff, tiff + 2) === "II";
-      const u16 = (at: number) => (little ? bytes.readUInt16LE(at) : bytes.readUInt16BE(at));
-      const u32 = (at: number) => (little ? bytes.readUInt32LE(at) : bytes.readUInt32BE(at));
-      const ifd = tiff + u32(tiff + 4);
-      if (ifd + 2 > bytes.length) return 1;
-      const entries = u16(ifd);
-      for (let i = 0; i < entries; i += 1) {
-        const entry = ifd + 2 + i * 12;
-        if (entry + 12 > bytes.length) return 1;
-        if (u16(entry) === 0x0112) {
-          const value = u16(entry + 8);
-          return value >= 1 && value <= 8 ? value : 1;
-        }
-      }
-      return 1;
-    }
-    offset += 2 + length;
-  }
-  return 1;
-}
-
-/** Bakes an EXIF orientation into the pixels so the image displays upright. */
-function applyExifOrientation(image: Rgba, orientation: number): Rgba {
-  if (orientation <= 1 || orientation > 8) return image;
-  const { width: w, height: h, data: src } = image;
-  const swap = orientation >= 5;
-  const outW = swap ? h : w;
-  const outH = swap ? w : h;
-  const out = new Uint8Array(src.length);
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      let dx: number;
-      let dy: number;
-      switch (orientation) {
-        case 2: dx = w - 1 - x; dy = y; break;
-        case 3: dx = w - 1 - x; dy = h - 1 - y; break;
-        case 4: dx = x; dy = h - 1 - y; break;
-        case 5: dx = y; dy = x; break;
-        case 6: dx = h - 1 - y; dy = x; break;
-        case 7: dx = h - 1 - y; dy = w - 1 - x; break;
-        default: dx = y; dy = w - 1 - x; break; // 8
-      }
-      const s = (y * w + x) * 4;
-      const d = (dy * outW + dx) * 4;
-      out[d] = src[s]!;
-      out[d + 1] = src[s + 1]!;
-      out[d + 2] = src[s + 2]!;
-      out[d + 3] = src[s + 3]!;
-    }
-  }
-  return { width: outW, height: outH, data: out, hasAlpha: image.hasAlpha };
 }

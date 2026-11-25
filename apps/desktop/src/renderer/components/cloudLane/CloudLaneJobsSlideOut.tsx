@@ -3,19 +3,18 @@ import { lastNoticeCornerHold, noticeCornerHeld, subscribeNoticeCornerHeld } fro
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CaretRight, Check, Warning, X } from "@phosphor-icons/react";
 import type { CloudAccountState } from "../../../shared/adeCloud";
-import type { CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
+import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import { STANDARD_EASE } from "../../lib/motion";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { LaunchProgressRail } from "../chat/launch/LaunchProgressRail";
 import { LaunchStageGlyph } from "../chat/launch/stepCardParts";
-import { useLaunchDurationText } from "../chat/launch/launchClock";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { cn } from "../ui/cn";
 import { NoticeIcon } from "../ui/notice/NoticeParts";
 import { noticeTone, type NoticeTone } from "../ui/notice/noticeTones";
 import { ToastCard } from "../ui/notice/ToastCard";
 import { LaneIcon } from "../ui/vcsIcons";
-import { CloudLaneJobCard, cloudLaneJobPresentation, cloudLaneJobTitle } from "./CloudLaneJobCard";
+import { CloudLaneJobSteps, JobElapsed, cloudLaneJobPresentation, cloudLaneJobTitle } from "./CloudLaneJobCard";
 import { cloudLaneLifeAvailable, dismissCloudLaneJob } from "./cloudLaneActions";
 import { cloudLaneJobMarks, cloudLaneJobVisible, cloudLaneJobsNow, subscribeCloudLaneJobs, useCloudLaneJobs, type CloudLaneJobMark } from "./cloudLaneStores";
 import "./cloudLane.css";
@@ -75,8 +74,6 @@ function useHiddenVersion(): number {
   return useSyncExternalStore(subscribeHidden, () => hiddenVersion, () => 0);
 }
 
-const isLive = (job: CloudLaneJobSnapshot) => job.phase === "waiting" || job.phase === "running";
-
 /** The jobs the panel shows, oldest first. Pure. */
 function selectPanelJobs(
   jobs: ReadonlyMap<string, CloudLaneJobSnapshot>,
@@ -87,7 +84,7 @@ function selectPanelJobs(
     const mark = input.marks.get(job.jobId);
     const hiddenAt = input.hidden.get(job.jobId);
     if ((hiddenAt != null && hiddenAt === (mark?.turn ?? 0)) || job.dismissedAt) continue;
-    if (isLive(job)) {
+    if (cloudLaneJobIsLive(job)) {
       shown.push(job);
       continue;
     }
@@ -160,7 +157,7 @@ function shownSince(job: CloudLaneJobSnapshot): number {
 function nextExpiryOf(shown: readonly CloudLaneJobSnapshot[]): number | null {
   let soonest: number | null = null;
   for (const job of shown) {
-    if (isLive(job) || job.phase === "failed") continue;
+    if (cloudLaneJobIsLive(job) || job.phase === "failed") continue;
     // A held corner shows nothing, so no finished row's period runs out.
     if (noticeCornerHeld()) return null;
     const endedAt = shownSince(job);
@@ -262,23 +259,18 @@ export function useCloudLaneJobsSlideOutVisible(): boolean {
 
 function cloudLaneJobsHeadline(jobs: readonly CloudLaneJobSnapshot[], account: CloudAccountState | null): string {
   if (jobs.length === 1) return cloudLaneJobTitle(jobs[0]!, account);
-  const running = jobs.filter(isLive).length;
+  const running = jobs.filter(cloudLaneJobIsLive).length;
   if (running > 0) return `Changing ${running} cloud lane${running === 1 ? "" : "s"}…`;
   const done = jobs.filter((job) => job.phase === "online").length;
   const failed = jobs.filter((job) => job.phase === "failed").length;
   return [done ? `${done} done` : null, failed ? `${failed} failed` : null].filter(Boolean).join(" · ") || "ADE Cloud lanes";
 }
 
-function JobElapsed({ job }: { job: CloudLaneJobSnapshot }) {
-  const text = useLaunchDurationText(job.startedAt, job.endedAt, isLive(job));
-  return <span className="shrink-0 tabular-nums text-fg/40">{text}</span>;
-}
-
 const JobRow = React.memo(function JobRow({ job, account, single }: { job: CloudLaneJobSnapshot; account: CloudAccountState | null; single: boolean }) {
   const reduceMotion = useReducedMotion();
   const failed = job.phase === "failed";
   const done = job.phase === "online";
-  const live = isLive(job);
+  const live = cloudLaneJobIsLive(job);
   const [expanded, setExpanded] = useState(failed);
   useEffect(() => {
     if (failed) setExpanded(true);
@@ -346,7 +338,7 @@ const JobRow = React.memo(function JobRow({ job, account, single }: { job: Cloud
               >
                 {line}
               </span>
-              <JobElapsed job={job} />
+              <JobElapsed job={job} className="text-fg/40" />
             </span>
           ) : null}
           {single ? null : (
@@ -383,7 +375,7 @@ const JobRow = React.memo(function JobRow({ job, account, single }: { job: Cloud
             className="overflow-hidden"
           >
             <div className="ml-[32px] mt-2.5 rounded-lg border border-fg/[0.07] bg-fg/[0.03] px-2.5 pt-1.5 pb-1">
-              <CloudLaneJobCard job={job} account={account} variant="panel" headless className="adecl-jobpanel-bare" />
+              <CloudLaneJobSteps job={job} account={account} />
             </div>
           </motion.div>
         ) : null}
@@ -397,7 +389,7 @@ export function CloudLaneJobsSlideOut() {
   // Size names from the account the header already keeps (no read of its own).
   const account = useCloudAccount();
   if (jobs.length === 0) return null;
-  const anyLive = jobs.some(isLive);
+  const anyLive = jobs.some(cloudLaneJobIsLive);
   const anyFailed = jobs.some((job) => job.phase === "failed");
   const tone: NoticeTone = anyFailed ? "error" : anyLive ? "accent" : jobs.every((job) => job.phase === "online") ? "success" : "neutral";
   return (

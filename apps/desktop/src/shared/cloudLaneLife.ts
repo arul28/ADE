@@ -10,9 +10,13 @@
  */
 
 import type { AdeCardPayload, AdeCardRow } from "./adeCard";
+import { isAccountAnsweredPin, isAdeCloudTargetId } from "./adeCloud/binding";
 import type { CloudTierId } from "./cloudTiers";
 import type { CloudLaneWithoutComputer } from "./cloudLaneLaunch";
+import { savedChatsMachineKey } from "./cloudSavedChats";
+import { sameMachineKey } from "./machineAddress";
 import type { ChatLaunchStageStatus } from "./types/chatLaunch";
+import type { OpenProjectBinding } from "./types/core";
 
 export type { CloudLaneWithoutComputer };
 
@@ -128,6 +132,9 @@ export type CloudLaneJobStage = {
   endedAt: string | null;
 };
 
+/** The save step's detail when it couldn't write the chats' saved copy (a stuck brain): the job goes on. */
+export const CLOUD_LANE_SAVE_WARNING_DETAIL = "The chats' saved copy may be a few minutes old";
+
 /**
  * `waiting`: for the agent to be idle. `running`: the steps. `online`: ADE on
  * the computer answers (the lane says Online only now). `failed`: a step
@@ -156,6 +163,8 @@ export type CloudLaneJobSnapshot = {
   error: string | null;
   /** The agent's chat whose request card the person confirmed, or null. */
   requestedByChat: string | null;
+  /** That request card's id, so the card matches this job and no later one. Absent on older records. */
+  requestId?: string | null;
   /**
    * A resize that also grows the disk: the disk's new size in GB. Null (or
    * absent, from an older record) keeps the disk as it is.
@@ -170,6 +179,25 @@ export type CloudLaneJobSnapshot = {
    */
   dismissedAt?: string | null;
 };
+
+/** The job still waits for the agent or runs its steps. */
+export function cloudLaneJobIsLive(job: Pick<CloudLaneJobSnapshot, "phase">): boolean {
+  return job.phase === "waiting" || job.phase === "running";
+}
+
+/**
+ * A send to the lane's chats goes to the account's queue now, which holds it
+ * until the change is done: a move from its making on (once it no longer
+ * waits for the agent; the server's `HOLDING_STEPS` in
+ * `account-directory/src/cloud/moves.ts`), a size change once its resize was
+ * asked (before that its ADE still answers, and the restart would cut the
+ * turn the message started).
+ */
+export function cloudLaneJobHoldsSends(job: CloudLaneJobSnapshot): boolean {
+  if (job.phase !== "running") return false;
+  if (job.kind === "move") return true;
+  return job.stages.some((stage) => stage.id === "resize" && (stage.status === "done" || stage.status === "warning" || stage.status === "skipped"));
+}
 
 /** The calls `IPC.cloudLaneLifeCall` answers. */
 export type CloudLaneLifeMethod =
@@ -212,7 +240,20 @@ export type CloudLaneChangeTierArgs = {
   /** The request card the person confirmed, if any (`CloudTierRequest.requestId`). */
   requestId?: string | null;
   requestedByChat?: string | null;
+  /**
+   * That chat's runtime pin: the layer that runs the change tells the chat's
+   * own machine how it ended (`cloud.tier_request_answer` with its outcome).
+   */
+  requestedByChatPin?: OpenProjectBinding | null;
 };
+
+/** The size request a change names (`CloudLaneChangeTierArgs`), trimmed; null for each one left out. */
+export function cloudTierRequestIdsOf(
+  raw: { requestId?: unknown; requestedByChat?: unknown } | null | undefined,
+): { requestId: string | null; requestedByChat: string | null } {
+  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+  return { requestId: text(raw?.requestId), requestedByChat: text(raw?.requestedByChat) };
+}
 
 // ---------------------------------------------------------------------------
 // An agent asks for a tier change
@@ -221,7 +262,12 @@ export type CloudLaneChangeTierArgs = {
 /** The card an agent's `cloud.tier_request` posts in its chat. A person confirms it; the agent never changes a tier. */
 export const CLOUD_TIER_REQUEST_CARD_VARIANT = "cloud_tier_request";
 
-/** The card's buttons. The client answers `idle` and `now` with `changeTier`. */
+/**
+ * The card's buttons. The client answers `idle` and `now` with `changeTier`;
+ * every answer, `dismiss` too, then goes to the chat's own machine
+ * (`cloud.tier_request_answer`), which marks the card answered and tells the
+ * agent. How the change ended goes there from the layer that runs it.
+ */
 export const CLOUD_TIER_REQUEST_ACTIONS = {
   idle: "cloud_tier_change_idle",
   now: "cloud_tier_change_now",
@@ -235,26 +281,44 @@ export type CloudTierRequest = {
   computerName: string;
   fromSizeId: CloudTierId | null;
   toSizeId: CloudTierId;
+  /** The new size's name ("Large"), as the card was built with it. */
+  toLabel: string;
   /** The agent's reason, in its words. */
   reason: string;
   chatSessionId: string;
 };
 
 /** Row keys the card carries its request in, so a client reads it back without parsing text. */
-const ROW = { computer: "tier_request_computer", size: "tier_request_size", reason: "tier_request_reason", from: "tier_request_from" } as const;
+const ROW = {
+  computer: "tier_request_computer",
+  size: "tier_request_size",
+  toLabel: "tier_request_to_label",
+  reason: "tier_request_reason",
+  from: "tier_request_from",
+} as const;
 
-export function buildCloudTierRequestCard(request: CloudTierRequest, labels: { from: string | null; to: string; rate: string | null }): AdeCardPayload {
+const TIER_REQUEST_CARD_PREFIX = "cloud-tier-request:";
+
+/** The `cardId` of a request's card: the chat's machine reads the card back by it. */
+export function cloudTierRequestCardId(requestId: string): string {
+  return `${TIER_REQUEST_CARD_PREFIX}${requestId}`;
+}
+
+export function buildCloudTierRequestCard(request: CloudTierRequest, labels: { from: string | null; rate: string | null }): AdeCardPayload {
+  const to = request.toLabel;
   const rows: AdeCardRow[] = [
     { key: ROW.computer, icon: "info", text: request.computerName, detail: request.instanceId },
-    { key: ROW.size, icon: "info", text: `To ${labels.to}${labels.rate ? `, ${labels.rate}` : ""}`, detail: request.toSizeId },
+    // Its text is for people; an older ADE reads the size id from its detail.
+    { key: ROW.size, icon: "info", text: `To ${to}${labels.rate ? `, ${labels.rate}` : ""}`, detail: request.toSizeId },
+    { key: ROW.toLabel, icon: "info", text: to, detail: null },
     ...(request.fromSizeId ? [{ key: ROW.from, icon: "info" as const, text: `Now ${labels.from ?? request.fromSizeId}`, detail: request.fromSizeId }] : []),
     { key: ROW.reason, icon: "info", text: request.reason, detail: null },
   ];
   return {
-    cardId: `cloud-tier-request:${request.requestId}`,
+    cardId: cloudTierRequestCardId(request.requestId),
     variant: CLOUD_TIER_REQUEST_CARD_VARIANT,
     state: "live",
-    title: `Change ${request.computerName} to ${labels.to}?`,
+    title: `Change ${request.computerName} to ${to}?`,
     subtitle: "The agent asks. It changes nothing until you confirm.",
     rows,
     actions: [
@@ -262,14 +326,19 @@ export function buildCloudTierRequestCard(request: CloudTierRequest, labels: { f
       { id: CLOUD_TIER_REQUEST_ACTIONS.now, label: "Do it now", kind: "default" },
       { id: CLOUD_TIER_REQUEST_ACTIONS.dismiss, label: "Keep the size", kind: "default" },
     ],
-    fallbackText: `The agent asks to change ${request.computerName} to ${labels.to}: ${request.reason} Change it in ADE (Settings › ADE Cloud).`,
+    fallbackText: `The agent asks to change ${request.computerName} to ${to}: ${request.reason} Change it in ADE (Settings › ADE Cloud).`,
   };
+}
+
+/** A card from before the label row: its size row says "To Large, uses 4 hours an hour". */
+function legacyToLabel(sizeText: string): string | null {
+  return /^To (.+?)(?:,|$)/.exec(sizeText)?.[1]?.trim() || null;
 }
 
 /** The request a `cloud_tier_request` card carries, or null for any other card. */
 export function cloudTierRequestOfCard(card: AdeCardPayload, chatSessionId: string): CloudTierRequest | null {
   if (card.variant !== CLOUD_TIER_REQUEST_CARD_VARIANT) return null;
-  const requestId = card.cardId.startsWith("cloud-tier-request:") ? card.cardId.slice("cloud-tier-request:".length) : "";
+  const requestId = card.cardId.startsWith(TIER_REQUEST_CARD_PREFIX) ? card.cardId.slice(TIER_REQUEST_CARD_PREFIX.length) : "";
   const row = (key: string) => card.rows?.find((entry) => entry.key === key) ?? null;
   const computer = row(ROW.computer);
   const size = row(ROW.size);
@@ -280,8 +349,338 @@ export function cloudTierRequestOfCard(card: AdeCardPayload, chatSessionId: stri
     computerName: computer.text,
     fromSizeId: (row(ROW.from)?.detail as CloudTierId | undefined) ?? null,
     toSizeId: size.detail as CloudTierId,
+    toLabel: row(ROW.toLabel)?.text.trim() || legacyToLabel(size.text) || size.detail,
     reason: row(ROW.reason)?.text ?? "",
     chatSessionId,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The person's answer to a tier request, and how the change ended
+// ---------------------------------------------------------------------------
+
+/**
+ * The person's answer: change it once the agent is idle, now, or keep the
+ * size (`CLOUD_TIER_REQUEST_ACTIONS`).
+ */
+export type CloudTierRequestAnswer = "idle" | "now" | "dismiss";
+/** How a change the person said yes to ended. */
+export type CloudTierRequestOutcome = "online" | "failed" | "cancelled";
+
+/**
+ * `cloud.tier_request_answer`, on the chat's own machine: the person's answer
+ * from their client, and how the change ended from the layer that ran it
+ * (this app's main process, or ADE Web's tab for a size change it ran). That
+ * machine reads the card from the chat itself.
+ */
+export type CloudTierRequestAnswerArgs = {
+  chatSessionId: string;
+  requestId: string;
+  answer: CloudTierRequestAnswer;
+  /** How the change the person said yes to ended; unset at the answer itself. */
+  outcome?: CloudTierRequestOutcome | null;
+  /** A failed change's reason. */
+  error?: string | null;
+};
+
+export function isCloudTierRequestAnswer(value: unknown): value is CloudTierRequestAnswer {
+  return value === "idle" || value === "now" || value === "dismiss";
+}
+
+export function isCloudTierRequestOutcome(value: unknown): value is CloudTierRequestOutcome {
+  return value === "online" || value === "failed" || value === "cancelled";
+}
+
+/** How a job ended, as a request's outcome; null while it waits or runs. */
+export function cloudTierRequestOutcomeOfJob(job: Pick<CloudLaneJobSnapshot, "phase">): CloudTierRequestOutcome | null {
+  return job.phase === "online" || job.phase === "failed" || job.phase === "cancelled" ? job.phase : null;
+}
+
+/**
+ * What tells the asking chat how its job ended (`cloud.tier_request_answer`),
+ * or null while the job waits or runs: the one call this app's main process
+ * and ADE Web's tab make.
+ */
+export function cloudTierRequestEndArgs(
+  job: Pick<CloudLaneJobSnapshot, "phase" | "timing" | "error">,
+  request: { requestId: string; chatSessionId: string },
+): CloudTierRequestAnswerArgs | null {
+  const outcome = cloudTierRequestOutcomeOfJob(job);
+  if (!outcome) return null;
+  return {
+    chatSessionId: request.chatSessionId,
+    requestId: request.requestId,
+    answer: job.timing,
+    outcome,
+    error: outcome === "failed" ? job.error : null,
+  };
+}
+
+/**
+ * The machine to tell a size request's chat on when its pin alone doesn't
+ * reach it now, or null to call through the pin as it is:
+ * - a chat on the lane's own computer moved with the lane: it is on the new
+ *   computer now, in the same folder;
+ * - a pin that names no machine (`isAccountAnsweredPin`): a saved chat's
+ *   stand-in names its machine by key (`cloud-saved:<key>`), and the ADE
+ *   Cloud tab's names the account, so the chat is on the job's lane computer.
+ *
+ * `pinMachineKey` is the machine the pin's connection reaches as the caller
+ * knows it (null when it knows none). Throws for a pin that names no machine
+ * and gives no key to reach one by.
+ */
+export function cloudTierRequestChatMachineKey(input: {
+  pin: OpenProjectBinding;
+  pinMachineKey: string | null;
+  job: Pick<CloudLaneJobSnapshot, "kind" | "machineKey">;
+  /** The machine the job started on: a move's old computer. */
+  fromMachineKey: string | null;
+}): string | null {
+  const { pin, job, fromMachineKey } = input;
+  if (pin.kind !== "remote") return null;
+  const pinKey = isAdeCloudTargetId(pin.targetId) ? job.machineKey : input.pinMachineKey ?? savedChatsMachineKey(pin.targetId);
+  const movedWithLane = job.kind === "move" && job.machineKey != null && fromMachineKey != null
+    && !sameMachineKey(job.machineKey, fromMachineKey) && sameMachineKey(pinKey, fromMachineKey);
+  if (movedWithLane) return job.machineKey;
+  if (!isAccountAnsweredPin(pin)) return null;
+  if (!pinKey) throw new Error("ADE doesn't know which computer this chat is on, so it can't tell the agent.");
+  return pinKey;
+}
+
+/** One telling's calls. The newest `note` of a key gives them; each try reads them again. */
+export type CloudTierRequestTell<End extends string = string> = {
+  /** The end to tell now, or null while the change waits or runs (a Retry). */
+  read: () => End | null;
+  /** Tells the chat that end; throws when its machine can't take it now. */
+  tell: (end: End) => Promise<void>;
+  isTold: (end: End) => boolean;
+  /** That end was told, and the change still ends so (a Retry that started meanwhile keeps its own end to tell). */
+  markTold: (end: End) => void;
+};
+
+/**
+ * Tells the chat whose size request started a change how it ended: the loop
+ * this app's main process and ADE Web's tab share, each with its own reach
+ * and retry schedule. One telling per key at a time; each try reads the end
+ * again, so a change that runs again is told when it ends; a new end starts
+ * its tries over; an end told stops it; and an end that comes while a try
+ * waits wakes that wait, so it is told at once. A woken wait clears its timer.
+ */
+export function createTierRequestTelling<End extends string = string>(options: {
+  /** The waits between tries; after the last, the end is left untold. */
+  retryMs: readonly number[];
+  /** Waits with this instead of a timer (a test's clock): such a wait is woken, never cleared. */
+  sleep?: ((ms: number) => Promise<void>) | null;
+  /** A try that failed; `final` when no try follows. */
+  onFailed: (error: unknown, info: { key: string; end: End; attempt: number; final: boolean }) => void;
+}) {
+  type Telling = { calls: CloudTierRequestTell<End>; trying: End | null; wake: (() => void) | null };
+  const tellings = new Map<string, Telling>();
+
+  const waitOrWake = (telling: Telling, ms: number): Promise<void> => new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      if (timer != null) clearTimeout(timer);
+      if (telling.wake === done) telling.wake = null;
+      resolve();
+    };
+    telling.wake = done;
+    if (options.sleep) void options.sleep(ms).then(done, done);
+    else timer = setTimeout(done, ms);
+  });
+
+  const run = async (key: string, telling: Telling): Promise<void> => {
+    let attempt = 0;
+    try {
+      for (;;) {
+        const end = telling.calls.read();
+        if (end == null || telling.calls.isTold(end)) return;
+        if (end !== telling.trying) {
+          telling.trying = end;
+          attempt = 0;
+        }
+        try {
+          await telling.calls.tell(end);
+          if (telling.calls.read() === end) telling.calls.markTold(end);
+        } catch (error) {
+          const wait = options.retryMs[attempt];
+          options.onFailed(error, { key, end, attempt, final: wait == null });
+          attempt += 1;
+          if (wait == null) return;
+          await waitOrWake(telling, wait);
+        }
+      }
+    } finally {
+      tellings.delete(key);
+    }
+  };
+
+  return {
+    /** A change published: its end is told unless it was. A telling of `key` that runs reads `calls` from now on. */
+    note(key: string, calls: CloudTierRequestTell<End>): void {
+      const current = tellings.get(key);
+      if (current) {
+        current.calls = calls;
+        if (calls.read() !== current.trying) current.wake?.();
+        return;
+      }
+      const end = calls.read();
+      if (end == null || calls.isTold(end)) return;
+      const telling: Telling = { calls, trying: null, wake: null };
+      tellings.set(key, telling);
+      void run(key, telling);
+    },
+  };
+}
+
+/**
+ * Row keys the answered card carries: the answer, how the change ended, and
+ * what ADE told the agent of it (so the chat's machine tells it once, from
+ * the card itself, however often and from wherever it is reported).
+ */
+const ANSWER_ROW = { answer: "tier_request_answer", outcome: "tier_request_outcome", told: "tier_request_told" } as const;
+
+/** What the card says the person answered, and how the change ended; null while it still asks. */
+export function cloudTierRequestAnswerOfCard(card: AdeCardPayload): { answer: CloudTierRequestAnswer; outcome: CloudTierRequestOutcome | null } | null {
+  if (card.variant !== CLOUD_TIER_REQUEST_CARD_VARIANT) return null;
+  const answer = card.rows?.find((entry) => entry.key === ANSWER_ROW.answer)?.detail;
+  if (!isCloudTierRequestAnswer(answer)) return null;
+  const outcome = card.rows?.find((entry) => entry.key === ANSWER_ROW.outcome)?.detail;
+  return { answer, outcome: isCloudTierRequestOutcome(outcome) ? outcome : null };
+}
+
+/** The key of one thing ADE tells the agent: an answer, or an answer and how its change ended. */
+export function cloudTierRequestToldKey(answer: CloudTierRequestAnswer, outcome: CloudTierRequestOutcome | null | undefined): string {
+  return `${answer}:${answer === "dismiss" ? "" : outcome ?? ""}`;
+}
+
+/** What ADE last told the card's agent (`cloudTierRequestToldKey`), or null. */
+export function cloudTierRequestToldOfCard(card: AdeCardPayload): string | null {
+  return card.rows?.find((entry) => entry.key === ANSWER_ROW.told)?.detail ?? null;
+}
+
+/**
+ * What ADE tells the agent that asked, in ADE's words, never a message from
+ * the person: `wake`, a host-authored wake now (it waits for a running turn
+ * to end); `next_turn`, a note its next turn starts with and no turn of its
+ * own. A yes is a note: a turn started then would hold up a change that waits
+ * for the agent to be idle, and one that runs now stops the turn anyway.
+ */
+export type CloudTierRequestAgentMessage = { via: "wake" | "next_turn"; text: string };
+
+/** The person's sentence on the card and the agent's message, for one answer and how its change ended. */
+function tierRequestWords(
+  request: CloudTierRequest,
+  input: { answer: CloudTierRequestAnswer; outcome: CloudTierRequestOutcome | null; error: string | null },
+): { sentence: string; agent: CloudTierRequestAgentMessage } {
+  const { computerName: name, toLabel: to } = request;
+  const why = input.error ? `: ${input.error.replace(/\.$/, "")}` : "";
+  if (input.answer === "dismiss") {
+    return {
+      sentence: `You kept ${name} at its size.`,
+      agent: { via: "wake", text: `The person kept ${name} at its size: they said no to your request to change it to ${to}. Don't ask again for this. Carry on at this size, or tell them what you can't do without ${to}.` },
+    };
+  }
+  switch (input.outcome) {
+    case "online":
+      return {
+        sentence: `${name} is on ${to} now.`,
+        agent: { via: "wake", text: `The person said yes to your request: ${name} now runs at ${to}. ADE changed the lane's computer for it; your files and this chat stayed. Carry on with the work that needed it.` },
+      };
+    case "failed":
+      return {
+        sentence: `The change to ${to} stopped${why}.`,
+        agent: { via: "wake", text: `The person said yes to your request, but the change of ${name} to ${to} stopped${why}. It keeps its size for now. The person can retry it from this chat; carry on at this size or wait for them.` },
+      };
+    case "cancelled":
+      return {
+        sentence: `You cancelled the change. ${name} kept its size.`,
+        agent: { via: "wake", text: `The person cancelled the change of ${name} to ${to}, so it keeps its size. Carry on at this size, or tell them what you can't do without ${to}.` },
+      };
+    default: {
+      const now = input.answer === "now";
+      return {
+        sentence: now ? `You said yes. ADE changes it to ${to} now.` : `You said yes. ADE changes it to ${to} once the agent is idle.`,
+        // True after the change too, when the agent reads it later.
+        agent: { via: "next_turn", text: `The person said yes to your request to change ${name} to ${to}. ADE changes it ${now ? "at once (ADE stops the running turn for it)" : "once you are idle"}; the lane's computer restarts for it, and your files and this chat stay. ADE tells you in this chat when the change is done.` },
+      };
+    }
+  }
+}
+
+function answerInput(input: { answer: CloudTierRequestAnswer; outcome?: CloudTierRequestOutcome | null; error?: string | null }) {
+  return { answer: input.answer, outcome: input.answer === "dismiss" ? null : input.outcome ?? null, error: input.error?.trim() || null };
+}
+
+/** What ADE tells the agent of one answer, and of how the change it said yes to ended. */
+export function cloudTierRequestAgentMessage(
+  request: CloudTierRequest,
+  input: { answer: CloudTierRequestAnswer; outcome?: CloudTierRequestOutcome | null; error?: string | null },
+): CloudTierRequestAgentMessage {
+  return tierRequestWords(request, answerInput(input)).agent;
+}
+
+/**
+ * The card once the person answered (and again once the change ended): no
+ * buttons, the answer in its subtitle and rows, so every surface (another
+ * window, ADE Web, the phone's fallback text) shows the same answer. `told`
+ * is what ADE told the agent (`cloudTierRequestToldKey`); null keeps none.
+ */
+export function buildCloudTierRequestAnsweredCard(
+  card: AdeCardPayload,
+  request: CloudTierRequest,
+  input: { answer: CloudTierRequestAnswer; outcome?: CloudTierRequestOutcome | null; error?: string | null; told: string | null },
+): AdeCardPayload {
+  const { answer, outcome, error } = answerInput(input);
+  const { sentence } = tierRequestWords(request, { answer, outcome, error });
+  const rows = (card.rows ?? []).filter((entry) => entry.key !== ANSWER_ROW.answer && entry.key !== ANSWER_ROW.outcome && entry.key !== ANSWER_ROW.told);
+  rows.push({ key: ANSWER_ROW.answer, icon: "info", text: sentence, detail: answer });
+  if (outcome) rows.push({ key: ANSWER_ROW.outcome, icon: outcome === "online" ? "pass" : outcome === "failed" ? "fail" : "skipped", text: sentence, detail: outcome });
+  if (input.told) rows.push({ key: ANSWER_ROW.told, icon: "info", text: "Told the agent", detail: input.told });
+  return {
+    ...card,
+    state: "terminal",
+    subtitle: sentence,
+    rows,
+    actions: [],
+    fallbackText: `The agent asked to change ${request.computerName} to ${request.toLabel}. ${sentence}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// A delete or free the person said yes to, in the agent's chat
+// ---------------------------------------------------------------------------
+
+/**
+ * One card in the agent's chat for a lane delete, a free or a saved copy's
+ * delete the person approved on its card: "Deleting Stall Repro…", then its
+ * outcome. The verb's result also goes to the command that asked. The
+ * generic `ade_card` draws it (`KNOWN_ADE_CARD_VARIANTS`): live while it
+ * runs, one quiet line when done, amber with the reason when it failed.
+ */
+export const CLOUD_LANE_ACTION_CARD_VARIANT = "cloud_lane_action";
+
+export function buildCloudLaneActionCard(input: {
+  cardId: string;
+  state: "live" | "terminal";
+  title: string;
+  /** The outcome's sentence; null while it runs. */
+  detail?: string | null;
+  failed?: boolean;
+}): AdeCardPayload {
+  const detail = input.detail?.trim() || null;
+  return {
+    cardId: input.cardId,
+    variant: CLOUD_LANE_ACTION_CARD_VARIANT,
+    state: input.state,
+    title: input.title,
+    // A failure's reason is its amber row; a subtitle too would say it twice.
+    subtitle: input.failed ? null : detail,
+    rows: detail ? [{ key: "cloud_lane_action_outcome", icon: input.failed ? "fail" : input.state === "live" ? "running" : "pass", text: detail, tone: input.failed ? "warning" : "neutral" }] : [],
+    fallbackText: detail ? `${input.title}. ${detail}` : input.title,
   };
 }
 

@@ -104,6 +104,54 @@ export const prepareStopCommand = (diskGrow: { gb: number; jobId: string } | nul
 
 /* ---- A move: the old computer's side ---- */
 
+const moveSaveFile = (jobId: string, kind: "started" | "exit" | "log") => `/tmp/ade-move-save-${shellJobId(jobId)}.${kind}`;
+
+/** The old computer's mark while a move holds it, under `$ADE_HOME/cloud` (the CLI's `cloudMovingOut` reads it). */
+export const CLOUD_MOVING_MARK_FILE = "moving.json";
+
+/**
+ * Shell: marks the old computer as moving, from the making of the new one:
+ * its ADE refuses a chat send from another device (`computer_moving`), which
+ * then goes to the account's queue the move holds. Written with the move's
+ * hold, and expires by itself as the hold does. `$ADE_HOME` stays out of the
+ * home folder's copy, so the new computer never has it.
+ */
+export function moveOutMarkCommand(ttlMs: number): string {
+  return `d="$ADE_HOME/cloud"; mkdir -p "$d"; printf '{"until":%s}' "$(( $(date +%s%3N) + ${Math.round(ttlMs)} ))" > "$d/${CLOUD_MOVING_MARK_FILE}"`;
+}
+
+/** Shell: the old computer takes chat sends again (a move that stopped, or one that kept it). */
+export const MOVE_OUT_CLEAR_COMMAND = `rm -f "$ADE_HOME/cloud/${CLOUD_MOVING_MARK_FILE}"`;
+
+/**
+ * A move's save (`prepareStopCommand`), in the background: the move starts it
+ * while it makes the new computer, so the two run at once instead of one
+ * after the other, and reads its end with `moveSaveStateCommand`. Once per
+ * move (the marker is named for it): a second run, a step tried again after
+ * its answer was lost, finds the marker and starts nothing. Prints `started`
+ * either way.
+ */
+export function startMoveSaveCommand(jobId: string): string {
+  const started = moveSaveFile(jobId, "started");
+  const exit = moveSaveFile(jobId, "exit");
+  return [
+    `if [ -e ${started} ]; then echo started; else touch ${started}`,
+    `rm -f ${exit}`,
+    `nohup sh -c 'export PATH="$ADE_HOME/bin:$PATH"; ade cloud prepare-stop --timeout 40; echo $? > ${exit}' > ${moveSaveFile(jobId, "log")} 2>&1 < /dev/null &`,
+    "echo started",
+    "fi",
+  ].join("\n");
+}
+
+/**
+ * The move's save for a poll, in `moveCopyStateOf`'s words: its exit code once
+ * it ended, nothing while it runs, `not_started` when none was started here
+ * (the computer restarted since, which empties /tmp).
+ */
+export function moveSaveStateCommand(jobId: string): string {
+  return `cat ${moveSaveFile(jobId, "exit")} 2>/dev/null || { [ -e ${moveSaveFile(jobId, "started")} ] || echo not_started; }`;
+}
+
 /** The projects ADE knows on the computer, as JSON (`readProjectRoots`). Needs its ADE running. */
 export const PROJECTS_LIST_COMMAND = 'cd "$HOME" && ade projects list --json 2>/dev/null';
 
@@ -242,7 +290,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         # One gzip stream around both archives, one after the other: the
         # receiver's tar reads past the first one's end into the second.
-        packer = zlib.compressobj(6, zlib.DEFLATED, 31)
+        # Level 1: this single thread is the move's bottleneck. On node_modules
+        # level 6 packed 23 MB/s, level 1 77 MB/s, for 29% of the size instead
+        # of 25% (2026-11-25), so a 7.9 GB home copies in about a third of the time.
+        packer = zlib.compressobj(1, zlib.DEFLATED, 31)
         def send(chunk):
             out = packer.compress(chunk)
             if out:
@@ -362,6 +413,25 @@ export function registerProjectsCommand(roots: readonly string[]): string {
     return `mkdir -p '${root}/.ade/secrets' && printf moved > '${root}/.ade/secrets/sync-host-copied'; ade projects add '${root}' >/dev/null 2>&1 || echo "failed ${root}"`;
   }).join("; ");
 }
+
+/**
+ * Detached, on the new computer once its home arrived: `ade tools ensure`,
+ * the brain's own startup fetch of the agents this machine runs. Its brain
+ * started before the home did, so that startup fetch saw no record of use,
+ * and the lane's first message after the move waited on its agent's download
+ * ("Getting Claude Code ready"). The copied `~/.ade/tools/.last-used.json`
+ * names them now. Run for every move, projects or not.
+ */
+export const FETCH_USED_AGENT_TOOLS_COMMAND = "(setsid ade tools ensure >/dev/null 2>&1 < /dev/null &)";
+
+/**
+ * Asks the computer's ADE to send the chat messages the account holds for it
+ * (`ade cloud messages drain`), detached, so the step that asks never waits
+ * on the sends. It waits up to a minute for ADE to answer first: an ADE a
+ * move paused is starting again. A move runs it on the new computer once the
+ * lane is there, and on the old one when the move stops before that.
+ */
+export const DRAIN_MESSAGES_DETACHED_COMMAND = `(setsid sh -c 'export PATH="$ADE_HOME/bin:$PATH"; i=0; until ade projects list --json >/dev/null 2>&1 || [ "$i" -ge 60 ]; do sleep 1; i=$((i+1)); done; ade cloud messages drain --json' >/dev/null 2>&1 < /dev/null &)`;
 
 /** Busy reasons that are a lane still being set up (`cloudKeepAwake.ts`), not an agent at work. */
 const SETUP_WORK = new Set(["setup", "lane_setup", "first_clone", "lane_launch"]);

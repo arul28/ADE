@@ -169,8 +169,32 @@ export type CloudBootLaunchDeps = {
    * a queued message goes only to an idle chat.
    */
   waitForChatIdle?: (projectId: string, sessionId: string) => Promise<boolean>;
+  /**
+   * Starts downloading the pinned tool of the agent the launch runs
+   * (`launchAgentOf`) and returns at once, so it downloads while the
+   * repository clones and the lane sets up. Never awaited.
+   */
+  prefetchAgentTools?: (agent: LaunchAgent) => void;
   sleep?: (ms: number) => Promise<void>;
 };
+
+/** The agent a server launch runs on this computer: a chat, or a CLI by its launch profile. */
+export type LaunchAgent = { kind: "chat" | "cli"; provider: string };
+
+/**
+ * Which agent a server launch runs, from its facts: the chat's provider (a
+ * continued CLI copy is that provider's CLI), or a CLI launch's profile from
+ * the app's own args. Null for a lane alone (`ade lanes create --machine
+ * cloud`) and a shell.
+ */
+export function launchAgentOf(request: CloudServerLaunchRequest): LaunchAgent | null {
+  const provider = request.chat?.provider?.trim();
+  if (provider) return { kind: request.continueChat?.kind === "cli" ? "cli" : "chat", provider };
+  const base = request.launch && typeof request.launch === "object" ? request.launch : null;
+  const profile = typeof base?.provider === "string" ? base.provider.trim() : "";
+  if (request.kind === "lane" && base?.kind === "cli" && profile && profile !== "shell") return { kind: "cli", provider: profile };
+  return null;
+}
 
 type BootState = {
   launchId: string;
@@ -582,6 +606,16 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
       return;
     }
     const request = record.request;
+    // A new computer has no agent tools yet: the launch's own downloads now,
+    // beside the clone and the setup, not inside the first turn.
+    const agent = launchAgentOf(request);
+    if (agent && deps.prefetchAgentTools) {
+      try {
+        deps.prefetchAgentTools(agent);
+      } catch (error) {
+        logger.warn("cloud_boot_launch.tools_prefetch_failed", { launchId, error: errorText(error) });
+      }
+    }
     const computerStage = doneStage("computer");
     const joinStage = doneStage("join");
     const repository = request.project.origin.replace(/^github\.com\//, "");
@@ -1194,12 +1228,13 @@ function readRelayMachineKey(secretsDir: string, logger: Logger): string {
 export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: string | null }, host: CloudBootLaunchHost): void {
   const { logger } = host;
   void (async () => {
-    const [{ createCloudApiClient }, headless, { setUpRepositoryOnThisMachine }, { enableCloudSleep }, { recordCloudMachineKey }] = await Promise.all([
+    const [{ createCloudApiClient }, headless, { setUpRepositoryOnThisMachine }, { enableCloudSleep }, { recordCloudMachineKey }, { startPinnedToolsForLaunch }] = await Promise.all([
       import("../../../../desktop/src/shared/cloudApiClient"),
       import("./cloudHeadlessApproval"),
       import("../../multiProjectRpcServer"),
       import("../../../../desktop/src/main/services/adeCloud/cloudSleep"),
       import("../../../../desktop/src/main/services/adeCloud/cloudMachines"),
+      import("../../../../desktop/src/main/services/ai/pinnedProviderTools"),
     ]);
     const chromium = headless.findHeadlessChromium();
     const { account, cloudInstanceId } = host;
@@ -1252,6 +1287,15 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
       typeIntoCli: host.typeIntoCli,
       continueChat: host.continueChat,
       restoreLaneChats: host.restoreLaneChats,
+      prefetchAgentTools: (agent) => {
+        const tools = startPinnedToolsForLaunch(agent.kind, agent.provider);
+        logger.info("cloud_boot_launch.tools_prefetch", {
+          launchId: launchEnv.launchId,
+          kind: agent.kind,
+          provider: agent.provider,
+          tools: tools.join(","),
+        });
+      },
       launches: async (projectId) => {
         const service = await host.chatLaunchService(projectId);
         if (!service) throw new Error("This ADE runtime can't run a lane launch.");

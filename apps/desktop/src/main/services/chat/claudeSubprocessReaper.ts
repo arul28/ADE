@@ -56,6 +56,9 @@ export type ClaudeSubprocessRecord = ClaudeSubprocessMetadata & {
 
 type ClaudeChildProcess = ChildProcessByStdio<Writable, Readable, Readable>;
 
+/** Listeners per event on one Claude child (`spawnClaudeCodeProcess` counts its `exit` listeners). */
+const CLAUDE_CHILD_MAX_LISTENERS = 20;
+
 /** Characters of a chat's Claude stderr kept for failure reports, and how many chats keep one. */
 const STDERR_TAIL_MAX_CHARS = 4_000;
 const STDERR_TAIL_MAX_SESSIONS = 32;
@@ -650,6 +653,14 @@ export function createClaudeSubprocessReaper(args: {
       removeClaudeMcpConfigFiles(mcpConfig.files);
       throw error;
     }
+    // One Claude process collects about a dozen `exit` listeners over its life,
+    // none of them per turn: Node's own for the abort signal, Sentry's child
+    // process watch, ADE's three below, and the SDK's seven (its transport, its
+    // close, and two waits of two each while it shuts down). Node's default of
+    // 10 printed "MaxListenersExceededWarning: 11 exit listeners added to
+    // [ChildProcess]" at every Claude shutdown, which reads as a leak. The
+    // headroom covers that count, so a real per-call leak still warns.
+    child.setMaxListeners(CLAUDE_CHILD_MAX_LISTENERS);
     if (mcpConfig.files.length) {
       // Kept for the whole life of the process: Claude reads the file at
       // start, and a reconnect may read it again.

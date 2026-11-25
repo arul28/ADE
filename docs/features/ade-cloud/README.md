@@ -120,7 +120,7 @@ Facts from those docs that ADE's design leans on:
 | Reaching ADE's server, access | `cloudServerProvider.ts`, `cloudAccess.ts`, `cloudVaultItems.ts` |
 | Server (account directory, `apps/account-directory/src/cloud/`) | `routes.ts`, `store.ts`, `billing.ts`, `cron.ts`, `chats.ts`, `provider.ts`, `accountDeletion.ts`, `referrals.ts`, `freePlan.ts`, `email.ts` |
 | Server reads with no computer awake (migration `0039`): sealed saved copies, the project overview, the account lane index | `apps/account-directory/src/cloud/seal.ts`, `sessionCopies.ts`, `gitSummaries.ts`, `forkCapsules.ts`, `projectOverview.ts`; `apps/account-directory/src/accountLanes/routes.ts` |
-| Server message queue of an existing chat or CLI, and the continue on a new computer | `apps/account-directory/src/cloud/chatMessages.ts`, `launches.ts` (`continueChat`), `launchMessages.ts`, `chats.ts` (`handleMove`) |
+| Server message queue of an existing chat or CLI, and the continue on a new computer | `apps/account-directory/src/cloud/chatMessages.ts`, `launches.ts` (`continueChat`), `launchMessages.ts`, `chats.ts` (`handleMove`), `moves.ts` (the hold during a move) |
 | Server account reads for a client with no computer (migrations `0040`, `0041`) | `apps/account-directory/src/cloud/limits.ts`, `accountSecrets.ts`, `ctoCopy.ts`, `integrations.ts`, `linearRenewal.ts`, `eventWakes.ts` |
 | Client calls for ADE with no computer (desktop and web) | `apps/desktop/src/shared/cloudApiClient.ts`, `apps/desktop/src/shared/adeCloud/chatQueue.ts`, `apps/desktop/src/shared/adeCloud/accountCalls.ts`, `apps/desktop/src/renderer/state/adeCloudChatQueue.ts`, `apps/desktop/src/main/services/adeCloud/adeCloudReadIpc.ts` |
 | A cloud computer's git identity | `apps/ade-cli/src/services/github/cloudGitIdentity.ts` |
@@ -279,6 +279,61 @@ gives them only to the chat's computer. That computer applies them with
 
 The person can take back a queued message (`DELETE`); one a claim took
 answers 409 `message_taken`. An unsent message fails after 24 hours.
+
+A message with files, or one that carries thread comments, is not queued: the
+client wakes the computer and sends it directly. A queued message reaches the
+chat as text only, so its comments would stay pending there, unsent.
+
+**While a move runs** (`moves.ts`, a computer to the other kind), the server
+holds the lane's messages and answers `wake.state: "moving"`:
+
+- From the move's `make` step until `register`, a send is stored for the old
+  computer and nothing wakes it or asks it to drain. Only the plan's
+  refusals run then (`ChatWake.heldCheck`: the account's block, an outside
+  agent on the free plan, credits for the computer's size); the wake's checks
+  (an update in progress, the queue feature, past due, the awake cap, the
+  idle cleanup's claim) are skipped. Its own list and claim
+  leave the held messages out (`MOVE_HOLDS_MESSAGES_SQL`), since the move
+  stops its ADE and would cut the turn. `wait_idle` holds nothing.
+- A send straight to the old computer, from a device that doesn't know of
+  the move (another desktop, ADE Web, the phone): the move marks the running
+  old computer with its hold (`moveOutMarkCommand`,
+  `$ADE_HOME/cloud/moving.json`), and its ADE refuses, with
+  `computer_moving` (`cloudMoveMark.ts`), exactly what starts a turn from
+  another device: the desktop's `ade/actions/call` `chat.sendMessage`,
+  `chat.sendDraftNow`, `chat.createSessionAndSend`, `chat.startLaunch`,
+  `chat.launchCli` and `chat.launchHeadless` with a kickoff, and
+  the sync `chat.send` and `chat.launch` of ADE Web and the phone. A chat
+  made with no turn (`chat.create`) is not refused. The desktop and ADE Web
+  then send a message to a chat that exists to the account's queue
+  (`withSavedChatReads`), which holds it; the phone shows the sentence. A new
+  chat with its first message has no queue: the desktop shows the sentence
+  and keeps the text, and a launch fails with the sentence. The queue's own
+  drain is never refused. The undo clears the mark; one it
+  misses (the computer was asleep) expires with the hold.
+- At the end of `register` the new computer has the lane: the queued
+  messages move to its instance id and keep their chat address (machine key
+  and chat id), so every client reads them where it queued them. The server
+  runs `ade cloud messages drain` there, detached
+  (`DRAIN_MESSAGES_DETACHED_COMMAND`). A message the old computer had
+  claimed may have reached the chat there, so it ends failed with "check the
+  chat" (`MOVE_CUT_MESSAGE_ERROR`), never sent twice. The move's last step
+  hands over again, for one sent in between.
+- After `register`, and after the move (also when its old computer was
+  kept), a send to the old address goes to the new computer
+  (`moveMessageRouteOf`, up to 4 moves deep, while the move's record lasts a
+  week). It no longer starts a continue launch for a computer a move
+  deleted.
+- A chat with no saved copy yet (the move's save writes it while the new
+  computer is made) still takes a message by the old computer's address; the
+  computer finds the chat by its id.
+- A failed or cancelled move gives the messages back to the old computer:
+  what the new one was given comes back, and a running old computer is asked
+  to drain (a paused one drains when its ADE starts again). An asleep one
+  keeps them for its next wake.
+- A size change in place keeps the computer's id, so its messages drain when
+  its ADE starts again after the restart. The server does not hold them
+  before the resize is asked; the client waits until then (below).
 
 On the phone a held message looks like any sent message: the person's own
 bubble at the end of the thread and the working line, with a quiet Cancel
@@ -1186,6 +1241,22 @@ the phone (`cloud.read`) and a brain with no project can read it.
 - **The daily limit:** past the day's new computers for agents, the refusal
   names the limit and Settings › Integrations › ADE Cloud › What agents may do
   › New computers a day. A person is never counted.
+- **The card.** `approve()` asks with one structured question: a short
+  question ("Delete Stall Repro?", `question`, else the title with "?"), one
+  line under it on what goes or what it costs (`impact`), and each yes with
+  one line on what it does (`confirmDetail`, `alternative.detail`). There is
+  no "No" option: the card's Decline says no, so there is one way to say it.
+  No answer in 5 minutes is a no. A card closed with no answer (the turn
+  stopped, or a size change or move saved the work and stopped the turns)
+  is not a no: the chat gets a notice that nothing was done, and the agent
+  gets the same sentence as the command's error and as a note ahead of its
+  next turn (`queueAgentNote`, the restart-note channel), because the
+  command's answer may never reach a turn that was stopped.
+- **In an agent's shell,** a command that may wait for the card
+  (`cloudStep(..., waitsForPerson)`) first prints on stderr that it waits for
+  the person and prints the outcome when they answer. A shell tool that
+  hands back a command still running, or moved it to the background, shows
+  that line, so the agent doesn't read the silence as done.
 
 **How it runs.**
 
@@ -1273,6 +1344,13 @@ computer. The new computer runs its own launch. The routes are in
 - **Run.** The computer reads the facts (`GET /cloud/launches/:id`), sets up
   the repository with its own Git sign-in, and runs `chat.startLaunch` with
   the same launch and lane ids.
+  - Once the facts are read, the agent's own tool starts downloading
+    (`launchAgentOf`, then `startPinnedToolsForLaunch`), beside the clone and
+    the setup, never awaited: the chat's provider tool, a CLI launch's
+    terminal tools, nothing for a lane alone, a shell or a Cursor chat. The
+    chat's start joins that download. A new computer has no use record, so
+    without this its first turn waited on the download (about 17 s for Claude
+    Code after Start now). Logged as `cloud_boot_launch.tools_prefetch`.
   - It posts a stage only when a stage changes (`PUT .../stages`). The last
     one is retried with a backoff and again at the next boot. A `done` launch
     takes no other state. A launch stopped on the computer reads `failed`.
@@ -1497,10 +1575,95 @@ account, never a pin.
     the job's own save. A failed disk-only resize removes the note.
   - Its steps go to every window (`IPC.cloudLaneJobEvent`). The lane is Online
     only when ADE on the computer answers and has the lane's project.
+  - While a change runs, the desktop and ADE Web composer of the lane's chat
+    send through the account's queue instead of to the computer
+    (`chatLaneChangeRef` in `AgentChatPane`, then `sendThroughCloudQueue`). ADE
+    on the computer stops during the change (a move stops it at `serve` and
+    deletes the computer), so a direct send waited at most 45 s on the old
+    address and failed, or started a turn the change cut. A move's message
+    is held on the server and sent on the new computer
+    ([the message queue](#send-to-an-asleep-or-deleted-computer-the-message-queue));
+    the chat shows it as queued ("Moving this lane to its new ADE Cloud
+    computer…") until the transcript has it. A size change queues only once
+    its resize was asked: before that its ADE still answers, and the restart
+    would cut the turn the message started, so the message stays in the box
+    with a hint. Files and thread comments stay in the box with a hint for
+    the whole change (they go with a live send only), and so does a message
+    the queue can't take (an older server). The phone sends to the queue
+    once its link to the old computer drops (after `serve`); before that it
+    sends directly, and the move cuts that turn.
+  - A move saves the chats while it makes the new computer (Save work and
+    Make computer run at once; one after the other they took about 1.5
+    minutes each). The server's `make` step holds the running old computer
+    and starts `ade cloud prepare-stop` there in the background, once per
+    move (`startMoveSaveCommand`); `join` notes its end while it waits, and
+    `save` waits for it, at most 2 minutes from its start, then goes on with
+    a warning as a save past its time always did. The copy (`serve`, the
+    pause) starts only after both. The record says `saveState` (`running`,
+    `done`, `warning`) and `copyStarted`; `copying` reads from the sign-in
+    on, so a client shows the copy only once `copyStarted` is true.
+  - The desktop job (`cloudLaneLife.ts`) waits for the agent first (timing
+    `idle`), then hands the save to the server (`onSave`); a move run from
+    here (an older server) runs its own save beside `createCloudMachine` and
+    waits for it before the pause (`saveHere`). An older server's save shows
+    done when its copy starts.
+  - Cancel works until the copy starts (the card's Cancel, `cancelJob`): the
+    server's undo deletes the new computer, releases the old one's hold, and
+    unpauses it only if it was paused. The answer waits for the server (up to
+    30 s); if the copy started first, it says so and the move goes on. A
+    cancel while the new computer exists costs its minutes so far, metered
+    like any computer's. The save keeps running to its end: the stopped
+    turns stay stopped, as after any save.
+  - In the lane's chat it is one slim bar above the prompt box
+    (`CloudLaneChatStatus` in `CloudLaneChatCards.tsx`, the job card's `bar`
+    variant): the job's title, its step now and how long it has run. A click
+    opens the steps (Retry, Cancel); the × hides it while it runs (the job
+    goes on, and the bar comes back if it fails) and dismisses it once it
+    ended. A finish leaves after 20 seconds unless its steps are open; a
+    failure opens on its steps and stays for Retry. The bar and Send find the
+    lane's job the same way (`useChatCloudLaneJob`), and Send goes to the
+    account's queue while the job holds sends (`cloudLaneJobHoldsSends`). The
+    chat header's cloud button shows the job too: its step now, "Show the
+    move's steps" (opens that bar, else the ADE Cloud page), and no sleep
+    countdown, Change size or Sleep now while it runs.
 - **An agent asks.** `ade cloud resize --request --size large --reason "…"`
   (`cloud.tier_request`) posts a `cloud_tier_request` card in the agent's
   chat; the person confirms there. An unwatched agent can not change a size:
   `cloud.resize` is declined.
+  - The newest request still waiting (a day at most) is pinned above the
+    prompt box, where an "ADE asks" question shows
+    (`CloudTierRequestsAboveComposer`); its transcript card turns to one line
+    that points there. The × and Keep the size say no; Change size or Move it
+    start the change (`changeTier`, main process, no pin).
+  - Every answer then goes to the chat's own machine by the chat's pin
+    (`cloud.tier_request_answer` with the chat and the request id, user-only;
+    ADE Web and the phone through `cloud.write`). That machine reads the card
+    from the chat (never a client's copy), marks it answered (same `cardId`,
+    no buttons, the answer in its subtitle and rows) for every surface, and
+    tells the agent (`cloudTierRequestAgentMessage`): Keep the size wakes it
+    at once with ADE's words (`hostContinuation.reason: "card_answer"`); a
+    yes is a note for its next turn (no wake: a turn then would hold up a
+    change that waits for the agent to be idle).
+  - How the change ended (online, failed or cancelled) goes to the chat's
+    machine from what runs the change, with the chat's pin the confirm
+    passed (`requestedByChatPin`): this app's main process
+    (`tellRequestingChat` in `cloudLaneLife.ts`) for a size change it runs
+    and for a move it follows on ADE's server, with every window closed; it
+    tries again a few times, and after a quit. Each try reads the job again,
+    so a Retry's end is told too (at once when it comes while a try waits).
+    ADE Web's tab tells it for a size change it ran and for a move it
+    follows (`createWebTierRequestTeller`), while the tab is open; both run
+    the same loop (`createTierRequestTelling` in `shared/cloudLaneLife.ts`).
+    A move started from ADE Web keeps its request and timing on the server's
+    record (`CloudMoveRequest.requestId`, `requestedByChat`,
+    `requestedByChatPin`), so a reloaded tab still tells the chat; an older
+    server drops them and nobody is told. A chat that lived
+    on the moved computer is told on the new one, and a pin that names no
+    machine (a saved chat's `cloud-saved:<key>`, the ADE Cloud tab's) is
+    reached by its machine key: that machine is connected and the chat's
+    project found there (`cloudTierRequestChatMachineKey`). The agent is
+    woken with the outcome. The card keeps what the agent was told
+    (`tier_request_told`), so a repeat tells it nothing.
 - **Before a launch,** `lane.cloudStartBranch` and `lane.pushCloudStartBranch`
   run (pinned) on the machine that has the project. Files on the first message
   go to the launcher (`uploadLaunchFile`); later ones go to the clone after
@@ -1527,9 +1690,9 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
   read (a hidden second lane could have that name).
 - **Writes** are the delete class of `approve` (`CLOUD_APPROVED_ACTIONS`):
   - `lane_delete`: on a computer, the work check runs first (no wake for a
-    saved computer), then one card: `Delete lane "X"?` with Delete lane,
-    Keep for later (a free) and Cancel. The body names each lane's work not
-    on GitHub. A person always decides, even for a computer the chat made:
+    saved computer), then one card: "Delete X?", one line on what goes and
+    the work not on GitHub, then Delete lane and Keep for later (a free),
+    each with one line on what it does. Decline says no. A person always decides, even for a computer the chat made:
     the lane's saved chats go with it. A card that read an asleep computer's
     backups stops the delete if the computer started meanwhile. A move run
     by the server refuses a delete or free of either computer. Computer
@@ -1539,7 +1702,10 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
     those chats and the lane's backups itself. `--keep-chats` is refused
     there: the chats are all that is left of the lane.
   - `lane_free`, `saved_chat_delete`, `session_delete`, `backup_forget` and
-    `job_cancel` ask the same way. `lane_start` makes the lane's new computer
+    `job_cancel` ask the same way.
+  - After the person's yes, the agent's chat shows the write as one card
+    (`cloud_lane_action`, drawn by the generic `ade_card`): "Deleting X…",
+    then "Deleted X" with the result's sentence, or why it failed in amber. The command gets the same result. `lane_start` makes the lane's new computer
     through `lane_launch` and its card, on `origin/<branch>`, from a folder
     of the lane's project. A lane whose repository ADE doesn't know is
     refused.
@@ -1590,7 +1756,8 @@ Agent programs (see
   that the image now bakes are removed.
 - The brain reads `ADE_TOOLS_BAKED_ROOTS`, `ADE_SYSTEM_CACHE_ROOT` and
   `ADE_SYSTEM_CACHE_BUDGET_BYTES`. With `ADE_TOOLS_PREFETCH=used`, it fetches
-  at startup only agents this computer ran.
+  at startup only agents this computer ran. A server launch fetches its own
+  agent as soon as it reads the launch (see **Run** above).
 - A status read, a model list or a sign-in check never downloads an agent.
 
 ## Updates
@@ -1775,7 +1942,14 @@ One busy list, `decideCloudBusy` in
   key is not asked again for 10 minutes).
 - **Waking.** A send from a saved chat wakes its computer (15–30 s). The pane
   shows "Waking the computer…" and the Work row "Waking"
-  (`markCloudWakeForSend`, display only). In a chat on a sleeping computer, a
+  (`markCloudWakeForSend`, display only). Once the chat's connection is up
+  again (the header then reads Awake) and the send is still on its way, the
+  line reads "Starting <agent>…"; a turn waiting for ADE to download the agent
+  reads "Getting <agent> ready…" (the notice's `status: "agent_download"`).
+  The bubble shows when the person pressed Enter: a send that reached the
+  computer 5 s to 1 hour after that carries the time as `user_message.sentAt`
+  (`heldSendSentAt`, from the desktop's `clientSubmittedAtMs`); the transcript
+  row's own timestamp stays when the computer wrote it. In a chat on a sleeping computer, a
   proof offers **Wake**, and a code block's **Run** wakes it first
   (`useChatMachineWake.tsx`). A deleted computer's proof says so with no
   button. Every wake for use logs its cause (`remote.cloud_woken_for_use`:
@@ -1784,6 +1958,30 @@ One busy list, `decideCloudBusy` in
   tab shows Wake; at 0 hours (a size that uses hours) it shows the lane's
   saved work instead (`CloudLaneSavedWork`, no wake). A connect from ADE Web to an asleep computer wakes
   it first, then retries the connect for up to two minutes.
+- **Comments wait on the device.** A thread comment written in a chat whose
+  computer rests stays on the device that wrote it (desktop and ADE Web,
+  localStorage), because a create is a write and would wake the computer. So
+  does an edit, tick or delete of a comment the computer already has. The
+  send that carries comments applies the changes and hands the new ones to
+  the computer first, then sends; the host builds the review block as for
+  any comment. Other devices see them only after that send. See
+  [chat › thread comments](../chat/README.md).
+- **Files wait on the device.** A file pasted, dropped or picked into a chat
+  whose computer rests stays in the window that took it (desktop and ADE
+  Web, `heldChatAttachments.ts`), because copying it to the computer is a
+  write. The send copies it there right before the message and goes direct
+  (files never ride the queue from the desktop); a failed copy sends nothing
+  and keeps the text and files in the box. The phone already holds files
+  and sends them with the queued message. See
+  [chat › attachments](../chat/composer-and-ui.md#attachments).
+- **What still wakes a resting computer before a send** (a person's
+  explicit action on the chat's machine): a permission or mode change (it
+  must reach the computer before any other turn runs there, a scheduled wake
+  or another device's message included), Codex Daybreak, saving or
+  scheduling a draft, a Retry or Discard of a comment whose save failed,
+  dismissing an open question card, and a screenshot added from the iOS
+  simulator, App Control, the browser or the capture gesture. Model, effort
+  and Fast picks wait for the send (`updateSession` in `withSavedChatReads`).
 - **A send caught by a sleep** is retried once after the wake: chat
   `sendMessage` carries a `clientSendId` (`isRetriableAfterSleep`), and the
   brain drops a retry it already took. A send to a computer that rests or is
@@ -1865,6 +2063,36 @@ One busy list, `decideCloudBusy` in
     kills the biggest process of the brain's user below a twentieth of memory
     (200 to 512 MB), never the brain, its workers, the entrypoint or the
     provider's processes (`cloud.memory_guard_killed`).
+  - The chat hears it (`tellChatsOfCloudMemoryKill`). Before the kill the
+    guard reads the process's `ADE_CHAT_SESSION_ID`, which every chat's agent
+    process and its commands carry, on all 13 providers
+    (`buildAgentRuntimeEnv`). That chat, loaded if it is at rest, gets a
+    warning notice: what was stopped, its size, the computer's memory, and
+    that a bigger size gives more. Its agent gets a one-time note ahead of
+    its next turn (`pendingRestartNote`, the restart-note channel, every
+    provider): the same facts and `ade cloud resize --request`. A process
+    with no chat id, or a chat no booted runtime has, tells every chat with a
+    running turn instead. One notice per chat a minute
+    (`reportCloudMemoryKill` in `agentChatService.ts`), so a burst of kills is
+    one notice. The command shows as its program and the words before its
+    first option, paths cut to their last part, secrets scrubbed
+    (`cloudMemoryKillNotice.ts`). A tracked agent CLI's terminal carries its
+    own terminal session id as `ADE_CHAT_SESSION_ID` (`ptyService.ts`), and
+    so does every command the CLI runs: that id names a session that is not a
+    chat, so no chat is told (`notAChat`,
+    `agent_chat.cloud_memory_kill_not_a_chat`). The CLI surface gets no
+    notice: not supported, a terminal has no notice channel, and its own
+    output shows "Killed".
+  - Every agent's prompt on a cloud computer has one line
+    (`describeAdeCloudComputer` in `adeCloud/cloudComputerRules.ts`): its memory,
+    no swap, that "Killed" means the guard stopped it, and
+    `ade cloud resize --request`. The runtime block carries it for Claude,
+    Codex, Copilot, Droid, OpenCode and Pi; `buildAdeGuidanceForLane` for
+    Cursor (beside its 3 KB prompt, outside the budget), Muse and the ACP
+    agents (Qwen, Kimi, Grok, Devin, Antigravity). Cursor Cloud and Devin
+    Cloud agents run elsewhere and don't get it; nor do personal chats or
+    agent CLIs in a terminal (OpenCode's terminal does: it shares the chat's
+    prompt).
 - **A launch that needs more memory** (`CLOUD_AUTO_SIZE` in `contract.ts`): a
   launch on the default size moves its computer from Small to Medium once when
   the setup guard stops its setup.

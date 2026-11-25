@@ -106,6 +106,12 @@ export function cloudLaneStatusModel(input: {
   status: CloudComputerStatus | null;
   account: CloudAccountState | null;
   now: number;
+  /**
+   * A size change or move of this lane runs now: the computer won't sleep on
+   * its idle clock (the change saves, restarts or replaces it), so the
+   * countdown is left out. The menu shows the change instead.
+   */
+  changing?: boolean;
 }): CloudLaneStatusModel {
   const { power, box, status, account, now } = input;
   const words = cloudUnitWords(account);
@@ -157,7 +163,7 @@ export function cloudLaneStatusModel(input: {
     const agents = activity.runningAgents === 1 ? "1 agent running" : `${activity.runningAgents} agents running`;
     if (activity.busy) {
       lines.push({ key: "activity", text: activity.runningAgents > 0 ? agents : "Working", tone: null });
-    } else if (activity.sleepsAt != null) {
+    } else if (activity.sleepsAt != null && !input.changing) {
       const minutes = Math.round((activity.sleepsAt - now) / 60_000);
       lines.push({
         key: "activity",

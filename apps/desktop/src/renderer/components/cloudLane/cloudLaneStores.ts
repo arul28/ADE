@@ -1,7 +1,8 @@
-import { useSyncExternalStore } from "react";
-import type { CloudLaneJobSnapshot, CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import { useEffect, useSyncExternalStore } from "react";
+import { cloudLaneJobIsLive, type CloudLaneJobSnapshot, type CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import { cloudLaneLifeAvailable, listCloudLaneJobs, listCloudLanesWithoutComputer } from "./cloudLaneActions";
 
 /**
@@ -15,6 +16,7 @@ import { cloudLaneLifeAvailable, listCloudLaneJobs, listCloudLanesWithoutCompute
  *
  * One read however many surfaces show them; no timer, no poll. Both are
  * account level (main process, no pin) and empty where this ADE can't ask.
+ * Also this window's state of each job's bar above a chat's prompt box.
  */
 
 // ---------------------------------------------------------------------------
@@ -114,10 +116,6 @@ export function useCloudLaneJobs(enabled = true): ReadonlyMap<string, CloudLaneJ
   return useSyncExternalStore(enabled ? subscribeJobs : subscribeNoJobs, enabled ? readJobs : readNoJobs, readNoJobs);
 }
 
-function cloudLaneJobIsLive(job: CloudLaneJobSnapshot): boolean {
-  return job.phase === "waiting" || job.phase === "running";
-}
-
 /** A failed job waits for Retry this long before its card leaves the view. */
 const FAILED_JOB_VISIBLE_MS = 24 * 60 * 60_000;
 
@@ -150,6 +148,76 @@ export function cloudLaneJobFor(
     if (!best || job.updatedAt > best.updatedAt) best = job;
   }
   return best;
+}
+
+/**
+ * The size change or move of a chat's ADE Cloud lane that shows now, or null:
+ * one answer for the chat's bar above the prompt box and for its Send (which
+ * goes to the account's queue while the job holds sends). The chat's own
+ * binding finds its lane computer (the one it is on, or the one a move
+ * started from); its lane id finds the lane's job while the binding names a
+ * computer this window never reached, or one a move replaced.
+ */
+export function useChatCloudLaneJob(binding: OpenProjectBinding | null, laneId: string | null): CloudLaneJobSnapshot | null {
+  const lane = useAdeCloudLaneForBinding(binding);
+  const { computers } = useAdeCloudLaneComputers();
+  const onCloud = lane != null || (laneId != null && (binding?.kind === "remote" || computers.some((computer) => computer.laneId === laneId)));
+  const all = useCloudLaneJobs(onCloud);
+  if (!onCloud) return null;
+  return cloudLaneJobFor(all, { instanceId: lane?.instanceId ?? null, laneId: lane?.laneId ?? laneId });
+}
+
+// ---------------------------------------------------------------------------
+// A job's bar above a chat's prompt box, in this window
+// ---------------------------------------------------------------------------
+
+/** `open`: its steps show. `hidden`: closed while the job runs (the job goes on; a failure shows it again). */
+export type CloudLaneJobBarState = { open: boolean; hidden: boolean };
+
+const BAR_DEFAULT: CloudLaneJobBarState = { open: false, hidden: false };
+let bars: ReadonlyMap<string, CloudLaneJobBarState> = new Map();
+const barListeners = new Set<() => void>();
+/** How many bars of each job are on screen now. */
+const barsShown = new Map<string, number>();
+
+function subscribeBars(listener: () => void): () => void {
+  barListeners.add(listener);
+  return () => {
+    barListeners.delete(listener);
+  };
+}
+
+export function setCloudLaneJobBar(jobId: string, patch: Partial<CloudLaneJobBarState>): void {
+  const current = bars.get(jobId) ?? BAR_DEFAULT;
+  const next = { ...current, ...patch };
+  if (next.open === current.open && next.hidden === current.hidden) return;
+  const map = new Map(bars);
+  map.set(jobId, next);
+  bars = map;
+  for (const listener of barListeners) listener();
+}
+
+/**
+ * "Show the steps" from the chat's cloud button: that job's bar opens on its
+ * steps, and shows again if it was closed. False when no bar of it is on
+ * screen (the caller shows the steps elsewhere).
+ */
+export function openCloudLaneJobBar(jobId: string): boolean {
+  setCloudLaneJobBar(jobId, { open: true, hidden: false });
+  return (barsShown.get(jobId) ?? 0) > 0;
+}
+
+/** One job's bar state, for the bar on screen. */
+export function useCloudLaneJobBar(jobId: string): CloudLaneJobBarState {
+  useEffect(() => {
+    barsShown.set(jobId, (barsShown.get(jobId) ?? 0) + 1);
+    return () => {
+      const left = (barsShown.get(jobId) ?? 1) - 1;
+      if (left > 0) barsShown.set(jobId, left);
+      else barsShown.delete(jobId);
+    };
+  }, [jobId]);
+  return useSyncExternalStore(subscribeBars, () => bars.get(jobId) ?? BAR_DEFAULT, () => BAR_DEFAULT);
 }
 
 // ---------------------------------------------------------------------------

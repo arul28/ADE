@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
 import { capitalizeCloudPhrase, cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
-import { cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import type { OpenProjectBinding } from "../../../shared/types/core";
+import { cloudTierHoldsDisk, cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { CLOUD_CREDIT_WORDS, cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
@@ -62,10 +63,11 @@ export function CloudTierChangeCard({
   facts,
   account,
   pickable,
-  requestId = null,
-  requestedByChat = null,
+  request = null,
   onStarted,
   onNotNow,
+  notNowLabel = "Not now",
+  notNowBusy = false,
   className,
   headless = false,
   computer = null,
@@ -76,10 +78,17 @@ export function CloudTierChangeCard({
   computer?: TierChangeComputer | null;
   /** A person's change: the four sizes show and the person picks one. */
   pickable: boolean;
-  requestId?: string | null;
-  requestedByChat?: string | null;
+  /**
+   * The agent's size request this card answers: its chat, and that chat's
+   * runtime pin, which hears how the change ended from whatever runs it.
+   */
+  request?: { requestId: string; chatSessionId: string; chatPin: OpenProjectBinding | null } | null;
   onStarted?: (job: CloudLaneJobSnapshot) => void;
   onNotNow: () => void;
+  /** An agent's request: "Keep the size", which ADE tells the agent. */
+  notNowLabel?: string;
+  /** The not-now answer is on its way. */
+  notNowBusy?: boolean;
   className?: string;
   /** Inside a dialog whose title already names the change: no heading of its own. */
   headless?: boolean;
@@ -99,6 +108,8 @@ export function CloudTierChangeCard({
   const leftMilli = hoursLeftOf(account);
   const hours = hoursText(leftMilli, to, words);
   const currentDiskGb = computer?.diskGb ?? null;
+  // A disk never shrinks: a size whose cap is below it is refused, so it can't be started.
+  const diskFits = !to || cloudTierHoldsDisk(to, currentDiskGb);
   const diskLine = to && changed ? tierChangeDiskLine({ to, move, currentGb: currentDiskGb }) : null;
   const diskGrow = useMemo(
     () => (to && changed && !move ? tierChangeDiskChoices({ account, to, currentGb: currentDiskGb }) : { choices: [], why: null }),
@@ -112,11 +123,19 @@ export function CloudTierChangeCard({
     : null;
 
   const start = async (timing: CloudLaneTierTiming) => {
-    if (!to || !changed) return;
+    if (!to || !changed || !diskFits) return;
     setBusy(timing);
     setError(null);
     try {
-      const job = await changeCloudLaneTier({ instanceId: facts.instanceId, sizeId: to.id, timing, diskGb: growDiskGb, requestId, requestedByChat });
+      const job = await changeCloudLaneTier({
+        instanceId: facts.instanceId,
+        sizeId: to.id,
+        timing,
+        diskGb: growDiskGb,
+        requestId: request?.requestId ?? null,
+        requestedByChat: request?.chatSessionId ?? null,
+        requestedByChatPin: request?.chatPin ?? null,
+      });
       onStarted?.(job);
     } catch (startError) {
       setError(ipcErrorMessage(startError) || "ADE couldn't change the size. Try again in a moment.");
@@ -132,7 +151,7 @@ export function CloudTierChangeCard({
     : `Change the size of ${facts.laneName}`;
 
   return (
-    <div className={cn("adecl-tier", className)} data-cloud-tier-card={requestId ?? "person"}>
+    <div className={cn("adecl-tier", className)} data-cloud-tier-card={request?.requestId ?? "person"}>
       {headless ? null : (
         <div className="adecl-tier-head">
           <span className="adecl-tier-mark" aria-hidden><CloudMark size={14} bold /></span>
@@ -151,6 +170,7 @@ export function CloudTierChangeCard({
             markLabel="Now"
             ariaLabel="New size"
             words={words}
+            currentDiskGb={currentDiskGb}
           />
         </div>
       ) : null}
@@ -179,7 +199,7 @@ export function CloudTierChangeCard({
           {diskLine || diskGrow.choices.length || diskGrow.why ? (
             <>
               <dt>Disk</dt>
-              <dd>
+              <dd style={diskFits ? undefined : { color: noticeTone("warning").text }}>
                 {diskLine}
                 {diskGrow.choices.length ? (
                   <label className="adecl-tier-grow">
@@ -230,8 +250,8 @@ export function CloudTierChangeCard({
             <span>Stop the running turn and do it now</span>
           </label>
         ) : <span />}
-        <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={busy != null} onClick={onNotNow}>Not now</button>
-        <button type="button" className="kit-btn adecl-btn-sky" data-size="sm" disabled={!changed || !available || busy != null} onClick={() => void start(stopTurn ? "now" : "idle")}>
+        <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={busy != null || notNowBusy} onClick={onNotNow}>{notNowLabel}</button>
+        <button type="button" className="kit-btn adecl-btn-sky" data-size="sm" disabled={!changed || !available || !diskFits || busy != null} onClick={() => void start(stopTurn ? "now" : "idle")}>
           {busy ? "Starting…" : move ? "Move it" : "Change size"}
         </button>
       </div>

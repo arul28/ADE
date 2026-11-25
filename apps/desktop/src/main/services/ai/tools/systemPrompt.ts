@@ -1,4 +1,5 @@
 import { buildAdeCliAgentGuidance } from "../../../../shared/adeCliGuidance";
+import { describeAdeCloudComputer } from "../../adeCloud/cloudComputerRules";
 import { adePromptAgentSkillRoots } from "../../skills/agentSkillRuntimeService";
 
 /**
@@ -251,6 +252,7 @@ export function buildCodingAgentSystemPrompt(args: {
           "",
           "## Runtime Environment",
           ...describeRuntime(runtime),
+          ...[describeAdeCloudComputer()].filter((line): line is string => line != null),
         ]
       : []),
     // The default task (coding work in edit mode) needs no words: every

@@ -315,6 +315,10 @@ import {
 } from "./services/projects/recentProjectSummary";
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
 import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
+import {
+  parseSavedRemoteProjectBinding as parseSavedRemoteProjectBindingWith,
+  sanitizeRendererProjectBinding as sanitizeRendererProjectBindingWith,
+} from "../shared/projectBinding";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { decodeProjectIconUpload, importProjectIconBytes } from "./services/projects/projectIconResolver";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
@@ -323,7 +327,6 @@ import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
 import { readRuntimeActionRequest } from "./services/ipc/ipcTimeouts";
-import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import { resolveAdeLayout } from "../shared/adeLayout";
 import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
 import type {
@@ -996,11 +999,6 @@ function scheduleReconcile(runner: () => Promise<unknown>): void {
   } else {
     pendingReconciles.push(run);
   }
-}
-
-function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
-  const value = source?.[key];
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 // The Claude CLI refuses to start if it detects it is inside another Claude Code
@@ -2169,38 +2167,10 @@ app.whenReady().then(async () => {
       fs.existsSync(path.join(resolved, ".git"))
     );
   };
+  // A saved binding's icon is made small first (`nativeImage`), so a full-size one is kept too.
   const parseSavedRemoteProjectBinding = (
     value: unknown,
-  ): RemoteOpenProjectBinding | null => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const record = value as Record<string, unknown>;
-    const targetId = readString(record, "targetId");
-    const projectId = readString(record, "projectId");
-    const rootPath = readString(record, "rootPath");
-    const hostname = readString(record, "hostname");
-    if (record.kind !== "remote" || !targetId || !projectId || !rootPath) {
-      return null;
-    }
-    return {
-      kind: "remote",
-      key: readString(record, "key") ?? remoteProjectBindingKey(targetId, projectId),
-      targetId,
-      runtimeName: readString(record, "runtimeName") ?? "Remote",
-      transport: record.transport === "paired" ? "paired" : "ssh",
-      ...(hostname ? { hostname } : {}),
-      projectId,
-      rootPath,
-      displayName: readString(record, "displayName") ?? path.basename(rootPath),
-      ...(readString(record, "gitOriginUrl")
-        ? { gitOriginUrl: readString(record, "gitOriginUrl") }
-        : {}),
-      // Restore the cached project logo so the tab shows it immediately on a
-      // cold start, before the remote reconnects and refreshes the icon.
-      iconDataUrl: remoteProjectIconDataUrlForPersistence(
-        readString(record, "iconDataUrl"),
-      ),
-    };
-  };
+  ): RemoteOpenProjectBinding | null => parseSavedRemoteProjectBindingWith(value, remoteProjectIconDataUrlForPersistence);
   const remoteProjectIconDataUrlForPersistence = (
     value: string | null | undefined,
   ): string | null => {
@@ -2219,27 +2189,9 @@ app.whenReady().then(async () => {
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(
     saved.lastRemoteProjectBinding,
   );
-  /**
-   * A binding that came from a renderer. Main stores and persists it, so it is
-   * rebuilt field by field: a remote binding goes through the saved-binding
-   * parser with its key recomputed, and a local one needs a string root.
-   */
-  const sanitizeRendererProjectBinding = (value: unknown): OpenProjectBinding | null => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    const record = value as Record<string, unknown>;
-    if (record.kind === "remote") {
-      const remote = parseSavedRemoteProjectBinding(value);
-      return remote ? { ...remote, key: remoteProjectBindingKey(remote.targetId, remote.projectId) } : null;
-    }
-    const rootPath = readString(record, "rootPath")?.trim();
-    if (record.kind !== "local" || !rootPath) return null;
-    return {
-      kind: "local",
-      key: `local:${rootPath}`,
-      rootPath,
-      displayName: readString(record, "displayName") ?? path.basename(rootPath),
-    };
-  };
+  /** A binding that came from a renderer, rebuilt field by field (`projectBinding.ts`). */
+  const sanitizeRendererProjectBinding = (value: unknown): OpenProjectBinding | null =>
+    sanitizeRendererProjectBindingWith(value, remoteProjectIconDataUrlForPersistence);
 
   const readLastRemoteProjectBinding = (): RemoteOpenProjectBinding | null =>
     parseSavedRemoteProjectBinding(
@@ -5616,6 +5568,8 @@ app.whenReady().then(async () => {
       macDesktopRuntime: {
         hasDisplaySync: (laneId) => macDesktopService?.hasDisplaySync(laneId) ?? false,
         supportsLaneDisplaySync: () => macDesktopService?.supportsLaneDisplaySync() ?? false,
+        // Without it the prompt names a macOS screen on a Linux or Windows desktop.
+        seatHostPlatform: () => macDesktopService?.seatHostPlatform() ?? process.platform,
       },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,

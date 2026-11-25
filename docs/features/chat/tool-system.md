@@ -342,9 +342,12 @@ The agent-facing prompt cost is exactly one line, sent once.
 when the lane has a display, and `null` otherwise; `composeLaunchDirectives` in
 `agentChatService.ts` drops the null, so a lane without a screen produces a
 byte-identical prompt to one built before the feature existed. The line names
-the screen of the machine that runs the chat (`seatHostPlatform`): a Mac brain
-gets `MAC_DESKTOP_PROMPT_LINE` (`ade screen`), a Windows brain gets
-`WINDOWS_DESKTOP_PROMPT_LINE` (`ade screen`). It is epoch-scoped like the
+the screen of the machine that runs the chat (`seatHostPlatform`, which the
+brain's `bootstrap.ts` and the desktop's `main.ts` both pass; without it the
+line fell back to macOS on every host): a Mac brain gets
+`MAC_DESKTOP_PROMPT_LINE` (`ade screen`), a Windows brain gets
+`WINDOWS_DESKTOP_PROMPT_LINE` and a Linux brain, an ADE Cloud computer
+included, gets `LINUX_DESKTOP_PROMPT_LINE` (`ade screen`). It is epoch-scoped like the
 computer-use block (`deliveredDirectiveKeys.laneScreen`): sent when the lane
 gains a screen or the line changes, and again after the provider thread is
 replaced, not on every turn. Personal chats never get it. Each host gets only

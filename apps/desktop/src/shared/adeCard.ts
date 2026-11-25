@@ -54,6 +54,8 @@ export type AdeCardVariant =
   | "cloud_disk_grow"
   /** A disk grow refused at a limit, with the lanes that hold the disk (`./cloudDiskGrowCard.ts`). */
   | "cloud_disk_limit"
+  /** A lane delete or free the person said yes to, in the agent's chat (`./cloudLaneLife.ts`). */
+  | "cloud_lane_action"
   /**
    * An MCP App: the page an MCP server ships with a tool (`./mcpApp.ts`). The
    * desktop runs it in a sandboxed frame. Not in the known list below on
@@ -172,6 +174,7 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "lane_setup",
   "cloud_disk_grow",
   "cloud_disk_limit",
+  "cloud_lane_action",
 ];
 
 export function isKnownAdeCardVariant(variant: string | null | undefined): boolean {

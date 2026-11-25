@@ -153,7 +153,7 @@ import type {
 } from "../shared/projectRemoval";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
+import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults, CloudTierRequestAnswerArgs } from "../shared/cloudLaneLife";
 import type {
   CtoCloudHomeCallArgs,
   CtoCloudHomeCallResult,
@@ -14480,6 +14480,9 @@ const adeBridge = {
     /** On the lane's own computer, through its pin: the brain there refuses a call meant for another one. */
     clearCaches: (pin: OpenProjectBinding, instanceId: string): Promise<{ freedGb: number }> =>
       callPinnedRuntimeAction<{ freedGb: number }>(pin, "cloud", "clear_caches", { args: { machine: instanceId } }),
+    /** The person's answer to an agent's size request, on the chat's own machine (`pin`): the card is marked answered and the agent told. */
+    answerTierRequest: (pin: OpenProjectBinding, args: CloudTierRequestAnswerArgs): Promise<{ answered: boolean; toldAgent: boolean }> =>
+      callPinnedRuntimeAction<{ answered: boolean; toldAgent: boolean }>(pin, "cloud", "tier_request_answer", { args }),
     // A kept ADE Cloud lane moved to a machine: `pin` is the DESTINATION project's binding, and
     // the start, its progress reads and the preview all go to that one brain.
     previewKeptLaneRestore: (args: CloudKeptLaneRestorePreviewArgs, pin?: OpenProjectBinding | null): Promise<CloudKeptLaneRestorePreview> =>

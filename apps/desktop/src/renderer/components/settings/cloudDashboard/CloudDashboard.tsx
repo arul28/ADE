@@ -73,7 +73,7 @@ import { clearCloudLaneCaches, cloudLaneChangesAvailable, cloudLaneLifeAvailable
 import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
 import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
-import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
+import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudSavedLaneWorkCard } from "../../cloudLane/CloudLaneSavedWork";
 import { CloudTierChangeDialog } from "../../cloudLane/CloudTierChangeDialog";
@@ -322,7 +322,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
               menuActions={(lane) => {
                 const job = lane.instanceId ? cloudLaneJobFor(jobs, { instanceId: lane.instanceId, laneId: lane.machine?.lane?.laneId ?? null }) : null;
                 return laneMenuActions(lane, {
-                  jobRunning: job != null && (job.phase === "waiting" || job.phase === "running"),
+                  jobRunning: job != null && cloudLaneJobIsLive(job),
                   busy: busyKey === lane.key,
                   onLookInside: () => openInside(lane.key),
                   onSize: () => setSizing(lane),

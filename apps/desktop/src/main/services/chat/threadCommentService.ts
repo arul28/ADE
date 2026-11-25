@@ -7,8 +7,10 @@ import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import type { AdeMessageAuthor } from "../../../shared/types/chat";
 import {
   MAX_THREAD_COMMENTS_PER_SESSION,
-  MAX_THREAD_COMMENT_BODY_CHARS,
   MAX_THREAD_COMMENT_EXCERPT_CHARS,
+  THREAD_COMMENT_GONE_MESSAGE,
+  THREAD_COMMENT_MISSING_MESSAGE,
+  cleanThreadCommentBody,
   collapseWhitespace,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
@@ -265,11 +267,6 @@ export function createThreadCommentService({
     }
   };
 
-  const cleanBody = (body: unknown): string => {
-    if (typeof body !== "string") return "";
-    return body.replace(/\r\n?/g, "\n").trim().slice(0, MAX_THREAD_COMMENT_BODY_CHARS);
-  };
-
   const list = ({ sessionId }: { sessionId: string }): ChatThreadComment[] => read(sessionId);
 
   /**
@@ -284,7 +281,7 @@ export function createThreadCommentService({
     if (!anchor) throw new Error("A comment needs the text, table row, image or video it is about.");
     const messageKey = typeof args.messageKey === "string" ? args.messageKey.trim() : "";
     if (!messageKey) throw new Error("A comment needs the message it is about.");
-    const body = cleanBody(args.body);
+    const body = cleanThreadCommentBody(args.body);
     if (!body) throw new Error("Write a comment first.");
     const current = read(args.sessionId);
     // Idempotent by (chat, client id, author): a retry whose first attempt
@@ -295,7 +292,7 @@ export function createThreadCommentService({
       const existing = current.find((comment) => comment.clientId === clientId && sameAuthor(comment.author, options.author));
       if (existing) return existing;
       if (goneClientIds.get(args.sessionId)?.has(clientId)) {
-        throw new Error("This comment was already sent or deleted.");
+        throw new Error(THREAD_COMMENT_GONE_MESSAGE);
       }
     }
     if (current.length >= MAX_THREAD_COMMENTS_PER_SESSION) {
@@ -323,9 +320,9 @@ export function createThreadCommentService({
   const update = (args: ChatThreadCommentUpdateArgs): ChatThreadComment => {
     const current = read(args.sessionId);
     const index = current.findIndex((comment) => comment.id === args.commentId);
-    if (index < 0) throw new Error("That comment no longer exists.");
+    if (index < 0) throw new Error(THREAD_COMMENT_MISSING_MESSAGE);
     const previous = current[index]!;
-    const body = args.body === undefined ? previous.body : cleanBody(args.body);
+    const body = args.body === undefined ? previous.body : cleanThreadCommentBody(args.body);
     if (!body) throw new Error("A comment cannot be empty. Delete it instead.");
     // The owner ticked a guest's comment for the text it had: new text waits for a new tick.
     const bodyChanged = body !== previous.body;

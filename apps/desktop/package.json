@@ -335,6 +335,10 @@
         "to": "ade-cli/usageLedgerWorker.cjs"
       },
       {
+        "from": "../ade-cli/dist/providerInlineImageWorker.cjs",
+        "to": "ade-cli/providerInlineImageWorker.cjs"
+      },
+      {
         "from": "../ade-cli/dist/adeRpcServer.cjs",
         "to": "ade-cli/adeRpcServer.cjs"
       },

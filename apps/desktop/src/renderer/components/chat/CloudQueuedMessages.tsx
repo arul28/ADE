@@ -19,6 +19,22 @@ export function draftWithPutBack(current: string, text: string): string {
 const ROW_BUTTON = "shrink-0 underline-offset-2 hover:underline disabled:opacity-50";
 
 /**
+ * Why the messages wait: the lane's computer is moving or changing size (the
+ * server holds them until it is done), the computer wakes for them, or it is
+ * simply not up yet.
+ */
+export type CloudQueueState = "move" | "resize" | "waking" | "waiting";
+
+/** The banner's title; `launch`: a row goes to a new computer (its old one was deleted), not a waking one. */
+const QUEUE_TITLE: Record<CloudQueueState | "launch", (count: string) => string> = {
+  launch: (count) => `Starting a new ADE Cloud computer… ${count} for it.`,
+  move: (count) => `Moving this lane to its new ADE Cloud computer… ${count} for it.`,
+  resize: (count) => `Changing your ADE Cloud computer's size… ${count} for it.`,
+  waking: (count) => `Waking your ADE Cloud computer… ${count} for it.`,
+  waiting: (count) => `${count} for your ADE Cloud computer.`,
+};
+
+/**
  * The messages an ADE Cloud chat holds in the account's queue while its
  * computer is asleep or a new one is set up (`useAdeCloudChatQueue`). Each
  * one shows here until the live chat has it, and a queued one can be
@@ -29,7 +45,7 @@ const ROW_BUTTON = "shrink-0 underline-offset-2 hover:underline disabled:opacity
 export function CloudQueuedMessages({
   messages,
   failed = [],
-  waking,
+  state,
   style,
   onCancel,
   onPutBack,
@@ -38,8 +54,8 @@ export function CloudQueuedMessages({
   messages: CloudChatQueuedMessage[];
   /** Messages the server could not send (`state: "failed"`), oldest first. */
   failed?: CloudChatQueuedMessage[];
-  /** The computer wakes for these (not a new computer: the launch card shows that). */
-  waking: boolean;
+  /** Why they wait. `waking`: the computer wakes for them (not a new computer: the launch card shows that). */
+  state: CloudQueueState;
   style?: CSSProperties;
   onCancel: (messageId: string) => Promise<void>;
   /** Puts a failed message's text back in the box; the caller then drops the row. */
@@ -69,12 +85,9 @@ export function CloudQueuedMessages({
       model={{
         id: "chat-cloud-queued-messages",
         tone: "info",
-        busy: waking,
-        // A row with a launch goes to a new computer (its old one was deleted), not a waking one.
-        title: messages.some((message) => message.launchId)
-          ? `Starting a new ADE Cloud computer… ${count} for it.`
-          : waking ? `Waking your ADE Cloud computer… ${count} for it.` : `${count} for your ADE Cloud computer.`,
-        detail: error ?? "The agent gets them in order when the computer is up.",
+        busy: state !== "waiting",
+        title: QUEUE_TITLE[messages.some((message) => message.launchId) ? "launch" : state](count),
+        detail: error ?? (state === "move" || state === "resize" ? "ADE Cloud keeps them, and the agent gets them in order once it is done." : "The agent gets them in order when the computer is up."),
         report: false,
         extra: (
           <ul className="mt-1 flex flex-col gap-1" aria-label="Queued messages">

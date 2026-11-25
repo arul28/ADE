@@ -287,7 +287,8 @@ Lanes
     $ ade lanes templates default [<id>] [--clear]  Read or change the default lane template
     $ ade lanes templates apply <id> --lane <lane>  Apply a template to an existing lane
     $ ade lanes templates delete <id>                Delete a lane template
-    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies
+    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies in the main
+                                                    checkout (not a lane's worktree)
     $ ade lanes templates list --machine "<name>" --text
                                                     Templates follow your account per repository; --machine reads them via that computer
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'

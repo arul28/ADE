@@ -4,19 +4,30 @@ import { randomUUID } from "node:crypto";
 import { cloudCatalogOf, cloudShapeFor, type CloudShapeId } from "../../../shared/adeCloud";
 import { cloudMachineLaneFactsOf, CLOUD_LANE_NAME_METADATA } from "../../../shared/cloudLaneLaunch";
 import {
+  CLOUD_LANE_SAVE_WARNING_DETAIL,
+  cloudLaneJobIsLive,
   cloudLaneJobStageIds,
+  cloudTierRequestChatMachineKey,
+  cloudTierRequestEndArgs,
+  cloudTierRequestIdsOf,
+  cloudTierRequestOutcomeOfJob,
+  createTierRequestTelling,
   type CloudLaneChangeTierArgs,
   type CloudLaneJobKind,
   type CloudLaneJobSnapshot,
   type CloudLaneJobStage,
   type CloudLaneJobStageId,
+  type CloudTierRequestOutcome,
   cloudLaneJobGrowsDiskOnly,
 } from "../../../shared/cloudLaneLife";
 import { cloudTier, cloudTierOfShape, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import type { ChatLaunchStageStatus, RemoteRuntimeProjectRecord } from "../../../shared/types";
+import { pickMachineProject } from "../../../shared/projectIdentity";
+import type { ChatLaunchStageStatus, OpenProjectBinding, RemoteRuntimeActionRequest, RemoteRuntimeProjectRecord } from "../../../shared/types";
+import { sanitizeRendererProjectBinding } from "../../../shared/projectBinding";
 import { getErrorMessage } from "../shared/utils";
 import { moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
+import { CloudCreateCancelled } from "./cloudMachineCreator";
 import { prepareStopCommand, shellJobId } from "../../../../../account-directory/src/cloud/computerCommands";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import { CLOUD_MACHINE_KEY_METADATA, type createCloudMachines } from "./cloudMachines";
@@ -45,6 +56,16 @@ import { createCloudLaneAccount } from "./cloudLaneAccount";
 
 type MachinesApi = Pick<ReturnType<typeof createCloudMachines>, "run" | "runPushWork" | "account">;
 
+/** Calls to a chat's machine by the chat's pin. */
+export type CloudLaneChatCalls = {
+  /** One runtime action through the pin: this computer's project for a local pin. */
+  callAction: (pin: OpenProjectBinding, request: RemoteRuntimeActionRequest) => Promise<unknown>;
+  /** The account machine a saved connection reaches (or reached, or now reaches after a move), or null. */
+  machineKeyOf: (targetId: string) => string | null;
+  /** The pin of a project on a connected machine, by its id or folder there. */
+  resolveBinding: (targetId: string, projectId: string, rootPath: string) => Promise<OpenProjectBinding>;
+};
+
 export type CloudLaneLifeDeps = {
   recordsDir: string;
   machines: MachinesApi;
@@ -60,6 +81,12 @@ export type CloudLaneLifeDeps = {
   changed: () => void;
   /** The account's lane backups of one computer: an asleep computer's work check reads them with no wake. */
   laneBackups?: ((machineKey: string) => Promise<CloudLaneBackup[]>) | null;
+  /**
+   * How the chat whose size request started a job is told how it ended
+   * (`cloud.tier_request_answer` on that chat's own machine). Unset: nobody
+   * is told.
+   */
+  chatCalls?: CloudLaneChatCalls | null;
   logger: CloudLogger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -78,6 +105,10 @@ const CONNECT_RETRY_MS = 5_000;
 const FINISHED_JOB_KEEP_MS = 24 * 60 * 60_000;
 /** How long a save covers a disk grow's restart: past it (a Retry), the chats are saved again first. */
 const SAVE_FRESH_MS = 2 * 60_000;
+/** How long a cancel of a move waits for ADE's answer (the server ends a step first) before it answers with the job as it is. */
+const MOVE_CANCEL_WAIT_MS = 30_000;
+/** A chat that couldn't be told how its change ended (its machine asleep, starting or gone) is tried again after these waits. */
+const TELL_CHAT_RETRY_MS = [30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000];
 /** A disk-only job that stopped after its save: its own note goes (a newer grow's note stays). */
 const clearGrowNoteCommand = (jobId: string): string =>
   `f="$ADE_HOME/cloud/disk-grow.json"; grep -q '"jobId":"${shellJobId(jobId)}"' "$f" 2>/dev/null && rm -f "$f"; true`;
@@ -93,6 +124,12 @@ type JobRecord = {
   fromMachineKey?: string | null;
   /** The move runs on ADE's server: a quit mid-move follows it again on the next start, since it went on without this app. */
   serverMove?: boolean;
+  /**
+   * The agent's size request the person confirmed: its chat is told how the
+   * job ended, on the chat's own machine (`pin`). `told` is the outcome it
+   * was told, so a restart doesn't tell it again; a Retry clears it.
+   */
+  request?: { requestId: string; chatSessionId: string; pin: OpenProjectBinding; told?: CloudTierRequestOutcome | null };
 };
 
 /** A finished job's card is closed: it leaves every view, and its record stays until it expires. */
@@ -131,6 +168,16 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   const nowIso = () => nowIsoFrom(now);
   const jobs = new Map<string, JobRecord>();
   const running = new Map<string, AbortController>();
+  /** A running move's own stop, by job: a cancel before its copy asks ADE's server to take the new computer away. */
+  const moveCancels = new Map<string, AbortController>();
+  /** A cancel of a move waiting for its answer: true, cancelled; false, too late (the copy started). */
+  const cancelSettles = new Map<string, (cancelled: boolean) => void>();
+  const settleCancel = (jobId: string, cancelled: boolean): void => {
+    const settle = cancelSettles.get(jobId);
+    if (!settle) return;
+    cancelSettles.delete(jobId);
+    settle(cancelled);
+  };
   /** Computers a tier change is being set up for, before its job exists: a second confirm is refused. */
   const reserving = new Set<string>();
   let disposed = false;
@@ -158,6 +205,75 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     record.job.updatedAt = nowIso();
     persist(record);
     deps.emit(structuredClone(record.job));
+    tellRequestingChat(record);
+  };
+
+  /** Jobs whose chat is being told now, one telling at a time per job (`createTierRequestTelling`). */
+  const telling = createTierRequestTelling<CloudTierRequestOutcome>({
+    retryMs: TELL_CHAT_RETRY_MS,
+    // Unset in the app: its own timers, cleared when a new end wakes the wait.
+    sleep: deps.sleep ?? null,
+    onFailed: (error, { key, end, attempt, final }) => {
+      logger.warn?.("cloud.lane_job_chat_tell_failed", { jobId: key, outcome: end, attempt, final, error: getErrorMessage(error) });
+    },
+  });
+
+  /**
+   * The chat's pin to tell it through now. A pin that names no machine, or a
+   * chat that moved with the lane, is reached by its machine key
+   * (`cloudTierRequestChatMachineKey`): that machine is connected (paired and
+   * woken when needed) and the chat's project found there. The ADE Cloud
+   * tab's pin names the account's project, so it is found by that id or the
+   * lane's origin.
+   */
+  const chatPinNow = async (record: JobRecord, pin: OpenProjectBinding, calls: CloudLaneChatCalls): Promise<OpenProjectBinding> => {
+    const { job } = record;
+    if (pin.kind !== "remote") return pin;
+    const machineKey = cloudTierRequestChatMachineKey({ pin, pinMachineKey: calls.machineKeyOf(pin.targetId), job, fromMachineKey: record.fromMachineKey ?? null });
+    if (!machineKey) return pin;
+    const { targetId } = await deps.connectMachine(machineKey);
+    try {
+      return await calls.resolveBinding(targetId, pin.projectId, pin.rootPath);
+    } catch (error) {
+      const project = pickMachineProject(await deps.listProjects(targetId), {
+        projectId: pin.projectId,
+        rootPath: pin.rootPath,
+        accountProjectId: pin.projectId,
+        originUrl: job.projectOrigin ?? pin.gitOriginUrl ?? null,
+      });
+      if (!project) throw error;
+      return await calls.resolveBinding(targetId, project.projectId, project.rootPath);
+    }
+  };
+
+  /**
+   * The job ended: the chat whose size request started it is told how, on
+   * that chat's own machine, whatever window shows it (none may). A machine
+   * that can't take it now (asleep, restarting, a move's new computer still
+   * pairing) is tried again a few times; a quit tries again at the next start.
+   * Each try reads the job again: a Retry that runs is told when it ends, and
+   * an end that comes while a try waits wakes it, so that end is told at
+   * once. The chat's machine tells the agent once, by the card
+   * (`tier_request_answer`).
+   */
+  const tellRequestingChat = (record: JobRecord): void => {
+    const { job, request } = record;
+    const calls = deps.chatCalls;
+    if (!request || !calls) return;
+    telling.note(job.jobId, {
+      read: () => (disposed ? null : cloudTierRequestOutcomeOfJob(job)),
+      tell: async (outcome) => {
+        const args = cloudTierRequestEndArgs(job, request);
+        if (!args) return;
+        await calls.callAction(await chatPinNow(record, request.pin, calls), { domain: "cloud", action: "tier_request_answer", args });
+        logger.info?.("cloud.lane_job_chat_told", { jobId: job.jobId, outcome });
+      },
+      isTold: (outcome) => request.told === outcome,
+      markTold: (outcome) => {
+        request.told = outcome;
+        persist(record);
+      },
+    });
   };
 
   const stageOf = (record: JobRecord, id: CloudLaneJobStageId): CloudLaneJobStage | null =>
@@ -181,8 +297,6 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
 
   const finished = (stage: CloudLaneJobStage | null) => stage?.status === "done" || stage?.status === "skipped" || stage?.status === "warning";
 
-  const isLive = (job: CloudLaneJobSnapshot) => job.phase === "waiting" || job.phase === "running";
-
   // ---------------------------------------------------------------------------
   // Reads, delete lane, and keep the lane on a fresh computer (shared with
   // a brain's `cloud` actions, `cloudLaneAccount.ts`)
@@ -195,7 +309,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     forgetMachineConnections: deps.forgetMachineConnections,
     changed: deps.changed,
     // A tier change mid-way would make a computer the delete or free doesn't know.
-    busy: (instanceId) => Array.from(jobs.values()).some((record) => isLive(record.job) && record.job.instanceId === instanceId),
+    busy: (instanceId) => Array.from(jobs.values()).some((record) => cloudLaneJobIsLive(record.job) && record.job.instanceId === instanceId),
     disposed: () => disposed,
     logger,
     now,
@@ -214,8 +328,8 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   /** True when nothing the agent does keeps the computer busy (asleep counts as idle; unknown is busy). */
   const agentIdle = async (instanceId: string): Promise<boolean> => (await agentWork(instanceId)) === "idle";
 
-  /** Save work: waits for the agent (or stops its turn), then writes the saved chat copy. */
-  const runSave = async (record: JobRecord, signal: AbortSignal): Promise<void> => {
+  /** Save work, its first half: the step runs from here, and waits for the agent when the timing says so. */
+  const waitForAgent = async (record: JobRecord, signal: AbortSignal): Promise<void> => {
     const job = record.job;
     const saveDetail = cloudLaneJobGrowsDiskOnly(job) ? "Saving the chats" : job.timing === "now" ? "Stopping the running turn" : "Waiting for the agent to finish";
     setStage(record, "save", "running", { detail: saveDetail });
@@ -232,19 +346,34 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     }
     job.phase = "running";
     assertActive(record, signal);
+  };
+
+  /**
+   * Save work, its second half: stops what still runs and writes the saved
+   * chat copy, so the chats read the same while the computer restarts or
+   * moves. The step ends here.
+   */
+  const saveChats = async (record: JobRecord): Promise<void> => {
+    const job = record.job;
     const client = await deps.client();
     const instance = await client.getInstance(job.instanceId);
     if (instance.status === "running") {
-      // Stops what still runs and writes the saved chat copy, so the chats
-      // read the same while the computer restarts or moves.
       const ran = await client.exec(job.instanceId, prepareStopCommand(cloudLaneJobGrowsDiskOnly(job) ? { gb: job.diskGb, jobId: job.jobId } : null), { timeoutMs: 90_000 }).catch((error: unknown) => {
         logger.warn?.("cloud.lane_job_prepare_stop_failed", { jobId: job.jobId, error: getErrorMessage(error) });
         return null;
       });
-      setStage(record, "save", ran?.exitCode === 0 ? "done" : "warning", { detail: ran?.exitCode === 0 ? null : "The chats' saved copy may be a few minutes old" });
+      setStage(record, "save", ran?.exitCode === 0 ? "done" : "warning", { detail: ran?.exitCode === 0 ? null : CLOUD_LANE_SAVE_WARNING_DETAIL });
       return;
     }
     setStage(record, "save", "done", { detail: "Asleep, nothing running" });
+  };
+
+  /** Save work: waits for the agent (or stops its turn), then writes the saved chat copy. */
+  const runSave = async (record: JobRecord, signal: AbortSignal): Promise<void> => {
+    await waitForAgent(record, signal);
+    await saveChats(record);
+    // A cancel during the save's exec stops the job here, before the size changes.
+    assertActive(record, signal);
   };
 
   const waitForRunning = async (record: JobRecord, signal: AbortSignal, instanceId: string): Promise<void> => {
@@ -373,8 +502,20 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       return;
     }
     const job = record.job;
+    assertActive(record, signal);
+    // The chats' save runs while the new computer is made (it took as long,
+    // one after the other): on ADE's server, or here for a move run from here.
+    // The copy starts only after both.
+    const saveBeside = !finished(stageOf(record, "save"));
+    if (saveBeside) setStage(record, "save", "running", { detail: job.timing === "now" ? "Stopping the running turn" : "Saving the chats" });
+    const settleSave = (status: "done" | "warning") => {
+      if (stageOf(record, "save")?.status === "running") setStage(record, "save", status, { detail: status === "done" ? null : CLOUD_LANE_SAVE_WARNING_DETAIL });
+    };
+    /** ADE's server reports its save (`saveState`); an older one doesn't. */
+    let serverSaid = false;
     setStage(record, "computer", "running");
     const controller = new AbortController();
+    moveCancels.set(job.jobId, controller);
     const onAbort = () => controller.abort();
     signal.addEventListener("abort", onAbort, { once: true });
     let result: Awaited<ReturnType<typeof moveCloudMachine>>;
@@ -387,9 +528,15 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         requestId: job.jobId,
         madeByChat: job.requestedByChat,
       }, (progress) => {
-        // The copy starts once the new computer joined: its first line names the target.
-        if (progress.stage === "joining" && progress.instanceId && /^Copying/.test(progress.message)) {
+        // The new computer joined: its lines name it from here on.
+        if (progress.stage === "joining" && progress.instanceId) {
           if (stageOf(record, "computer")?.status === "running") setStage(record, "computer", "done");
+          // The copy starts after the save: until then (the old computer still saves), nothing more.
+          if (!/^Copying/.test(progress.message)) return;
+          // An older server doesn't say when its save ended: before the copy.
+          if (!serverSaid) settleSave("done");
+          // A cancel asked for now is too late: the move goes on.
+          settleCancel(job.jobId, false);
           if (stageOf(record, "copy")?.status === "pending") setStage(record, "copy", "running", { detail: progress.message });
           return;
         }
@@ -398,8 +545,16 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
         if (stage && stage.detail !== progress.message) setStage(record, active, "running", { detail: progress.message });
       }, {
         signal: controller.signal,
-        // The save step above stopped the turns and wrote the chats; the move doesn't do it again.
-        save: false,
+        // A save done before (a Retry after it) isn't run again.
+        ...(saveBeside
+          ? {
+            onSave: (state: "running" | "done" | "warning") => {
+              serverSaid = true;
+              if (state !== "running") settleSave(state);
+            },
+            saveHere: () => saveChats(record),
+          }
+          : { save: false }),
         onServer: () => {
           record.serverMove = true;
           persist(record);
@@ -419,7 +574,10 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       });
     } finally {
       signal.removeEventListener("abort", onAbort);
+      moveCancels.delete(job.jobId);
     }
+    settleSave("done");
+    settleCancel(job.jobId, false);
     if (stageOf(record, "computer")?.status === "running") setStage(record, "computer", "done");
     if (stageOf(record, "copy")?.status !== "done") setStage(record, "copy", "done", { detail: null });
     job.instanceId = result.instanceId;
@@ -450,6 +608,12 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     setStage(record, "save", "pending");
   };
 
+  /** A move's save that a failure or a quit cut: pending again, so a Retry saves. */
+  const resetRunningSave = (record: JobRecord): void => {
+    const save = stageOf(record, "save");
+    if (save?.status === "running") Object.assign(save, { status: "pending", detail: null, startedAt: null, endedAt: null });
+  };
+
   const runJob = async (record: JobRecord): Promise<void> => {
     const job = record.job;
     if (running.has(job.jobId)) return;
@@ -461,7 +625,14 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       job.error = null;
       if (!finished(stageOf(record, "save"))) {
         active = "save";
-        await runSave(record, signal);
+        // A move saves while it makes the new computer (`runMove`): only its
+        // wait for the agent runs here, and not again for a move ADE's server
+        // already took (followed again after a quit).
+        if (job.kind === "move") {
+          if (!record.serverMove) await waitForAgent(record, signal);
+        } else {
+          await runSave(record, signal);
+        }
       }
       job.phase = "running";
       publish(record);
@@ -480,9 +651,24 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       logger.info?.("cloud.lane_job_online", { jobId: job.jobId, kind: job.kind, toSizeId: job.toSizeId });
     } catch (error) {
       await clearGrowNote(record);
+      // A move cancelled before its copy (here with `cancelJob`, or from another
+      // device on ADE's server): its new computer was taken away.
+      if (error instanceof CloudCreateCancelled && job.kind === "move" && !disposed) {
+        job.phase = "cancelled";
+        job.endedAt = nowIso();
+        for (const stage of job.stages) {
+          if (stage.status === "running") Object.assign(stage, { status: "skipped", endedAt: job.endedAt });
+        }
+        publish(record);
+        settleCancel(job.jobId, true);
+        logger.info?.("cloud.lane_job_cancelled", { jobId: job.jobId, kind: job.kind });
+        return;
+      }
       if (error instanceof JobStopped || disposed) return;
       // A move's failing step: the copy, unless the new computer never came.
       if (job.kind === "move" && active === "computer" && stageOf(record, "copy")?.status === "running") active = "copy";
+      // A save cut by the move's failure runs again on Retry.
+      if (job.kind === "move" && active !== "save") resetRunningSave(record);
       const message = getErrorMessage(error);
       job.phase = "failed";
       job.error = message;
@@ -496,6 +682,8 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       logger.warn?.("cloud.lane_job_failed", { jobId: job.jobId, kind: job.kind, stage: active, error: message });
     } finally {
       running.delete(job.jobId);
+      // A cancel still waiting when the run ended any other way: answered, so a later one asks again.
+      settleCancel(job.jobId, job.phase === "cancelled");
     }
   };
 
@@ -504,7 +692,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     if (!instanceId) throw new Error("Name the computer.");
     if (!isCloudTierId(raw?.sizeId)) throw new Error("Pick a size.");
     const timing = raw.timing === "now" ? "now" : "idle";
-    const busy = Array.from(jobs.values()).some((record) => isLive(record.job) && (record.job.instanceId === instanceId || record.job.fromInstanceId === instanceId));
+    const busy = Array.from(jobs.values()).some((record) => cloudLaneJobIsLive(record.job) && (record.job.instanceId === instanceId || record.job.fromInstanceId === instanceId));
     // Reserved before the first await: two confirms at once never start two jobs.
     if (busy || reserving.has(instanceId)) throw new Error("A change is already running for this lane.");
     reserving.add(instanceId);
@@ -532,6 +720,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     // The same size with a bigger disk is a disk grow (the Android pane's Grow the disk): the same steps.
     if (from?.id === tier.id && diskGb == null) throw new Error(`It's already ${tier.label}.`);
     const lane = cloudMachineLaneFactsOf(instance.metadata);
+    const { requestId, requestedByChat } = cloudTierRequestIdsOf(raw);
     const startedAt = nowIso();
     const job: CloudLaneJobSnapshot = {
       jobId: randomUUID(),
@@ -548,18 +737,28 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       phase: timing === "idle" ? "waiting" : "running",
       stages: cloudLaneJobStageIds(kind).map((id) => ({ id, status: "pending", detail: null, error: null, startedAt: null, endedAt: null })),
       error: null,
-      requestedByChat: typeof raw.requestedByChat === "string" && raw.requestedByChat.trim() ? raw.requestedByChat.trim() : null,
+      requestedByChat,
+      requestId,
       diskGb,
       startedAt,
       updatedAt: startedAt,
       endedAt: null,
     };
-    const record: JobRecord = { v: 1, job, shape: shape.id, targetType: tier.type, fromMachineKey: job.machineKey };
+    // No icon: a call through the pin needs none, and the record stays small.
+    const chatPin = sanitizeRendererProjectBinding(raw.requestedByChatPin, () => null);
+    const record: JobRecord = {
+      v: 1,
+      job,
+      shape: shape.id,
+      targetType: tier.type,
+      fromMachineKey: job.machineKey,
+      ...(requestId && requestedByChat && chatPin ? { request: { requestId, chatSessionId: requestedByChat, pin: chatPin } } : {}),
+    };
     // A new change replaces what an older one of this lane left on screen (a
     // failure, a finish): one job per lane in view, and an old failure never
     // stands in front of the next change.
     for (const older of jobs.values()) {
-      if (isLive(older.job) || isDismissed(older.job)) continue;
+      if (cloudLaneJobIsLive(older.job) || isDismissed(older.job)) continue;
       const sameLane = (job.laneId != null && older.job.laneId === job.laneId)
         || older.job.instanceId === instanceId || older.job.fromInstanceId === instanceId;
       if (!sameLane) continue;
@@ -594,15 +793,37 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     record.job.phase = "running";
     record.job.endedAt = null;
     record.job.dismissedAt = null;
+    // Its next end is told again (the chat's card tells the agent a repeat of the same end once).
+    if (record.request) record.request.told = null;
     publish(record);
     void runJob(record);
     return structuredClone(record.job);
   };
 
-  /** Stops a job before the size changed: while it waits or saves. After that it runs to the end. */
+  /**
+   * A move's cancel before its copy, while the new computer is made and the
+   * work saves: ADE's server (or the making here) takes the new computer
+   * away, and the answer says whether it did. The copy may start first; the
+   * move then goes on.
+   */
+  const cancelMoveBeforeCopy = async (record: JobRecord): Promise<CloudLaneJobSnapshot> => {
+    const { jobId } = record.job;
+    if (!cancelSettles.has(jobId)) {
+      const answered = new Promise<boolean>((resolve) => cancelSettles.set(jobId, resolve));
+      moveCancels.get(jobId)?.abort();
+      const cancelled = await Promise.race([answered, sleep(MOVE_CANCEL_WAIT_MS).then(() => null)]);
+      if (cancelled === false) throw new Error("The copy already started, so the move can't be cancelled now. ADE finishes it.");
+    }
+    return structuredClone(record.job);
+  };
+
+  /** Stops a job before the size changed: while it waits or saves, and a move until its copy starts. After that it runs to the end. */
   const cancelJob = async (args: { jobId: string }): Promise<CloudLaneJobSnapshot | null> => {
     const record = jobs.get(args?.jobId);
     if (!record) return null;
+    if (record.job.kind === "move" && record.job.phase === "running" && moveCancels.has(record.job.jobId) && stageOf(record, "copy")?.status === "pending") {
+      return await cancelMoveBeforeCopy(record);
+    }
     const changing = record.job.stages.some((stage) => stage.id !== "save" && stage.status !== "pending");
     if (changing && record.job.phase !== "failed") throw new Error("The size is already changing. ADE finishes it.");
     record.job.phase = "cancelled";
@@ -620,7 +841,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   const dismissJob = async (args: { jobId: string }): Promise<CloudLaneJobSnapshot | null> => {
     const record = jobs.get(args?.jobId);
     if (!record) return null;
-    if (isLive(record.job)) throw new Error("This change is still running. Cancel it, or wait for it to finish.");
+    if (cloudLaneJobIsLive(record.job)) throw new Error("This change is still running. Cancel it, or wait for it to finish.");
     if (!isDismissed(record.job)) {
       record.job.dismissedAt = nowIso();
       publish(record);
@@ -652,12 +873,16 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
           continue;
         }
         const ended = record.job.endedAt ? Date.parse(record.job.endedAt) : null;
-        if (!isLive(record.job) && ended != null && now() - ended > FINISHED_JOB_KEEP_MS) {
+        if (!cloudLaneJobIsLive(record.job) && ended != null && now() - ended > FINISHED_JOB_KEEP_MS) {
           fs.rmSync(file, { force: true });
           continue;
         }
         jobs.set(record.job.jobId, record);
-        if (!isLive(record.job)) continue;
+        if (!cloudLaneJobIsLive(record.job)) {
+          // An end the chat wasn't told of before the quit.
+          tellRequestingChat(record);
+          continue;
+        }
         const cutMove = record.job.kind === "move" && !record.serverMove
           && (stageOf(record, "computer")?.status === "running" || stageOf(record, "copy")?.status === "running");
         if (cutMove) {
@@ -667,7 +892,9 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
           record.job.error = "ADE quit during the move. The old computer is as it was; Retry to move it again.";
           const stage = stageOf(record, stageOf(record, "copy")?.status === "running" ? "copy" : "computer");
           if (stage) Object.assign(stage, { status: "failed", error: record.job.error, endedAt: nowIso() });
+          resetRunningSave(record);
           persist(record);
+          tellRequestingChat(record);
           continue;
         }
         void runJob(record);

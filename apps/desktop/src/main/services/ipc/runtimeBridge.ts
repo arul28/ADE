@@ -605,6 +605,8 @@ export type RuntimeBridgeRegistration = {
     resolveBinding(targetId: string, projectId: string, rootPath: string): Promise<OpenProjectBinding & { kind: "remote" }>;
     /** One runtime action through a pin; the action's own result. */
     callAction(binding: OpenProjectBinding & { kind: "remote" }, request: RemoteRuntimeActionRequest): Promise<unknown>;
+    /** The account machine key a saved connection reaches (or a gone one reached, or now reaches after a move), or null. */
+    machineKeyOf(targetId: string): string | null;
     /** Streams one file from this computer to the pin's project there; the path there. */
     uploadAttachment(binding: OpenProjectBinding & { kind: "remote" }, input: { sourcePath: string; filename: string }): Promise<{ path: string }>;
     /** The pin's runtime events of one category; `onEnded` when the stream stops by itself. */
@@ -912,6 +914,7 @@ export function registerRuntimeBridge({
         request,
         { projectRootPath: binding.rootPath },
       )).result,
+      machineKeyOf: (targetId) => remoteConnectionService.getTarget(targetId)?.pairedMachine?.machineKey ?? goneTargetMachineKey(targetId),
       uploadAttachment: (binding, input) => remoteConnectionService.uploadChatAttachment({
         targetId: requireRemoteTarget(binding.targetId).id,
         projectId: binding.projectId,

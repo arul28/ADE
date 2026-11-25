@@ -3,6 +3,7 @@ import { ArrowUp, CheckCircle, Play, Terminal, Warning } from "@phosphor-icons/r
 import type { OpenProjectBinding, PtyExitEvent, TerminalSerializedSnapshot } from "../../../shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../shared/types/sync";
 import { confirmDialog } from "../ui/dialog";
+import { personErrorText } from "../../lib/format";
 import { isWindowsAbsolutePath } from "../../lib/pathUtils";
 import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
 import { planShellBlockRun, shellRunResultMessage, shellRunTerminalTitle } from "./shellCodeBlockRun";
@@ -347,7 +348,7 @@ async function sendRunOutput(key: string): Promise<void> {
     if (!busy) {
       captureError(error, { fingerprint: ["chat-code-block-run", "send-output-failed"], level: "warning", handled: true });
     }
-    const message = busy ? "The agent is busy with a turn. Send the output when it finishes." : errorText(error);
+    const message = busy ? "The agent is busy with a turn. Send the output when it finishes." : personErrorText(error);
     updateRun(key, run.id, { send: { kind: "error", message } });
   }
 }

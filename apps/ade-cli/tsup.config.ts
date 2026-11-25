@@ -68,7 +68,8 @@ export default defineConfig([
       droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
       copilotSdkWorker: "../desktop/src/main/services/chat/copilotSdkWorker.ts",
       piSdkWorker: "../desktop/src/main/services/chat/piSdkWorker.ts",
-      usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"
+      usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts",
+      providerInlineImageWorker: "../desktop/src/main/services/chat/providerInlineImageWorkerEntry.ts"
     },
     format: ["cjs"],
     platform: "node",

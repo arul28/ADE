@@ -16,6 +16,7 @@ import {
 import {
   CLOUD_LANE_JOB_STAGE_LABELS,
   cloudLaneJobGrowsDiskOnly,
+  cloudLaneJobIsLive,
   type CloudLaneJobSnapshot,
   type CloudLaneJobStage,
   type CloudLaneJobStageId,
@@ -41,18 +42,27 @@ import { Banner } from "../ui/notice";
 import { cn } from "../ui/cn";
 import type { NoticeTone } from "../ui/notice/noticeTones";
 import { cancelCloudLaneJob, dismissCloudLaneJob, retryCloudLaneJob } from "./cloudLaneActions";
+import { setCloudLaneJobBar, useCloudLaneJobBar } from "./cloudLaneStores";
 import "./cloudLane.css";
 
 /**
  * The steps of a tier change or a move, in the same card a new cloud lane
  * shows (`LaneSetupCard`): the header with the ADE Cloud mark, the segmented
  * rail, one row per step with its time, Retry on a failure, Cancel only
- * while the job waits or saves, and Copy details.
+ * while the job waits or saves (a move: until its copy starts), and Copy
+ * details. A move saves while it makes the new computer, so two steps can
+ * run at once.
  *
  * It reads the job record main keeps (`cloud.laneLife`, `onLaneJob`), so it
  * goes on with every window closed and shows the same in the chat and on
  * the dashboard. The lane says Online only at `phase === "online"`.
+ *
+ * `CloudLaneJobBar` is the same job as one slim line above a chat's prompt
+ * box, opening to this card's steps.
  */
+
+/** A finished job's bar stays this long, then goes. A failure stays for Retry. */
+const JOB_BAR_FINISHED_MS = 20_000;
 
 const STAGE_ICON: Record<CloudLaneJobStageId, Icon> = {
   save: FloppyDisk,
@@ -63,6 +73,11 @@ const STAGE_ICON: Record<CloudLaneJobStageId, Icon> = {
   connect: PlugsConnected,
   remove: Trash,
 };
+
+/** "a Large", "an X-Large": the article a size's name reads with. */
+function withArticle(label: string): string {
+  return /^(?:[aeiou]|x-)/i.test(label) ? `an ${label}` : `a ${label}`;
+}
 
 function sizeLabel(account: CloudAccountState | null, id: string | null): string | null {
   if (!id) return null;
@@ -117,15 +132,18 @@ export function cloudLaneJobPresentation(job: CloudLaneJobSnapshot, account: Clo
       };
     case "running":
       return {
-        title: move ? `Moving ${job.laneName} to a ${to} computer` : `Changing ${job.laneName} to ${to}`,
+        title: move ? `Moving ${job.laneName} to ${withArticle(to)} computer` : `Changing ${job.laneName} to ${to}`,
         stepLine: liveStepLine(job),
         tone: "accent",
-        note: "Your files and chats stay. A message you send waits until ADE on the computer answers. You can close this window.",
+        // A message sent meanwhile waits on ADE Cloud until the change is done (`AgentChatPane` submit).
+        note: move
+          ? "Your files and chats stay. A message you send now waits on ADE Cloud, and the agent gets it on the new computer. You can close this window."
+          : "Your files and chats stay. A message you send waits until the computer is back. You can close this window.",
         row: { state: "starting", label: move ? "Moving" : "Changing size" },
       };
     case "online":
       return {
-        title: move ? `Moved to a ${to} computer · your chat follows` : `${job.laneName} is online at ${to}`,
+        title: move ? `Moved to ${withArticle(to)} computer · your chat follows` : `${job.laneName} is online at ${to}`,
         stepLine: move ? `${job.laneName} is online. The old computer is gone.` : null,
         tone: "success",
         note: move
@@ -159,11 +177,11 @@ export function cloudLaneJobTitle(job: CloudLaneJobSnapshot, account: CloudAccou
 
 /** A waiting or running job's step now, as one line. */
 function liveStepLine(job: CloudLaneJobSnapshot): string | null {
-  const stage = job.stages.find((entry) => entry.status === "running")
-    ?? job.stages.find((entry) => entry.status === "pending")
-    ?? null;
+  const running = job.stages.filter((entry) => entry.status === "running");
+  // Two at once (a move saves while it makes the new computer): both names, and the later one's detail.
+  const stage = running.at(-1) ?? job.stages.find((entry) => entry.status === "pending") ?? null;
   if (!stage) return null;
-  const label = CLOUD_LANE_JOB_STAGE_LABELS[stage.id];
+  const label = running.length > 1 ? running.map((entry) => CLOUD_LANE_JOB_STAGE_LABELS[entry.id]).join(" and ") : CLOUD_LANE_JOB_STAGE_LABELS[stage.id];
   return stage.detail?.trim() ? `${label} · ${stage.detail.trim()}` : label;
 }
 
@@ -172,10 +190,12 @@ function cloudLaneJobDismissable(job: CloudLaneJobSnapshot): boolean {
   return job.phase === "failed" || job.phase === "online" || job.phase === "cancelled";
 }
 
-/** Cancel works only before the size changes: while the job waits, or saves the work. */
+/** Cancel works only before the size changes: while the job waits, or saves the work, and a move until its copy starts. */
 function canCancel(job: CloudLaneJobSnapshot): boolean {
   if (job.phase === "waiting") return true;
   if (job.phase !== "running") return false;
+  // A move until its copy starts: the cancel takes the new computer away (`cancelJob` in main).
+  if (job.kind === "move") return job.stages.find((stage) => stage.id === "copy")?.status === "pending";
   return job.stages.every((stage) => stage.id === "save" || stage.status === "pending");
 }
 
@@ -198,23 +218,47 @@ function changeAnnouncers(jobId: string, cardId: string, add: boolean) {
   else announcers.delete(jobId);
   for (const listener of announcerListeners) listener();
 }
-function useAnnouncesJob(jobId: string): boolean {
+/** Null: a card without a title to speak (headless) leaves the announcement to the row or bar around it. */
+function useAnnouncesJob(jobId: string | null): boolean {
   const cardId = useId();
   useEffect(() => {
+    if (!jobId) return;
     changeAnnouncers(jobId, cardId, true);
     return () => changeAnnouncers(jobId, cardId, false);
   }, [cardId, jobId]);
   return useSyncExternalStore(
     subscribeAnnouncers,
-    () => announcers.get(jobId)?.at(-1) === cardId,
+    () => jobId != null && announcers.get(jobId)?.at(-1) === cardId,
     () => false,
   );
 }
 
-function JobElapsed({ job, className }: { job: CloudLaneJobSnapshot; className?: string }) {
-  const live = job.phase === "waiting" || job.phase === "running";
-  const text = useLaunchDurationText(job.startedAt, job.endedAt, live);
+/** How long the job has run (or ran), on the shared launch clock. */
+export function JobElapsed({ job, className }: { job: CloudLaneJobSnapshot; className?: string }) {
+  const text = useLaunchDurationText(job.startedAt, job.endedAt, cloudLaneJobIsLive(job));
   return <span className={cn("shrink-0 tabular-nums", className)}>{text}</span>;
+}
+
+/** A finished job's bar: true a moment after the finish (one timer, only while a finished bar shows). */
+function useFinishedBarExpired(job: CloudLaneJobSnapshot): boolean {
+  const finished = job.phase === "online" || job.phase === "cancelled";
+  const endedAt = job.endedAt ?? job.updatedAt;
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    if (!finished || !endedAt) {
+      setExpired(false);
+      return;
+    }
+    const left = JOB_BAR_FINISHED_MS - (Date.now() - Date.parse(endedAt));
+    if (!(left > 0)) {
+      setExpired(true);
+      return;
+    }
+    setExpired(false);
+    const timer = window.setTimeout(() => setExpired(true), left);
+    return () => window.clearTimeout(timer);
+  }, [endedAt, finished]);
+  return expired;
 }
 
 function StageTime({ stage }: { stage: CloudLaneJobStage }) {
@@ -233,9 +277,9 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   job: CloudLaneJobSnapshot;
   /** For the size names and rates; null shows the size ids' own names. */
   account: CloudAccountState | null;
-  /** `thread`: a chat card. `panel`: inside the dashboard's lane panel or the corner panel. */
+  /** `thread`: a chat card. `panel`: inside the dashboard's lane panel, the corner panel or the chat's bar. */
   variant?: "thread" | "panel";
-  /** Inside a row that already shows the title (the corner panel): only the steps and actions. */
+  /** Inside a row that already shows the title (the corner panel, the chat's bar): only the steps and actions. */
   headless?: boolean;
   className?: string;
 }) {
@@ -243,11 +287,11 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
   const [error, setError] = useState<string | null>(null);
   const compact = variant === "panel";
   const failed = job.phase === "failed";
-  const live = job.phase === "waiting" || job.phase === "running";
-  const announces = useAnnouncesJob(job.jobId);
-  // Above the prompt box the card folds to one line. It is open by default
-  // only while a step runs or has failed; the person's own choice holds
-  // until the job's phase changes.
+  const live = cloudLaneJobIsLive(job);
+  const announces = useAnnouncesJob(headless ? null : job.jobId);
+  // A thread card folds to one line. It is open by default only while a
+  // step runs or has failed; the person's own choice holds until the job's
+  // phase changes.
   const foldable = variant === "thread" && !headless;
   const openByDefault = job.phase === "running" || failed;
   const [openChoice, setOpenChoice] = useState<{ phase: CloudLaneJobSnapshot["phase"]; open: boolean } | null>(null);
@@ -423,6 +467,108 @@ export const CloudLaneJobCard = React.memo(function CloudLaneJobCard({
         </div>
       ) : null}
       </div>
+      ) : null}
+    </div>
+  );
+});
+
+/** A job's steps and actions alone, inside a row or bar that already shows its title (the chat's bar, the corner panel). */
+export function CloudLaneJobSteps({ job, account }: { job: CloudLaneJobSnapshot; account: CloudAccountState | null }) {
+  return <CloudLaneJobCard job={job} account={account} variant="panel" headless className="adecl-jobpanel-bare" />;
+}
+
+/**
+ * A lane's size change or move as one slim line above a chat's prompt box:
+ * its title, step now and time, opening to its steps (the panel card,
+ * headless). Its × hides it while the job runs (the job goes on; a failure
+ * shows it again) and dismisses it once it ended. A finish leaves a moment
+ * later unless its steps are open; a failure opens on them. Its open and
+ * hidden state is the window's (`setCloudLaneJobBar`), so the chat's cloud
+ * button opens it.
+ */
+export const CloudLaneJobBar = React.memo(function CloudLaneJobBar({
+  job,
+  account,
+  className,
+}: {
+  job: CloudLaneJobSnapshot;
+  /** For the size names and rates; null shows the size ids' own names. */
+  account: CloudAccountState | null;
+  className?: string;
+}) {
+  const [closing, setClosing] = useState(false);
+  const failed = job.phase === "failed";
+  const live = cloudLaneJobIsLive(job);
+  const announces = useAnnouncesJob(job.jobId);
+  const { open, hidden } = useCloudLaneJobBar(job.jobId);
+  const expired = useFinishedBarExpired(job);
+  // A failure opens its bar on its steps (Retry is there); a bar closed while the job ran comes back for it.
+  useEffect(() => {
+    if (failed) setCloudLaneJobBar(job.jobId, { open: true, hidden: false });
+  }, [failed, job.jobId]);
+  const bodyId = `adecl-jobbar-body-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const presentation = cloudLaneJobPresentation(job, account);
+
+  /** The ×: hidden while the job runs (it goes on), dismissed everywhere once it ended. */
+  const close = async () => {
+    if (live) {
+      setCloudLaneJobBar(job.jobId, { hidden: true });
+      return;
+    }
+    setClosing(true);
+    try {
+      await dismissCloudLaneJob(job.jobId);
+    } catch (dismissError) {
+      console.warn("[cloud] dismissing a lane job failed", ipcErrorMessage(dismissError));
+    } finally {
+      setClosing(false);
+      setCloudLaneJobBar(job.jobId, { hidden: true });
+    }
+  };
+
+  if (hidden || (expired && !open)) return null;
+
+  return (
+    <div
+      data-cloud-lane-job-bar={job.jobId}
+      data-job-phase={job.phase}
+      data-tone={failed ? "error" : live ? "live" : "done"}
+      className={cn("font-sans text-[11.5px] adecl-jobbar", className)}
+    >
+      <div className="adecl-jobbar-row">
+        <button
+          type="button"
+          className="adecl-jobbar-main"
+          aria-expanded={open}
+          aria-controls={bodyId}
+          title={open ? "Hide the steps" : "Show the steps"}
+          onClick={() => setCloudLaneJobBar(job.jobId, { open: !open })}
+        >
+          <span className="adecl-jobbar-mark" aria-hidden>
+            {failed ? <Warning size={12} weight="bold" /> : <CloudMark size={12} bold />}
+          </span>
+          <span className="adecl-jobbar-text" role={announces ? "status" : undefined}>
+            <b>{presentation.title}</b>
+            {presentation.stepLine ? <span className="adecl-jobbar-step">{presentation.stepLine}</span> : null}
+          </span>
+          <JobElapsed job={job} className="adecl-jobbar-time" />
+          <CaretDown size={11} weight="bold" aria-hidden data-open={open ? "1" : "0"} className="adecl-jobbar-caret" />
+        </button>
+        <button
+          type="button"
+          className="adecl-job-dismiss"
+          aria-label={live ? "Hide this bar (the change goes on)" : failed ? "Dismiss this failure" : "Dismiss"}
+          title={live ? "Hide (the change goes on)" : "Dismiss"}
+          disabled={closing}
+          onClick={() => void close()}
+        >
+          <X size={10} weight="bold" aria-hidden />
+        </button>
+      </div>
+      {open ? (
+        <div id={bodyId} className="adecl-jobbar-steps">
+          <CloudLaneJobSteps job={job} account={account} />
+        </div>
       ) : null}
     </div>
   );

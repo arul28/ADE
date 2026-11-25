@@ -1,7 +1,8 @@
 import { useId, useRef, type KeyboardEvent } from "react";
 import { Check } from "@phosphor-icons/react";
-import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
+import { cloudTierFacts, cloudTierHoldsDisk, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
 import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { noticeTone } from "../../ui/notice/noticeTones";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import "./cloudSizeCards.css";
 
@@ -26,6 +27,7 @@ export function CloudSizeCards({
   markLabel,
   ariaLabel,
   words = CLOUD_CREDIT_WORDS,
+  currentDiskGb = null,
 }: {
   tiers: readonly CloudTier[];
   picked: CloudTierId | null;
@@ -38,6 +40,11 @@ export function CloudSizeCards({
   ariaLabel: string;
   /** The account's words (`cloudUnitWords`). */
   words?: CloudUnitWords;
+  /**
+   * The disk of the computer being resized (the change dialog only). A disk
+   * never shrinks, so a size whose cap is below it says it can't take it.
+   */
+  currentDiskGb?: number | null;
 }) {
   const idBase = useId();
   const cards = useRef<(HTMLButtonElement | null)[]>([]);
@@ -64,7 +71,8 @@ export function CloudSizeCards({
           const facts = cloudTierFacts(tier, words);
           const id = `${idBase}-${tier.id}`;
           const marked = tier.id === markId;
-          const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`].filter(Boolean).join(" ");
+          const tooSmall = !cloudTierHoldsDisk(tier, currentDiskGb);
+          const described = [marked ? `${id}-mark` : null, `${id}-rate`, `${id}-specs`, tooSmall ? `${id}-disk` : null].filter(Boolean).join(" ");
           const usesHours = cloudTierUsesHours(tier);
           // Time on this size (Small reads "Unlimited"); the others say how long the hours left last here.
           const big = usesHours && leftMilli == null ? null : cloudTierHoursAt(tier, leftMilli ?? 0);
@@ -94,9 +102,15 @@ export function CloudSizeCards({
                 <span>{under}</span>
               </span>
               <span id={`${id}-specs`} className="adecd-sizecard-specs">
-                {[`${tier.cpu} CPU`, `${tier.memoryGb} GB memory`]
+                {[`${tier.cpu} CPU`, `${tier.memoryGb} GB memory`, tier.diskMaxGb != null ? `disk up to ${tier.diskMaxGb} GB` : null]
+                  .filter((fact): fact is string => fact != null)
                   .map((fact, at) => <span key={fact}>{at > 0 ? " · " : null}<span className="adecd-sizecard-fact">{fact}</span></span>)}
               </span>
+              {tooSmall ? (
+                <span id={`${id}-disk`} className="adecd-sizecard-specs" style={{ color: noticeTone("warning").text }}>
+                  Can't hold this computer's {currentDiskGb} GB disk
+                </span>
+              ) : null}
               {facts.full ? <span className="kit-tag adecd-sizecard-full">Full computer</span> : null}
             </button>
           );

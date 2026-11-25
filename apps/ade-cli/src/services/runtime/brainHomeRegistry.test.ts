@@ -23,11 +23,12 @@ afterEach(() => {
   }
 });
 
-/** A fake process table: pid -> start time, absent means dead. */
+/** A fake process table: pid -> start time, absent means dead. Every pid in it is a process, not a thread. */
 function table(entries: Record<number, number>) {
   return {
     isPidAlive: (pid: number) => pid in entries,
     readProcessStartTimeMs: (pid: number) => entries[pid] ?? null,
+    readThreadGroupId: (pid: number) => (pid in entries ? pid : null),
   };
 }
 

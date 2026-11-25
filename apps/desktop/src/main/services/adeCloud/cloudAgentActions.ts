@@ -100,7 +100,20 @@ import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchS
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { buildCloudTierRequestCard, cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
+import {
+  buildCloudTierRequestAnsweredCard,
+  buildCloudTierRequestCard,
+  cloudJoinApprovalWaitText,
+  cloudTierRequestAgentMessage,
+  cloudTierRequestAnswerOfCard,
+  cloudTierRequestCardId,
+  cloudTierRequestOfCard,
+  cloudTierRequestToldKey,
+  cloudTierRequestToldOfCard,
+  isCloudTierRequestAnswer,
+  isCloudTierRequestOutcome,
+  type CloudTierRequestOutcome,
+} from "../../../shared/cloudLaneLife";
 import { buildSponsoredPickCard } from "../../../shared/sponsoredPick";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
@@ -151,6 +164,8 @@ export type CloudChatApprovals = {
       id?: string;
       header?: string;
       question: string;
+      /** One line under the question: what the yes does. */
+      impact?: string;
       options?: Array<{ label: string; value?: string; description?: string; recommended?: boolean }>;
       allowsFreeform?: boolean;
     }>;
@@ -163,6 +178,20 @@ export type CloudChatApprovals = {
   notice(chatSessionId: string, message: string): void;
   /** Posts a card in the chat (a tier change request). Unset where the chat service can't. */
   postCard?: (chatSessionId: string, card: AdeCardPayload) => Promise<void>;
+  /** One card of the chat as its transcript holds it now, by its id; null when it has none. Unset where the chat service can't. */
+  readCard?: (chatSessionId: string, cardId: string) => Promise<AdeCardPayload | null>;
+  /**
+   * Tells the chat's agent something in ADE's words: a host-authored wake
+   * (`hostContinuation`), never a message from the person. It waits for the
+   * turn to end when one runs. Unset where the chat service can't.
+   */
+  tellAgent?: (chatSessionId: string, text: string) => Promise<void>;
+  /**
+   * A note the chat's agent reads once ahead of its next turn, with no turn
+   * of its own (the restart-note channel). Plain text: the chat service adds
+   * the "ADE note:" prefix. Unset where the chat service can't.
+   */
+  noteForNextTurn?: (chatSessionId: string, note: string) => void;
 };
 
 export type CloudAgentActionDeps = {
@@ -261,6 +290,25 @@ function readApproval(args: Record<string, unknown>): CloudApproval {
 }
 
 const NO_DESKTOP = "This ADE can't make ADE Cloud machines: it isn't signed in to your ADE account.";
+
+/**
+ * The answers to one request card, one at a time (the actions are rebuilt
+ * per call): each reads the card the one before it posted, so two reports of
+ * the same end that arrive together tell the agent once. What was told is on
+ * the card itself (`cloudTierRequestToldOfCard`), so that holds across
+ * restarts too.
+ */
+const tierAnswerTurns = new Map<string, Promise<unknown>>();
+
+function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const next = (tierAnswerTurns.get(key) ?? Promise.resolve()).catch(() => undefined).then(run);
+  tierAnswerTurns.set(key, next);
+  const settled = () => {
+    if (tierAnswerTurns.get(key) === next) tierAnswerTurns.delete(key);
+  };
+  next.then(settled, settled);
+  return next;
+}
 
 /**
  * New machines unattended agents started from this brain today, kept for the
@@ -399,14 +447,20 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
        * answers it.
        */
       action: "spend" | "delete" | "person_only";
+      /** What it does, for notices and errors ("Delete lane "Stall Repro""). */
       title: string;
+      /** The card's short question ("Delete Stall Repro?"); `title?` when unset. */
+      question?: string;
       /**
-       * The card's text. A function is read only when a card is really
-       * posted: a lane delete's work check, which may wake an asleep
-       * computer, never runs for a caller ADE refuses or answers alone.
+       * The line under the question: what goes or what it costs. A function
+       * is read only when a card is really posted: a lane delete's work
+       * check, which may wake an asleep computer, never runs for a caller ADE
+       * refuses or answers alone.
        */
       body: string | (() => Promise<string>);
       confirm: string;
+      /** One line under the yes: what it does. */
+      confirmDetail?: string;
       madeByThisChat?: boolean;
       /** Starts a new machine (make, copy, move): counts against the day's limit. */
       newMachine?: boolean;
@@ -428,7 +482,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
        * person picks it instead of `confirm`, and the answer's `choice` says
        * so. Never picked for a caller nobody watches: that one gets `confirm`.
        */
-      alternative?: { label: string };
+      alternative?: { label: string; detail?: string };
     },
   ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; choice: "confirm" | "alternative" }> => {
     const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, choice: "confirm" as const };
@@ -557,6 +611,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       throw noChatToAsk();
     }
     const body = typeof card.body === "function" ? await card.body() : card.body;
+    const question = card.question?.trim() || `${card.title}?`;
     let response: Awaited<ReturnType<CloudChatApprovals["requestChatInput"]>>;
     try {
       response = await approvals.requestChatInput({
@@ -567,15 +622,18 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       allowsFreeform: false,
       // Only the person answers: an agent's `chat.respondToInput` is refused.
       providerMetadata: { [ADE_CLOUD_APPROVAL_METADATA_KEY]: true },
+      // The short question, the line on what it does under it, and one line
+      // under each yes. No "No" option: the card's own Decline says no, so
+      // there is one way to say it.
       questions: [{
         id: "decision",
         header: "ADE Cloud",
-        question: `${card.title}? ${body}`,
+        question,
+        ...(body.trim() ? { impact: body.trim() } : {}),
         allowsFreeform: false,
         options: [
-          { label: card.confirm, value: "yes" },
-          ...(card.alternative ? [{ label: card.alternative.label, value: "alternative" }] : []),
-          { label: card.alternative ? "Cancel" : "No", value: "no" },
+          { label: card.confirm, value: "yes", ...(card.confirmDetail ? { description: card.confirmDetail } : {}) },
+          ...(card.alternative ? [{ label: card.alternative.label, value: "alternative", ...(card.alternative.detail ? { description: card.alternative.detail } : {}) }] : []),
         ],
       }],
       });
@@ -587,9 +645,24 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     // The person said yes to an agent's ask: still an agent's new machine.
     if (response.decision === "accept" && answer === "yes") return { ...nothing, maker: "chat" };
     if (response.decision === "accept" && answer === "alternative" && card.alternative) return { ...nothing, maker: "chat", choice: "alternative" };
-    throw new CloudDeclined(response.timedOut
-      ? `${card.title}: nobody answered in 5 minutes, so nothing was done.`
-      : `${card.title}: the person said no, so nothing was done.`);
+    if (response.timedOut) throw new CloudDeclined(`${card.title}: nobody answered in 5 minutes, so nothing was done.`);
+    // Closed with no answer: the chat's turn ended, or its computer stopped
+    // or moved (a size change saves the work and stops the turns first). The
+    // card leaves the chat, so the person reads why there, and the agent is
+    // told it was not a no.
+    if (response.decision === "cancel" || response.decision === "none") {
+      const closed = `${card.title}: the card closed before the person answered (the turn stopped, or this computer restarted or moved), so nothing was done. Run the command again if it's still needed.`;
+      approvals.notice(chatSessionId, `ADE closed the card "${question}" before you answered (the turn stopped, or this lane's computer restarted or moved), so nothing was done.`);
+      // The command's own answer may never reach the agent (its turn was the
+      // one stopped), so its next turn starts with it too.
+      try {
+        approvals.noteForNextTurn?.(chatSessionId, closed);
+      } catch (noteError) {
+        logger.warn?.("cloud.approval_closed_note_failed", { error: getErrorMessage(noteError) });
+      }
+      throw new CloudDeclined(closed);
+    }
+    throw new CloudDeclined(`${card.title}: the person said no, so nothing was done.`);
   };
 
   /** True when nothing here can make a machine. */
@@ -660,6 +733,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     recentInstances: () => deps.machines.recentInstances(60_000),
     approve,
     readApproval,
+    // The delete or free the person said yes to, as one card in the agent's chat.
+    chatCard: deps.approvals?.postCard ?? null,
     laneLaunch: (args: Record<string, unknown>) => actions.lane_launch(args),
     projectOriginUrl: () => deps.projectOriginUrl?.() ?? null,
     analytics: deps.analytics,
@@ -997,16 +1072,78 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const requestId = randomUUID();
       const computerName = (box as CloudLaneMachine).lane?.laneName ?? box.name ?? box.instanceId;
       const card = buildCloudTierRequestCard(
-        { requestId, instanceId: box.instanceId, computerName, fromSizeId: from?.id ?? null, toSizeId: to.id, reason: clipReason(reason), chatSessionId },
-        { from: from?.label ?? null, to: to.label, rate: cloudTierRateLabel(to, cloudUnitWords(all.account)) },
+        { requestId, instanceId: box.instanceId, computerName, fromSizeId: from?.id ?? null, toSizeId: to.id, toLabel: to.label, reason: clipReason(reason), chatSessionId },
+        { from: from?.label ?? null, rate: cloudTierRateLabel(to, cloudUnitWords(all.account)) },
       );
       await deps.approvals.postCard(chatSessionId, card);
       logger.info?.("cloud.tier_requested", { instanceId: box.instanceId, toSizeId: to.id, fromSizeId: from?.id ?? null });
       return {
         requested: true,
         requestId,
-        message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn.`,
+        message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn. ADE tells you in this chat when they keep the size, or once the change is done.`,
       };
+    },
+
+    /**
+     * The person's answer to a `tier_request` card from their own client, and
+     * how the change they said yes to ended from the layer that ran it (this
+     * app's main process, ADE Web's tab), on the chat's own machine
+     * (user-only: an agent never answers its own card). The card is read from
+     * the chat here, never taken from the caller. It is marked answered for
+     * every surface (`cardId` merges), and the agent is told in ADE's words
+     * (`cloudTierRequestAgentMessage`): a wake when the person keeps the size
+     * and when the change ends, a note for its next turn at the yes. The card
+     * keeps what the agent was told, so a second report of it tells nothing.
+     */
+    async tier_request_answer(rawArgs?: unknown) {
+      const args = record(rawArgs);
+      const chatSessionId = text(args, "chatSessionId");
+      if (!chatSessionId) throw new Error("Name the chat the card is in (chatSessionId).");
+      const requestId = text(args, "requestId");
+      if (!requestId) throw new Error("Name the size request (requestId).");
+      const answer = args.answer;
+      if (!isCloudTierRequestAnswer(answer)) throw new Error("Answer idle, now or dismiss.");
+      const rawOutcome = args.outcome ?? null;
+      let outcome: CloudTierRequestOutcome | null = null;
+      if (rawOutcome !== null) {
+        if (!isCloudTierRequestOutcome(rawOutcome) || answer === "dismiss") throw new Error("A change ends online, failed or cancelled.");
+        outcome = rawOutcome;
+      }
+      const error = text(args, "error")?.slice(0, 300) ?? null;
+      const postCard = deps.approvals?.postCard;
+      const readCard = deps.approvals?.readCard;
+      if (!postCard || !readCard) throw new Error("ADE can't update cards in this chat here.");
+      return await oneAtATime(`${chatSessionId}\0${requestId}`, async () => {
+        const card = await readCard(chatSessionId, cloudTierRequestCardId(requestId));
+        const request = card ? cloudTierRequestOfCard(card, chatSessionId) : null;
+        if (!card || !request) throw new Error("This chat has no such ADE Cloud size request.");
+        // The yes that arrives after its change already ended changes nothing.
+        if (!outcome && answer !== "dismiss" && cloudTierRequestAnswerOfCard(card)?.outcome) return { answered: true, toldAgent: false };
+        const told = cloudTierRequestToldKey(answer, outcome);
+        const toldBefore = cloudTierRequestToldOfCard(card);
+        if (toldBefore === told) return { answered: true, toldAgent: false };
+        const message = cloudTierRequestAgentMessage(request, { answer, outcome, error });
+        const noteForNextTurn = deps.approvals?.noteForNextTurn;
+        const deliver = message.via === "wake"
+          ? deps.approvals?.tellAgent ?? null
+          : noteForNextTurn ? async (chat: string, note: string) => noteForNextTurn(chat, note) : null;
+        const answered = (toldNow: string | null) => buildCloudTierRequestAnsweredCard(card, request, { answer, outcome, error, told: toldNow });
+        // Shown at once, and marked told before the send: a report of the same end meanwhile is a no-op.
+        await postCard(chatSessionId, answered(deliver ? told : toldBefore));
+        if (!deliver) return { answered: true, toldAgent: false };
+        try {
+          await deliver(chatSessionId, message.text);
+        } catch (tellError) {
+          // Not told: the mark goes, so the next report (or the person's try again) tells it.
+          await postCard(chatSessionId, answered(toldBefore)).catch((postError: unknown) => {
+            logger.warn?.("cloud.tier_request_unmark_failed", { error: getErrorMessage(postError) });
+          });
+          logger.warn?.("cloud.tier_request_tell_failed", { answer, outcome, via: message.via, error: getErrorMessage(tellError) });
+          throw tellError;
+        }
+        logger.info?.("cloud.tier_request_answered", { answer, outcome, via: message.via });
+        return { answered: true, toldAgent: true };
+      });
     },
 
     /**

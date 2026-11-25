@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
+import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, ListChecks, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
 import { idleCleanupWhen, type CloudIdleCleanupEntry } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { cloudLaneJobIsLive } from "../../../shared/cloudLaneLife";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
@@ -15,7 +16,9 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
+import { cloudLaneJobPresentation } from "./CloudLaneJobCard";
 import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneActions";
+import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
 import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower } from "./cloudLaneStatus";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
@@ -150,7 +153,12 @@ function CloudLaneStatusMenu({
     const timer = window.setInterval(() => setNow(Date.now()), MENU_TICK_MS);
     return () => window.clearInterval(timer);
   }, []);
-  const model = cloudLaneStatusModel({ power, box, status, account, now });
+  // A size change or move of this lane: its step now, a way to its steps, and no sleep countdown.
+  const jobs = useCloudLaneJobs();
+  const job = cloudLaneJobFor(jobs, { instanceId: computer.instanceId, laneId: computer.laneId });
+  const jobLive = job != null && cloudLaneJobIsLive(job);
+  const jobText = job && (jobLive || job.phase === "failed") ? cloudLaneJobPresentation(job, account) : null;
+  const model = cloudLaneStatusModel({ power, box, status, account, now, changing: jobLive });
   const life = cloudLaneChangesAvailable();
 
   const { run } = menu;
@@ -171,7 +179,7 @@ function CloudLaneStatusMenu({
       className="ade-cx-menu adecl-status-menu"
       zIndex={Z_LAYERS.contextMenu}
       onKeyDown={menu.closeOnEscape}
-      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}`}
+      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}${jobText ? 1 : 0}`}
     >
       <div ref={menu.menuRef} style={{ display: "contents" }}>
         {power === "asleep" ? (
@@ -190,7 +198,18 @@ function CloudLaneStatusMenu({
               </span>
             ) : null}
           </div>
-          {model.sizeText ? <div className="adecl-status-row"><span>{model.sizeText}</span></div> : null}
+          {jobText ? (
+            <div className="adecl-status-line" data-tone={job?.phase === "failed" ? "warn" : undefined} title={jobText.stepLine ?? undefined}>
+              <span className="adecl-status-ic" aria-hidden="true">
+                {job?.phase === "failed" ? <Warning size={12} weight="fill" /> : <Cloud size={12} weight="bold" />}
+              </span>
+              <span>
+                {jobText.title}
+                {jobText.stepLine ? <small className="adecl-status-job-step"> · {jobText.stepLine}</small> : null}
+              </span>
+            </div>
+          ) : null}
+          {model.sizeText ? <div className="adecl-status-row"><span>{jobLive ? `Now ${model.sizeText}` : model.sizeText}</span></div> : null}
           {model.disk || model.hours ? (
             <div className="adecl-status-row">
               {model.disk ? <span className="kit-num" data-face="ui" data-tone={model.disk.tone ?? undefined}>{model.disk.text}</span> : null}
@@ -236,13 +255,27 @@ function CloudLaneStatusMenu({
           </button>
         ) : null}
         <div className="adecl-status-actions">
-          {life || cloudLaneMovesAvailable() ? (
+          {job && jobText ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="ade-cx-menu-item"
+              // The chat's bar above the prompt box opens on its steps; with none on screen, the ADE Cloud page shows them.
+              onClick={run(() => {
+                if (!openCloudLaneJobBar(job.jobId)) navigateToAppTarget({ kind: "settings", tab: "ade-cloud", anchor: "cloud-lanes" });
+              })}
+            >
+              <span className="ade-cx-menu-icon"><ListChecks size={13} /></span>
+              {job.kind === "move" ? "Show the move's steps" : "Show the change's steps"}
+            </button>
+          ) : null}
+          {(life || cloudLaneMovesAvailable()) && !jobLive ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onSize)}>
               <span className="ade-cx-menu-icon"><Cpu size={13} /></span>
               Change size
             </button>
           ) : null}
-          {power === "awake" ? (
+          {power === "awake" && !jobLive ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(sleepNow)}>
               <span className="ade-cx-menu-icon"><Moon size={13} /></span>
               Sleep now
