@@ -30640,10 +30640,19 @@ export function createAgentChatService(args: {
     //  - Terminal reasons (handle_close, ended_session, model_switch) must
     //    still invalidate so a future resume can't reattach to a session
     //    the user actually closed.
+    // A dropped pointer means the next send opens a new thread, but
+    // `armIfStale` can't see it: the key reads "unopened" until that thread
+    // names itself, after the first send. Codex resumes from the session's
+    // own `threadId`, which a teardown keeps.
+    const restageIfThreadDropped = (): void => {
+      if (managed.session.provider === "codex" && managed.session.threadId) return;
+      restageSectionsForNewProviderThread(managed);
+    };
     if (!managed.runtime) {
       if (!reasonAllowsPreservation) {
         managed.runtimeInvalidated = true;
         clearDeliveredDirectiveEpoch(managed);
+        restageIfThreadDropped();
       }
       return;
     }
@@ -30950,6 +30959,7 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
+    if (managed.runtimeInvalidated) restageIfThreadDropped();
     managed.acpReasoningEffortInvalidated = false;
     if (!preserveDeliveredDirectives) {
       clearDeliveredDirectiveEpoch(managed);
