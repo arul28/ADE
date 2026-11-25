@@ -142,7 +142,11 @@ export type CtoOpenWorkItem = {
 
 export type CtoUpdateNotesArgs = {
   scope: CtoNotesScope;
-  /** The whole notes file, one note per line. Over the cap is refused. */
+  /**
+   * The whole notes file, one note per line. Over the cap, the coldest notes
+   * the person did not just type move to the archive; with no archive, or
+   * when the new lines alone are over, the write is refused.
+   */
   text: string;
   /**
    * sha256 (hex) of the notes text the editor started from: the snapshot's

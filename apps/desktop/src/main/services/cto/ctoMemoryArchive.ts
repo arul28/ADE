@@ -160,6 +160,18 @@ function toEntry(row: Row, full: boolean): CtoArchiveEntry {
   };
 }
 
+/** SQLite's primary result code, from node:sqlite's `errcode` (extended codes carry it in the low byte). */
+function sqliteCode(error: unknown): number | null {
+  const code = (error as { errcode?: unknown } | null)?.errcode;
+  return typeof code === "number" ? code & 0xff : null;
+}
+
+/** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the file. */
+const isSqliteBusy = (error: unknown): boolean => sqliteCode(error) === 5 || sqliteCode(error) === 6;
+
+/** SQLITE_CORRUPT or SQLITE_NOTADB: the file is not a database this can read. */
+const isSqliteUnreadable = (error: unknown): boolean => sqliteCode(error) === 11 || sqliteCode(error) === 26;
+
 export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | null }) {
   const dbPath = path.join(args.dir, CTO_ARCHIVE_DB_FILENAME);
   let db: DatabaseSyncType | null = null;
@@ -208,9 +220,12 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       return db;
     } catch (error) {
       warn("cto_archive.open_failed", error, { dbPath });
-      // A file that exists but won't open is the only copy of what it holds:
-      // set it aside and start a new one, never delete it.
-      if (fs.existsSync(dbPath)) {
+      // Another process holds the file (the brain and a CLI on one project):
+      // the file is fine, so try again on the next call.
+      if (isSqliteBusy(error)) return null;
+      // A file that SQLite says is not a database is the only copy of what it
+      // holds: set it aside and start a new one, never delete it.
+      if (isSqliteUnreadable(error) && fs.existsSync(dbPath)) {
         const aside = `${dbPath}.unreadable-${Date.now()}`;
         try {
           for (const suffix of ["", "-wal", "-shm"]) {
@@ -237,40 +252,44 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   const add = (record: CtoArchiveRecord): number | null => {
     const handle = open();
     if (!handle) return null;
-    const text = redactSecrets(record.text.trim()).slice(0, ENTRY_MAX_CHARS);
-    if (!text) return null;
-    const scope = record.kind === "note" ? record.scope ?? "project" : null;
-    const key = textKey(record.kind, scope, text);
-    const now = nowIso();
-    const archivedAt = record.archivedAt?.trim() || now;
     try {
-      const existing = handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined;
-      if (existing) {
-        if (record.kind === "note") {
-          handle.prepare("UPDATE entries SET reason = ?, archived_at = ?, pinned_at = NULL WHERE id = ?")
-            .run(record.reason ?? null, archivedAt, existing.id);
-        }
-        return existing.id;
-      }
-      const result = handle.prepare(`
-        INSERT INTO entries(kind, scope, text, reason, source_session_id, source_at, source_label, archived_at, text_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        record.kind,
-        scope,
-        text,
-        record.reason ?? null,
-        record.sourceSessionId ?? null,
-        record.sourceAt ?? null,
-        record.sourceLabel ?? null,
-        archivedAt,
-        key,
-      );
-      return Number(result.lastInsertRowid);
+      return write(handle, record);
     } catch (error) {
       warn("cto_archive.add_failed", error, { kind: record.kind });
       return null;
     }
+  };
+
+  /** One entry in (see `add`); throws on a failed write so a batch rolls back. */
+  const write = (handle: DatabaseSyncType, record: CtoArchiveRecord): number | null => {
+    const text = redactSecrets(record.text.trim()).slice(0, ENTRY_MAX_CHARS);
+    if (!text) return null;
+    const scope = record.kind === "note" ? record.scope ?? "project" : null;
+    const key = textKey(record.kind, scope, text);
+    const archivedAt = record.archivedAt?.trim() || nowIso();
+    const existing = handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined;
+    if (existing) {
+      if (record.kind === "note") {
+        handle.prepare("UPDATE entries SET reason = ?, archived_at = ?, pinned_at = NULL WHERE id = ?")
+          .run(record.reason ?? null, archivedAt, existing.id);
+      }
+      return existing.id;
+    }
+    const result = handle.prepare(`
+      INSERT INTO entries(kind, scope, text, reason, source_session_id, source_at, source_label, archived_at, text_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.kind,
+      scope,
+      text,
+      record.reason ?? null,
+      record.sourceSessionId ?? null,
+      record.sourceAt ?? null,
+      record.sourceLabel ?? null,
+      archivedAt,
+      key,
+    );
+    return Number(result.lastInsertRowid);
   };
 
   /**
@@ -283,9 +302,12 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     if (!records.length) return 0;
     let added = 0;
     try {
-      handle.exec("BEGIN");
+      // IMMEDIATE takes the write lock first (waiting on busy_timeout): a
+      // read that later becomes a write fails at once when another process
+      // wrote in between.
+      handle.exec("BEGIN IMMEDIATE");
       const before = (handle.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
-      for (const record of records) add(record);
+      for (const record of records) write(handle, record);
       added = (handle.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n - before;
       handle.exec("COMMIT");
     } catch (error) {
@@ -454,7 +476,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
         INSERT INTO note_heat(scope, note_key, last_used_at) VALUES (?, ?, ?)
         ON CONFLICT(scope, note_key) DO UPDATE SET last_used_at = excluded.last_used_at
       `);
-      handle.exec("BEGIN");
+      handle.exec("BEGIN IMMEDIATE");
       for (const row of rows) upsert.run(row.scope, row.key, row.at);
       handle.exec("COMMIT");
     } catch (error) {

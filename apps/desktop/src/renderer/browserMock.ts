@@ -324,6 +324,24 @@ const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
     v;
+
+/** The CTO's notes in the browser preview; an edit stays until reload. */
+const mockCtoNotes: Record<"project" | "user", string> = {
+  project: [
+    "We release desktop builds from tagged commits on main.",
+    "The team prefers concise status updates with next actions.",
+    "Current focus: hardening the mobile sync transport.",
+  ].join("\n"),
+  user: "Prefers a short Brief at the top of each PR.",
+};
+const mockCtoMemorySnapshot = () => {
+  const bytes = (text: string) => new TextEncoder().encode(text).length;
+  return {
+    memory: mockCtoNotes.project, memoryBytes: bytes(mockCtoNotes.project), memoryLimitBytes: 4096,
+    userNotes: mockCtoNotes.user, userNotesBytes: bytes(mockCtoNotes.user), userNotesLimitBytes: 2048,
+    openWork: [], notesOverflowArchives: true, updatedAt: new Date().toISOString(),
+  };
+};
 /** A failed built-in run: the "Clean up merged lanes" template run by hand. */
 const BROWSER_MOCK_FAILED_RUN = {
   id: "run-2",
@@ -9553,20 +9571,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         completedSteps: ["identity"],
         completedAt: now,
       }),
-      getMemory: resolved({
-        memory: [
-          "## Facts",
-          "- We ship desktop releases from tagged commits on main.",
-          "- The team prefers concise status updates with next actions.",
-          "- Current focus: hardening the mobile sync transport.",
-        ].join("\n"),
-        updatedAt: now,
-      }),
-      updateNotes: resolvedArg({
-        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
-        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
-        updatedAt: now,
-      }),
+      getMemory: async () => mockCtoMemorySnapshot(),
+      updateNotes: async (args: { scope: "project" | "user"; text: string }) => {
+        mockCtoNotes[args.scope] = args.text;
+        return mockCtoMemorySnapshot();
+      },
       updateOpenWork: resolvedArg({
         memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
         userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
