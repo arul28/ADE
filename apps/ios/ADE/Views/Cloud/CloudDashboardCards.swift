@@ -345,6 +345,11 @@ struct CloudHero: View {
       return ("Keep going", used > 0 ? "\(words.amount(used)) extra this month" : "Extra \(words.unit), billed after use")
     }
     if account.plan == "free" {
+      // Held free credits (GitHub check, or refused here) don't come back at the reset: say what clears the hold.
+      if freeHoursHeld(account) {
+        let wait = "cloud computers wait until the free plan's check clears, or you pick a plan"
+        return ("Pause", (account.earnedHours?.leftMilli ?? 0) > 0 ? "Earned \(words.unit) run them first; then \(wait)" : "C" + wait.dropFirst())
+      }
       // Free with sponsored cards off rates Small too: then every computer pauses.
       return ("Pause", cloudSmallTierUsingHours(account) != nil ? "Cloud computers pause until next month" : "Bigger computers pause until next month")
     }
