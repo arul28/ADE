@@ -1977,7 +1977,10 @@ One busy list, `decideCloudBusy` in
   does an edit, tick or delete of a comment the computer already has. The
   send that carries comments applies the changes and hands the new ones to
   the computer first, then sends; the host builds the review block as for
-  any comment. Other devices see them only after that send. See
+  any comment. Once the computer is awake, any send hands them over (so a
+  delete of the last comment reaches it with an ordinary message); while it
+  rests, an ordinary message goes to the queue without waiting for the wake.
+  Other devices see them only after that send. See
   [chat › thread comments](../chat/README.md).
 - **Files wait on the device.** A file pasted, dropped or picked into a chat
   whose computer rests stays in the window that took it (desktop and ADE

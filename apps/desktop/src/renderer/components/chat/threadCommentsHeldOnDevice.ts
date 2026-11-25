@@ -320,7 +320,8 @@ export function threadCommentChangeHeldOnDevice(sessionId: string, commentId: st
 /**
  * Keeps an edit or a tick of a comment the host has on this device, while the
  * chat's computer rests: writing it there would wake it. Shown at once; the
- * next send that carries comments applies it there first
+ * next send that carries comments (or any send once the computer is awake,
+ * `prepareDeviceHeldForSend`) applies it there first
  * (`handOverHeldThreadComments`), so the agent gets the same review block. A
  * change back to what the host has drops it. `hostComments` is the host's
  * latest list for the chat. Throws a sentence when it can't; nothing is sent.
@@ -342,10 +343,16 @@ export function holdChangeAgainst(
   const includeInNextSend = typeof patch.includeInNextSend === "boolean"
     ? patch.includeInNextSend
     : guestTextChanged ? false : previous?.includeInNextSend;
+  const heldBody = body !== undefined && body !== host.body ? body : undefined;
+  // The host unticks a guest's comment when it takes new text, so with new
+  // text held the tick is always written out, even when it matches the
+  // host's tick now: a tick made after the edit still reaches the host.
+  const guestBodyHeld = host.author?.kind === "guest" && heldBody !== undefined;
+  const tick = guestBodyHeld ? includeInNextSend ?? false : includeInNextSend;
   const change: HeldChange = {
     commentId,
-    ...(body !== undefined && body !== host.body ? { body } : {}),
-    ...(includeInNextSend !== undefined && includeInNextSend !== host.includeInNextSend ? { includeInNextSend } : {}),
+    ...(heldBody !== undefined ? { body: heldBody } : {}),
+    ...(tick !== undefined && (guestBodyHeld || tick !== host.includeInNextSend) ? { includeInNextSend: tick } : {}),
   };
   const others = chat.changes.filter((entry) => entry.commentId !== commentId);
   const changed = change.body !== undefined || change.includeInNextSend !== undefined;
@@ -356,7 +363,8 @@ export function holdChangeAgainst(
 /**
  * Deletes a comment the host has, on this device, while the chat's computer
  * rests: gone from the list at once, deleted there at the next send that
- * carries comments. It rides no send meanwhile. `host` is the host's latest
+ * carries comments, or any send once the computer is awake. It rides no send
+ * meanwhile. `host` is the host's latest
  * list for the chat.
  */
 export function holdDeleteAgainst(
@@ -373,7 +381,7 @@ export function holdDeleteAgainst(
   return { deleted: true };
 }
 
-/** Whether a send that carries comments must hand some over first. Cheap: every such send asks. */
+/** Whether a send must hand some over first (`prepareDeviceHeldForSend` says which sends ask). Cheap. */
 export function threadCommentsHeldOnDevice(sessionId: string): boolean {
   const chat = heldChat(sessionId);
   return chat.gone.length > 0 || chat.changes.length > 0 || chat.comments.some((comment) => comment.includeInNextSend);

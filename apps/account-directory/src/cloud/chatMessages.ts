@@ -25,7 +25,7 @@ import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, laun
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
 import { cloudSizeForTier, type CloudSize } from "./plans";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
-import { logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
+import { handOverQueuedMessagesStatements, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
 import { cliSessionCopy } from "./sessionCopies";
 import { MOVE_HOLDS_MESSAGES_SQL, MOVE_JOB_KIND, moveMessageRouteOf } from "./moves";
@@ -677,18 +677,40 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
     if (!inserted) return fail("chat_moved", "This chat moved to another machine just as the message was sent. Send it again.", 409);
     const { row, created } = inserted;
     // A move holds it: nothing wakes the old computer or asks it to send, and the move hands it on.
-    if (!held) {
-      const work = deps.wake.wakeAndDrain(computer).catch((error: unknown) => {
-        logCloud("cloud.chat_message_wake_failed", { userId, instanceId: computer.instance_id, error: error instanceof Error ? error.message : "unknown" });
+    const askTo = held ? await computerAfterHold(env, userId, chat, computer, now) : computer;
+    if (askTo) {
+      const work = deps.wake.wakeAndDrain(askTo).catch((error: unknown) => {
+        logCloud("cloud.chat_message_wake_failed", { userId, instanceId: askTo.instance_id, error: error instanceof Error ? error.message : "unknown" });
       });
       if (deps.waitUntil) deps.waitUntil(work);
       else await work;
     }
-    const wake: CloudWakeOutcome = { state: checked.state };
+    const wake: CloudWakeOutcome = { state: held && askTo ? "awake" : checked.state };
     logCloud("cloud.chat_message_queued", { userId, instanceId: computer.instance_id, wake: wake.state });
     return json({ message: await messageOf(env, keys, row), wake } satisfies CloudChatMessageAddResult, created ? 201 : 200);
   }
   return await sendThroughLaunch(env, keys, userId, chat, input, deps);
+}
+
+/**
+ * A held send's row is written, and the move may have stopped holding it
+ * meanwhile: a cancel gave the old computer the lane back and asked it to
+ * send what was held, or the new computer took the lane and the last
+ * hand-over ran. Nothing would ask for this row then. The route is read
+ * again: while the move still holds it, null (the move hands it on). Else it
+ * goes where the lane is now, and the computer there is returned to be asked
+ * to send it, only when it runs: an asleep one sends it at its next wake, as
+ * the move's own cancel leaves it (`sendHeldOnSource`), since a held send ran
+ * none of the wake's checks.
+ */
+async function computerAfterHold(env: CloudEnv, userId: string, chat: QueueTarget, heldOn: ComputerRow, now: number): Promise<ComputerRow | null> {
+  const after = await queueComputerOf(env, userId, chat);
+  if (after.held || !after.computer) return null;
+  if (after.computer.instance_id !== heldOn.instance_id) {
+    await env.DB.batch(handOverQueuedMessagesStatements(env, { userId, fromInstanceId: heldOn.instance_id, toInstanceId: after.computer.instance_id, now }));
+  }
+  logCloud("cloud.chat_message_hold_ended", { userId, instanceId: after.computer.instance_id, status: after.computer.status });
+  return after.computer.status === "running" && after.computer.idle_claimed_at == null ? after.computer : null;
 }
 
 /**

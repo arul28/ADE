@@ -22,9 +22,13 @@ function notReached(what: "files" | "comments", error: unknown): Error {
  *   earlier try of this send is not copied again.
  * - Comments kept here, and edits, ticks and deletes of the host's comments
  *   (`threadCommentsHeldOnDevice.ts`), are handed to its host, so it builds
- *   the same review block as for any comment. Only for a send that carries
- *   the chat's comments, and before its exclusion list is read, which names
- *   what stays here.
+ *   the same review block as for any comment, before the send's exclusion
+ *   list is read, which names what stays here. A send that carries the
+ *   chat's comments always hands them over. Any other send does too while
+ *   the computer is awake, so a delete or untick of the last comment reaches
+ *   the host and every other device; while it rests such a send goes to the
+ *   account's queue without waiting for the wake, and they go with the first
+ *   send once it is awake.
  *
  * Throws a sentence when either can't reach the machine: nothing is sent,
  * and each file and comment that did not go stays here. `stagedHeldPaths`
@@ -41,6 +45,8 @@ export async function prepareDeviceHeldForSend(args: {
   attachments: AgentChatFileRef[];
   /** The send carries the chat's thread comments. */
   carriesComments: boolean;
+  /** The chat's ADE Cloud computer rests now (`ChatRuntimeScope.machineRests`). */
+  machineRests: boolean;
 }): Promise<{ attachments: AgentChatFileRef[]; stagedHeldPaths: string[]; commentsHandedOver: boolean }> {
   const { api, sessionId, pin } = args;
   const reach = sessionId ? chatSendReach(api) : null;
@@ -60,7 +66,9 @@ export async function prepareDeviceHeldForSend(args: {
     }
   }
 
-  const commentsHandedOver = Boolean(sessionId && args.carriesComments && threadCommentsHeldOnDevice(sessionId));
+  const commentsHandedOver = Boolean(
+    sessionId && (args.carriesComments || !args.machineRests) && threadCommentsHeldOnDevice(sessionId),
+  );
   if (sessionId && commentsHandedOver) {
     try {
       await handOverHeldThreadComments(sessionId, pin, api.threadComments, onSendMachine);

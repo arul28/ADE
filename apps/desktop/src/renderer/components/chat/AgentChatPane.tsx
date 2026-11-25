@@ -6061,6 +6061,8 @@ export function AgentChatPane({
   const chatMachineEntry = useMachineEntryForBinding(chatRuntimePin);
   const { computers: chatCloudLaneComputers } = useAdeCloudLaneComputers();
   const chatComputerResting = chatMachineEntry != null && machineIsCloudResting(chatMachineEntry, chatCloudLaneComputers);
+  const chatComputerRestingRef = useRef(chatComputerResting);
+  chatComputerRestingRef.current = chatComputerResting;
   // A size change or a move of the chat's ADE Cloud lane, while it runs: ADE
   // on the lane's computer stops for minutes (a move replaces the computer),
   // so a direct send then would fail, or start a turn the change cuts. The
@@ -17485,6 +17487,7 @@ export function AgentChatPane({
           : draftExecutionBindingRef.current,
         attachments: attachmentsSnapshot,
         carriesComments: includeThreadComments && threadCommentsSessionAtSend != null,
+        machineRests: chatComputerRestingRef.current,
       });
       if (deviceHeld.stagedHeldPaths.length) {
         for (const path of deviceHeld.stagedHeldPaths) sentHeldAttachmentPathsRef.current.add(path);

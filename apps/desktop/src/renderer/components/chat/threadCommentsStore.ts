@@ -42,8 +42,9 @@ import {
  * Another keeps a resting ADE Cloud computer asleep: a comment written while
  * the chat's computer rests, and an edit, a tick or a delete of one the host
  * already has, stays on this device (`threadCommentsHeldOnDevice.ts`), shows
- * here at once, and is handed over by the next send that carries comments
- * (`handOverHeldThreadComments`).
+ * here at once, and is handed over by the next send that carries comments,
+ * or by any send once the computer is awake (`handOverHeldThreadComments`,
+ * `prepareDeviceHeldForSend`).
  */
 const EMPTY: ChatThreadComment[] = [];
 const bySession = new Map<string, ChatThreadComment[]>();
