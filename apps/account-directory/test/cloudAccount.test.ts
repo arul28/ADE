@@ -5434,8 +5434,11 @@ describe("sponsored cards", () => {
     goLive();
     // The Index answers from where the person last looked: their US state, kept with the look.
     expect((await index()).pick).toMatchObject({ name: "Neon" });
-    // A look from California, where the notice's yes doesn't hold, stops it at once.
+    // A look from California, where the notice's yes doesn't hold, stops it at once, for every computer of the account.
+    seedComputer(harness, { instance_id: SECOND });
+    expect(await from(US, "POST", "/cloud/sponsored/seen", { instanceId: SECOND, device: DEVICE }).then((response) => response.json())).toEqual({ ok: true });
     expect(await seen(undefined, "US-CA")).toEqual({ ok: false });
+    expect(harness.rows("select instance_id from cloud_sponsored_viewers where user_id = ?", OWNER)).toEqual([]);
     expect(await index()).toMatchObject({ pick: null });
     expect(await seen()).toEqual({ ok: true });
     expect(await seen({ "sec-gpc": "1" })).toEqual({ ok: false });
@@ -5450,6 +5453,10 @@ describe("sponsored cards", () => {
     expect(await state(US, { "sec-gpc": "1" })).toMatchObject({ consent: "granted" });
     expect(await seen({ "sec-gpc": "1" })).toEqual({ ok: true });
     expect(harness.row("select consent, source, gpc from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "granted", source: "answer", gpc: 1 });
+    // A card asked for from such a browser over a yes given without it opts the account out too, not just that card.
+    harness.exec("update cloud_sponsored_consent set gpc = 0 where user_id = ?", OWNER);
+    expect(await (await from(US, "POST", "/cloud/sponsored/ad", adBody({ turnId: "turn-3" }), { "sec-gpc": "1" })).json()).toEqual({ ad: null, reason: "consent" });
+    expect(saved()).toEqual({ consent: "declined", source: "gpc", country: "US" });
 
     // Turned off in the US: Small uses credits, a later notice never overwrites it, and it holds a year, whatever the switch does.
     expect(await choose(US, "declined")).toBe(200);
