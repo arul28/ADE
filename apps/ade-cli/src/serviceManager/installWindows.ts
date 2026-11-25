@@ -1770,10 +1770,11 @@ async function installWindowsServiceImpl(
   }
   // A channel brain no supervisor runs (the CLI's fallback start) is reaped
   // below as stale, so it counts too: a command inside it must not end it.
-  const unsupervisedBrains = listStaleChannelServePids(run, {
+  const staleMatch = {
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
     primarySocketPath: runningSocketPath,
-  }, "win32");
+  };
+  const unsupervisedBrains = listStaleChannelServePids(run, staleMatch, "win32");
   const selfBlock = windowsSelfMutationRefusal(run, {
     action: "install",
     serviceName,
@@ -1863,23 +1864,16 @@ async function installWindowsServiceImpl(
   // before loading the replacement, because a brain that outlived its
   // registration keeps the channel socket and the sync-host lock hostage. On
   // Windows this scan used to shell out to `ps -axo`, which does not exist
-  // there, so it silently found nothing and the reap never happened. The scan
-  // ran before anything was stopped (the self-mutation check needs it), so the
-  // brains the startup removal and the predecessor stop already ended are skipped.
-  const alreadyStopped = new Set([
-    startupPlan.brain?.runtimePid,
-    ...startupPlan.predecessors.flatMap((group) => group.children.map((child) => child.pid)),
-  ]);
+  // there, so it silently found nothing and the reap never happened. Scanned
+  // again rather than reusing the list the self-mutation check read: a
+  // supervisor can start a new brain between that scan and its own stop, and
+  // only a scan after the stops sees it.
+  const staleScan = listStaleChannelServePids(run, staleMatch, "win32");
   // A stale brain is force-killed only once it is proven to be this channel's: it
   // must name the channel socket itself, or answer on that endpoint. Any other
   // stale candidate is left running and reported, not claimed as taken over.
-  const staleMatch = {
-    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: runningSocketPath,
-  };
   const unverifiedStalePids: number[] = [];
-  const stalePids = unsupervisedBrains.ok ? unsupervisedBrains.pids : [];
-  for (const stalePid of stalePids.filter((pid) => !alreadyStopped.has(pid))) {
+  for (const stalePid of staleScan.ok ? staleScan.pids : []) {
     const outcome = await stopWindowsBrainGracefully(run, {
       socketPath: runningSocketPath,
       runtimePid: stalePid,

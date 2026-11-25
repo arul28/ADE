@@ -880,6 +880,7 @@ jobs:
           src/bootstrap.test.ts
           src/serviceManager/common.test.ts
           src/serviceManager/installWindows.test.ts
+          src/serviceManager/processAncestry.test.ts
           src/services/builtInBrowser/desktopBridgeClient.test.ts
           src/services/modelPickerStore.test.ts
           src/services/projects/machineLayout.test.ts

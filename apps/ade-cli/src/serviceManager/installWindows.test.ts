@@ -637,8 +637,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
@@ -691,6 +693,7 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
       staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
@@ -1052,8 +1055,10 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: stableLegacyAction, stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
@@ -1093,6 +1098,7 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
       staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
@@ -1228,8 +1234,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       // Both job-escaping handovers are unavailable, so the launch falls all the
@@ -1269,6 +1277,7 @@ describe("Windows background service helpers", () => {
       buildWindowsQueryTaskArgs(taskName),
       buildWindowsRunKeyQueryArgs(taskName),
       buildWindowsProcessCommandLineQueryArgs(),
+      buildWindowsProcessCommandLineQueryArgs(),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
       buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       buildWindowsWmiStartArgs(launcherPath),
@@ -1283,8 +1292,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: registration failed" },
     ]);
@@ -1304,6 +1315,7 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
       staleServeScanCall,
       expect.objectContaining({ command: windowsRegCommand(), args: expect.arrayContaining(["ADD"]) }),
     ]);
