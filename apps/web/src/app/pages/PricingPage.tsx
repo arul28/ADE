@@ -55,8 +55,8 @@ const OUTSIDE_AGENT_PLANS = PRICING_PLANS.filter((plan) => plan.outsideAgents);
 const NO_OUTSIDE_AGENT_PLANS = PRICING_PLANS.filter((plan) => !plan.outsideAgents);
 /** The extra unit's prices, one entry when every paid plan charges the same. */
 const EXTRA_PRICES = [...new Set(PAID_PLANS.map((plan) => plan.extraHourCents ?? 0))];
-/** The ADE Cloud iPhone joins the rate table only under credits, once it is on the site. */
-const PHONE_IN_CREDITS = UNIT.credits && CLOUD_PHONE_ON_WEBSITE;
+/** The ADE Cloud iPhone joins the rate table once it is on the site. */
+const PHONE_IN_CREDITS = CLOUD_PHONE_ON_WEBSITE;
 
 const days = (count: number): string => `${count} ${count === 1 ? "day" : "days"}`;
 /** Clock hours on a computer, which every mode counts in hours. */
@@ -620,7 +620,7 @@ function ExtraCard() {
               <div className="flex items-baseline justify-between">
                 <span className="text-[15px] text-white/75">{plan.name}</span>
                 <span className="text-[14px] text-white/50">
-                  <span className="font-display text-[24px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> {UNIT.credits ? "a credit" : "an hour"}
+                  <span className="font-display text-[24px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> a credit
                 </span>
               </div>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
@@ -731,7 +731,7 @@ function FaqSection() {
             Yes. {UNIT.smallUnlimited} Each one counts toward your plan's cloud computers, and it sleeps when work
             stops. {CLOUD_SMALL_FAIR_USE_SENTENCE}
           </FaqItem>
-          <FaqItem question={UNIT.credits ? "What is a credit?" : "What is an hour?"}>
+          <FaqItem question="What is a credit?">
             {UNIT.unitSentence} Free's {UNIT.count(FREE_PLAN.hours)} last {hoursOnSizesLine(FREE_PLAN.hours, ", ")}.
             A computer that is asleep uses no {UNIT.many}, and your {UNIT.many} start over each month.
           </FaqItem>

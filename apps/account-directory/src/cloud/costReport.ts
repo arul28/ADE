@@ -277,7 +277,7 @@ async function safetyReportLines(env: CloudEnv, day: string, dayStart: number): 
   return {
     lines: [
       `Sign-ups: ${row.signups} (counted from sign-ups with a recorded address).`,
-      `Cloud hours used: ${hours} across ${row.active_accounts} account${row.active_accounts === 1 ? "" : "s"}.`,
+      `Cloud credits used: ${hours} across ${row.active_accounts} account${row.active_accounts === 1 ? "" : "s"}.`,
       `Blocks: ${row.blocks_today} new, ${row.blocked_accounts} account${row.blocked_accounts === 1 ? "" : "s"} blocked in all. Abuse events: ${row.abuse_events}. Owner alerts sent: ${row.alerts_sent}.`,
     ],
     active: row.signups > 0 || row.blocks_today > 0 || row.abuse_events > 0 || row.alerts_sent > 0,

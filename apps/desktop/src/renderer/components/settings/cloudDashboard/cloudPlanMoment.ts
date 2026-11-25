@@ -53,8 +53,8 @@ export type CloudPlanMoment = {
   renewsAt: number;
   /** Free hours left before the upgrade that the new plan's fresh period replaced; null when none were. */
   replacedFreeMilli: number | null;
-  /** What the balance is called (`cloudUnitWords`): credits once the server sends `credits`. */
-  noun: "hours" | "credits";
+  /** What the balance is called (`cloudUnitWords`): credits. */
+  noun: "credits";
 };
 
 /** "Your 79.1 unused free hours were replaced by Plus's 300." when the upgrade replaced free hours; null otherwise. */

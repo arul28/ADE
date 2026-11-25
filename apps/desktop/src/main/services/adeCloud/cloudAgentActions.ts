@@ -432,7 +432,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     },
   ): Promise<{ counted: () => void; release: () => void; unattended: boolean; maker: CloudAgentMaker | null; choice: "confirm" | "alternative" }> => {
     const nothing = { counted: () => undefined, release: () => undefined, unattended: false, maker: null, choice: "confirm" as const };
-    const noChatToAsk = () => new CloudDeclined(`${card.title} uses hours or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
+    const noChatToAsk = () => new CloudDeclined(`${card.title} uses credits or deletes something, so it needs your yes, and ADE has no chat to ask you in. ${card.personPlace ?? "Run it from an ADE chat, or do it in ADE: Settings › ADE Cloud, the lane's row."}`);
     if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     // An app on ADE MCP has no chat to ask in: it is answered like a chat
@@ -513,7 +513,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         notice(`ADE said no to "${card.title}" in ${where}: ${why}`);
         throw new CloudDeclined(`${card.title}: declined. ${why} ${change}`.trim());
       };
-      if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses hours.");
+      if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that uses credits.");
       if (limits && card.shape && !cloudShapeWithin(card.shape, limits.maxShape)) {
         const max = cloudShapeById(limits.maxShape);
         refuse(`agents may pick up to ${max.label} on their own.`);

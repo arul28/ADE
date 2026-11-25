@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { capitalizeCloudPhrase, cloudCatalogOf, cloudHoursLeftMilli, formatCloudHours, type CloudAccountState } from "../../../shared/adeCloud";
+import { capitalizeCloudPhrase, cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
 import { cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
-import { CLOUD_HOURS_WORDS, cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { CLOUD_CREDIT_WORDS, cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
@@ -44,7 +44,7 @@ function waitText(move: boolean): string {
     : "About 2 minutes: the computer restarts at the new size. Your files and chats stay.";
 }
 
-function rateText(tier: CloudTier | null, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+function rateText(tier: CloudTier | null, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
   return tier ? cloudTierRateLabel(tier, words) : "";
 }
 
@@ -55,7 +55,7 @@ function hoursLeftOf(account: CloudAccountState | null): number | null {
 
 function hoursText(leftMilli: number | null, tier: CloudTier | null, words: CloudUnitWords): string | null {
   if (leftMilli == null || !tier || tier.multiplierMilli <= 0) return null;
-  return `${words.credits ? words.milli(leftMilli) : `${formatCloudHours(leftMilli)} h`} left is about ${cloudTierHoursAt(tier, leftMilli)} awake at this size.`;
+  return `${words.milli(leftMilli)} left is about ${cloudTierHoursAt(tier, leftMilli)} awake at this size.`;
 }
 
 export function CloudTierChangeCard({

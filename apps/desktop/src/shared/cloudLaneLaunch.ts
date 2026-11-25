@@ -140,11 +140,11 @@ export function cloudLaneStartBlock(
   const github = (account as Partial<CloudAccountState>).rules === "free" ? cloudFreePlanOf(account).github : undefined;
   const why = github && github.state !== "ok" ? github.sentence : null;
   if (cloudOutOfHours(account) && !extraHours?.enabled && (usesHours || why)) {
-    // The free plan's GitHub rules hold its hours: their sentence says why and what to do.
+    // The free plan's GitHub rules hold its credits: their sentence says why and what to do.
     return {
       code: "out_of_hours",
       message: why ?? (cloudSmallUsesHours(catalog) ? CLOUD_OUT_OF_HOURS_MESSAGE : `${CLOUD_OUT_OF_HOURS_MESSAGE} Small computers keep working.`),
-      short: why ? "Free hours wait on GitHub." : "Out of hours for this size.",
+      short: why ? "Free credits wait on GitHub." : "Out of credits for this size.",
     };
   }
   if (!options.newLane) return null;

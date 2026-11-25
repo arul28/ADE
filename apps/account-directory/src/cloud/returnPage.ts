@@ -139,7 +139,7 @@ function planFacts(plan: CloudPaidPlanId): string {
   const facts: Array<[string, string]> = [
     [String(terms.computerLimit), "cloud computers"],
     ["Unlimited", "Small computers"],
-    [hoursText(terms.includedMilli), "hours a month on a Medium"],
+    [hoursText(terms.includedMilli), "credits a month, one Medium hour each"],
   ];
   return `<ul class="facts">${facts.map(([value, label]) => `<li><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></li>`).join("")}</ul>`;
 }
@@ -153,7 +153,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         title: plan ? `You're on ADE Cloud ${CLOUD_PLANS[plan].label}` : "Thanks for buying ADE Cloud",
         eyebrow: "Payment complete",
         heading: plan ? `Thank you. You're on ${CLOUD_PLANS[plan].label}.` : "Thank you. Your plan is ready.",
-        lede: "It shows in ADE in a moment. Your hours start fresh today.",
+        lede: "It shows in ADE in a moment. Your credits start fresh today.",
         body: plan ? planFacts(plan) : "",
         tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours work"), tile(LINKS.billing, "card", "Manage billing")],
       };
@@ -170,7 +170,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
       return {
         title: "Card saved",
         eyebrow: "Card saved",
-        heading: "Your free hours are on.",
+        heading: "Your free credits are on.",
         lede: "You weren't charged. They show in ADE in a moment.",
         body: "",
         tiles: [tile(LINKS.firstLane, "lane", "Start your first cloud lane"), tile(LINKS.hours, "hours", "How hours work")],
@@ -180,7 +180,7 @@ function contentFor(kind: ReturnKind, plan: CloudPaidPlanId | null): Content {
         title: "Nothing changed",
         eyebrow: "No card saved",
         heading: "Nothing changed.",
-        lede: "You left before saving a card. Your free hours start when your GitHub account is 30 days old.",
+        lede: "You left before saving a card. Your free credits start when your GitHub account is 30 days old.",
         body: "",
         tiles: [tile(LINKS.hours, "hours", "How hours work")],
       };

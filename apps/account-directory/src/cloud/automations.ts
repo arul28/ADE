@@ -706,7 +706,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
     return failRun(env, { rule }, run.run_id, "ADE Cloud couldn't read your agent limits, so it didn't start an unattended run. It reads them again the next time ADE opens this project on one of your computers.", now, { email: true });
   }
   if (!limits.unattendedSpend) {
-    return failRun(env, { rule }, run.run_id, "Your agent limits say unattended agents ask before anything that uses hours, so ADE Cloud didn't start this run. Change it in Settings › ADE Cloud.", now, { email: true });
+    return failRun(env, { rule }, run.run_id, "Your agent limits say unattended agents ask before anything that uses credits, so ADE Cloud didn't start this run. Change it in Settings › ADE Cloud.", now, { email: true });
   }
   if (!withinShape(spec.sizeId, limits.maxShape)) {
     return failRun(env, { rule }, run.run_id, `This rule's computer is bigger than your agent limits allow (${limits.maxShape.replace("x", " CPU, ")} GB). Pick a smaller size or raise the limit in Settings › ADE Cloud.`, now, { email: true });

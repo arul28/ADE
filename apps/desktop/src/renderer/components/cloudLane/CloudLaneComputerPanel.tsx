@@ -90,12 +90,12 @@ export function CloudLaneComputerPanel({
           </ManageRow>
         ) : null}
         {life || cloudLaneMovesAvailable() ? (
-          <ManageRow icon={<Cpu size={14} />} title="Size" hint="More CPU and memory use hours faster.">
+          <ManageRow icon={<Cpu size={14} />} title="Size" hint="More CPU and memory use credits faster.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => setSizing(true)}>Change size</button>
           </ManageRow>
         ) : null}
         {awake ? (
-          <ManageRow icon={<Moon size={14} />} title="Sleep" hint="A sleeping computer uses no hours. A message wakes it.">
+          <ManageRow icon={<Moon size={14} />} title="Sleep" hint="A sleeping computer uses no credits. A message wakes it.">
             <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats)}>Put to sleep</button>
           </ManageRow>
         ) : null}
@@ -110,7 +110,7 @@ export function CloudLaneComputerPanel({
             </button>
           </ManageRow>
         ) : null}
-        <ManageRow icon={<ArrowSquareOut size={14} />} title="Disk and hours" hint="What uses its disk, and the account's hours.">
+        <ManageRow icon={<ArrowSquareOut size={14} />} title="Disk and credits" hint="What uses its disk, and the account's credits.">
           <button
             type="button"
             className="kit-btn kit-btn-ghost"

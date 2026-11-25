@@ -656,14 +656,11 @@ export type CloudPlanFacts = {
   outsideAgents?: boolean;
 };
 
-/** The offer, as every surface says it (`docs/plans/pricing-v2-and-gravity.md`). Never "0 hours". */
-export const CLOUD_SMALL_UNLIMITED_SENTENCE = "Unlimited Small computers. They never use your hours.";
+/** The offer, as every surface says it (`docs/plans/pricing-v2-and-gravity.md`). Never "0 credits". */
+export const CLOUD_SMALL_UNLIMITED_SENTENCE = "Unlimited Small computers. They never use your credits.";
 /** The small print beside it: the owner may act on a rare outlier. */
 export const CLOUD_SMALL_FAIR_USE_SENTENCE = "Small computers are for your own work and fall under fair use.";
-/** What one hour of the plan is: one hour on a Medium computer. */
-export const CLOUD_HOUR_UNIT_SENTENCE = "One hour is one hour on a Medium computer. Bigger sizes use more an hour.";
-
-/** What a credit buys, under credits (`CloudAccountState.credits`). */
+/** What a credit buys. */
 export const CLOUD_CREDIT_UNIT_SENTENCE = "A credit is an hour on a Medium computer or a minute on the ADE Cloud iPhone. Small computers use none.";
 
 /**
@@ -944,13 +941,13 @@ export const formatCloudFreeGithubDay = (at: number): string =>
 export function cloudFreeGithubSentence(state: CloudFreePlanGithubState, facts: { oldEnoughAt: number | null; plusIncludedMilli: number }): string | null {
   switch (state) {
     case "no_github":
-      return "Free hours need a GitHub account. Connect GitHub to start; ADE Cloud uses it to get your code.";
+      return "Free credits need a GitHub account. Connect GitHub to start; ADE Cloud uses it to get your code.";
     case "too_new":
       return facts.oldEnoughAt != null
-        ? `Your GitHub account is new, so free hours start on ${formatCloudFreeGithubDay(facts.oldEnoughAt)}. Add a card (no charge) to start now.`
-        : "Your GitHub account is new, so free hours start when it is 30 days old. Add a card (no charge) to start now.";
+        ? `Your GitHub account is new, so free credits start on ${formatCloudFreeGithubDay(facts.oldEnoughAt)}. Add a card (no charge) to start now.`
+        : "Your GitHub account is new, so free credits start when it is 30 days old. Add a card (no charge) to start now.";
     case "used":
-      return `This GitHub account already has a free plan on another ADE account. Plus gives you ${Math.round(facts.plusIncludedMilli / 1000).toLocaleString("en-US")} hours a month.`;
+      return `This GitHub account already has a free plan on another ADE account. Plus gives you ${Math.round(facts.plusIncludedMilli / 1000).toLocaleString("en-US")} credits a month.`;
     case "checking":
       return "ADE couldn't check your GitHub account just now. It tries again in a few minutes.";
     default:
@@ -970,7 +967,7 @@ export type CloudSustainedCpuReport = { since: number; minutes: number; cpuPerce
 
 /** The dashboard's sentence for a refused free plan; the server passes `CLOUD_PLANS.plus.includedMilli` (`plans.ts`). */
 export const cloudFreePlanRefusedSentence = (plusIncludedMilli: number): string =>
-  `This computer already used another account's free hours. Plus gives you ${Math.round(plusIncludedMilli / 1000).toLocaleString("en-US")} hours a month.`;
+  `This computer already used another account's free credits. Plus gives you ${Math.round(plusIncludedMilli / 1000).toLocaleString("en-US")} credits a month.`;
 
 export type CloudReferralSummary = {
   /** This account's invite code and link. */
@@ -1094,7 +1091,7 @@ export function timedWakesCancelledSentence(notice: Pick<CloudTimedWakesCancelle
   const what = notice.count === 1 ? "A timed wake-up" : `${notice.count} timed wake-ups`;
   return notice.reason === "over_plan_disk"
     ? `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because your computers hold more disk than the free plan has, so they can't wake. Once you delete a computer or get Plus, each computer sets its next timed wake-up again the next time it runs.`
-    : `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because you're out of ADE Cloud hours, so your computers can't wake. When your hours reset or you add hours, each computer sets its next timed wake-up again the next time it runs.`;
+    : `${what} on your ADE Cloud computers won't run (a chat's scheduled wake-up or an automation's schedule), because you're out of ADE Cloud credits, so your computers can't wake. When your credits reset or you add credits, each computer sets its next timed wake-up again the next time it runs.`;
 }
 
 /** Each plan's name inside a sentence ("To fit the free plan", "Plus allows ..."): the server's emails and ADE say the same. */
@@ -2080,8 +2077,8 @@ export function cloudAutoSizeSentence(why: CloudLaunchAutoSize["why"] | "checkin
   const { fromMemoryGb, toLabel } = CLOUD_AUTO_SIZE;
   if (why === "remembered") return `${toLabel}: this repo's setup needed more than ${fromMemoryGb} GB before.`;
   if (why === "checking") return `Setup needed more than this computer's memory. ADE is checking whether it can move it to ${toLabel}…`;
-  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so ADE is moving this computer to ${toLabel}, which uses hours. It restarts for a moment, then setup runs again.`;
-  return `Setup needed more than ${fromMemoryGb} GB, so ADE moved this computer to ${toLabel}, which uses hours.`;
+  if (why === "moving") return `Setup needed more than ${fromMemoryGb} GB, so ADE is moving this computer to ${toLabel}, which uses credits. It restarts for a moment, then setup runs again.`;
+  return `Setup needed more than ${fromMemoryGb} GB, so ADE moved this computer to ${toLabel}, which uses credits.`;
 }
 
 /**
@@ -2098,7 +2095,7 @@ export function cloudAutoSizeRefusalSentence(reason: CloudAutoSizeRefusal): stri
   const { toLabel } = CLOUD_AUTO_SIZE;
   switch (reason) {
     case "picked":
-      return `Small was picked for this launch, so ADE didn't move it up. Start it again on ${toLabel}, which uses hours.`;
+      return `Small was picked for this launch, so ADE didn't move it up. Start it again on ${toLabel}, which uses credits.`;
     case "capped":
       return `Your agent limits keep agents nobody watches at Small, so ADE didn't move it up. Start it again on ${toLabel}, or raise the limit in Settings › ADE Cloud.`;
     case "moved":

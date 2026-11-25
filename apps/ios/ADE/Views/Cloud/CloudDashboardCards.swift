@@ -243,7 +243,7 @@ struct CloudHero: View {
     let hours = account.hours
     let notes = cloudHoursNotes(account, now: store.now)
     return VStack(alignment: .leading, spacing: 8) {
-      Text(words.leftTitle(smallUsesBalance: cloudSmallTierUsingHours(account) != nil))
+      Text(words.leftTitle)
         .font(.system(size: 12))
         .foregroundStyle(CloudBrandColor.skyText2)
         .fixedSize(horizontal: false, vertical: true)
@@ -264,21 +264,17 @@ struct CloudHero: View {
           .fixedSize(horizontal: false, vertical: true)
       }
       .accessibilityElement(children: .combine)
-      if words.credits {
-        CloudCreditsBar(account: account)
-        // The same number as the big one above, so the two never disagree.
-        if let line = words.leftBuys(
-          hours.leftMilli,
-          medium: store.tiers.first { $0.id == "medium" },
-          phoneOn: account.phoneOn
-        ) {
-          Text(line)
-            .font(.system(size: 12.5))
-            .foregroundStyle(CloudBrandColor.skyText)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      } else {
-        hoursBar(hours)
+      CloudCreditsBar(account: account)
+      // The same number as the big one above, so the two never disagree.
+      if let line = words.leftBuys(
+        hours.leftMilli,
+        medium: store.tiers.first { $0.id == "medium" },
+        phoneOn: account.phoneOn
+      ) {
+        Text(line)
+          .font(.system(size: 12.5))
+          .foregroundStyle(CloudBrandColor.skyText)
+          .fixedSize(horizontal: false, vertical: true)
       }
       ForEach(notes.filter { $0.tone == .warn }, id: \.self) { note in
         Text(note.text)
@@ -300,24 +296,6 @@ struct CloudHero: View {
         .padding(.top, 2)
       }
     }
-  }
-
-  /// Hours: the share left, filled; it turns to the pressure colour under a fifth.
-  private func hoursBar(_ hours: CloudPhoneAccount.Hours) -> some View {
-    let percentLeft = hours.includedMilli > 0 ? Double(hours.leftMilli) / Double(hours.includedMilli) * 100 : 0
-    let level = ADEUsagePressure.color(percentLeft: percentLeft, fallback: CloudBrandColor.violet)
-    let calm = percentLeft > 20
-    return GeometryReader { geo in
-      ZStack(alignment: .leading) {
-        Capsule().fill(Color.white.opacity(0.12))
-        Capsule()
-          .fill(calm ? AnyShapeStyle(CloudBrandColor.fill) : AnyShapeStyle(level))
-          .frame(width: max(0, min(1, percentLeft / 100)) * geo.size.width)
-          .shadow(color: calm ? CloudBrandColor.roseLight.opacity(0.45) : .clear, radius: 6)
-      }
-    }
-    .frame(height: 6)
-    .accessibilityHidden(true)
   }
 
   /// The computers and Small, side by side; one over the other at the

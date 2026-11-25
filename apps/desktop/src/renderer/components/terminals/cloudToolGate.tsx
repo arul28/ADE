@@ -142,9 +142,9 @@ export function CloudToolGate({
   if (outOfHours && down) {
     return restingGate({
       id: "cloud-tool-out-of-hours",
-      title: "Out of hours",
-      detail: `${name} needs ADE Cloud hours to wake at its size. They come back when your hours reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
-      actions: [{ label: "Plans and hours", onClick: openCloudPlanSettings }],
+      title: "Out of credits",
+      detail: `${name} needs ADE Cloud credits to wake at its size. They come back when your credits reset${cloudSmallUsesHours(cloudCatalogOf(account)) ? "." : "; a Small computer never uses them."}`,
+      actions: [{ label: "Plans and credits", onClick: openCloudPlanSettings }],
     });
   }
   const comingUp = waking || box.state === "starting";

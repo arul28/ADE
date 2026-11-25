@@ -17,7 +17,9 @@ import {
   useCloudPhoneIdleCountdown,
   useCloudPhoneLive,
 } from "../../state/cloudPhoneLive";
+import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useTabCopyPin } from "../../state/repositoryScope";
+import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { InlineErrorNotice } from "../ui/notice/InlineErrorNotice";
@@ -26,7 +28,7 @@ import { HeaderSheet } from "./HeaderSheet";
 /**
  * The ADE Cloud iPhone in the top bar, only while one runs or starts: a phone
  * icon (a dot for its state) that opens what the phone is doing: its model,
- * how long it has been on, the plan's minutes left, when it stops with nothing
+ * how long it has been on, the credits left, when it stops with nothing
  * to do, and Keep on / Stop. One phone per account, so it is the same phone
  * whichever chat or machine started it.
  *
@@ -122,6 +124,8 @@ function CloudIphoneDetails({
   const live = useCloudPhoneLive();
   const phone = live.status?.phone ?? null;
   const minutes = live.status?.minutes ?? null;
+  // The iPhone draws from the account's credits (account level, no pin).
+  const words = cloudUnitWords(useCloudAccount());
   const [busy, setBusy] = useState<"stop" | "keep" | null>(null);
   const [error, setError] = useState<string | null>(null);
   if (!phone) return null;
@@ -147,7 +151,7 @@ function CloudIphoneDetails({
     { label: "State", value: starting ? (phone.queueUntil ? "Waiting for a free phone" : "Starting") : "On" },
   ];
   if (!starting && phone.readyAt) rows.push({ label: "On for", value: `${formatPhoneSpan(now - phone.readyAt, false)} of ${CLOUD_PHONE_MAX_MINUTES / 60} h at most` });
-  if (left != null && minutes) rows.push({ label: "Plan minutes", value: `${left} of ${minutes.included} left` });
+  if (left != null && minutes) rows.push({ label: "Credits left", value: `${words.milli(left * words.phoneMilliPerMinute)}, about ${left} min` });
   if (!starting && stopAt != null) {
     rows.push({ label: "Idle stop", value: stopping ? "due now" : `in ${formatPhoneSpan(stopAt - now, warn)} with no input`, warn });
   }

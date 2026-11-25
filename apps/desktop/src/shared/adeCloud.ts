@@ -28,7 +28,7 @@ import type {
 } from "../../../account-directory/src/cloud/contract";
 import { CLOUD_INVITE_REFUSAL_REASONS, CLOUD_PLAN_SENTENCE_NAMES, CLOUD_SMALL_UNLIMITED_SENTENCE, formatCloudCents } from "../../../account-directory/src/cloud/contract";
 import { cloudCatalog } from "../../../account-directory/src/cloud/plans";
-import { CLOUD_HOURS_WORDS, cloudUnitWords, formatCloudHours, type CloudUnitWords } from "./cloudUnitWords";
+import { CLOUD_CREDIT_WORDS, cloudUnitWords, formatCloudHours, type CloudUnitWords } from "./cloudUnitWords";
 import type {
   CloudEarnedHours,
   CloudFreePlan,
@@ -78,7 +78,6 @@ export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, t
 export {
   CLOUD_COMPUTER_LIMIT_CODE,
   CLOUD_CREDIT_UNIT_SENTENCE,
-  CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_OUTSIDE_AGENT_FREE_CODE,
   CLOUD_OUTSIDE_AGENT_FREE_MESSAGE,
   CLOUD_SMALL_FAIR_USE_SENTENCE,
@@ -278,26 +277,25 @@ export function cloudHoursRate(kind: CloudMachineKind, shape: CloudShapeId, cata
 }
 
 /**
- * "uses no hours" for Small, "uses 2.5 hours an hour" for the rest: a size's
+ * "uses no credits" for Small, "uses 2.5 credits an hour" for the rest: a size's
  * rate in words, never a multiplier, lowercase to sit inside a sentence
  * (`capitalizeCloudPhrase` where it starts one). Where the account's hours
  * are known, surfaces say how long they last instead (`cloudTierHoursAt`).
  */
-export function formatCloudHoursRate(rate: number, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+export function formatCloudHoursRate(rate: number, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
   return words.rate(rate);
 }
 
-/** A lowercase phrase as the start of a sentence: "Uses 2.5 hours an hour". */
+/** A lowercase phrase as the start of a sentence: "Uses 2.5 credits an hour". */
 export function capitalizeCloudPhrase(phrase: string): string {
   return phrase.charAt(0).toUpperCase() + phrase.slice(1);
 }
 
-/** What a size uses of the plan, as one sentence for approval cards: Small never uses hours. */
-export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+/** What a size uses of the plan, as one sentence for approval cards: Small never uses credits. */
+export function describeCloudHoursUse(kind: CloudMachineKind, shape: CloudShapeId, catalog?: CloudCatalog, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
   const rate = cloudHoursRate(kind, shape, catalog);
   if (!(rate > 0)) return `Small computers never use your ${words.noun}.`;
-  if (words.credits) return `It uses about ${words.count(rate)} for each hour it's awake, and none while it sleeps.`;
-  return `It uses about ${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"} of your plan for each hour it's awake, and none while it sleeps.`;
+  return `It uses about ${words.count(rate)} for each hour it's awake, and none while it sleeps.`;
 }
 
 /**
@@ -319,18 +317,13 @@ export function cloudSmallUsesHours(catalog: Pick<CloudCatalog, "sizes">): boole
 
 /**
  * Small's line for this account: "Unlimited Small computers. They never use
- * your hours." or, when its Small uses hours, "Small computers use half an
- * hour of your hours for each hour awake." Credits mode says credits.
+ * your credits." or, when its Small uses credits, "Small computers use half a
+ * credit for each hour awake."
  */
-export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">, words: CloudUnitWords = CLOUD_HOURS_WORDS): string {
+export function cloudSmallHoursSentence(catalog: Pick<CloudCatalog, "sizes">, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
   const rate = cloudSmallRateMilli(catalog) / 1000;
-  if (words.credits) {
-    if (!(rate > 0)) return "Unlimited Small computers. They never use your credits.";
-    return `Small computers use ${rate === 0.5 ? "half a credit" : words.count(rate)} for each hour awake.`;
-  }
   if (!(rate > 0)) return CLOUD_SMALL_UNLIMITED_SENTENCE;
-  const amount = rate === 0.5 ? "half an hour" : `${Number(rate.toFixed(2))} ${rate === 1 ? "hour" : "hours"}`;
-  return `Small computers use ${amount} of your hours for each hour awake.`;
+  return `Small computers use ${rate === 0.5 ? "half a credit" : words.count(rate)} for each hour awake.`;
 }
 
 /** Android needs a full computer of Medium or bigger. */
@@ -367,7 +360,7 @@ export function cloudMachineRunsAndroid(machine: Pick<CloudMachine, "type" | "sh
 /**
  * The first half of {@link cloudAndroidNeedsVmMessage}: that this computer
  * can't run the emulator, that a full computer of Medium or bigger can, and
- * what that uses in hours. `kind` is what this computer is now.
+ * what that uses in credits. `kind` is what this computer is now.
  */
 export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: CloudMachineKind = "box"): string {
   const vmShape = cloudAndroidVmShape(boxShape);
@@ -375,7 +368,7 @@ export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: Cloud
   const boxRate = boxShape ? cloudHoursRate(kind, boxShape.id) : null;
   const more = boxRate == null ? "" : boxRate > 0 ? `, about ${(rate - boxRate).toFixed(1).replace(/\.0$/, "")} more than this computer` : "; this Small computer uses none";
   return "This computer can't run the Android emulator. A full computer can, at Medium or bigger. "
-    + `A ${vmShape.label} full computer uses about ${rate} hours for each hour it's awake${more}.`;
+    + `A ${vmShape.label} full computer uses about ${rate} credits for each hour it's awake${more}.`;
 }
 
 /**
@@ -791,11 +784,11 @@ export type { CloudComputerActivityReport, CloudComputerStatus };
  */
 export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup; freeing?: string[] };
 
-/** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
-export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
+/** The server's sentence for what needs credits at 0. The server enforces it; these two only stop a request that can't work. */
+export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud credits for this period.";
 
 export const CLOUD_HOURS_UNKNOWN_MESSAGE =
-  "ADE couldn't read your ADE Cloud hours, so it didn't start or change a computer. Try again in a minute.";
+  "ADE couldn't read your ADE Cloud credits, so it didn't start or change a computer. Try again in a minute.";
 
 export function cloudOutOfHours(account: Pick<CloudAccountState, "hours"> | null | undefined): boolean {
   return account?.hours.state === "zero";
@@ -970,7 +963,7 @@ export async function cloudDomainEnabled(
   }
 }
 
-/** "1,600", "299.8" or "49.5" from thousandths (hours or credits): lives with the unit's words. */
+/** "1,600", "299.8" or "49.5" from thousandths (credits): lives with the unit's words. */
 export { formatCloudHours } from "./cloudUnitWords";
 
 /** The banner for an account, or null when there is nothing to warn about. */
@@ -1018,7 +1011,7 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     // A Free account whose Small uses hours (sponsored cards off) stops every size.
     const bigger = cloudSmallUsesHours(catalog)
       ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ADE Cloud to keep Small computers unlimited.`
-      : `Medium, Large and X-Large computers${words.credits ? " and the ADE Cloud iPhone" : ""} are stopped until ${resetDate}. Small computers keep working.`;
+      : `Medium, Large and X-Large computers and the ADE Cloud iPhone are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
       ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)
@@ -1027,7 +1020,7 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     return {
       id: "cloud-hours-zero",
       tone: "warning",
-      title: words.credits ? "You're out of credits" : "You're out of hours for bigger computers",
+      title: "You're out of credits",
       detail: account.extraHours.available ? `${bigger} Turn on ${words.extra.toLowerCase()} to keep going sooner.` : `${bigger}${plans}`,
     };
   }

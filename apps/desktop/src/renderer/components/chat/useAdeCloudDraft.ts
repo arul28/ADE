@@ -208,7 +208,7 @@ export function useAdeCloudDraft({
     resetTier,
     setDefaultTier,
     hoursLeftMilli,
-    /** The account's words: hours, or credits once the server sends `credits`. */
+    /** The account's words (`cloudUnitWords`). */
     words,
     runOnLine,
     refresh: machines.refresh,

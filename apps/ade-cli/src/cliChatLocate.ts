@@ -68,7 +68,7 @@ export type ChatLocateReport = {
   offline: string[];
   /**
    * Of `offline`, the ADE Cloud computers that are asleep. A lookup never
-   * wakes one (a wake uses hours); the person or agent wakes it, then asks again.
+   * wakes one (a wake uses credits); the person or agent wakes it, then asks again.
    */
   restingCloud?: Array<{ machine: string; machineKey?: string; instanceId: string }>;
   /** Machines that were asked and did not answer (older ADE, timeout, error). */
@@ -350,7 +350,7 @@ function restingCloudSentence(resting: ReadonlyArray<{ machine: string; instance
   if (!resting.length) return null;
   const wakes = resting.map((entry) => `\`ade cloud wake ${entry.instanceId}\` (${entry.machine})`).join(", ");
   return `asleep on ADE Cloud, not asked: ${resting.map((entry) => entry.machine).join(", ")}. `
-    + `If the chat is there, wake its computer with ${wakes} (a wake uses hours), then run this again`;
+    + `If the chat is there, wake its computer with ${wakes} (a wake uses credits), then run this again`;
 }
 
 /** What the lookup could not cover, for a "not found" message. */

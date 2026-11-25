@@ -39,7 +39,7 @@
  */
 
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
-import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, creditsAtStart, creditsOnFor, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { captureCloudPhone, type CloudWaitUntil } from "./analytics";
 import { freeCapRefuses } from "./costReport";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
@@ -219,7 +219,7 @@ function phoneCreditStatements(db: D1Database, phoneId: string, now: number): D1
  * Keeps what NoMac said about a phone this account started. A late or
  * repeated answer can't undo a newer one (`PHONE_MERGE_SQL`). `free` is
  * whether the account was on free rules when the phone started; `credits`,
- * whether credits reached it then (both only for a new row). A credits
+ * whether it counts in credits (both only for a new row). A credits
  * phone's new billed minutes go into the account's credits in the same write.
  */
 async function savePhone(
@@ -267,7 +267,7 @@ async function updatePhone(env: CloudEnv, session: PhoneSession, now: number): P
       .bind(userId).first<Pick<AccountRow, "plan" | "stripe_status" | "phone_start_credits" | "phone_start_credits_at">>()
     : null;
   if (!userId || !account) return null;
-  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await recoveredCredits(env, userId, account, isoMs(session.created_at) ?? now) }))) return null;
+  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: recoveredCredits(account, isoMs(session.created_at) ?? now) }))) return null;
   logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
   return { userId, wasEnded: false };
 }
@@ -278,17 +278,15 @@ const START_CLOCK_SLACK_MS = 5 * 60_000;
 /**
  * Whether a phone found with no row counts in credits: what the start that
  * made it decided (saved with its claim), when it is from the account's
- * latest start; else (one from before that record) the switch at its start.
+ * latest start; else credits, as every start now is.
  */
-async function recoveredCredits(
-  env: CloudEnv,
-  userId: string,
+function recoveredCredits(
   account: Pick<AccountRow, "phone_start_credits" | "phone_start_credits_at">,
   startedAt: number,
-): Promise<boolean> {
+): boolean {
   const at = account.phone_start_credits_at;
   if (at != null && account.phone_start_credits != null && startedAt >= at - START_CLOCK_SLACK_MS) return account.phone_start_credits === 1;
-  return creditsAtStart(env, userId, startedAt);
+  return true;
 }
 
 /** The phones an account started in `[since, before)`. Billing counts only their settled minutes (`settledPhoneMinutes`). */
@@ -487,8 +485,8 @@ export type PhoneCredits = { liveUsedMilli: number };
 /**
  * The account's `PhoneCredits`, or null. `counts`: whether this phone counts
  * in credits, when it is known (a running phone keeps what it started on,
- * `cloud_phones.credits`); left out, whether credits reach the account now
- * (a new phone). `reload`: read the account again (a phone's save since
+ * `cloud_phones.credits`); left out, credits (a new phone: every account is
+ * on credits). `reload`: read the account again (a phone's save since
  * `account` was read may have added to `used_milli`), in one read with the
  * phones' settled marks.
  */
@@ -498,7 +496,7 @@ export async function phoneCreditsFor(
   now: number,
   { reload = false, counts }: { reload?: boolean; counts?: boolean } = {},
 ): Promise<PhoneCredits | null> {
-  if (counts === false || (counts === undefined && !(await creditsOnFor(env, account.user_id)))) return null;
+  if (counts === false) return null;
   if (reload) {
     const read = await accountWithUnsettledPhones(env, account.user_id, now);
     if (read.liveUsedMilli != null) return { liveUsedMilli: read.liveUsedMilli };

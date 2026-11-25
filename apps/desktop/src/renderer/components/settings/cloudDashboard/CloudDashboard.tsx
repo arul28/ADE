@@ -105,7 +105,7 @@ const errorText = (error: unknown) => ipcErrorMessage(error) || `${ADE_CLOUD_NAM
 
 /**
  * Settings › ADE Cloud: the one-stop page for the account's cloud. Everything
- * shows at once, nothing folds away: the credits (or hours) and computers
+ * shows at once, nothing folds away: the credits and computers
  * against the plan, every computer the account pays for, the plans
  * side by side, the sizes, the sign-ins cloud computers use, and what agents
  * may do alone.
@@ -391,7 +391,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
 /**
  * The night sky at the top: the plan and when it resets, then three parts in
- * a row (stacked when narrow): what is left of the plan's credits (or hours),
+ * a row (stacked when narrow): what is left of the plan's credits,
  * split by what used them; the cloud computers against the plan's limit; and
  * what happens past the plan. The numbers are said once on the page. Reads
  * only the account already in hand: no read, timer or call of its own.
@@ -418,7 +418,7 @@ function CloudHero({
   const smallRateMilli = cloudSmallRateMilli(catalog);
   const forecast = hoursForecast(account, now, words);
   const worth = heroCreditsWorth(account, words);
-  const parts = heroBalanceParts(account, words);
+  const parts = heroBalanceParts(account);
   const computers = cloudAccountComputers(account);
   // The free plan refused on this computer (another account used its free hours): one sentence from the server.
   const freePlan = cloudFreePlanOf(account);
@@ -435,18 +435,14 @@ function CloudHero({
   const toPlans = () => scrollTo("cloud-plan");
   // The extra switch lives on the plans card: go there and hand it focus.
   const toExtra = () => scrollTo(CLOUD_EXTRA_ANCHOR)?.querySelector<HTMLElement>("[role='switch'], input, button")?.focus({ preventScroll: true });
-  // Hours mode: the iPhone's own minutes, for an account that has it. Credits mode: it draws from the credits above.
-  const phoneMinutes = !words.credits && account.phone?.access === "on" ? account.phone.minutes : null;
-  const leftLabel = words.credits ? "Credits left" : smallRateMilli > 0 ? "Hours left" : "Hours left for bigger computers";
+  const leftLabel = "Credits left";
   const planTotal = held ? cloudCatalogOf(account).plans.free.includedMilli : hours.includedMilli;
   const barParts = parts.filter((part) => part.milli > 0);
   const barTotal = Math.max(1, hours.includedMilli);
   const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.shownMilli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
   const extra = account.extraHours;
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
-  const stopsWhen = words.credits
-    ? `Stops when credits run out`
-    : smallRateMilli > 0 ? "Stops when hours run out" : "Bigger computers stop when hours run out";
+  const stopsWhen = "Stops when credits run out";
   return (
     <section ref={heroRef} className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
       <CloudSky />
@@ -485,11 +481,6 @@ function CloudHero({
               <li>
                 {`${cloudSmallHoursSentence(catalog, words)} ${cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))} left at that size.`}
                 {account.sponsored?.smallNeedsCards ? " Sponsored cards make it unlimited." : ""}
-              </li>
-            ) : null}
-            {phoneMinutes ? (
-              <li title="Time on your ADE Cloud iPhone this month, for testing your app.">
-                {`iPhone: ${phoneMinutes.used} of ${phoneMinutes.included} minutes this month${account.phone?.extra.enabled ? ", extra minutes on" : ""}`}
               </li>
             ) : null}
           </ul>

@@ -26,12 +26,6 @@ export const CLOUD_SETTINGS = {
    * the arm it was first given (`cloud_sponsored_formats`).
    */
   gravity_format_split: ["70-20-10", "80-15-5", "60-25-15", "50-30-20", "34-33-33"],
-  /**
-   * Credits (`credits.ts`): one balance for computers and the ADE Cloud
-   * iPhone, and the word "credits" on every surface. `testers` reaches the
-   * accounts on the iPhone's beta list. Held under `CLOUD_CREDITS`.
-   */
-  cloud_credits: ["off", "testers", "all"],
 } as const satisfies Record<string, readonly [string, ...string[]]>;
 
 export type CloudSettingKey = keyof typeof CLOUD_SETTINGS;

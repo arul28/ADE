@@ -405,7 +405,7 @@ struct WorkCloudRestingMoveSheet: View {
   /// Open the chat to write the message that continues it.
   let onOpenChat: () -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
-  /// The cloud account, for its unit (hours or credits).
+  /// The cloud account, for its unit.
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss

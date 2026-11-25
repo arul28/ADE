@@ -173,8 +173,8 @@ function useCloudPhoneLink(pin: OpenProjectBinding | null, phoneId: string | nul
  */
 function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
   const { status, error: statusError, refresh } = useCloudPhoneStatus(pin, hidden);
-  // The account (already read for the header's meter): credits mode, where the
-  // iPhone has no minutes of its own and draws from the credits. Account level, no pin.
+  // The account (already read for the header's meter): the iPhone has no
+  // minutes of its own and draws from the credits. Account level, no pin.
   const words = cloudUnitWords(useCloudAccount());
   const phone = status?.phone ?? null;
   const ready = phone?.state === "ready";
@@ -227,7 +227,7 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
     family: device === "ipad" ? "ipad" as const : "iphone" as const,
     minutes,
     words,
-    minutesLine: minutes ? cloudPhoneLeftText(minutes.left, minutes.included, words) : null,
+    minutesLine: minutes ? cloudPhoneLeftText(minutes.left, words) : null,
     off: !phone || phone.state === "ended",
     setError,
     busy,
@@ -238,12 +238,11 @@ function useCloudPhoneControl(pin: OpenProjectBinding | null, hidden: boolean) {
 type CloudPhoneControl = ReturnType<typeof useCloudPhoneControl>;
 
 /**
- * "77 of 120 min left", or under credits (one balance, the iPhone has no
- * minutes of its own) "418 credits left, 1 credit a minute": the phone's
- * minutes left are the credits left at its rate.
+ * "418 credits left, 1 credit a minute": one balance, the iPhone has no
+ * minutes of its own, so the phone's minutes left are the credits left at
+ * its rate.
  */
-function cloudPhoneLeftText(minutesLeft: number, included: number, words: CloudUnitWords): string {
-  if (words.phoneMilliPerMinute == null) return `${minutesLeft} of ${included} min left`;
+function cloudPhoneLeftText(minutesLeft: number, words: CloudUnitWords): string {
   const perMinute = words.phoneMilliPerMinute / 1000;
   return `${words.count(Math.floor(minutesLeft * perMinute * 10) / 10)} left, ${words.count(perMinute)} a minute`;
 }
@@ -255,21 +254,14 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
   if (status?.access === "on" && off) {
     const reason = phone?.endReason ? END_REASONS[phone.endReason] : null;
     const why = phone?.endReason ? ` ${reason ?? `It ended (${phone.endReason}).`}` : "";
-    // Start stays even with the plan's minutes used up: extra minutes may
-    // allow it, and when they don't the server's refusal shows here.
+    // Start stays even with the credits used up: extra credits may allow it,
+    // and when they don't the server's refusal shows here. The iPhone draws
+    // from the account's credits, one balance.
     return (
       <AppleDeviceNoticeStrip
-        sentence={words.credits
-          // Credits: the iPhone draws from the account's credits, one balance.
-          ? minutes && minutes.left <= 0
-            ? `Your ADE Cloud credits are used up, and the iPhone uses ${words.count((words.phoneMilliPerMinute ?? 1000) / 1000)} a minute.${why}`
-            : `The ADE Cloud iPhone is off. It uses ${words.count((words.phoneMilliPerMinute ?? 1000) / 1000)} a minute while it runs.${why}`
-          : minutes && minutes.included <= 0
-            // Every plan has minutes: none at all is a free plan the free-plan checks hold.
-            ? "The free plan's iPhone minutes need the same check as its free hours. Finish it in Settings › ADE Cloud, or pick a plan."
-            : minutes && minutes.left <= 0
-              ? `This period's ${minutes.included} ADE Cloud iPhone minutes are used up.${why}`
-              : `The ADE Cloud iPhone is off.${why}`}
+        sentence={minutes && minutes.left <= 0
+          ? `Your ADE Cloud credits are used up, and the iPhone uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute.${why}`
+          : `The ADE Cloud iPhone is off. It uses ${words.count(words.phoneMilliPerMinute / 1000)} a minute while it runs.${why}`}
         actionLabel={busy === "start" ? "Starting" : "Start"}
         busy={busy === "start"}
         onAction={() => void run("start")}
@@ -283,7 +275,7 @@ function CloudPhoneStrip({ control, failure = control.failure }: { control: Clou
 
 /**
  * The running phone in one line: its model, how long it has been on, the
- * plan's minutes left, and when it stops with nothing to do. In the idle
+ * credits left, and when it stops with nothing to do. In the idle
  * countdown's last 90 s it counts in seconds and offers Keep on (one cheap
  * call to the phone, which NoMac counts as use).
  */
@@ -315,7 +307,7 @@ function CloudPhoneRunningStrip({ control }: { control: CloudPhoneControl }) {
   };
 
   const left = cloudPhoneMinutesLeft(live, now);
-  const minutesPart = left != null && live.status?.minutes ? ` · ${cloudPhoneLeftText(left, live.status.minutes.included, words)}` : "";
+  const minutesPart = left != null && live.status?.minutes ? ` · ${cloudPhoneLeftText(left, words)}` : "";
   const onFor = phone?.readyAt ? ` · on ${formatPhoneSpan(now - phone.readyAt, false)}` : "";
   if (warn && stopAt != null) {
     // The deadline is this window's estimate (another machine's calls don't

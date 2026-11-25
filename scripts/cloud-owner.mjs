@@ -33,7 +33,6 @@ Switches:
                                          gravity_format below_reply|above_prompt|inline|split,
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)
-                                         cloud_credits off|testers|all (testers: the iPhone beta list)
   ab [--days N]                          the sponsored formats' A/B scoreboard (default 14 days)
 
 Environment: CLOUD_OWNER_TOKEN (required), ADE_ACCOUNT_ORIGIN (default https://account.ade-app.dev).`;
@@ -124,12 +123,12 @@ const when = (ms) => (ms ? new Date(ms).toISOString().replace("T", " ").slice(0,
 function printAccount({ account }) {
   const lines = [
     `${account.email ?? account.userId} (${account.userId})`,
-    `  Real plan:  ${account.real.plan} · ${account.real.computers} computers · ${account.real.hours} hours this period · Stripe ${account.real.stripeStatus ?? "none"}`,
+    `  Real plan:  ${account.real.plan} · ${account.real.computers} computers · ${account.real.hours} credits this period · Stripe ${account.real.stripeStatus ?? "none"}`,
     account.test
-      ? `  Test:       ${[account.test.plan && `acts as ${account.test.plan}`, account.test.computers != null && `${account.test.computers} computers`, account.test.hours != null && `${account.test.hours} hours`, account.test.phoneMinutes != null && `${account.test.phoneMinutes} iPhone minutes`].filter(Boolean).join(" · ")} · ends ${when(account.test.until)}${account.test.note ? ` · "${account.test.note}"` : ""}`
+      ? `  Test:       ${[account.test.plan && `acts as ${account.test.plan}`, account.test.computers != null && `${account.test.computers} computers`, account.test.hours != null && `${account.test.hours} credits`, account.test.phoneMinutes != null && `${account.test.phoneMinutes} iPhone minutes`].filter(Boolean).join(" · ")} · ends ${when(account.test.until)}${account.test.note ? ` · "${account.test.note}"` : ""}`
       : "  Test:       none",
     `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list (provider: ${account.phone.listed})` : " · not on the beta list"} · ${account.credits ? `${account.phone.usedMinutes} minutes used, from credits` : `${account.phone.usedMinutes} of ${account.phone.minutes} minutes used${account.phone.minutes !== account.phone.planMinutes ? ` (plan: ${account.phone.planMinutes})` : ""}${account.phone.extraOn ? " · extra minutes on" : ""}`}`,
-    `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} hours (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses hours" : "unlimited"}`,
+    `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} credits (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses credits" : "unlimited"}`,
     `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"} · format ${account.sponsored.format ?? "the switch's"}`,
   ];
   if (account.log.length) {

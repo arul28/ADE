@@ -89,7 +89,7 @@ struct CloudNewComputerSizePick {
   let tiers: [CloudPhoneTier]
   let picked: String?
   let pick: (String?) -> Void
-  /// The account's unit, hours or credits.
+  /// The account's unit.
   let words: CloudBalanceWords
   /// The account's hours left, so each size says how long they last on it.
   var leftMilli: Int? = nil
@@ -158,8 +158,8 @@ struct CloudDeletedComputerFacts: Equatable {
   /// Why ADE can't make a new computer for the lane now; nil when it can.
   /// The one text the line and the composer both show.
   var blocked: String? = nil
-  /// The account's unit (hours or credits), for the Why? sentence.
-  var words: CloudBalanceWords = .hours
+  /// The account's unit, for the Why? sentence.
+  var words: CloudBalanceWords = .credits
 
   /// Nothing known beyond the delete.
   static let unknown = CloudDeletedComputerFacts(fate: cloudComputerFateSentence(nil, deletedAt: nil))

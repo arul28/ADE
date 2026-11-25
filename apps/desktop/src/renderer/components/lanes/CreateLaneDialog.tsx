@@ -86,7 +86,7 @@ export type CreateLaneAdeCloud = {
   defaultTier: CloudTierId;
   onChooseTier: (tier: CloudTierId) => void;
   onSetDefaultTier: (tier: CloudTierId) => void;
-  /** The account's words (hours or credits). */
+  /** The account's words. */
   words: CloudUnitWords;
   /** Why the lane can't start on ADE Cloud now (a fact of the account), or null. */
   problem: string | null;

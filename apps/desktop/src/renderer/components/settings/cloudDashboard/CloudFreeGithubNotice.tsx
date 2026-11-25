@@ -20,15 +20,15 @@ const GITHUB_SETTINGS_ROUTE = settingsRouteFor("integrations.github");
 export function cloudFreeGithubHeroLine(github: CloudFreePlanGithub): string | null {
   switch (github.state) {
     case "no_github":
-      return "Free hours wait for GitHub.";
+      return "Free credits wait for GitHub.";
     case "too_new":
       return github.oldEnoughAt != null
-        ? `Free hours start ${formatCloudFreeGithubDay(github.oldEnoughAt)}.`
-        : `Free hours start when your GitHub account is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old.`;
+        ? `Free credits start ${formatCloudFreeGithubDay(github.oldEnoughAt)}.`
+        : `Free credits start when your GitHub account is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old.`;
     case "used":
-      return "No free hours on this account yet.";
+      return "No free credits on this account yet.";
     case "checking":
-      return "Checking your GitHub account for free hours.";
+      return "Checking your GitHub account for free credits.";
     default:
       return null;
   }
@@ -50,10 +50,10 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
     try {
       const result = await window.ade.cloud?.openFreeUnlock?.();
       if (result?.unlocked) {
-        showToast({ tone: "success", title: "Your free hours are on", message: "The card already on file counts. You weren't charged." });
+        showToast({ tone: "success", title: "Your free credits are on", message: "The card already on file counts. You weren't charged." });
         onChanged();
       } else if (result?.opened) {
-        showToast({ title: "Save a card in your browser", message: "You won't be charged. Your free hours show here once it's saved." });
+        showToast({ title: "Save a card in your browser", message: "You won't be charged. Your free credits show here once it's saved." });
       }
     } catch (error) {
       showToast({ tone: "error", title: "Couldn't open the card page", message: ipcErrorMessage(error) || "Try again in a moment." });
@@ -73,7 +73,7 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             id: "cloud-free-github-none",
             tone: "warning",
             icon: <GithubLogo />,
-            title: "Free hours need GitHub",
+            title: "Free credits need GitHub",
             detail: `Connect a GitHub account that is at least ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. ADE Cloud uses it to get your code.`,
             actions: [{ label: "Connect GitHub", variant: "primary", onClick: () => navigate(GITHUB_SETTINGS_ROUTE) }],
             report: false,
@@ -90,8 +90,8 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             icon: <GithubLogo />,
             title: github.githubLogin ? `Your GitHub account ${github.githubLogin} is new` : "Your GitHub account is new",
             detail: github.oldEnoughAt != null
-              ? `Free hours start once it is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. Add a card (no charge) to start now, or wait until ${formatCloudFreeGithubDay(github.oldEnoughAt)}.`
-              : `Free hours start once it is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. Add a card (no charge) to start now, or wait.`,
+              ? `Free credits start once it is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. Add a card (no charge) to start now, or wait until ${formatCloudFreeGithubDay(github.oldEnoughAt)}.`
+              : `Free credits start once it is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old. Add a card (no charge) to start now, or wait.`,
             actions: github.canUnlockWithCard
               ? [{ label: "Add a card (no charge)", variant: "primary", icon: <CreditCard />, busy, onClick: () => void addCard() }]
               : [],
@@ -108,7 +108,7 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             tone: "warning",
             icon: <GithubLogo />,
             title: "This GitHub account already has a free plan",
-            detail: `${github.githubLogin ? `${github.githubLogin} gives` : "It gives"} its free hours to another ADE account, so this one has none.${plusHours ? ` Plus gives you ${formatCloudHours(plusHours)} hours a month.` : ""}`,
+            detail: `${github.githubLogin ? `${github.githubLogin} gives` : "It gives"} its free credits to another ADE account, so this one has none.${plusHours ? ` Plus gives you ${formatCloudHours(plusHours)} credits a month.` : ""}`,
             actions: [{ label: "See plans", variant: "secondary", onClick: toPlans }],
             report: false,
           }}
@@ -123,7 +123,7 @@ export function CloudFreeGithubNotice({ account, onChanged }: { account: CloudAc
             tone: "info",
             icon: <GithubLogo />,
             title: "Checking your GitHub account",
-            detail: "ADE couldn't reach GitHub just now. It tries again in a few minutes; your free hours start once it can.",
+            detail: "ADE couldn't reach GitHub just now. It tries again in a few minutes; your free credits start once it can.",
             actions: [{ label: "Check again", variant: "secondary", onClick: onChanged }],
             report: false,
           }}

@@ -72,7 +72,7 @@ export async function runCloudMachineLifecycleAction(
   switch (args.action) {
     case "sleep":
       await ops.sleep(instanceId);
-      return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
+      return { ok: true, blocker: null, message: "Asleep. It uses no credits until it wakes." };
     case "wake": {
       const status = await ops.wake(instanceId, args.origin === "mcp" ? "mcp" : undefined);
       return {

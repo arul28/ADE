@@ -206,22 +206,22 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   cloud: {
     status: {
-      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computer_limit | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {computers, smallComputers: unlimited, hours, outsideAgents}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours, unit}, iphone {access: on, minutes {left, included, used} | null, resetsAt, extraMinutes {available, enabled, centsPerMinute, monthlyLimitCents, usedMinutes, usedCents}} | null (only when this account has the ADE Cloud iPhone, ios@cloud), plans [{id, label, priceUsdMonth, computers, hours, hoursOnSizes, outsideAgents, iphoneMinutes, extraHourCents (null: bigger sizes stop), extraIphoneMinuteCents, current}], smallComputers, computers {inUse, awake, limit} (cloud computers asleep or not, and the plan's limit), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, usesHours, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Small computers are unlimited and never use hours; an hour is one hour on a Medium computer (Large uses 2.5 an hour, X-Large 4). Say hours as time on each size (plans[].hoursOnSizes), never as a multiplier. Never returns a key or token.",
+      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computer_limit | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {computers, smallComputers: unlimited, hours, outsideAgents}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours, unit}, credits {iphonePerMinute} | null (hours is one balance of credits: a Medium computer uses one an hour, the ADE Cloud iPhone iphonePerMinute a minute), iphone {access: on, creditsUsed, resetsAt} | null (only when this account has the ADE Cloud iPhone, ios@cloud), plans [{id, label, priceUsdMonth, computers, hours, hoursOnSizes, outsideAgents, extraHourCents (null: bigger sizes stop), current}], smallComputers, computers {inUse, awake, limit} (cloud computers asleep or not, and the plan's limit), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, usesHours, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Small computers are unlimited and never use credits; a credit is an hour on a Medium computer (Large uses 2.5 an hour, X-Large 4). Say credits as time on each size (plans[].hoursOnSizes), never as a multiplier. Never returns a key or token.",
       input: "no input",
       example: "ade cloud status --text",
     },
     list: {
-      description: "List the account's ADE Cloud machines: name, id, ADE machine key, state (running, asleep…), type and size, how fast it uses hours, how it sleeps, plus the account's plan and hours. Reads ADE Cloud with the account's key; never returns the key. status has the same computers with their lanes, and more.",
+      description: "List the account's ADE Cloud machines: name, id, ADE machine key, state (running, asleep…), type and size, how fast it uses credits, how it sleeps, plus the account's plan and hours. Reads ADE Cloud with the account's key; never returns the key. status has the same computers with their lanes, and more.",
       input: "no input",
       example: "ade cloud list --text",
     },
     hours: {
-      description: "The account's plan and hours. Returns {plan, rules, hours: {includedMilli, usedMilli, leftMilli, percentUsed, state}, extraHours, computers {total, awake, limit}, dueForDeletion, billing, catalog}. Milli values are thousandths of a Medium-hour (Small computers never use hours); state is none, warn80, warn95 or zero.",
+      description: "The account's plan and credits. Returns {plan, rules, hours: {includedMilli, usedMilli, leftMilli, percentUsed, state}, extraHours, computers {total, awake, limit}, dueForDeletion, billing, catalog}. Milli values are thousandths of a credit, one Medium hour (Small computers never use credits); state is none, warn80, warn95 or zero.",
       input: "no input",
       example: "ade cloud hours --text",
     },
     referral: {
-      description: `The account's ADE Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} hours, and so does this account when the friend's first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Medium-hour.`,
+      description: `The account's ADE Cloud invite link and what it earned: {code, link, friendsJoined, rewardsPaid, rewardsLeft, rewardLimit, rewardMilli, hoursEarnedMilli, canEnterCode, enterCodeUntil, hasReferrer, referredState}. A friend who enters the link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} credits, and so does this account when the friend's first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most). A friend's invite is entered in Settings › Account, never from the CLI. Milli values are thousandths of a Medium-hour.`,
       input: "no input",
       example: "ade cloud invite --text",
     },
@@ -241,7 +241,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud update \"android vm\"",
     },
     create: {
-      description: "Make an ADE Cloud computer, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs hours. An agent never makes one alone: it asks the person on a card in its chat (a full-auto chat too), and with nobody to ask (an automation run, an ADE MCP app) the answer is no. Agents start a lane instead (lane_launch, ade chat create --machine cloud --size <size>). Refused before any card when the account is out of hours, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
+      description: "Make an ADE Cloud computer, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs credits. An agent never makes one alone: it asks the person on a card in its chat (a full-auto chat too), and with nobody to ask (an automation run, an ADE MCP app) the answer is no. Agents start a lane instead (lane_launch, ade chat create --machine cloud --size <size>). Refused before any card when the account is out of credits, uses all its computers or has a full disk (status's canStartLane sentence). Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
       input: "object { kind?: \"box\" | \"vm\" (vm is a full computer: Android and Docker), shape?: \"small\" | \"medium\" | \"large\" | \"x-large\" or \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
       example: "ade cloud create --kind vm --shape 4x8 --name \"android vm\"",
     },
@@ -261,7 +261,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade --role agent actions run cloud.make_status --input-json '{\"requestId\":\"…\"}' --json",
     },
     lane_launch: {
-      description: "Start a new lane on ADE Cloud: this brain makes one new computer for the lane alone, joins it to the account, gets the GitHub repository there, then starts the chat there (chat.startLaunch on that computer, same launch id). Returns at once with {launch, machine, approvalUrl, madeByChat}; read progress with lane_launch_status. The same launch id again answers that launch (a failed one goes on from its failed step), never a second computer. Refused before any card when the account is out of hours, uses all its computers or has a full disk, with status's canStartLane sentence. Costs hours: asks the person in your chat first, within the agent limits for unattended chats. The lane starts from the pushed copy of its branch.",
+      description: "Start a new lane on ADE Cloud: this brain makes one new computer for the lane alone, joins it to the account, gets the GitHub repository there, then starts the chat there (chat.startLaunch on that computer, same launch id). Returns at once with {launch, machine, approvalUrl, madeByChat}; read progress with lane_launch_status. The same launch id again answers that launch (a failed one goes on from its failed step), never a second computer. Refused before any card when the account is out of credits, uses all its computers or has a full disk, with status's canStartLane sentence. Costs hours: asks the person in your chat first, within the agent limits for unattended chats. The lane starts from the pushed copy of its branch.",
       input: "object { launch: chat launch args (kind \"chat\", launchId, prompt, chat, laneConfig?) with cloud: { sizeId: \"small\" | \"medium\" | \"large\" | \"xlarge\" }, originUrl: string (the project's git origin) }",
       example: "ade chat create --machine cloud --size medium --provider codex --model openai/gpt-5.6-sol --prompt \"…\"",
     },
@@ -271,7 +271,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade chat launch-status <launchId> --machine cloud",
     },
     tier_request: {
-      description: "Ask the person to change a lane computer's size (for example Android needs Large): posts a card in your chat with the size, its hours rate and your reason. It changes nothing; the person confirms on the card (when you are idle, or now). An agent never changes a size itself.",
+      description: "Ask the person to change a lane computer's size (for example Android needs Large): posts a card in your chat with the size, its credits rate and your reason. It changes nothing; the person confirms on the card (when you are idle, or now). An agent never changes a size itself.",
       input: "object { size: \"small\" | \"medium\" | \"large\" | \"xlarge\", reason: string, machine?: string (default: the cloud computer this runs on) }",
       example: "ade cloud resize --request --size large --reason \"Android needs a full computer\"",
     },
@@ -296,7 +296,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade chat launch-cancel <launchId> --machine cloud",
     },
     sleep: {
-      description: "Put an ADE Cloud computer to sleep now: memory kept, it uses no hours.",
+      description: "Put an ADE Cloud computer to sleep now: memory kept, it uses no credits.",
       input: "object { machine: string (name, id or machine key) }",
       example: "ade cloud sleep \"android vm\"",
     },
@@ -306,7 +306,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run cloud.saved_chat_machine --input-json '{\"chatId\":\"chat-1\",\"machineKeys\":[\"m-1\"]}' --json",
     },
     wake: {
-      description: "Wake an asleep ADE Cloud machine (about a second; ADE on it is online a few seconds later). The server refuses it at 0 hours. A --machine call to an asleep machine wakes it on its own.",
+      description: "Wake an asleep ADE Cloud machine (about a second; ADE on it is online a few seconds later). The server refuses it at 0 credits. A --machine call to an asleep machine wakes it on its own.",
       input: "object { machine: string }",
       example: "ade cloud wake \"android vm\"",
     },
@@ -346,7 +346,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud lanes delete fix-login",
     },
     lane_free: {
-      description: "Keep an ADE Cloud lane for later: ADE pushes its work to GitHub, removes its computer (no more hours or disk), and keeps the lane and its chats. Its next message makes a new computer on the same branch. Asks the person first, as a delete.",
+      description: "Keep an ADE Cloud lane for later: ADE pushes its work to GitHub, removes its computer (no more credits or disk), and keeps the lane and its chats. Its next message makes a new computer on the same branch. Asks the person first, as a delete.",
       input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
       example: "ade cloud lanes free fix-login",
     },
@@ -356,7 +356,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud lanes start fix-login --size medium",
     },
     lane_keep: {
-      description: "Stop the idle cleanup's delete of a lane's computer (a lane with deletesAt): the idle clock starts again. It wakes nothing and uses no hours.",
+      description: "Stop the idle cleanup's delete of a lane's computer (a lane with deletesAt): the idle clock starts again. It wakes nothing and uses no credits.",
       input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
       example: "ade cloud lanes keep fix-login",
     },

@@ -96,7 +96,7 @@ export function formatPhoneSpan(ms: number, precise: boolean): string {
 }
 
 /**
- * The plan's minutes left now: the read's count, less the time the phone has
+ * The phone's minutes left now (the credits left at its rate): the read's count, less the time the phone has
  * run since that read (the server counts a running phone's minutes as it goes).
  */
 export function cloudPhoneMinutesLeft(value: CloudPhoneLive, now: number): number | null {

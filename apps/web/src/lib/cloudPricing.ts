@@ -6,9 +6,8 @@
  * the free plan's rules, invites, idle cleanup). Nothing here is typed by
  * hand. Pricing v2 (`docs/plans/pricing-v2-and-gravity.md`): Small computers
  * never use hours, bigger ones use Medium-hours, each plan has a number of
- * cloud computers, and no surface shows GB. Under credits
- * (`CLOUD_CREDITS_ON_WEBSITE`) the same numbers are called credits; every
- * unit word comes from `UNIT`.
+ * cloud computers, and no surface shows GB. The site calls those numbers
+ * credits; every unit word comes from `UNIT`.
  *
  * Both files are plain data with no Worker code, so the site bundles only
  * the values it uses. `vercel.json`'s ignore step watches them too, so a
@@ -17,7 +16,6 @@
 import {
   CLOUD_CREDIT_UNIT_SENTENCE,
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
-  CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_IDLE_CLEANUP_DAYS,
   CLOUD_REFERRAL_ENTER_DAYS,
   CLOUD_REFERRAL_REWARD_LIMIT,
@@ -33,7 +31,7 @@ import { CLOUD_PLANS, cloudSizeForTier } from "../../../account-directory/src/cl
 export { CLOUD_SMALL_FAIR_USE_SENTENCE, cloudComputersPhrase };
 
 /**
- * The ADE Cloud iPhone (an iOS Simulator in the cloud, with iPhone minutes)
+ * The ADE Cloud iPhone (an iOS Simulator in the cloud, paid from the credits)
  * is behind the server's `CLOUD_PHONE_ACCESS` switch, in beta for testers.
  * The website names it as coming soon everywhere (`ComingSoon`,
  * `CloudSection`, the pricing page's plan cards) with no numbers; once that
@@ -57,49 +55,42 @@ export const ADS_FREE_PLAN_SENTENCE =
   "Free is ad-supported: an ADE Cloud chat on Free may show one sponsored card under a finished reply. Paid plans have no ads. Chats on your own computer never show ads.";
 
 /**
- * Credits: one balance for everything ADE Cloud runs, with the same numbers as
- * the hours (`apps/account-directory/src/cloud/credits.ts`). A Medium computer
- * uses one credit an hour, bigger sizes more, the ADE Cloud iPhone one a
- * minute; Small uses none. The server turns it on with its `cloud_credits`
- * switch. While this is false the site says hours, and the iPhone's own
- * minutes, exactly as before. Every unit word on the site comes from `UNIT`.
- */
-// Flip to true in the same release that sets the server's `cloud_credits` switch to `all`.
-export const CLOUD_CREDITS_ON_WEBSITE = false;
-
-/**
  * Credits an ADE Cloud iPhone minute uses: one, as `CLOUD_CREDIT_UNIT_SENTENCE`
  * says (the server's `PHONE_CREDIT_MILLI_PER_MINUTE` is 1000 thousandths;
  * `credits.ts` carries Worker types the site can't bundle).
  */
 export const PHONE_CREDITS_PER_MINUTE = 1;
 
-/** The words for the plan's unit, hours or credits. Built once from the switches below; tests may build the other. */
+/**
+ * One balance for everything ADE Cloud runs (`apps/account-directory/src/cloud/credits.ts`):
+ * a Medium computer uses one credit an hour, bigger sizes more, the ADE Cloud
+ * iPhone one a minute; Small uses none. The words for it, built once below
+ * (`UNIT`); every unit word on the site comes from there.
+ */
 export type CloudUnitWords = {
-  credits: boolean;
-  /** "hour" or "credit". */
+  /** "credit". */
   one: string;
-  /** "hours" or "credits". */
+  /** "credits". */
   many: string;
-  /** "Hours" or "Credits". */
+  /** "Credits". */
   title: string;
-  /** "1 hour", "1,500 credits". */
+  /** "1 credit", "1,500 credits". */
   count: (value: number) => string;
-  /** "Unlimited Small computers. They never use your hours." */
+  /** "Unlimited Small computers. They never use your credits." */
   smallUnlimited: string;
   /** The offer's two sentences apart, for a headline and its second line. */
   smallUnlimitedParts: readonly [string, string];
-  /** "Bigger computers use hours, and each plan has a number of cloud computers." */
+  /** "Bigger computers use credits, and each plan has a number of cloud computers." */
   offerRest: string;
-  /** What one unit is, in a sentence or two. */
+  /** What one credit is, in a sentence or two. */
   unitSentence: string;
-  /** "What an hour is" or "What a credit buys": the rate table's heading. */
+  /** "What a credit buys": the rate table's heading. */
   rateTitle: string;
-  /** What uses the plan's number: "bigger computers" (and the iPhone, under credits once it is on the site). */
+  /** What uses the plan's number: "bigger computers" (and the iPhone, once it is on the site). */
   spenders: string;
-  /** "Extra hours" or "Extra credits". */
+  /** "Extra credits". */
   extraTitle: string;
-  /** "extra hours" or "extra credits", inside a sentence. */
+  /** "extra credits", inside a sentence. */
   extra: string;
 };
 
@@ -109,35 +100,27 @@ function splitOffer(sentence: string): readonly [string, string] {
   return at < 0 ? [sentence, ""] : [sentence.slice(0, at + 1), sentence.slice(at + 2)];
 }
 
-export function cloudUnitWords(credits: boolean, phoneShown: boolean): CloudUnitWords {
-  const one = credits ? "credit" : "hour";
-  const many = credits ? "credits" : "hours";
-  const smallFirst = splitOffer(CLOUD_SMALL_UNLIMITED_SENTENCE)[0];
-  const smallUnlimited = credits ? `${smallFirst} They never use your credits.` : CLOUD_SMALL_UNLIMITED_SENTENCE;
+function cloudUnitWords(phoneShown: boolean): CloudUnitWords {
+  const smallUnlimited = CLOUD_SMALL_UNLIMITED_SENTENCE;
   return {
-    credits,
-    one,
-    many,
-    title: credits ? "Credits" : "Hours",
-    count: (value) => `${formatCount(value)} ${value === 1 ? one : many}`,
+    one: "credit",
+    many: "credits",
+    title: "Credits",
+    count: (value) => `${formatCount(value)} ${value === 1 ? "credit" : "credits"}`,
     smallUnlimited,
     smallUnlimitedParts: splitOffer(smallUnlimited),
-    offerRest: `Bigger computers use ${many}, and each plan has a number of cloud computers.`,
+    offerRest: "Bigger computers use credits, and each plan has a number of cloud computers.",
     // The iPhone stays off the site until it launches, so the credit's sentence names it only then.
-    unitSentence: credits
-      ? phoneShown
-        ? CLOUD_CREDIT_UNIT_SENTENCE
-        : "A credit is an hour on a Medium computer. Small computers use none."
-      : CLOUD_HOUR_UNIT_SENTENCE,
-    rateTitle: credits ? "What a credit buys" : "What an hour is",
-    spenders: credits && phoneShown ? "bigger computers and the ADE Cloud iPhone" : "bigger computers",
-    extraTitle: credits ? "Extra credits" : "Extra hours",
-    extra: credits ? "extra credits" : "extra hours",
+    unitSentence: phoneShown ? CLOUD_CREDIT_UNIT_SENTENCE : "A credit is an hour on a Medium computer. Small computers use none.",
+    rateTitle: "What a credit buys",
+    spenders: phoneShown ? "bigger computers and the ADE Cloud iPhone" : "bigger computers",
+    extraTitle: "Extra credits",
+    extra: "extra credits",
   };
 }
 
-/** The site's unit words: hours until `CLOUD_CREDITS_ON_WEBSITE`. */
-export const UNIT = cloudUnitWords(CLOUD_CREDITS_ON_WEBSITE, CLOUD_PHONE_ON_WEBSITE);
+/** The site's unit words. */
+export const UNIT = cloudUnitWords(CLOUD_PHONE_ON_WEBSITE);
 
 /** The offer's first sentence without its period, for a pill or a link: "Unlimited Small computers". */
 export const CLOUD_SMALL_UNLIMITED_SHORT = UNIT.smallUnlimitedParts[0].replace(/\.$/, "");
@@ -149,18 +132,14 @@ export type PricingPlan = {
   id: CloudPlanId;
   name: string;
   priceUsd: number;
-  /** A month's hours (or credits: the same number) for the sizes bigger than Small, in Medium-hours. */
+  /** A month's credits for the sizes bigger than Small (one is an hour on a Medium). */
   hours: number;
   /** How many cloud computers the account may have, asleep or not. */
   computerLimit: number;
   /** Whether outside agents (ADE MCP) may start ADE Cloud work. */
   outsideAgents: boolean;
-  /** ADE Cloud iPhone minutes a month; shown only with `CLOUD_PHONE_ON_WEBSITE`. */
-  phoneMinutes: number;
   /** What an hour past the plan's costs, or null on Free, where work on the bigger sizes stops. */
   extraHourCents: number | null;
-  /** What a minute past the plan's iPhone minutes costs, or null on Free; shown only with `CLOUD_PHONE_ON_WEBSITE`. */
-  extraPhoneMinuteCents: number | null;
   /** Whether ADE Cloud chats on the plan may show a sponsored suggestion: only Free. */
   adSupported: boolean;
   /** Days an unused computer is kept before ADE cleans it up. */
@@ -185,9 +164,7 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
     hours: hoursOf(plan.includedMilli),
     computerLimit: plan.computerLimit,
     outsideAgents: plan.outsideAgents,
-    phoneMinutes: plan.phoneMinutes,
     extraHourCents: plan.extraHourCents,
-    extraPhoneMinuteCents: plan.extraPhoneMinuteCents,
     adSupported: id === "free",
     idleDays: id === "free" ? CLOUD_IDLE_CLEANUP_DAYS.free : CLOUD_IDLE_CLEANUP_DAYS.paid,
     pitch: PLAN_PITCHES[id],

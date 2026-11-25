@@ -1,15 +1,7 @@
 import { Smartphone } from "lucide-react";
 import { AppleMark } from "../home/marks";
 import { cn } from "../../lib/cn";
-import { CLOUD_PHONE_ON_WEBSITE, PHONE_CREDITS_PER_MINUTE, PRICING_PLANS, UNIT, formatCents, formatCount } from "../../lib/cloudPricing";
-
-/** "2.5¢ a minute" for the paid plans that sell extra iPhone minutes (hours only: under credits an extra minute is an extra credit). */
-const EXTRA_PHONE_MINUTE_LINE = (() => {
-  const paid = PRICING_PLANS.filter((plan) => plan.extraPhoneMinuteCents != null);
-  if (!paid.length) return null;
-  const prices = [...new Set(paid.map((plan) => formatCents(plan.extraPhoneMinuteCents ?? 0)))];
-  return `${prices.join(" or ")} a minute past your plan`;
-})();
+import { CLOUD_PHONE_ON_WEBSITE, PHONE_CREDITS_PER_MINUTE, UNIT } from "../../lib/cloudPricing";
 
 const ITEMS = [
   {
@@ -55,15 +47,7 @@ export function ComingSoon({ compact, className }: { compact?: boolean; classNam
           {/* Its numbers show only once it is open to everyone (`CLOUD_PHONE_ON_WEBSITE`): they may still change. */}
           {item.id === "ios" && CLOUD_PHONE_ON_WEBSITE ? (
             <p className="mt-4 text-[13px] leading-[1.5] text-white/45">
-              {UNIT.credits ? (
-                <>It uses your plan's credits: {UNIT.count(PHONE_CREDITS_PER_MINUTE)} a minute.</>
-              ) : (
-                <>
-                  Plans will include minutes on a phone in the cloud:{" "}
-                  {PRICING_PLANS.map((plan) => `${formatCount(plan.phoneMinutes)} on ${plan.name}`).join(", ")}.
-                  {EXTRA_PHONE_MINUTE_LINE ? ` Then ${EXTRA_PHONE_MINUTE_LINE}, billed after use.` : null}
-                </>
-              )}
+              It uses your plan's credits: {UNIT.count(PHONE_CREDITS_PER_MINUTE)} a minute.
             </p>
           ) : null}
         </div>

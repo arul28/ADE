@@ -36,7 +36,7 @@ export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
     chooseTier: draft.chooseTier,
     resetTier: draft.resetTier,
     setDefaultTier: draft.setDefaultTier,
-    /** The account's words: hours, or credits once the server sends `credits`. */
+    /** The account's words (`cloudUnitWords`). */
     words: draft.words,
     /** The line under the name in a machine list. Each plan allows a number of computers (the limit card says so when it's reached). */
     detail: "A new computer for each lane",

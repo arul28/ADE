@@ -197,10 +197,6 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
       return accountState(await post(CLOUD_PATHS.billingExtraHours, { enabled }, page));
     },
 
-    async setExtraPhoneMinutes(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState> {
-      return accountState(await post(CLOUD_PATHS.billingExtraPhone, choice, page));
-    },
-
     /** A tester's pick of who runs their phones (account level, as on the desktop). The server refuses anyone else with its sentence. */
     async setPhoneProvider(provider: CloudPhoneProviderChoice): Promise<CloudPhoneProviderChoiceAnswer> {
       const body = record(await post(CLOUD_PATHS.phoneProvider, { provider }, page));

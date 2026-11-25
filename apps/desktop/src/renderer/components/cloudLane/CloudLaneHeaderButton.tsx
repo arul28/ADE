@@ -252,7 +252,7 @@ function CloudLaneStatusMenu({
             type="button"
             role="menuitem"
             className="ade-cx-menu-item"
-            aria-label="Disk, hours and more on the ADE Cloud page"
+            aria-label="Disk, credits and more on the ADE Cloud page"
             onClick={run(() => navigateToAppTarget({ kind: "settings", tab: "ade-cloud", anchor: "cloud-lanes" }))}
           >
             <span className="ade-cx-menu-icon"><ArrowSquareOut size={13} /></span>

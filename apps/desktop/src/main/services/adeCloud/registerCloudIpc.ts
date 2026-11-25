@@ -716,29 +716,6 @@ export function registerCloudIpc(args: {
     return account;
   });
 
-  // Account-level: extra iPhone minutes are the account's phone, so no pin. An
-  // older server has no such route: it says so in a plain sentence.
-  ipcMain.handle(IPC.cloudSetExtraPhoneMinutes, async (event, arg: { enabled?: unknown; monthlyLimitUsd?: unknown }): Promise<CloudAccountState | null> => {
-    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSetExtraPhoneMinutes)) return null;
-    // On or off is always said: a missing value is refused, never read as off.
-    if (typeof arg?.enabled !== "boolean") throw new Error("Say whether extra iPhone minutes are on or off.");
-    // No limit is only ever chosen (null); a limit that isn't whole dollars is refused, never read as none.
-    const raw = arg.monthlyLimitUsd ?? null;
-    const limit = typeof raw === "number" && Number.isInteger(raw) ? raw : null;
-    if (arg.enabled && raw !== null && limit === null) {
-      throw new Error("Pick a monthly limit in whole dollars, or none.");
-    }
-    const choice = arg.enabled
-      ? { enabled: true as const, monthlyLimitUsd: limit }
-      : { enabled: false as const };
-    const provider = await requireCloudProvider(credentials);
-    if (!provider.setExtraPhoneMinutes) throw new Error("This ADE Cloud doesn't sell extra iPhone minutes yet.");
-    const account = await billingCall(async () => await provider.setExtraPhoneMinutes!(choice));
-    logger.info("cloud.extra_phone_minutes_set", { enabled: choice.enabled });
-    sendToAllWindows(IPC.cloudStatusChanged);
-    return account;
-  });
-
   // Account-level: a tester's pick of who runs their phones, so no pin. The
   // server refuses anyone not on the iPhone's beta list with its own sentence.
   ipcMain.handle(IPC.cloudSetPhoneProvider, async (event, arg: { provider?: unknown }): Promise<CloudPhoneProviderChoiceAnswer> => {
@@ -807,7 +784,7 @@ export function registerCloudIpc(args: {
   ipcMain.handle(IPC.cloudOpenFreeUnlock, async (event): Promise<{ opened: boolean; unlocked: boolean }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudOpenFreeUnlock)) return { opened: false, unlocked: false };
     const provider = await requireCloudProvider(credentials);
-    if (!provider.billingFreeUnlock) throw new Error("This ADE Cloud can't take a card for the free hours yet.");
+    if (!provider.billingFreeUnlock) throw new Error("This ADE Cloud can't take a card for the free credits yet.");
     const result = await billingCall(async () => await provider.billingFreeUnlock!());
     if (result.unlocked) {
       logger.info("cloud.free_unlocked", { source: "card_on_file" });

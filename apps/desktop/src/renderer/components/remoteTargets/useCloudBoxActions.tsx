@@ -107,7 +107,7 @@ export async function confirmCloudSleep(name: string, runningChats: number): Pro
   if (runningChats <= 0) return true;
   return await confirmDialog({
     title: `Sleep ${name}?`,
-    message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no hours while asleep.`,
+    message: `${chatsLine(runningChats, name)} Sleep stops the turns in progress first, and they show as Stopped. Send again after it wakes. It uses no credits while asleep.`,
     confirmLabel: "Sleep",
   });
 }
@@ -275,7 +275,7 @@ export function useCloudBoxActions(args: {
     removing.current.add(key);
     try {
       const message = input.box
-        ? `${input.name} leaves your computers on every device. The computer stays on ADE Cloud and uses hours whenever it's awake. To remove it for good, use Delete computer instead.`
+        ? `${input.name} leaves your computers on every device. The computer stays on ADE Cloud and uses credits whenever it's awake. To remove it for good, use Delete computer instead.`
         : input.deletedOnCloud
           ? `${input.name} was deleted on ADE Cloud, so it no longer exists. This removes its entry from your computers on every device.`
           : `${input.name} leaves your computers on every device.\n\n${accountMachineRemovalConfirmBody(input.machine)}`;
@@ -395,8 +395,8 @@ export function useCloudBoxActions(args: {
       ?? cloudShapeById("2x4");
     // A full computer smaller than Medium runs Docker but not Android: say so.
     const runs = cloudShapeRunsAndroid(target.id)
-      ? "Android and Docker; it uses hours faster"
-      : "Docker; it uses hours faster. Android needs Medium or bigger: resize it after the move, or use Move in the Android pane";
+      ? "Android and Docker; it uses credits faster"
+      : "Docker; it uses credits faster. Android needs Medium or bigger: resize it after the move, or use Move in the Android pane";
     const ok = await confirmDialog({
       title: to === "vm" ? `Move ${ctx.name} to a full computer?` : `Move ${ctx.name} to a standard computer?`,
       message: to === "vm"

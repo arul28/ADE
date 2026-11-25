@@ -1,7 +1,7 @@
 import { useId, useRef, type KeyboardEvent } from "react";
 import { Check } from "@phosphor-icons/react";
 import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../../shared/cloudTiers";
-import { CLOUD_HOURS_WORDS, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../../shared/cloudUnitWords";
 import { CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import "./cloudSizeCards.css";
 
@@ -25,7 +25,7 @@ export function CloudSizeCards({
   markId,
   markLabel,
   ariaLabel,
-  words = CLOUD_HOURS_WORDS,
+  words = CLOUD_CREDIT_WORDS,
 }: {
   tiers: readonly CloudTier[];
   picked: CloudTierId | null;
@@ -36,7 +36,7 @@ export function CloudSizeCards({
   markId: CloudTierId | null;
   markLabel: string;
   ariaLabel: string;
-  /** The account's words (hours or credits, `cloudUnitWords`). */
+  /** The account's words (`cloudUnitWords`). */
   words?: CloudUnitWords;
 }) {
   const idBase = useId();

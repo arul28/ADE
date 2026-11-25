@@ -2,7 +2,6 @@ import {
   capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursLeftMilli,
-  formatCloudHours,
   formatCloudHoursRate,
   type CloudAccountState,
   type CloudComputerStatus,
@@ -138,7 +137,7 @@ export function cloudLaneStatusModel(input: {
         const left = cloudHoursLeftMilli(account);
         const included = Math.max(1, account.hours.includedMilli);
         return {
-          text: `${words.credits ? words.milli(left) : `${formatCloudHours(left)}h`} left · ${heroPeriodChip(account).text}`,
+          text: `${words.milli(left)} left · ${heroPeriodChip(account).text}`,
           tone: usageLeftLevel((left / included) * 100) ?? null,
         };
       })()

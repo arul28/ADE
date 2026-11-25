@@ -331,7 +331,7 @@ const machineArgSchema = z
 const laneMachineArgSchema = machineArgSchema.describe(
   "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
   + "Or \"cloud\": a new lane on its own new ADE Cloud computer (pick size, or the person's saved size). "
-  + "The person approves it in this chat, with the size and its hours rate.",
+  + "The person approves it in this chat, with the size and its credits rate.",
 );
 
 const cloudSizeArgSchema = z

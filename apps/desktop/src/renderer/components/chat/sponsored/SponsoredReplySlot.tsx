@@ -274,7 +274,7 @@ function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: bo
       <p className="ade-sponsored-title">{smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported"}</p>
       <p className="ade-sponsored-text">
         {smallNeedsCards
-          ? `Free shows ${FORMAT_PLACE[format]} in ADE Cloud chats. Without them, Small computers use your hours, half an hour for each hour awake. An agent may also recommend a sponsored tool.`
+          ? `Free shows ${FORMAT_PLACE[format]} in ADE Cloud chats. Without them, Small computers use your credits, half a credit for each hour awake. An agent may also recommend a sponsored tool.`
           : `A Free chat on ADE Cloud can show ${FORMAT_PLACE[format]}, and an agent may recommend a sponsored tool.`}{" "}
         To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the
         agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards
@@ -285,7 +285,7 @@ function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: bo
           Show sponsored cards
         </Button>
         <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
-          {smallNeedsCards ? "No thanks, use my hours" : "No thanks"}
+          {smallNeedsCards ? "No thanks, use my credits" : "No thanks"}
         </Button>
         <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
           How it works

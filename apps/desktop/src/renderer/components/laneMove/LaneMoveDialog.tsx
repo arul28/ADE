@@ -343,7 +343,7 @@ export function LaneMoveDialog({
                   tone: "warning",
                   report: false,
                   title: review.saved?.reason ?? "The computer's saved copy isn't complete.",
-                  detail: `So ADE wakes the computer and moves the lane from there. Waking it uses ${ADE_CLOUD_NAME} hours.`,
+                  detail: `So ADE wakes the computer and moves the lane from there. Waking it uses ${ADE_CLOUD_NAME} credits.`,
                 }}
               />
             ) : asleepInstanceId ? (

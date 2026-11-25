@@ -40,7 +40,7 @@ function hoursMeter(percentUsed: number): string {
   const left = percent > 0 ? `<td width="${percent}%" height="8" bgcolor="${color}" style="background:${color};font-size:0;line-height:0;">&nbsp;</td>` : "";
   const right = percent < 100 ? `<td height="8" bgcolor="#27273a" style="background:#27273a;font-size:0;line-height:0;">&nbsp;</td>` : "";
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 8px;border-radius:4px;overflow:hidden;"><tr>${left}${right}</tr></table>
-<p style="margin:0 0 24px;font:13px/18px ${FONT};color:#8b8b9a;">${percent}% of this period's hours used</p>`;
+<p style="margin:0 0 24px;font:13px/18px ${FONT};color:#8b8b9a;">${percent}% of this period's credits used</p>`;
 }
 
 const CLOUD_FOOTER = "ADE Cloud account notice, sent automatically. Replies to this address aren't read.";

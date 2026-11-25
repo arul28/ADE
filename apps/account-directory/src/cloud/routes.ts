@@ -183,8 +183,8 @@ const notFound = () => fail("not_found", NOT_FOUND_MESSAGE, 404);
 const outOfHours = (account?: Pick<AccountRow, "plan" | "free_refused_at" | "free_github_hold">, smallFree = true) => fail(
   "out_of_hours",
   account && smallFree && !hasNoFreePlan(account)
-    ? "You're out of ADE Cloud hours for this period. Small computers don't use hours, so they keep working."
-    : "You're out of ADE Cloud hours for this period.",
+    ? "You're out of ADE Cloud credits for this period. Small computers don't use credits, so they keep working."
+    : "You're out of ADE Cloud credits for this period.",
   402,
 );
 const badDiskStep = () => badRequest(`Disk grows in steps of ${DISK_STEP_GB} GB.`);

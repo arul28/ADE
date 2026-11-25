@@ -1651,7 +1651,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: [
       "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud",
       // The machines themselves live in Your computers; the page header opens it.
-      "sleep", "wake", "resize", "back up", "backup", "delete box", "hours", "plan", "extra hours", "billing", "suspended",
+      "sleep", "wake", "resize", "back up", "backup", "delete box", "hours", "credits", "plan", "extra hours", "extra credits", "billing", "suspended",
     ],
     tab: "ade-cloud",
     anchor: "cloud-connection",
@@ -1686,7 +1686,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-cloud.plans",
     label: "ADE Cloud plans and billing",
-    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "manage billing", "subscription", "invoice", "cancel"],
+    keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "extra credits", "credits", "manage billing", "subscription", "invoice", "cancel"],
     tab: "ade-cloud",
     anchor: "cloud-plan",
     // The plans side by side and extra hours; the account's Stripe subscription.
@@ -1697,7 +1697,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-cloud.invite",
     label: "Invite friends to ADE Cloud",
-    keywords: ["invite", "invite friends", "referral", "refer", "free hours", "invite code", "earn hours"],
+    keywords: ["invite", "invite friends", "referral", "refer", "free hours", "free credits", "invite code", "earn hours", "earn credits"],
     tab: "ade-cloud",
     anchor: "cloud-invite",
     // The account's invite link and code box; the Work sidebar's invite pill lands here.

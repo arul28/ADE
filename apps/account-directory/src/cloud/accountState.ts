@@ -1,4 +1,4 @@
-import { PHONE_CREDIT_MILLI_PER_MINUTE, creditsOnFor, liveUsedWithPhones } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
 import { requestCountry, smallUsesNoHours, sponsoredAccountState } from "./gravity";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
@@ -86,11 +86,6 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   });
   // A running credits phone's minutes its provider hasn't billed yet count now, as the limits count them.
   const live = await liveUsedWithPhones(env, account, now);
-  // Credits (`credits.ts`): one balance, which the ADE Cloud iPhone draws from too.
-  const credits = await creditsOnFor(env, userId).catch((error: unknown) => {
-    reportCloudFailure("cloud.credits_read_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
-    return false;
-  });
   // What the person sees follows the account test tool's plan (`ownerAccounts.ts`); billing below stays the real plan.
   const rules = shownRulesOf(account);
   const shownPlan = shownPlanIdOf(account);
@@ -107,7 +102,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   });
   return {
     ...(sponsored ? { sponsored } : {}),
-    ...(credits ? { credits: { phoneMilliPerMinute: PHONE_CREDIT_MILLI_PER_MINUTE } } : {}),
+    credits: { phoneMilliPerMinute: PHONE_CREDIT_MILLI_PER_MINUTE },
     plan: shownPlan === "free" ? "free" : "paid",
     rules,
     planId: shownPlan,
@@ -131,7 +126,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
     freePlan: { ...freePlanOf(account, growth?.has_claim === 1), ...(freeGithub ? { github: freeGithub } : {}) },
     ...(referral ? { referral } : {}),
     // D1 only: the account read is polled, and never asks NoMac.
-    phone: await phoneAccountState(env, account, now, credits ? { liveUsedMilli: live } : null).catch((error: unknown) => {
+    phone: await phoneAccountState(env, account, now, { liveUsedMilli: live }).catch((error: unknown) => {
       reportCloudFailure("cloud.phone_account_state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return undefined;
     }),

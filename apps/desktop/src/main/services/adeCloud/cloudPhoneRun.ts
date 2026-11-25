@@ -39,7 +39,7 @@ export function cloudPhoneCallerChat(args: unknown): string | null {
 function endSentence(reason: string | null): string {
   if (reason === "idle") return `nothing used it for ${CLOUD_PHONE_IDLE_MINUTES} minutes`;
   if (reason === "time_limit") return `it reached its ${CLOUD_PHONE_MAX_MINUTES / 60}-hour limit`;
-  if (reason === "spend_cap" || reason === "minutes_used") return "this period's minutes ran out";
+  if (reason === "spend_cap" || reason === "minutes_used") return "this period's credits ran out";
   if (reason === "stopped") return "it was stopped";
   return reason ? `it ended (${reason})` : "it ended";
 }
@@ -49,7 +49,7 @@ export function cloudPhoneStartLine(start: CloudPhoneStart): string {
   const device = start.phone.device;
   const label = isCloudPhoneDevice(device) ? CLOUD_PHONE_MODELS[device].label : String(device);
   const minutes = start.minutes
-    ? start.minutes.left > 0 ? ` ${start.minutes.left} of ${start.minutes.included} min left this period.` : " This period's plan minutes are used, so extra minutes apply."
+    ? start.minutes.left > 0 ? ` Credits for about ${start.minutes.left} min left this period.` : " This period's credits are used, so extra credits apply."
     : "";
   return `ADE Cloud iPhone started (${label}).${minutes} It stops after ${CLOUD_PHONE_IDLE_MINUTES} min with no command or input.`;
 }
