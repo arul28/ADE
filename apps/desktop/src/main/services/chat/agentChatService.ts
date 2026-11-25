@@ -12417,6 +12417,15 @@ export function createAgentChatService(args: {
    */
   turnStartRefusal?: (() => string | null) | null;
   /**
+   * Makes sure this host has applied the account's sign-in for `provider`
+   * before a scheduled turn starts. An ADE Cloud computer that just started
+   * (or woke from a stop) applies them a few seconds after its chats can run,
+   * and a wake that fired in that window failed with "couldn't sign in"
+   * (`bootstrap.ts`). Never throws for a missing sign-in: the turn then
+   * refuses visibly, as before. Absent: nothing to wait for.
+   */
+  ensureTurnSignIn?: ((provider: AgentChatProvider) => Promise<void>) | null;
+  /**
    * This host's sleep state, so a turn interrupted by a suspending machine can
    * say so instead of reporting a provider retry with cause `unknown`.
    *
@@ -12797,6 +12806,7 @@ export function createAgentChatService(args: {
     prService,
     diskPressureMonitor,
     turnStartRefusal,
+    ensureTurnSignIn,
     getTestService,
     getTerminalWatchService,
     ptyService,
@@ -84005,6 +84015,20 @@ export function createAgentChatService(args: {
           throw error;
         }
         return { complete: true };
+      }
+      // A computer that just started may not have the account's sign-in yet:
+      // get it first, as a queued message does, so the wake doesn't fail on it.
+      if (ensureTurnSignIn) {
+        const provider = managedSessions.get(schedule.sessionId)?.session.provider
+          ?? readPersistedState(schedule.sessionId)?.provider
+          ?? providerFromToolType(row?.toolType);
+        await ensureTurnSignIn(provider).catch((error: unknown) => {
+          logger.warn("agent_chat.scheduled_work_sign_in_check_failed", {
+            sessionId: schedule.sessionId,
+            scheduleId: schedule.id,
+            error: getErrorMessage(error),
+          });
+        });
       }
       // The send runs with `awaitDispatch: false`, so a throw here is a refusal
       // before any turn started (provider signed out, pending input, a full

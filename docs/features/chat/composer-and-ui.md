@@ -1046,7 +1046,11 @@ depth-first with the same mode, reported as `stoppedChildChatCount`).
   after five minutes. A turn cancels it; a timer over a minute late is dropped.
   Claude's `idleCompaction` setting is left alone.
 - Only a send with `compactFirst: true` compacts first; CLI, automation and
-  queued sends never do. No compaction while Claude's `resume_return` question
+  queued sends never do. A send to an ADE Cloud chat that goes through the
+  account's queue (its computer asleep or moving; desktop, ADE Web and the
+  phone) carries the choice in its settings (`CloudChatMessageSettings.compactFirst`),
+  and the computer passes it with that send when it delivers it, never as a
+  chat setting. An older server or computer drops it. No compaction while Claude's `resume_return` question
   waits, or while background work is live (`hasRuntimeActiveWorkload`).
 - **Shared values.** `shared/compactFirst.ts` (`compactFirstIdleMs`,
   `COMPACT_FIRST_MIN_TOKENS`); the summary carries `compactFirstMinTokens` and

@@ -132,7 +132,7 @@ export type CloudBootLaunchDeps = {
   sendChatMessage?: (
     projectId: string,
     sessionId: string,
-    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
+    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }>; compactFirst?: boolean },
   ) => Promise<void>;
   /**
    * Types a queued message at a restored CLI's prompt (`typeIntoAgentCliWhenFree`
@@ -988,9 +988,10 @@ async function follow(
       });
       if (!restored.promptSent) {
         // Older servers send no settings; the same checks as the server's. A refused setting never loses the message.
-        const settings = pending.kind === "cli" ? null : cloudChatMessageSettingsOf(pending.settings);
-        if (settings && deps.applyChatSettings) {
-          await deps.applyChatSettings(projectId, restored.sessionId, { ...settings, modelId: pending.modelId }).catch((error: unknown) => {
+        // "Compact first" goes with this send only; the rest are the chat's settings.
+        const { compactFirst, ...chatSettings } = (pending.kind === "cli" ? null : cloudChatMessageSettingsOf(pending.settings)) ?? {};
+        if (Object.keys(chatSettings).length > 0 && deps.applyChatSettings) {
+          await deps.applyChatSettings(projectId, restored.sessionId, { ...chatSettings, modelId: pending.modelId }).catch((error: unknown) => {
             logger.warn("cloud_boot_launch.continue_settings_failed", { launchId, error: errorText(error) });
           });
         }
@@ -998,6 +999,7 @@ async function follow(
           text: pending.text,
           clientSendId: pending.clientMessageId,
           ...(pending.attachments.length ? { attachments: pending.attachments } : {}),
+          ...(compactFirst !== undefined ? { compactFirst } : {}),
         });
       }
       continued = restored.sessionId;

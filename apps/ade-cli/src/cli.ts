@@ -32831,7 +32831,7 @@ async function runServe(
   const sendCloudChatMessage = async (
     projectId: string,
     sessionId: string,
-    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
+    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }>; compactFirst?: boolean },
   ) => {
     const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
     if (!chat) throw new Error("This ADE runtime has no chats.");
@@ -32840,6 +32840,7 @@ async function runServe(
       text: message.text,
       clientSendId: message.clientSendId,
       ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+      ...(message.compactFirst !== undefined ? { compactFirst: message.compactFirst } : {}),
     });
   };
   // A queued message waits until the chat's running turn is over (an event wait, at most 30 minutes).

@@ -3187,7 +3187,7 @@ describe("ADE Cloud without a computer", () => {
     expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/booted`, { adeVersion: "1.2.131", features: ["chat_queue", "later_feature"] })).status).toBe(200);
     expect(harness.row("select ade_features from cloud_computers where instance_id = ?", INSTANCE).ade_features).toBe("chat_queue");
     // Settings keep known keys with short plain values only.
-    const settings = { reasoningEffort: "xhigh", fastMode: true, fastTier: "turbo", presetId: "<b>p</b>", runtimeActor: "cto" };
+    const settings = { reasoningEffort: "xhigh", fastMode: true, fastTier: "turbo", presetId: "<b>p</b>", runtimeActor: "cto", compactFirst: true };
     const sent = await harness.send(OWNER, "POST", messages, { messageId: "m1", text: "Fix the footer.", settings });
     expect(sent.status).toBe(201);
     expect(((await sent.json()) as { wake: unknown }).wake).toEqual({ state: "waking" });
@@ -3201,7 +3201,7 @@ describe("ADE Cloud without a computer", () => {
     // The person's own list shows no settings; the computer's list carries them, checked.
     expect(JSON.stringify(await (await harness.send(OWNER, "GET", messages)).json())).not.toContain("xhigh");
     const forComputer = (await (await harness.send(OWNER, "GET", `/cloud/instances/${INSTANCE}/messages`)).json()) as { messages: Array<{ settings?: unknown }> };
-    expect(forComputer.messages.map((message) => message.settings)).toEqual([{ reasoningEffort: "xhigh", fastMode: true }]);
+    expect(forComputer.messages.map((message) => message.settings)).toEqual([{ reasoningEffort: "xhigh", fastMode: true, compactFirst: true }]);
     expect((await harness.send(OTHER, "GET", messages)).status).toBe(404);
     expect((await harness.send(OTHER, "GET", `/cloud/instances/${INSTANCE}/messages`)).status).toBe(404);
 

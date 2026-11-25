@@ -1505,6 +1505,12 @@ export type CloudChatMessageSettings = {
   reasoningEffort?: string | null;
   fastMode?: boolean;
   fastTier?: "ultrafast" | null;
+  /**
+   * This message only: compact the chat first (`AgentChatSendArgs.compactFirst`;
+   * false overrides Always). The computer passes it with the send, never
+   * stores it as a chat setting.
+   */
+  compactFirst?: boolean;
 };
 
 const SETTING_TEXT = /^[A-Za-z0-9._:/-]{1,120}$/;
@@ -1527,6 +1533,7 @@ export function cloudChatMessageSettingsOf(value: unknown): CloudChatMessageSett
   if (reasoningEffort !== undefined) settings.reasoningEffort = reasoningEffort;
   if (typeof record.fastMode === "boolean") settings.fastMode = record.fastMode;
   if (record.fastTier === "ultrafast" || record.fastTier === null) settings.fastTier = record.fastTier;
+  if (typeof record.compactFirst === "boolean") settings.compactFirst = record.compactFirst;
   return Object.keys(settings).length > 0 ? settings : null;
 }
 

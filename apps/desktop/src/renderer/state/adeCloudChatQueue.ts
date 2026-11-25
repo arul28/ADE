@@ -264,7 +264,9 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   // until the queue took this one.
   // A model goes only when the person picked one: the computer applies a sent
   // model as a pick, and a gone computer's launch falls back to the saved model.
-  const { modelId: pickedModel, ...settings } = peekQueuedChatPicks(location.chatId) ?? {};
+  const { modelId: pickedModel, ...picks } = peekQueuedChatPicks(location.chatId) ?? {};
+  // "Compact first" is this message's own choice, not a pick: it rides with it.
+  const settings = typeof args.compactFirst === "boolean" ? { ...picks, compactFirst: args.compactFirst } : picks;
   const answer = await send({
     machineKey: location.machineKey,
     chatId: location.chatId,

@@ -17216,7 +17216,7 @@ final class SyncService: ObservableObject {
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
-      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, files: cloudFiles, using: self) {
+      switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, files: cloudFiles, compactFirst: compactFirst, using: self) {
       case .queued:
         return .heldByServer
       case .refused(let message), .failed(let message):
@@ -17263,7 +17263,8 @@ final class SyncService: ObservableObject {
         sessionId: sessionId,
         text: text,
         messageId: (args["clientSendId"] as? String) ?? UUID().uuidString,
-        carriesFilesOrComments: !(attachments ?? []).isEmpty || includeThreadComments
+        carriesFilesOrComments: !(attachments ?? []).isEmpty || includeThreadComments,
+        compactFirst: compactFirst
       )
     }
     // The host takes the comments it sends and publishes the new list; the
@@ -17285,7 +17286,8 @@ final class SyncService: ObservableObject {
     sessionId: String,
     text: String,
     messageId: String,
-    carriesFilesOrComments: Bool
+    carriesFilesOrComments: Bool,
+    compactFirst: Bool?
   ) async throws -> SyncChatMessageDelivery {
     guard let key = chatThreadKey(for: sessionId),
           isCloudFleetKey(key.machineKey),
@@ -17297,7 +17299,7 @@ final class SyncService: ObservableObject {
         "ADEErrorCode": syncCloudComputerMovingCode,
       ])
     }
-    switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
+    switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, compactFirst: compactFirst, using: self) {
     case .queued:
       return .heldByServer
     case .refused(let message), .failed(let message):

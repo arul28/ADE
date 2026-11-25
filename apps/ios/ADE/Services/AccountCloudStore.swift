@@ -343,7 +343,7 @@ final class AccountCloudStore: ObservableObject {
   /// server wakes the chat's own computer (or makes a new one for a lane
   /// whose computer was deleted) and delivers the message once, keyed on
   /// `messageId` (the composer's send id).
-  func queueSend(machineKey: String, chatId: String, messageId: String, text: String, files: [CloudQueuedFile] = [], using sync: SyncService) async -> SendOutcome {
+  func queueSend(machineKey: String, chatId: String, messageId: String, text: String, files: [CloudQueuedFile] = [], compactFirst: Bool? = nil, using sync: SyncService) async -> SendOutcome {
     let generation = accountGeneration
     guard let client = await sync.cloudServerClient() else { return .failed("Sign in to ADE to send this message.") }
     let key = Self.chatKey(machineKey: machineKey, chatId: chatId)
@@ -370,7 +370,7 @@ final class AccountCloudStore: ObservableObject {
     guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
     let sizeId = newComputerSizes[machineKey.lowercased()]
     do {
-      let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments, sizeId: sizeId)
+      let result = try await client.queueMessage(machineKey: machineKey, chatId: chatId, messageId: messageId, text: text, attachments: attachments, sizeId: sizeId, compactFirst: compactFirst)
       guard generation == accountGeneration else { return .failed("The account changed. Send the message again.") }
       upsert(result.message, key: key)
       // A size picked while the send was out stays for the next send.

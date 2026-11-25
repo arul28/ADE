@@ -66,7 +66,7 @@ export type CloudChatQueueDeps = {
   chatProvider: (projectId: string, sessionId: string) => Promise<string | null>;
   /** Resolves when the chat has no running turn (an event wait, never a poll); false at the wait's limit. */
   waitForChatIdle: (projectId: string, sessionId: string) => Promise<boolean>;
-  sendChatMessage: (projectId: string, sessionId: string, message: { text: string; clientSendId: string; attachments?: QueuedFile[] }) => Promise<void>;
+  sendChatMessage: (projectId: string, sessionId: string, message: { text: string; clientSendId: string; attachments?: QueuedFile[]; compactFirst?: boolean }) => Promise<void>;
   /**
    * Applies the model and the settings picked with a message to the chat
    * (its `updateSession`) before the message goes. Chats only: a CLI ignores
@@ -248,10 +248,11 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
             return;
           }
           // Older servers send no settings; the same checks as the server's.
-          const settings = cloudChatMessageSettingsOf(message.settings);
-          if (deps.applyChatSettings && (settings || message.modelId)) {
+          // "Compact first" goes with this send only; the rest are the chat's settings.
+          const { compactFirst, ...chatSettings } = cloudChatMessageSettingsOf(message.settings) ?? {};
+          if (deps.applyChatSettings && (Object.keys(chatSettings).length > 0 || message.modelId)) {
             // A setting the chat refuses must not lose the message: it goes on the chat's current settings.
-            await deps.applyChatSettings(where.projectId, sessionId, { ...settings, modelId: message.modelId }).catch((error: unknown) => {
+            await deps.applyChatSettings(where.projectId, sessionId, { ...chatSettings, modelId: message.modelId }).catch((error: unknown) => {
               logger.warn("cloud.chat_queue_settings_failed", { ...logMeta, error: errorText(error) });
             });
           }
@@ -259,6 +260,7 @@ export function createCloudChatMessageQueue(deps: CloudChatQueueDeps): CloudChat
             text: message.text,
             clientSendId: message.clientSendId || message.messageId,
             ...(attachments.length ? { attachments } : {}),
+            ...(compactFirst !== undefined ? { compactFirst } : {}),
           });
         },
         logger,

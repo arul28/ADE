@@ -618,9 +618,11 @@ struct CloudServerClient {
   /// same `messageId` again answers the same message (the client's send id).
   /// `sizeId`: the size picked for the new computer when the chat's computer
   /// was deleted; the server ignores it for a computer that is still there.
-  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String, attachments: [[String: Any]] = [], sizeId: String? = nil) async throws -> CloudChatQueueResult {
+  func queueMessage(machineKey: String, chatId: String, messageId: String, text: String, attachments: [[String: Any]] = [], sizeId: String? = nil, compactFirst: Bool? = nil) async throws -> CloudChatQueueResult {
     var payload: [String: Any] = ["messageId": messageId, "text": text]
     if !attachments.isEmpty { payload["attachments"] = attachments }
+    // This message's own "compact first" (`CloudChatMessageSettings.compactFirst`); an older server drops it.
+    if let compactFirst { payload["settings"] = ["compactFirst": compactFirst] }
     if let sizeId { payload["sizeId"] = sizeId }
     let body = try JSONSerialization.data(withJSONObject: payload)
     return try decode(

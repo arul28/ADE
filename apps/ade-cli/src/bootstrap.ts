@@ -441,6 +441,34 @@ declare const __ADE_VERSION__: string | undefined;
 
 const BUNDLED_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
 
+/** Bounds one sign-in pull before a scheduled turn; the turn goes on either way. */
+const CLOUD_TURN_SIGN_IN_WAIT_MS = 30_000;
+
+/**
+ * `AgentChatServiceArgs.ensureTurnSignIn` on an ADE Cloud computer: when the
+ * provider reads as signed out here, pull the account's vault and run one
+ * sign-in pass (the Claude pass reconcile hears the pass), at most
+ * `CLOUD_TURN_SIGN_IN_WAIT_MS`. Signed in, or a provider ADE can't tell,
+ * costs one local check.
+ */
+function ensureCloudTurnSignIn(vault: AccountVaultStore | null): (provider: string) => Promise<void> {
+  let providerReady: import("./services/account/cloudLaunchSignInWait").ProviderReady | null = null;
+  return async (provider) => {
+    if (!providerReady) {
+      const { createProviderReady } = await import("./services/account/cloudLaunchSignInWait");
+      providerReady = createProviderReady(async (options) => (await import("../../desktop/src/main/services/ai/authDetector")).detectAllAuth(undefined, options));
+    }
+    if ((await providerReady(provider)) !== "missing") return;
+    const pull = (async () => {
+      await vault?.sync();
+      const { providerLoginSync } = await import("../../desktop/src/main/services/providerLogins/providerLoginSync");
+      await providerLoginSync()?.pass(null);
+    })();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([pull, new Promise<void>((resolve) => { timer = setTimeout(resolve, CLOUD_TURN_SIGN_IN_WAIT_MS); })]);
+    clearTimeout(timer);
+  };
+}
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 
@@ -3275,6 +3303,11 @@ export async function createAdeRuntime(args: {
         diskPressureMonitor,
         // An ADE Cloud computer that the server deletes now takes no new turn (`cloudDeleteFreeze.ts`).
         ...(isAdeCloudComputer() ? { turnStartRefusal: () => cloudDeleteFreezeRefusal() } : {}),
+        // A scheduled wake on an ADE Cloud computer that just started: when the chat's provider isn't
+        // signed in here yet, pull the account's sign-ins and run one sign-in pass first, as a queued
+        // message does (`cloudChatMessageQueue.ts`). A wake fired seconds after a start used to fail
+        // with "couldn't sign in" while the Claude pass was still on its way.
+        ...(isAdeCloudComputer() ? { ensureTurnSignIn: ensureCloudTurnSignIn(accountVaultStore ?? null) } : {}),
         // Sleep is a machine fact, so every chat in this brain reads the one
         // monitor. Borrowed: the chat service must not be able to dispose it out
         // from under the account publisher, or vice versa.
