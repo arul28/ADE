@@ -53,7 +53,7 @@ Ask the CTO to remember something explicitly — "remember that we deploy from `
 
 ## Switch models without losing the thread
 
-You can change the CTO's model at any point from **Settings → Model**. The conversation, its transcript, and its memory carry over to the new model (on a new thread) — a switch is not a reset. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
+You can change the CTO's model at any point from **Settings → Model**. A switch is not a reset. On Claude, Codex, Cursor and Muse the CTO keeps its thread. On other providers it starts a new thread with its memory, the story so far and the newest messages, and the full transcript stays in ADE for it to read. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
 
 The list is narrower than elsewhere in ADE on purpose: the CTO only runs on models that can take a message into a turn already underway, because it is interrupted constantly by the chats it starts and by its own wake-ups.
 
