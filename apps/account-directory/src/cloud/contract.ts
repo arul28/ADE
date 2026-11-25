@@ -261,8 +261,9 @@ export const CLOUD_PATHS = {
   agent37Webhook: "/cloud/agent37/webhook",
   /**
    * Sponsored cards and the Index on the Free plan's ADE Cloud chats
-   * (`gravity.ts`). `PUT /consent` `{ consent }` records the account's answer
-   * (`CloudSponsoredState`); `POST /seen` `CloudSponsoredSeenRequest` says a
+   * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
+   * the account's answer, or the notice that cards are on, and answers
+   * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
    * person has one of the account's cloud chats open; `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
@@ -3229,8 +3230,21 @@ export type CloudAccountPhone = {
 export type CloudSponsoredState = {
   /** Sponsored cards may show in this account's ADE Cloud chats now, once `consent` is `granted`. */
   ads: boolean;
-  /** The account's answer to the one-time question, on every machine; null when it was never asked. */
+  /**
+   * The account's answer to the one-time question, on every machine; null when
+   * the person is to be asked (never asked, or a no old enough to ask again).
+   * The yes saved with the on-by-default notice reads `granted` only where
+   * cards start on; anywhere else it reads null, so the person is asked.
+   */
   consent: CloudSponsoredConsent | null;
+  /**
+   * Cards start on for this person (their country's law lets ADE tell them
+   * instead of asking, and their browser sent no Global Privacy Control).
+   * With `consent` null, the client shows the notice that they are on, with
+   * a way to turn them off, instead of the question, and saves it
+   * (`PUT /consent` `notice`). Absent: ask.
+   */
+  startsOn?: boolean;
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */
   test: boolean;
   /**
@@ -3259,6 +3273,9 @@ export type CloudSponsoredSurface = "desktop" | "web" | "ios";
 export const CLOUD_SPONSORED_SURFACES = ["desktop", "web", "ios"] as const satisfies readonly CloudSponsoredSurface[];
 export type CloudSponsoredConsent = "granted" | "declined";
 export const CLOUD_SPONSORED_CONSENTS: readonly CloudSponsoredConsent[] = ["granted", "declined"];
+/** What `PUT /cloud/sponsored/consent` saves: the person's answer, or `notice` (they were told cards are on, `startsOn`). */
+export type CloudSponsoredChoice = CloudSponsoredConsent | "notice";
+export const CLOUD_SPONSORED_CHOICES: readonly CloudSponsoredChoice[] = ["granted", "declined", "notice"];
 
 /** The device a person reads the chat on, as Gravity wants it (`device_type`, `os`). */
 export type CloudSponsoredDevice = {

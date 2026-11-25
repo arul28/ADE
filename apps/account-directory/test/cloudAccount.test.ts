@@ -5488,6 +5488,58 @@ describe("sponsored cards", () => {
     expect(computer(harness).multiplier_milli).toBe(0);
   });
 
+  it("where cards start on (the US), the person is told and can turn them off: the notice's yes holds only there, a no holds a year there and two weeks elsewhere", async () => {
+    const from = (country: string, method: string, path: string, body?: Row, headers: Record<string, string> = {}) => {
+      const request = new Request(`https://directory.test${path}`, {
+        method,
+        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7", ...headers },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      Object.defineProperty(request, "cf", { value: { country } });
+      return handleCloudRequest(request, harness.env);
+    };
+    const state = async (country: string, headers?: Record<string, string>) => ((await (await from(country, "GET", "/cloud/account", undefined, headers)).json()) as CloudAccountState).sponsored;
+    const choose = async (country: string, consent: string, headers?: Record<string, string>) => (await from(country, "PUT", "/cloud/sponsored/consent", { consent }, headers)).status;
+    const saved = () => harness.row("select consent, source, country from cloud_sponsored_consent where user_id = ?", OWNER);
+    harness.exec("delete from cloud_sponsored_consent");
+    harness.exec("update cloud_computers set multiplier_milli = 500 where instance_id = ?", INSTANCE);
+
+    // Never answered: told in the US; asked in the UK, and in the US when the browser sends Global Privacy Control.
+    expect(await state("US")).toMatchObject({ ads: true, consent: null, startsOn: true });
+    expect((await state("GB"))?.startsOn).toBeUndefined();
+    expect((await state("US", { "sec-gpc": "1" }))?.startsOn).toBeUndefined();
+    expect([await choose("GB", "notice"), await choose("US", "notice", { "sec-gpc": "1" })]).toEqual([409, 409]);
+    expect(saved()).toBeUndefined();
+    // Told in the US: the yes is saved as the notice's, Small runs free, and cards go to Gravity from there.
+    expect(await choose("US", "notice")).toBe(200);
+    expect(saved()).toEqual({ consent: "granted", source: "notice", country: "US" });
+    expect(computer(harness).multiplier_milli).toBe(0);
+    expect(((await (await from("US", "POST", "/cloud/sponsored/ad", adBody())).json()) as { ad: Row | null }).ad).toMatchObject({ brand: "Neon" });
+    // From the UK that yes doesn't hold: the person is asked, and no card goes to Gravity.
+    expect((await state("GB"))?.consent).toBeNull();
+    expect(await (await from("GB", "POST", "/cloud/sponsored/ad", adBody({ turnId: "turn-2" }))).json()).toEqual({ ad: null, reason: "consent" });
+    expect(gravityCalls).toHaveLength(1);
+
+    // Turned off in the US: Small uses credits, a later notice never overwrites it, and it holds a year, whatever the switch does.
+    expect(await choose("US", "declined")).toBe(200);
+    expect(computer(harness).multiplier_milli).toBe(500);
+    expect(await choose("US", "notice")).toBe(200);
+    expect(saved()).toEqual({ consent: "declined", source: "answer", country: "US" });
+    harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + DAY);
+    clock += 364 * DAY;
+    expect((await state("US"))?.consent).toBe("declined");
+    clock += DAY;
+    expect(await state("US")).toMatchObject({ consent: null, startsOn: true });
+    // A no given in the UK is asked again after two weeks, or at once after the switch changes.
+    expect(await choose("GB", "declined")).toBe(200);
+    clock += 14 * DAY;
+    expect((await state("GB"))?.consent).toBeNull();
+    expect(await choose("GB", "declined")).toBe(200);
+    harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + 1);
+    clock += 2;
+    expect((await state("GB"))?.consent).toBeNull();
+  });
+
   it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {
     const DAY = 24 * 60 * 60_000;
     const viewer = (user: string, instance: string, seenAt: number) => harness.insert("cloud_sponsored_viewers", { user_id: user, instance_id: instance, ip: "203.0.113.7", ua: "ADE/1", device_type: "desktop", os: "macos", seen_at: seenAt });

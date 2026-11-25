@@ -58,6 +58,7 @@ export type {
   CloudSponsoredAd,
   CloudSponsoredAdAnswer,
   CloudSponsoredAdRequest,
+  CloudSponsoredChoice,
   CloudSponsoredConsent,
   CloudSponsoredDevice,
   CloudSponsoredFormat,

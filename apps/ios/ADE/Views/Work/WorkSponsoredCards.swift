@@ -150,7 +150,8 @@ struct WorkSponsoredReplySlot: View {
   @ObservedObject private var accountStore = AccountCloudStore.shared
 
   private enum Showing: Equatable {
-    case consent
+    /// The one-time question, or (`notice`) the notice that cards are on.
+    case consent(notice: Bool)
     case ad(CloudSponsoredAd)
   }
 
@@ -188,8 +189,13 @@ struct WorkSponsoredReplySlot: View {
 
   private var showing: Showing? {
     guard wanted, let sponsored else { return nil }
-    // The question is always asked under the reply.
-    if sponsored.consent == nil { return .consent }
+    // Where cards start on, the person is told instead of asked; the notice
+    // stays on its reply (after saving it made the answer a yes) until
+    // dismissed. Both are always under the reply.
+    let notice = store.noticeTurns[turnKey]
+    let noticeShowing = notice == nil ? sponsored.toldOn : notice == false && (sponsored.toldOn || sponsored.granted)
+    if noticeShowing { return .consent(notice: true) }
+    if sponsored.consent == nil, !sponsored.startsOn, notice != true { return .consent(notice: false) }
     // A card shows, and holds the place, only while its spot is on screen.
     if sponsored.granted, shownFormat == .belowReply, slot.onScreen, let ad = store.ads[turnKey] { return .ad(ad) }
     return nil
@@ -201,8 +207,11 @@ struct WorkSponsoredReplySlot: View {
     VStack(alignment: .leading, spacing: 0) {
       if store.holder == sessionId {
         switch showing {
-        case .consent:
-          WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format, words: CloudBalanceWords(accountStore.account))
+        case .consent(let notice):
+          WorkSponsoredConsentCard(
+            smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format, words: CloudBalanceWords(accountStore.account),
+            notice: notice, onDismiss: { store.dismissNotice(turnKey: turnKey) }
+          )
         case .ad(let ad):
           if let gravity = ad.gravity {
             WorkSponsoredGravityCard(ad: ad, gravity: gravity, sessionId: sessionId) {
@@ -224,6 +233,12 @@ struct WorkSponsoredReplySlot: View {
     .task(id: "\(showing != nil)|\(store.holder ?? "")") {
       if showing != nil { store.hold(sessionId) } else { store.release(sessionId) }
     }
+    // The notice, shown: kept on this reply and saved once as the account's yes.
+    .task(id: "\(turnKey)|\(store.holder == sessionId && showing == .consent(notice: true))|\(sponsored?.toldOn == true)") {
+      guard store.holder == sessionId, showing == .consent(notice: true), sponsored?.toldOn == true else { return }
+      store.showNotice(turnKey: turnKey)
+      store.noteNoticeShown()
+    }
     // The row under the reply is measured again whenever what it draws changes.
     .task(id: Self.shownKey(showing, holds: store.holder == sessionId)) {
       slot.setShownKey(Self.shownKey(showing, holds: store.holder == sessionId))
@@ -240,14 +255,16 @@ struct WorkSponsoredReplySlot: View {
   private static func shownKey(_ showing: Showing?, holds: Bool) -> String? {
     guard holds, let showing else { return nil }
     switch showing {
-    case .consent: return "consent"
+    case .consent(let notice): return notice ? "notice" : "consent"
     case .ad(let ad): return "ad:\(ad.id)"
     }
   }
 
   private func askIfWanted() async {
     // No ask while another sponsored unit holds the one place; the dock asks for its own.
-    guard sponsored?.granted == true, wanted, seen, !placeTaken, shownFormat != .abovePrompt, store.ads[turnKey] == nil else { return }
+    // The reply that showed the notice asks for no card.
+    guard sponsored?.granted == true, wanted, seen, !placeTaken, shownFormat != .abovePrompt, store.ads[turnKey] == nil,
+          store.noticeTurns[turnKey] == nil else { return }
     await workSponsoredAsk(instanceId: instanceId, sessionId: sessionId, turn: turn, format: shownFormat, store: store)
   }
 }
@@ -324,7 +341,7 @@ struct WorkSponsoredDockSlot: View {
 
   private var wanted: Bool {
     guard instanceId != nil, let sponsored, sponsored.ads, sponsored.granted, sponsored.format == .abovePrompt,
-          let turn, let turnKey else { return false }
+          let turn, let turnKey, store.noticeTurns[turnKey] == nil else { return false }
     return turn.isFresh() && !store.hiddenTurns.contains(turnKey) && store.appActive && slot.chatVisible
   }
 
@@ -470,6 +487,8 @@ private struct WorkSponsoredCTA: View {
   var external = false
   /// The smaller size for the cards' head row.
   var compact = false
+  /// The card's main answer: filled with the accent.
+  var primary = false
   let action: () -> Void
 
   var body: some View {
@@ -482,11 +501,12 @@ private struct WorkSponsoredCTA: View {
             .accessibilityHidden(true)
         }
       }
-      .font(.system(size: compact ? 11.5 : 12.5, weight: .medium))
-      .foregroundStyle(ADEColor.textSecondary)
+      .font(.system(size: compact ? 11.5 : 12.5, weight: primary ? .semibold : .medium))
+      .foregroundStyle(primary ? Color.white : ADEColor.textSecondary)
       .padding(.horizontal, compact ? 8 : 10)
       .frame(minHeight: compact ? 24 : 28)
-      .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEColor.textPrimary.opacity(0.14), lineWidth: 0.75))
+      .background(primary ? AnyShapeStyle(ADEColor.accentDeep) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+      .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEColor.textPrimary.opacity(primary ? 0 : 0.14), lineWidth: 0.75))
       .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
     .buttonStyle(.plain)
@@ -500,15 +520,21 @@ private func workSponsoredOpen(_ value: String?) {
   UIApplication.shared.open(url)
 }
 
-/// The one-time question, under the first finished reply of a Free cloud chat.
-/// While the server's `smallNeedsCards` rule is on, a no has Free's Small
-/// computers use hours, so the card says that up front.
+/// The one-time question, under the first finished reply of a Free cloud chat,
+/// or, where cards start on (`CloudSponsoredState.startsOn`), the notice that
+/// they are on with Turn off beside it. While the server's `smallNeedsCards`
+/// rule is on, a no has Free's Small computers use credits, so both say that
+/// on a line of its own.
 struct WorkSponsoredConsentCard: View {
   var smallNeedsCards = false
   /// Where the cards show, so the question names the place.
   var format: CloudSponsoredFormat = .belowReply
   /// The account's unit.
   var words: CloudBalanceWords = .credits
+  /// The notice that cards are on, not the question.
+  var notice = false
+  /// Got it: the notice goes from this reply.
+  var onDismiss: () -> Void = {}
   @State private var busy = false
   @State private var error: String?
 
@@ -517,16 +543,20 @@ struct WorkSponsoredConsentCard: View {
       Text("ADE Cloud Free")
         .font(.system(size: 11.5))
         .foregroundStyle(ADEColor.textMuted)
-      Text(smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported")
+      Text(notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported")
         .font(.system(size: 13.5, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
-      Text((smallNeedsCards
-        ? "Free shows \(format.placeSentence) in ADE Cloud chats. Without them, \(words.smallWithoutCards). An agent may also recommend a sponsored tool."
-        : "A Free chat on ADE Cloud can show \(format.placeSentence), and an agent may recommend a sponsored tool.")
-        + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older. You can change this in Settings › ADE Cloud.")
+      Text("Free ADE Cloud chats show \(format.placeSentence), and an agent may recommend a sponsored tool."
+        + (notice && smallNeedsCards ? " They keep Small computers free." : "")
+        + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.")
         .font(.system(size: 12.5))
         .foregroundStyle(ADEColor.textSecondary)
+        .lineSpacing(1.5)
+        .fixedSize(horizontal: false, vertical: true)
+      Text(costLine)
+        .font(.system(size: 12.5, weight: .medium))
+        .foregroundStyle(ADEColor.textPrimary)
         .lineSpacing(1.5)
         .fixedSize(horizontal: false, vertical: true)
       ViewThatFits(in: .horizontal) {
@@ -555,12 +585,26 @@ struct WorkSponsoredConsentCard: View {
     .accessibilityLabel("Sponsored cards on ADE Cloud Free")
   }
 
+  /// What a no costs, on a line of its own, and where to change it.
+  private var costLine: String {
+    let change = "You can change this in Settings › ADE Cloud."
+    guard smallNeedsCards else { return notice ? "You can turn them off at any time. \(change)" : change }
+    return "\(notice ? "Turn them off" : "Say no") and \(words.smallWithoutCards). \(change)"
+  }
+
   @ViewBuilder
   private var answers: some View {
-    WorkSponsoredCTA(title: "Show sponsored cards") { answer(CloudSponsoredState.granted) }
-      .disabled(busy)
-    WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my \(words.unit)" : "No thanks") { answer(CloudSponsoredState.declined) }
-      .disabled(busy)
+    if notice {
+      WorkSponsoredCTA(title: "Got it", primary: true) { onDismiss() }
+        .disabled(busy)
+      WorkSponsoredCTA(title: smallNeedsCards ? "Turn off, use my \(words.unit)" : "Turn off") { answer(CloudSponsoredState.declined) }
+        .disabled(busy)
+    } else {
+      WorkSponsoredCTA(title: "Show sponsored cards", primary: true) { answer(CloudSponsoredState.granted) }
+        .disabled(busy)
+      WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my \(words.unit)" : "No thanks") { answer(CloudSponsoredState.declined) }
+        .disabled(busy)
+    }
   }
 
   private var howItWorks: some View {

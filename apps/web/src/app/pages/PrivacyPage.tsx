@@ -9,9 +9,9 @@ import {
   setMarketingAnalyticsEnabled,
 } from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "November 24, 2026";
+const EFFECTIVE_DATE = "November 25, 2026";
 /** What the latest update changed, shown under the date. */
-const LATEST_CHANGE = "Added “Sponsored cards on the ADE Cloud Free plan”: Gravity is ADE’s ad partner, and that section lists what it receives.";
+const LATEST_CHANGE = "“Sponsored cards on the ADE Cloud Free plan”: in the United States the cards start on and you can turn them off; it also covers Global Privacy Control and the free Small computers they pay for.";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -28,7 +28,8 @@ const sponsoredSection: Section = {
   title: "Sponsored cards on the ADE Cloud Free plan",
   body: [
     "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com), its ad partner, to show sponsored cards in the ADE apps (desktop, the web app, and iPhone and iPad). A card is labeled “Sponsored” and shows under a finished reply, above the prompt box, or at the end of the reply, at most one per reply. An agent may also suggest a sponsored tool for something you need. Paid plans, chats on your own computer, and this website have no ads.",
-    "Only after you agree in ADE, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
+    "In the United States, sponsored cards start on: your first ADE Cloud chat (or Settings › ADE Cloud) tells you they are on, with a button to turn them off. Everywhere else, and whenever your browser sends a Global Privacy Control (GPC) signal, ADE asks first and cards show only after you agree.",
+    "While they are on, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
     {
       list: [
         "the last messages of that chat (your latest request and the reply),",
@@ -42,8 +43,10 @@ const sponsoredSection: Section = {
     "When a card shows, your app loads it from Gravity's design and tells Gravity directly that the card was seen and how much of it was on screen; when you open a card, the link goes through Gravity first, so Gravity can count the click. Gravity receives your IP address and your app or browser's details with those requests.",
     "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
     "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",
-    "You can turn this off in Settings › ADE Cloud by withdrawing your consent. After that, nothing is sent and no cards show.",
-    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you withdraw consent), the sponsored card shown for a reply for about a day, and daily counts of requests, cards shown and cards hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
+    "You can turn this off at any time in Settings › ADE Cloud. After that, nothing is sent and no cards show.",
+    "Under California and other US state privacy laws, sending this to Gravity for ads can be a “sale” or “sharing” of personal information. Turning sponsored cards off is how you opt out; if you do that in the United States, ADE won't ask you to turn them back on for 12 months. A browser that sends a Global Privacy Control signal never gets cards that started on by themselves: ADE asks there instead.",
+    "Notice of financial incentive: on the Free plan, Small ADE Cloud computers are free while sponsored cards are on. With them off, Small computers use credits, half a credit for each hour awake. The cards pay for that computer time, so ADE values the data above at about what that time costs. You can turn the cards off, or back on, at any time in Settings › ADE Cloud.",
+    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you turn sponsored cards off), the sponsored card shown for a reply for about a day, and daily counts of requests, cards shown and cards hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
   ],
 };
 
@@ -124,10 +127,10 @@ const sections: Section[] = [
           "Sentry — receives error and crash reports as described under Error and crash reporting, in Sentry's United States region. On iOS, a short, fully masked screen recording may accompany an error.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
-          "Gravity (IRIS Inc.) — ADE’s ad partner for sponsored cards on the ADE Cloud Free plan, only after you agree in ADE; see Sponsored cards below.",
+          "Gravity (IRIS Inc.) — ADE’s ad partner for sponsored cards on the ADE Cloud Free plan, only while they are on; see Sponsored cards below.",
         ],
       },
-      "ADE does not share analytics with advertisers. The only personal data ADE gives an ad partner is what “Sponsored cards on the ADE Cloud Free plan” below describes, and only after you agree in ADE.",
+      "ADE does not share analytics with advertisers. The only personal data ADE gives an ad partner is what “Sponsored cards on the ADE Cloud Free plan” below describes, and only while those cards are on.",
     ],
   },
   sponsoredSection,
@@ -147,7 +150,7 @@ const sections: Section[] = [
           "Revoke camera or local network access in iOS Settings → ADE.",
           "Unpair the iOS app from the machine to clear the stored pairing.",
           "Disable cloud and BYOK features in the desktop app at any time.",
-          "Turn off sponsored cards on the ADE Cloud Free plan by withdrawing your consent in Settings › ADE Cloud.",
+          "Turn off sponsored cards on the ADE Cloud Free plan in Settings › ADE Cloud (in the United States, this opts you out of the “sale” or “sharing” of the data they use).",
           "Set DO_NOT_TRACK=1 in the environment ADE runs in to stop product analytics and error reporting from the desktop app and runtime.",
           "Unpair first to clear pairing credentials, then uninstall or clear app/site data to remove the corresponding app-container or browser data.",
         ],

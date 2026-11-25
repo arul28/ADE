@@ -252,6 +252,8 @@ struct CloudSponsoredCard: View {
   /// The server's answer to this page's save, for a page whose account came
   /// through a computer (the account store then has no account to update).
   @State private var saved: CloudSponsoredState?
+  /// This card showed the notice that cards are on: its words stay while the page is open, after the save made it a yes.
+  @State private var toldHere = false
 
   /// The shared account's answer wins even when it is none (the switch went off).
   private var sponsored: CloudSponsoredState? {
@@ -265,7 +267,8 @@ struct CloudSponsoredCard: View {
       VStack(alignment: .leading, spacing: 0) {
         ADESettingsRow(title: "Sponsored cards", symbol: "megaphone") {
           Toggle("Sponsored cards", isOn: Binding(
-            get: { sponsored.granted },
+            // Where cards start on, they read on before any answer (this card is then the notice).
+            get: { sponsored.granted || sponsored.toldOn },
             set: { on in save(on ? CloudSponsoredState.granted : CloudSponsoredState.declined) }
           ))
           .labelsHidden()
@@ -297,16 +300,22 @@ struct CloudSponsoredCard: View {
         }
       }
       .adeKitCard(padding: nil)
+      // Shown here, the notice that cards are on is saved as the account's yes, as in a chat.
+      .task(id: sponsored.toldOn) {
+        guard sponsored.toldOn else { return }
+        toldHere = true
+        CloudSponsoredStore.shared.noteNoticeShown()
+      }
     }
   }
 
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {
     // Before the first yes, the toggle says everything the one-time question does.
-    guard sponsored.granted else {
+    guard sponsored.granted || sponsored.toldOn else {
       return "Off. If you turn it on, a Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
     }
     return sponsored.ads
-      ? "On. A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
+      ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
   }
 

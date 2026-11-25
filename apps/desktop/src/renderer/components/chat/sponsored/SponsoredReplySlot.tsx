@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ArrowUpRight, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent, type CloudSponsoredFormat } from "../../../../shared/adeCloud";
-import { setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
+import { noteSponsoredNoticeShown, setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
@@ -68,6 +68,12 @@ function sponsoredViewabilityUrl(impUrl: string, ev: "measured" | "viewable"): s
   }
 }
 const hiddenTurns = new Set<string>();
+/**
+ * Replies that showed the notice that cards are on (`startsOn`): false while
+ * it shows, true once the person dismissed it. That reply asks for no card:
+ * the notice holds its place.
+ */
+const noticeTurns = new Map<string, boolean>();
 /** Replies whose inline card went under the reply (no end to draw into): kept for the run, so a remount asks and draws the same. */
 const belowReplyTurns = new Set<string>();
 /**
@@ -121,6 +127,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
       turnActive={turnActive}
       paneVisible={paneVisible}
       consent={sponsored.consent}
+      startsOn={sponsored.startsOn === true}
       test={sponsored.test}
       smallNeedsCards={sponsored.smallNeedsCards === true}
       format={sponsored.format ?? "below_reply"}
@@ -135,6 +142,7 @@ function SponsoredReplySlotOn({
   turnActive,
   paneVisible,
   consent,
+  startsOn,
   test,
   smallNeedsCards,
   format,
@@ -142,6 +150,8 @@ function SponsoredReplySlotOn({
   instanceId: string;
   sessionId: string;
   consent: CloudSponsoredConsent | null;
+  /** Cards start on for this person: the notice that they are on shows instead of the question. */
+  startsOn: boolean;
   test: boolean;
   smallNeedsCards: boolean;
   format: CloudSponsoredFormat;
@@ -153,6 +163,8 @@ function SponsoredReplySlotOn({
   const turnKey = turn ? `${sessionId}:${turn.turnId}` : null;
   const [hidden, setHidden] = useState(() => (turnKey ? hiddenTurns.has(turnKey) : false));
   useEffect(() => setHidden(turnKey ? hiddenTurns.has(turnKey) : false), [turnKey]);
+  const [notice, setNotice] = useState(() => (turnKey ? noticeTurns.get(turnKey) : undefined));
+  useEffect(() => setNotice(turnKey ? noticeTurns.get(turnKey) : undefined), [turnKey]);
 
   // The latest finished reply, kept while the next one runs: the docked card stays only if it is that reply's.
   const [lastTurnKey, setLastTurnKey] = useState<string | null>(null);
@@ -207,7 +219,7 @@ function SponsoredReplySlotOn({
   // chat's copy (`not_cloud`): one more ask a little later, never more.
   const [askAgain, setAskAgain] = useState<string | null>(null);
   useEffect(() => {
-    if (consent !== "granted" || !wanted || !seen || !targetReady || !placeFree || !turn || !turnKey) return;
+    if (consent !== "granted" || notice !== undefined || !wanted || !seen || !targetReady || !placeFree || !turn || !turnKey) return;
     if (ad?.key === turnKey) return;
     const askAd = window.ade?.cloud?.sponsoredAd;
     if (!askAd) return;
@@ -231,12 +243,17 @@ function SponsoredReplySlotOn({
       live = false;
       if (timer != null) window.clearTimeout(timer);
     };
-  }, [consent, wanted, seen, targetReady, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain, shownFormat]);
+  }, [consent, notice, wanted, seen, targetReady, placeFree, turn, turnKey, ad?.key, instanceId, sessionId, askAgain, shownFormat]);
 
   const adShown = ad !== null && ad.key === turnKey && ad.format === shownFormat;
+  // Where cards start on, the person is told instead of asked; the notice stays on its reply
+  // (after saving it made the answer a yes) until dismissed. A turned-off notice unmounts the slot.
+  const told = startsOn && consent === null;
+  const noticeShowing = notice === undefined ? told : notice === false && (told || consent === "granted");
+  const asking = consent === null && !startsOn && notice !== true;
   let showing: "consent" | "ad" | null = null;
-  // The question is always asked under the reply.
-  if (wanted && onScreen && consent === null) showing = "consent";
+  // The question and the notice are always under the reply.
+  if (wanted && onScreen && (asking || noticeShowing)) showing = "consent";
   else if (wanted && seen && adShown && targetReady) showing = "ad";
   // The docked card stays while the next reply runs, and gives way to that reply's own.
   else if (place === "dock" && turnActive && target && visible && ad && ad.format === "above_prompt" && ad.key === lastTurnKey && !hiddenTurns.has(ad.key)) showing = "ad";
@@ -247,6 +264,22 @@ function SponsoredReplySlotOn({
   }, [showing, slotId, holder]);
   useEffect(() => () => releaseSponsoredPlace(slotId), [slotId]);
   const holds = holder === slotId;
+
+  // The notice, shown: saved once (so cards and free Small follow on every machine), and kept on this reply.
+  useEffect(() => {
+    if (!holds || showing !== "consent" || !told || !turnKey) return;
+    if (!noticeTurns.has(turnKey)) {
+      noticeTurns.set(turnKey, false);
+      if (noticeTurns.size > ANSWER_CACHE_LIMIT) noticeTurns.delete(noticeTurns.keys().next().value as string);
+      setNotice(false);
+    }
+    noteSponsoredNoticeShown();
+  }, [holds, showing, told, turnKey]);
+  const dismissNotice = () => {
+    if (!turnKey) return;
+    noticeTurns.set(turnKey, true);
+    setNotice(true);
+  };
 
   const hide = () => {
     if (!ad) return;
@@ -276,7 +309,9 @@ function SponsoredReplySlotOn({
   return (
     <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
       <div aria-hidden className="h-px w-full" />
-      {holds && showing === "consent" ? <SponsoredConsentCard smallNeedsCards={smallNeedsCards} format={shownFormat} /> : null}
+      {holds && showing === "consent" ? (
+        <SponsoredConsentCard smallNeedsCards={smallNeedsCards} format={shownFormat} notice={noticeShowing} onDismiss={dismissNotice} />
+      ) : null}
       {card && place && target ? createPortal(card, target) : card}
     </div>
   );
@@ -295,10 +330,17 @@ const FORMAT_PLACE: Record<CloudSponsoredFormat, string> = {
 };
 
 /**
- * The one-time question. While the server's `smallNeedsCards` rule is on, a
- * no has Free's Small computers use hours, so the card says that up front.
+ * The one-time question, or, where cards start on (`startsOn`), the notice
+ * that they are on with Turn off beside it. While the server's
+ * `smallNeedsCards` rule is on, a no has Free's Small computers use credits,
+ * so both say that on a line of its own.
  */
-function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: boolean; format: CloudSponsoredFormat }) {
+function SponsoredConsentCard({ smallNeedsCards, format, notice, onDismiss }: {
+  smallNeedsCards: boolean;
+  format: CloudSponsoredFormat;
+  notice: boolean;
+  onDismiss: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const answer = (consent: CloudSponsoredConsent) => {
     setBusy(true);
@@ -306,27 +348,44 @@ function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: bo
       .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save your answer", message: ipcErrorMessage(error) || "Try again in a moment." }))
       .finally(() => setBusy(false));
   };
+  const what = `Free ADE Cloud chats show ${FORMAT_PLACE[format]}, and an agent may recommend a sponsored tool.`;
   return (
     <section className="ade-sponsored" aria-label="Sponsored cards on ADE Cloud Free">
       <div className="ade-sponsored-head">
         <span className="ade-sponsored-label">ADE Cloud Free</span>
       </div>
-      <p className="ade-sponsored-title">{smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported"}</p>
+      <p className="ade-sponsored-title">
+        {notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers free" : "Free cloud chats are ad-supported"}
+      </p>
       <p className="ade-sponsored-text">
+        {what}{notice && smallNeedsCards ? " They keep Small computers free." : ""} {SPONSORED_SENDS}
+      </p>
+      <p className="ade-sponsored-cost">
         {smallNeedsCards
-          ? `Free shows ${FORMAT_PLACE[format]} in ADE Cloud chats. Without them, Small computers use your credits, half a credit for each hour awake. An agent may also recommend a sponsored tool.`
-          : `A Free chat on ADE Cloud can show ${FORMAT_PLACE[format]}, and an agent may recommend a sponsored tool.`}{" "}
-        To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the
-        agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards
-        are for people 18 or older. You can change this in Settings › ADE Cloud.
+          ? `${notice ? "Turn them off" : "Say no"} and Small computers use your credits, half a credit for each hour awake.`
+          : notice ? "You can turn them off at any time." : null}{" "}
+        You can change this in Settings › ADE Cloud.
       </p>
       <div className="ade-sponsored-actions">
-        <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("granted")}>
-          Show sponsored cards
-        </Button>
-        <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
-          {smallNeedsCards ? "No thanks, use my credits" : "No thanks"}
-        </Button>
+        {notice ? (
+          <>
+            <Button size="sm" casing="sentence" variant="primary" disabled={busy} onClick={onDismiss}>
+              Got it
+            </Button>
+            <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
+              {smallNeedsCards ? "Turn off, use my credits" : "Turn off"}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button size="sm" casing="sentence" variant="primary" disabled={busy} onClick={() => answer("granted")}>
+              Show sponsored cards
+            </Button>
+            <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
+              {smallNeedsCards ? "No thanks, use my credits" : "No thanks"}
+            </Button>
+          </>
+        )}
         <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
           How it works
         </button>
@@ -334,6 +393,10 @@ function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: bo
     </section>
   );
 }
+
+/** What Gravity gets, as the question, the notice and Settings say it. */
+const SPONSORED_SENDS =
+  "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.";
 
 type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };
 

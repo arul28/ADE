@@ -47,9 +47,11 @@ export function TermsPage() {
                 <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
                 <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
                   <p>
-                    The ADE Cloud Free plan is ad-supported. After you agree in ADE, chats on ADE Cloud computers may
-                    show a sponsored card from Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent
-                    may suggest a sponsored tool. Chats on your own computer and paid plans have no ads.{" "}
+                    The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored card from
+                    Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
+                    tool. In the United States the cards start on and ADE tells you so; elsewhere they show only after
+                    you agree. You can turn them off at any time in Settings › ADE Cloud; Small computers on Free then
+                    use credits. Chats on your own computer and paid plans have no ads.{" "}
                     <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
                       The Privacy page
                     </a>{" "}
