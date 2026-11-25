@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
+import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
@@ -38,7 +38,7 @@ import { ADE_CLOUD_NAME, CloudLogo, CloudMark, CloudSizeIcon } from "../../remot
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
-import { Banner } from "../../ui/notice";
+import { Banner, type NoticeAction } from "../../ui/notice";
 import { cloudFreeGithubHeroLine } from "./CloudFreeGithubNotice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
@@ -435,7 +435,9 @@ function CloudHero({
   // Small never uses credits (unless the catalog rates it), so only the bigger sizes pause.
   // Free credits held (GitHub rules, or another account used them here) don't come back at the reset, and nothing runs.
   const pauseLine = held
-    ? "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
+    ? earned > 0
+      ? "Your earned credits run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
+      : "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
     : smallRateMilli > 0
     ? `Cloud computers pause until ${formatCloudDate(account.billing.periodEnd)}.`
     : `Bigger computers pause until ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
@@ -515,13 +517,28 @@ function CloudHero({
         </div>
       </div>
       {moment ? (
-        <HeroLine
-          line={{ id: `cloud-plan-moment-${moment.key}`, tone: "success", title: moment.title, detail: moment.detail }}
-          action={{ label: "See your plan", onClick: toPlans }}
-          onDismiss={dismissCloudPlanMoment}
+        <Banner
+          layout="inline"
+          style={HERO_NOTICE_STYLE}
+          model={{
+            id: `cloud-plan-moment-${moment.key}`,
+            tone: "success",
+            icon: <CloudLogo size={14} glow />,
+            title: moment.title,
+            detail: moment.detail,
+            actions: [{ label: "See your plan", onClick: toPlans }],
+            dismiss: { onDismiss: dismissCloudPlanMoment },
+            report: false,
+          }}
         />
       ) : null}
-      {status ? <HeroLine line={status} action={statusAction(status, account, { onExtra: toExtra, onPlans: toPlans, onUpdateCard })} /> : null}
+      {status ? (
+        <Banner
+          layout="inline"
+          style={HERO_NOTICE_STYLE}
+          model={{ ...status, actions: statusActions(status, account, { onExtra: toExtra, onPlans: toPlans, onUpdateCard }), report: false }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -543,42 +560,31 @@ function ComputerWindows({ total, limit, awake }: { total: number; limit: number
   );
 }
 
-/** The one thing to do about the account's urgent line, or null when there is nothing to do. */
-function statusAction(
+/**
+ * The hero's notices sit in its night sky: the shared `Banner`, on the hero's
+ * glass instead of the page card, so they read as part of the plan.
+ */
+const HERO_NOTICE_STYLE: CSSProperties = {
+  position: "relative",
+  marginTop: 12,
+  borderRadius: 14,
+  border: "1px solid var(--adecd-glass-edge)",
+  background: "rgba(14, 10, 40, 0.42)",
+  backdropFilter: "blur(10px)",
+  boxShadow: "none",
+};
+
+/** The one thing to do about the account's urgent line; none when there is nothing to do. */
+function statusActions(
   status: CloudAccountBanner,
   account: CloudAccountState,
   to: { onExtra: () => void; onPlans: () => void; onUpdateCard: (() => void) | null },
-): { label: string; onClick: () => void } | null {
-  if (status.id === "cloud-hours-past-due") return to.onUpdateCard ? { label: "Update card", onClick: to.onUpdateCard } : null;
-  if (status.id === "cloud-hours-restored") return null;
+): NoticeAction[] {
+  if (status.id === "cloud-hours-past-due") return to.onUpdateCard ? [{ label: "Update card", variant: "primary", onClick: to.onUpdateCard }] : [];
+  if (status.id === "cloud-hours-restored") return [];
   const extra = account.extraHours;
-  if (!extra.available) return { label: "Compare plans", onClick: to.onPlans };
-  return extra.enabled ? null : { label: `Turn on ${cloudUnitWords(account).extra.toLowerCase()}`, onClick: to.onExtra };
-}
-
-/** A line inside the hero's sky: a lamp in its tone, the words, one action, and a close button for a moment that can be put away. */
-function HeroLine({
-  line,
-  action,
-  onDismiss,
-}: {
-  line: { id: string; tone: "info" | "warning" | "success"; title: string; detail: string };
-  action: { label: string; onClick: () => void } | null;
-  onDismiss?: () => void;
-}) {
-  return (
-    <div className="adecd-hero-status" role="status" data-tone={line.tone} data-id={line.id}>
-      <span className="adecd-status-lamp" aria-hidden="true" />
-      <div className="adecd-status-words">
-        <b>{line.title}</b>
-        <span>{line.detail}</span>
-      </div>
-      {action ? <button type="button" className="adecd-glassbtn adecd-status-action" onClick={action.onClick}><span>{action.label}</span></button> : null}
-      {onDismiss ? (
-        <button type="button" className="adecd-status-close" aria-label="Dismiss" onClick={onDismiss}><X size={12} weight="bold" /></button>
-      ) : null}
-    </div>
-  );
+  if (!extra.available) return [{ label: "Compare plans", onClick: to.onPlans }];
+  return extra.enabled ? [] : [{ label: `Turn on ${cloudUnitWords(account).extra.toLowerCase()}`, onClick: to.onExtra }];
 }
 
 const WHEN_CREDITS_RUN_OUT = "When credits run out";
