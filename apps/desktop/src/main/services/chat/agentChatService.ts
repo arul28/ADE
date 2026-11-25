@@ -206,8 +206,7 @@ import {
 import { createCtoHistoryReader } from "../cto/ctoHistoryReader";
 import {
   buildCtoHistoryBlock,
-  countUncoveredBeforeTail,
-  selectCtoTail,
+  selectCtoHistoryTail,
   type CtoStoryRecord,
 } from "../cto/ctoStory";
 import { createCtoStoryUpdater, type CtoStorySession, type CtoStoryUpdateRequest } from "../cto/ctoStoryUpdater";
@@ -18780,13 +18779,18 @@ export function createAgentChatService(args: {
       // reads as a new instruction.
       const entries = sinceMove ?? collectConversationEntries(managed);
       const story = readCtoStorySafely();
-      const { kept: tailEntries, firstKeptIndex } = selectCtoTail(entries);
+      // Widened over what the story hasn't folded yet: a fresh thread's forced
+      // fold runs in the background, and this send doesn't wait for it.
+      const { kept: tailEntries, widenedBy, omitted } = selectCtoHistoryTail(entries, story);
+      if (widenedBy > 0) {
+        logger.info("agent_chat.cto_tail_widened", { sessionId: managed.session.id, widenedBy, omitted });
+      }
       const block = buildCtoHistoryBlock({
         title: RECENT_CONVERSATION_TAIL_TITLE,
         story,
         carried: carriedTurns,
         tail: tailEntries,
-        omitted: countUncoveredBeforeTail(entries, firstKeptIndex, story),
+        omitted,
         timeZone: ctoPersonTimeZone(),
       });
       if (block.length) sections.push({ id: "tail", text: block });
@@ -30636,10 +30640,23 @@ export function createAgentChatService(args: {
     //  - Terminal reasons (handle_close, ended_session, model_switch) must
     //    still invalidate so a future resume can't reattach to a session
     //    the user actually closed.
+    // An invalidating teardown drops the pointer of OpenCode, Droid, Copilot,
+    // Pi, Muse and the ACP providers, so their next send opens a new thread;
+    // `armIfStale` can't see that, because the key reads "unopened" until the
+    // new thread names itself, after the first send. Claude and Cursor resume
+    // their persisted pointer and Codex its session `threadId`: those threads
+    // already hold the conversation.
+    const restageIfThreadDropped = (): void => {
+      const provider = managed.session.provider;
+      if (provider === "claude" || provider === "cursor") return;
+      if (provider === "codex" && managed.session.threadId) return;
+      restageSectionsForNewProviderThread(managed);
+    };
     if (!managed.runtime) {
       if (!reasonAllowsPreservation) {
         managed.runtimeInvalidated = true;
         clearDeliveredDirectiveEpoch(managed);
+        restageIfThreadDropped();
       }
       return;
     }
@@ -30946,6 +30963,7 @@ export function createAgentChatService(args: {
       managed.runtime = null;
     }
     managed.runtimeInvalidated = !preserveProviderResumeState;
+    if (managed.runtimeInvalidated) restageIfThreadDropped();
     managed.acpReasoningEffortInvalidated = false;
     if (!preserveDeliveredDirectives) {
       clearDeliveredDirectiveEpoch(managed);

@@ -5242,6 +5242,7 @@ describe("ADE Cloud computer status (the provider's webhook and the brain's acti
 describe("sponsored cards", () => {
   type GravityCall = { url: string; body: Row };
   let gravityCalls: GravityCall[];
+  let gravityAnswer: Row;
   const AD = { adText: "Serverless Postgres that scales to zero.", title: "Neon", brandName: "Neon", cta: "Try Neon", url: "https://neon.tech", clickUrl: "https://api.trygravity.ai/track/click?p=1", impUrl: "https://api.trygravity.ai/ack?p=1", favicon: "https://icons.example/neon.ico" };
   const PICK = { search_id: "s1", recommendation: { name: "Neon", description: "Serverless Postgres", category: "database", click_url: "https://index.trygravity.com/go/abc", website_url: "https://neon.tech", sponsored: true }, install: { steps: [{ text: "npm i @neondatabase/serverless" }, { command: "npx\u200b neonctl init" }, { text: "x".repeat(501) }, { text: "rm -rf ./db" }] } };
   const DEVICE = { type: "desktop", os: "macos", osVersion: "15.1", ua: "ADE/1.2.133" };
@@ -5257,12 +5258,13 @@ describe("sponsored cards", () => {
 
   beforeEach(() => {
     gravityCalls = [];
+    gravityAnswer = AD;
     const inner = globalThis.fetch;
     vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       if (!/trygravity\./.test(url)) return inner(input as RequestInfo, init);
       gravityCalls.push({ url, body: init?.body ? JSON.parse(String(init.body)) as Row : {} });
-      return new Response(JSON.stringify(url.includes("index.") ? PICK : [AD]), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(url.includes("index.") ? PICK : [gravityAnswer]), { status: 200, headers: { "content-type": "application/json" } });
     });
     Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_ADS: "all" });
     setting("gravity_ads", "all");
@@ -5340,6 +5342,43 @@ describe("sponsored cards", () => {
     const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json();
     expect(answer).toEqual({ ad: null, reason });
     expect(gravityCalls).toEqual([]);
+  });
+
+  // Gravity's renderer: only a client that draws Gravity's design gets it, and only what that renderer draws.
+  const SPEC = { version: 1, name: "design", root: { type: "link", bind: "url", children: [{ type: "text", bind: "title" }] } };
+  it.each<[string, Row, Row, string | undefined]>([
+    ["an older client gets ADE's own card, and Gravity is told no design will be drawn", {}, { supportsSpec: false }, undefined],
+    ["desktop and web get Gravity's web design, with the icon inlined", { renderer: "web1" }, { supportsSpec: true, specCapabilities: "web1" }, "data:image/png;base64,iVBORw=="],
+    ["the iPhone app gets Gravity's native design, with the icon's own link", { renderer: "psp1", surface: "ios", device: IPHONE }, { supportsSpec: true, specCapabilities: "psp1" }, AD.favicon],
+    ["the inline format stays ADE's own linked line, whatever the client draws", { renderer: "web1", format: "inline" }, { supportsSpec: false }, undefined],
+  ])("%s", async (_label, overrides, request, favicon) => {
+    gravityAnswer = {
+      ...AD,
+      renderer_spec: SPEC,
+      render: { mode: "iframe", frameUrl: "https://frames.trygravity.ai/f/1" },
+      unit: { type: "action_card", version: 1, layouts: [], content: {} },
+      action: { type: "prompt", id: "a1", prompt: "install neon" },
+      connect: { type: "mcp", id: "c1", serverUrl: "https://mcp.example", name: "Neon" },
+    };
+    const gravity = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input) === AD.favicon ? new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } }) : gravity(input, init));
+    const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json() as { ad: Row & { gravity?: Row } };
+    expect(gravityCalls).toHaveLength(1);
+    const body = gravityCalls[0]!.body;
+    expect(body).toMatchObject(request);
+    // Never a frame, a data unit or an image layout: no ADE client draws one.
+    expect(body.supportsFrames).toBeUndefined();
+    expect((body.placements as Row[])[0]!.capabilities).toBeUndefined();
+    expect(answer.ad).toMatchObject({ brand: "Neon", clickUrl: AD.clickUrl, impUrl: AD.impUrl });
+    if (!favicon) {
+      expect(answer.ad.gravity).toBeUndefined();
+      return;
+    }
+    expect(answer.ad.gravity).toEqual({
+      adText: AD.adText, title: "Neon", cta: "Try Neon", brandName: "Neon", url: "https://neon.tech/", favicon,
+      clickUrl: AD.clickUrl, impUrl: AD.impUrl, renderer_spec: SPEC,
+    });
   });
 
   it("tells clients nothing while the switch is off, and the answer while it is on", async () => {

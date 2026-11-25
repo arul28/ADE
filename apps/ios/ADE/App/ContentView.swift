@@ -527,7 +527,7 @@ private struct PrivacyPolicyNoticeBanner: View {
     TopPromptBanner(
       systemImage: "checkmark.shield.fill",
       title: "We updated our Privacy Policy",
-      detail: "It now lists everything ADE collects and where it goes. What ADE collects did not change.",
+      detail: "It now lists everything ADE collects and where it goes, and adds sponsored cards on the ADE Cloud Free plan.",
       secondary: .init(title: "OK", accessibilityLabel: "Close the privacy policy notice", identifier: "privacy-notice-ok", action: onClose),
       primary: .init(title: "Read", accessibilityLabel: "Read what changed in the Privacy Policy", identifier: "privacy-notice-read", action: onRead)
     )

@@ -572,6 +572,7 @@ vi.mock("@opencode/client", () => ({
         },
         message: { list: vi.fn(async () => ({ data: [] })) },
         command: { list: vi.fn(async () => ({ data: mockState.openCodeCommands.map((name) => ({ name })) })) },
+        mcp: { list: vi.fn(async () => ({ data: [] })) },
         permission: { reply: vi.fn(async () => ({ data: {} })) },
         question: { reply: vi.fn(async () => ({ data: {} })), reject: vi.fn(async () => ({ data: {} })) },
         session: {

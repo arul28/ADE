@@ -26,7 +26,7 @@ export function PrivacyPolicyUpdateNotice(): null {
           tone: "info",
           icon: <ShieldCheck size={14} weight="bold" />,
           title: "We updated our Privacy Policy",
-          detail: "It now lists everything ADE collects and where it goes. What ADE collects did not change.",
+          detail: "It now lists everything ADE collects and where it goes, and adds sponsored cards on the ADE Cloud Free plan.",
           actions: [
             {
               label: "Read what changed",

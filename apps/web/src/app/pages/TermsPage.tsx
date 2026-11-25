@@ -1,7 +1,6 @@
 import { Container } from "../../components/Container";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
-import { GRAVITY_ADS_ON_WEBSITE } from "../../lib/cloudPricing";
 import { LINKS } from "../../lib/links";
 import { ANALYTICS_FEATURE_ATTRIBUTE, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
@@ -20,7 +19,7 @@ const sections: Array<{ title: string; body: string[] }> = [
     title: "Your account and your data",
     body: [
       "ADE needs an account. You are responsible for what happens under your account and for keeping your sign-in methods safe.",
-      "You let ADE handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your ADE account so your other computers and ADE Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and ADE Cloud data the policy lists; and sending product analytics, error reports and diagnostic reports.",
+      "You let ADE handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your ADE account so your other computers and ADE Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and ADE Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, on the ADE Cloud Free plan after you agree, sending parts of ADE Cloud chats to Gravity for sponsored cards.",
       "You can turn off the features that have a switch, as the Privacy Policy's “Your choices” section says, and you can delete your account at any time.",
     ],
   },
@@ -85,29 +84,32 @@ export function TermsPage() {
                 </div>
               </Reveal>
             ))}
-            {GRAVITY_ADS_ON_WEBSITE ? (
-              <Reveal delay={0.08}>
-                <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
-                  <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
-                  <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
-                    <p>
-                      The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored card,
-                      labeled “Sponsored”. Paid plans have no ads. The Privacy page lists what is shared.
-                    </p>
-                    <p>ADE Cloud is for people 18 or older.</p>
-                    <p>
-                      “Unlimited Small computers” is subject to fair use. ADE may limit an account whose use is far
-                      outside normal development work, for example running an always-on service, mining, or automated
-                      traffic. ADE gives notice where possible.
-                    </p>
-                    <p>
-                      ADE gives no rewards for viewing or clicking ads. You must not view or click ads automatically,
-                      or for pay.
-                    </p>
-                  </div>
+            <Reveal delay={0.08}>
+              <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
+                <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
+                <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
+                  <p>
+                    The ADE Cloud Free plan is ad-supported. After you agree in ADE, chats on ADE Cloud computers may
+                    show a sponsored card from Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent
+                    may suggest a sponsored tool. Chats on your own computer and paid plans have no ads.{" "}
+                    <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
+                      The Privacy page
+                    </a>{" "}
+                    lists what is shared with Gravity.
+                  </p>
+                  <p>ADE Cloud is for people 18 or older.</p>
+                  <p>
+                    “Unlimited Small computers” is subject to fair use. ADE may limit an account whose use is far
+                    outside normal development work, for example running an always-on service, mining, or automated
+                    traffic. ADE gives notice where possible.
+                  </p>
+                  <p>
+                    ADE gives no rewards for viewing or clicking ads. You must not view or click ads automatically,
+                    or for pay.
+                  </p>
                 </div>
-              </Reveal>
-            ) : null}
+              </div>
+            </Reveal>
             <Reveal delay={0.1}>
               <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                 <div className="text-sm font-semibold text-fg">Project docs</div>

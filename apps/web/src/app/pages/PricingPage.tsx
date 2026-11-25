@@ -258,7 +258,7 @@ function RateSection() {
               <RateRow
                 key={size.id}
                 name={size.label}
-                detail={`${size.cpu} CPU · ${size.memoryGb} GB memory · ${size.use}`}
+                detail={`${size.full ? "Full computer · " : ""}${size.cpu} CPU · ${size.memoryGb} GB memory · ${size.use}`}
                 per="Each hour uses"
                 value={size.rate > 0 ? UNIT.count(size.rate) : "None"}
                 note={size.rate > 0 ? undefined : GRAVITY_ADS_ON_WEBSITE ? "Unlimited on paid plans, and on Free with sponsored cards" : "Unlimited, on every plan"}

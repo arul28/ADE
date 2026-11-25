@@ -119,8 +119,8 @@
   // `gravity_ads` setting may go: `off`, a hard off; `testers`; `all`),
   // GRAVITY_LIVE (`1` lets the `gravity_live` setting send real ads; anything
   // else keeps Gravity's free test ads), GRAVITY_COUNTRIES (default `US,CA,GB,AU`),
-  // and GRAVITY_DAILY_LIMIT (live
-  // requests a day, default 900 under self-serve's 1,000). Turning ads on is
+  // and GRAVITY_DAILY_LIMIT (an optional ceiling on live requests a day;
+  // unset, none: the contract has no daily limit). Turning ads on is
   // the owner's call, asked for on its own.
   //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
@@ -342,8 +342,11 @@
         // Sponsored cards and the Index (src/cloud/gravity.ts): the ceiling of
         // the instant `gravity_ads` setting, which starts off (no row reads
         // off). The owner flips that setting; `off` here is the hard off.
-        // GRAVITY_LIVE stays unset: test ads only. GRAVITY_API_KEY is a secret.
+        // GRAVITY_LIVE `1` only lets the instant `gravity_live` setting (off
+        // until the owner turns it on) send real ads; with that setting off,
+        // ads stay Gravity's free test ads. GRAVITY_API_KEY is a secret.
         "GRAVITY_ADS": "all",
+        "GRAVITY_LIVE": "1",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.

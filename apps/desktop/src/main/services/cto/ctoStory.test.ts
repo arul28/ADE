@@ -6,6 +6,7 @@ import {
   countUncoveredBeforeTail,
   CTO_TAIL_MAX_CHARS,
   planCtoStoryFold,
+  selectCtoHistoryTail,
   selectCtoTail,
   type CtoStoryEntry,
   type CtoStoryRecord,
@@ -31,6 +32,34 @@ describe("selectCtoTail", () => {
     expect(firstKeptIndex).toBe(list.length - expected);
     expect(kept[kept.length - 1]!.text.slice(0, 4)).toBe(list[list.length - 1]!.text.slice(0, 4));
     expect(kept.every((entry) => entry.text.length <= 6_000)).toBe(true);
+  });
+});
+
+describe("selectCtoHistoryTail", () => {
+  // 30 messages of 2k: the base tail keeps the newest 18; 0..11 are outside it.
+  const list = entries(30, 2_000);
+  const story = (minute: number) => ({ coveredThrough: at(minute) });
+  const startsAt = (kept: CtoStoryEntry[]) => kept[0]!.text.split(":")[0];
+
+  it.each([
+    // The forced fold on a fresh thread has not landed: 6..11 left the tail since the story's end.
+    ["the fold has not landed", story(5), 6, "6", 0],
+    ["the fold landed", story(11), 0, "12", 0],
+    // Everything outside the base tail is new, but only 24k of it fits.
+    ["no story yet", null, 12, "0", 0],
+  ])("%s", (_label, record, widenedBy, first, omitted) => {
+    const result = selectCtoHistoryTail(list, record);
+    expect(result.widenedBy).toBe(widenedBy);
+    expect(startsAt(result.kept)).toBe(first);
+    expect(result.kept[result.kept.length - 1]!.text).toBe(list[list.length - 1]!.text);
+    expect(result.omitted).toBe(omitted);
+  });
+
+  it("counts what its own budget leaves out", () => {
+    const long = entries(60, 2_000);
+    const result = selectCtoHistoryTail(long, null);
+    expect(result.widenedBy).toBe(12);
+    expect(result.omitted).toBe(60 - 18 - 12);
   });
 });
 
