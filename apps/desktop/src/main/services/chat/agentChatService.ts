@@ -73444,6 +73444,7 @@ export function createAgentChatService(args: {
       // when its saved state is rewritten, which is not a move.
       lastActivityAt: row.lastActivityAt || row.startedAt || summary.startedAt,
       turnStartedAt: turnStartedAtOf(summary),
+      lastTurnFailedAt: row.lastTurnFailedAt,
       ended: Boolean(summary.archivedAt),
       turnActive: summary.status === "active" || Boolean(summary.currentTurnStartedAt) || Boolean(summary.turnAcceptedAt),
       awaitingInput,
@@ -73488,6 +73489,7 @@ export function createAgentChatService(args: {
       lastActivityAt: ctoChildMovedAt({
         lastActivityAt: row.lastActivityAt || row.startedAt || summary.startedAt,
         turnStartedAt: turnStartedAtOf(summary),
+        lastTurnFailedAt: row.lastTurnFailedAt,
       }),
       ended: Boolean(row.archivedAt || summary.archivedAt),
       pendingKey: card === undefined ? undefined : awaitingInput ? (card?.key ?? null) : null,

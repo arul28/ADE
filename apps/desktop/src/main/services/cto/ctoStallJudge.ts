@@ -69,6 +69,11 @@ export type CtoChildFacts = {
    * that starts after a long pause is a move even before it writes anything.
    */
   turnStartedAt?: string | null;
+  /**
+   * When the child's last turn failed, ISO. A turn that fails before any
+   * output (a rate limit) moves the child too: someone or something retried it.
+   */
+  lastTurnFailedAt?: string | null;
   /** Archived or gone. A chat whose runtime stopped (a brain restart) is not ended: it resumes on send. */
   ended: boolean;
   turnActive: boolean;
@@ -144,9 +149,9 @@ function latestMs(...times: Array<string | null | undefined>): number {
   return latest;
 }
 
-/** The child's last move, ISO: its last output, or the start of the turn it runs now when that is later. */
-export function ctoChildMovedAt(facts: Pick<CtoChildFacts, "lastActivityAt" | "turnStartedAt">): string {
-  const ms = latestMs(facts.lastActivityAt, facts.turnStartedAt);
+/** The child's last move, ISO: its last output, the start of the turn it runs now, or its last failed turn, whichever is latest. */
+export function ctoChildMovedAt(facts: Pick<CtoChildFacts, "lastActivityAt" | "turnStartedAt" | "lastTurnFailedAt">): string {
+  const ms = latestMs(facts.lastActivityAt, facts.turnStartedAt, facts.lastTurnFailedAt);
   return Number.isFinite(ms) ? new Date(ms).toISOString() : facts.lastActivityAt;
 }
 

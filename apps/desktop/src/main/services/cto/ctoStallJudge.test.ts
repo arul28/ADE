@@ -56,6 +56,7 @@ describe("judgeCtoChildStall", () => {
     ["a turn quiet for 10 min", { turnActive: true }, 10 * MIN, null],
     ["a turn that started 5 min ago after a long pause", { turnActive: true, turnStartedAt: at(30 * MIN) }, 35 * MIN, null],
     ["a turn started 20 min ago with no output since", { turnActive: true, turnStartedAt: at(30 * MIN) }, 50 * MIN, "hung"],
+    ["idle 1 min after a turn that failed with no output", { lastTurnFailedAt: at(30 * MIN) }, 31 * MIN, null],
     ["a card first seen 1 min ago after old output", { awaitingInput: true, pendingKind: "permission", pendingSeenAt: at(9 * MIN) }, 10 * MIN, null],
     ["quiet on purpose (settled, snoozed, waiting on its own work)", { quietOnPurpose: true }, 30 * MIN, null],
     ["ended", { ended: true }, 30 * MIN, null],
