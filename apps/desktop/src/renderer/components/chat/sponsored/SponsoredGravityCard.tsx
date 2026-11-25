@@ -1,4 +1,4 @@
-import { Suspense, lazy, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import type { GravityAdData } from "@gravity-ai/ui";
 import { isGravityUrl, type CloudSponsoredGravityAd } from "../../../../shared/adeCloud";
@@ -29,13 +29,18 @@ type Props = {
 export function SponsoredGravityCard({ ad, place, brand, onHide }: Props) {
   const ref = useRef<HTMLElement | null>(null);
   const theme = useGravityTheme(ref);
+  const viewedBefore = useMemo(() => Boolean(ad.impUrl && viewedImpressions.has(ad.impUrl)), [ad.impUrl]);
   // The design's links fall back to the landing page only when Gravity sent no tracked link; ADE always has one.
-  const data = useMemo(() => ({ ...ad, url: ad.url ?? ad.clickUrl }) as GravityAdData, [ad]);
+  // A card already seen in this window mounts without its view link, so the renderer doesn't send it again.
+  const data = useMemo(() => {
+    const { impUrl, ...rest } = ad;
+    return { ...rest, ...(impUrl && !viewedBefore ? { impUrl } : {}), url: ad.url ?? ad.clickUrl } as GravityAdData;
+  }, [ad, viewedBefore]);
   // Gravity's links are `target="_blank"` anchors, and the desktop window opens no
-  // windows: every click on the card opens Gravity's tracked link in the browser.
+  // windows: a click (or a middle click) on the card opens Gravity's tracked link in the browser.
   const onClickCapture = (event: React.MouseEvent<HTMLElement>) => {
     const target = event.target as Element;
-    if (target.closest(".ade-sponsored-gravity-hide")) return;
+    if (event.button > 1 || target.closest(".ade-sponsored-gravity-hide")) return;
     event.preventDefault();
     event.stopPropagation();
     const href = target.closest("a[href]")?.getAttribute("href");
@@ -52,12 +57,44 @@ export function SponsoredGravityCard({ ad, place, brand, onHide }: Props) {
       onAuxClickCapture={onClickCapture}
     >
       <Suspense fallback={null}>
-        <GravityAd placement={place} ad={data} theme="auto" enableFrames={false} />
+        <GravityAdOnce ad={data} place={place} impUrl={viewedBefore ? undefined : ad.impUrl} />
       </Suspense>
       <button type="button" className="ade-sponsored-gravity-hide" aria-label="Hide this sponsored card" title="Hide" onClick={onHide}>
         <X size={10} weight="bold" />
       </button>
     </section>
+  );
+}
+
+/** View links Gravity's renderer already sent in this window (one per card). */
+const viewedImpressions = new Set<string>();
+const VIEWED_LIMIT = 500;
+
+/**
+ * Gravity's renderer, noting when it sends the card's view link (once half
+ * the drawn card is on screen). The renderer sends it again on every new
+ * mount, and a card unmounts whenever its place scrolls away or another card
+ * takes the window's one spot, so the next mount leaves the link out. Inside
+ * the Suspense boundary: it watches only a card that is drawn.
+ */
+function GravityAdOnce({ ad, place, impUrl }: { ad: GravityAdData; place: SponsoredGravityPlace; impUrl: string | undefined }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const host = ref.current;
+    if (!host || !impUrl || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= 0.5)) return;
+      viewedImpressions.add(impUrl);
+      if (viewedImpressions.size > VIEWED_LIMIT) viewedImpressions.delete(viewedImpressions.values().next().value as string);
+      observer.disconnect();
+    }, { threshold: 0.5 });
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, [impUrl]);
+  return (
+    <div ref={ref}>
+      <GravityAd placement={place} ad={ad} theme="auto" enableFrames={false} />
+    </div>
   );
 }
 

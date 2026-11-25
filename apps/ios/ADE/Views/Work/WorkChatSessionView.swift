@@ -2011,7 +2011,7 @@ struct WorkChatSessionView: View {
         let base = rowRevisions[entry.id] ?? workChatTranscriptRowRevision(entry)
         var revision = workChatTranscriptRowRevision(entry, base: base, inputs: inputs)
         if entry.id == sponsoredInlineHost?.rowId {
-          // The reply that ends the finished turn carries the inline sponsored line's place.
+          // The reply that ends the finished turn carries the inline sponsored card's place.
           var hasher = Hasher()
           hasher.combine(revision)
           hasher.combine("sponsored-inline")
@@ -2162,7 +2162,7 @@ struct WorkChatSessionView: View {
       if index < entries.count {
         let entry = entries[index]
         if let host = sponsoredSlot.inlineHost, host.rowId == entry.id {
-          // The finished turn's last reply: an inline sponsored line may end it.
+          // The finished turn's last reply: an inline sponsored card may end it.
           VStack(alignment: .leading, spacing: 0) {
             timelineRenderEntryView(
               for: entry,
@@ -2217,7 +2217,7 @@ struct WorkChatSessionView: View {
   var sponsoredDockAvailable: Bool { shownProviderSignIn == nil }
 
   /// The transcript row whose reply ends the finished turn: the inline
-  /// sponsored line goes at its end. Scans back from the last row only to
+  /// sponsored card goes at its end. Scans back from the last row only to
   /// that turn's last reply; nil when the turn's last text isn't a reply row.
   func sponsoredInlineHost(for turn: CloudSponsoredTurn) -> (rowId: String, turnId: String)? {
     func own(_ turnId: String?) -> Bool {

@@ -79,7 +79,7 @@ enum CloudSponsoredFormat: String, Equatable {
     switch self {
     case .belowReply: return "one sponsored card under a finished reply"
     case .abovePrompt: return "one sponsored card above the prompt box after a finished reply"
-    case .inline: return "one sponsored line at the end of a finished reply"
+    case .inline: return "one sponsored card at the end of a finished reply"
     }
   }
 }

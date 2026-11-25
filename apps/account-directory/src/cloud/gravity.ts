@@ -604,9 +604,32 @@ async function inlineFavicon(url: string): Promise<string | null> {
       cf: { cacheTtl: 86_400, cacheEverything: true },
     } as RequestInit);
     const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
-    if (!response.ok || !FAVICON_TYPES.test(type)) return null;
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length || bytes.length > FAVICON_MAX_BYTES) return null;
+    if (!response.ok || !FAVICON_TYPES.test(type) || !response.body) return null;
+    if (Number(response.headers.get("content-length") ?? 0) > FAVICON_MAX_BYTES) {
+      await response.body.cancel();
+      return null;
+    }
+    // Read only up to the cap: the advertiser's host decides how much it sends.
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > FAVICON_MAX_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    if (!size) return null;
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
     let binary = "";
     for (const byte of bytes) binary += String.fromCharCode(byte);
     return `data:${type};base64,${btoa(binary)}`;
