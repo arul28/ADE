@@ -4,6 +4,7 @@ import {
   CaretDown,
   ChatCircleText,
   Check,
+  ClockCounterClockwise,
   CircleNotch,
   DeviceMobile,
   FileText,
@@ -37,13 +38,18 @@ import {
   hasVariable,
   NOTIFY_LINK_PHONE_EFFECT,
   readNotifyLink,
+  RUN_CHAT_VALUE,
+  RUN_LANE_VALUE,
+  runChoiceOf,
   type NotifyLink,
   type NotifyLinkFields,
   type NotifyLinkKind,
+  type NotifyRunChoice,
 } from "../notifyLink";
 import { variablesForTrigger } from "../variableCatalog";
 import { VariableInput } from "./VariableMenu";
-import { explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
+import { AUTOMATION_RUN_LINK_ID, explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
+import { useAutomationFeatureGate } from "../automationFeatureGate";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
@@ -67,26 +73,27 @@ function withVariableNames(text: string, triggerType: string): string {
  * never made one (its agent step failed first) sends the notification
  * without the link.
  */
-const RUN_CHAT = { label: "The chat this run started", value: "{{run.chatSessionId}}" };
-const RUN_LANE = { label: "The lane this run used", value: "{{run.laneId}}" };
+const RUN_CHAT = { label: "The chat this run started", value: RUN_CHAT_VALUE };
+const RUN_LANE = { label: "The lane this run used", value: RUN_LANE_VALUE };
 const RUN_VALUES = [RUN_CHAT, RUN_LANE];
 
-type Choice = { kind: NotifyLinkKind; label: string; icon: typeof Bell };
+/** One button of the "When tapped, open" picker; `key` is a link kind, or `run-<choice>` for "From this run". */
+type Choice = { key: string; label: string; icon: typeof Bell; hint?: string };
 
 const PHONE_CHOICES: Choice[] = [
-  { kind: "none", label: "Just open ADE", icon: DeviceMobile },
-  { kind: "activity", label: "Activity", icon: Pulse },
-  { kind: "chat", label: "A chat", icon: ChatCircleText },
-  { kind: "pr", label: "A pull request", icon: GitPullRequest },
-  { kind: "linear", label: "A Linear issue", icon: Kanban },
+  { key: "none", label: "Just open ADE", icon: DeviceMobile },
+  { key: "activity", label: "Activity", icon: Pulse },
+  { key: "chat", label: "A chat", icon: ChatCircleText },
+  { key: "pr", label: "A pull request", icon: GitPullRequest },
+  { key: "linear", label: "A Linear issue", icon: Kanban },
 ];
 
 const COMPUTER_CHOICES: Choice[] = [
-  { kind: "lane", label: "A lane", icon: Stack },
-  { kind: "file", label: "A file", icon: FileText },
-  { kind: "commit", label: "A commit", icon: GitCommit },
-  { kind: "branch", label: "A branch", icon: GitBranch },
-  { kind: "proof", label: "Proof", icon: ImageSquare },
+  { key: "lane", label: "A lane", icon: Stack },
+  { key: "file", label: "A file", icon: FileText },
+  { key: "commit", label: "A commit", icon: GitCommit },
+  { key: "branch", label: "A branch", icon: GitBranch },
+  { key: "proof", label: "Proof", icon: ImageSquare },
 ];
 
 type PickOption = { value: string; label: string; detail?: string; also?: NotifyLinkFields };
@@ -289,37 +296,79 @@ function CountedField({
   );
 }
 
+/**
+ * What the run makes, filled in as it goes: the usual answer for a rule that
+ * creates the thing to look at, so it comes first.
+ */
+const RUN_CHOICES: Choice[] = [
+  {
+    key: "run-chat",
+    label: RUN_CHAT.label,
+    hint: "Opens on the phone. If the run starts no chat, the tap opens ADE.",
+    icon: ChatCircleText,
+  },
+  {
+    key: "run-lane",
+    label: RUN_LANE.label,
+    hint: "Opens on your computer; the phone offers to send it there.",
+    icon: Stack,
+  },
+  {
+    key: "run-run",
+    label: "This run's history",
+    hint: "Opens the run in Automations on your computer. The phone opens the run's chat, or offers the run to your computer.",
+    icon: ClockCounterClockwise,
+  },
+];
+
+const RUN_LINKS: Record<NotifyRunChoice, NotifyLink> = {
+  chat: { kind: "chat", fields: { sessionId: RUN_CHAT_VALUE } },
+  lane: { kind: "lane", fields: { laneId: RUN_LANE_VALUE } },
+  run: { kind: "run", fields: {} },
+};
+
 function ChoiceGrid({
   title,
   choices,
   selected,
   onSelect,
+  columns = 5,
+  blockedReason,
 }: {
   title: string;
   choices: Choice[];
-  selected: NotifyLinkKind;
-  onSelect: (kind: NotifyLinkKind) => void;
+  /** The picked choice's key, across every grid. */
+  selected: string;
+  onSelect: (key: string) => void;
+  columns?: 3 | 5;
+  /** Why the rule's machine can't use a choice; the picked one stays choosable. */
+  blockedReason?: (key: string) => string | null;
 }) {
   return (
     <div>
       <div className="mb-1 text-[10px] text-muted-fg/55">{title}</div>
-      <div className="grid grid-cols-2 gap-1 sm:grid-cols-5">
+      <div className={cn("grid gap-1", columns === 3 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-2 sm:grid-cols-5")}>
         {choices.map((choice) => {
           const Icon = choice.icon;
-          const active = choice.kind === selected;
+          const active = choice.key === selected;
+          const blocked = active ? null : blockedReason?.(choice.key) ?? null;
           return (
             <button
-              key={choice.kind}
+              key={choice.key}
               type="button"
               role="radio"
               aria-checked={active}
-              data-notify-link-kind={choice.kind}
-              onClick={() => onSelect(choice.kind)}
+              disabled={blocked != null}
+              data-notify-link-choice={choice.key}
+              title={blocked ?? choice.hint}
+              onClick={() => onSelect(choice.key)}
               className={cn(
                 "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
                 active
                   ? "border-accent/45 bg-accent/10 text-fg"
-                  : "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/85 hover:border-fg/[0.16] hover:text-fg",
+                  : blocked
+                    ? "cursor-not-allowed border-fg/[0.07] bg-fg/[0.02] text-muted-fg/85 opacity-50"
+                    : "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/85 hover:border-fg/[0.16] hover:text-fg",
               )}
             >
               <Icon size={12} weight={active ? "fill" : "regular"} className={active ? "text-accent" : undefined} />
@@ -601,6 +650,9 @@ function LinkFields({
           />
         </div>
       );
+    case "run":
+      // The run fills in its own ids; nothing to pick.
+      return null;
     case "proof":
       return (
         <PickField
@@ -688,6 +740,8 @@ export function NotifyStepEditor({
     updateLink({ kind, fields: kind === link.kind ? link.fields : {} });
 
   const builtLink = buildNotifyLink(link);
+  const runChoice = runChoiceOf(link);
+  const selectedChoice = runChoice ? `run-${runChoice}` : link.kind;
   const check = checkNotifyLink(builtLink);
   const needsInput = link.kind !== "none" && check.state === "empty";
 
@@ -698,6 +752,10 @@ export function NotifyStepEditor({
     setTest((current) => (current.state === "done" ? { state: "idle" } : current));
   }, [title, body, open]);
   const canTest = isAdeAvailable(window.ade?.attention?.sendNotification);
+  // The test is sent from the rule's machine; an ADE there without the step can't.
+  const gate = useAutomationFeatureGate();
+  const machineBlocked = gate.blockedReason("adeAction", "attention.sendNotification");
+  const runLinkBlocked = gate.blockedReason("notifyLink", AUTOMATION_RUN_LINK_ID);
   const titleProblem = !title.trim()
     ? "Add a title."
     : title.trim().length > CUSTOM_NOTIFICATION_TITLE_MAX
@@ -705,10 +763,11 @@ export function NotifyStepEditor({
       : body.trim().length > CUSTOM_NOTIFICATION_BODY_MAX
         ? `Shorten the message to ${CUSTOM_NOTIFICATION_BODY_MAX} characters.`
         : null;
+  const testBlocked = machineBlocked ? `${machineBlocked}. Update ADE there to send a test.` : titleProblem;
 
   const sendTest = async () => {
     const send = window.ade?.attention?.sendNotification;
-    if (!isAdeAvailable(send) || titleProblem || !runtimePin) return;
+    if (!isAdeAvailable(send) || testBlocked || !runtimePin) return;
     setTest({ state: "sending" });
     try {
       // A link with trigger values has nothing to fill them with yet, so the
@@ -736,7 +795,7 @@ export function NotifyStepEditor({
         message: (() => {
           const raw = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error);
           // An older ADE on the rule's machine has no notification action yet.
-          return explainAutomationActionError(raw) ?? raw;
+          return explainAutomationActionError(raw, gate.machineName) ?? raw;
         })(),
       });
     }
@@ -774,16 +833,24 @@ export function NotifyStepEditor({
         </div>
         <div className="space-y-2" role="radiogroup" aria-label="When tapped, open">
           <ChoiceGrid
+            title="From this run"
+            choices={RUN_CHOICES}
+            columns={3}
+            selected={selectedChoice}
+            blockedReason={(key) => (key === "run-run" ? runLinkBlocked : null)}
+            onSelect={(key) => updateLink(RUN_LINKS[key.slice("run-".length) as NotifyRunChoice])}
+          />
+          <ChoiceGrid
             title="On the phone"
             choices={PHONE_CHOICES}
-            selected={link.kind}
-            onSelect={selectKind}
+            selected={selectedChoice}
+            onSelect={(key) => selectKind(key as NotifyLinkKind)}
           />
           <ChoiceGrid
             title="On your computer (the phone offers to open it there)"
             choices={COMPUTER_CHOICES}
-            selected={link.kind}
-            onSelect={selectKind}
+            selected={selectedChoice}
+            onSelect={(key) => selectKind(key as NotifyLinkKind)}
           />
           <button
             type="button"
@@ -852,8 +919,8 @@ export function NotifyStepEditor({
           <button
             type="button"
             onClick={() => void sendTest()}
-            disabled={test.state === "sending" || Boolean(titleProblem)}
-            title={titleProblem ?? "Sends this notification to your phones now"}
+            disabled={test.state === "sending" || Boolean(testBlocked)}
+            title={testBlocked ?? "Sends this notification to your phones now"}
             className="flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2.5 text-[11px] font-medium text-fg transition-colors hover:border-accent/35 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {test.state === "sending" ? <CircleNotch size={11} className="animate-spin" /> : <DeviceMobile size={12} />}
@@ -869,8 +936,8 @@ export function NotifyStepEditor({
             >
               {test.message}
             </span>
-          ) : titleProblem ? (
-            <span className="text-[11px] text-muted-fg/55">{titleProblem}</span>
+          ) : testBlocked ? (
+            <span className="text-[11px] text-muted-fg/55">{testBlocked}</span>
           ) : null}
         </div>
       ) : null}

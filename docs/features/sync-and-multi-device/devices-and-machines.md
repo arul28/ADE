@@ -146,8 +146,8 @@ listed by `devices` on any machine and used the same way.
 The cloud iPhone is one more **source** for the `ios` kind. Nothing else
 changes for the agent:
 
-- `ade devices` lists `ios@cloud` ("ADE Cloud iPhone · phone minutes") when
-  the person's account has access, and says how many phone minutes are left.
+- `ade devices` lists `ios@cloud` ("ADE Cloud iPhone") when the person's
+  account has access, and says how many minutes its credits have left.
 - `ade devices use ios@cloud`, then the same `ade apple launch | tap |
   screenshot | record` verbs. A build sends the code to the cloud Mac instead of
   a machine of theirs.

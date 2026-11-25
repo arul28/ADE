@@ -19,7 +19,7 @@ import { CLOUD_PLANS, cloudSizeFor, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
 import {
   boughtPlanIdOf,
-  hasComputerTest,
+  hasAccountTest,
   countedDiskGb,
   deleteComputer,
   groupByUser,
@@ -112,13 +112,13 @@ export type PlanCleanupChoice = CloudPlanCleanupPick & { planId: CloudPlanId; at
 export function cleanupPlanOf(account: Pick<AccountRow, "plan" | "paid_plan" | "stripe_status" | "test_plan" | "test_computers" | "test_hours_milli">): CloudPlanId | null {
   if (account.plan === "paid" && account.stripe_status === "past_due") return null;
   // An account test (`ownerAccounts.ts`) sets its own limits; the cleanup and its emails wait for it to end.
-  if (hasComputerTest(account)) return null;
+  if (hasAccountTest(account)) return null;
   return boughtPlanIdOf(account);
 }
 
 /** The cheaper plan a downgrade or a cancel waits for at the period end, or null. */
 export function waitingPlanOf(account: Pick<AccountRow, "plan" | "stripe_status" | "cancel_at_period_end" | "paid_plan_next" | "test_plan" | "test_computers" | "test_hours_milli">): CloudPlanId | null {
-  if (account.plan !== "paid" || account.stripe_status === "past_due" || hasComputerTest(account)) return null;
+  if (account.plan !== "paid" || account.stripe_status === "past_due" || hasAccountTest(account)) return null;
   if (account.cancel_at_period_end === 1) return "free";
   return account.paid_plan_next ?? null;
 }

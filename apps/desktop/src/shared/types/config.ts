@@ -670,6 +670,34 @@ export type AutomationActionType =
   // is "create"; never authored by the user, but surfaced in run history.
   | "lane-setup";
 
+/** Every step type this build can run (`lane-setup` is synthetic and left out). */
+export const AUTOMATION_STEP_TYPES = [
+  "create-lane",
+  "delete-lane",
+  "agent-session",
+  "predict-conflicts",
+  "run-tests",
+  "run-command",
+  "ade-action",
+  "handoff",
+] as const satisfies readonly Exclude<AutomationActionType, "lane-setup">[];
+
+/**
+ * What a machine's brain can run in a rule: its answer to
+ * `automations.getCapabilities`. The builder greys out what the rule's machine
+ * lacks; an older brain without the call falls back to
+ * `shared/automationFeatureVersions.ts`.
+ */
+export type AutomationCapabilities = {
+  triggerTypes: string[];
+  stepTypes: string[];
+  laneModes: string[];
+  /** Whether a run's lane can start on ADE Cloud (`execution.cloud`). */
+  cloudLanes: boolean;
+  /** `domain.action` names an `ade-action` step can run here; null while unknown. */
+  adeActions: string[] | null;
+};
+
 /**
  * Configuration for an `ade-action` automation action. Points at a domain +
  * action registered in the shared ADE action registry. `args` may contain
@@ -913,7 +941,8 @@ export type AutomationAgentLimits = {
 
 export type AutomationExecutionKind = "agent-session" | "built-in";
 
-export type AutomationLaneMode = "create" | "reuse" | "require-on-trigger" | "pr-branch";
+export const AUTOMATION_LANE_MODES = ["create", "reuse", "require-on-trigger", "pr-branch"] as const;
+export type AutomationLaneMode = (typeof AUTOMATION_LANE_MODES)[number];
 
 export type AutomationLaneNamePreset =
   | "issue-title"

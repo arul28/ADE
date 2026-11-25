@@ -45,7 +45,7 @@ The CTO lives in its own **CTO** tab: a single chat thread plus a Settings sheet
 
 ## Memory that carries over
 
-The CTO keeps durable memory as part of the project, so it doesn't start from zero each time. It records the decisions and preferences worth keeping, and ADE re-injects the relevant parts into every session — including after a long conversation is compacted or after you change the model mid-thread. You can see and edit what it remembers from **CTO → Settings → Memory**.
+The CTO keeps durable memory as part of the project, so it doesn't start from zero each time. It records the decisions and preferences worth keeping in short notes, and ADE injects all of them into every turn — including after a long conversation is compacted or after you change the model mid-thread. You can see and edit what it remembers from **CTO → Settings → Memory**.
 
 <Tip>
 Ask the CTO to remember something explicitly — "remember that we deploy from `main` only" — and it will save it as a durable fact you can review later.
@@ -53,7 +53,7 @@ Ask the CTO to remember something explicitly — "remember that we deploy from `
 
 ## Switch models without losing the thread
 
-You can change the CTO's model at any point from **Settings → Model**. The thread, its transcript, and its memory carry over to the new model — a switch is not a reset. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
+You can change the CTO's model at any point from **Settings → Model**. A switch is not a reset. On Claude, Codex, Cursor and Muse the CTO keeps its thread. On other providers it starts a new thread with its memory, the story so far and the newest messages, and the full transcript stays in ADE for it to read. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
 
 The list is narrower than elsewhere in ADE on purpose: the CTO only runs on models that can take a message into a turn already underway, because it is interrupted constantly by the chats it starts and by its own wake-ups.
 

@@ -90,9 +90,8 @@
   // webhook secret is the one NoMac shows once when the webhook to
   // /cloud/nomac/webhook is made. Apply migrations/0048_cloud_phone_usage.sql
   // first too. Vars (here and under env.production): CLOUD_PHONE_ACCESS
-  // (`beta` by default, `all` at launch, `off`), CLOUD_PHONES_PAUSED (`1`
-  // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and
-  // STRIPE_PHONE_METER_EVENT (scripts/stripe-setup.mjs prints both).
+  // (`beta` by default, `all` at launch, `off`) and CLOUD_PHONES_PAUSED (`1`
+  // stops new phones). The phone draws from the account's credits.
   //
   // SECRET — REVYL_PARTNER_API_KEY (ADE Cloud iPhone on Revyl)
   // Revyl's partner key: makes one Revyl workspace per account and mints short
@@ -119,8 +118,8 @@
   // `gravity_ads` setting may go: `off`, a hard off; `testers`; `all`),
   // GRAVITY_LIVE (`1` lets the `gravity_live` setting send real ads; anything
   // else keeps Gravity's free test ads), GRAVITY_COUNTRIES (default `US,CA,GB,AU`),
-  // and GRAVITY_DAILY_LIMIT (live
-  // requests a day, default 900 under self-serve's 1,000). Turning ads on is
+  // and GRAVITY_DAILY_LIMIT (an optional ceiling on live requests a day;
+  // unset, none: the contract has no daily limit). Turning ads on is
   // the owner's call, asked for on its own.
   //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
@@ -233,9 +232,6 @@
     "STRIPE_MAX_PRICE_ID": "price_1UbEC9Bsy4QVYccD16fLtkI2",
     "STRIPE_DISK_PRICE_ID": "price_1UbECBBsy4QVYccDXcCUZEYt",
     "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-    // Extra ADE Cloud iPhone minutes (2.5 cents a minute, its own meter). Same script, same sandbox.
-    "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1Ud7x8Bsy4QVYccDQcdVWRfk",
-    "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
     "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
     // The ADE GitHub App's public client id (also a constant in the desktop),
     // and the two GitHub bases the sign-in calls. The bases are settings so a
@@ -333,8 +329,6 @@
         "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbMTjPWulQjqSYPROgTWr6C,price_1UbMTkPWulQjqSYPhPcWm3l6",
         "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-        "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
-        "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
         "CLOUD_PHONE_ACCESS": "beta",
         // Revyl may start phones (owner's yes, 2026-11-23): second, after NoMac,
         // and only on paid plans (or a tester's own pick).
@@ -342,8 +336,11 @@
         // Sponsored cards and the Index (src/cloud/gravity.ts): the ceiling of
         // the instant `gravity_ads` setting, which starts off (no row reads
         // off). The owner flips that setting; `off` here is the hard off.
-        // GRAVITY_LIVE stays unset: test ads only. GRAVITY_API_KEY is a secret.
+        // GRAVITY_LIVE `1` only lets the instant `gravity_live` setting (off
+        // until the owner turns it on) send real ads; with that setting off,
+        // ads stay Gravity's free test ads. GRAVITY_API_KEY is a secret.
         "GRAVITY_ADS": "all",
+        "GRAVITY_LIVE": "1",
         "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaNNNPWulQjqSYPYyVgxCA6",
         // GitHub App sign-in, restated for the same reason. The two secrets
         // are set with `wrangler secret put … --env production`.

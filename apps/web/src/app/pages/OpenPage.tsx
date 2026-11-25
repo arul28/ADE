@@ -12,6 +12,7 @@ import {
   Globe,
   Image as ImageIcon,
   Link2Off,
+  History,
   MessageSquare,
   Settings,
   Users,
@@ -37,6 +38,7 @@ type OpenTarget =
   | { kind: "file"; path: string; line?: number; laneId?: string }
   | { kind: "commit"; sha: string; laneId?: string; envelope?: OpenEnvelope }
   | { kind: "artifact"; artifactId: string; envelope?: OpenEnvelope }
+  | { kind: "automation-run"; ruleId: string; runId: string; sessionId?: string; ownership?: OpenOwnership }
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo?: string; number: number; tab?: string; ownership?: OpenOwnership }
   | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
@@ -153,6 +155,21 @@ function parseQuery(search: string): OpenTarget {
     const artifactId = params.get("id") ?? "";
     if (artifactId) return { kind: "artifact", artifactId, envelope: readEnvelope(params) };
   }
+  if (type === "automation-run") {
+    const ruleId = (params.get("rule") ?? "").trim();
+    const runId = (params.get("id") ?? "").trim();
+    const sessionId = (params.get("session") ?? "").trim();
+    const opaque = (value: string) => value.length <= 512 && !MACHINE_ID_BAD_RE.test(value);
+    if (ruleId && runId && opaque(ruleId) && opaque(runId) && opaque(sessionId)) {
+      return {
+        kind: "automation-run",
+        ruleId,
+        runId,
+        ...(sessionId ? { sessionId } : {}),
+        ...(ownership ? { ownership } : {}),
+      };
+    }
+  }
   if (type === "branch") {
     const repo = params.get("repo") ?? "";
     const branch = params.get("branch") ?? "";
@@ -235,6 +252,10 @@ function buildAdeUrl(target: OpenTarget): string | null {
     case "artifact": {
       const base = `ade://artifact/${encodeURIComponent(target.artifactId)}`;
       return appendQuery(base, envelopeEntries(target.envelope));
+    }
+    case "automation-run": {
+      const base = `ade://automation-run/${encodeURIComponent(target.ruleId)}/${encodeURIComponent(target.runId)}`;
+      return appendQuery(base, [["session", target.sessionId], ...ownershipEntries(target.ownership)]);
     }
     case "branch": {
       const [owner, name] = target.repo.split("/");
@@ -328,6 +349,11 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
         summary: "Proof artifact",
         valueLabel: "Artifact",
         value: target.artifactId,
+      };
+    case "automation-run":
+      return {
+        title: "Open an automation run in ADE",
+        summary: "Opens the run in Automations → History.",
       };
     case "branch":
       return {
@@ -811,6 +837,7 @@ const KIND_ICONS: Record<OpenTarget["kind"], LucideIcon> = {
   file: FileText,
   commit: GitCommitHorizontal,
   artifact: ImageIcon,
+  "automation-run": History,
   branch: GitBranch,
   pr: GitPullRequest,
   "linear-issue": CircleDot,

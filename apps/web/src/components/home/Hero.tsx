@@ -11,7 +11,6 @@ import {
 } from "../../lib/marketingAnalytics";
 import { CopyButton } from "../CopyButton";
 import { cn } from "../../lib/cn";
-import { CLOUD_SMALL_UNLIMITED_SHORT } from "../../lib/cloudPricing";
 import { useInstallDialog } from "../install/InstallDialogProvider";
 import { AppleMark, WindowsMark } from "./marks";
 import { guessPlatform } from "./SiteNav";
@@ -40,22 +39,20 @@ export function Hero() {
             <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.07] ring-1 ring-white/10">
               <CloudMark className="h-[17px]" />
             </span>
-            <span className="flex min-w-0 flex-col items-start leading-[1.2] sm:flex-row sm:items-center sm:gap-2.5">
-              <span className="font-semibold text-white">ADE Cloud: agents on cloud computers</span>
+            <span className="flex min-w-0 flex-wrap items-center justify-center gap-x-2.5 leading-[1.2]">
+              <span className="font-semibold text-[color:var(--color-lamp)]">Free, unlimited cloud computers</span>
               <span className="hidden h-3.5 w-px bg-white/20 sm:block" aria-hidden />
-              <span className="text-[color:var(--color-lamp)]">
-                {CLOUD_SMALL_UNLIMITED_SHORT} on the free plan
-              </span>
+              <span className="hidden text-white/75 sm:inline">Pay only for stronger ones</span>
             </span>
             <ArrowRight className="h-4 w-4 shrink-0 text-white/70 transition-transform group-hover:translate-x-0.5 group-hover:text-white" />
           </Link>
         </div>
 
         <h1
-          className="ade-rise mt-[clamp(20px,2.6vw,32px)] font-serif font-normal text-white"
+          className="ade-rise mt-[clamp(18px,2vw,26px)] font-serif font-normal text-white"
           style={{
             animationDelay: "60ms",
-            fontSize: "clamp(44px, 6vw, 88px)",
+            fontSize: "clamp(40px, 5vw, 74px)",
             lineHeight: 1.0,
             letterSpacing: "-0.02em",
           }}
@@ -67,14 +64,14 @@ export function Hero() {
         </h1>
 
         <p
-          className="ade-rise mt-5 max-w-[600px] text-[clamp(15px,1.2vw,17px)] leading-[1.55] text-white/65"
+          className="ade-rise mt-4 max-w-[600px] text-[clamp(15px,1.2vw,17px)] leading-[1.55] text-white/65"
           style={{ animationDelay: "120ms" }}
         >
           One agentic development environment, synced across every machine you own. Desktop, web,
           and iPhone. Bring your own models.
         </p>
 
-        <InstallBlock position={MARKETING_CTA_POSITIONS.HERO} animated />
+        <InstallBlock position={MARKETING_CTA_POSITIONS.HERO} animated compact />
       </div>
 
       <div className="relative h-0">
@@ -85,15 +82,18 @@ export function Hero() {
   );
 }
 
-/** The download buttons, the install command, and the quiet links under them. */
-export function InstallBlock({ position, animated }: { position: string; animated?: boolean }) {
+/**
+ * The download buttons, the install command, and the quiet links under them.
+ * `compact` (the hero): no install command, so the app shows above the fold.
+ */
+export function InstallBlock({ position, animated, compact }: { position: string; animated?: boolean; compact?: boolean }) {
   const { openInstall } = useInstallDialog();
   const windows = guessPlatform() === "windows";
   const installCommand = windows ? WINDOWS_INSTALL_COMMAND : MAC_INSTALL_COMMAND;
   return (
     <>
         <div
-          className={cn(animated && "ade-rise", "mt-8 flex flex-wrap items-center justify-center gap-3")}
+          className={cn(animated && "ade-rise", compact ? "mt-6" : "mt-8", "flex flex-wrap items-center justify-center gap-3")}
           style={animated ? { animationDelay: "180ms" } : undefined}
         >
           <button
@@ -128,7 +128,7 @@ export function InstallBlock({ position, animated }: { position: string; animate
           </a>
         </div>
 
-        <div
+        {!compact && <div
           className={cn(animated && "ade-rise", "mx-auto mt-5 flex w-fit max-w-full items-center gap-1 rounded-full border border-white/10 bg-black/40 py-1 pl-4 pr-1 font-mono text-[12.5px] text-white/70 backdrop-blur")}
           style={animated ? { animationDelay: "220ms" } : undefined}
         >
@@ -143,7 +143,7 @@ export function InstallBlock({ position, animated }: { position: string; animate
             }
             className="h-7 w-7 justify-center rounded-full border-0 bg-transparent px-0 text-white/50 hover:bg-white/10 hover:text-white [&_svg]:h-3.5 [&_svg]:w-3.5"
           />
-        </div>
+        </div>}
 
         <p
           className={cn(animated && "ade-rise", "mt-4 flex flex-wrap items-center justify-center gap-x-2.5 text-[13px] text-white/30")}
@@ -197,7 +197,7 @@ function HeroDevices() {
   return (
     <figure
       ref={ref}
-      className="relative mx-auto mt-[clamp(40px,5vw,72px)] max-w-[1640px] px-4 sm:px-8"
+      className="relative mx-auto mt-[clamp(24px,3vw,44px)] max-w-[1640px] px-4 sm:px-8"
       style={{ perspective: "1800px" }}
     >
       <motion.div className="relative pb-[8%]" style={{ rotateX, scale, transformOrigin: "50% 0%" }}>

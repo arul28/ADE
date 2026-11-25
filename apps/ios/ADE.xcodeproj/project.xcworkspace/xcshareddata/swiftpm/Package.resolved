@@ -1,5 +1,5 @@
 {
-  "originHash" : "a96fa4316aa7b359765df3ded799a0bb7c8eef2a7c501094edd119c85c73d402",
+  "originHash" : "a12780bece445e3b816e955b716ad61ebc7635e6ebf13fc9da3688655849d748",
   "pins" : [
     {
       "identity" : "bigint",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "f1b7b749d988bfcfd9bf0b9b106a704ead972d9f",
         "version" : "1.7.1"
+      }
+    },
+    {
+      "identity" : "gravity-swift-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Try-Gravity/gravity-swift-sdk",
+      "state" : {
+        "revision" : "7af8bda98be16a9888523c3def38bd6a4238c0b8",
+        "version" : "1.2.2"
       }
     },
     {

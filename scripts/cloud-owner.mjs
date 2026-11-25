@@ -14,9 +14,9 @@ const USAGE = `Usage: node scripts/cloud-owner.mjs <command> [args]
 Accounts (an email, or a Clerk user id that starts with user_):
   show <account>                         the real plan, the test, what is in force, the change log
   act-as <account> <free|plus|pro|max>   the account acts as that plan (limits, hours, cards); Stripe untouched
-  limits <account> [--computers N] [--hours N] [--phone-minutes N]
-                                         its own computer limit, monthly hours and iPhone minutes
-                                         this period (none: clear them; no option: clear all three)
+  limits <account> [--computers N] [--hours N]
+                                         its own computer limit and monthly credits this period
+                                         (the iPhone draws from them; none: clear it; no option: clear both)
   phone <account> <on|off>               on the ADE Cloud iPhone's beta list, or off it; not a test
                                          (a tester picks their own provider in an ADE beta app)
   tester <account> <on|off>              on the sponsored testers list (ads switch "testers")
@@ -63,7 +63,7 @@ function fail(message) {
 /** The options each command takes; any other is refused before a request goes. */
 const COMMAND_OPTIONS = {
   "act-as": ["days", "note"],
-  limits: ["computers", "hours", "phone-minutes", "days", "note"],
+  limits: ["computers", "hours", "days", "note"],
   set: ["note"],
   ab: ["days"],
 };
@@ -125,9 +125,9 @@ function printAccount({ account }) {
     `${account.email ?? account.userId} (${account.userId})`,
     `  Real plan:  ${account.real.plan} · ${account.real.computers} computers · ${account.real.hours} credits this period · Stripe ${account.real.stripeStatus ?? "none"}`,
     account.test
-      ? `  Test:       ${[account.test.plan && `acts as ${account.test.plan}`, account.test.computers != null && `${account.test.computers} computers`, account.test.hours != null && `${account.test.hours} credits`, account.test.phoneMinutes != null && `${account.test.phoneMinutes} iPhone minutes`].filter(Boolean).join(" · ")} · ends ${when(account.test.until)}${account.test.note ? ` · "${account.test.note}"` : ""}`
+      ? `  Test:       ${[account.test.plan && `acts as ${account.test.plan}`, account.test.computers != null && `${account.test.computers} computers`, account.test.hours != null && `${account.test.hours} credits`].filter(Boolean).join(" · ")} · ends ${when(account.test.until)}${account.test.note ? ` · "${account.test.note}"` : ""}`
       : "  Test:       none",
-    `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list (provider: ${account.phone.listed})` : " · not on the beta list"} · ${account.credits ? `${account.phone.usedMinutes} minutes used, from credits` : `${account.phone.usedMinutes} of ${account.phone.minutes} minutes used${account.phone.minutes !== account.phone.planMinutes ? ` (plan: ${account.phone.planMinutes})` : ""}${account.phone.extraOn ? " · extra minutes on" : ""}`}`,
+    `  iPhone:     ${account.phone.access}${account.phone.listed ? ` · beta list (provider: ${account.phone.listed})` : " · not on the beta list"} · ${account.phone.usedMinutes} minutes used, from credits (about ${account.phone.minutesLeft} left)`,
     `  In force:   ${account.inForce.plan} · ${account.inForce.computers} computers · ${account.inForce.hours} credits (${account.inForce.usedHours} used) · Small ${account.inForce.smallUsesHours ? "uses credits" : "unlimited"}`,
     `  Sponsored:  switch ${account.sponsored.mode} · ${account.sponsored.tester ? "on the testers list" : "not a tester"} · answer ${account.sponsored.consent ?? "never asked"} · format ${account.sponsored.format ?? "the switch's"}`,
   ];
@@ -162,13 +162,11 @@ switch (command) {
   case "limits": {
     const computers = whole("computers", options.computers);
     const hours = whole("hours", options.hours);
-    const phoneMinutes = whole("phone-minutes", options["phone-minutes"]);
-    const given = computers !== undefined || hours !== undefined || phoneMinutes !== undefined;
+    const given = computers !== undefined || hours !== undefined;
     printAccount(await call("account", {
       ...accountRef(rest[0]),
       computers: given ? computers : null,
       hours: given ? hours : null,
-      phoneMinutes: given ? phoneMinutes : null,
       ...test(),
     }));
     break;

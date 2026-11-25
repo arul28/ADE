@@ -9,6 +9,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Button } from "../../ui/Button";
 import { holdSponsoredPlace, releaseSponsoredPlace, useOnScreen, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
+import { SponsoredGravityCard, type SponsoredGravityPlace } from "./SponsoredGravityCard";
 import { SponsoredOutletsContext, useSponsoredOutlet } from "./sponsoredOutlets";
 import { SPONSORED_TURN_FRESH_MS, lastFinishedTurn, sponsoredDevice } from "./sponsoredTurn";
 import { useDocumentVisible, useSponsoredViewer } from "./useSponsoredViewer";
@@ -42,6 +43,30 @@ const INLINE_HOST_WAIT_MS = 1_500;
 
 const answers = new Map<string, Promise<CloudSponsoredAdAnswer>>();
 const viewedAds = new Set<string>();
+/** Gravity's viewability rule: half of the card on screen for a full second. */
+const SPONSORED_VIEWABLE_MS = 1_000;
+
+/** One of a card's Gravity links, once per key. Not delivered (offline): the next look at the card sends it again. */
+function sendSponsoredLink(key: string, url: string | null): void {
+  if (!url || viewedAds.has(key)) return;
+  viewedAds.add(key);
+  void window.ade?.cloud?.sponsoredViewed?.(url)?.then((delivered) => {
+    if (!delivered) viewedAds.delete(key);
+  }, () => viewedAds.delete(key));
+}
+
+/** The card's view link with Gravity's viewability event, named as ADE's own renderer (Gravity's renderers send `sdk`/`sv` too). */
+function sponsoredViewabilityUrl(impUrl: string, ev: "measured" | "viewable"): string | null {
+  try {
+    const url = new URL(impUrl);
+    url.searchParams.append("ev", ev);
+    url.searchParams.append("sdk", "ade-js");
+    url.searchParams.append("sv", "1");
+    return url.toString();
+  } catch {
+    return null; // Never: the server sends only Gravity's own https links.
+  }
+}
 const hiddenTurns = new Set<string>();
 /** Replies whose inline card went under the reply (no end to draw into): kept for the run, so a remount asks and draws the same. */
 const belowReplyTurns = new Set<string>();
@@ -190,7 +215,7 @@ function SponsoredReplySlotOn({
     let timer: number | null = null;
     noteAsked(turnKey, shownFormat);
     const askedFormat = askedFormats.get(turnKey) ?? shownFormat;
-    const input = { instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice(), format: askedFormat, surface: "desktop" as const };
+    const input = { instanceId, chatId: sessionId, turnId: turn.turnId, messages: turn.messages, device: sponsoredDevice(), format: askedFormat, surface: "desktop" as const, renderer: "web1" as const };
     void askOnce(turnKey, () => askAd(input))
       .then((answer) => {
         if (!live) return;
@@ -232,10 +257,20 @@ function SponsoredReplySlotOn({
   };
 
   let card: React.ReactNode = null;
+  const gravityAd = ad?.ad.gravity;
   if (holds && showing === "ad" && ad) {
-    if (ad.format === "inline") card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
-    else if (ad.format === "above_prompt") card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
-    else card = <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} />;
+    if (ad.format === "inline") {
+      // The inline format is ADE's own linked sentence at the reply's end, never a card.
+      card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
+    } else if (gravityAd && isGravityUrl(gravityAd.clickUrl)) {
+      // Gravity's own renderer and design, in the card's place.
+      card = <SponsoredGravityCard ad={gravityAd} place={GRAVITY_PLACE[ad.format]} brand={ad.ad.brand} onHide={hide} />;
+    } else if (ad.format === "above_prompt") {
+      // An answer without Gravity's ad (an older account server): ADE's own card.
+      card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
+    } else {
+      card = <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} />;
+    }
   }
 
   return (
@@ -246,6 +281,11 @@ function SponsoredReplySlotOn({
     </div>
   );
 }
+
+const GRAVITY_PLACE: Record<Exclude<CloudSponsoredFormat, "inline">, SponsoredGravityPlace> = {
+  below_reply: "below_response",
+  above_prompt: "bottom_page",
+};
 
 /** Where each format shows, as the one-time question says it. */
 const FORMAT_PLACE: Record<CloudSponsoredFormat, string> = {
@@ -297,18 +337,24 @@ function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: bo
 
 type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };
 
-/** Gravity's view link, once, when half of the card is on screen in a visible window. Returns the card's opener. */
+/**
+ * Gravity's view link and viewability links, as Gravity's own renderer sends
+ * them: once half of the card is on screen in a visible window, the view link
+ * and `ev=measured`; after a full second of that, `ev=viewable`. Each once per
+ * card. Returns the card's opener.
+ */
 function useSponsoredView(ref: React.RefObject<HTMLElement | null>, ad: CloudSponsoredAd): () => void {
   const visible = useDocumentVisible();
   const halfOnScreen = useOnScreen(ref, 0.5, true);
   useEffect(() => {
-    if (!halfOnScreen || !visible || !ad.impUrl || viewedAds.has(ad.id)) return;
-    viewedAds.add(ad.id);
-    const sent = window.ade?.cloud?.sponsoredViewed?.(ad.impUrl);
-    // Not delivered (offline): the next time half the card is on screen sends it again.
-    void sent?.then((delivered) => {
-      if (!delivered) viewedAds.delete(ad.id);
-    }, () => viewedAds.delete(ad.id));
+    const impUrl = ad.impUrl;
+    if (!halfOnScreen || !visible || !impUrl) return;
+    sendSponsoredLink(ad.id, impUrl);
+    sendSponsoredLink(`${ad.id} measured`, sponsoredViewabilityUrl(impUrl, "measured"));
+    if (viewedAds.has(`${ad.id} viewable`)) return;
+    // Scrolled away, or the window hidden, before the second is up: no viewable link yet.
+    const timer = window.setTimeout(() => sendSponsoredLink(`${ad.id} viewable`, sponsoredViewabilityUrl(impUrl, "viewable")), SPONSORED_VIEWABLE_MS);
+    return () => window.clearTimeout(timer);
   }, [halfOnScreen, visible, ad.id, ad.impUrl]);
   return () => {
     if (isGravityUrl(ad.clickUrl)) openExternalUrl(ad.clickUrl);
@@ -332,37 +378,53 @@ function SponsoredInlineLine({ ad, test, onHide }: SponsoredCardProps) {
   return (
     <p ref={lineRef} className="ade-sponsored-inline" aria-label={`Sponsored: ${ad.brand}`}>
       <span className="ade-sponsored-inline-tag">{sponsoredLabel(test, ad)} · {ad.brand}</span>
-      <button type="button" className="ade-sponsored-inline-link" onClick={open}>
+      {/* A link, not a button: a button never breaks across lines, so a long ad would drop to a row of its own. */}
+      <a
+        href={ad.clickUrl}
+        className="ade-sponsored-inline-link"
+        onClick={(event) => {
+          event.preventDefault();
+          open();
+        }}
+      >
         {ad.text}
         <ArrowUpRight size={11} weight="bold" aria-hidden />
-      </button>
+      </a>
       <SponsoredHide onHide={onHide} label="Hide this sponsored line" />
     </p>
   );
 }
 
-/** A one-row card docked above the prompt box: the latest reply's. */
-function SponsoredDockCard({ ad, test, onHide }: SponsoredCardProps) {
-  const cardRef = useRef<HTMLElement | null>(null);
-  const open = useSponsoredView(cardRef, ad);
+/**
+ * A card's top row: who, that it's sponsored, and on the right its call to
+ * action and the hide button, so the ad's text below gets the card's width.
+ */
+function SponsoredCardHead({ ad, test, open, onHide }: SponsoredCardProps & { open: () => void }) {
   return (
-    <section ref={cardRef} className="ade-sponsored ade-sponsored--dock" aria-label={`Sponsored: ${ad.brand}`}>
+    <div className="ade-sponsored-head">
       <span className="ade-sponsored-mark" aria-hidden>{ad.brand.slice(0, 1).toUpperCase()}</span>
-      <div className="ade-sponsored-dock-copy">
-        <div className="ade-sponsored-head">
-          <span className="ade-sponsored-brand">{ad.brand}</span>
-          <span className="ade-sponsored-label">{sponsoredLabel(test, ad)}</span>
-        </div>
-        <button type="button" className="ade-sponsored-dock-line" onClick={open} title={`${ad.title} — ${ad.text}`}>
-          <span className="ade-sponsored-dock-title">{ad.title}</span>
-          <span className="ade-sponsored-dock-text"> — {ad.text}</span>
-        </button>
-      </div>
+      <span className="ade-sponsored-brand">{ad.brand}</span>
+      <span className="ade-sponsored-label">{sponsoredLabel(test, ad)}</span>
       <button type="button" className="ade-sponsored-cta" onClick={open}>
         {ad.cta ?? "Learn more"}
         <ArrowUpRight size={12} weight="bold" aria-hidden />
       </button>
       <SponsoredHide onHide={onHide} label="Hide this card" />
+    </div>
+  );
+}
+
+/** The card docked above the prompt box (the latest reply's): the ad as one line that wraps, never cut off. */
+function SponsoredDockCard({ ad, test, onHide }: SponsoredCardProps) {
+  const cardRef = useRef<HTMLElement | null>(null);
+  const open = useSponsoredView(cardRef, ad);
+  return (
+    <section ref={cardRef} className="ade-sponsored ade-sponsored--dock" aria-label={`Sponsored: ${ad.brand}`}>
+      <SponsoredCardHead ad={ad} test={test} open={open} onHide={onHide} />
+      <button type="button" className="ade-sponsored-dock-line" onClick={open}>
+        <span className="ade-sponsored-dock-title">{ad.title}</span>
+        {ad.text ? <span className="ade-sponsored-dock-text"> — {ad.text}</span> : null}
+      </button>
     </section>
   );
 }
@@ -372,22 +434,11 @@ function SponsoredAdCard({ ad, test, onHide }: SponsoredCardProps) {
   const open = useSponsoredView(cardRef, ad);
   return (
     <section ref={cardRef} className="ade-sponsored" aria-label={`Sponsored: ${ad.brand}`}>
-      <div className="ade-sponsored-head">
-        <span className="ade-sponsored-mark" aria-hidden>{ad.brand.slice(0, 1).toUpperCase()}</span>
-        <span className="ade-sponsored-brand">{ad.brand}</span>
-        <span className="ade-sponsored-label">{sponsoredLabel(test, ad)}</span>
-        <SponsoredHide onHide={onHide} label="Hide this card" />
-      </div>
+      <SponsoredCardHead ad={ad} test={test} open={open} onHide={onHide} />
       <button type="button" className="ade-sponsored-title ade-sponsored-open" onClick={open}>
         {ad.title}
       </button>
       <p className="ade-sponsored-text">{ad.text}</p>
-      <div className="ade-sponsored-actions ade-sponsored-actions--end">
-        <button type="button" className="ade-sponsored-cta" onClick={open}>
-          {ad.cta ?? "Learn more"}
-          <ArrowUpRight size={12} weight="bold" aria-hidden />
-        </button>
-      </div>
     </section>
   );
 }

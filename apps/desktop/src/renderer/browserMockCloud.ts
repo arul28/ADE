@@ -5,7 +5,7 @@
  * `?mockCloud=<scenario>` turns it on. Without the flag nothing here runs.
  *  - `free` (default): Free plan, one lane (1 of its 2 computers).
  *  - `empty`: Free plan, nothing made yet.
- *  - `plus`: Plus plan at all 3 of its computers, extra hours on, earned hours.
+ *  - `plus`: Plus plan at all 3 of its computers, extra credits on, earned credits.
  *  - `pro`: Pro plan, a busy account over Plus's computers ("Move to Plus" asks first).
  *  - `downgrade`: Pro with a move to Plus waiting (made in the billing portal), over Plus.
  *  - `over`: Free plan in force, over its limits (a cancel made in the billing portal).
@@ -307,7 +307,7 @@ function fixture(scenario: Scenario): Fixture {
     case "plus":
       return {
         planId: "plus",
-        usedMilli: 212_400,
+        usedMilli: 72_400,
         extraHours: true,
         earnedMilli: 40_000,
         recentUsedMilli: 61_000,
@@ -321,7 +321,7 @@ function fixture(scenario: Scenario): Fixture {
     case "pro":
       return {
         planId: "pro",
-        usedMilli: 640_000,
+        usedMilli: 410_000,
         recentUsedMilli: 140_000,
         extraHours: true,
         lanes: Array.from({ length: 9 }, (_, index): LaneSpec => ({
@@ -471,15 +471,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       usedMilli: used,
       leftMilli: left,
       percentUsed: percent,
-      state: left <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
+      state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    phone: fix.planId === "free" ? undefined : {
-      access: "on",
-      minutes: { included: plan.phoneMinutes ?? 0, used: 42, left: Math.max(0, (plan.phoneMinutes ?? 0) - 42) },
-      state: "none",
-      extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
-    },
+    phone: fix.planId === "free" ? undefined : { access: "on" },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
@@ -606,26 +601,18 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
-  // Credits: the iPhone has used some of the balance; no separate extra iPhone minutes.
+  // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
-    if (phoneParam && !out.phone) {
-      out = { ...out, phone: { access: "on", minutes: { included: 60, used: 12, left: 48 }, state: "none", extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 } } };
-    }
+    if (phoneParam && !out.phone) out = { ...out, phone: { access: "on" } };
     if (out.phone && (providerParam === "auto" || providerParam === "nomac" || providerParam === "revyl")) {
       out = { ...out, phone: { ...out.phone, providerChoice: providerParam } };
     }
     const phoneUsed = out.phone ? Math.min(out.hours.usedMilli, Math.round(out.hours.usedMilli * 0.4)) : 0;
-    const leftMinutes = Math.floor(out.hours.leftMilli / 1000);
     return {
       ...out,
       credits: { phoneMilliPerMinute: 1000 },
-      phone: out.phone ? {
-        ...out.phone,
-        creditsUsedMilli: phoneUsed,
-        minutes: { included: Math.floor(phoneUsed / 1000) + leftMinutes, used: Math.floor(phoneUsed / 1000), left: leftMinutes },
-        extra: { ...out.phone.extra, available: false, enabled: false },
-      } : undefined,
+      phone: out.phone ? { ...out.phone, creditsUsedMilli: phoneUsed } : undefined,
     };
   };
   state = withCredits(state);
@@ -730,6 +717,7 @@ export function applyBrowserMockCloud(ade: any): void {
           impUrl: null,
           favicon: null,
           test: true,
+          gravity: MOCK_GRAVITY_AD,
         },
       };
     },
@@ -920,3 +908,55 @@ export function applyBrowserMockCloud(ade: any): void {
     onChanged: () => () => undefined,
   };
 }
+
+/**
+ * Gravity's ad for its web renderer, as the account server passes it on: the
+ * same design Gravity sends for every ADE placement ("design", 2026-11-25),
+ * and an inlined icon. The links are Gravity's hosts; the mock fires nothing.
+ */
+const MOCK_GRAVITY_AD = {
+  adText: "Spin up a database branch for every pull request, then merge the schema when it lands.",
+  title: "Managed Postgres with branching",
+  cta: "Learn more",
+  brandName: "Northwind Postgres",
+  url: "https://trygravity.ai/",
+  favicon: `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#2f6f5e"/><path d="M10 23V9h2.6l6.8 9.4V9H22v14h-2.6l-6.8-9.4V23z" fill="#fff"/></svg>')}`,
+  clickUrl: "https://trygravity.ai/",
+  render: { mode: "spec" as const },
+  renderer_spec: {
+    name: "design",
+    version: 1,
+    root: {
+      bind: "url",
+      type: "link",
+      style: { gap: "8px", color: "hsl(var(--foreground))", width: "100%", border: "1px solid hsl(var(--border))", display: "flex", padding: "12px 14px", background: "hsl(var(--card))", borderRadius: "var(--radius)", flexDirection: "column", textDecoration: "none" },
+      children: [
+        {
+          type: "box",
+          style: { gap: "7px", width: "100%", display: "flex", alignItems: "center" },
+          children: [
+            { bind: "favicon", type: "image", style: { width: "18px", height: "18px", objectFit: "cover", borderRadius: "4px" } },
+            { bind: "brandName", type: "text", style: { color: "hsl(var(--muted-foreground))", fontSize: "12px", fontWeight: 600, lineHeight: 1.2 } },
+            { type: "box", style: { flexGrow: 1 } },
+            { text: "Sponsored", type: "text", style: { color: "hsl(var(--muted-foreground))", border: "1px solid hsl(var(--border))", padding: "2px 6px", fontSize: "10px", fontWeight: 700, lineHeight: 1.2, borderRadius: "999px", letterSpacing: "0.08em", textTransform: "uppercase" } },
+          ],
+        },
+        {
+          type: "box",
+          style: { gap: "12px", width: "100%", display: "flex", alignItems: "center" },
+          children: [
+            {
+              type: "box",
+              style: { gap: "4px", display: "flex", flexGrow: 1, flexDirection: "column" },
+              children: [
+                { bind: "title", type: "text", style: { color: "hsl(var(--foreground))", fontSize: "15px", fontWeight: 700, lineHeight: 1.3 } },
+                { bind: "adText", type: "text", style: { color: "hsl(var(--muted-foreground))", fontSize: "13px", fontWeight: 400, lineHeight: 1.35 }, showIf: "adText" },
+              ],
+            },
+            { bind: "cta", type: "text", style: { color: "hsl(var(--primary-foreground))", padding: "7px 13px", fontSize: "12px", background: "hsl(var(--primary))", flexShrink: 0, fontWeight: 700, lineHeight: 1.2, borderRadius: "999px" } },
+          ],
+        },
+      ],
+    },
+  },
+};

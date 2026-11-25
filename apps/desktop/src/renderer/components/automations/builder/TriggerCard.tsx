@@ -29,6 +29,7 @@ import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
 import { WebhookTriggerPanel } from "./WebhookTriggerPanel";
 import { settingsRouteFor } from "../../settings/settingsManifest";
+import { gatedOption, useAutomationFeatureGate } from "../automationFeatureGate";
 
 function SmallField({
   label,
@@ -224,6 +225,7 @@ export function TriggerCard({
   /** The Cursor source is an integration surface, so hide it until auth is confirmed. */
   cursorCloudConnected?: boolean;
 }) {
+  const gate = useAutomationFeatureGate();
   const source = sourceForTriggerType(trigger.type);
   const def = sourceDef(source);
   const events = def.events;
@@ -270,11 +272,16 @@ export function TriggerCard({
         <label className="block space-y-1">
           <span className={labelCls}>Event</span>
           <select className={selectCls} value={trigger.type} onChange={(e) => setEvent(e.target.value)}>
-            {events.map((event) => (
-              <option key={event.value} value={event.value}>
-                {event.label}
-              </option>
-            ))}
+            {events.map((event) => {
+              // The selected event stays choosable, so the select never shows
+              // a value it cannot render; the builder's banner names it.
+              const option = gatedOption(gate, "trigger", event.value, event.label, event.value === trigger.type);
+              return (
+                <option key={event.value} value={event.value} disabled={option.disabled}>
+                  {option.label}
+                </option>
+              );
+            })}
           </select>
         </label>
       ) : (

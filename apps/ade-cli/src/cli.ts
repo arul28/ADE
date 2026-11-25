@@ -38345,7 +38345,7 @@ function formatIosSimStatus(value: unknown): string {
     ),
     // No simulator here (Windows, Linux): name the one that runs anywhere.
     ...(status.supported === false
-      ? ["", "No simulator on this machine. The ADE Cloud iPhone runs from any machine: ade devices use ios@cloud (or one command with --machine cloud). ade devices --kind ios --text shows its minutes left."]
+      ? ["", "No simulator on this machine. The ADE Cloud iPhone runs from any machine: ade devices use ios@cloud (or one command with --machine cloud). ade devices --kind ios --text shows the minutes its credits have left."]
       : []),
   ].join("\n");
 }
@@ -42739,6 +42739,9 @@ function createLinkOwnershipResolver(
   options: GlobalOptions,
 ): (target: OwnedDeeplinkTarget) => Promise<DeeplinkOwnership | null> {
   return async (target) => {
+    // A run link names this project only through its chat; the brain has no
+    // other check for a run, so one without a chat stays unowned.
+    if (target.kind === "automation-run" && !target.sessionId) return null;
     let connection: CliConnection | null = null;
     try {
       const linked = await connectForLink(options);
@@ -42748,7 +42751,9 @@ function createLinkOwnershipResolver(
         ? { sessionId: target.sessionId, ...(target.laneId ? { laneId: target.laneId } : {}) }
         : target.kind === "lane"
           ? { laneId: target.laneId }
-          : target.repoOwner && target.repoName ? { repo: `${target.repoOwner}/${target.repoName}` } : {};
+          : target.kind === "automation-run"
+            ? { sessionId: target.sessionId ?? "" }
+            : target.repoOwner && target.repoName ? { repo: `${target.repoOwner}/${target.repoName}` } : {};
       return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership", subject)));
     } catch {
       return null;

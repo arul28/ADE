@@ -1,3 +1,4 @@
+import GravitySDK
 import OSLog
 import SwiftUI
 import UIKit
@@ -56,6 +57,11 @@ final class WorkSponsoredSlotModel: ObservableObject {
   /// again when a card appears or goes: a cached height kept from before the
   /// card drew the card over the turn's footer and under the prompt box.
   @Published private(set) var shownKey: String?
+  /// The ad the inline line at the reply's end draws now, as a key (nil while
+  /// none draws). The chat folds it into the reply row's revision: the line can
+  /// draw after the answer was placed (once the place is free), and a height
+  /// cached before it squeezed the reply's last lines into the line.
+  @Published private(set) var inlineShownKey: String?
   /// The slot's own height, as it last drew. Not published: geometry reads it.
   var height: CGFloat = 0
   /// The inline line's height, as it last drew (0 while it isn't drawn).
@@ -72,6 +78,10 @@ final class WorkSponsoredSlotModel: ObservableObject {
 
   func setShownKey(_ key: String?) {
     if shownKey != key { shownKey = key }
+  }
+
+  func setInlineShownKey(_ key: String?) {
+    if inlineShownKey != key { inlineShownKey = key }
   }
 
   func place(_ next: WorkSponsoredPlacedAd) {
@@ -194,8 +204,14 @@ struct WorkSponsoredReplySlot: View {
         case .consent:
           WorkSponsoredConsentCard(smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format, words: CloudBalanceWords(accountStore.account))
         case .ad(let ad):
-          WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
-            store.hide(chatId: sessionId, turnId: turn.turnId)
+          if let gravity = ad.gravity {
+            WorkSponsoredGravityCard(ad: ad, gravity: gravity, sessionId: sessionId) {
+              store.hide(chatId: sessionId, turnId: turn.turnId)
+            }
+          } else {
+            WorkSponsoredAdCard(ad: ad, test: sponsored?.test == true, slot: slot) {
+              store.hide(chatId: sessionId, turnId: turn.turnId)
+            }
           }
         case nil:
           EmptyView()
@@ -324,8 +340,16 @@ struct WorkSponsoredDockSlot: View {
     VStack(spacing: 0) {
       // Drawn at once (the hold below follows): the chat's own units never show together.
       if let shown, store.placeFree(forChat: sessionId) {
-        WorkSponsoredDockCard(ad: shown.ad, test: accountStore.account?.sponsored?.test == true) {
-          store.hide(chatId: sessionId, turnId: shown.turnId)
+        Group {
+          if let gravity = shown.ad.gravity {
+            WorkSponsoredGravityCard(ad: shown.ad, gravity: gravity, sessionId: sessionId, place: .dock) {
+              store.hide(chatId: sessionId, turnId: shown.turnId)
+            }
+          } else {
+            WorkSponsoredDockCard(ad: shown.ad, test: accountStore.account?.sponsored?.test == true) {
+              store.hide(chatId: sessionId, turnId: shown.turnId)
+            }
+          }
         }
         .padding(.bottom, 8)
         .transition(.opacity)
@@ -379,9 +403,11 @@ struct WorkSponsoredInlineOutlet: View {
 
   var body: some View {
     let shown = shown
+    let draws = shown != nil && store.placeFree(forChat: sessionId)
     VStack(alignment: .leading, spacing: 0) {
       // Drawn at once, so the row measures with it (the hold below follows).
-      if let shown, store.placeFree(forChat: sessionId) {
+      if let shown, draws {
+        // ADE's own linked sentence, never a card (Gravity's design is a card).
         WorkSponsoredInlineLine(ad: shown.ad, test: accountStore.account?.sponsored?.test == true, slot: slot) {
           store.hide(chatId: sessionId, turnId: shown.turnId)
         }
@@ -390,6 +416,7 @@ struct WorkSponsoredInlineOutlet: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { slot.inlineHeight = $0 }
+    .task(id: draws ? shown?.key : nil) { slot.setInlineShownKey(draws ? shown?.key : nil) }
     .task(id: "\(shown?.turnKey ?? "")|\(store.holder ?? "")") {
       if shown != nil { store.hold(placeId) } else { store.release(placeId) }
     }
@@ -441,6 +468,8 @@ private func workSponsoredLabel(test: Bool, ad: CloudSponsoredAd) -> String {
 private struct WorkSponsoredCTA: View {
   let title: String
   var external = false
+  /// The smaller size for the cards' head row.
+  var compact = false
   let action: () -> Void
 
   var body: some View {
@@ -453,10 +482,10 @@ private struct WorkSponsoredCTA: View {
             .accessibilityHidden(true)
         }
       }
-      .font(.system(size: 12.5, weight: .medium))
+      .font(.system(size: compact ? 11.5 : 12.5, weight: .medium))
       .foregroundStyle(ADEColor.textSecondary)
-      .padding(.horizontal, 10)
-      .frame(minHeight: 28)
+      .padding(.horizontal, compact ? 8 : 10)
+      .frame(minHeight: compact ? 24 : 28)
       .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEColor.textPrimary.opacity(0.14), lineWidth: 0.75))
       .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
@@ -555,8 +584,110 @@ struct WorkSponsoredConsentCard: View {
   }
 }
 
-/// One sponsored card: the brand, "Sponsored", hide, the title, the text,
-/// and Learn more. Its view counts once half of it is on screen.
+/// The head row both cards share: the brand's mark, the brand, "Sponsored",
+/// then Learn more and hide at the top right, so the ad's own text below gets
+/// the card's whole width. When the row does not fit (a narrow phone, a long
+/// brand), Learn more moves under the text and hide stays top right.
+private struct WorkSponsoredCardLayout<Copy: View>: View {
+  let ad: CloudSponsoredAd
+  let test: Bool
+  let onHide: () -> Void
+  @ViewBuilder var copy: () -> Copy
+
+  var body: some View {
+    // The copy has no width of its own (it wraps to what it is given), so
+    // only the head row decides which layout fits.
+    ViewThatFits(in: .horizontal) {
+      VStack(alignment: .leading, spacing: 4) {
+        head(.full)
+        copyBox
+      }
+      VStack(alignment: .leading, spacing: 4) {
+        head(.tight)
+        copyBox
+      }
+      VStack(alignment: .leading, spacing: 4) {
+        head(.tightest)
+        copyBox
+      }
+      VStack(alignment: .leading, spacing: 4) {
+        head(.noCTA)
+        copyBox
+        outlinedCTA
+          .frame(maxWidth: .infinity, alignment: .trailing)
+          .padding(.top, 2)
+      }
+    }
+  }
+
+  /// The head row, widest first: with the brand's mark and an outlined
+  /// button; without the mark and with Learn more as a plain link (a phone);
+  /// the same without a test ad's "test" mark; and without Learn more, which
+  /// then sits under the text.
+  private enum Head { case full, tight, tightest, noCTA }
+
+  private var copyBox: some View {
+    copy().frame(idealWidth: 0, maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var outlinedCTA: some View {
+    WorkSponsoredCTA(title: ad.cta ?? "Learn more", external: true, compact: true) { workSponsoredOpen(ad.clickUrl) }
+      .fixedSize()
+  }
+
+  private var linkCTA: some View {
+    Button { workSponsoredOpen(ad.clickUrl) } label: {
+      HStack(spacing: 3) {
+        Text(ad.cta ?? "Learn more")
+        Image(systemName: "arrow.up.right")
+          .font(.system(size: 9, weight: .bold))
+          .accessibilityHidden(true)
+      }
+      .font(.system(size: 11.5, weight: .medium))
+      .foregroundStyle(ADEColor.textSecondary)
+      .frame(minHeight: 28)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .fixedSize()
+  }
+
+  private func head(_ head: Head) -> some View {
+    HStack(spacing: 6) {
+      if head == .full { WorkSponsoredMonogram(name: ad.brand) }
+      Text(ad.brand)
+        .font(.system(size: 11.5, weight: .medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+      Text("· \(head == .tightest ? "Sponsored" : workSponsoredLabel(test: test, ad: ad))")
+        .font(.system(size: 11.5))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .layoutPriority(1)
+      Spacer(minLength: 6)
+      switch head {
+      case .full: outlinedCTA
+      case .tight, .tightest: linkCTA
+      case .noCTA: EmptyView()
+      }
+      Button(action: onHide) {
+        Image(systemName: "xmark")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 28, height: 28)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .padding(.vertical, -4)
+      .padding(.leading, -4)
+      .padding(.trailing, -6)
+      .accessibilityLabel("Hide this card")
+    }
+  }
+}
+
+/// One sponsored card under the reply: the head row, then the title and the
+/// text. Its view counts once half of it is on screen.
 struct WorkSponsoredAdCard: View {
   let ad: CloudSponsoredAd
   let test: Bool
@@ -566,63 +697,43 @@ struct WorkSponsoredAdCard: View {
 
   var body: some View {
     WorkSponsoredFrame {
-      HStack(spacing: 6) {
-        WorkSponsoredMonogram(name: ad.brand)
-        Text(ad.brand)
-          .font(.system(size: 11.5, weight: .medium))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-        Text(test || ad.test ? "· Sponsored · test" : "· Sponsored")
-          .font(.system(size: 11.5))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .layoutPriority(1)
-        Spacer(minLength: 4)
-        Button(action: onHide) {
-          Image(systemName: "xmark")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(width: 28, height: 28)
-            .contentShape(Rectangle())
+      WorkSponsoredCardLayout(ad: ad, test: test, onHide: onHide) {
+        VStack(alignment: .leading, spacing: 3) {
+          Button { workSponsoredOpen(ad.clickUrl) } label: {
+            Text(ad.title)
+              .font(.system(size: 13.5, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .multilineTextAlignment(.leading)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          .buttonStyle(.plain)
+          if !ad.text.isEmpty {
+            Text(ad.text)
+              .font(.system(size: 12.5))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineSpacing(1.5)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
-        .buttonStyle(.plain)
-        .padding(.vertical, -6)
-        .padding(.trailing, -6)
-        .accessibilityLabel("Hide this card")
       }
-      Button { workSponsoredOpen(ad.clickUrl) } label: {
-        Text(ad.title)
-          .font(.system(size: 13.5, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .multilineTextAlignment(.leading)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .buttonStyle(.plain)
-      if !ad.text.isEmpty {
-        Text(ad.text)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineSpacing(1.5)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      // The call to action sits on the right, under the hide button.
-      WorkSponsoredCTA(title: ad.cta ?? "Learn more", external: true) { workSponsoredOpen(ad.clickUrl) }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.top, 4)
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored: \(ad.brand)")
     .task(id: "\(ad.id)|\(slot.halfOnScreen)|\(store.appActive)") {
-      if slot.halfOnScreen, store.appActive { store.noteViewed(ad) }
+      guard slot.halfOnScreen, store.appActive else { return }
+      store.noteViewed(ad)
+      // A changed id (scrolled away, app in the background) cancels this before the second is up.
+      try? await Task.sleep(for: CloudSponsoredStore.viewableAfter)
+      if !Task.isCancelled { store.noteViewable(ad) }
     }
   }
 }
 
-/// The docked card above the prompt box: one row as wide as the prompt box.
-/// The brand's mark, the brand and "Sponsored" over the title and text on one
-/// line, the call to action, and hide. Floats over the thread like the other
-/// rows above the prompt box, so it carries its own glass. On screen whenever
-/// it draws (the chat is on screen), so its view counts once it shows.
+/// The docked card above the prompt box, as wide as the prompt box: the head
+/// row, then the title and text as one line that wraps, never cut off
+/// (Gravity's ask). Floats over the thread like the other rows above the
+/// prompt box, so it carries its own glass. On screen whenever it draws (the
+/// chat is on screen), so its view counts once it shows.
 struct WorkSponsoredDockCard: View {
   let ad: CloudSponsoredAd
   let test: Bool
@@ -630,56 +741,32 @@ struct WorkSponsoredDockCard: View {
   let onHide: () -> Void
 
   var body: some View {
-    HStack(spacing: 10) {
+    WorkSponsoredCardLayout(ad: ad, test: test, onHide: onHide) {
       Button { workSponsoredOpen(ad.clickUrl) } label: {
-        HStack(spacing: 10) {
-          WorkSponsoredMonogram(name: ad.brand, size: 28)
-          VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-              Text(ad.brand)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
-              Text("· \(workSponsoredLabel(test: test, ad: ad))")
-                .font(.system(size: 11.5))
-                .foregroundStyle(ADEColor.textMuted)
-                .lineLimit(1)
-                .layoutPriority(1)
-            }
-            (Text(ad.title).fontWeight(.semibold).foregroundStyle(ADEColor.textPrimary)
-              + Text(ad.text.isEmpty ? "" : " — \(ad.text)").foregroundStyle(ADEColor.textSecondary))
-              .font(.system(size: 13))
-              .lineLimit(1)
-              .truncationMode(.tail)
-          }
+        (Text(ad.title).fontWeight(.semibold).foregroundStyle(ADEColor.textPrimary)
+          + Text(ad.text.isEmpty ? "" : " — \(ad.text)").foregroundStyle(ADEColor.textSecondary))
+          .font(.system(size: 13))
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("\(ad.title). \(ad.text)")
-      WorkSponsoredCTA(title: ad.cta ?? "Learn more", external: true) { workSponsoredOpen(ad.clickUrl) }
-        .fixedSize()
-      Button(action: onHide) {
-        Image(systemName: "xmark")
-          .font(.system(size: 10, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(width: 28, height: 28)
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .padding(.leading, -4)
-      .accessibilityLabel("Hide this card")
+      .accessibilityLabel("\(ad.title). \(ad.text)")
     }
-    .padding(.leading, 10)
-    .padding(.trailing, 6)
-    .padding(.vertical, 8)
+    .padding(.leading, 12)
+    .padding(.trailing, 10)
+    .padding(.vertical, 9)
     .frame(maxWidth: .infinity, alignment: .leading)
     .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored: \(ad.brand)")
     .task(id: "\(ad.id)|\(store.appActive)") {
-      if store.appActive { store.noteViewed(ad) }
+      guard store.appActive else { return }
+      store.noteViewed(ad)
+      // A changed id (scrolled away, app in the background) cancels this before the second is up.
+      try? await Task.sleep(for: CloudSponsoredStore.viewableAfter)
+      if !Task.isCancelled { store.noteViewable(ad) }
     }
   }
 }
@@ -737,8 +824,126 @@ struct WorkSponsoredInlineLine: View {
       .accessibilityAction { workSponsoredOpen(ad.clickUrl) }
       .accessibilityAction(named: "Hide this sponsored line", onHide)
       .task(id: "\(ad.id)|\(slot.inlineHalfOnScreen)|\(store.appActive)") {
-        if slot.inlineHalfOnScreen, store.appActive { store.noteViewed(ad) }
+        guard slot.inlineHalfOnScreen, store.appActive else { return }
+        store.noteViewed(ad)
+        // A changed id (scrolled away, app in the background) cancels this before the second is up.
+        try? await Task.sleep(for: CloudSponsoredStore.viewableAfter)
+        if !Task.isCancelled { store.noteViewable(ad) }
       }
+  }
+}
+
+// MARK: - Gravity's renderer
+
+/// The one Gravity instance the cards draw with. Keyless on purpose: ADE's
+/// Gravity key is the account server's secret, and the server asks for the
+/// ads. On the phone the SDK only draws a card, sends its view and
+/// viewability links, and opens its tracked link, none of which takes a key.
+private let workSponsoredGravity = Gravity(apiKey: "")
+
+/// Where a Gravity-drawn card sits: in the transcript (under the reply, or
+/// at its end), or docked above the prompt box, floating over the thread.
+enum WorkSponsoredGravityPlace {
+  case transcript
+  case dock
+}
+
+/// Gravity's design tokens (`$card`, `$border`, `$primary`...) in ADE's own
+/// colors, so the card reads as ADE's in light and dark: the quiet fill and
+/// hairline of ADE's sponsored card in the transcript, the prompt box's glass
+/// in the dock, ADE's text tones, and the accent for the one filled button.
+/// `$primary` is opaque: designs use it for text as well as for fills.
+private enum WorkSponsoredGravityTheme {
+  static let transcript = theme(card: ADEColor.textPrimary.opacity(0.02), radius: 12)
+  /// The card's own fill is the glass behind it.
+  static let dock = theme(card: .clear, radius: 14)
+
+  private static func theme(card: Color, radius: CGFloat) -> GravityTheme {
+    GravityTheme(
+      background: ADEColor.pageBackground,
+      foreground: ADEColor.textPrimary,
+      card: card,
+      cardForeground: ADEColor.textPrimary,
+      primary: ADEColor.accent,
+      primaryForeground: Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.05, alpha: 1) : .white }),
+      muted: ADEKit.track,
+      mutedForeground: ADEColor.textSecondary,
+      accent: ADEKit.pressed,
+      accentForeground: ADEColor.textPrimary,
+      border: ADEKit.edge,
+      radius: radius
+    )
+  }
+}
+
+/// A sponsored card in Gravity's own design (`CloudSponsoredAd.gravity`),
+/// drawn by Gravity's renderer (`SpecAdView`) in ADE's colors, under the reply
+/// and docked above the prompt box (the inline format is ADE's own linked
+/// sentence, `WorkSponsoredInlineLine`). The renderer sends the card's view link once half of it is on
+/// screen, and its measured and viewable links, and opens Gravity's tracked
+/// link on a tap; so nothing here calls `noteViewed` (that would count the
+/// view twice). ADE keeps the rest: the place, the one card on screen, and
+/// hide, a small round badge on the card's top right corner, outside the
+/// design so it never covers the design's own "Sponsored" or its copy.
+struct WorkSponsoredGravityCard: View {
+  let ad: CloudSponsoredAd
+  let gravity: AdResponse
+  /// The chat: the renderer's session (it only labels feedback, which ADE leaves off).
+  let sessionId: String
+  var place: WorkSponsoredGravityPlace = .transcript
+  let onHide: () -> Void
+
+  /// The hide badge's size, and how far it reaches past the card's top and
+  /// right edges (its center sits on the corner). The card keeps that much
+  /// room above it, so its slot's frame holds the whole badge.
+  private static let badge: CGFloat = 22
+  private static var overhang: CGFloat { badge / 2 }
+
+  var body: some View {
+    card
+      .overlay(alignment: .topTrailing) { hideBadge }
+      .padding(.top, Self.overhang)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      // No label of its own: the design's link already reads as the whole
+      // card, its "Sponsored" included (a label here hid the card's children).
+      .accessibilityElement(children: .contain)
+  }
+
+  @ViewBuilder
+  private var card: some View {
+    switch place {
+    case .transcript:
+      SpecAdView(ad: gravity, gravity: workSponsoredGravity, sessionId: sessionId, theme: WorkSponsoredGravityTheme.transcript, showFeedback: false)
+    case .dock:
+      SpecAdView(ad: gravity, gravity: workSponsoredGravity, sessionId: sessionId, theme: WorkSponsoredGravityTheme.dock, showFeedback: false)
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+  }
+
+  /// A 44 pt target around the badge, reaching out past the corner more than
+  /// into the card: inside the card it stays within the design's padding,
+  /// clear of its "Sponsored" label.
+  private var hideBadge: some View {
+    let target: CGFloat = 44
+    let inside: CGFloat = 14
+    let shift = target - inside
+    return Button(action: onHide) {
+      Image(systemName: "xmark")
+        .font(.system(size: 8.5, weight: .bold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: Self.badge, height: Self.badge)
+        .background(ADEColor.raisedBackground, in: Circle())
+        .overlay(Circle().strokeBorder(ADEColor.border, lineWidth: 0.75))
+        .padding(.leading, inside - Self.overhang)
+        .padding(.bottom, inside - Self.overhang)
+        .frame(width: target, height: target, alignment: .bottomLeading)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .offset(x: shift, y: -shift)
+    .accessibilityLabel("Hide this card")
+    // Read after the card it hides.
+    .accessibilitySortPriority(-1)
   }
 }
 

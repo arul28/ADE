@@ -308,6 +308,8 @@ export function chipFromDeeplinkTarget(url: string, target: DeeplinkTarget): Chi
     case "lane-share":
       // An invite link: an address only; the shared lanes page decides.
       return { kind: "ade_link", token: url, label: "Shared lane", source };
+    case "automation-run":
+      return { kind: "ade_link", token: url, label: "Automation run", source };
     case "open": {
       const place = openPlaceById(target.place);
       if (!place) return { kind: "ade_link", token: url, label: `ADE · open/${target.place}`, source };

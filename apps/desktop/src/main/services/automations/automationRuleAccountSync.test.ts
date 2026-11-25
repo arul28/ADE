@@ -260,6 +260,30 @@ describe("automation rules that follow the account", () => {
     expect(a.account.get(SCOPE, "automations.rule.future")).toEqual(future);
   });
 
+  it("treats a step calling an ADE action this build lacks as a newer ADE's rule, and a known one as runnable", async () => {
+    const relay = createRelay();
+    const a = await createComputer({ name: "mac-a", relay });
+    const withAction = (id: string, domain: string, action: string) => ({
+      id,
+      name: id,
+      enabled: true,
+      mode: "review",
+      triggers: [{ type: "manual" }],
+      execution: { kind: "built-in", builtIn: { actions: [{ type: "ade-action", adeAction: { domain, action, args: {} } }] } },
+    });
+    for (const [id, domain, action] of [["unknown", "attention", "madeUpAction"], ["known", "attention", "sendNotification"]] as const) {
+      a.account.set(SCOPE, `automations.rule.${id}`, withAction(id, domain, action));
+      a.account.set(SCOPE, `automations.home.${id}`, { deviceId: "mac-a", name: "mac-a", chosenAt: new Date().toISOString() });
+    }
+    await settleAll(a);
+
+    const shown = a.rules();
+    expect(shown.unknown?.needsNewerAde).toBe(true);
+    expect(shown.unknown?.runsHere).toBe(false);
+    expect(shown.known?.needsNewerAde).toBeFalsy();
+    expect(shown.known?.runsHere).toBe(true);
+  });
+
   it("stops starting rules once out of touch, and moves a signed-out edit only into its own account", async () => {
     const relay = createRelay();
     const user = { id: "user-1" as string | null };

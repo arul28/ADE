@@ -278,6 +278,7 @@ import type {
   ArchiveLaneArgs,
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
+  AutomationCapabilities,
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
@@ -2198,6 +2199,8 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AutomationRunDetail | null>;
         getIngressStatus: (pin: OpenProjectBinding) => Promise<AutomationIngressStatus>;
+        /** What a rule on the pinned machine can use; refused by an ADE older than this call. */
+        getCapabilities: (pin: OpenProjectBinding) => Promise<AutomationCapabilities>;
         refreshWebhookGatewayStatus: (pin: OpenProjectBinding) => Promise<AutomationWebhookGatewayStatus>;
         setWebhookGatewayPublicUrl: (args: {
           publicUrl?: string | null;

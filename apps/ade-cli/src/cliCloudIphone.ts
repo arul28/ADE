@@ -373,7 +373,7 @@ function textOf(call: Call, value: unknown): string {
   }
   if (action === "start") {
     const phone = isRecord(value.phone) ? value.phone : null;
-    const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left` : "";
+    const minutes = isRecord(value.minutes) ? ` · credits for about ${value.minutes.left} min left this period` : "";
     return `ADE Cloud iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`
       + cloudPhoneAbilityLines({ abilities: value.abilities }, true)
       + `It counts minutes until it stops. Run ade apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;

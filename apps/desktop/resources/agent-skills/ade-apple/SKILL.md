@@ -158,12 +158,12 @@ so Windows and Linux use it too. `ade devices` lists it only when the account
 has it; otherwise `use ios@cloud` says why: not on this account yet, or this
 machine's ADE is too old for it (then the person updates ADE; don't look for
 another cause). It spends
-iPhone minutes; a Mac of the person's (`ios@<Mac>`) spends none, so prefer one
-that is listed.
+the account's ADE Cloud credits (one a minute); a Mac of the person's
+(`ios@<Mac>`) spends none, so prefer one that is listed.
 
 ```bash
 "$ADE_CLI_PATH" devices use ios@cloud   # this chat's iPhone
-"$ADE_CLI_PATH" apple status --text     # access, minutes left, what this phone can and can't do
+"$ADE_CLI_PATH" apple status --text     # access, the minutes the credits have left, what this phone can and can't do
 ```
 
 Cloud iPhones differ in a few abilities (app tests, uninstall, StoreKit,
@@ -194,16 +194,16 @@ For one command, `ade apple … --machine cloud`. What differs:
   own. `foreground` answers from the screen text. `act` takes the same words
   as the screen. `show` opens the chat's tools pane on this machine, as it
   does for a Mac's simulator.
-- It spends the plan's iPhone minutes from the first command (a read like
-  `snapshot` starts it too) until it stops, building included. A phone left
-  alone stops by itself only after 5 minutes with no input, and those 5
-  minutes count: a few separate short visits cost far more than one batch.
-  `ade apple status --text` lists this period's phones with their minutes and
-  how each ended. `ade cloud status` has the totals (`iphone`: left, reset
-  day, extra minutes) and every plan's (`plans`). It stops at 0 unless extra
-  minutes are on (paid plans), and after 2 hours. `ade apple stop` as soon as
-  you are done. Only the person changes the plan or extra minutes, in
-  Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
+- It spends the account's credits, one a minute, from the first command (a
+  read like `snapshot` starts it too) until it stops, building included. A
+  phone left alone stops by itself only after 5 minutes with no input, and
+  those 5 minutes count: a few separate short visits cost far more than one
+  batch. `ade apple status --text` lists this period's phones with their
+  minutes and how each ended. `ade cloud status` has the credits left, what
+  the iPhone used (`iphone`) and every plan's (`plans`). It stops when the
+  credits run out unless extra credits are on (paid plans), and after 2
+  hours. `ade apple stop` as soon as you are done. Only the person changes the
+  plan or extra credits, in Settings › ADE Cloud. A full-auto chat or an automation uses it only when the
   person lets agents spend (the agent limits, as for hours).
 
 Working fast on it (measured: `snapshot` about 1 s, a step 2–3 s, a fresh

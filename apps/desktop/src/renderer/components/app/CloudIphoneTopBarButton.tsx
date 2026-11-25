@@ -188,7 +188,7 @@ function CloudIphoneDetails({
             navigateToAppTarget({ kind: "settings", tab: "ade-cloud" });
           }}
         >
-          Minutes
+          Credits
         </Button>
         {!starting ? (
           <Button variant="outline" size="sm" casing="sentence" disabled={busy != null} onClick={() => act("keep")}>

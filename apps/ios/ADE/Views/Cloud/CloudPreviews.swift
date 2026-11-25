@@ -1,3 +1,4 @@
+import GravitySDK
 import SwiftUI
 
 #if DEBUG
@@ -153,7 +154,7 @@ enum CloudPreviews {
   private static func listJSON() -> String {
     let hour = 3_600_000.0
     let day = 86_400_000.0
-    let phone = #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto","minutes":{"included":497,"used":15,"left":482},"state":"none"},"credits":{"phoneMilliPerMinute":1000}"#
+    let phone = #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto"},"credits":{"phoneMilliPerMinute":1000}"#
     return """
     {"state":"ok","runningCount":1,"machines":[
       {"instanceId":"zodqsue74s","name":"ADE Cloud computer","machineKey":"mk1","state":"running","type":"box",
@@ -195,11 +196,11 @@ enum CloudPreviews {
       "dueForDeletion":[],"deletedInstanceIds":[],
       "catalog":{
         "plans":{
-          "free":{"includedMilli":50000,"diskGb":24,"priceUsd":0,"phoneMinutes":60,"extraHourCents":null,"computerLimit":2,"outsideAgents":false},
-          "paid":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"phoneMinutes":80,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
-          "plus":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"phoneMinutes":80,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
-          "pro":{"includedMilli":600000,"diskGb":120,"priceUsd":20,"phoneMinutes":300,"extraHourCents":2,"computerLimit":10,"outsideAgents":true},
-          "max":{"includedMilli":1500000,"diskGb":240,"priceUsd":50,"phoneMinutes":800,"extraHourCents":2,"computerLimit":20,"outsideAgents":true}},
+          "free":{"includedMilli":50000,"diskGb":24,"priceUsd":0,"extraHourCents":null,"computerLimit":2,"outsideAgents":false},
+          "paid":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
+          "plus":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
+          "pro":{"includedMilli":600000,"diskGb":120,"priceUsd":20,"extraHourCents":2,"computerLimit":10,"outsideAgents":true},
+          "max":{"includedMilli":1500000,"diskGb":240,"priceUsd":50,"extraHourCents":2,"computerLimit":20,"outsideAgents":true}},
         "sizes":[
           {"type":"default","cpu":2,"memoryGb":4,"multiplierMilli":0,"tier":"small","label":"Small","diskMaxGb":12},
           {"type":"default","cpu":4,"memoryGb":8,"multiplierMilli":1000,"tier":"medium","label":"Medium","diskMaxGb":20},
@@ -390,18 +391,162 @@ private struct CloudSponsoredFormatChatFixture: View {
         CloudSponsoredStore.shared.seedPreview(
           turnKey: CloudSponsoredStore.turnKey(chatId: workPreviewChatSessionId, turnId: Self.turnId),
           ad: CloudSponsoredAd(
-            id: "fixture-neon",
-            brand: "Neon",
-            title: "Serverless Postgres with branching",
-            text: "Spin up a database branch for every pull request.",
-            cta: "Try Neon",
-            clickUrl: "https://trygravity.ai/c/fixture-neon",
+            id: "fixture-postgres",
+            brand: "Northwind Postgres",
+            title: "Managed Postgres with branching",
+            text: "Spin up a database branch for every pull request, then merge the schema when it lands.",
+            cta: "Learn more",
+            clickUrl: "https://trygravity.ai/c/fixture-postgres",
             impUrl: nil,
-            test: true
+            test: true,
+            gravity: Self.gravityAd
           )
         )
       }
   }
+
+  /// The same ad as Gravity's renderer gets it (`CloudSponsoredAd.gravity`):
+  /// the design Gravity answers a `psp1` request with, as the server passes it
+  /// on (a real answer, its row gap as `spacerBefore`). A linked card, the
+  /// brand and a "Sponsored" pill on top, the title and text beside a filled
+  /// call to action. No view link, so the fixture sends nothing; no icon, so
+  /// it loads nothing (the design skips it). A tap opens the tracked link.
+  private static let gravityAd: AdResponse? = try? JSONDecoder().decode(AdResponse.self, from: Data(#"""
+    {
+      "adText": "Spin up a database branch for every pull request, then merge the schema when it lands.",
+      "title": "Managed Postgres with branching",
+      "brandName": "Northwind Postgres",
+      "cta": "Learn more",
+      "clickUrl": "https://api.trygravity.ai/track/click?p=preview",
+      "render": { "mode": "spec" },
+      "placement": "below_response",
+      "placement_id": "ade-ios-below-reply",
+      "renderer_spec": {
+        "name": "design",
+        "root": {
+          "bind": "url",
+          "type": "link",
+          "style": {
+            "gap": "8px",
+            "color": "$foreground",
+            "width": "100%",
+            "border": "1px solid $border",
+            "padding": "12px 14px",
+            "direction": "column",
+            "background": "$card",
+            "borderRadius": "$radius",
+            "textDecoration": "none"
+          },
+          "children": [
+            {
+              "type": "box",
+              "style": {
+                "gap": "7px",
+                "align": "center",
+                "width": "100%",
+                "direction": "row"
+              },
+              "children": [
+                {
+                  "bind": "favicon",
+                  "type": "image",
+                  "style": {
+                    "fit": "cover",
+                    "width": "18px",
+                    "height": "18px",
+                    "borderRadius": "4px"
+                  }
+                },
+                {
+                  "bind": "brandName",
+                  "type": "text",
+                  "style": {
+                    "color": "$muted-foreground",
+                    "fontSize": "12px",
+                    "fontWeight": 600,
+                    "lineHeight": 1.2
+                  }
+                },
+                {
+                  "text": "Sponsored",
+                  "type": "text",
+                  "style": {
+                    "color": "$muted-foreground",
+                    "border": "1px solid $border",
+                    "padding": "2px 6px",
+                    "fontSize": "10px",
+                    "fontWeight": 700,
+                    "lineHeight": 1.2,
+                    "borderRadius": "full",
+                    "letterSpacing": "0.08em",
+                    "textTransform": "uppercase",
+                    "spacerBefore": true
+                  }
+                }
+              ]
+            },
+            {
+              "type": "box",
+              "style": {
+                "gap": "12px",
+                "align": "center",
+                "width": "100%",
+                "direction": "row"
+              },
+              "children": [
+                {
+                  "type": "box",
+                  "style": {
+                    "gap": "4px",
+                    "grow": 1,
+                    "direction": "column"
+                  },
+                  "children": [
+                    {
+                      "bind": "title",
+                      "type": "text",
+                      "style": {
+                        "color": "$foreground",
+                        "fontSize": "15px",
+                        "fontWeight": 700,
+                        "lineHeight": 1.3
+                      }
+                    },
+                    {
+                      "bind": "adText",
+                      "type": "text",
+                      "style": {
+                        "color": "$muted-foreground",
+                        "fontSize": "13px",
+                        "fontWeight": 400,
+                        "lineHeight": 1.35
+                      },
+                      "showIf": "adText"
+                    }
+                  ]
+                },
+                {
+                  "bind": "cta",
+                  "type": "text",
+                  "style": {
+                    "color": "$primary-foreground",
+                    "shrink": 0,
+                    "padding": "7px 13px",
+                    "fontSize": "12px",
+                    "background": "$primary",
+                    "fontWeight": 700,
+                    "lineHeight": 1.2,
+                    "borderRadius": "full"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        "version": 1
+      }
+    }
+    """#.utf8))
 }
 
 /// Settings › Providers with ADE Cloud picked, from fixtures.
