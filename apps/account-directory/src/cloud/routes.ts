@@ -21,6 +21,7 @@ import { serverGitCheck } from "./accountVault";
 import { routeAccountSignIns } from "./accountSignIns";
 import { routeAccountSecrets } from "./accountSecrets";
 import { routeCtoCopy } from "./ctoCopy";
+import { handleDeletedAccountsList, isDeletedAccountsListRequest } from "../accountErasure";
 import { handleInternalEventWake, isInternalEventWakeRequest, routeEventWakeSubscription, type EventWakeOutcome } from "./eventWakes";
 import { routeJiraIssue, routeJiraSearch, routeLinearQuery } from "./integrations";
 import { routeCloudLimits } from "./limits";
@@ -2037,6 +2038,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       createComputer: (userId, launchProvider, extras) => createComputerSettled(env, userId, launchProvider, extras, { now, waitUntil }),
     }));
   }
+  // The webhook relay's read of the accounts deleted in the last day: the same shared secret.
+  if (isDeletedAccountsListRequest(path)) return handleDeletedAccountsList(request, env);
   // The webhook relay's event wake: its shared secret is the proof, no account token.
   if (isInternalEventWakeRequest(path)) {
     return providerCall(() => handleInternalEventWake(request, env, (computer, now) => eventWakeComputer(env, computer, now), Date.now()));

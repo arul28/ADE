@@ -4,6 +4,7 @@ import { RepoEventsDurableObject as RepoEventsDurableObjectClass } from "./repoE
 import { cloudflareTransientKind, logCloudflareTransient, retryD1Reads, transientUnavailableResponse } from "./cloudflareTransient";
 import { handleRequest, type RelayEnv } from "./relay";
 import { retryHookForwards } from "./customHooks";
+import { purgeDeletedAccounts } from "./accountPurge";
 import { scrubString } from "./sentryScrub";
 import { reportJobFailure, reportRequest, routeTemplate, type PostHogLogsEnv } from "./posthogLogs";
 import { sentryOptions, type SentryEnv } from "./sentry";
@@ -58,11 +59,15 @@ export default Sentry.withSentry(sentryOptions, {
 
   // The cron jobs: start ADE's Beta workflow (src/betaTimer.ts), and send
   // forwarded webhook deliveries the account directory didn't take yet
-  // (customHooks.ts; one indexed read when none waits). Awaited, so a throw
-  // reaches the Sentry wrapper.
+  // (customHooks.ts; one indexed read when none waits), and purge the
+  // accounts deleted in the last day (accountPurge.ts; one directory read
+  // each when none was). Awaited, so a throw reaches the Sentry wrapper.
   async scheduled(_event: ScheduledEvent, env: BetaTimerEnv & RelayEnv & SentryEnv & PostHogLogsEnv, ctx: ExecutionContext): Promise<void> {
     const forwards = retryHookForwards({ ...env, DB: retryD1Reads(env.DB) }).catch((error: unknown) => {
       reportJobFailure(env, ctx, WORKER_NAME, "hook_forwards", error);
+    });
+    const purges = purgeDeletedAccounts(env).catch((error: unknown) => {
+      reportJobFailure(env, ctx, WORKER_NAME, "account_purge", error);
     });
     try {
       await runBetaTimer(env);
@@ -70,7 +75,7 @@ export default Sentry.withSentry(sentryOptions, {
       reportJobFailure(env, ctx, WORKER_NAME, "beta_timer", error);
       throw error;
     } finally {
-      await forwards;
+      await Promise.all([forwards, purges]);
     }
   },
 });

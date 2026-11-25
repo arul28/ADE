@@ -436,8 +436,10 @@ answers `{ ok: true, users: [{ user_id, email, added_at }] }`.
 
 **Deleting an account.** Clerk's `user.deleted` runs `deleteAccountPhone`: it
 stops the account's phones, asks NoMac to forget what it kept for the label
-(saved states, replays, workspace), and removes the row from the beta list.
-NoMac's billing records stay under the label, which is an id, never an email.
+(saved states, replays, workspace), and removes the row from the beta list
+and its pending invite. NoMac's billing records stay under the label, which is
+an id, never an email. The repeats of the deletion (`accountErasure.ts`) run
+it again.
 
 ## Speed (measured 2026-11-19, from a Mac)
 

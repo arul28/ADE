@@ -404,9 +404,19 @@ async function handleMove(request: Request, env: LaneShareEnv, userId: string, i
  * account is gone and no guest keeps a lane whose owner is gone. Safe to
  * repeat. Pending invites TO the account's address are not found here (the
  * address is gone with the account); they expire in 24 h.
+ *
+ * The account's closed grants (its address, its labels, the other person's
+ * ID) go on a later run of the deletion (`accountErasure.ts` repeats it after
+ * 15 minutes), once they have been closed for `CLOSED_GRANT_SEEN_MS`: by then
+ * the other person's computers have read the close, and a grant that is gone
+ * answers them the same 404 as one they may not see.
  */
 export async function closeLaneSharesForAccount(env: { DB: D1Database }, userId: string, now: number = Date.now()): Promise<void> {
   await env.DB.batch([
+    env.DB.prepare(`
+      delete from lane_shares
+      where (giver_user_id = ? or receiver_user_id = ?) and state not in ${LIVE_STATES} and closed_at is not null and closed_at <= ?
+    `).bind(userId, userId, now - CLOSED_GRANT_SEEN_MS),
     env.DB.prepare(`
       update lane_shares set state = 'revoked', closed_reason = 'account_deleted', closed_at = ?, updated_at = ?, version = version + 1
       where giver_user_id = ? and state in ${LIVE_STATES}
@@ -419,6 +429,8 @@ export async function closeLaneSharesForAccount(env: { DB: D1Database }, userId:
 }
 
 const SWEEP_BATCH = 500;
+/** How long a deleted account's closed grant stays, so the other person's computers read the close first. */
+const CLOSED_GRANT_SEEN_MS = 10 * 60_000;
 const KEEP_CLOSED_MS = 90 * 24 * 60 * 60 * 1000;
 const KEEP_BUDGET_DAYS = 7;
 

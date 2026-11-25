@@ -503,6 +503,17 @@ export class FakeD1Database {
       const writes = this.usageResearchDays.get(String(values[0]));
       return (writes === undefined ? null : { writes }) as T | null;
     }
+    if (normalized.includes("left join revoked_machines")) {
+      const [userId, , machineKey] = values;
+      const revocation = this.revocations.find((row) => row.user_id === userId && row.machine_key === machineKey);
+      return {
+        machine_key: revocation?.machine_key ?? null,
+        device_id: revocation?.device_id ?? null,
+        revoked_at: revocation?.revoked_at ?? null,
+        // No deletion here: the gate's deleted-account half runs on real SQL in cloudAccount.test.ts.
+        account_deleted_at: null,
+      } as T;
+    }
     if (normalized.includes("from revoked_machines")) {
       const [userId, machineKey] = values;
       return (this.revocations.find((row) =>
