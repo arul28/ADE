@@ -8,8 +8,8 @@ import type {
   CloudLaneTierTiming,
   CloudLaneWithoutComputer,
   CloudLaneWorkState,
-  CloudTierRequestAnswerArgs,
 } from "../../../shared/cloudLaneLife";
+import type { CloudTierRequestAnswerArgs } from "../../../shared/cloudTierRequest";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { OpenProjectBinding } from "../../../shared/types/core";

@@ -1,5 +1,5 @@
 import type { AdeCardIcon, AdeCardPayload, AdeCardRow } from "./adeCard";
-import { stripElectronErrorWrapper } from "./codedError";
+import { stripElectronErrorWrapper, withoutRefusalCode } from "./codedError";
 import type { LaneStart } from "./laneStart";
 import type {
   ChatLaunchArgs,
@@ -339,10 +339,14 @@ export function isChatLaunchRefused(launch: Pick<ChatLaunchSnapshot, "phase" | "
   return launch.phase === "failed" && !launch.laneCreated && launch.stages.every((stage) => stage.status === "pending");
 }
 
-/** The plain sentence of a launch error, without Electron's IPC wrapper or an error class name. */
+/**
+ * The plain sentence of a launch error, without Electron's IPC wrapper, an
+ * error class name or a person's refusal code (`withoutRefusalCode`: a launch
+ * refused while its computer moves reads as the sentence).
+ */
 export function chatLaunchErrorMessage(error: unknown, fallback = "ADE couldn't start this launch."): string {
   const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return stripElectronErrorWrapper(raw) || fallback;
+  return withoutRefusalCode(stripElectronErrorWrapper(raw)) || fallback;
 }
 
 /** The agent (or CLI session) is up: completed, or started early and not since failed or cancelled. */

@@ -40,6 +40,14 @@ export function findMachineProject<T extends { projectId: string; rootPath: stri
   return projects.find((project) => comparableRootPath(project.rootPath) === rootPath) ?? null;
 }
 
+/** Which project on a machine: by id, then folder, then the account's project id, then the repository's origin (`pickMachineProject`). */
+export type MachineProjectRef = {
+  projectId?: string | null;
+  rootPath?: string | null;
+  originUrl?: string | null;
+  accountProjectId?: string | null;
+};
+
 /**
  * The project a machine lists for a reference to it, of those still there:
  * by id, then by folder (`findMachineProject`), then by the account's project
@@ -55,7 +63,7 @@ export function pickMachineProject<T extends {
   gitOriginUrl?: string | null;
 }>(
   projects: readonly T[] | null | undefined,
-  ref: { projectId?: string | null; rootPath?: string | null; originUrl?: string | null; accountProjectId?: string | null },
+  ref: MachineProjectRef,
 ): T | null {
   const present = (projects ?? []).filter((project) => project.exists !== false);
   const found = findMachineProject(present, ref);

@@ -153,7 +153,8 @@ import type {
 } from "../shared/projectRemoval";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults, CloudTierRequestAnswerArgs } from "../shared/cloudLaneLife";
+import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
+import type { CloudTierRequestAnswerArgs } from "../shared/cloudTierRequest";
 import type {
   CtoCloudHomeCallArgs,
   CtoCloudHomeCallResult,

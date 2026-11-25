@@ -239,6 +239,7 @@ import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCur
 import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { useLaneGitRemote } from "./useLaneGitRemote";
+import { useProviderStatusRefresh } from "./useProviderStatusRefresh";
 import { familiesFromStatus, familiesWithoutRuntime } from "../shared/ModelPicker/useProviderAuthStatus";
 import { isPiRoutedModel } from "../shared/ModelPicker/modelFacts";
 import {
@@ -5060,6 +5061,8 @@ export function AgentChatPane({
         }
       : null,
   );
+  // The status's connections by provider id, for any provider (the chat's, the sign-in card's).
+  const connectionsByProvider = aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined;
   const [attachments, setAttachmentsState] = useState<AgentChatFileRef[]>([]);
   // The same array as the state: `submit` compares the two to tell an edit made
   // while a send awaited, so they must never be two different empty lists.
@@ -9546,55 +9549,6 @@ export function AgentChatPane({
     });
   }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary, setSelectedSessionId]);
 
-  // The visible pane reads the model list when it shows, when the chat's
-  // provider changes, and when a turn starts and ends (`turnActive` in the
-  // deps). It used to re-read every 5 s for the whole turn; the list rarely
-  // changes mid-turn, and a model a provider adds during a long turn shows
-  // at the turn's end. A hidden pane reads nothing.
-  //
-  // A status that says the chat's provider cannot run ("No Claude login was
-  // detected") is read past this window's cache when a turn ends: the turn
-  // that just ran on that provider proved it wrong, or the read is right. It
-  // also reads again when the chat moves to another machine (its pin key).
-  const chatProviderStatus = selectedSession?.provider
-    ? (aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined)?.[selectedSession.provider]
-    : undefined;
-  const chatProviderStatusBlockedRef = useRef(false);
-  chatProviderStatusBlockedRef.current = chatProviderStatus != null
-    && (chatProviderStatus.runtimeAvailable === false || Boolean(chatProviderStatus.blocker));
-  useEffect(() => {
-    if (!isTileActive) return;
-    void refreshAvailableModels(!turnActive && chatProviderStatusBlockedRef.current ? { revalidate: true } : undefined);
-  }, [chatRuntimePinKey, isTileActive, refreshAvailableModels, selectedSession?.provider, turnActive]);
-
-  // The chat's machine applied or changed its provider sign-ins (an ADE Cloud
-  // computer applies the account's sign-ins as ADE starts there, so a status
-  // read in that first half minute says "no login"): read its status again.
-  // The event is the chat's machine's, by its pin; no timer, no poll. The
-  // refresh is read through a ref so a model change does not resubscribe.
-  const refreshAvailableModelsRef = useRef(refreshAvailableModels);
-  refreshAvailableModelsRef.current = refreshAvailableModels;
-  useEffect(() => {
-    if (!isTileActive || !selectedSessionId) return undefined;
-    const onChanged = window.ade?.providerLogins?.onChanged;
-    if (typeof onChanged !== "function") return undefined;
-    let off: (() => void) | undefined;
-    try {
-      off = onChanged(() => {
-        void refreshAvailableModelsRef.current({ revalidate: true });
-      }, chatRuntimePinRef.current);
-    } catch (error) {
-      // A window that cannot reach that machine's events (ADE Web without a
-      // route to it) reads the status on the triggers above instead.
-      console.warn(
-        "[chat] provider-login-events-unavailable; the chat's sign-in status refreshes on its other triggers",
-        error instanceof Error ? error.message : String(error),
-      );
-      return undefined;
-    }
-    return () => off?.();
-  }, [chatRuntimePinKey, isTileActive, selectedSessionId]);
-
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
     options?: { force?: boolean; keepOnError?: boolean },
@@ -11128,16 +11082,20 @@ export function AgentChatPane({
     if (!isTileVisible || !readableSessionId) return;
     void loadHistory(readableSessionId, { force: true });
   }, [chatConnectionMark, isTileVisible, loadHistory, readableSessionId]);
-  // The same new connection can be a brain that signed in to its providers
-  // after this pane last read its status (a wake, a new computer after a
-  // move): read the status there again, past this window's cache.
-  const lastStatusConnectionMarkRef = useRef(chatConnectionMark);
-  useEffect(() => {
-    const previous = lastStatusConnectionMarkRef.current;
-    lastStatusConnectionMarkRef.current = chatConnectionMark;
-    if (!chatConnectionMark || previous === chatConnectionMark || !isTileActive) return;
-    void refreshAvailableModelsRef.current({ revalidate: true });
-  }, [chatConnectionMark, isTileActive]);
+  // The visible pane reads the chat's provider status (models, sign-ins)
+  // again when it shows, on a turn's start and end, on the chat's machine's
+  // sign-in events, and on a new connection to that machine.
+  useProviderStatusRefresh({
+    isTileActive,
+    turnActive,
+    selectedSessionId,
+    provider: selectedSession?.provider,
+    providerStatus: selectedSession?.provider ? connectionsByProvider?.[selectedSession.provider] : undefined,
+    chatRuntimePinKey,
+    chatRuntimePinRef,
+    connectionMark: chatConnectionMark,
+    refreshAvailableModels,
+  });
 
   // A launch this window started shows the whole pick it launched with
   // (model, effort, Fast, permission mode), not the composer's defaults.
@@ -19797,7 +19755,6 @@ export function AgentChatPane({
   // machine (no extra probe per send); after a turn stopped on its sign-in,
   // from that turn's error. It runs the sign-in on that machine
   // (`composerRuntimePin`, null for the tab's own) and shows above the prompt box.
-  const signInConnections = aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined;
   // A parallel draft starts one chat for each model in its set, so the check
   // follows the set: the first model whose provider has no login here, else
   // the first model. The composer's own model may not be in the set.
@@ -19813,8 +19770,8 @@ export function AgentChatPane({
         ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(slot.modelId, modelCatalogScopeKey))
         : null))
       .filter((provider): provider is NonNullable<typeof provider> => Boolean(provider));
-    return providers.find((provider) => providerLoginMissing(provider, signInConnections?.[provider])) ?? providers[0] ?? null;
-  }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, signInConnections]);
+    return providers.find((provider) => providerLoginMissing(provider, connectionsByProvider?.[provider])) ?? providers[0] ?? null;
+  }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, connectionsByProvider]);
   /**
    * The provider whose local login a send needs, or null when the composer's
    * route brings its own credentials. A saved preset or Run-in route decides
@@ -19877,12 +19834,12 @@ export function AgentChatPane({
     if (
       !sessionRunsInACloud
       && signInLoginProvider
-      && providerLoginMissing(signInLoginProvider, signInConnections?.[signInLoginProvider])
+      && providerLoginMissing(signInLoginProvider, connectionsByProvider?.[signInLoginProvider])
     ) {
       return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, connectionsByProvider, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
   const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
@@ -19909,7 +19866,7 @@ export function AgentChatPane({
   });
 
   // The connection of the provider the card signs in to.
-  const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
+  const signInConnection = providerSignInNeed ? connectionsByProvider?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
   // another machine) brings one back.
   const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);

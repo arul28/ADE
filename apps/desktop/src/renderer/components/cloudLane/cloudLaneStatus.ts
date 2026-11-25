@@ -8,17 +8,20 @@ import {
   type CloudMachineState,
 } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { cloudTierOfMachine, cloudTierRateLabel, cloudTiers } from "../../../shared/cloudTiers";
 import { formatAgo } from "../../lib/format";
 import { usageLeftLevel } from "../usage/usageDesign";
 import { heroPeriodChip } from "../settings/cloudDashboard/cloudDashboardModel";
+import { cloudLaneJobPresentation } from "./CloudLaneJobCard";
 
 /**
  * What a cloud lane's chat header says about its computer: the state mark on
  * the cloud button, and the status lines at the top of its menu. Pure: the
  * reads are the lane index, the account, the chat's wake, the list read the
- * menu opens, and the status read (`GET .../status`). Nothing here wakes it.
+ * menu opens, the status read (`GET .../status`) and the lane's size change
+ * or move. Nothing here wakes it.
  */
 
 /** The cloud button's mark. */
@@ -83,12 +86,21 @@ const GB = 1024 ** 3;
 const gbText = (gb: number) => (gb >= 10 ? Math.round(gb).toString() : (Math.round(gb * 10) / 10).toString());
 
 export type CloudLaneStatusTone = "ok" | "warn" | "crit" | null;
-export type CloudLaneStatusLine = { key: string; text: string; tone: CloudLaneStatusTone; hint?: string };
+export type CloudLaneStatusLine = {
+  key: string;
+  text: string;
+  tone: CloudLaneStatusTone;
+  hint?: string;
+  /** A quieter part after the text (a change's step now). */
+  detail?: string | null;
+};
 
 export type CloudLaneStatusModel = {
   /** "Awake · up 42m", "Asleep", "Waking…", or null while the menu doesn't know. */
   stateText: string;
-  /** "Medium · 4 CPU · 8 GB · Uses 1 hour an hour", or null before the list read names its size. */
+  /** The lane's size change or move while it runs or after it failed, right under the title; null otherwise. */
+  job: CloudLaneStatusLine | null;
+  /** "Medium · 4 CPU · 8 GB · Uses 1 hour an hour" ("Now Medium …" while a change runs), or null before the list read names its size. */
   sizeText: string | null;
   /** "Disk 7.2 / 12 GB" with its headroom tone, or null when it was never measured. */
   disk: { text: string; tone: CloudLaneStatusTone } | null;
@@ -106,15 +118,19 @@ export function cloudLaneStatusModel(input: {
   status: CloudComputerStatus | null;
   account: CloudAccountState | null;
   now: number;
-  /**
-   * A size change or move of this lane runs now: the computer won't sleep on
-   * its idle clock (the change saves, restarts or replaces it), so the
-   * countdown is left out. The menu shows the change instead.
-   */
-  changing?: boolean;
+  /** The lane's newest size change or move (`cloudLaneJobFor`), or null. */
+  job?: CloudLaneJobSnapshot | null;
 }): CloudLaneStatusModel {
   const { power, box, status, account, now } = input;
   const words = cloudUnitWords(account);
+  // A change that runs: the computer won't sleep on its idle clock (the change
+  // saves, restarts or replaces it), so the countdown is left out; its line says what happens.
+  const changing = input.job != null && cloudLaneJobIsLive(input.job);
+  const failed = input.job?.phase === "failed";
+  const presented = input.job && (changing || failed) ? cloudLaneJobPresentation(input.job, account) : null;
+  const jobLine: CloudLaneStatusLine | null = presented
+    ? { key: "job", text: presented.title, detail: presented.stepLine, tone: failed ? "warn" : null, hint: presented.stepLine ?? undefined }
+    : null;
   const awakeSince = power === "awake" ? status?.awakeSince ?? box?.awakeSinceMs ?? null : null;
   const stateText = power === "awake" && awakeSince != null && awakeSince <= now
     ? `Awake · up ${formatUptime(now - awakeSince)}`
@@ -125,7 +141,8 @@ export function cloudLaneStatusModel(input: {
     const tier = cloudTierOfMachine(box, cloudTiers(cloudCatalogOf(account)));
     const phrase = tier ? cloudTierRateLabel(tier, words) : box.hoursRate != null ? formatCloudHoursRate(box.hoursRate, words) : null;
     const rate = phrase ? capitalizeCloudPhrase(phrase) : null;
-    sizeText = [tier?.label, `${box.resources.cpu} CPU`, `${box.resources.memoryGb} GB`, rate].filter(Boolean).join(" · ");
+    const size = [tier?.label, `${box.resources.cpu} CPU`, `${box.resources.memoryGb} GB`, rate].filter(Boolean).join(" · ");
+    sizeText = changing ? `Now ${size}` : size;
   }
 
   // The provider's own measure when it has one (minutes old), else the computer's last report.
@@ -163,7 +180,7 @@ export function cloudLaneStatusModel(input: {
     const agents = activity.runningAgents === 1 ? "1 agent running" : `${activity.runningAgents} agents running`;
     if (activity.busy) {
       lines.push({ key: "activity", text: activity.runningAgents > 0 ? agents : "Working", tone: null });
-    } else if (activity.sleepsAt != null && !input.changing) {
+    } else if (activity.sleepsAt != null && !changing) {
       const minutes = Math.round((activity.sleepsAt - now) / 60_000);
       lines.push({
         key: "activity",
@@ -188,5 +205,5 @@ export function cloudLaneStatusModel(input: {
       lines.push({ key: "memory", text: "Memory is running low", tone: "warn", hint: "A bigger size has more memory." });
     }
   }
-  return { stateText, sizeText, disk, hours, lines };
+  return { stateText, job: jobLine, sizeText, disk, hours, lines };
 }

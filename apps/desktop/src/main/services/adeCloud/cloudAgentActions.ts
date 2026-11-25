@@ -39,7 +39,6 @@
  */
 
 import { AdeExpectedError } from "../../../shared/expectedError";
-import { randomUUID } from "node:crypto";
 import {
   ADE_CLOUD_APPROVAL_METADATA_KEY,
   CLOUD_HOURS_UNKNOWN_MESSAGE,
@@ -90,30 +89,18 @@ import type { CloudLogger, CloudProvider } from "./cloudProvider";
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import type { CloudLaneAccount } from "./cloudLaneAccount";
 import { buildCloudLaneVerbs } from "./cloudLaneVerbs";
+import { buildCloudTierRequestActions, clipReason } from "./cloudTierRequestActions";
 import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import type { CloudDiskGrowAnswer, CloudDiskGrowHost } from "./cloudDiskGrowHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierOfShape, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
-import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import {
-  buildCloudTierRequestAnsweredCard,
-  buildCloudTierRequestCard,
-  cloudJoinApprovalWaitText,
-  cloudTierRequestAgentMessage,
-  cloudTierRequestAnswerOfCard,
-  cloudTierRequestCardId,
-  cloudTierRequestOfCard,
-  cloudTierRequestToldKey,
-  cloudTierRequestToldOfCard,
-  isCloudTierRequestAnswer,
-  isCloudTierRequestOutcome,
-  type CloudTierRequestOutcome,
-} from "../../../shared/cloudLaneLife";
+import { cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
 import { buildSponsoredPickCard } from "../../../shared/sponsoredPick";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
@@ -231,12 +218,6 @@ export type CloudAgentActionDeps = {
   logger?: CloudLogger;
 };
 
-/** An agent's reason on a tier request card: one short paragraph. */
-function clipReason(reason: string): string {
-  const flat = reason.replace(/\s+/g, " ").trim();
-  return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
-}
-
 /** An approval card that gives up: nobody watching must never hold an agent. */
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
 /** The biggest disk an agent's `grow_disk` may name, in GB (`--free` or `--disk`). */
@@ -290,25 +271,6 @@ function readApproval(args: Record<string, unknown>): CloudApproval {
 }
 
 const NO_DESKTOP = "This ADE can't make ADE Cloud machines: it isn't signed in to your ADE account.";
-
-/**
- * The answers to one request card, one at a time (the actions are rebuilt
- * per call): each reads the card the one before it posted, so two reports of
- * the same end that arrive together tell the agent once. What was told is on
- * the card itself (`cloudTierRequestToldOfCard`), so that holds across
- * restarts too.
- */
-const tierAnswerTurns = new Map<string, Promise<unknown>>();
-
-function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
-  const next = (tierAnswerTurns.get(key) ?? Promise.resolve()).catch(() => undefined).then(run);
-  tierAnswerTurns.set(key, next);
-  const settled = () => {
-    if (tierAnswerTurns.get(key) === next) tierAnswerTurns.delete(key);
-  };
-  next.then(settled, settled);
-  return next;
-}
 
 /**
  * New machines unattended agents started from this brain today, kept for the
@@ -741,8 +703,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     logger,
   });
 
+  // An agent's size request and the person's answer to it (`cloudTierRequestActions.ts`).
+  const tierRequests = buildCloudTierRequestActions({ approvals: deps.approvals, readApproval, resolveMachine, logger });
+
   const actions = {
     ...laneVerbs.actions,
+    ...tierRequests.actions,
     async list(rawArgs?: unknown) {
       const all = await readMachines();
       // The web app's Settings › ADE Cloud reads the account's own list (no key in it), like this desktop's main.
@@ -1039,111 +1005,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       } finally {
         yes.release();
       }
-    },
-
-    /**
-     * An agent asks the person for a tier change (Android on a Small computer
-     * needs Large): a card in its chat with the size, the rate and its
-     * reason. It changes nothing: the person confirms on the card, and the
-     * app's main process runs the change. An agent never changes a tier
-     * itself, attended or not.
-     */
-    async tier_request(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const approval = readApproval(args);
-      if (approval.by === "person") throw new Error("Change the size directly: Settings › ADE Cloud, or ade cloud resize.");
-      const chatSessionId = approval.chatSessionId;
-      if (!chatSessionId || !deps.approvals?.postCard) {
-        throw new Error("ADE has no chat to show this request in. Ask the person to change the size in Settings › ADE Cloud.");
-      }
-      const sizeId = text(args, "size")?.toLowerCase() ?? null;
-      if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
-      const reason = text(args, "reason");
-      if (!reason) throw new Error("Say why the lane needs it (--reason).");
-      // On a cloud computer the agent asks for its own computer by default.
-      const selector = text(args, "machine") ?? process.env.ADE_CLOUD_INSTANCE_ID?.trim() ?? null;
-      const { box, all } = await resolveMachine(selector);
-      const catalog = cloudCatalogOf(all.account);
-      const tiers = cloudTiers(catalog);
-      const to = cloudTier(catalog, sizeId);
-      if (!to) throw new Error("ADE Cloud doesn't offer that size now.");
-      const from = cloudTierOfMachine(box, tiers);
-      if (from?.id === to.id) throw new Error(`It's already ${to.label}.`);
-      const requestId = randomUUID();
-      const computerName = (box as CloudLaneMachine).lane?.laneName ?? box.name ?? box.instanceId;
-      const card = buildCloudTierRequestCard(
-        { requestId, instanceId: box.instanceId, computerName, fromSizeId: from?.id ?? null, toSizeId: to.id, toLabel: to.label, reason: clipReason(reason), chatSessionId },
-        { from: from?.label ?? null, rate: cloudTierRateLabel(to, cloudUnitWords(all.account)) },
-      );
-      await deps.approvals.postCard(chatSessionId, card);
-      logger.info?.("cloud.tier_requested", { instanceId: box.instanceId, toSizeId: to.id, fromSizeId: from?.id ?? null });
-      return {
-        requested: true,
-        requestId,
-        message: `Asked the person in this chat to change ${computerName} to ${to.label}. Nothing changes until they confirm; keep working or end your turn. ADE tells you in this chat when they keep the size, or once the change is done.`,
-      };
-    },
-
-    /**
-     * The person's answer to a `tier_request` card from their own client, and
-     * how the change they said yes to ended from the layer that ran it (this
-     * app's main process, ADE Web's tab), on the chat's own machine
-     * (user-only: an agent never answers its own card). The card is read from
-     * the chat here, never taken from the caller. It is marked answered for
-     * every surface (`cardId` merges), and the agent is told in ADE's words
-     * (`cloudTierRequestAgentMessage`): a wake when the person keeps the size
-     * and when the change ends, a note for its next turn at the yes. The card
-     * keeps what the agent was told, so a second report of it tells nothing.
-     */
-    async tier_request_answer(rawArgs?: unknown) {
-      const args = record(rawArgs);
-      const chatSessionId = text(args, "chatSessionId");
-      if (!chatSessionId) throw new Error("Name the chat the card is in (chatSessionId).");
-      const requestId = text(args, "requestId");
-      if (!requestId) throw new Error("Name the size request (requestId).");
-      const answer = args.answer;
-      if (!isCloudTierRequestAnswer(answer)) throw new Error("Answer idle, now or dismiss.");
-      const rawOutcome = args.outcome ?? null;
-      let outcome: CloudTierRequestOutcome | null = null;
-      if (rawOutcome !== null) {
-        if (!isCloudTierRequestOutcome(rawOutcome) || answer === "dismiss") throw new Error("A change ends online, failed or cancelled.");
-        outcome = rawOutcome;
-      }
-      const error = text(args, "error")?.slice(0, 300) ?? null;
-      const postCard = deps.approvals?.postCard;
-      const readCard = deps.approvals?.readCard;
-      if (!postCard || !readCard) throw new Error("ADE can't update cards in this chat here.");
-      return await oneAtATime(`${chatSessionId}\0${requestId}`, async () => {
-        const card = await readCard(chatSessionId, cloudTierRequestCardId(requestId));
-        const request = card ? cloudTierRequestOfCard(card, chatSessionId) : null;
-        if (!card || !request) throw new Error("This chat has no such ADE Cloud size request.");
-        // The yes that arrives after its change already ended changes nothing.
-        if (!outcome && answer !== "dismiss" && cloudTierRequestAnswerOfCard(card)?.outcome) return { answered: true, toldAgent: false };
-        const told = cloudTierRequestToldKey(answer, outcome);
-        const toldBefore = cloudTierRequestToldOfCard(card);
-        if (toldBefore === told) return { answered: true, toldAgent: false };
-        const message = cloudTierRequestAgentMessage(request, { answer, outcome, error });
-        const noteForNextTurn = deps.approvals?.noteForNextTurn;
-        const deliver = message.via === "wake"
-          ? deps.approvals?.tellAgent ?? null
-          : noteForNextTurn ? async (chat: string, note: string) => noteForNextTurn(chat, note) : null;
-        const answered = (toldNow: string | null) => buildCloudTierRequestAnsweredCard(card, request, { answer, outcome, error, told: toldNow });
-        // Shown at once, and marked told before the send: a report of the same end meanwhile is a no-op.
-        await postCard(chatSessionId, answered(deliver ? told : toldBefore));
-        if (!deliver) return { answered: true, toldAgent: false };
-        try {
-          await deliver(chatSessionId, message.text);
-        } catch (tellError) {
-          // Not told: the mark goes, so the next report (or the person's try again) tells it.
-          await postCard(chatSessionId, answered(toldBefore)).catch((postError: unknown) => {
-            logger.warn?.("cloud.tier_request_unmark_failed", { error: getErrorMessage(postError) });
-          });
-          logger.warn?.("cloud.tier_request_tell_failed", { answer, outcome, via: message.via, error: getErrorMessage(tellError) });
-          throw tellError;
-        }
-        logger.info?.("cloud.tier_request_answered", { answer, outcome, via: message.via });
-        return { answered: true, toldAgent: true };
-      });
     },
 
     /**

@@ -126,6 +126,7 @@ Facts from those docs that ADE's design leans on:
 | A cloud computer's git identity | `apps/ade-cli/src/services/github/cloudGitIdentity.ts` |
 | Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneAccount.ts` (the account side, shared by the desktop and the brain), `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
+| An agent's size request: the card, the answer, telling the agent how the change ended | `cloudTierRequestActions.ts` (`tier_request`, `tier_request_answer`); `apps/desktop/src/shared/cloudTierRequest.ts` |
 | The account's lanes, saved chats, CLI copies, backups and server jobs from the CLI and agents (`ade cloud lanes`, `chats`, `sessions`, `backups`, `jobs`, `project`) | `cloudLaneVerbs.ts`; text in `apps/ade-cli/src/cliCloudLanes.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
@@ -290,7 +291,8 @@ holds the lane's messages and answers `wake.state: "moving"`:
 - From the move's `make` step until `register`, a send is stored for the old
   computer and nothing wakes it or asks it to drain. Only the plan's
   refusals run then (`ChatWake.heldCheck`: the account's block, an outside
-  agent on the free plan, credits for the computer's size); the wake's checks
+  agent on the free plan, credits for the size the move lands on, as the
+  move's start checked them); the wake's checks
   (an update in progress, the queue feature, past due, the awake cap, the
   idle cleanup's claim) are skipped. Its own list and claim
   leave the held messages out (`MOVE_HOLDS_MESSAGES_SQL`), since the move
@@ -299,18 +301,16 @@ holds the lane's messages and answers `wake.state: "moving"`:
   the move (another desktop, ADE Web, the phone): the move marks the running
   old computer with its hold (`moveOutMarkCommand`,
   `$ADE_HOME/cloud/moving.json`), and its ADE refuses, with
-  `computer_moving` (`cloudMoveMark.ts`), exactly what starts a turn from
-  another device: the desktop's `ade/actions/call` `chat.sendMessage`,
-  `chat.sendDraftNow`, `chat.createSessionAndSend`, `chat.startLaunch`,
-  `chat.launchCli` and `chat.launchHeadless` with a kickoff, and
-  the sync `chat.send` and `chat.launch` of ADE Web and the phone. A chat
-  made with no turn (`chat.create`) is not refused. The desktop and ADE Web
-  then send a message to a chat that exists to the account's queue
-  (`withSavedChatReads`), which holds it; the phone shows the sentence. A new
-  chat with its first message has no queue: the desktop shows the sentence
-  and keeps the text, and a launch fails with the sentence. The queue's own
-  drain is never refused. The undo clears the mark; one it
-  misses (the computer was asleep) expires with the hold.
+  `computer_moving`, exactly what starts a turn from another device: the
+  chat actions in `CHAT_TURN_STARTS` (`cloudMoveMark.ts`), one list for the
+  desktop's `ade/actions/call` and the sync commands of ADE Web and the
+  phone. A chat made with no turn (`chat.create`) is not refused. The
+  desktop and ADE Web then send a message to a chat that exists to the
+  account's queue (`withSavedChatReads`), which holds it; the phone shows the
+  sentence. A new chat with its first message has no queue: the desktop
+  shows the sentence and keeps the text, and a launch fails with the
+  sentence. The queue's own drain is never refused. The undo clears the
+  mark; one it misses (the computer was asleep) expires with the hold.
 - At the end of `register` the new computer has the lane: the queued
   messages move to its instance id and keep their chat address (machine key
   and chat id), so every client reads them where it queued them. The server
@@ -1627,7 +1627,7 @@ account, never a pin.
     move's steps" (opens that bar, else the ADE Cloud page), and no sleep
     countdown, Change size or Sleep now while it runs.
 - **An agent asks.** `ade cloud resize --request --size large --reason "…"`
-  (`cloud.tier_request`) posts a `cloud_tier_request` card in the agent's
+  (`cloud.tier_request`, `cloudTierRequestActions.ts`) posts a `cloud_tier_request` card in the agent's
   chat; the person confirms there. An unwatched agent can not change a size:
   `cloud.resize` is declined.
   - The newest request still waiting (a day at most) is pinned above the
@@ -1653,7 +1653,7 @@ account, never a pin.
     so a Retry's end is told too (at once when it comes while a try waits).
     ADE Web's tab tells it for a size change it ran and for a move it
     follows (`createWebTierRequestTeller`), while the tab is open; both run
-    the same loop (`createTierRequestTelling` in `shared/cloudLaneLife.ts`).
+    the same loop (`createTierRequestTelling` in `shared/cloudTierRequest.ts`).
     A move started from ADE Web keeps its request and timing on the server's
     record (`CloudMoveRequest.requestId`, `requestedByChat`,
     `requestedByChatPin`), so a reloaded tab still tells the chat; an older

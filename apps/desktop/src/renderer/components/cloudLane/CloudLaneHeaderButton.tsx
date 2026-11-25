@@ -16,10 +16,9 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
-import { cloudLaneJobPresentation } from "./CloudLaneJobCard";
 import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneActions";
 import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
-import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower } from "./cloudLaneStatus";
+import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
 import "../remoteTargets/cloudBrand.css";
@@ -157,8 +156,7 @@ function CloudLaneStatusMenu({
   const jobs = useCloudLaneJobs();
   const job = cloudLaneJobFor(jobs, { instanceId: computer.instanceId, laneId: computer.laneId });
   const jobLive = job != null && cloudLaneJobIsLive(job);
-  const jobText = job && (jobLive || job.phase === "failed") ? cloudLaneJobPresentation(job, account) : null;
-  const model = cloudLaneStatusModel({ power, box, status, account, now, changing: jobLive });
+  const model = cloudLaneStatusModel({ power, box, status, account, now, job });
   const life = cloudLaneChangesAvailable();
 
   const { run } = menu;
@@ -179,7 +177,7 @@ function CloudLaneStatusMenu({
       className="ade-cx-menu adecl-status-menu"
       zIndex={Z_LAYERS.contextMenu}
       onKeyDown={menu.closeOnEscape}
-      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}${jobText ? 1 : 0}`}
+      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}${model.job ? 1 : 0}`}
     >
       <div ref={menu.menuRef} style={{ display: "contents" }}>
         {power === "asleep" ? (
@@ -198,34 +196,15 @@ function CloudLaneStatusMenu({
               </span>
             ) : null}
           </div>
-          {jobText ? (
-            <div className="adecl-status-line" data-tone={job?.phase === "failed" ? "warn" : undefined} title={jobText.stepLine ?? undefined}>
-              <span className="adecl-status-ic" aria-hidden="true">
-                {job?.phase === "failed" ? <Warning size={12} weight="fill" /> : <Cloud size={12} weight="bold" />}
-              </span>
-              <span>
-                {jobText.title}
-                {jobText.stepLine ? <small className="adecl-status-job-step"> · {jobText.stepLine}</small> : null}
-              </span>
-            </div>
-          ) : null}
-          {model.sizeText ? <div className="adecl-status-row"><span>{jobLive ? `Now ${model.sizeText}` : model.sizeText}</span></div> : null}
+          {model.job ? <StatusLine line={model.job} /> : null}
+          {model.sizeText ? <div className="adecl-status-row"><span>{model.sizeText}</span></div> : null}
           {model.disk || model.hours ? (
             <div className="adecl-status-row">
               {model.disk ? <span className="kit-num" data-face="ui" data-tone={model.disk.tone ?? undefined}>{model.disk.text}</span> : null}
               {model.hours ? <span className="kit-num" data-face="ui" data-tone={model.hours.tone ?? undefined}>{model.hours.text}</span> : null}
             </div>
           ) : null}
-          {model.lines.map((line) => (
-            <div key={line.key} className="adecl-status-line" data-tone={line.tone ?? undefined} title={line.hint}>
-              <span className="adecl-status-ic" aria-hidden="true">
-                {line.key === "work" && line.tone === "ok" ? <CheckCircle size={12} weight="fill" />
-                  : line.tone === "warn" || line.tone === "crit" ? <Warning size={12} weight="fill" />
-                  : <Pulse size={12} />}
-              </span>
-              <span>{line.text}</span>
-            </div>
-          ))}
+          {model.lines.map((line) => <StatusLine key={line.key} line={line} />)}
           {loading && !box ? <div className="adecl-status-line"><small>Reading its status…</small></div> : null}
           {statusFailed && !loading ? (
             <div className="adecl-status-line">
@@ -255,7 +234,7 @@ function CloudLaneStatusMenu({
           </button>
         ) : null}
         <div className="adecl-status-actions">
-          {job && jobText ? (
+          {job && model.job ? (
             <button
               type="button"
               role="menuitem"
@@ -309,6 +288,24 @@ function CloudLaneStatusMenu({
         ) : null}
       </div>
     </AnchoredMenu>
+  );
+}
+
+/** One status line of the menu: its mark, its text, and a quieter detail after it. */
+function StatusLine({ line }: { line: CloudLaneStatusLine }) {
+  return (
+    <div className="adecl-status-line" data-tone={line.tone ?? undefined} title={line.hint}>
+      <span className="adecl-status-ic" aria-hidden="true">
+        {line.tone === "warn" || line.tone === "crit" ? <Warning size={12} weight="fill" />
+          : line.key === "job" ? <Cloud size={12} weight="bold" />
+          : line.key === "work" && line.tone === "ok" ? <CheckCircle size={12} weight="fill" />
+          : <Pulse size={12} />}
+      </span>
+      <span>
+        {line.text}
+        {line.detail ? <small> · {line.detail}</small> : null}
+      </span>
+    </div>
   );
 }
 

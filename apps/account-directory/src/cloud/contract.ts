@@ -2343,21 +2343,28 @@ export type CloudMoveRequest = {
   /**
    * The agent's size request the person confirmed with this move (its card's
    * id) and the chat that asked, by id and runtime pin: the client that
-   * follows the move tells that chat how it ended. Kept on the record as
-   * given (`CloudMoveChatPin`); the server reads none of them. Left out:
+   * follows the move tells that chat how it ended. The pin as the client has
+   * it (an `OpenProjectBinding`); the record keeps its short text fields
+   * (`CloudMoveChatPin`) and the server acts on none of them. Left out:
    * none, and nobody is told.
    */
   requestId?: string | null;
   requestedByChat?: string | null;
-  requestedByChatPin?: CloudMoveChatPin | null;
+  requestedByChatPin?: Partial<Record<CloudMoveChatPinField, string | null>> | null;
 };
 
 /**
- * A chat's runtime pin (`OpenProjectBinding`) as a move keeps it: its short
- * text fields only (kind, target, project, folder, names, origin), never an
- * icon. A client rebuilds the pin from it field by field.
+ * The fields of a chat's runtime pin (`OpenProjectBinding`) a move keeps:
+ * kind, target, project, folder, names, origin; never its icon.
  */
-export type CloudMoveChatPin = Record<string, unknown>;
+export const CLOUD_MOVE_CHAT_PIN_FIELDS = ["kind", "key", "targetId", "runtimeName", "transport", "hostname", "projectId", "rootPath", "displayName", "gitOriginUrl"] as const;
+export type CloudMoveChatPinField = (typeof CLOUD_MOVE_CHAT_PIN_FIELDS)[number];
+
+/**
+ * A chat's runtime pin as a move keeps it: the `CLOUD_MOVE_CHAT_PIN_FIELDS`
+ * it was given as short text. A client rebuilds the pin from it field by field.
+ */
+export type CloudMoveChatPin = Partial<Record<CloudMoveChatPinField, string>>;
 
 /**
  * - `making`: waiting for the agent (with `timing: "idle"`) or making the new computer.

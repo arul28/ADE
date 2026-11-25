@@ -2,16 +2,11 @@ import type { CloudMachineActionResult } from "../../../shared/adeCloud";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import { cloudMachineLaneFactsOf, CLOUD_LANE_NAME_METADATA } from "../../../shared/cloudLaneLaunch";
 import {
+  CLOUD_LANE_CHANGE_RUNNING_MESSAGE,
   CLOUD_LANE_SAVE_WARNING_DETAIL,
   cloudLaneJobGrowsDiskOnly,
   cloudLaneJobIsLive,
   cloudLaneJobStageIds,
-  cloudTierRequestChatMachineKey,
-  cloudTierRequestEndArgs,
-  cloudTierRequestIdsOf,
-  cloudTierRequestOutcomeOfJob,
-  createTierRequestTelling,
-  type CloudTierRequestAnswerArgs,
   type CloudLaneDeleteResult,
   type CloudLaneFreeResult,
   type CloudLaneJobSnapshot,
@@ -20,10 +15,20 @@ import {
   type CloudLaneWorkLane,
   type CloudLaneWorkState,
 } from "../../../shared/cloudLaneLife";
+import {
+  cloudTierRequestChatMachineKey,
+  cloudTierRequestEndArgs,
+  cloudTierRequestIdsOf,
+  cloudTierRequestOutcomeOfJob,
+  cloudTierRequestProjectRef,
+  createTierRequestTelling,
+  type CloudTierRequestAnswerArgs,
+} from "../../../shared/cloudTierRequest";
 import { cloudTierOfShape, cloudTiers, type CloudTier } from "../../../shared/cloudTiers";
 import type { CloudCatalog } from "../../../shared/adeCloud";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { sanitizeRendererProjectBinding } from "../../../shared/projectBinding";
+import type { MachineProjectRef } from "../../../shared/projectIdentity";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import type { OpenProjectBinding, RemoteOpenProjectBinding } from "../../../shared/types/core";
 import {
@@ -384,7 +389,7 @@ export type WebTierRequestReach = {
   /** The account machine a connection of this tab reaches, or null. */
   machineKeyOf: (targetId: string) => Promise<string | null>;
   /** The pin of a project on a machine of the account, connecting (and waking) that machine first (`pickMachineProject`). */
-  pinOnMachine: (machineKey: string, ref: { projectId: string; rootPath: string; originUrl: string | null; accountProjectId: string }) => Promise<OpenProjectBinding>;
+  pinOnMachine: (machineKey: string, ref: MachineProjectRef) => Promise<OpenProjectBinding>;
 };
 
 /** A chat this tab couldn't tell how its change ended is tried again after these waits. */
@@ -424,9 +429,10 @@ export function createWebTierRequestTeller(reach: WebTierRequestReach) {
   const byRequest = new Map<string, Entry>();
   const telling = createTierRequestTelling({
     retryMs: TELL_CHAT_RETRY_MS,
-    onFailed: (error, { end, final }) => {
+    onFailed: (error, { key, final }) => {
       if (!final) return;
-      forwardSignalToSentry("web.cloud_tier_request_tell_failed", { outcome: end.slice(end.lastIndexOf(":") + 1) || null, message: errorText(error) }, "cloud_tier_request_tell_failed", "info");
+      const entry = byRequest.get(key);
+      forwardSignalToSentry("web.cloud_tier_request_tell_failed", { outcome: entry ? cloudTierRequestOutcomeOfJob(entry.job) : null, message: errorText(error) }, "cloud_tier_request_tell_failed", "info");
     },
   });
 
@@ -434,12 +440,7 @@ export function createWebTierRequestTeller(reach: WebTierRequestReach) {
     const { pin } = entry.request;
     const machineKey = cloudTierRequestChatMachineKey({ pin, pinMachineKey: await reach.machineKeyOf(pin.targetId), job: entry.job, fromMachineKey: entry.fromMachineKey });
     if (!machineKey) return pin;
-    return await reach.pinOnMachine(machineKey, {
-      projectId: pin.projectId,
-      rootPath: pin.rootPath,
-      originUrl: pin.gitOriginUrl ?? entry.job.projectOrigin,
-      accountProjectId: pin.projectId,
-    });
+    return await reach.pinOnMachine(machineKey, cloudTierRequestProjectRef(pin, entry.job));
   };
 
   /** The job's end, by job: a Retry's new job ends anew. */
@@ -460,8 +461,9 @@ export function createWebTierRequestTeller(reach: WebTierRequestReach) {
       telling.note(request.requestId, {
         read: () => endOf(entry),
         tell: async () => {
+          // `read` just gave an end, so the job has ended; if not, the try fails and nothing is marked told.
           const args = cloudTierRequestEndArgs(entry.job, entry.request);
-          if (!args) return;
+          if (!args) throw new Error("This change hasn't ended, so there is nothing to tell the chat yet.");
           await reach.answer(await pinNow(entry), args);
         },
         isTold: (end) => entry.told === end,
@@ -499,8 +501,8 @@ function diskGrowOf(raw: unknown, currentGb: number | null, tier: CloudTier): nu
 export function createWebCloudResizes(deps: {
   api: () => CloudApiClient | null;
   agentWork: (instanceId: string) => Promise<"idle" | "busy" | "unknown">;
-  /** A move of this computer runs on ADE's server: a Retry waits for it. */
-  moving: (instanceId: string) => boolean;
+  /** A size change (this tab's) or a move (on ADE's server) of this computer runs: one change of a computer at a time. */
+  changing: (instanceId: string) => boolean;
   /** This tab ran the change, so it tells the chat whose size request started it how it ended. */
   teller: WebTierRequestTeller;
 }) {
@@ -671,7 +673,7 @@ export function createWebCloudResizes(deps: {
     }): CloudLaneJobSnapshot {
       const { computer, tier } = args;
       const request = webTierRequestOf(args.request);
-      if (liveOn(computer.id)) throw new Error("A change is already running for this lane.");
+      if (deps.changing(computer.id)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       const from = cloudTierOfShape({ type: computer.type, cpu: computer.resources?.cpu, memoryGb: computer.resources?.memory }, cloudTiers(args.catalog));
       const diskGb = diskGrowOf(args.diskGb, computer.resources?.disk ?? null, tier);
       if (from?.id === tier.id && diskGb == null) throw new Error(`It's already ${tier.label}.`);
@@ -719,7 +721,7 @@ export function createWebCloudResizes(deps: {
       if (cloudLaneJobIsLive(record.job) || record.job.phase === "online") return structuredClone(record.job);
       const { job } = record;
       // A Retry from a card that still shows an older failure: one change of a computer at a time.
-      if (liveOn(job.instanceId) || deps.moving(job.instanceId)) throw new Error("A change is already running for this lane.");
+      if (deps.changing(job.instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       record.job.dismissedAt = nowIso();
       publish(record);
       return begin({

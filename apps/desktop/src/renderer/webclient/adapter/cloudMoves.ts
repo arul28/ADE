@@ -1,17 +1,18 @@
 import { cloudCatalogOf, type CloudCatalog } from "../../../shared/adeCloud";
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import {
+  CLOUD_LANE_CHANGE_RUNNING_MESSAGE,
   CLOUD_LANE_SAVE_WARNING_DETAIL,
   cloudLaneJobStageIds,
-  cloudTierRequestIdsOf,
   type CloudLaneJobPhase,
   type CloudLaneJobSnapshot,
   type CloudLaneJobStage,
   type CloudLaneJobStageId,
 } from "../../../shared/cloudLaneLife";
+import { cloudTierRequestIdsOf } from "../../../shared/cloudTierRequest";
 import { cloudTier, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudInstance, CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
-import { webTierRequestOf, type WebTierRequestInput, type WebTierRequestTeller } from "./cloudLaneLifeWeb";
+import { webTierRequestOf, type WebTierRequest, type WebTierRequestInput, type WebTierRequestTeller } from "./cloudLaneLifeWeb";
 
 /**
  * ADE Web's moves of a lane's computer to the other kind (Standard ↔ Full):
@@ -43,6 +44,10 @@ export type WebCloudResizeInPlace = (args: {
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const isLive = (record: CloudMoveRecord) => record.state !== "done" && record.state !== "failed" && record.state !== "cancelled";
+
+/** The size request a move answers, as the server keeps it on the move's record (none without one). */
+const moveRequestFields = (request: WebTierRequest | null) =>
+  (request ? { requestId: request.requestId, requestedByChat: request.chatSessionId, requestedByChatPin: request.pin } : {});
 
 /** The step a move is on, as the desktop's move steps name it. */
 function activeStageOf(record: CloudMoveRecord): CloudLaneJobStageId {
@@ -123,8 +128,8 @@ export function laneJobOfMove(record: CloudMoveRecord): CloudLaneJobSnapshot {
 
 export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
   resizeInPlace: WebCloudResizeInPlace;
-  /** A size change in place runs for this computer. */
-  resizing: (instanceId: string) => boolean;
+  /** A size change (this tab's) or a move of this computer runs: one change of a computer at a time. */
+  changing: (instanceId: string) => boolean;
   /** A move that answers an agent's size request tells that chat how it ended, from this tab. */
   teller: WebTierRequestTeller;
 }) {
@@ -183,9 +188,7 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
       if (!instanceId) throw new Error("Name the computer.");
       if (!isCloudTierId(args.sizeId)) throw new Error("Pick a size.");
       const client = need();
-      if (options.resizing(instanceId) || moving(instanceId)) {
-        throw new Error("A change is already running for this lane.");
-      }
+      if (options.changing(instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       const [computer, account] = await Promise.all([client.computer(instanceId), client.account()]);
       const catalog = cloudCatalogOf(account);
       const tier = cloudTier(catalog, args.sizeId);
@@ -208,7 +211,7 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
         origin: "person",
         timing: args.timing === "now" ? "now" : "idle",
         // The server keeps the request on the move's record, so any tab that follows it tells the chat.
-        ...(request ? { requestId: request.requestId, requestedByChat: request.chatSessionId, requestedByChatPin: request.pin } : {}),
+        ...moveRequestFields(request),
       });
       publish(record);
       schedule();
@@ -235,16 +238,15 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
       const old = typeof jobId === "string" ? followed.get(jobId) : null;
       if (!old || isLive(old) || old.state === "done") return old ? laneJobOfMove(old) : null;
       // A Retry from a card that still shows an older failure: one change of a computer at a time.
-      if (options.resizing(old.sourceInstanceId) || moving(old.sourceInstanceId)) throw new Error("A change is already running for this lane.");
+      if (options.changing(old.sourceInstanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       // A move that ended without moving: the same move again, with a new id (the same timing and request).
-      const request = webTierRequestOf(old);
       const record = await need().startMove(old.sourceInstanceId, {
         moveId: crypto.randomUUID(),
         to: old.to,
         ...(old.sizeId ? { sizeId: old.sizeId } : {}),
         origin: "person",
         ...(old.timing ? { timing: old.timing } : {}),
-        ...(request ? { requestId: request.requestId, requestedByChat: request.chatSessionId, requestedByChatPin: request.pin } : {}),
+        ...moveRequestFields(webTierRequestOf(old)),
       });
       dismissed.add(old.moveId);
       publish(record);

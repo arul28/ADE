@@ -81,7 +81,7 @@ import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/c
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
-import { cloudMoveSendRefusal } from "../power/cloudMoveMark";
+import { CLOUD_MOVE_SYNC_TURN_STARTS, cloudMoveSendRefusal } from "../power/cloudMoveMark";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
 import {
   decodeCrossMachineDestinationPreflightArgs,
@@ -5493,10 +5493,6 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
-    // Its kickoff is a turn the move would cut, like `chat.send` (`cloudMoveMark.ts`).
-    // A new chat has no queue: the launch fails with the sentence.
-    const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
-    if (moving) throw moving;
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatLaunchArgs(payload);
     const session = await agentChatService.launchHeadless(await resolveChatCreateModel(agentChatService, parsed));
@@ -5790,10 +5786,6 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload, context) => {
-    // A move of this ADE Cloud computer holds it (`cloudMoveMark.ts`): the turn
-    // would be cut. `computer_moving` tells ADE Web to queue it on the account.
-    const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
-    if (moving) throw moving;
     // A paired controller sends what its user typed, like `chat.steer`.
     const sendArgs = withExpectedTurn(
       withGuestAgentNote({ ...parseAgentChatSendArgs(payload), sentByUser: true }, context),
@@ -9079,6 +9071,14 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       const handler = registry.get(payload.action as SyncRemoteCommandAction);
       if (!handler) {
         throw new Error(`Unsupported remote command: ${payload.action}`);
+      }
+      // A move of this ADE Cloud computer holds it (`cloudMoveMark.ts`): a
+      // command that starts a turn (a send, a launch) would have it cut.
+      // `computer_moving` tells ADE Web to queue a message to a chat it has on
+      // the account; a new chat has no queue, so its launch fails with the sentence.
+      if (CLOUD_MOVE_SYNC_TURN_STARTS.has(payload.action)) {
+        const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
+        if (moving) throw moving;
       }
       const commandArgs = isRecord(payload.args) ? payload.args : {};
       args.logger.debug?.("sync.remote_command.execute", {

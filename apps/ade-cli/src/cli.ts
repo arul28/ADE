@@ -761,7 +761,7 @@ import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/s
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
 import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./services/power/cloudDeleteFreeze";
-import { cloudMoveSendRefusal } from "./services/power/cloudMoveMark";
+import { cloudMoveSendRefusal, isRemoteChatTurnStart } from "./services/power/cloudMoveMark";
 import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
@@ -33167,23 +33167,6 @@ async function runServe(
     if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true;
     return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
   };
-  // Work from another device that starts a turn here: a person's message to
-  // a chat it has (`chat.sendMessage`), a draft sent now (`chat.sendDraftNow`),
-  // a new chat with its first message (`chat.createSessionAndSend`), a new chat
-  // or CLI launched with its first turn (`chat.launchHeadless` with a kickoff,
-  // `chat.startLaunch`, `chat.launchCli`). A chat made with no turn
-  // (`chat.create`) is not one: it starts nothing a move would cut.
-  const REMOTE_TURN_STARTS = new Set(["sendMessage", "sendDraftNow", "createSessionAndSend", "startLaunch", "launchCli"]);
-  const isRemoteChatSend = (params: unknown): boolean => {
-    if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
-    if (asString(params.arguments.domain) !== "chat") return false;
-    const action = asString(params.arguments.action);
-    if (action === "launchHeadless") {
-      const args = params.arguments.args;
-      return isRecord(args) && typeof args.kickoffText === "string" && args.kickoffText.trim().length > 0;
-    }
-    return action != null && REMOTE_TURN_STARTS.has(action);
-  };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !cloudKeepAwake) return handler;
     const keepAwake = cloudKeepAwake;
@@ -33197,7 +33180,7 @@ async function runServe(
         // message to a chat it has to the account's queue, which the move holds
         // and hands to the new computer. A new chat has no queue: the sender
         // shows the sentence and keeps the text.
-        const moving = isRemoteChatSend(request.params) ? cloudMoveSendRefusal(layout.adeDir) : null;
+        const moving = isRemoteChatTurnStart(request.params) ? cloudMoveSendRefusal(layout.adeDir) : null;
         if (moving) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, encodeCodedErrorMessage(moving.code, moving.message), { code: moving.code });
         void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete

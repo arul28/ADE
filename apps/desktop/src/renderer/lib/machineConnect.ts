@@ -6,7 +6,7 @@
  * machine. Nothing here reads or changes the tab's machine.
  */
 
-import { pickMachineProject } from "../../shared/projectIdentity";
+import { pickMachineProject, type MachineProjectRef } from "../../shared/projectIdentity";
 import {
   MachineConnectError,
   projectPinOn,
@@ -21,14 +21,6 @@ export async function connectMachine(machineKey: string, options?: MachineConnec
   if (!result.ok) throw new MachineConnectError(result);
   return result.address;
 }
-
-/** Which project on the machine: by id, then folder, then the account's project id, then the repository's origin (`pickMachineProject`). */
-export type MachineProjectRef = {
-  projectId?: string | null;
-  rootPath?: string | null;
-  originUrl?: string | null;
-  accountProjectId?: string | null;
-};
 
 /**
  * The pin for one project on the machine `machineKey`, connecting first.

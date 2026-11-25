@@ -216,7 +216,7 @@ import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
-import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
+import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudTierRequest";
 import { SPONSORED_PICK_CARD_VARIANT } from "../../../shared/sponsoredPick";
 import { SponsoredPickCard } from "./sponsored/SponsoredPickCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";

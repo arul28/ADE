@@ -23,7 +23,7 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
 import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
-import { cloudSizeForTier } from "./plans";
+import { cloudSizeForTier, type CloudSize } from "./plans";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { copyRow, openSummary, type CopyRow } from "./chats";
@@ -247,12 +247,13 @@ export type ChatWake = {
   /**
    * A send a move holds: nothing wakes this computer and the new one sends
    * it. Only the plan's refusals run (the account's block, outside agents on
-   * the free plan, credits for the computer's size); the wake's checks (an
-   * update in progress, the queue feature, past due, the awake cap, the idle
-   * cleanup's claim) are about a wake that never happens. A response when the
-   * send must not be stored, else null.
+   * the free plan, credits for `landsOn`, the size the move makes, as the
+   * move's own start checked them; the computer's size when null); the wake's
+   * checks (an update in progress, the queue feature, past due, the awake
+   * cap, the idle cleanup's claim) are about a wake that never happens. A
+   * response when the send must not be stored, else null.
    */
-  heldCheck: (computer: ComputerRow, asker: { outsideAgent: boolean }) => Promise<Response | null>;
+  heldCheck: (computer: ComputerRow, asker: { outsideAgent: boolean }, landsOn: CloudSize | null) => Promise<Response | null>;
   /** After the row is stored: wakes it when asleep, then asks it to drain. Runs after the answer. */
   wakeAndDrain: (computer: ComputerRow) => Promise<void>;
   /** A launch that continues the chat on a new computer (`startServerLaunch` with the router's deps). */
@@ -390,7 +391,11 @@ const MOVE_HOPS = 4;
  * the old computer is gone) on to the new computer. Null with no computer:
  * the chat's computer is gone.
  */
-async function queueComputerOf(env: CloudEnv, userId: string, chat: QueueTarget): Promise<{ computer: ComputerRow | null; held: boolean }> {
+async function queueComputerOf(
+  env: CloudEnv,
+  userId: string,
+  chat: QueueTarget,
+): Promise<{ computer: ComputerRow | null; held: boolean; landsOn: CloudSize | null }> {
   let computer = await liveComputerOf(env, userId, chat);
   let from: { instanceId: string | null; machineKey: string | null } = {
     instanceId: computer?.instance_id ?? chat.instance_id,
@@ -398,14 +403,14 @@ async function queueComputerOf(env: CloudEnv, userId: string, chat: QueueTarget)
   };
   for (let hop = 0; hop < MOVE_HOPS; hop += 1) {
     const route = await moveMessageRouteOf(env, userId, from);
-    if (route?.kind === "held") return { computer, held: true };
+    if (route?.kind === "held") return { computer, held: true, landsOn: route.size };
     if (route?.kind !== "moved") break;
     const target = await ownedComputer(env, userId, route.targetInstanceId);
     if (!target) break;
     computer = target;
     from = { instanceId: target.instance_id, machineKey: target.machine_key };
   }
-  return { computer, held: false };
+  return { computer, held: false, landsOn: null };
 }
 
 export async function routeChatMessages(
@@ -653,14 +658,14 @@ async function handleSend(request: Request, env: CloudEnv, userId: string, machi
   // `origin: "mcp"`: an outside agent (ADE MCP) sending; on the free plan it can't wake or start a computer.
   const input: SendInput = { messageId, text, attachments, provider, modelId, settings, sizeId, outsideAgent: body.origin === "mcp" };
   // The chat's computer, or the one a move took its lane to; `held` while a move of it runs.
-  const { computer, held } = await queueComputerOf(env, userId, chat);
+  const { computer, held, landsOn } = await queueComputerOf(env, userId, chat);
   if (held && !computer) return fail("computer_busy", "This chat's computer is moving to a new one. Send the message again in a minute.", 409);
   if (computer) {
     // Every refusal runs before the row is written: a refused send stores nothing.
     // A held send runs only the plan's refusals: no wake happens (`heldCheck`).
     const asker = { outsideAgent: input.outsideAgent === true };
     const checked = held
-      ? (await deps.wake.heldCheck(computer, asker)) ?? { state: "moving" as const }
+      ? (await deps.wake.heldCheck(computer, asker, landsOn)) ?? { state: "moving" as const }
       : await deps.wake.check(computer, asker);
     if (checked instanceof Response) return checked;
     const where: InsertWhere = { instanceId: computer.instance_id, launchId: null, viaLaunch: false };

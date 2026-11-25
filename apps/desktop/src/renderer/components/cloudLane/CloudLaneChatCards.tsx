@@ -2,14 +2,14 @@ import { useEffect, useId, useMemo, useState, useSyncExternalStore } from "react
 import { CaretDown, X } from "@phosphor-icons/react";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import type { CloudAccountState } from "../../../shared/adeCloud";
+import type { CloudLaneJobSnapshot } from "../../../shared/cloudLaneLife";
 import {
   CLOUD_TIER_REQUEST_CARD_VARIANT,
   cloudTierRequestAnswerOfCard,
   cloudTierRequestOfCard,
-  type CloudLaneJobSnapshot,
   type CloudTierRequest,
   type CloudTierRequestAnswer,
-} from "../../../shared/cloudLaneLife";
+} from "../../../shared/cloudTierRequest";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { ipcErrorMessage } from "../../lib/format";
@@ -174,13 +174,15 @@ export function useCloudTierRequestCards(events: readonly AgentChatEventEnvelope
  * stays in the store). A job that names its request matches only that card,
  * so an older request never claims a later change (a failed Large request
  * and a Medium one asked after it). An older record without the id falls
- * back to same chat, same computer, started after the card.
+ * back to same chat, same computer, started after the card. `started`, the
+ * change this card started, stands unless a newer job names the request.
  */
 function jobOfRequest(
   jobs: ReadonlyMap<string, CloudLaneJobSnapshot>,
   input: { requestId: string; chatSessionId: string; instanceId: string; since: string | null },
+  started: CloudLaneJobSnapshot | null = null,
 ): CloudLaneJobSnapshot | null {
-  let named: CloudLaneJobSnapshot | null = null;
+  let named: CloudLaneJobSnapshot | null = started;
   let best: CloudLaneJobSnapshot | null = null;
   for (const job of jobs.values()) {
     if (job.requestId) {
@@ -290,13 +292,14 @@ export function CloudTierRequestCard({ card, sessionId }: { card: AdeCardPayload
   const dismissedHere = useDismissedRequests();
   const dismissed = request ? dismissedHere.has(request.requestId) : false;
   const [started, setStarted] = useState<CloudLaneJobSnapshot | null>(null);
-  const matched = request
-    ? jobOfRequest(jobs, { requestId: request.requestId, chatSessionId: request.chatSessionId, instanceId: request.instanceId, since: card.createdAt ?? null })
+  // The change this card started (as the store has it now), unless a newer job of the same request replaced it (a Retry on ADE Web).
+  const job = request
+    ? jobOfRequest(
+      jobs,
+      { requestId: request.requestId, chatSessionId: request.chatSessionId, instanceId: request.instanceId, since: card.createdAt ?? null },
+      started ? jobs.get(started.jobId) ?? started : null,
+    )
     : null;
-  // The change this card started, unless a newer job of the same request replaced it (a Retry on ADE Web).
-  const mine = request && started ? jobs.get(started.jobId) ?? started : null;
-  const replaced = Boolean(mine && matched && matched.requestId === request?.requestId && matched.startedAt > mine.startedAt);
-  const job = mine && !replaced ? mine : matched;
   const asking = Boolean(request) && !answered && !dismissed && !job;
   const { account, computer } = useRequestFacts(request, asking && !pinned);
   const answer = useTierRequestAnswer({ request, binding });

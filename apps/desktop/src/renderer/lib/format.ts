@@ -1,7 +1,6 @@
 /** Shared formatting utilities for the renderer. */
 
-import { CLOUD_COMPUTER_MOVING_CODE } from "../../../../account-directory/src/cloud/contract";
-import { parseCodedErrorMessage, stripElectronErrorWrapper } from "../../shared/codedError";
+import { stripElectronErrorWrapper, withoutRefusalCode } from "../../shared/codedError";
 
 // Lives in shared so main-process and renderer text can use the same sizes.
 export { formatBytes } from "../../shared/formatting";
@@ -219,27 +218,13 @@ export function ipcErrorMessage(err: unknown): string {
 }
 
 /**
- * Refusals whose message is written for the person: their code crosses the
- * wire as a `code: message` prefix (`encodeCodedErrorMessage`) so the sender
- * can act on it, and is not for reading.
- */
-const SENTENCE_REFUSAL_CODES: ReadonlySet<string> = new Set([CLOUD_COMPUTER_MOVING_CODE]);
-
-/**
  * An error's text as a person reads it: a refusal written for the person
- * ("computer_moving: This ADE Cloud computer is moving…") reads as its
- * sentence; any other error's text exactly as it is (`extractError`). The one
- * place that code is taken out of the text (`ipcErrorMessage` uses it too).
- * The code stays on the error itself, so its expected-outcome classification
- * (`isExpectedOutcome`) holds.
+ * reads as its sentence (`withoutRefusalCode`); any other error's text exactly
+ * as it is (`extractError`). The code stays on the error itself, so its
+ * expected-outcome classification (`isExpectedOutcome`) holds.
  */
 export function personErrorText(err: unknown): string {
   return withoutRefusalCode(extractError(err));
-}
-
-function withoutRefusalCode(text: string): string {
-  const parsed = parseCodedErrorMessage(text);
-  return parsed.code && SENTENCE_REFUSAL_CODES.has(parsed.code) ? parsed.message : text;
 }
 
 const IPC_TIMEOUT_TEXT = /^IPC handler for '[^']+' timed out after \d+ms/;

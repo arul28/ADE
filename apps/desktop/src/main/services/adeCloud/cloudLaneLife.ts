@@ -4,22 +4,26 @@ import { randomUUID } from "node:crypto";
 import { cloudCatalogOf, cloudShapeFor, type CloudShapeId } from "../../../shared/adeCloud";
 import { cloudMachineLaneFactsOf, CLOUD_LANE_NAME_METADATA } from "../../../shared/cloudLaneLaunch";
 import {
+  CLOUD_LANE_CHANGE_RUNNING_MESSAGE,
   CLOUD_LANE_SAVE_WARNING_DETAIL,
   cloudLaneJobIsLive,
   cloudLaneJobStageIds,
-  cloudTierRequestChatMachineKey,
-  cloudTierRequestEndArgs,
-  cloudTierRequestIdsOf,
-  cloudTierRequestOutcomeOfJob,
-  createTierRequestTelling,
   type CloudLaneChangeTierArgs,
   type CloudLaneJobKind,
   type CloudLaneJobSnapshot,
   type CloudLaneJobStage,
   type CloudLaneJobStageId,
-  type CloudTierRequestOutcome,
   cloudLaneJobGrowsDiskOnly,
 } from "../../../shared/cloudLaneLife";
+import {
+  cloudTierRequestChatMachineKey,
+  cloudTierRequestEndArgs,
+  cloudTierRequestIdsOf,
+  cloudTierRequestOutcomeOfJob,
+  cloudTierRequestProjectRef,
+  createTierRequestTelling,
+  type CloudTierRequestOutcome,
+} from "../../../shared/cloudTierRequest";
 import { cloudTier, cloudTierOfShape, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { pickMachineProject } from "../../../shared/projectIdentity";
@@ -211,8 +215,6 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   /** Jobs whose chat is being told now, one telling at a time per job (`createTierRequestTelling`). */
   const telling = createTierRequestTelling<CloudTierRequestOutcome>({
     retryMs: TELL_CHAT_RETRY_MS,
-    // Unset in the app: its own timers, cleared when a new end wakes the wait.
-    sleep: deps.sleep ?? null,
     onFailed: (error, { key, end, attempt, final }) => {
       logger.warn?.("cloud.lane_job_chat_tell_failed", { jobId: key, outcome: end, attempt, final, error: getErrorMessage(error) });
     },
@@ -224,7 +226,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
    * (`cloudTierRequestChatMachineKey`): that machine is connected (paired and
    * woken when needed) and the chat's project found there. The ADE Cloud
    * tab's pin names the account's project, so it is found by that id or the
-   * lane's origin.
+   * repository's origin (`cloudTierRequestProjectRef`).
    */
   const chatPinNow = async (record: JobRecord, pin: OpenProjectBinding, calls: CloudLaneChatCalls): Promise<OpenProjectBinding> => {
     const { job } = record;
@@ -235,12 +237,7 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     try {
       return await calls.resolveBinding(targetId, pin.projectId, pin.rootPath);
     } catch (error) {
-      const project = pickMachineProject(await deps.listProjects(targetId), {
-        projectId: pin.projectId,
-        rootPath: pin.rootPath,
-        accountProjectId: pin.projectId,
-        originUrl: job.projectOrigin ?? pin.gitOriginUrl ?? null,
-      });
+      const project = pickMachineProject(await deps.listProjects(targetId), cloudTierRequestProjectRef(pin, job));
       if (!project) throw error;
       return await calls.resolveBinding(targetId, project.projectId, project.rootPath);
     }
@@ -263,8 +260,9 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     telling.note(job.jobId, {
       read: () => (disposed ? null : cloudTierRequestOutcomeOfJob(job)),
       tell: async (outcome) => {
+        // `read` just gave this end, so the job has ended; if not, the try fails and nothing is marked told.
         const args = cloudTierRequestEndArgs(job, request);
-        if (!args) return;
+        if (!args) throw new Error("This change hasn't ended, so there is nothing to tell the chat yet.");
         await calls.callAction(await chatPinNow(record, request.pin, calls), { domain: "cloud", action: "tier_request_answer", args });
         logger.info?.("cloud.lane_job_chat_told", { jobId: job.jobId, outcome });
       },
@@ -687,14 +685,21 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     }
   };
 
+  /**
+   * One change of a computer at a time: a live job on it (the computer it is
+   * on now, or the one a move started from), or one being set up for it.
+   */
+  const changeRunsOn = (instanceId: string): boolean =>
+    reserving.has(instanceId) || Array.from(jobs.values()).some((record) => cloudLaneJobIsLive(record.job)
+      && (record.job.instanceId === instanceId || record.job.fromInstanceId === instanceId));
+
   const changeTier = async (raw: CloudLaneChangeTierArgs): Promise<CloudLaneJobSnapshot> => {
     const instanceId = typeof raw?.instanceId === "string" ? raw.instanceId.trim() : "";
     if (!instanceId) throw new Error("Name the computer.");
     if (!isCloudTierId(raw?.sizeId)) throw new Error("Pick a size.");
     const timing = raw.timing === "now" ? "now" : "idle";
-    const busy = Array.from(jobs.values()).some((record) => cloudLaneJobIsLive(record.job) && (record.job.instanceId === instanceId || record.job.fromInstanceId === instanceId));
     // Reserved before the first await: two confirms at once never start two jobs.
-    if (busy || reserving.has(instanceId)) throw new Error("A change is already running for this lane.");
+    if (changeRunsOn(instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
     reserving.add(instanceId);
     try {
       return await startTierChange(raw, instanceId, timing);
@@ -776,6 +781,8 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     const record = jobs.get(args?.jobId);
     if (!record) return null;
     if (record.job.phase !== "failed") return structuredClone(record.job);
+    // A card that still shows this older failure while a newer change runs: its Retry would start a second one.
+    if (changeRunsOn(record.job.instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
     for (const stage of record.job.stages) {
       if (stage.status === "failed") {
         stage.status = "pending";

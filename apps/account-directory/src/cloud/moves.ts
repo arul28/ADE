@@ -27,7 +27,7 @@ import {
   startMoveSaveCommand,
   type MoveCopyState,
 } from "./computerCommands";
-import { CLOUD_LANE_METADATA, type CloudMoveChatPin, type CloudMoveKind, type CloudMoveList, type CloudMoveRecord, type CloudMoveState, type CloudTierId } from "./contract";
+import { CLOUD_LANE_METADATA, CLOUD_MOVE_CHAT_PIN_FIELDS, type CloudMoveChatPin, type CloudMoveKind, type CloudMoveList, type CloudMoveRecord, type CloudMoveState, type CloudTierId } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJson } from "./http";
 import {
   FINAL_JOB_STATES,
@@ -155,8 +155,6 @@ type MoveParams = {
 /** The size request a move answers: its client tells that chat how the move ended. */
 type MoveChatRequest = { requestId: string; requestedByChat: string; requestedByChatPin: CloudMoveChatPin };
 
-/** The pin fields a client rebuilds a chat's pin from (`OpenProjectBinding`); never its icon. */
-const CHAT_PIN_FIELDS = ["kind", "key", "targetId", "runtimeName", "transport", "hostname", "projectId", "rootPath", "displayName", "gitOriginUrl"] as const;
 const CHAT_REQUEST_ID_MAX = 200;
 const CHAT_PIN_TEXT_MAX = 1024;
 
@@ -175,8 +173,8 @@ function moveChatRequestOf(raw: { requestId?: unknown; requestedByChat?: unknown
   const requestedByChat = shortText(raw?.requestedByChat, CHAT_REQUEST_ID_MAX);
   const given = raw?.requestedByChatPin;
   if (!requestId || !requestedByChat || !given || typeof given !== "object" || Array.isArray(given)) return null;
-  const pin: Record<string, string> = {};
-  for (const field of CHAT_PIN_FIELDS) {
+  const pin: CloudMoveChatPin = {};
+  for (const field of CLOUD_MOVE_CHAT_PIN_FIELDS) {
     const value = shortText((given as Record<string, unknown>)[field], CHAT_PIN_TEXT_MAX);
     if (value) pin[field] = value;
   }
@@ -209,7 +207,7 @@ type MoveFacts = {
 const kindLabel = (to: CloudMoveKind): string => (to === "full" ? "full computer" : "standard computer");
 const typeOf = (to: CloudMoveKind): "default" | "vm" => (to === "full" ? "vm" : "default");
 
-function paramsOf(job: JobRow): MoveParams {
+function paramsOf(job: Pick<JobRow, "params_json">): MoveParams {
   const raw = (job.params_json ? JSON.parse(job.params_json) : {}) as Partial<MoveParams>;
   const to: CloudMoveKind = raw.to === "standard" ? "standard" : "full";
   return {
@@ -284,8 +282,12 @@ export const MOVE_HOLDS_MESSAGES_SQL = `exists (select 1 from cloud_jobs j where
   and j.user_id = cloud_chat_messages.user_id and j.source_instance_id = cloud_chat_messages.instance_id
   and j.state not in (${quoted(FINAL_JOB_STATES)}) and j.step in (${quoted(HOLDING_STEPS)}))`;
 
-/** Where the newest move from a computer sends its messages: held, or on to the computer it moved to. */
-export type MoveMessageRoute = { kind: "held" } | { kind: "moved"; targetInstanceId: string };
+/**
+ * Where the newest move from a computer sends its messages: held, with the
+ * size the move lands on (null when its params name none ADE offers), or on
+ * to the computer it moved to.
+ */
+export type MoveMessageRoute = { kind: "held"; size: CloudSize | null } | { kind: "moved"; targetInstanceId: string };
 
 /**
  * The newest move from this computer (by its id, or by its account key once
@@ -303,14 +305,14 @@ export async function moveMessageRouteOf(
 ): Promise<MoveMessageRoute | null> {
   if (!from.instanceId && !from.machineKey) return null;
   const job = await env.DB.prepare(`
-    select state, step, target_instance_id, source_deleted from cloud_jobs
+    select state, step, target_instance_id, source_deleted, params_json from cloud_jobs
     where user_id = ? and kind = ? and (source_instance_id = ? or (? is not null and lower(source_machine_key) = lower(?)))
     order by created_at desc limit 1
   `).bind(userId, MOVE_JOB_KIND, from.instanceId, from.machineKey, from.machineKey)
-    .first<Pick<JobRow, "state" | "step" | "target_instance_id" | "source_deleted">>();
+    .first<Pick<JobRow, "state" | "step" | "target_instance_id" | "source_deleted" | "params_json">>();
   if (!job) return null;
   const live = !FINAL_JOB_STATES.has(job.state);
-  if (live && HOLDING_STEPS.has(job.step)) return { kind: "held" };
+  if (live && HOLDING_STEPS.has(job.step)) return { kind: "held", size: sizeOf(paramsOf(job)) };
   if (job.target_instance_id && ((live && LANDED_STEPS.has(job.step)) || job.state === "done" || job.source_deleted === 1)) {
     return { kind: "moved", targetInstanceId: job.target_instance_id };
   }

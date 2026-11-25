@@ -5307,7 +5307,7 @@ declare global {
          */
         answerTierRequest?: (
           pin: OpenProjectBinding,
-          args: import("../shared/cloudLaneLife").CloudTierRequestAnswerArgs,
+          args: import("../shared/cloudTierRequest").CloudTierRequestAnswerArgs,
         ) => Promise<{ answered: boolean; toldAgent: boolean }>;
         /**
          * A kept ADE Cloud lane (its computer deleted) moved to a machine of the person's,
