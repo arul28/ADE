@@ -93,7 +93,8 @@ export function TermsPage() {
                     Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
                     tool. In the United States, except California, the cards start on and ADE tells you so; in
                     California and elsewhere they show only after you agree. You can turn them off at any time in Settings › ADE Cloud; Small computers on Free then
-                    use credits. Chats on your own computer and paid plans have no ads.{" "}
+                    use credits. They also use credits after 14 days without an ADE Cloud chat opened from a
+                    country where the cards show, until you next open one. Chats on your own computer and paid plans have no ads.{" "}
                     <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
                       The Privacy page
                     </a>{" "}

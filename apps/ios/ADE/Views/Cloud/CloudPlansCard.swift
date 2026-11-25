@@ -301,7 +301,7 @@ struct CloudSponsoredCard: View {
           .padding(.top, -4)
           .padding(.bottom, sponsored.smallUsesHoursWithoutCards ? 4 : 12)
         if sponsored.smallUsesHoursWithoutCards {
-          Text("Small computers use your \(CloudBalanceWords(accountStore.account ?? pageAccount).unit) while sponsored cards are off.")
+          Text(smallLine(sponsored, unit: CloudBalanceWords(accountStore.account ?? pageAccount).unit))
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -331,6 +331,13 @@ struct CloudSponsoredCard: View {
         sponsoredStore.noteNoticeShown()
       }
     }
+  }
+
+  /// What Small costs with this answer: credits while cards are off, or for now after a yes whose looks lapsed.
+  private func smallLine(_ sponsored: CloudSponsoredState, unit: String) -> String {
+    (sponsored.granted || sponsored.toldOn) && sponsored.smallNeedsLook
+      ? "Small computers use your \(unit) for now: they're free again once you open an ADE Cloud chat from a country where sponsored cards show. Your last one was over 14 days ago."
+      : "Small computers use your \(unit) while sponsored cards are off."
   }
 
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {

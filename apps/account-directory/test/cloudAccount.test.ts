@@ -7,7 +7,7 @@ import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
-import { pruneSponsored } from "../src/cloud/gravity";
+import { pruneSponsored, syncAllSmallRates } from "../src/cloud/gravity";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
@@ -5231,7 +5231,7 @@ describe("sponsored cards", () => {
     setting("gravity_ads", "all");
     seedAccount(harness, OWNER);
     seedComputer(harness);
-    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW });
+    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW, looked_at: NOW });
     // The computer saved a copy of the chat after its turn: it runs there.
     harness.insert("cloud_chat_copies", { user_id: OWNER, machine_key: "mk-1", chat_id: "chat-1", instance_id: INSTANCE, r2_key: "chats/1", updated_at: NOW });
   });
@@ -5433,6 +5433,28 @@ describe("sponsored cards", () => {
     // An hour on the yes adds nothing to the meter.
     clock += HOUR;
     expect((await accountState()).hours.usedMilli - used).toBe(500);
+    // The yes keeps Small free only while the person looks at a cloud chat from where cards can show: 14 days
+    // without such a look (away, or a yes given once through a VPN) and Small uses credits until the next one.
+    clock += 14 * DAY + HOUR;
+    expect(await syncAllSmallRates(harness.env as never, clock)).toBe(1);
+    expect(computer(harness).multiplier_milli).toBe(500);
+    expect((await accountState()).sponsored).toMatchObject({ consent: "granted", smallNeedsLook: true });
+    const fromUS = (method: string, path: string, body?: Row) => {
+      const request = new Request(`https://directory.test${path}`, {
+        method,
+        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      Object.defineProperty(request, "cf", { value: { country: "US", regionCode: "TX" } });
+      return handleCloudRequest(request, harness.env);
+    };
+    const look = (from: typeof fromBrazil) => from("POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE }).then((response) => response.json());
+    // A look from where Gravity shows no cards doesn't count; one from where it does frees Small at once.
+    expect(await look(fromBrazil)).toEqual({ ok: false });
+    expect(computer(harness).multiplier_milli).toBe(500);
+    expect(await look(fromUS)).toEqual({ ok: true });
+    expect(computer(harness).multiplier_milli).toBe(0);
+    expect((await accountState()).sponsored?.smallNeedsLook).toBeUndefined();
 
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);

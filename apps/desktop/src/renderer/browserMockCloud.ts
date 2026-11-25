@@ -642,6 +642,10 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "again") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, confirmYes: true }, catalog: smallRate(null) };
   }
+  // `lapsed`: a yes, but no look at a cloud chat from where cards show in 14 days: Small uses credits until the next one.
+  if (sponsoredParam === "lapsed") {
+    state = { ...state, sponsored: { ads: true, consent: "granted", test: true, smallNeedsCards: true, smallNeedsLook: true }, catalog: smallRate("declined") };
+  }
   // `gpc`: a browser's Global Privacy Control turned an earlier yes off: Settings says why.
   if (sponsoredParam === "gpc") {
     state = { ...state, sponsored: { ads: true, consent: "declined", test: true, smallNeedsCards: true, confirmYes: true, gpcOff: true }, catalog: smallRate("declined") };
@@ -714,7 +718,7 @@ export function applyBrowserMockCloud(ade: any): void {
       }
       // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
       const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
-      const { startsOn: _startsOn, confirmYes: _confirmYes, gpcOff: _gpcOff, ...sponsored } = state.sponsored;
+      const { startsOn: _startsOn, confirmYes: _confirmYes, gpcOff: _gpcOff, smallNeedsLook: _smallNeedsLook, ...sponsored } = state.sponsored;
       // After a no, a yes is confirmed a second time, as the server has it.
       state = { ...state, sponsored: { ...sponsored, consent, ...(consent === "declined" ? { confirmYes: true } : {}) } };
       if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };

@@ -46,13 +46,16 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// The no came from a browser's Global Privacy Control (it opts the whole
   /// account out from the US): Settings says so (`gpcOffLine`).
   let gpcOff: Bool
+  /// A yes, but nobody has looked at a cloud chat from where cards show for
+  /// 14 days: Small uses credits until the next such look. Settings says so.
+  let smallNeedsLook: Bool
 
   static let granted = "granted"
   static let declined = "declined"
   /// The notice that cards are on was shown: saved as a yes of its own kind (`CloudSponsoredChoice`).
   static let notice = "notice"
 
-  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false, smallNeedsLook: Bool = false) {
     self.ads = ads
     self.consent = consent
     self.test = test
@@ -61,9 +64,10 @@ struct CloudSponsoredState: Decodable, Equatable {
     self.startsOn = startsOn
     self.confirmYes = confirmYes
     self.gpcOff = gpcOff
+    self.smallNeedsLook = smallNeedsLook
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff, smallNeedsLook }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -76,6 +80,7 @@ struct CloudSponsoredState: Decodable, Equatable {
     startsOn = c.lenient(Bool.self, forKey: .startsOn) ?? false
     confirmYes = c.lenient(Bool.self, forKey: .confirmYes) ?? false
     gpcOff = c.lenient(Bool.self, forKey: .gpcOff) ?? false
+    smallNeedsLook = c.lenient(Bool.self, forKey: .smallNeedsLook) ?? false
   }
 
   /// What Gravity gets, as the question, the notice and Settings say it.

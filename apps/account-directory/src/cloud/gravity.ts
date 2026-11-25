@@ -217,7 +217,7 @@ async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow |
   for (let tries = 0; tries < 2 && gpcOverrides(consent, who); tries += 1) {
     const flip = consent
       ? env.DB.prepare(`
-        update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0
+        update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0, looked_at = null
         where user_id = ? and consent = 'granted' and decided_at = ?
       `).bind(now, who.country, account.user_id, consent.decided_at)
       : env.DB.prepare(`
@@ -236,7 +236,7 @@ async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow |
     }
     logCloud("cloud.sponsored.consent", { consent: "declined", source: "gpc" });
     await syncSmallRates(env, account, now);
-    return { consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0 };
+    return { consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0, looked_at: null };
   }
   return consent;
 }
@@ -269,6 +269,8 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
     ...(shownPlanIdOf(account) === "free" ? { smallNeedsCards: true } : {}),
+    // A yes whose looks lapsed: Small uses credits until the next look where cards can show.
+    ...(shownPlanIdOf(account) === "free" && consent?.consent === "granted" && !lookKeepsSmallFree(consent, now) ? { smallNeedsLook: true } : {}),
   };
 }
 
@@ -327,18 +329,35 @@ function surfaceOf(value: unknown, device: CloudSponsoredDevice): CloudSponsored
 /* ---- Free's Small computers: unlimited with sponsored cards ---- */
 
 /**
+ * How long a yes keeps Free's Small free after the person last looked at an
+ * ADE Cloud chat from where their cards can show (`looked_at`, refreshed by
+ * `/cloud/sponsored/seen`). Covers a trip abroad or a few weeks away; after
+ * it, Small uses credits until the next such look. So a yes given once (from
+ * a VPN, say) can't keep Small free for someone who never sees a card.
+ */
+const SMALL_FREE_LOOK_MS = 14 * 24 * 60 * 60_000;
+/** A look refreshes `looked_at` at most this often: one write an hour per account, not one every few minutes. */
+const LOOK_REFRESH_MS = 60 * 60_000;
+
+/** Whether the account's yes still keeps Small free: given, or seen holding, within `SMALL_FREE_LOOK_MS`. */
+const lookKeepsSmallFree = (consent: ConsentRow | null, now: number): boolean =>
+  consent?.consent === "granted" && consent.looked_at != null && now - consent.looked_at <= SMALL_FREE_LOOK_MS;
+
+/**
  * Whether the account's Small computers use no hours now. Always, unless the
  * account is on Free (or acts as it, `shownPlanIdOf`) and the ad switch
  * reaches it: then only while it said yes to sponsored cards. One switch is
  * the deal: where ads reach Free, Small is unlimited with cards and uses
  * hours without; ads off is Small unlimited for everyone. An account never
- * asked (outside Gravity's countries, or no cloud chat yet) uses hours too.
+ * asked (outside Gravity's countries, or no cloud chat yet) uses hours too,
+ * and so does a yes the person hasn't looked at a card under for
+ * `SMALL_FREE_LOOK_MS`.
  */
-export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings): Promise<boolean> {
+export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings, now = Date.now()): Promise<boolean> {
   if (shownPlanIdOf(account) !== "free") return true;
   const { mode } = await gravitySwitches(env, settings ?? (await readCloudSettings(env)));
   if (!(await switchReaches(env, account, mode))) return true;
-  return (await readConsent(env, account.user_id))?.consent === "granted";
+  return lookKeepsSmallFree(await readConsent(env, account.user_id), now);
 }
 
 /** The rate a computer of `size` runs at for this account: Small's is 0, or `SMALL_NO_CARDS_RATE_MILLI`. */
@@ -353,7 +372,7 @@ export const rateMilliFor = (size: Pick<CloudSize, "tier" | "multiplierMilli">, 
  * account after a switch flips. The number of computers re-rated.
  */
 export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: number, settings?: CloudSettings): Promise<number> {
-  const smallFree = await smallUsesNoHours(env, account, settings);
+  const smallFree = await smallUsesNoHours(env, account, settings, now);
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(account.user_id).all<ComputerRow>();
   const statements: D1PreparedStatement[] = [];
   let changed = 0;
@@ -367,9 +386,9 @@ export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: 
     // A rate that uses hours is never written over a yes saved meanwhile (a no
     // and a yes racing): the yes's own sync, or the next tick, has the say.
     const guard = statusGuard(computer);
-    const yesSince = smallFree ? "" : ` and not exists (select 1 from cloud_sponsored_consent where user_id = cloud_computers.user_id and consent = 'granted')`;
+    const yesSince = smallFree ? "" : ` and not exists (select 1 from cloud_sponsored_consent where user_id = cloud_computers.user_id and consent = 'granted' and looked_at >= ?)`;
     statements.push(env.DB.prepare(`update cloud_computers set multiplier_milli = ? where instance_id = ? and multiplier_milli = ? and ${guard.sql}${yesSince}`)
-      .bind(rate, computer.instance_id, computer.multiplier_milli, ...guard.binds));
+      .bind(rate, computer.instance_id, computer.multiplier_milli, ...guard.binds, ...(smallFree ? [] : [now - SMALL_FREE_LOOK_MS])));
     if (computer.awake_since != null && computer.awake_since <= now) statements.push(...restartStretchStatements(env, computer, now));
     changed += 1;
   }
@@ -402,10 +421,10 @@ export async function syncAllSmallRates(env: GravityEnv, now: number, { force = 
         and c.multiplier_milli != (case when
           coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) != 'free'
           or not (? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))
-          or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted')
+          or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted' and s.looked_at >= ?)
         then 0 else ? end)
       limit ?
-    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, mode, mode, SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
+    `).bind(SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, mode, mode, now - SMALL_FREE_LOOK_MS, SMALL_NO_CARDS_RATE_MILLI, SMALL_SYNC_PAGE).all<{ user_id: string }>();
     const page = users.results ?? [];
     let pageChanged = 0;
     for (const { user_id: userId } of page) {
@@ -779,13 +798,15 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // meanwhile holds. A no always saves.
   const guard = consent === "declined" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
   const write = env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc) values (?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at) values (?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
-      source = excluded.source, country = excluded.country, gpc = excluded.gpc${guard}
+      source = excluded.source, country = excluded.country, gpc = excluded.gpc, looked_at = excluded.looked_at${guard}
   `).bind(
     userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
+    // A yes is given where cards can show (from elsewhere it is refused above): Small is free from now.
+    consent === "granted" ? now : null,
     ...(guard && before ? [before.decided_at] : []),
   );
   // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
@@ -839,6 +860,13 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
       os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
       region = excluded.region, seen_at = excluded.seen_at
   `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
+  // A look where the cards can show keeps Free's Small free (`SMALL_FREE_LOOK_MS`), at most one write an hour.
+  if (consent.looked_at == null || now - consent.looked_at >= LOOK_REFRESH_MS) {
+    await env.DB.prepare("update cloud_sponsored_consent set looked_at = ? where user_id = ? and consent = 'granted' and decided_at = ?")
+      .bind(now, userId, consent.decided_at).run();
+    // Back from a lapse (away, or no look for a while): Small is free again from this look.
+    if (!lookKeepsSmallFree(consent, now)) await syncSmallRates(env, account, now);
+  }
   return json({ ok: true });
 }
 

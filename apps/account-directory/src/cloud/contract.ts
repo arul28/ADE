@@ -3270,6 +3270,13 @@ export type CloudSponsoredState = {
    */
   smallNeedsCards?: boolean;
   /**
+   * The account said yes, but nobody has looked at one of its ADE Cloud chats
+   * from where the cards can show for 14 days (away, or a yes given once
+   * from elsewhere): Small uses credits until the next such look. Settings
+   * says so. Absent otherwise.
+   */
+  smallNeedsLook?: boolean;
+  /**
    * Where this account's cards show (`CloudSponsoredFormat`), as the server
    * assigns it. Absent (an older server): under the reply.
    */

@@ -448,7 +448,11 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   <small className="adecd-addon-state">{SPONSORED_GPC_OFF}</small>
                 ) : null}
                 {sponsoredToggle.smallNeedsCards ? (
-                  <small className="adecd-addon-state">Small computers use your {noun} while sponsored cards are off.</small>
+                  <small className="adecd-addon-state">
+                    {sponsoredOn && sponsoredToggle.smallNeedsLook
+                      ? `Small computers use your ${noun} for now: they're free again once you open an ADE Cloud chat from a country where sponsored cards show. Your last one was over 14 days ago.`
+                      : `Small computers use your ${noun} while sponsored cards are off.`}
+                  </small>
                 ) : null}
               </div>
             ) : null}
