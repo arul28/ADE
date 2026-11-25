@@ -30640,12 +30640,16 @@ export function createAgentChatService(args: {
     //  - Terminal reasons (handle_close, ended_session, model_switch) must
     //    still invalidate so a future resume can't reattach to a session
     //    the user actually closed.
-    // A dropped pointer means the next send opens a new thread, but
-    // `armIfStale` can't see it: the key reads "unopened" until that thread
-    // names itself, after the first send. Codex resumes from the session's
-    // own `threadId`, which a teardown keeps.
+    // An invalidating teardown drops the pointer of OpenCode, Droid, Copilot,
+    // Pi, Muse and the ACP providers, so their next send opens a new thread;
+    // `armIfStale` can't see that, because the key reads "unopened" until the
+    // new thread names itself, after the first send. Claude and Cursor resume
+    // their persisted pointer and Codex its session `threadId`: those threads
+    // already hold the conversation.
     const restageIfThreadDropped = (): void => {
-      if (managed.session.provider === "codex" && managed.session.threadId) return;
+      const provider = managed.session.provider;
+      if (provider === "claude" || provider === "cursor") return;
+      if (provider === "codex" && managed.session.threadId) return;
       restageSectionsForNewProviderThread(managed);
     };
     if (!managed.runtime) {
