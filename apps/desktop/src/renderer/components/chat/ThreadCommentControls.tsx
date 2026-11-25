@@ -3,7 +3,7 @@ import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { motion } from "motion/react";
 import { ArrowSquareOut, ChatTeardropText, FilmStrip, Image as ImageIcon, PencilSimple, Trash, WarningCircle } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
+import { isLocalThreadComment, threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import { cn } from "../ui/cn";
@@ -13,11 +13,13 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import { ipcErrorMessage, isConnectionTroubleText } from "../../lib/format";
 import { requireChatPin } from "./chatMachinePin";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   countCommentsForNextSend,
   countFailedThreadComments,
   discardFailedThreadComment,
-  isLocalThreadComment,
+  holdThreadCommentChange,
+  holdThreadCommentDelete,
   patchThreadComment,
   refreshThreadComments,
   removeThreadCommentLocally,
@@ -26,6 +28,12 @@ import {
   threadCommentSaveError,
   threadCommentsApi,
 } from "./threadCommentsStore";
+import {
+  deleteHeldThreadComment,
+  isDeviceHeldThreadComment,
+  threadCommentChangeHeldOnDevice,
+  updateHeldThreadComment,
+} from "./threadCommentsHeldOnDevice";
 
 /** An error from a comment write, as a person reads it, and whether it was the link to the chat's machine. */
 export type ThreadCommentError = { text: string; connection: boolean };
@@ -61,6 +69,7 @@ export function useThreadCommentActions(
   const [error, setError] = useState<ThreadCommentError | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const stopEditing = useCallback(() => setEditingId(null), []);
+  const { machineRests } = useChatRuntimeScope();
   // An edit belongs to the chat it started in; another chat starts clean.
   const pinKey = pin?.key ?? null;
   useEffect(() => {
@@ -77,9 +86,19 @@ export function useThreadCommentActions(
       return null;
     }
   };
+  /**
+   * A change to a comment the host has stays on this device while the chat's
+   * computer rests, and after that while an earlier one waits here, so the
+   * next send applies them in order. Writing it now would wake the computer.
+   */
+  const holdsChange = (activeSessionId: string, commentId: string) =>
+    machineRests || threadCommentChangeHeldOnDevice(activeSessionId, commentId);
   const update = async (commentId: string, patch: { body?: string; includeInNextSend?: boolean }) => {
     // A comment still being created has no host id yet.
     if (!sessionId || isLocalThreadComment(commentId)) return null;
+    // Kept on this device while the chat's computer rests: changed here, nothing wakes it.
+    if (isDeviceHeldThreadComment(commentId)) return run(async () => updateHeldThreadComment(sessionId, commentId, patch));
+    if (holdsChange(sessionId, commentId)) return run(async () => holdThreadCommentChange(sessionId, commentId, patch));
     // The change shows at once; if the host refuses it, show the host's list again.
     patchThreadComment(sessionId, commentId, patch);
     const result = await run(() => threadCommentsApi()?.update({ sessionId, commentId, ...patch }, requireChatPin(pin)));
@@ -88,6 +107,8 @@ export function useThreadCommentActions(
   };
   const remove = async (commentId: string) => {
     if (!sessionId || isLocalThreadComment(commentId)) return null;
+    if (isDeviceHeldThreadComment(commentId)) return run(async () => deleteHeldThreadComment(sessionId, commentId));
+    if (holdsChange(sessionId, commentId)) return run(async () => holdThreadCommentDelete(sessionId, commentId));
     removeThreadCommentLocally(sessionId, commentId);
     const result = await run(() => threadCommentsApi()?.delete({ sessionId, commentId }, requireChatPin(pin)));
     // The row went early; if the host kept it, show the host's list again.
@@ -222,6 +243,19 @@ export function ThreadCommentEditor({
   );
 }
 
+/** Under a comment, or a change to one, that waits on this device for a send while the chat's computer rests. */
+function HeldOnDeviceNote({ held }: { held: "comment" | "change" }) {
+  return (
+    <div
+      className="truncate pl-[11px] font-sans text-[10.5px] text-fg/45"
+      data-testid={held === "comment" ? "thread-comment-held-on-device" : "thread-comment-change-held-on-device"}
+      title={`The chat's computer is asleep, so this ${held} stays on this device and doesn't wake it. It reaches the computer with a message you send.`}
+    >
+      {held === "comment" ? "On this device until you send" : "Change on this device until you send"}
+    </div>
+  );
+}
+
 /** One comment in a list: the quote it hangs off, the note, and its controls. */
 export function ThreadCommentListItem({
   comment,
@@ -299,6 +333,11 @@ export function ThreadCommentListItem({
         <div className="truncate pl-[11px] font-sans text-[10.5px] text-fg/50" data-testid="thread-comment-author" title={guestName}>
           From {guestName}
         </div>
+      ) : null}
+      {isDeviceHeldThreadComment(comment.id) ? (
+        <HeldOnDeviceNote held="comment" />
+      ) : threadCommentChangeHeldOnDevice(comment.sessionId, comment.id) ? (
+        <HeldOnDeviceNote held="change" />
       ) : null}
       {editing && !saveError ? (
         <ThreadCommentEditor initialBody={comment.body} saveLabel="Save" error={error} onSave={onSaveEdit} onCancel={onCancelEdit} />

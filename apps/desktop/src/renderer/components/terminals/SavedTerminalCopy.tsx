@@ -180,7 +180,9 @@ function SavedCliSendBox({ machineKey, sessionId }: { machineKey: string; sessio
           ? "Sent. The CLI gets it now."
           : answer.wake.state === "launching"
             ? "Its computer is gone. A new ADE Cloud computer restores this CLI and sends it."
-            : "Waking your ADE Cloud computer. The CLI gets this when it's up.",
+            : answer.wake.state === "moving"
+              ? "This lane's computer is moving. ADE Cloud keeps this and sends it once the move is done."
+              : "Waking your ADE Cloud computer. The CLI gets this when it's up.",
       });
       void refresh();
     } catch (error) {

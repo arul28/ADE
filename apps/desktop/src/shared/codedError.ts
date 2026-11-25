@@ -1,3 +1,5 @@
+import { CLOUD_COMPUTER_MOVING_CODE } from "../../../account-directory/src/cloud/contract";
+
 export type ParsedCodedError = {
   code?: string;
   message: string;
@@ -112,6 +114,25 @@ export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
     message,
     ...(rootPath ? { rootPath } : {}),
   };
+}
+
+/**
+ * Refusals whose message is written for the person: their code crosses the
+ * wire as a `code: message` prefix (`encodeCodedErrorMessage`) so the sender
+ * can act on it, and is not for reading.
+ */
+const SENTENCE_REFUSAL_CODES: ReadonlySet<string> = new Set([CLOUD_COMPUTER_MOVING_CODE]);
+
+/**
+ * Error text as a person reads it: a refusal written for the person
+ * ("computer_moving: This ADE Cloud computer is moving…") reads as its
+ * sentence; any other text exactly as it is. The one place that code is taken
+ * out of the text (`personErrorText`, `ipcErrorMessage`,
+ * `chatLaunchErrorMessage`); the code stays on the error itself.
+ */
+export function withoutRefusalCode(text: string): string {
+  const parsed = parseCodedErrorMessage(text);
+  return parsed.code && SENTENCE_REFUSAL_CODES.has(parsed.code) ? parsed.message : text;
 }
 
 export function extractCodeFromMessage(error: unknown): string | null {

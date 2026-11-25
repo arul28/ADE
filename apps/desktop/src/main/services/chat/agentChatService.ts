@@ -155,7 +155,7 @@ import {
 } from "./claudeThinkingTranscriptRepair";
 import { piForkCutBeforePrompt } from "./piForkCut";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
-import { createClientSendLedger } from "./chatClientSendLedger";
+import { createClientSendLedger, heldSendSentAt } from "./chatClientSendLedger";
 import { createQuietTurnHandler, type TurnRecoveryState } from "./chatQuietTurn";
 import {
   quietThresholdsFor,
@@ -426,6 +426,7 @@ import {
   type ExternalParentWake,
   type ExternalWakeDeliveryResult,
 } from "./externalChats";
+import { agentRelaySenderNote, withoutAgentRelaySenderNote } from "./agentRelayNote";
 import {
   lowerPermissionCeiling,
   permissionCeilingClamp,
@@ -1168,7 +1169,8 @@ import {
 } from "../../../shared/modelRegistry";
 import { isLaunchProfile, isTrackedCliPermissionMode, piSdkToolPolicyForPermissionMode, piThinkingLevel, type PiSdkMcpPolicy } from "../../../shared/cliLaunch";
 import { codexAppServerApprovalPolicy } from "../../../shared/codexApprovalPolicy";
-import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
+import { describeAdeCloudComputer, isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
+import { buildCloudMemoryKillNote, formatCloudMemoryKillNotice, type CloudMemoryKillAnswer, type CloudMemoryKillReport } from "../adeCloud/cloudMemoryKillNotice";
 import {
   claudeCodeRefusesBypassHere,
   claudeRootRuleApplies,
@@ -1376,6 +1378,7 @@ import {
   type SkillDeliveryDetail,
 } from "../skills/skillDelivery";
 import {
+  AGENT_DOWNLOAD_NOTICE_STATUS,
   isDroppedSteerDeliveryState,
   isSettledSteerDeliveryState,
   parseAgentChatTranscript,
@@ -11348,6 +11351,12 @@ function buildAdeSessionLineageGuidance(
  * from the END — so it would silently evict that prompt's subagent routing
  * contract and project rules. The rule is documented in the "Board and status"
  * section of the ade-cli-control-plane skill, which every agent reads.
+ *
+ * The ADE Cloud computer line (`describeAdeCloudComputer`, only on one) rides
+ * here for the providers whose guidance is this block (Cursor, Muse, the ACP
+ * agents). Cursor sends this block beside its 3 KB prompt, never inside it, so
+ * the line costs that budget nothing. Cursor Cloud and Devin Cloud agents run
+ * on their own machines and never get this block.
  */
 function buildAdeGuidanceForLane(
   laneWorktreePath: string,
@@ -11355,7 +11364,7 @@ function buildAdeGuidanceForLane(
   opts?: SpawnSelfReportGuidanceOpts,
 ): string {
   const base = buildAdeCliAgentGuidance(adePromptAgentSkillRoots({ cwd: laneWorktreePath }));
-  return [base, buildAdeSessionLineageGuidance(session, opts)].filter(Boolean).join("\n");
+  return [base, describeAdeCloudComputer(), buildAdeSessionLineageGuidance(session, opts)].filter(Boolean).join("\n");
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -12408,6 +12417,15 @@ export function createAgentChatService(args: {
    */
   turnStartRefusal?: (() => string | null) | null;
   /**
+   * Makes sure this host has applied the account's sign-in for `provider`
+   * before a scheduled turn starts. An ADE Cloud computer that just started
+   * (or woke from a stop) applies them a few seconds after its chats can run,
+   * and a wake that fired in that window failed with "couldn't sign in"
+   * (`bootstrap.ts`). Never throws for a missing sign-in: the turn then
+   * refuses visibly, as before. Absent: nothing to wait for.
+   */
+  ensureTurnSignIn?: ((provider: AgentChatProvider) => Promise<void>) | null;
+  /**
    * This host's sleep state, so a turn interrupted by a suspending machine can
    * say so instead of reporting a provider retry with cause `unknown`.
    *
@@ -12788,6 +12806,7 @@ export function createAgentChatService(args: {
     prService,
     diskPressureMonitor,
     turnStartRefusal,
+    ensureTurnSignIn,
     getTestService,
     getTerminalWatchService,
     ptyService,
@@ -16883,6 +16902,22 @@ export function createAgentChatService(args: {
     } catch {
       return buffered;
     }
+  };
+
+  /**
+   * The newest `ade_card` event with this id in a chat's transcript, or null.
+   * A repeat emit with the same id is the same card, changed.
+   */
+  const latestAdeCardEvent = (
+    managed: ManagedChatSession,
+    cardId: string,
+    options?: { includeBuffered?: boolean },
+  ): Extract<AgentChatEvent, { type: "ade_card" }> | null => {
+    let latest: Extract<AgentChatEvent, { type: "ade_card" }> | null = null;
+    for (const entry of readTranscriptEnvelopes(managed, options)) {
+      if (entry.event.type === "ade_card" && entry.event.cardId === cardId) latest = entry.event;
+    }
+    return latest;
   };
 
   /**
@@ -26455,7 +26490,11 @@ export function createAgentChatService(args: {
     // steer, and that row must not read as this send's message.
     if (event.type === "user_message" && !event.clientSendId && !event.steerId && !event.metadata?.hostContinuation) {
       const clientSendId = clientSends.claimSendId(managed.session.id);
-      if (clientSendId) event = { ...event, clientSendId };
+      if (clientSendId) {
+        // A send held on the way says when the person sent it; the same message only.
+        const sentAt = event.sentAt ?? clientSends.sentAtOf(managed.session.id);
+        event = { ...event, clientSendId, ...(sentAt ? { sentAt } : {}) };
+      }
     }
     // A reaction names its message by id; a Codex send writes the person's
     // message before its turn has one, with no id at all.
@@ -47521,6 +47560,8 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
+        // The working line reads this notice while the turn waits on it.
+        status: AGENT_DOWNLOAD_NOTICE_STATUS,
         message: `Getting ${label} ready`,
         detail: `ADE downloads each agent the first time this machine uses it. This turn starts when ${label} is ready.`,
       });
@@ -58092,14 +58133,8 @@ export function createAgentChatService(args: {
       // Cold for this card in this process — consult the durable transcript
       // once so the guard survives a restart. Subsequent ticks hit the cache
       // instead of re-parsing the (potentially very large) transcript file.
-      for (const entry of readTranscriptEnvelopes(managed)) {
-        if (entry.event.type === "ade_card" && entry.event.cardId === cardId) {
-          previous = {
-            fingerprint: adeCardFingerprint(entry.event),
-            createdAt: entry.event.createdAt ?? nowIso(),
-          };
-        }
-      }
+      const latest = latestAdeCardEvent(managed, cardId);
+      if (latest) previous = { fingerprint: adeCardFingerprint(latest), createdAt: latest.createdAt ?? nowIso() };
     }
 
     const fingerprint = adeCardFingerprint(card);
@@ -58419,12 +58454,7 @@ export function createAgentChatService(args: {
     if (managed.claudeSessionQuotaSnapshot) return true;
     if (managed.claudeQuotaCardLiveChecked) return managed.claudeQuotaCardWasLive === true;
     managed.claudeQuotaCardLiveChecked = true;
-    const cardId = claudeSessionQuotaCardId(managed.session.id);
-    let live = false;
-    for (const entry of readTranscriptEnvelopes(managed)) {
-      if (entry.event.type !== "ade_card" || entry.event.cardId !== cardId) continue;
-      live = entry.event.state === "live";
-    }
+    const live = latestAdeCardEvent(managed, claudeSessionQuotaCardId(managed.session.id))?.state === "live";
     managed.claudeQuotaCardWasLive = live;
     return live;
   };
@@ -59740,6 +59770,18 @@ export function createAgentChatService(args: {
     const visibleText = hasPastedPromptAttachment
       ? displayText?.trim() ?? ""
       : rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
+    // What the agent reads. A message another agent sent says so, or the agent
+    // takes it as the person's own request. A command stays as sent so it
+    // still runs: a provider slash command (`providerSlashCommand`; `/review
+    // is this safe?` is chat text and gets the note), or one of Muse's own commands
+    // (`parseMuseControlCommand`: its `/…` set and `!cmd`, which is a command
+    // on Muse only). The bubble keeps the sent text (`visibleText`).
+    const sentAsCommand = providerSlashCommand
+      || (managed.session.provider === "muse" && parseMuseControlCommand(trimmed) != null);
+    const relayNote = sentAsCommand
+      ? null
+      : agentRelaySenderNote(metadata?.agentRelay, (fromSessionId) => externalChatContext(fromSessionId)?.machineName);
+    const agentText = relayNote ? `${relayNote}\n\n${withoutAgentRelaySenderNote(trimmed)}` : trimmed;
 
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
@@ -59951,10 +59993,10 @@ export function createAgentChatService(args: {
       ? carryChatMentionBlocks(trimmed, expandedSlashCommandPrompt)
       : null;
     const promptText = devinCloudPrompt
-      ? trimmed
+      ? agentText
       : providerSlashCommand && !personalSession
       ? slashCommandPromptWithMentions ?? trimmed
-      : composeLaunchDirectives(trimmed, [
+      : composeLaunchDirectives(agentText, [
           // A Claude lane chat's system prompt opens with the worktree and its
           // write rule; the lane directive repeats it only after a move.
           shouldInjectLaneDirective
@@ -60023,7 +60065,7 @@ export function createAgentChatService(args: {
     return {
       sessionId,
       managed,
-      submittedText: trimmed,
+      submittedText: agentText,
       promptText,
       visibleText,
       attachments: publicAttachments,
@@ -67204,6 +67246,9 @@ export function createAgentChatService(args: {
     args = argsWithoutTiming;
     const timedManaged = managedSessions.get(args.sessionId);
     chatSendTiming.begin(args.sessionId, timedManaged?.session.provider ?? "unknown", clientSubmittedAtMs);
+    // Held on the way (the computer woke, its ADE started): the message shows
+    // when the person sent it, not when it got here (`user_message.sentAt`).
+    const sentAt = heldSendSentAt(clientSubmittedAtMs, Date.now());
     const takeRuntime = takeChatRuntimeOrRefuse(args.sessionId, "send to");
     if (takeRuntime) await takeRuntime;
     // A retried send (after a sleep, a launch's backoff, a phone's offline
@@ -67215,6 +67260,7 @@ export function createAgentChatService(args: {
       clientSendId,
       () => sendMessageOnce(sendArgs, options),
       () => undefined,
+      { sentAt },
     );
   }
 
@@ -75055,6 +75101,95 @@ export function createAgentChatService(args: {
       }
     }));
     return running.length;
+  };
+
+  /**
+   * Queue a one-time note the agent reads ahead of its next turn's prompt (the
+   * restart-note channel, persisted with the chat): never a message from the
+   * person and never a turn of its own. Callers pass plain text; the
+   * "ADE note:" prefix is added here, the one place it is decided. A note
+   * already pending is not repeated. False for a closed or deleted chat, or
+   * an empty note.
+   */
+  const queueNoteForNextTurn = (managed: ManagedChatSession, note: string): boolean => {
+    const text = note.trim();
+    if (!text || managed.deleted || managed.closed) return false;
+    managed.pendingRestartNote = mergePendingRestartNote(managed.pendingRestartNote, `ADE note: ${text}`);
+    persistChatState(managed);
+    return true;
+  };
+
+  /** When each chat was last told of a memory kill: a burst of kills is one notice a minute. */
+  const CLOUD_MEMORY_NOTICE_QUIET_MS = 60_000;
+  const cloudMemoryNoticeAt = new Map<string, number>();
+
+  /**
+   * ADE Cloud's memory guard stopped a process (`cloudMemoryGuard.ts` in the
+   * brain). The chat it names (the process's `ADE_CHAT_SESSION_ID`), loaded
+   * if it is at rest, else every chat with a running turn, gets a notice the
+   * person sees and a one-time note ahead of the agent's next turn (the
+   * restart-note channel): what was stopped, the memory, and how to ask for a
+   * bigger size. `told` is how many chats of this project it matched; 0 lets
+   * the brain try another project or tell the running chats instead.
+   *
+   * A tracked agent CLI's terminal carries its own terminal session id as
+   * `ADE_CHAT_SESSION_ID` (`ptyService`), and so does every command the CLI
+   * runs. Such an id names a session here that is not a chat: the answer is
+   * `notAChat`, so the brain tells no chat about another surface's process.
+   * The CLI itself gets no notice (a terminal has no notice channel); its own
+   * output shows "Killed".
+   */
+  const reportCloudMemoryKill = (kill: CloudMemoryKillReport): CloudMemoryKillAnswer => {
+    let targets: ManagedChatSession[];
+    if (kill.sessionId) {
+      let managed = managedSessions.get(kill.sessionId) ?? null;
+      const row = managed ? null : sessionService.get(kill.sessionId);
+      if (row && !isChatToolType(row.toolType)) {
+        logger.info("agent_chat.cloud_memory_kill_not_a_chat", {
+          sessionId: kill.sessionId,
+          toolType: row.toolType ?? null,
+          pid: kill.pid,
+          rssMb: kill.rssMb,
+        });
+        return { told: 0, notAChat: true };
+      }
+      if (row) {
+        try {
+          managed = ensureManagedSession(kill.sessionId);
+        } catch (error) {
+          logger.warn("agent_chat.cloud_memory_kill_load_failed", { sessionId: kill.sessionId, error: getErrorMessage(error) });
+        }
+      }
+      targets = managed ? [managed] : [];
+    } else {
+      targets = [...managedSessions.values()].filter((managed) => managed.session.status === "active" || runtimeMidTurn(managed));
+    }
+    targets = targets.filter((managed) => !managed.closed && !managed.deleted);
+    const now = Date.now();
+    for (const managed of targets) {
+      const sessionId = managed.session.id;
+      const last = cloudMemoryNoticeAt.get(sessionId);
+      if (last != null && now - last < CLOUD_MEMORY_NOTICE_QUIET_MS) {
+        logger.info("agent_chat.cloud_memory_kill_quiet", { sessionId, pid: kill.pid });
+        continue;
+      }
+      cloudMemoryNoticeAt.set(sessionId, now);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "warning",
+        message: formatCloudMemoryKillNotice(kill),
+        turnId: activeTurnIdForManaged(managed) ?? undefined,
+      });
+      queueNoteForNextTurn(managed, buildCloudMemoryKillNote(kill));
+      logger.info("agent_chat.cloud_memory_kill_told", {
+        sessionId,
+        provider: managed.session.provider,
+        pid: kill.pid,
+        rssMb: kill.rssMb,
+        ownCommand: kill.sessionId != null,
+      });
+    }
+    return { told: targets.length, notAChat: false };
   };
 
   // Broader than hasActiveWorkloads: a session that's between turns still
@@ -83881,6 +84016,28 @@ export function createAgentChatService(args: {
         }
         return { complete: true };
       }
+      // A computer that just started may not have the account's sign-in yet:
+      // get it first, as a queued message does, so the wake doesn't fail on it.
+      if (ensureTurnSignIn) {
+        const provider = managedSessions.get(schedule.sessionId)?.session.provider
+          ?? readPersistedState(schedule.sessionId)?.provider
+          ?? providerFromToolType(row?.toolType);
+        await ensureTurnSignIn(provider).catch((error: unknown) => {
+          logger.warn("agent_chat.scheduled_work_sign_in_check_failed", {
+            sessionId: schedule.sessionId,
+            scheduleId: schedule.id,
+            error: getErrorMessage(error),
+          });
+        });
+        // The wait can take seconds: a cancel made meanwhile wins, and so does a
+        // pause made meanwhile, except for Run now (it runs a paused routine once).
+        const current = scheduledWorkScheduler?.list(schedule.sessionId).find((entry) => entry.id === schedule.id);
+        if (!current || current.status === "cancelled" || current.status === "done") {
+          return { complete: true, outcomeSummary: "Cancelled before it started." };
+        }
+        const pausedNow = current.status === "paused" || current.pausedFlag;
+        if (!context.manual && pausedNow && !schedule.pausedFlag) return { retry: true };
+      }
       // The send runs with `awaitDispatch: false`, so a throw here is a refusal
       // before any turn started (provider signed out, pending input, a full
       // queue): nothing was delivered, and no turn exists to settle the row
@@ -85116,6 +85273,32 @@ ${schedule.prompt}`
       return result;
     },
     emitAdeCard,
+    /**
+     * One `ade_card` of a chat as its transcript holds it now (its newest
+     * emit), or null. ADE Cloud reads a size request's card back by its id
+     * here, never trusting a client's copy of it.
+     */
+    readAdeCard(args: { sessionId: string; cardId: string }): AdeCardPayload | null {
+      const sessionId = args.sessionId?.trim();
+      const cardId = args.cardId?.trim();
+      if (!sessionId || !cardId) return null;
+      // No such chat here (the common case): no card, quietly.
+      if (!managedSessions.has(sessionId)) {
+        const row = sessionService.get(sessionId);
+        if (!row || !isChatToolType(row.toolType)) return null;
+      }
+      let event: Extract<AgentChatEvent, { type: "ade_card" }> | null;
+      try {
+        event = latestAdeCardEvent(ensureManagedSession(sessionId), cardId, { includeBuffered: true });
+      } catch (error) {
+        // The chat is here but its transcript couldn't be read: the caller reads it as no such card.
+        logger.warn("agent_chat.ade_card_read_failed", { sessionId, cardId, error: getErrorMessage(error) });
+        return null;
+      }
+      if (!event) return null;
+      const { type: _type, ...payload } = event;
+      return payload;
+    },
     // Every public send strips a caller's `metadata.author`: only the host
     // sets one (`withHostMessageAuthor`). Internal sends keep what they carry.
     // A lane share move's chat makes its first send a plain prompt
@@ -85310,6 +85493,19 @@ ${schedule.prompt}`
         ...(detail ? { detail } : {}),
       });
     },
+    /**
+     * A note the chat's agent reads once, ahead of its next turn's prompt (the
+     * restart-note channel, persisted with the chat), never a message from the
+     * person and never a turn of its own. ADE Cloud tells an agent this way
+     * that the person said yes to its size request (a wake would start a turn
+     * the change then waits for), or that its approval card closed unanswered
+     * while the computer stopped or moved. Plain text: `queueNoteForNextTurn`
+     * adds the "ADE note:" prefix.
+     */
+    queueAgentNote(args: { sessionId: string; note: string }): void {
+      if (!args.note?.trim()) return;
+      queueNoteForNextTurn(ensureManagedSession(args.sessionId), args.note);
+    },
     getSessionIdentityKey,
     getSessionSideChatParentId,
     getSessionOrchestrationParentId,
@@ -85328,6 +85524,7 @@ ${schedule.prompt}`
     hasActiveWorkloads,
     listBusyFacts,
     interruptRunningTurns,
+    reportCloudMemoryKill,
     hasRetainableSessions,
     residentChatEventHistorySessionCount: () => eventHistoryBySession.size,
     seedLiveChatEventHistory(envelopes: AgentChatEventEnvelope[]): void {

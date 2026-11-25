@@ -99,6 +99,24 @@ export type ChatThreadComment = {
 /** One guest comment the owner picked for a send: its id and the body revision the owner saw. */
 export type ChatThreadCommentSelection = { id: string; revision: number };
 
+/**
+ * The host's refusal of a create whose client id a send already took or a
+ * delete removed. A client that reads it knows the comment already left.
+ */
+export const THREAD_COMMENT_GONE_MESSAGE = "This comment was already sent or deleted.";
+
+/**
+ * The host's refusal of an edit of a comment it no longer has: a send took
+ * it, or it was deleted elsewhere. A client that reads it has nothing left to change.
+ */
+export const THREAD_COMMENT_MISSING_MESSAGE = "That comment no longer exists.";
+
+/** A comment's note as it is stored: line ends made `\n`, trimmed, capped. Empty when it is no note. */
+export function cleanThreadCommentBody(body: unknown): string {
+  if (typeof body !== "string") return "";
+  return body.replace(/\r\n?/g, "\n").trim().slice(0, MAX_THREAD_COMMENT_BODY_CHARS);
+}
+
 /** The body revision of a comment (`ChatThreadComment.revision`). */
 export function threadCommentRevision(comment: Pick<ChatThreadComment, "revision">): number {
   return typeof comment.revision === "number" && Number.isSafeInteger(comment.revision) && comment.revision > 0
@@ -121,6 +139,20 @@ export function normalizeThreadCommentClientId(value: unknown): string | undefin
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return /^[A-Za-z0-9_.:-]{1,128}$/.test(trimmed) ? trimmed : undefined;
+}
+
+/** The id of a comment a client shows before its host has it: `local:<clientId>`. */
+export const LOCAL_THREAD_COMMENT_ID_PREFIX = "local:";
+
+/** True for a comment shown before its host has it; it has no host id to act on yet. */
+export function isLocalThreadComment(commentId: string): boolean {
+  return commentId.startsWith(LOCAL_THREAD_COMMENT_ID_PREFIX);
+}
+
+/** A new client id for a comment this client makes (`ChatThreadCommentCreateArgs.clientId`). */
+export function newThreadCommentClientId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  return random ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
 }
 
 /**

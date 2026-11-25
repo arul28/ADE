@@ -63,6 +63,7 @@ test("reports every missing runtime-critical ADE CLI payload", () => {
       "droidSdkWorker.cjs",
       "copilotSdkWorker.cjs",
       "piSdkWorker.cjs",
+      "providerInlineImageWorker.cjs",
       "adeRpcServer.cjs",
       "bin/ade",
       "bin/ade.cmd",

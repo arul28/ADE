@@ -67,6 +67,7 @@ import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/pa
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import { buildSponsoredPickCard } from "../shared/sponsoredPick";
 import {
+  THREAD_COMMENT_MISSING_MESSAGE,
   formatThreadReviewBlock,
   normalizeThreadCommentAnchor,
   prependThreadReview,
@@ -8464,7 +8465,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         update: async (args: ChatThreadCommentUpdateArgs) => {
           const current = browserMockThreadComments.get(args.sessionId) ?? [];
           const previous = current.find((comment) => comment.id === args.commentId);
-          if (!previous) throw new Error("That comment no longer exists.");
+          if (!previous) throw new Error(THREAD_COMMENT_MISSING_MESSAGE);
           const next: ChatThreadComment = {
             ...previous,
             ...(typeof args.body === "string" ? { body: args.body.trim() } : {}),

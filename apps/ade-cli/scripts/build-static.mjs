@@ -545,6 +545,12 @@ async function main() {
     // cap; collection cost is unchanged from the Node 22 runtime. An older
     // Node ignores the field.
     execArgv: ["--max-semi-space-size=16"],
+    // Worker-thread bundles the runtime starts from its own bytes, since no
+    // file sits beside the executable: `sea.getAsset(<name>)` reads them
+    // (`providerInlineImageWorkerPool.ts`).
+    assets: {
+      "providerInlineImageWorker.cjs": path.join(packageRoot, "dist", "providerInlineImageWorker.cjs"),
+    },
   };
   await fs.writeFile(seaConfigPath, `${JSON.stringify(seaConfig, null, 2)}\n`, "utf8");
   await run(sourceNodeBinary, ["--experimental-sea-config", seaConfigPath]);

@@ -5299,6 +5299,18 @@ declare global {
          */
         clearCaches?: (pin: OpenProjectBinding, instanceId: string) => Promise<{ freedGb: number }>;
         /**
+         * The person's answer to an agent's size request card
+         * (`cloud.tier_request_answer`) on the chat's OWN machine: `pin` is
+         * the chat's runtime pin. That machine reads the card from the chat,
+         * marks it answered for every surface and tells the agent. How a
+         * change the person said yes to ended goes there from whatever runs
+         * the change (main, or ADE Web's tab), not from a window.
+         */
+        answerTierRequest?: (
+          pin: OpenProjectBinding,
+          args: import("../shared/cloudTierRequest").CloudTierRequestAnswerArgs,
+        ) => Promise<{ answered: boolean; toldAgent: boolean }>;
+        /**
          * A kept ADE Cloud lane (its computer deleted) moved to a machine of the person's,
          * restored there from the server copies (shared/cloudKeptLaneRestore.ts). `pin` is
          * the DESTINATION project's binding; keep it for the preview, the start and every

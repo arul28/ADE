@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ArrowSquareOut, CheckCircle, Clock, Cloud, Cpu, ListChecks, Moon, Pulse, SunHorizon, Trash, Warning } from "@phosphor-icons/react";
 import { idleCleanupWhen, type CloudIdleCleanupEntry } from "../../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import { useCloudAccount } from "../../state/cloudAccountStore";
@@ -16,7 +16,8 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
 import { cloudLaneChangesAvailable, cloudLaneMovesAvailable } from "./cloudLaneActions";
-import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower } from "./cloudLaneStatus";
+import { cloudLaneJobFor, openCloudLaneJobBar, useCloudLaneJobs } from "./cloudLaneStores";
+import { CLOUD_LANE_POWER_TEXT, cloudLanePower, cloudLaneStatusModel, type CloudLanePower, type CloudLaneStatusLine } from "./cloudLaneStatus";
 import { deleteCloudLaneWithCheck } from "./deleteCloudLane";
 import { forgetCloudComputerStatus, useCloudComputerStatus } from "./useCloudComputerStatus";
 import "../remoteTargets/cloudBrand.css";
@@ -150,7 +151,10 @@ function CloudLaneStatusMenu({
     const timer = window.setInterval(() => setNow(Date.now()), MENU_TICK_MS);
     return () => window.clearInterval(timer);
   }, []);
-  const model = cloudLaneStatusModel({ power, box, status, account, now });
+  // A size change or move of this lane: its step now, a way to its steps, and no sleep countdown.
+  const jobs = useCloudLaneJobs();
+  const job = cloudLaneJobFor(jobs, { instanceId: computer.instanceId, laneId: computer.laneId });
+  const model = cloudLaneStatusModel({ power, box, status, account, now, job });
   const life = cloudLaneChangesAvailable();
 
   const { run } = menu;
@@ -171,7 +175,7 @@ function CloudLaneStatusMenu({
       className="ade-cx-menu adecl-status-menu"
       zIndex={Z_LAYERS.contextMenu}
       onKeyDown={menu.closeOnEscape}
-      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}`}
+      remeasureKey={`${box ? 1 : 0}${loading ? 1 : 0}${statusFailed ? 1 : 0}${model.lines.length}${model.job ? 1 : 0}`}
     >
       <div ref={menu.menuRef} style={{ display: "contents" }}>
         {power === "asleep" ? (
@@ -190,6 +194,7 @@ function CloudLaneStatusMenu({
               </span>
             ) : null}
           </div>
+          {model.job ? <StatusLine line={model.job} /> : null}
           {model.sizeText ? <div className="adecl-status-row"><span>{model.sizeText}</span></div> : null}
           {model.disk || model.hours ? (
             <div className="adecl-status-row">
@@ -197,16 +202,7 @@ function CloudLaneStatusMenu({
               {model.hours ? <span className="kit-num" data-face="ui" data-tone={model.hours.tone ?? undefined}>{model.hours.text}</span> : null}
             </div>
           ) : null}
-          {model.lines.map((line) => (
-            <div key={line.key} className="adecl-status-line" data-tone={line.tone ?? undefined} title={line.hint}>
-              <span className="adecl-status-ic" aria-hidden="true">
-                {line.key === "work" && line.tone === "ok" ? <CheckCircle size={12} weight="fill" />
-                  : line.tone === "warn" || line.tone === "crit" ? <Warning size={12} weight="fill" />
-                  : <Pulse size={12} />}
-              </span>
-              <span>{line.text}</span>
-            </div>
-          ))}
+          {model.lines.map((line) => <StatusLine key={line.key} line={line} />)}
           {loading && !box ? <div className="adecl-status-line"><small>Reading its status…</small></div> : null}
           {statusFailed && !loading ? (
             <div className="adecl-status-line">
@@ -236,13 +232,27 @@ function CloudLaneStatusMenu({
           </button>
         ) : null}
         <div className="adecl-status-actions">
-          {life || cloudLaneMovesAvailable() ? (
+          {job && model.job ? (
+            <button
+              type="button"
+              role="menuitem"
+              className="ade-cx-menu-item"
+              // The chat's bar above the prompt box opens on its steps; with none on screen, the ADE Cloud page shows them.
+              onClick={run(() => {
+                if (!openCloudLaneJobBar(job.jobId)) navigateToAppTarget({ kind: "settings", tab: "ade-cloud", anchor: "cloud-lanes" });
+              })}
+            >
+              <span className="ade-cx-menu-icon"><ListChecks size={13} /></span>
+              {job.kind === "move" ? "Show the move's steps" : "Show the change's steps"}
+            </button>
+          ) : null}
+          {(life || cloudLaneMovesAvailable()) && !model.changing ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(onSize)}>
               <span className="ade-cx-menu-icon"><Cpu size={13} /></span>
               Change size
             </button>
           ) : null}
-          {power === "awake" ? (
+          {power === "awake" && !model.changing ? (
             <button type="button" role="menuitem" className="ade-cx-menu-item" onClick={run(sleepNow)}>
               <span className="ade-cx-menu-icon"><Moon size={13} /></span>
               Sleep now
@@ -276,6 +286,27 @@ function CloudLaneStatusMenu({
         ) : null}
       </div>
     </AnchoredMenu>
+  );
+}
+
+/** A status line's mark: trouble first, then the lane's change, its work on GitHub, and a pulse for the rest. */
+function statusLineIcon(line: CloudLaneStatusLine): ReactNode {
+  if (line.tone === "warn" || line.tone === "crit") return <Warning size={12} weight="fill" />;
+  if (line.key === "job") return <Cloud size={12} weight="bold" />;
+  if (line.key === "work" && line.tone === "ok") return <CheckCircle size={12} weight="fill" />;
+  return <Pulse size={12} />;
+}
+
+/** One status line of the menu: its mark, its text, and a quieter detail after it. */
+function StatusLine({ line }: { line: CloudLaneStatusLine }) {
+  return (
+    <div className="adecl-status-line" data-tone={line.tone ?? undefined} title={line.hint}>
+      <span className="adecl-status-ic" aria-hidden="true">{statusLineIcon(line)}</span>
+      <span>
+        {line.text}
+        {line.detail ? <small> · {line.detail}</small> : null}
+      </span>
+    </div>
   );
 }
 

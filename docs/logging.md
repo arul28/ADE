@@ -422,7 +422,9 @@ PostHog event.
 An image attachment that does not fit a provider's inline limits writes one of
 two local lines, and neither is a PostHog event. `agent_chat.inline_image_resized`
 (info) records an image that was re-encoded to fit, with `provider`, the `from`
-and `to` byte sizes and pixel dimensions. `agent_chat.inline_image_omitted`
+and `to` byte sizes and pixel dimensions, and `offThread` (true when a worker
+thread did the work, false when it ran on the event loop because no worker
+could start). `agent_chat.inline_image_omitted`
 (warn) records one that could not be sent inline, with `provider`, `bytes`, and
 the `reason`; the turn still runs and the model gets a path hint. Neither line
 carries the file's path or name.

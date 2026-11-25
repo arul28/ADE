@@ -615,7 +615,8 @@ export function AskQuestionComposer({
         </div>
       ) : null}
       {question.impact ? (
-        <div data-testid="ask-question-impact" className="-mt-1.5 px-3.5 pb-2.5 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-relaxed text-fg/55">
+        /* Pre-line: an impact may list its items one per line (the lanes whose work isn't on GitHub). */
+        <div data-testid="ask-question-impact" className="-mt-1.5 whitespace-pre-line px-3.5 pb-2.5 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-relaxed text-fg/55">
           {question.impact}
         </div>
       ) : null}

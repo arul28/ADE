@@ -420,7 +420,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // (`clear_caches` is not here: an agent may ask, and the action asks the person with a card.)
   // Moving a kept ADE Cloud lane to this machine brings its branch and every chat here and
   // then forgets the lane on ADE Cloud: the person's call, as a batch move of chats is.
-  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem", "kept_lane_move"],
+  // Answering an agent's size request is the person's: an agent never answers its own card.
+  cloud: [...CLOUD_SIGN_IN_WRITES, "invite_redeem", "kept_lane_move", "tier_request_answer"],
   // An agent asking to move a chat or batch must not approve its own request.
   // Only a person's client hosts an MCP App, so only it may pass an app's call on.
   chat: [
@@ -1250,7 +1251,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // A new lane on its own new computer (`ade chat create --machine cloud`).
     "lane_launch", "lane_launch_status", "lane_launch_cancel",
     // An agent asks the person for a tier change: a card in its chat; it changes nothing.
-    "tier_request",
+    // The person's client answers it on the chat's machine (user-only, above), and the agent is told.
+    "tier_request", "tier_request_answer",
     // An agent's Index search on ADE Cloud Free: a Sponsored card in its chat; it installs nothing.
     "recommend",
     // Clear a cloud computer's caches: the person from the dashboard; an agent asks the person with a card.

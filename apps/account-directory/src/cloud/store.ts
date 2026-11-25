@@ -546,6 +546,33 @@ export function moveQueuedMessagesStatement(
   `).bind(toMachineKey, MOVED_TO_OWN_MACHINE_MESSAGE_ERROR, now, userId, fromMachineKey, chatId, ...onlyIfBinds);
 }
 
+/** A message the old computer took before a move paused it: it may have reached the chat there, so it is never sent again. */
+export const MOVE_CUT_MESSAGE_ERROR = "The move to the new computer started while this message was being sent. Check the chat, and send it again if it isn't there.";
+
+/**
+ * A computer move (`moves.ts`) took the lane to `toInstanceId`: the messages
+ * still queued for the old computer are the new one's to send. They keep
+ * their chat address (machine key and chat id), so every client reads them
+ * where it queued them. One the old computer claimed and never finished
+ * ends failed (`MOVE_CUT_MESSAGE_ERROR`) with its text. Safe to run again.
+ */
+export function handOverQueuedMessagesStatements(
+  env: CloudDb,
+  args: { userId: string; fromInstanceId: string; toInstanceId: string; now: number },
+): D1PreparedStatement[] {
+  const { userId, fromInstanceId, toInstanceId, now } = args;
+  return [
+    env.DB.prepare(`
+      update cloud_chat_messages set instance_id = ?, updated_at = ?
+      where user_id = ? and instance_id = ? and via_launch = 0 and state = 'queued'
+    `).bind(toInstanceId, now, userId, fromInstanceId),
+    env.DB.prepare(`
+      update cloud_chat_messages set state = 'failed', error = ?, updated_at = ?
+      where user_id = ? and instance_id = ? and via_launch = 0 and state in ('sending', 'waiting_for_sign_in')
+    `).bind(MOVE_CUT_MESSAGE_ERROR, now, userId, fromInstanceId),
+  ];
+}
+
 export async function listComputers(env: CloudDb, userId: string): Promise<ComputerRow[]> {
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null")
     .bind(userId).all<ComputerRow>();

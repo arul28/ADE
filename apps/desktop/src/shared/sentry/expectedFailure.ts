@@ -17,6 +17,7 @@ import {
   parseCodedErrorMessage,
   PROJECT_FOLDER_TOO_SLOW_CODE,
 } from "../codedError";
+import { CLOUD_COMPUTER_MOVING_CODE } from "../../../../account-directory/src/cloud/contract";
 import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
@@ -328,6 +329,8 @@ const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set([
   PROJECT_FOLDER_TOO_SLOW_CODE,
   // A chat refusing a send or restart while its turn runs; the caller waits or stops it.
   "turn_in_flight",
+  // An ADE Cloud computer a move holds refusing a chat send; the sender queues it on the account.
+  CLOUD_COMPUTER_MOVING_CODE,
   // A clone or create into a folder that already exists; the renderer offers
   // to open it or pick another folder (projectCopies.ts).
   "target_exists",

@@ -2,6 +2,7 @@ import path from "node:path";
 import { app, ipcMain } from "electron";
 import type { CloudLaneChangeTierArgs, CloudLaneLifeCallRequest } from "../../../shared/cloudLaneLife";
 import { IPC } from "../../../shared/ipc";
+import type { RemoteRuntimeActionRequest } from "../../../shared/types";
 import type { RuntimeBridgeRegistration } from "../ipc/runtimeBridge";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import type { Logger } from "../logging/logger";
@@ -37,24 +38,37 @@ export function registerCloudLaneLifeIpc(args: {
   remote: RuntimeBridgeRegistration["remoteForMain"];
   /** The account's lane backups of one computer: an asleep computer's work check reads them with no wake. */
   laneBackups?: (machineKey: string) => Promise<CloudLaneBackup[]>;
+  /** One runtime action in a project of this computer (a chat here asked for the size); null where there is no local runtime. */
+  callLocalAction?: ((rootPath: string, request: RemoteRuntimeActionRequest) => Promise<unknown>) | null;
   /** One coarse outcome per freed lane (cloudLaneAnalytics.ts). */
   analytics?: CloudLaneAnalyticsCapture;
   logger: Logger;
 }): CloudLaneLife {
   const { logger, remote } = args;
+  const connectMachine = async (machineKey: string): Promise<{ targetId: string }> => {
+    // Contract C2: a moved lane's new computer is paired once (woken first
+    // when asleep); after that its saved connection is reused.
+    const result = await args.machineConnector.connect(machineKey);
+    if (!result.ok) throw new Error(result.message);
+    if (result.address.kind !== "remote") throw new Error("The lane's computer is this computer.");
+    return { targetId: result.address.targetId };
+  };
   const life = createCloudLaneLife({
     recordsDir: path.join(app.getPath("userData"), "cloud-lane-jobs"),
     machines: args.machines,
     client: args.client,
     copyDeps: args.copyDeps,
     forgetMachineConnections: args.forgetMachineConnections,
-    connectMachine: async (machineKey) => {
-      // Contract C2: a moved lane's new computer is paired once (woken first
-      // when asleep); after that its saved connection is reused.
-      const result = await args.machineConnector.connect(machineKey);
-      if (!result.ok) throw new Error(result.message);
-      if (result.address.kind !== "remote") throw new Error("The lane's computer is this computer.");
-      return { targetId: result.address.targetId };
+    connectMachine,
+    // How a change an agent asked for ended, to that chat's own machine by its pin.
+    chatCalls: {
+      callAction: async (pin, request) => {
+        if (pin.kind === "remote") return await remote.callAction(pin, request);
+        if (!args.callLocalAction) throw new Error("This ADE has no local runtime to tell the chat.");
+        return await args.callLocalAction(pin.rootPath, request);
+      },
+      machineKeyOf: (targetId) => remote.machineKeyOf(targetId),
+      resolveBinding: (targetId, projectId, rootPath) => remote.resolveBinding(targetId, projectId, rootPath),
     },
     listProjects: (targetId) => remote.projects(targetId),
     emit: (job) => sendToAllWindows(IPC.cloudLaneJobEvent, job),

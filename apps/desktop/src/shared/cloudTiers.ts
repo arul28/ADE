@@ -180,6 +180,16 @@ const TIER_RUNS: Record<CloudTierId, string> = {
   xlarge: "Docker, Android and heavy builds",
 };
 
+/**
+ * Whether a size can take a computer whose disk is `diskGb`. A disk never
+ * shrinks, so a smaller size whose disk cap is below it is refused by the
+ * server (`tierRefusal`); the pickers say so before anyone clicks. Unknown
+ * on either side counts as fitting: the server still decides.
+ */
+export function cloudTierHoldsDisk(tier: Pick<CloudTier, "diskMaxGb">, diskGb: number | null | undefined): boolean {
+  return diskGb == null || tier.diskMaxGb == null || tier.diskMaxGb >= diskGb;
+}
+
 export function cloudTierFacts(tier: CloudTier, words: CloudUnitWords = CLOUD_CREDIT_WORDS): CloudTierFacts {
   const rate = tier.multiplierMilli / 1000;
   return {

@@ -655,7 +655,9 @@ export type AgentChatHostContinuationMetadata = {
      * The CTO's one-line report of a child chat's turn. Its `spawn_completed`
      * notice already shows the line, so clients draw nothing for the wake.
      */
-    | "cto_child_report";
+    | "cto_child_report"
+    /** The person answered a card the agent posted (an ADE Cloud size request), or the change it asked for ended. */
+    | "card_answer";
   /**
    * The ADE row's one line for `reason` (`HOST_CONTINUATION_REASON_LABEL`),
    * stamped by the host so clients need no table of their own. Older hosts
@@ -681,6 +683,7 @@ export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContin
   cto_intro: "Started the CTO's introduction",
   cto_handoff_note: "Asked for a hand-off note",
   cto_child_report: "A chat it started reported back",
+  card_answer: "Told the agent the answer to its request",
 };
 
 /** The line for a reason, or null for a reason this build does not know. */
@@ -1652,6 +1655,14 @@ export type AgentChatEvent =
        * older host, a send without an id, or a message ADE wrote itself.
        */
       clientSendId?: string;
+      /**
+       * When the person sent it (ISO, the sending client's clock), set only
+       * when that was well before the host wrote it: a send held while the
+       * chat's computer woke, or while ADE there started. The bubble shows
+       * this time; the envelope's `timestamp` stays when the host wrote it,
+       * and ordering and turn timing keep reading that.
+       */
+      sentAt?: string;
     }
   | {
       /**
@@ -5890,9 +5901,11 @@ export type AgentChatSendArgs = {
    */
   clientSendId?: string;
   /**
-   * Wall-clock ms when the person pressed Enter in the desktop composer. Only
-   * the host's per-turn timing log (`agent_chat.send_timing`) reads it; the
-   * host drops it before the send goes anywhere else.
+   * Wall-clock ms when the person pressed Enter in the desktop composer. The
+   * host's per-turn timing log (`agent_chat.send_timing`) reads it, and a
+   * send that reached the host well after it (held while the computer woke)
+   * writes it on the message as `user_message.sentAt`. The host drops it
+   * before the send goes anywhere else.
    */
   clientSubmittedAtMs?: number;
   /**

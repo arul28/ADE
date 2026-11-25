@@ -21,7 +21,7 @@ import {
 } from "../../../../shared/claudeUsageReport";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
 import { modelMentionEffortLabel } from "../../../../shared/modelMentions";
-import { extractError, formatDurationMs, formatSpend } from "../../../lib/format";
+import { extractError, formatDurationMs, formatSpend, personErrorText } from "../../../lib/format";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { useAgentChatApi } from "../agentChatApi";
@@ -213,7 +213,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
       });
       onOpenChange(false);
     } catch (fixError) {
-      setError(extractError(fixError));
+      setError(personErrorText(fixError));
     } finally {
       setFixing(false);
     }

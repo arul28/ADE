@@ -472,7 +472,7 @@ import { createSavedGithubHeaderSweep } from "./services/github/savedGithubHeade
 import { readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import { isDevTestMachineHome, isDevTestMachineProcess } from "./services/sync/devTestMachine";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
-import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
+import { createBrainHomeRegistry, describeOtherBrains, readLinuxThreadGroupId } from "./services/runtime/brainHomeRegistry";
 import {
   describeBrainRoleCeiling,
   describeDroppedAgentEnv,
@@ -761,6 +761,9 @@ import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/s
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
 import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./services/power/cloudDeleteFreeze";
+import { cloudMoveSendRefusal, isCloudMoveRefusal, isRemoteTurnStart } from "./services/power/cloudMoveMark";
+import { CLOUD_COMPUTER_MOVING_CODE, CLOUD_COMPUTER_MOVING_SENTENCE } from "../../account-directory/src/cloud/contract";
+import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
@@ -2726,7 +2729,8 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade lanes templates default [<id>] [--clear]  Read or change the default lane template
     $ ade lanes templates apply <id> --lane <lane>  Apply a template to an existing lane
     $ ade lanes templates delete <id>                Delete a lane template
-    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies
+    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies in the main
+                                                    checkout (not a lane's worktree)
     $ ade lanes templates list --machine "<name>" --text
                                                     Templates follow your account per repository; --machine reads them via that computer
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
@@ -9659,6 +9663,9 @@ function laneIdFromCreateLaneValue(value: unknown): string | null {
   const lane = isRecord(result.lane) ? result.lane : result;
   return asString(lane.id) ?? asString(lane.laneId);
 }
+
+/** The plans that make a chat (`session`), then send its first message (`result`). */
+const CHAT_CREATE_PLAN_LABELS: ReadonlySet<string> = new Set(["new chat", "chat create", "chat create from Linear issue"]);
 
 /** Extract a session id from an unwrapped `chat.createSession` result. */
 function sessionIdFromCreateChatValue(value: unknown): string | null {
@@ -21872,9 +21879,18 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
  * the chat (5 minutes at most). An account-level one (the list, spending,
  * sleep, wake) goes to the machine's brain with no project, so it works from
  * any folder; the rest run in this folder's project.
+ *
+ * In an agent's chat a waiting one says so on stderr first: an agent's shell
+ * tool that hands back a command still running (or one it moved to the
+ * background) shows that line, so the agent knows the answer is still to
+ * come instead of reading the silence as done.
  */
+const CLOUD_PERSON_WAIT_NOTICE =
+  "Waiting for the person: when this needs their yes, ADE asks on a card in this chat (5 minutes at most) and prints what happened here. Keep this command running until it ends.";
+
 function cloudStep(label: string, action: string, input: JsonObject, formatter: FormatterId = "cloud-result", waitsForPerson = false): CliPlan {
   const machineScoped = isMachineScopedAdeAction("cloud", action);
+  const inAgentChat = Boolean(process.env.ADE_CHAT_SESSION_ID?.trim());
   return {
     kind: "execute",
     label: `cloud ${label}`,
@@ -21884,6 +21900,7 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
       : actionStep("result", "cloud", action, input)],
     ...(machineScoped ? { machineOnly: true, machineAutoStart: true } : {}),
     ...(waitsForPerson ? { minTimeoutMs: 75 * 60_000 } : {}),
+    ...(waitsForPerson && inAgentChat ? { progressNotice: CLOUD_PERSON_WAIT_NOTICE } : {}),
   };
 }
 
@@ -28605,6 +28622,7 @@ function findMachineBrainOnOtherPipeName(
       home: layout.adeDir,
       readProcessStartTimeMs,
       isPidAlive,
+      readThreadGroupId: readLinuxThreadGroupId,
     }).listOthers(process.pid).find((record) =>
       typeof record.endpoint === "string"
       && isChannelRuntimePipeName(record.endpoint)
@@ -30866,6 +30884,21 @@ async function runServe(
     );
   };
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  /**
+   * One project's runtime if this brain has it open, never booting it. Read
+   * at the call: the memory guard starts before this start sets
+   * `scopeRegistry`, and until then no project is open.
+   */
+  const bootedProjectRuntime = async (projectId: string) => {
+    if (scopeRegistry === undefined) return null;
+    return (await scopeRegistry.getIfBooted(projectId)?.catch(() => null))?.runtime ?? null;
+  };
+  /** Every runtime this brain has open: each project's, then the personal chats'. Boots none. */
+  const bootedRuntimes = async () => {
+    const projects = await Promise.all(projectRegistry.list().map((record) => bootedProjectRuntime(record.projectId)));
+    const personal = await personalChatScope.bootedRuntime().catch(() => null);
+    return [...projects, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+  };
   // One phone input ledger for the brain's own ingress and every project
   // sync host: a resent input id is a duplicate on either one. It holds the
   // receipts of all of them, so it gets a larger bound than one host's.
@@ -30953,9 +30986,18 @@ async function runServe(
       })
     : null;
   // No swap here: when memory runs out the provider restarts the whole computer. The biggest process goes instead.
-  const cloudMemoryGuard = isAdeCloudComputer()
-    ? (await import("./services/power/cloudMemoryGuard")).startCloudMemoryGuard({ logger: headlessProjectLogger })
-    : null;
+  // The chat whose command it was hears why, and how to ask for more memory (`tellChatsOfCloudMemoryKill`).
+  const cloudMemoryGuardModule = isAdeCloudComputer() ? await import("./services/power/cloudMemoryGuard") : null;
+  const cloudMemoryGuard = cloudMemoryGuardModule?.startCloudMemoryGuard({
+    logger: headlessProjectLogger,
+    onKill: (kill) => {
+      void (async () => {
+        cloudMemoryGuardModule.tellChatsOfCloudMemoryKill(await bootedRuntimes(), kill, headlessProjectLogger);
+      })().catch((error: unknown) => {
+        headlessProjectLogger.warn("cloud.memory_guard_tell_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    },
+  }) ?? null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
   const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
@@ -32789,7 +32831,7 @@ async function runServe(
   const sendCloudChatMessage = async (
     projectId: string,
     sessionId: string,
-    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }> },
+    message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }>; compactFirst?: boolean },
   ) => {
     const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
     if (!chat) throw new Error("This ADE runtime has no chats.");
@@ -32798,6 +32840,7 @@ async function runServe(
       text: message.text,
       clientSendId: message.clientSendId,
       ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+      ...(message.compactFirst !== undefined ? { compactFirst: message.compactFirst } : {}),
     });
   };
   // A queued message waits until the chat's running turn is over (an event wait, at most 30 minutes).
@@ -33022,7 +33065,7 @@ async function runServe(
       // Only open projects: one nobody opened since boot has nothing new to save.
       openRuntimes: async () => {
         const booted = await Promise.all(projectRegistry.list().map(async (record) => {
-          const runtime = (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null;
+          const runtime = await bootedProjectRuntime(record.projectId);
           return runtime ? { projectId: record.projectId, runtime } : null;
         }));
         return booted.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry));
@@ -33034,7 +33077,7 @@ async function runServe(
         cachePath: path.join(layout.adeDir, "cloud", "backup-lanes.json"),
         projects: () => projectRegistry.list().map((record) => ({
           projectId: record.projectId,
-          booted: async () => (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null,
+          booted: () => bootedProjectRuntime(record.projectId),
           open: async () => (await scopeRegistry.get(record.projectId)).runtime,
         })),
         projectKey: projectKeyOf,
@@ -33137,6 +33180,13 @@ async function runServe(
         // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
         const frozen = cloudDeleteFreezeRefusal();
         if (frozen) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, frozen);
+        // A move of this computer holds it (`cloudMoveMark.ts`): the turn this send
+        // would start is cut. Refused with its code, so the sender's ADE sends a
+        // message to a chat it has to the account's queue, which the move holds
+        // and hands to the new computer. A new chat has no queue: the sender
+        // shows the sentence and keeps the text.
+        const moving = isRemoteTurnStart(request.params) ? cloudMoveSendRefusal(layout.adeDir) : null;
+        if (moving) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, encodeCodedErrorMessage(moving.code, moving.message), { code: moving.code });
         void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete
         // (`/use`, cloudComputerRest.ts): once the delete started, the work is refused.
@@ -33176,10 +33226,7 @@ async function runServe(
             // A disk grow's restart continues the turns it cuts (`continueAfterRestartAllowed`): keep them
             // running, once the note that marks the restart is written. No note: stop them, as before.
             const keepTurns = diskGrowToGb != null && (cloudDiskGrower?.noteOutsideGrow(diskGrowToGb, growId ?? null) ?? false);
-            const booted = await Promise.all(projectRegistry.list().map(async (record) =>
-              (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null));
-            const personal = await personalChatScope.bootedRuntime().catch(() => null);
-            const runtimes = [...booted, personal].filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+            const runtimes = await bootedRuntimes();
             // `--chats-only` (an older server's Sleep) saves no lane backups: the sleep waits for this prepare.
             const saveForRest = chatsOnly ? null : cloudRest?.saveBeforeStop ?? null;
             return await prepareCloudComputerToStop({
@@ -34429,6 +34476,7 @@ async function runServe(
       isPidAlive: (pid) => {
         try { process.kill(pid, 0); return true; } catch { return false; }
       },
+      readThreadGroupId: readLinuxThreadGroupId,
     });
     // Named by its release as analytics names it (`stable`, `beta`, `alpha`),
     // `dev` for a development brain. ADE_PACKAGE_CHANNEL alone is set only for
@@ -43198,6 +43246,22 @@ async function executePlan(
           : await answer;
       } catch (error) {
         if (!step.optional) {
+          // A move holds the chat's ADE Cloud computer (`cloudMoveMark.ts`):
+          // it made the chat but refused its first turn. The empty chat is
+          // deleted and the computer's sentence is the answer.
+          const madeChatId = step.key === "result" && CHAT_CREATE_PLAN_LABELS.has(plan.label)
+            ? sessionIdFromCreateChatValue(values.session)
+            : null;
+          if (madeChatId && isCloudMoveRefusal(error)) {
+            const deleted = await connection.request("ade/actions/call", {
+              name: "run_ade_action",
+              arguments: { domain: "chat", action: "deleteSession", args: { sessionId: madeChatId } },
+            }).then(() => true, () => false);
+            throw new CliToolError(CLOUD_COMPUTER_MOVING_SENTENCE, {
+              code: CLOUD_COMPUTER_MOVING_CODE,
+              ...(deleted ? {} : { sessionId: madeChatId, nextAction: `Delete the empty chat: \`ade chat delete ${madeChatId}\`.` }),
+            });
+          }
           const createdSessionId = (
             plan.label === "new chat" || plan.label === "chat create"
           )

@@ -13,7 +13,8 @@ import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import { createWebCloudBilling, type CloudBillingAccountClient } from "./cloudBilling";
 import { createWebCloudCopies } from "./cloudCopies";
 import { createWebCloudMoves } from "./cloudMoves";
-import { createWebCloudLaneLife, createWebCloudResizes } from "./cloudLaneLifeWeb";
+import { createWebCloudLaneLife, createWebCloudResizes, createWebTierRequestTeller } from "./cloudLaneLifeWeb";
+import { projectPinOnMachine } from "../../lib/machineConnect";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
 import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
@@ -192,11 +193,38 @@ export function createWebCloudNamespace(
   const { client, commands } = infra;
   const billing = createWebCloudBilling(accountClient);
   const cloudApi = () => accountClient.cloudApi();
-  // Each one waits for the others: one change at a time per computer.
-  const life = createWebCloudLaneLife({ api: cloudApi, changing: (instanceId) => resizes.isLive(instanceId) || moves.moving(instanceId) });
-  const resizes = createWebCloudResizes({ api: cloudApi, agentWork: (instanceId) => life.agentWork(instanceId) });
+  // One change at a time per computer: a size change in place (this tab's) or a move (ADE's server's).
+  // A delete or free waits for it; the resizes and the moves each refuse a
+  // second change or a Retry, by their own state and the other's.
+  const changing = (instanceId: string): boolean => resizes.isLive(instanceId) || moves.moving(instanceId);
+  const life = createWebCloudLaneLife({ api: cloudApi, changing });
+  // How a change this tab ran ended, to the asking chat's machine: through
+  // `window.ade`, whose federated adapter sends a pinned call to the pin's
+  // machine, and reaches a machine of the account by its key (C2).
+  const teller = createWebTierRequestTeller({
+    answer: async (pin, args) => {
+      const answer = window.ade?.cloud?.answerTierRequest;
+      if (!answer) throw new Error("This window can't tell the chat.");
+      return await answer(pin, args);
+    },
+    machineKeyOf: async (targetId) => {
+      const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot().catch(() => null);
+      return snapshot?.connections.find((entry) => entry.target.id === targetId)?.target.pairedMachine?.machineKey ?? null;
+    },
+    pinOnMachine: async (machineKey, ref) => {
+      const { pin } = await projectPinOnMachine(machineKey, ref);
+      if (!pin) throw new Error("ADE couldn't reach the chat's computer from this window.");
+      return pin;
+    },
+  });
+  const resizes = createWebCloudResizes({
+    api: cloudApi,
+    agentWork: (instanceId) => life.agentWork(instanceId),
+    moving: (instanceId) => moves.moving(instanceId),
+    teller,
+  });
   const copies = createWebCloudCopies(cloudApi);
-  const moves = createWebCloudMoves(cloudApi, { resizeInPlace: (args) => resizes.start(args), resizing: (instanceId) => resizes.isLive(instanceId) });
+  const moves = createWebCloudMoves(cloudApi, { resizeInPlace: (args) => resizes.start(args), resizing: (instanceId) => resizes.isLive(instanceId), teller });
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
 
@@ -435,6 +463,14 @@ export function createWebCloudNamespace(
       const api = accountClient.cloudApi();
       if (!api) throw new Error("Sign in to ADE to delete your lane's work.");
       return await api.forgetLaneBackup(machineKey, laneId);
+    },
+    // The person's answer to an agent's size request, on the chat's own machine: the
+    // federated adapter sends the pinned call to the pin's machine, so it runs here.
+    // An account-answered pin (a saved chat read from the account) has no machine to tell.
+    answerTierRequest: async (pin, args) => {
+      if (isAccountAnsweredPin(pin)) throw markExpected(new Error("This chat's computer isn't connected, so ADE can't tell its agent. Open the chat once its computer is awake."), "environment");
+      if (!commands.hasAction("cloud.write")) throw markExpected(new Error("ADE on that computer can't take this answer yet. Update ADE there, then try again."), "user");
+      return await commands.call<{ answered: boolean; toldAgent: boolean }>("cloud.write", { action: "tier_request_answer", args }, { idempotent: false });
     },
     // A kept lane moved to one of the person's computers, run by that computer's brain in the
     // pinned project. The federated adapter sends a pinned call to the pin's machine (connecting

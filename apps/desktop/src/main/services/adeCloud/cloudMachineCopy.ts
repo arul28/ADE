@@ -68,6 +68,7 @@ import {
   readProjectRoots,
   receiveHomeCommand,
   registerProjectsCommand,
+  FETCH_USED_AGENT_TOOLS_COMMAND,
 } from "../../../../../account-directory/src/cloud/computerCommands";
 import type { CloudCopyRecord, CloudCopyRequest, CloudMoveRecord } from "../../../../../account-directory/src/cloud/contract";
 
@@ -412,6 +413,18 @@ export type CloudMoveOptions = {
   save?: boolean;
   /** Called once ADE's server took the move: it goes on there with no app open. */
   onServer?: () => void;
+  /**
+   * The server's save of the old computer's chats, which runs while the new
+   * computer is made (`saveState`): each change. An older server says nothing;
+   * its save is done once the copy starts.
+   */
+  onSave?: (state: "running" | "done" | "warning") => void;
+  /**
+   * A move run from here (a server that can't run it): the caller's save of
+   * the old computer's chats. It runs while the new computer is made, and the
+   * copy waits for it. Unset: nothing is saved here.
+   */
+  saveHere?: () => Promise<void>;
 };
 
 /**
@@ -500,6 +513,7 @@ async function moveOnServer(
   let copying = false;
   let copied = false;
   let lastLine = "";
+  let lastSave: CloudMoveRecord["saveState"] = null;
   let failures = 0;
   const copiedTarget = (from: CloudMoveRecord) => ({
     instanceId: from.targetInstanceId!,
@@ -518,6 +532,8 @@ async function moveOnServer(
       });
     }
     const line = record.message;
+    if (record.saveState && record.saveState !== lastSave) options.onSave?.(record.saveState);
+    lastSave = record.saveState ?? null;
     if (record.state === "making") {
       if (line !== lastLine) progress("creating", line);
     } else if (record.state === "joining") {
@@ -525,10 +541,15 @@ async function moveOnServer(
     } else if (record.state === "needs_approval") {
       if (line !== lastLine) progress("approve_elsewhere", line, record.targetInstanceId, record.approvalUrl);
     } else if (record.state === "copying") {
+      // `copying` reads from the new computer's sign-in on; the copy itself
+      // begins once the old one also saved (`copyStarted`; an older server
+      // copies as soon as it says copying). Until then the line names the new
+      // computer only, so a caller marks it made and waits on the save.
+      const handing = record.copyStarted !== false;
       // The first copy line names the target, as a move run here does: a caller marks the new computer made.
-      if (!copying) progress("joining", `Copying ${record.sourceName}'s files to the new ${label}…`, record.targetInstanceId);
+      if (handing && !copying) progress("joining", `Copying ${record.sourceName}'s files to the new ${label}…`, record.targetInstanceId);
       else if (line !== lastLine) progress("joining", line, record.targetInstanceId);
-      copying = true;
+      copying = handing;
     } else if ((record.state === "finishing" || record.state === "done") && !copied && record.targetInstanceId) {
       copied = true;
       options.onCopied?.(copiedTarget(record));
@@ -600,34 +621,52 @@ async function moveHere(
   const sourceResources = source.resources ? { cpu: source.resources.cpu, memoryGb: source.resources.memory } : null;
   const shape = (args.shape ? cloudShape(args.shape) : null) ?? cloudShapeFor(sourceResources) ?? cloudShapeById("2x4");
   const sourceName = source.name ?? source.id;
-  // The old box must be awake to hand its files over.
-  if (source.status !== "running") {
-    progress("creating", `Waking ${sourceName}…`);
-    await wakeThroughTransition(client, source.id);
-  }
-  const listed = await client.exec(source.id, PROJECTS_LIST_COMMAND, { timeoutMs: 60_000 });
-  const projectRoots = readProjectRoots(listed.stdout);
+  // The caller's save runs while the new machine is made; the copy waits for it.
+  // Its failure is the move's, read at the copy; until then it is only held.
+  const saving: Promise<unknown> = options.saveHere ? options.saveHere().then(() => null, (error: unknown) => error ?? new Error("The save failed.")) : Promise.resolve(null);
+  let projectRoots: string[];
+  let target: Awaited<ReturnType<typeof createCloudMachine>>;
+  try {
+    // The old box must be awake to hand its files over.
+    if (source.status !== "running") {
+      progress("creating", `Waking ${sourceName}…`);
+      await wakeThroughTransition(client, source.id);
+    }
+    const listed = await client.exec(source.id, PROJECTS_LIST_COMMAND, { timeoutMs: 60_000 });
+    projectRoots = readProjectRoots(listed.stdout);
 
-  // 1. The new machine, signed in, named for now as the move's target.
-  const target = await createCloudMachine(deps, requestId, {
-    kind: args.to,
-    shape: shape.id,
-    name: normalizeCloudMachineName(`${sourceName} (${cloudKindLabel(args.to)})`),
-  }, onProgress, {
-    signal: options.signal,
-    moveFromInstanceId: source.id,
-    metadata: {
-      // The lane moves with its computer: pickers, the dashboard and a later
-      // delete read the lane from here with no wake.
-      ...laneMetadataOf(source),
-      ade_moved_from: source.id,
-      [CLOUD_FORMER_MACHINE_KEYS_METADATA]: formerMachineKeysAfterMove(source.metadata, args.machineKey ?? source.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null),
-      ...cloudMadeByMetadata(args),
-    },
-  });
+    // 1. The new machine, signed in, named for now as the move's target.
+    target = await createCloudMachine(deps, requestId, {
+      kind: args.to,
+      shape: shape.id,
+      name: normalizeCloudMachineName(`${sourceName} (${cloudKindLabel(args.to)})`),
+    }, onProgress, {
+      signal: options.signal,
+      moveFromInstanceId: source.id,
+      metadata: {
+        // The lane moves with its computer: pickers, the dashboard and a later
+        // delete read the lane from here with no wake.
+        ...laneMetadataOf(source),
+        ade_moved_from: source.id,
+        [CLOUD_FORMER_MACHINE_KEYS_METADATA]: formerMachineKeysAfterMove(source.metadata, args.machineKey ?? source.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null),
+        ...cloudMadeByMetadata(args),
+      },
+    });
+  } catch (error) {
+    // A failed wake, list or make leaves no new machine (its create cleans
+    // up); the save beside it is waited for, not undone.
+    await saving;
+    throw error;
+  }
 
   let transferMs = 0;
   try {
+    // The copy starts only after the save: a cancel or a failed save meanwhile
+    // takes the new machine away below, and the old one stays as it was.
+    if (options.saveHere) progress("joining", `Saving ${sourceName}'s chats…`, target.instanceId);
+    const saveError = await saving;
+    if (saveError) throw saveError;
+    if (options.signal?.aborted) throw new CloudCreateCancelled();
     // 2. Quiet the old machine's ADE so its databases are copied whole: the
     //    entrypoint holds the brain while `brain.paused` exists.
     progress("joining", `Copying ${sourceName}'s files to the new ${cloudKindLabel(args.to)}…`, target.instanceId);
@@ -653,6 +692,9 @@ async function moveHere(
     logger.info?.("cloud.machine_move_copied", { sourceId: source.id, instanceId: target.instanceId, transferMs });
     // 3. Its projects, registered with the new machine's ADE.
     if (projectRoots.length) await client.exec(target.instanceId, registerProjectsCommand(projectRoots), { timeoutMs: 120_000 });
+    // Best effort: a failed start only means the first turn downloads its agent, as before.
+    await client.exec(target.instanceId, FETCH_USED_AGENT_TOOLS_COMMAND, { timeoutMs: 30_000 })
+      .catch((fetchError: unknown) => logger.warn?.("cloud.machine_move_tools_fetch_failed", { instanceId: target.instanceId, error: getErrorMessage(fetchError) }));
     // The move's work on the new machine is done: it may sleep when idle
     // again. The 45-minute time-out only covers an ADE that quit mid-move; a
     // failed move deletes the new machine, hold and all.
@@ -670,6 +712,8 @@ async function moveHere(
       await deps.removeAccountMachine(target.machineKey)
         .catch((removal: unknown) => logger.warn?.("cloud.machine_move_row_left", { error: getErrorMessage(removal) }));
     }
+    // A cancel stays a cancel, so the caller reads it as one.
+    if (error instanceof CloudCreateCancelled) throw error;
     throw new Error(`ADE couldn't move ${sourceName}: ${getErrorMessage(error)} ${sourceName} is as it was, and the new machine was deleted.`);
   }
 

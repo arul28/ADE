@@ -1,10 +1,12 @@
 import {
   CLOUD_FORMER_MACHINE_KEYS_METADATA,
   CLOUD_MACHINE_KEY_METADATA,
+  DRAIN_MESSAGES_DETACHED_COMMAND,
   KEEP_AWAKE_STATE_COMMAND,
   MOVE_COPY_STATE_COMMAND,
   MOVE_HOLD_MS,
   MOVE_LOG_TAIL_COMMAND,
+  MOVE_OUT_CLEAR_COMMAND,
   MOVE_SERVE_PORT,
   MOVE_TRANSFER_TIMEOUT_MS,
   MOVE_UNPAUSE_COMMAND,
@@ -15,15 +17,20 @@ import {
   formerMachineKeysAfterMove,
   moveArchiveUrl,
   moveCopyStateOf,
+  moveOutMarkCommand,
+  moveSaveStateCommand,
   pauseAndServeHomeCommand,
-  prepareStopCommand,
   readProjectRoots,
   receiveHomeOnceCommand,
   registerProjectsCommand,
+  FETCH_USED_AGENT_TOOLS_COMMAND,
+  startMoveSaveCommand,
+  type MoveCopyState,
 } from "./computerCommands";
-import { CLOUD_LANE_METADATA, type CloudMoveKind, type CloudMoveList, type CloudMoveRecord, type CloudMoveState, type CloudTierId } from "./contract";
+import { CLOUD_LANE_METADATA, CLOUD_MOVE_CHAT_PIN_FIELDS, type CloudMoveChatPin, type CloudMoveKind, type CloudMoveList, type CloudMoveRecord, type CloudMoveState, type CloudTierId } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJson } from "./http";
 import {
+  FINAL_JOB_STATES,
   JOB_RECORD_TTL_MS,
   nudgeJob,
   readJob,
@@ -40,7 +47,17 @@ import { machineLaunchMinVersion, readLaunch, startMachineLaunch } from "./launc
 import { deleteBackupsWithComputer } from "./laneBackups";
 import { cloudSizeFor, cloudSizeForTier, isMeteredStatus, type CloudSize } from "./plans";
 import { CloudProviderError } from "./provider";
-import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, statusChangeStatements, takeFromDeletes, type CloudEnv, type ComputerRow } from "./store";
+import {
+  deleteComputer,
+  handOverQueuedMessagesStatements,
+  logCloud,
+  ownedComputer,
+  reportCloudFailure,
+  statusChangeStatements,
+  takeFromDeletes,
+  type CloudEnv,
+  type ComputerRow,
+} from "./store";
 import { readUpdateChannel } from "./updates";
 
 /**
@@ -54,9 +71,26 @@ import { readUpdateChannel } from "./updates";
  *   wait_idle (timing `idle` only) → make → join → wake → save → serve →
  *   receive → copy → register → delete_source → confirm_delete → rename → done
  *
+ * The chats' save runs beside the making: `make` starts it in the background
+ * on a running old computer (`startMoveSaveCommand`), `join` notes its end
+ * while it waits, and `save` waits for it, so the copy starts only once both
+ * are done. One after the other they took about 1.5 minutes each.
+ *
  * Until the old computer is deleted, a failure (or a cancel, before the copy
  * starts) lets the old computer's ADE start again and deletes the new one.
  * The old computer is never deleted before the copy is in.
+ *
+ * A message the person sends to the lane's chats from `make` on waits in the
+ * account's queue (`chatMessages.ts`): the old computer neither wakes for it
+ * nor takes it (`MOVE_HOLDS_MESSAGES_SQL`), since the move stops its ADE and
+ * would cut the turn. A send straight to the old computer, from a device that
+ * doesn't know of the move, goes there too: the move marks the running old
+ * computer with its hold (`moveOutMarkCommand`), so its ADE refuses the send
+ * with `computer_moving` and the sender queues it. Once the new computer has
+ * the lane (`register`) the held messages are its own and it sends them
+ * (`handOverHeldMessages`), and a later send goes straight there
+ * (`moveMessageRouteOf`). A move that fails or is cancelled before that
+ * leaves them to the old computer (`sendHeldOnSource`) and clears its mark.
  */
 
 export const MOVE_JOB_KIND = "move";
@@ -81,8 +115,10 @@ const DELETE_RETRY_MS = 30_000;
 const DELETE_CONFIRM_POLL_MS = 10_000;
 /** Every command the move runs on a computer is bounded. */
 const EXEC_MS = 60_000;
-const SAVE_EXEC_MS = 90_000;
 const SHORT_EXEC_MS = 30_000;
+/** How long the copy waits for a save started beside the making, from its start; then it goes on with a warning. */
+const SAVE_WAIT_MAX_MS = 2 * 60_000;
+const SAVE_POLL_MS = 5_000;
 /** The signed link to the old computer's files: long enough for the longest copy. */
 const SERVE_LINK_TTL_S = 3_600;
 
@@ -91,6 +127,15 @@ const LAUNCH_BUSY_STATES = ["making", "joining", "needs_approval", "joined", "wa
 const LAUNCH_BUSY_WINDOW_MS = 2 * 60 * 60_000;
 /** The steps a cancel may still stop: nothing of the old computer is paused yet. */
 const CANCELLABLE_STEPS: ReadonlySet<string> = new Set(["wait_idle", "make", "join", "wake", "save"]);
+/**
+ * The steps in which a live move holds the messages sent to its old
+ * computer: from the making (the save stops the turns) until the new
+ * computer has the lane. While it waits for the agent (`wait_idle`) nothing
+ * is held: the old computer is the lane's as before.
+ */
+const HOLDING_STEPS: ReadonlySet<string> = new Set(["make", "join", "wake", "save", "serve", "receive", "copy", "register"]);
+/** The steps after `register`: the lane is on the new computer, which takes the messages. */
+const LANDED_STEPS: ReadonlySet<string> = new Set(["delete_source", "confirm_delete", "rename"]);
 /** The newest records `GET /cloud/moves` answers. */
 const LIST_LIMIT = 20;
 const LIST_FINISHED_MS = 24 * 60 * 60_000;
@@ -103,7 +148,38 @@ type MoveParams = {
   memoryGb: number;
   timing: "now" | "idle";
   save: boolean;
+  /** The agent's size request the move answers, as the client sent it (`CloudMoveRequest.requestId`); none when absent. */
+  request?: MoveChatRequest | null;
 };
+
+/** The size request a move answers: its client tells that chat how the move ended. */
+type MoveChatRequest = { requestId: string; requestedByChat: string; requestedByChatPin: CloudMoveChatPin };
+
+const CHAT_REQUEST_ID_MAX = 200;
+const CHAT_PIN_TEXT_MAX = 1024;
+
+const shortText = (value: unknown, max: number): string | null => {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text && text.length <= max ? text : null;
+};
+
+/**
+ * The size request a move answers, from a start's body or a stored record:
+ * its ids and the chat's pin cut to its short text fields. Null when any is
+ * missing: the move goes on, and nobody is told.
+ */
+function moveChatRequestOf(raw: { requestId?: unknown; requestedByChat?: unknown; requestedByChatPin?: unknown } | null | undefined): MoveChatRequest | null {
+  const requestId = shortText(raw?.requestId, CHAT_REQUEST_ID_MAX);
+  const requestedByChat = shortText(raw?.requestedByChat, CHAT_REQUEST_ID_MAX);
+  const given = raw?.requestedByChatPin;
+  if (!requestId || !requestedByChat || !given || typeof given !== "object" || Array.isArray(given)) return null;
+  const pin: CloudMoveChatPin = {};
+  for (const field of CLOUD_MOVE_CHAT_PIN_FIELDS) {
+    const value = shortText((given as Record<string, unknown>)[field], CHAT_PIN_TEXT_MAX);
+    if (value) pin[field] = value;
+  }
+  return pin.kind ? { requestId, requestedByChat, requestedByChatPin: pin } : null;
+}
 
 type MoveFacts = {
   /** The new computer's name until it takes the old one's. */
@@ -116,6 +192,11 @@ type MoveFacts = {
   /** Set before the pause: an undo lets the old computer's ADE start again. */
   pausedAt?: number;
   sourceHeld?: boolean;
+  /** Set before the old computer was marked as moving (`moveOutMarkCommand`): an undo clears the mark. */
+  sourceMarked?: boolean;
+  /** The chats' save, started in the background while the new computer is made, and when its end was read. */
+  saveStartedAt?: number;
+  saveEndedAt?: number;
   copyStartedAt?: number;
   transferMs?: number;
   deleteTries?: number;
@@ -126,7 +207,7 @@ type MoveFacts = {
 const kindLabel = (to: CloudMoveKind): string => (to === "full" ? "full computer" : "standard computer");
 const typeOf = (to: CloudMoveKind): "default" | "vm" => (to === "full" ? "vm" : "default");
 
-function paramsOf(job: JobRow): MoveParams {
+function paramsOf(job: Pick<JobRow, "params_json">): MoveParams {
   const raw = (job.params_json ? JSON.parse(job.params_json) : {}) as Partial<MoveParams>;
   const to: CloudMoveKind = raw.to === "standard" ? "standard" : "full";
   return {
@@ -136,6 +217,7 @@ function paramsOf(job: JobRow): MoveParams {
     memoryGb: typeof raw.memoryGb === "number" ? raw.memoryGb : 4,
     timing: raw.timing === "idle" ? "idle" : "now",
     save: raw.save !== false,
+    request: moveChatRequestOf(raw.request),
   };
 }
 
@@ -152,6 +234,11 @@ const sourceNameOf = (job: JobRow): string => job.source_name || job.source_inst
 const sizeOf = (params: MoveParams): CloudSize | null => cloudSizeFor(params.type, params.cpu, params.memoryGb);
 
 /* ---- The record ---- */
+
+function saveStateOf(facts: MoveFacts, finished: boolean): CloudMoveRecord["saveState"] {
+  if (facts.saveEndedAt != null) return facts.warnings?.includes("save") ? "warning" : "done";
+  return facts.saveStartedAt != null && !finished ? "running" : null;
+}
 
 export function moveRecordOf(job: JobRow): CloudMoveRecord {
   const params = paramsOf(job);
@@ -173,9 +260,103 @@ export function moveRecordOf(job: JobRow): CloudMoveRecord {
     sourceMachineKey: job.source_machine_key,
     projects: facts.projects ?? [],
     cancellable: !finished && job.cancel_requested_at == null && CANCELLABLE_STEPS.has(job.step),
+    saveState: saveStateOf(facts, finished),
+    copyStarted: facts.pausedAt != null,
+    timing: params.timing,
+    ...(params.request ?? {}),
     createdAt: job.created_at,
     updatedAt: job.updated_at,
   };
+}
+
+/* ---- The lane's messages while it moves ---- */
+
+const quoted = (steps: ReadonlySet<string>) => [...steps].map((step) => `'${step}'`).join(", ");
+
+/**
+ * SQL: a live move of the computer holds its queued messages (the queue's
+ * computer routes list none and claim none). Tied to the outer
+ * `cloud_chat_messages` row, so it binds nothing.
+ */
+export const MOVE_HOLDS_MESSAGES_SQL = `exists (select 1 from cloud_jobs j where j.kind = '${MOVE_JOB_KIND}'
+  and j.user_id = cloud_chat_messages.user_id and j.source_instance_id = cloud_chat_messages.instance_id
+  and j.state not in (${quoted(FINAL_JOB_STATES)}) and j.step in (${quoted(HOLDING_STEPS)}))`;
+
+/**
+ * Where the newest move from a computer sends its messages: held, with the
+ * size the move lands on (null when its params name none ADE offers), or on
+ * to the computer it moved to.
+ */
+export type MoveMessageRoute = { kind: "held"; size: CloudSize | null } | { kind: "moved"; targetInstanceId: string };
+
+/**
+ * The newest move from this computer (by its id, or by its account key once
+ * its row is gone), as the queue reads it: `held` while the move holds its
+ * messages (`HOLDING_STEPS`), `moved` once the new computer has the lane (the
+ * move's last steps, after it ended well, also when the old computer was
+ * kept, and after a failure that came once the old one was deleted), null
+ * with no move, while it waits for the agent, or after it failed or was
+ * cancelled (the old computer has the lane). A record lasts a week.
+ */
+export async function moveMessageRouteOf(
+  env: CloudEnv,
+  userId: string,
+  from: { instanceId: string | null; machineKey: string | null },
+): Promise<MoveMessageRoute | null> {
+  if (!from.instanceId && !from.machineKey) return null;
+  const job = await env.DB.prepare(`
+    select state, step, target_instance_id, source_deleted, params_json from cloud_jobs
+    where user_id = ? and kind = ? and (source_instance_id = ? or (? is not null and lower(source_machine_key) = lower(?)))
+    order by created_at desc limit 1
+  `).bind(userId, MOVE_JOB_KIND, from.instanceId, from.machineKey, from.machineKey)
+    .first<Pick<JobRow, "state" | "step" | "target_instance_id" | "source_deleted" | "params_json">>();
+  if (!job) return null;
+  const live = !FINAL_JOB_STATES.has(job.state);
+  if (live && HOLDING_STEPS.has(job.step)) return { kind: "held", size: sizeOf(paramsOf(job)) };
+  if (job.target_instance_id && ((live && LANDED_STEPS.has(job.step)) || job.state === "done" || job.source_deleted === 1)) {
+    return { kind: "moved", targetInstanceId: job.target_instance_id };
+  }
+  return null;
+}
+
+/** Whether the queue holds a message for this computer to send. */
+async function hasQueuedMessages(env: CloudEnv, userId: string, instanceId: string): Promise<boolean> {
+  const row = await env.DB.prepare("select 1 as n from cloud_chat_messages where user_id = ? and instance_id = ? and via_launch = 0 and state = 'queued' limit 1")
+    .bind(userId, instanceId).first<{ n: number }>();
+  return row != null;
+}
+
+/**
+ * The new computer has the lane: the messages the move held for the old
+ * one are its own to send (`handOverQueuedMessagesStatements`), and its ADE
+ * is asked to send them now. Safe to run again: `register` hands them over,
+ * and the move's end again, for one sent in between.
+ */
+async function handOverHeldMessages(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<void> {
+  const from = job.source_instance_id;
+  const to = job.target_instance_id;
+  if (!from || !to) return;
+  const [moved, cut] = await env.DB.batch(handOverQueuedMessagesStatements(env, { userId: job.user_id, fromInstanceId: from, toInstanceId: to, now: ctx.now }));
+  const count = moved?.meta?.changes ?? 0;
+  const cutCount = cut?.meta?.changes ?? 0;
+  if (count || cutCount) logCloud("cloud.move_messages_handed_over", { jobId: job.job_id, count, cut: cutCount });
+  // Asked whenever some wait, so a run that died between the hand-over and the ask asks on its next try.
+  if (count || await hasQueuedMessages(env, job.user_id, to)) await tryExec(ctx, to, DRAIN_MESSAGES_DETACHED_COMMAND, SHORT_EXEC_MS);
+}
+
+/**
+ * A move that stopped before the new computer had the lane (it failed or was
+ * cancelled): the old computer still has it, so the messages the move held
+ * are its own again. Its running ADE is asked to send them (one the move
+ * paused starts again and sends them by itself). An asleep one keeps them
+ * for its next wake.
+ */
+async function sendHeldOnSource(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<void> {
+  const source = await sourceOf(env, job);
+  if (!source || !(await hasQueuedMessages(env, job.user_id, source.instance_id))) return;
+  const instance = await ctx.provider.getInstance(source.instance_id).catch(() => null);
+  const asked = instance?.status === "running" && (await tryExec(ctx, source.instance_id, DRAIN_MESSAGES_DETACHED_COMMAND, SHORT_EXEC_MS)) != null;
+  logCloud("cloud.move_messages_returned", { jobId: job.job_id, asked, status: instance?.status ?? "unknown" });
 }
 
 /* ---- The steps ---- */
@@ -199,6 +380,35 @@ async function tryExec(ctx: JobContext, instanceId: string, command: string, tim
   }
 }
 
+/** The old computer's hold on sleep and its mark as moving, from the making on: both expire by themselves. */
+const holdSourceCommand = () => `${cloudHoldCommand("move", MOVE_HOLD_MS)}\n${moveOutMarkCommand(MOVE_HOLD_MS)}`;
+
+/** Lets the old computer go on as before: its hold and its mark go (its ADE takes chat sends again). */
+const releaseSourceCommand = () => `${cloudReleaseHoldCommand("move")}\n${MOVE_OUT_CLEAR_COMMAND}`;
+
+/**
+ * Starts the chats' save on the running old computer, in the background, so
+ * it runs while the new computer is made. The hold goes first: once its turns
+ * stop, its own brain must not sleep it before the pause. False when it
+ * couldn't start.
+ */
+async function startSave(job: JobRow, ctx: JobContext): Promise<boolean> {
+  const ran = await tryExec(ctx, job.source_instance_id!, `${holdSourceCommand()}\n${startMoveSaveCommand(job.job_id)}`, SHORT_EXEC_MS);
+  return ran != null && /started/.test(ran.stdout);
+}
+
+/** The facts with the save's end: when it was read, and a warning when it failed. */
+const savedFacts = (facts: MoveFacts, now: number, ok: boolean): MoveFacts =>
+  ({ ...facts, saveEndedAt: now, warnings: ok ? facts.warnings : [...(facts.warnings ?? []), "save"] });
+
+/** Reads the save started beside the making: its state, and the facts to write once it ended (else null). */
+async function readSave(job: JobRow, ctx: JobContext, facts: MoveFacts): Promise<{ state: MoveCopyState; ended: MoveFacts | null }> {
+  const read = await tryExec(ctx, job.source_instance_id!, moveSaveStateCommand(job.job_id), SHORT_EXEC_MS);
+  // Unreadable reads as still running: the save step's wait ends it.
+  const state: MoveCopyState = read ? moveCopyStateOf(read.stdout) : { kind: "running" };
+  return { state, ended: state.kind === "exited" ? savedFacts(facts, ctx.now, state.code === 0) : null };
+}
+
 async function waitIdle(env: CloudEnv, job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
   const source = await sourceOf(env, job);
   if (!source) return SOURCE_GONE;
@@ -218,6 +428,22 @@ async function make(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
   const size = sizeOf(params);
   if (!size || !job.target_launch_id) return { kind: "fail", error: "that size isn't one ADE Cloud offers." };
   const instance = await ctx.provider.getInstance(source.instance_id);
+  let facts = factsOf(job);
+  // The chats' save starts now, beside the making, on a running old computer.
+  if (params.save && instance.status === "running" && facts.saveStartedAt == null) {
+    // Noted before the ask: an undo then releases the hold and the mark even if its answer is lost.
+    facts = { ...facts, sourceHeld: true, sourceMarked: true };
+    await ctx.save({ facts_json: JSON.stringify(facts) });
+    if (await startSave(job, ctx)) {
+      facts = { ...facts, saveStartedAt: ctx.now };
+      await ctx.save({ facts_json: JSON.stringify(facts) });
+    }
+  } else if (instance.status === "running" && !facts.sourceMarked) {
+    // No save to start: the running old computer is only marked, so its ADE refuses direct sends from now on.
+    facts = { ...facts, sourceMarked: true };
+    await ctx.save({ facts_json: JSON.stringify(facts) });
+    await tryExec(ctx, source.instance_id, moveOutMarkCommand(MOVE_HOLD_MS), SHORT_EXEC_MS);
+  }
   const sourceKey = job.source_machine_key ?? instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
   // The lane moves with its computer: pickers, the dashboard and a later delete read it from here with no wake.
   const metadata: Record<string, string> = {};
@@ -230,7 +456,7 @@ async function make(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
   metadata.ade_made_by = "person";
   const formerKeys = formerMachineKeysAfterMove(instance.metadata, sourceKey);
   if (formerKeys) metadata[CLOUD_FORMER_MACHINE_KEYS_METADATA] = formerKeys;
-  const targetName = factsOf(job).targetName ?? `${sourceNameOf(job).slice(0, 40)} (${params.to === "full" ? "Full" : "Standard"})`;
+  const targetName = facts.targetName ?? `${sourceNameOf(job).slice(0, 40)} (${params.to === "full" ? "Full" : "Standard"})`;
   const answer = await startMachineLaunch(env, job.user_id, {
     launchId: job.target_launch_id,
     size,
@@ -258,12 +484,16 @@ async function make(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
       target_instance_id: instanceId,
       state: "joining",
       message: `Signing in the new ${kindLabel(params.to)}…`,
-      facts_json: withFacts(job, { targetName, sourceWasAsleep: !isMeteredStatus(source.status) }),
+      facts_json: JSON.stringify({ ...facts, targetName, sourceWasAsleep: !isMeteredStatus(source.status) }),
     },
   };
 }
 
 async function join(env: CloudEnv, job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
+  // The save beside the making: its end is noted while the new computer signs in, so the record shows it done.
+  const facts = factsOf(job);
+  const saved = facts.saveStartedAt != null && facts.saveEndedAt == null ? (await readSave(job, ctx, facts)).ended : null;
+  const savePatch = saved ? { facts_json: JSON.stringify(saved) } : {};
   const launch = job.target_launch_id ? await readLaunch(env, job.target_launch_id) : null;
   if (!launch) return { kind: "fail", error: "the new computer's launch is gone." };
   if (launch.state === "failed" || launch.state === "cancelled") return { kind: "fail", error: "the new computer didn't sign in." };
@@ -273,24 +503,24 @@ async function join(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
     return {
       kind: "wait",
       delayMs: APPROVAL_POLL_MS,
-      patch: { state: "needs_approval", approval_url: launch.approval_url, message: "Approve the new computer's sign-in to go on." },
+      patch: { ...savePatch, state: "needs_approval", approval_url: launch.approval_url, message: "Approve the new computer's sign-in to go on." },
     };
   }
   if (launch.state !== "done") {
-    return { kind: "wait", delayMs: JOIN_POLL_MS, patch: { state: "joining", approval_url: null, message: `Signing in the new ${kindLabel(params.to)}…` } };
+    return { kind: "wait", delayMs: JOIN_POLL_MS, patch: { ...savePatch, state: "joining", approval_url: null, message: `Signing in the new ${kindLabel(params.to)}…` } };
   }
   // Signed in: its account key is on its row (the brain wrote it before it reported done).
   const target = job.target_instance_id ? await ownedComputer(env, job.user_id, job.target_instance_id) : null;
   if (!target) return { kind: "fail", error: "the new computer is gone." };
   let machineKey = target.machine_key;
   if (!machineKey) machineKey = (await ctx.provider.getInstance(target.instance_id)).metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
-  if (!machineKey) return { kind: "wait", delayMs: JOIN_POLL_MS };
+  if (!machineKey) return { kind: "wait", delayMs: JOIN_POLL_MS, patch: savePatch };
   // Its brain, idle until the copy lands, must not put it to sleep meanwhile.
   await tryExec(ctx, target.instance_id, cloudHoldCommand("move", MOVE_HOLD_MS), SHORT_EXEC_MS);
   return {
     kind: "next",
     step: "wake",
-    patch: { target_machine_key: machineKey, approval_url: null, state: "copying", message: `Getting ${sourceNameOf(job)} ready to copy…` },
+    patch: { ...savePatch, target_machine_key: machineKey, approval_url: null, state: "copying", message: `Getting ${sourceNameOf(job)} ready to copy…` },
   };
 }
 
@@ -304,13 +534,15 @@ async function wake(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
     if (statements.length) await env.DB.batch(statements);
   }
   if (instance.status === "running") {
-    // Its own brain must not sleep it before the pause.
-    await tryExec(ctx, source.instance_id, cloudHoldCommand("move", MOVE_HOLD_MS), SHORT_EXEC_MS);
-    const save = params.save && !facts.sourceWasAsleep;
+    // Its own brain must not sleep it before the pause, nor its ADE take a direct send the pause would cut.
+    await tryExec(ctx, source.instance_id, holdSourceCommand(), SHORT_EXEC_MS);
+    // A save started beside the making is waited for, even when the row read the computer asleep then.
+    const save = params.save && (facts.saveStartedAt != null || !facts.sourceWasAsleep);
+    const saving = save && facts.saveEndedAt == null;
     return {
       kind: "next",
       step: save ? "save" : "serve",
-      patch: { facts_json: withFacts(job, { sourceHeld: true }), message: save ? `Saving ${sourceNameOf(job)}'s chats…` : copyingMessage(job, params.to) },
+      patch: { facts_json: withFacts(job, { sourceHeld: true, sourceMarked: true }), message: saving ? `Saving ${sourceNameOf(job)}'s chats…` : copyingMessage(job, params.to) },
     };
   }
   if (instance.status === "failed") return { kind: "fail", error: "it didn't wake up." };
@@ -330,12 +562,27 @@ async function wake(env: CloudEnv, job: JobRow, ctx: JobContext, params: MovePar
   return { kind: "wait", delayMs: WAKE_POLL_MS, patch: { message: `Waking ${sourceNameOf(job)}…` } };
 }
 
+/**
+ * Waits for the chats' save (it stops what still runs and writes the saved
+ * chat copy, so the chats read the same while it moves), which `make` started
+ * beside the making. The copy starts only after it.
+ */
 async function save(job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
   const facts = factsOf(job);
-  // Stops what still runs and writes the saved chat copy, so the chats read the same while it moves.
-  const ran = await tryExec(ctx, job.source_instance_id!, prepareStopCommand(null), SAVE_EXEC_MS);
-  const warnings = ran?.exitCode === 0 ? facts.warnings : [...(facts.warnings ?? []), "save"];
-  return { kind: "next", step: "serve", patch: { facts_json: withFacts(job, { warnings }), message: copyingMessage(job, params.to) } };
+  const goOn = (end: MoveFacts): StepResult => ({ kind: "next", step: "serve", patch: { facts_json: JSON.stringify(end), message: copyingMessage(job, params.to) } });
+  if (facts.saveEndedAt != null) return goOn(facts);
+  if (facts.saveStartedAt == null) {
+    // Not started beside the making (its start failed, or the computer was asleep then): now, as before.
+    if (!(await startSave(job, ctx))) return goOn(savedFacts(facts, ctx.now, false));
+    return { kind: "wait", delayMs: SAVE_POLL_MS, patch: { facts_json: JSON.stringify({ ...facts, saveStartedAt: ctx.now }) } };
+  }
+  const { state, ended } = await readSave(job, ctx, facts);
+  if (ended) return goOn(ended);
+  // Past its time the move goes on, as a save past its exec time always did: the saved copy may be a few minutes old.
+  if (ctx.now - facts.saveStartedAt > SAVE_WAIT_MAX_MS) return goOn(savedFacts(facts, ctx.now, false));
+  // Its marker is gone (the old computer restarted since): started again, its wait still counted from the first start.
+  if (state.kind === "not_started") await startSave(job, ctx);
+  return { kind: "wait", delayMs: SAVE_POLL_MS };
 }
 
 async function serve(job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
@@ -386,7 +633,7 @@ async function copy(job: JobRow, ctx: JobContext): Promise<StepResult> {
   return { kind: "next", step: "register", patch: { facts_json: withFacts(job, { transferMs }), state: "finishing", message: "Finishing the move…" } };
 }
 
-async function register(job: JobRow, ctx: JobContext): Promise<StepResult> {
+async function register(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepResult> {
   const facts = factsOf(job);
   const targetId = job.target_instance_id!;
   let warnings = facts.warnings;
@@ -394,14 +641,20 @@ async function register(job: JobRow, ctx: JobContext): Promise<StepResult> {
     const added = await tryExec(ctx, targetId, registerProjectsCommand(facts.projects), EXEC_MS);
     if (!added || /^failed /m.test(added.stdout)) warnings = [...(warnings ?? []), "projects"];
   }
+  // Best effort: a failed start only means the first turn downloads its agent, as before.
+  await tryExec(ctx, targetId, FETCH_USED_AGENT_TOOLS_COMMAND, SHORT_EXEC_MS);
   // The move's work on the new computer is done: it may sleep when idle again.
   await tryExec(ctx, targetId, cloudReleaseHoldCommand("move"), SHORT_EXEC_MS);
+  // The lane is there now: the messages sent during the move go to it.
+  await handOverHeldMessages(env, job, ctx);
   return { kind: "next", step: "delete_source", patch: { state: "finishing", facts_json: withFacts(job, { warnings }) } };
 }
 
 /** The old computer is kept (its delete failed): its ADE starts again, and the move is done without it gone. */
-async function keepSource(job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
-  await tryExec(ctx, job.source_instance_id!, `${MOVE_UNPAUSE_COMMAND}\n${cloudReleaseHoldCommand("move")}`, SHORT_EXEC_MS);
+async function keepSource(env: CloudEnv, job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
+  // First, so the old computer's ADE, starting again, finds none of the lane's messages left to send.
+  await handOverHeldMessages(env, job, ctx);
+  await tryExec(ctx, job.source_instance_id!, `${MOVE_UNPAUSE_COMMAND}\n${releaseSourceCommand()}`, SHORT_EXEC_MS);
   reportCloudFailure("cloud.move_source_left", { jobId: job.job_id, sourceId: job.source_instance_id });
   return {
     kind: "end",
@@ -422,7 +675,7 @@ async function deleteSource(env: CloudEnv, job: JobRow, ctx: JobContext, params:
   } catch (error) {
     const tries = (facts.deleteTries ?? 0) + 1;
     logCloud("cloud.move_source_delete_failed", { jobId: job.job_id, tries, code: error instanceof CloudProviderError ? error.code : "unknown" });
-    if (tries >= DELETE_TRIES) return await keepSource(job, ctx, params);
+    if (tries >= DELETE_TRIES) return await keepSource(env, job, ctx, params);
     return { kind: "wait", delayMs: DELETE_RETRY_MS, patch: { facts_json: withFacts(job, { deleteTries: tries }) } };
   }
   // Its backups go with its machine key; the lane's stay (the new computer holds the lane now).
@@ -451,6 +704,8 @@ async function confirmDelete(job: JobRow, ctx: JobContext): Promise<StepResult> 
 }
 
 async function rename(env: CloudEnv, job: JobRow, ctx: JobContext, params: MoveParams): Promise<StepResult> {
+  // A message held while `register` handed the others over goes too, before the move ends.
+  await handOverHeldMessages(env, job, ctx);
   const name = sourceNameOf(job);
   const targetId = job.target_instance_id!;
   let renamed = true;
@@ -484,7 +739,7 @@ async function runMoveStep(env: CloudEnv, job: JobRow, ctx: JobContext): Promise
     case "serve": return await serve(job, ctx, params);
     case "receive": return await receive(job, ctx);
     case "copy": return await copy(job, ctx);
-    case "register": return await register(job, ctx);
+    case "register": return await register(env, job, ctx);
     case "delete_source": return await deleteSource(env, job, ctx, params);
     case "confirm_delete": return await confirmDelete(job, ctx);
     case "rename": return await rename(env, job, ctx, params);
@@ -507,9 +762,13 @@ function asWasSentence(job: JobRow): string {
 async function undoMove(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<boolean> {
   if (job.source_deleted === 1) return true;
   const facts = factsOf(job);
-  if (job.source_instance_id && (facts.pausedAt != null || facts.sourceHeld)) {
+  if (job.source_instance_id && (facts.pausedAt != null || facts.sourceHeld || facts.sourceMarked)) {
     // The entrypoint clears a pause two hours old by itself, so one this misses comes back on its own.
-    await tryExec(ctx, job.source_instance_id, `${MOVE_UNPAUSE_COMMAND}\n${cloudReleaseHoldCommand("move")}`, SHORT_EXEC_MS);
+    // Held or marked but never paused (the save beside the making held it): only the hold and the mark go.
+    // A mark this misses (the computer was asleep) expires as the hold does; meanwhile a refused send goes
+    // to the queue, which no longer holds it, and the computer sends it from there.
+    const unpause = facts.pausedAt != null ? `${MOVE_UNPAUSE_COMMAND}\n` : "";
+    await tryExec(ctx, job.source_instance_id, `${unpause}${releaseSourceCommand()}`, SHORT_EXEC_MS);
   }
   let targetId = job.target_instance_id;
   if (job.target_launch_id) {
@@ -520,6 +779,11 @@ async function undoMove(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<bo
     `).bind(ctx.now, job.target_launch_id).first<{ instance_id: string | null }>();
     targetId = targetId ?? launch?.instance_id ?? (await readLaunch(env, job.target_launch_id))?.instance_id ?? null;
   }
+  // The lane stays on the old computer: what the new one was given comes back, and the old one sends what the move held.
+  if (targetId && job.source_instance_id) {
+    await env.DB.batch(handOverQueuedMessagesStatements(env, { userId: job.user_id, fromInstanceId: targetId, toInstanceId: job.source_instance_id, now: ctx.now }));
+  }
+  await sendHeldOnSource(env, job, ctx);
   if (!targetId) return true;
   const target = await ownedComputer(env, job.user_id, targetId);
   if (!target) return true;
@@ -618,7 +882,16 @@ export async function handleMoveStart(request: Request, env: CloudEnv, source: C
   if (refused) return refused;
   if (!deps.provider) return fail("unavailable", "ADE Cloud can't move a computer right now. Try again soon.", 503);
 
-  const params: MoveParams = { to, type: size.type === "vm" ? "vm" : "default", cpu: size.cpu, memoryGb: size.memoryGb, timing, save: body.save !== false };
+  const chatRequest = moveChatRequestOf(body);
+  const params: MoveParams = {
+    to,
+    type: size.type === "vm" ? "vm" : "default",
+    cpu: size.cpu,
+    memoryGb: size.memoryGb,
+    timing,
+    save: body.save !== false,
+    ...(chatRequest ? { request: chatRequest } : {}),
+  };
   const firstStep = timing === "idle" ? "wait_idle" : "make";
   const message = timing === "idle" ? `Waiting for ${source.name ?? source.instance_id}'s agents to finish…` : `Making the new ${kindLabel(to)}…`;
   try {

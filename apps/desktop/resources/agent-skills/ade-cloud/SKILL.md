@@ -46,7 +46,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 
 - Size: leave out `--size` to use the person's saved size (`defaultSize`). Small uses no credits, so prefer it; Medium when Small is too slow. Large or X-Large (full computers) only for Android or Docker: pass `--size large` (or `xlarge`) when you start the lane. With no `--size`, a Small whose setup runs out of memory moves to Medium once by itself (the launch says so), and that repository starts at Medium after that; a size you pass stays, so passing `--size small` turns this off.
 - Push the branch first. The lane starts from the pushed copy; uncommitted changes stay here.
-- The approval card asks the person in your chat, with the size and its credits rate. No answer in 5 minutes means no.
+- The approval card asks the person in your chat, with the size and its credits rate. No answer in 5 minutes means no. The command waits for the answer: keep it running (or keep polling it) until it prints the outcome. A card that closed before anyone answered (your turn stopped, or the computer restarted or moved) is not a no: nothing was done, and you can ask again.
 - In a full-auto chat, an automation or an ADE MCP app, nobody watches. ADE answers with the agent limits (`agents` in the status): only sizes in `sizesAllowed`, at most `newComputersLeftToday` new computers today. Each new lane counts one. A person never counts.
 - What only the person decides (a size change, deleting a computer this chat didn't make, looser agent limits) still puts a card in a full-auto chat, and the person answers it there. An automation or an ADE MCP app has nobody to ask, so it is refused.
 - From a terminal with no ADE chat, it is refused: ADE can't tell a person there from an agent. Tell the person to start it in the ADE app (Run on: ADE Cloud) or in an ADE chat.
@@ -157,7 +157,7 @@ cards, they are watching).
 - Make a computer: `ade cloud create` (a standard or a full computer), `ade cloud copy` or `ade cloud move`. Start a lane with the size it needs instead. ADE refuses an agent's make unless the person says yes on its card.
 - Change the plan, or turn on extra credits: only the person does, in Settings › ADE Cloud.
 - Delete a computer you didn't make without the person's yes on its card, or any computer over ADE MCP.
-- Change a size (`ade cloud resize --shape`) yourself (growing the disk with `--free` is yours to do). Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it.
+- Change a size (`ade cloud resize --shape`) yourself (growing the disk with `--free` is yours to do). Ask instead: `ade cloud resize --request --size large --reason "<why>"` puts a card in your chat, and the person confirms it. Don't wait in a loop: ADE tells you in the chat when they keep the size, and when the change is done or stopped.
 - Wake computers to look at them: the status already knows.
 - Sign a provider in for the person, or save a sign-in. The person does it once in ADE (ade://settings/integrations.ade-cloud-sign-ins).
 - Print, ask for or pass on a key or token.

@@ -2,7 +2,10 @@ import type { CloudMachineActionResult } from "../../../shared/adeCloud";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import { cloudMachineLaneFactsOf, CLOUD_LANE_NAME_METADATA } from "../../../shared/cloudLaneLaunch";
 import {
+  CLOUD_LANE_CHANGE_RUNNING_MESSAGE,
+  CLOUD_LANE_SAVE_WARNING_DETAIL,
   cloudLaneJobGrowsDiskOnly,
+  cloudLaneJobIsLive,
   cloudLaneJobStageIds,
   type CloudLaneDeleteResult,
   type CloudLaneFreeResult,
@@ -12,10 +15,22 @@ import {
   type CloudLaneWorkLane,
   type CloudLaneWorkState,
 } from "../../../shared/cloudLaneLife";
+import {
+  cloudTierRequestChatMachineKey,
+  cloudTierRequestEndArgs,
+  cloudTierRequestIdsOf,
+  cloudTierRequestOutcomeOfJob,
+  cloudTierRequestProjectRef,
+  createTierRequestTelling,
+  type CloudTierRequestAnswerArgs,
+} from "../../../shared/cloudTierRequest";
 import { cloudTierOfShape, cloudTiers, type CloudTier } from "../../../shared/cloudTiers";
 import type { CloudCatalog } from "../../../shared/adeCloud";
 import { sameMachineKey } from "../../../shared/machineAddress";
+import { sanitizeRendererProjectBinding } from "../../../shared/projectBinding";
+import type { MachineProjectRef } from "../../../shared/projectIdentity";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import type { OpenProjectBinding, RemoteOpenProjectBinding } from "../../../shared/types/core";
 import {
   CLOUD_MACHINE_KEY_METADATA,
   KEEP_AWAKE_STATE_COMMAND,
@@ -358,6 +373,109 @@ export function createWebCloudLaneLife(deps: WebCloudLaneLifeDeps) {
 }
 
 // ---------------------------------------------------------------------------
+// Telling the chat that asked for a change how it ended, from this tab
+// ---------------------------------------------------------------------------
+
+/** The agent's size request a change answers: its chat is told how the change ended, on the chat's machine. */
+export type WebTierRequest = { requestId: string; chatSessionId: string; pin: RemoteOpenProjectBinding };
+
+/** The request fields a change carries from its card's yes (`CloudLaneChangeTierArgs`). */
+export type WebTierRequestInput = { requestId?: unknown; requestedByChat?: unknown; requestedByChatPin?: unknown };
+
+/** How this tab reaches the asking chat's machine. */
+export type WebTierRequestReach = {
+  /** `cloud.tier_request_answer` through a pin: the federated adapter sends it to the pin's machine. */
+  answer: (pin: OpenProjectBinding, args: CloudTierRequestAnswerArgs) => Promise<unknown>;
+  /** The account machine a connection of this tab reaches, or null. */
+  machineKeyOf: (targetId: string) => Promise<string | null>;
+  /** The pin of a project on a machine of the account, connecting (and waking) that machine first (`pickMachineProject`). */
+  pinOnMachine: (machineKey: string, ref: MachineProjectRef) => Promise<OpenProjectBinding>;
+};
+
+/** A chat this tab couldn't tell how its change ended is tried again after these waits. */
+const TELL_CHAT_RETRY_MS = [15_000, 60_000];
+
+/**
+ * The request a change carries, or null without one. Its pin is rebuilt
+ * field by field (`sanitizeRendererProjectBinding`, as main does), with no
+ * icon: ADE Web reaches a chat only on another machine, so only a remote pin
+ * counts.
+ */
+export function webTierRequestOf(raw: WebTierRequestInput | null | undefined): WebTierRequest | null {
+  const { requestId, requestedByChat: chatSessionId } = cloudTierRequestIdsOf(raw);
+  const pin = sanitizeRendererProjectBinding(raw?.requestedByChatPin, () => null);
+  if (!requestId || !chatSessionId || !pin || pin.kind !== "remote") return null;
+  return { requestId, chatSessionId, pin };
+}
+
+/**
+ * Tells the chat whose size request started a change how it ended, from this
+ * tab, whatever shows the chat (none may): `createTierRequestTelling`, one
+ * telling per request, of its newest change (a Retry's new job is newer, and
+ * its end is a new end). A pin that names no machine, or a chat that moved
+ * with the lane, is reached by its machine key
+ * (`cloudTierRequestChatMachineKey`). The chat's machine tells the agent
+ * once, by the card.
+ */
+export function createWebTierRequestTeller(reach: WebTierRequestReach) {
+  type Entry = {
+    request: WebTierRequest;
+    job: CloudLaneJobSnapshot;
+    /** The machine the job started on: a move's old computer. */
+    fromMachineKey: string | null;
+    /** The job and end last told. */
+    told: string | null;
+  };
+  const byRequest = new Map<string, Entry>();
+  const telling = createTierRequestTelling({
+    retryMs: TELL_CHAT_RETRY_MS,
+    onFailed: (error, { key, final }) => {
+      if (!final) return;
+      const entry = byRequest.get(key);
+      forwardSignalToSentry("web.cloud_tier_request_tell_failed", { outcome: entry ? cloudTierRequestOutcomeOfJob(entry.job) : null, message: errorText(error) }, "cloud_tier_request_tell_failed", "info");
+    },
+  });
+
+  const pinNow = async (entry: Entry): Promise<OpenProjectBinding> => {
+    const { pin } = entry.request;
+    const machineKey = cloudTierRequestChatMachineKey({ pin, pinMachineKey: await reach.machineKeyOf(pin.targetId), job: entry.job, fromMachineKey: entry.fromMachineKey });
+    if (!machineKey) return pin;
+    return await reach.pinOnMachine(machineKey, cloudTierRequestProjectRef(pin, entry.job));
+  };
+
+  /** The job's end, by job: a Retry's new job ends anew. */
+  const endOf = (entry: Entry): string | null => {
+    const outcome = cloudTierRequestOutcomeOfJob(entry.job);
+    return outcome ? `${entry.job.jobId}:${outcome}` : null;
+  };
+
+  return {
+    /** A change that answers `request` published: an end is told (an older change of the same request no longer is). */
+    note(request: WebTierRequest | null, job: CloudLaneJobSnapshot, fromMachineKey: string | null): void {
+      if (!request) return;
+      const known = byRequest.get(request.requestId);
+      if (known && known.job.jobId !== job.jobId && job.startedAt < known.job.startedAt) return;
+      const entry: Entry = known ?? { request, job, fromMachineKey, told: null };
+      Object.assign(entry, { request, job, fromMachineKey });
+      byRequest.set(request.requestId, entry);
+      telling.note(request.requestId, {
+        read: () => endOf(entry),
+        tell: async () => {
+          // `read` just gave an end, so the job has ended; if not, the try fails and nothing is marked told.
+          await reach.answer(await pinNow(entry), cloudTierRequestEndArgs(entry.job, entry.request));
+        },
+        isTold: (end) => entry.told === end,
+        markTold: (end) => {
+          entry.told = end;
+        },
+      });
+    },
+  };
+}
+
+export type WebTierRequestTeller = ReturnType<typeof createWebTierRequestTeller>;
+
+// ---------------------------------------------------------------------------
 // A size change in place, run in this tab
 // ---------------------------------------------------------------------------
 
@@ -365,9 +483,8 @@ type ResizeRecord = {
   job: CloudLaneJobSnapshot;
   tier: CloudTier;
   cancelled: boolean;
+  request: WebTierRequest | null;
 };
-
-const isLiveJob = (job: CloudLaneJobSnapshot) => job.phase === "waiting" || job.phase === "running";
 
 /** The disk a resize grows to, or null to keep it (never smaller, never past what the size allows). */
 function diskGrowOf(raw: unknown, currentGb: number | null, tier: CloudTier): number | null {
@@ -382,6 +499,10 @@ function diskGrowOf(raw: unknown, currentGb: number | null, tier: CloudTier): nu
 export function createWebCloudResizes(deps: {
   api: () => CloudApiClient | null;
   agentWork: (instanceId: string) => Promise<"idle" | "busy" | "unknown">;
+  /** A move of this computer runs (on ADE's server): with this tab's own size changes, one change of a computer at a time. */
+  moving: (instanceId: string) => boolean;
+  /** This tab ran the change, so it tells the chat whose size request started it how it ended. */
+  teller: WebTierRequestTeller;
 }) {
   const jobs = new Map<string, ResizeRecord>();
   const listeners = new Set<(job: CloudLaneJobSnapshot) => void>();
@@ -391,6 +512,7 @@ export function createWebCloudResizes(deps: {
     record.job.updatedAt = nowIso();
     const job = structuredClone(record.job);
     for (const listener of listeners) listener(job);
+    deps.teller.note(record.request, record.job, record.job.machineKey);
   };
 
   const stageOf = (record: ResizeRecord, id: CloudLaneJobStageId): CloudLaneJobStage | null =>
@@ -443,7 +565,7 @@ export function createWebCloudResizes(deps: {
         // Stops what still runs and writes the saved chat copy, so the chats read the same while it restarts.
         // A save that fails goes on: the person chose to restart now.
         const ran = await api.exec(job.instanceId, prepareStopCommand(growOnly ? { gb: job.diskGb ?? 0, jobId: job.jobId } : null), PREPARE_STOP_TIMEOUT_MS).catch(() => null);
-        setStage(record, "save", ran?.exitCode === 0 ? "done" : "warning", ran?.exitCode === 0 ? null : "The chats' saved copy may be a few minutes old");
+        setStage(record, "save", ran?.exitCode === 0 ? "done" : "warning", ran?.exitCode === 0 ? null : CLOUD_LANE_SAVE_WARNING_DETAIL);
       } else {
         setStage(record, "save", "done", "Asleep, nothing running");
       }
@@ -505,7 +627,11 @@ export function createWebCloudResizes(deps: {
     }
   };
 
-  const begin = (input: Omit<CloudLaneJobSnapshot, "jobId" | "phase" | "stages" | "error" | "startedAt" | "updatedAt" | "endedAt">, tier: CloudTier): CloudLaneJobSnapshot => {
+  const begin = (
+    input: Omit<CloudLaneJobSnapshot, "jobId" | "phase" | "stages" | "error" | "startedAt" | "updatedAt" | "endedAt">,
+    tier: CloudTier,
+    request: WebTierRequest | null,
+  ): CloudLaneJobSnapshot => {
     const startedAt = nowIso();
     const job: CloudLaneJobSnapshot = {
       ...input,
@@ -519,11 +645,11 @@ export function createWebCloudResizes(deps: {
     };
     // A new change replaces what an older one of this lane left on screen.
     for (const older of jobs.values()) {
-      if (isLiveJob(older.job) || older.job.dismissedAt || older.job.instanceId !== job.instanceId) continue;
+      if (cloudLaneJobIsLive(older.job) || older.job.dismissedAt || older.job.instanceId !== job.instanceId) continue;
       older.job.dismissedAt = startedAt;
       publish(older);
     }
-    const record: ResizeRecord = { job, tier, cancelled: false };
+    const record: ResizeRecord = { job, tier, cancelled: false, request };
     jobs.set(job.jobId, record);
     publish(record);
     void run(record);
@@ -531,13 +657,23 @@ export function createWebCloudResizes(deps: {
   };
 
   const liveOn = (instanceId: string): boolean =>
-    [...jobs.values()].some((record) => isLiveJob(record.job) && record.job.instanceId === instanceId);
+    [...jobs.values()].some((record) => cloudLaneJobIsLive(record.job) && record.job.instanceId === instanceId);
+  /** One change of a computer at a time: this tab's size change, or a move. */
+  const changing = (instanceId: string): boolean => liveOn(instanceId) || deps.moving(instanceId);
 
   return {
     /** A size change of the same kind, from the computer and the size the person picked. */
-    start(args: { computer: CloudInstance; tier: CloudTier; catalog: CloudCatalog; timing: "idle" | "now"; diskGb?: unknown; requestedByChat?: unknown }): CloudLaneJobSnapshot {
+    start(args: {
+      computer: CloudInstance;
+      tier: CloudTier;
+      catalog: CloudCatalog;
+      timing: "idle" | "now";
+      diskGb?: unknown;
+      request?: WebTierRequestInput;
+    }): CloudLaneJobSnapshot {
       const { computer, tier } = args;
-      if (liveOn(computer.id)) throw new Error("A change is already running for this lane.");
+      const request = webTierRequestOf(args.request);
+      if (changing(computer.id)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       const from = cloudTierOfShape({ type: computer.type, cpu: computer.resources?.cpu, memoryGb: computer.resources?.memory }, cloudTiers(args.catalog));
       const diskGb = diskGrowOf(args.diskGb, computer.resources?.disk ?? null, tier);
       if (from?.id === tier.id && diskGb == null) throw new Error(`It's already ${tier.label}.`);
@@ -553,9 +689,9 @@ export function createWebCloudResizes(deps: {
         projectOrigin: lane?.projectOrigin ?? null,
         fromSizeId: from?.id ?? null,
         toSizeId: tier.id,
-        requestedByChat: typeof args.requestedByChat === "string" && args.requestedByChat.trim() ? args.requestedByChat.trim() : null,
+        ...cloudTierRequestIdsOf(args.request),
         diskGb,
-      }, tier);
+      }, tier, request);
     },
     isLive: liveOn,
     has(jobId: string): boolean {
@@ -569,7 +705,7 @@ export function createWebCloudResizes(deps: {
       const record = jobs.get(jobId);
       if (!record) return null;
       const resizing = stageOf(record, "resize")?.status !== "pending";
-      if (!isLiveJob(record.job) || resizing) return structuredClone(record.job);
+      if (!cloudLaneJobIsLive(record.job) || resizing) return structuredClone(record.job);
       record.cancelled = true;
       record.job.phase = "cancelled";
       record.job.endedAt = nowIso();
@@ -582,8 +718,10 @@ export function createWebCloudResizes(deps: {
     retry(jobId: string): CloudLaneJobSnapshot | null {
       const record = jobs.get(jobId);
       if (!record) return null;
-      if (isLiveJob(record.job) || record.job.phase === "online") return structuredClone(record.job);
+      if (cloudLaneJobIsLive(record.job) || record.job.phase === "online") return structuredClone(record.job);
       const { job } = record;
+      // A Retry from a card that still shows an older failure: one change of a computer at a time.
+      if (changing(job.instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       record.job.dismissedAt = nowIso();
       publish(record);
       return begin({
@@ -598,8 +736,9 @@ export function createWebCloudResizes(deps: {
         fromSizeId: job.fromSizeId,
         toSizeId: job.toSizeId,
         requestedByChat: job.requestedByChat,
+        requestId: job.requestId ?? null,
         diskGb: job.diskGb ?? null,
-      }, record.tier);
+      }, record.tier, record.request);
     },
     dismiss(jobId: string): CloudLaneJobSnapshot | null {
       const record = jobs.get(jobId);

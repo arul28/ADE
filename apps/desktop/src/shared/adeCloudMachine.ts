@@ -64,12 +64,14 @@ export type CloudChatSendRequest = {
 /**
  * Its answer. `sent`: queued, and `wake` says what the server did to the
  * computer (`launching` with `launchId`: the computer was gone, and a new one
- * continues this chat in the same row). `refused`: the server's code and
- * sentence; nothing was stored. `unsupported`: a server without the queue
- * (404) or an image that can't drain it (`update_needed`): use wake, then send.
+ * continues this chat in the same row; `moving`: a move of the computer runs,
+ * and the server holds the message for the new one). `refused`: the server's
+ * code and sentence; nothing was stored. `unsupported`: a server without the
+ * queue (404) or an image that can't drain it (`update_needed`): use wake,
+ * then send.
  */
 export type CloudChatSendAnswer =
-  | { state: "sent"; messageId: string; wake: { state: "awake" | "waking" | "launching"; launchId?: string | null } }
+  | { state: "sent"; messageId: string; wake: { state: "awake" | "waking" | "launching" | "moving"; launchId?: string | null } }
   | { state: "refused"; code: string | null; message: string }
   | { state: "unsupported" };
 

@@ -5,13 +5,23 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { Banner } from "../ui/notice";
 import { CloudSignInCodeField } from "./launch/CloudSignInCodeField";
 
-/** A message this pane queued for an ADE Cloud chat whose computer was asleep or gone. */
+/** A message this pane queued for an ADE Cloud chat whose computer was asleep, gone, or moving or changing size. */
 export type CloudQueueSend = {
   chatId: string;
-  wake: "awake" | "waking" | "launching";
+  /** `moving`: the server holds it while a move of the computer runs (`CloudWakeOutcome`). */
+  wake: "awake" | "waking" | "launching" | "moving";
   /** With `launching`: the launch that continues this chat on a new computer. */
   launchId: string | null;
   text: string;
+};
+
+/** The card's title once the message is queued, by what the computer does for it. */
+const SENT_TITLE: Record<CloudQueueSend["wake"], string> = {
+  moving: "Sent. ADE Cloud keeps your message while this lane moves, and the agent gets it on the new computer.",
+  waking: "Sent. Your ADE Cloud computer is waking, and the agent gets your message when it is up.",
+  awake: "Sent to your ADE Cloud computer.",
+  // A launch with no id to follow.
+  launching: "Sent to your ADE Cloud computer.",
 };
 
 /** The step a continue launch is at, in the chat's words. */
@@ -91,10 +101,8 @@ export function CloudQueueSendCard({
         model={{
           id: "chat-cloud-queued",
           tone: "info",
-          busy: send.wake === "waking",
-          title: send.wake === "waking"
-            ? "Sent. Your ADE Cloud computer is waking, and the agent gets your message when it is up."
-            : "Sent to your ADE Cloud computer.",
+          busy: send.wake === "waking" || send.wake === "moving",
+          title: SENT_TITLE[send.wake],
           detail: "You can leave this chat.",
           dismiss: { onDismiss: onDone },
         }}

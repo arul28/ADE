@@ -52,6 +52,7 @@ function createProcess(pid: number) {
     on: emitter.on.bind(emitter),
     once: emitter.once.bind(emitter),
     off: emitter.off.bind(emitter),
+    setMaxListeners: emitter.setMaxListeners.bind(emitter),
     emitExit: () => {
       child.exitCode = 0;
       emitter.emit("exit", 0, null);

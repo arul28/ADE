@@ -11,6 +11,7 @@ import {
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { rememberDraftAttachmentSource } from "./draftAttachmentSources";
+import { holdAttachmentBytes } from "./heldChatAttachments";
 import { withChatPin } from "./chatMachinePin";
 
 export type AttachmentStagingPlan =
@@ -141,6 +142,11 @@ export class AttachmentConversionError extends Error {
  * HEIC is converted here rather than on the host because the file may never
  * reach a host that can decode it — a clipboard paste and the hosted web client
  * both arrive as bytes with no path at all.
+ *
+ * `holdOnDevice`: the chat's ADE Cloud computer rests, so the bytes stay on
+ * this device under a stand-in path until the send carries them
+ * (`heldChatAttachments.ts`); copying them now would wake it. With no room
+ * left to hold them they are copied now, as before.
  */
 export async function stageAttachmentBytesFromFile(args: {
   file: File;
@@ -149,6 +155,7 @@ export async function stageAttachmentBytesFromFile(args: {
   pin: OpenProjectBinding | null | undefined;
   /** The pane's chat API; the project chat domain when omitted. */
   api?: Pick<Window["ade"]["agentChat"], "saveTempAttachment">;
+  holdOnDevice?: boolean;
 }): Promise<StagedAttachment> {
   const buffer = await args.file.arrayBuffer();
   let filename = normalizeImageAttachmentFilename(args.filename, args.file.type);
@@ -176,6 +183,8 @@ export async function stageAttachmentBytesFromFile(args: {
     mimeType = converted.mimeType;
     previewDataUrl = `data:${converted.mimeType};base64,${converted.data}`;
   }
+  const heldPath = args.holdOnDevice ? holdAttachmentBytes({ data, filename, mimeType }) : null;
+  if (heldPath) return { path: heldPath, mimeType, previewDataUrl };
   const { path } = await withChatPin(args.pin, (chatPin) => (args.api ?? window.ade.agentChat).saveTempAttachment({ data, filename }, chatPin));
   // Kept so a draft that moves to another machine can save it there again.
   rememberDraftAttachmentSource(path, { kind: "bytes", data, filename });

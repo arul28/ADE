@@ -1934,17 +1934,25 @@ const DRAIN_EXEC_TIMEOUT_MS = 120_000;
  */
 function chatWakeFor(env: CloudEnv, userId: string, provider: CloudProvider | null, ctx: CloudRequestContext, launchDeps: LaunchRouteDeps): ChatWake {
   const { now } = ctx;
+  // The plan's refusals, for every send: the account's block, an outside agent
+  // on the free plan, credits at `multiplierMilli` (the computer's size, or the
+  // one a move that holds the send lands on, as `moveRefusal` checked it).
+  const planRefusal = async (computer: ComputerRow, outsideAgent: boolean, multiplierMilli = computer.multiplier_milli): Promise<Response | null> => {
+    const accountBlock = await blockedNow(env, computer.user_id);
+    if (accountBlock) return accountBlock;
+    const { account, blocked } = await wakeBlocker(env, computer, now, multiplierMilli);
+    const outside = outsideAgentRefusal(account, outsideAgent);
+    if (outside) {
+      cloudActionTracker({ env, waitUntil: ctx.waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "agent", key: computer.instance_id, refusedAction: "wake", now }).refuse(outside);
+      return outside.response;
+    }
+    return blocked?.response ?? null;
+  };
   return {
+    heldCheck: async (computer, { outsideAgent }, landsOn) => await planRefusal(computer, outsideAgent, landsOn?.multiplierMilli),
     check: async (computer, { outsideAgent }) => {
-      const accountBlock = await blockedNow(env, computer.user_id);
-      if (accountBlock) return accountBlock;
-      const { account, blocked } = await wakeBlocker(env, computer, now);
-      const outside = outsideAgentRefusal(account, outsideAgent);
-      if (outside) {
-        cloudActionTracker({ env, waitUntil: ctx.waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: "agent", key: computer.instance_id, refusedAction: "wake", now }).refuse(outside);
-        return outside.response;
-      }
-      if (blocked) return blocked.response;
+      const planRefused = await planRefusal(computer, outsideAgent);
+      if (planRefused) return planRefused;
       if (computer.update_state === "updating") return fail("update_in_progress", new CloudUpdateInProgressError().message, 409);
       // A computer that never reported `chat_queue` can't drain, and the image a
       // wake would update it to may have no drain either: the client wakes it and sends.

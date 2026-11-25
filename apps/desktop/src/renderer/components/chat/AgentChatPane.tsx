@@ -198,6 +198,7 @@ import {
 } from "./AgentChatComposer";
 import {
   countThreadCommentsReadyToSend,
+  currentThreadComments,
   guestCommentsForNextSend,
   requestThreadCommentFocus,
   setThreadComments,
@@ -238,6 +239,7 @@ import { runtimeCatalogModelIds, useCursorCloudModelEligibility } from "./useCur
 import { reconcileDraftModelControls } from "./draftModelControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { useLaneGitRemote } from "./useLaneGitRemote";
+import { useProviderStatusRefresh } from "./useProviderStatusRefresh";
 import { familiesFromStatus, familiesWithoutRuntime } from "../shared/ModelPicker/useProviderAuthStatus";
 import { isPiRoutedModel } from "../shared/ModelPicker/modelFacts";
 import {
@@ -464,10 +466,12 @@ import { WebCloudSetupCards } from "./launch/WebCloudSetupCards";
 import { startAccountCloudChat } from "../../state/accountCloudLaunches";
 import { readAccountProjectList } from "../../state/useRepositoryCopies";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
-import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
+import { CloudLaneChatStatus, CloudTierRequestsAboveComposer, useCloudTierRequestCards } from "../cloudLane/CloudLaneChatCards";
 import { CloudLaneComputerDeletedBanner, cloudLaneComputerDeletedFacts } from "../cloudLane/CloudLaneComputerDeletedBanner";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useFollowLaneMoves } from "../cloudLane/useFollowLaneMoves";
+import { useChatCloudLaneJob } from "../cloudLane/cloudLaneStores";
+import { chatAccountQueueRoute } from "./chatAccountQueueRoute";
 import { CloudLaneHeaderButton } from "../cloudLane/CloudLaneHeaderButton";
 import { CloudLaneDeletingSoonBand } from "../cloudLane/CloudLaneDeletingSoonBand";
 import { newerLaunchDefaults, publishLaunchDefaults, readAccountLaunchDefaults } from "./accountLaunchDefaults";
@@ -475,7 +479,7 @@ import { AdeCloudTray, CloudSizeButton, useCloudLaneWithoutComputerForChat } fro
 import { useChatLaneMoveSource } from "../laneMove/useChatLaneMoveSource";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
-import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import type { CloudLaneJobSnapshot, CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import { accountProjectForOrigin } from "../projects/useHomeAccountProjects";
 import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
@@ -505,7 +509,9 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, noticeForChat, shownChatNotice, type ChatNotice } from "./chatNotice";
-import { SAVED_CHAT_COMPUTER_GONE_MESSAGE, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
+import { chatQueueMachineKey, savedChatComputerGone, savedChatLocation } from "../../state/cloudSavedChats";
+import { releaseHeldAttachments, releaseSentHeldAttachments } from "./heldChatAttachments";
+import { prepareDeviceHeldForSend } from "./deviceHeldSend";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, peekNewComputerSize, pickNewComputerSize, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
 import { CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
@@ -5055,6 +5061,8 @@ export function AgentChatPane({
         }
       : null,
   );
+  // The status's connections by provider id, for any provider (the chat's, the sign-in card's).
+  const connectionsByProvider = aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined;
   const [attachments, setAttachmentsState] = useState<AgentChatFileRef[]>([]);
   // The same array as the state: `submit` compares the two to tell an edit made
   // while a send awaited, so they must never be two different empty lists.
@@ -6053,6 +6061,17 @@ export function AgentChatPane({
   const chatMachineEntry = useMachineEntryForBinding(chatRuntimePin);
   const { computers: chatCloudLaneComputers } = useAdeCloudLaneComputers();
   const chatComputerResting = chatMachineEntry != null && machineIsCloudResting(chatMachineEntry, chatCloudLaneComputers);
+  const chatComputerRestingRef = useRef(chatComputerResting);
+  chatComputerRestingRef.current = chatComputerResting;
+  // A size change or a move of the chat's ADE Cloud lane, while it runs: ADE
+  // on the lane's computer stops for minutes (a move replaces the computer),
+  // so a direct send then would fail, or start a turn the change cuts. The
+  // send goes to the account's queue instead (`chatAccountQueueRoute`). The
+  // same job the bar above the box shows (`useChatCloudLaneJob`).
+  const chatLaneJob = useChatCloudLaneJob(chatEffectiveBinding, selectedSession?.laneId ?? null);
+  const chatLaneChangeKind = chatLaneJob?.phase === "running" ? chatLaneJob.kind : null;
+  const chatLaneJobRef = useRef<CloudLaneJobSnapshot | null>(null);
+  chatLaneJobRef.current = chatLaneJob;
   // The chat's own machine says, in its Work row, that no turn runs there: the
   // pane takes the row's state (`rowSaysTurnEnded`), so a wake or a reconnect
   // never leaves a dead turn reading "Thinking" beside a Done row.
@@ -6179,6 +6198,9 @@ export function AgentChatPane({
   // transcript disagree on which chat is open. Always null in a personal chat:
   // thread comments are a project-runtime action the personal scope lacks.
   const threadCommentsSessionId = readableSessionId && !chatSelectionTransitioning && !chatScope ? composerSessionId : null;
+  // While the chat's ADE Cloud computer rests, a new comment stays on this
+  // device until a send hands it over, so commenting never wakes the computer
+  // (the scope's `machineRests`, below).
   const threadComments = useThreadComments(threadCommentsSessionId, chatRuntimePin);
   // Mod UI is for a readable Claude project chat (the thread-comments gate)
   // in the desktop window: the hosted client draws none, and a subagent view
@@ -9529,16 +9551,6 @@ export function AgentChatPane({
     });
   }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary, setSelectedSessionId]);
 
-  // The visible pane reads the model list when it shows, when the chat's
-  // provider changes, and when a turn starts and ends (`turnActive` in the
-  // deps). It used to re-read every 5 s for the whole turn; the list rarely
-  // changes mid-turn, and a model a provider adds during a long turn shows
-  // at the turn's end. A hidden pane reads nothing.
-  useEffect(() => {
-    if (!isTileActive) return;
-    void refreshAvailableModels();
-  }, [isTileActive, refreshAvailableModels, selectedSession?.provider, turnActive]);
-
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
     options?: { force?: boolean; keepOnError?: boolean },
@@ -11072,6 +11084,19 @@ export function AgentChatPane({
     if (!isTileVisible || !readableSessionId) return;
     void loadHistory(readableSessionId, { force: true });
   }, [chatConnectionMark, isTileVisible, loadHistory, readableSessionId]);
+  // The visible pane reads the chat's provider status (models, sign-ins)
+  // again when it shows, on a turn's start and end, on the chat's machine's
+  // sign-in events, and on a new connection to that machine.
+  useProviderStatusRefresh({
+    isTileActive,
+    turnActive,
+    selectedSessionId,
+    provider: selectedSession?.provider,
+    providerStatus: selectedSession?.provider ? connectionsByProvider?.[selectedSession.provider] : undefined,
+    chatRuntimePin,
+    connectionMark: chatConnectionMark,
+    refreshAvailableModels,
+  });
 
   // A launch this window started shows the whole pick it launched with
   // (model, effort, Fast, permission mode), not the composer's defaults.
@@ -11295,6 +11320,17 @@ export function AgentChatPane({
     if (!hasMatchingCommittedUserMessage(committedEvents, optimistic.envelope)) return;
     setOptimisticOutgoingMessageSynced(null);
   }, [eventsBySession, setOptimisticOutgoingMessageSynced]);
+
+  // Files kept on this device that this pane's sends copied to the chat's
+  // machine: their bytes go once the bubble and the box stop showing them.
+  const sentHeldAttachmentPathsRef = useRef(new Set<string>());
+  useEffect(() => {
+    releaseSentHeldAttachments(sentHeldAttachmentPathsRef.current, optimisticOutgoingMessage, attachments);
+  }, [attachments, optimisticOutgoingMessage]);
+  useEffect(() => {
+    const sent = sentHeldAttachmentPathsRef.current;
+    return () => releaseHeldAttachments([...sent]);
+  }, []);
 
   // Fetch provider slash commands when session, lane, or draft provider changes.
   useEffect(() => {
@@ -14923,9 +14959,11 @@ export function AgentChatPane({
    * Sends the composer's text to an ADE Cloud chat whose computer is gone,
    * through the account's queue (`window.ade.cloud.sendChatMessage`): the
    * server starts a launch that continues this chat in the same row, and the
-   * row shows its setup card. Account level, by the chat's machine key: no
-   * pin. Files can't go this way yet: they stay in the box with a line why.
-   * Answers `unsupported` for a client or server without the queue.
+   * row shows its setup card. A chat whose lane is moving or changing size
+   * sends here too: the server holds the message until the change is done
+   * (`wake.state: "moving"` for a move). Account level, by the chat's machine
+   * key: no pin. Files can't go this way yet: they stay in the box with a
+   * line why. Answers `unsupported` for a client or server without the queue.
    */
   const sendThroughCloudQueue = useCallback(async (chat: { machineKey: string; chatId: string }): Promise<"sent" | "refused" | "unsupported"> => {
     const send = window.ade?.cloud?.sendChatMessage;
@@ -16827,25 +16865,34 @@ export function AgentChatPane({
       return;
     }
 
-    // A chat whose computer is gone (a lane kept without a computer, or a
-    // deleted computer's saved chat): the account's queue takes the message
-    // and a new computer continues this same chat, in this row. A server
-    // without the queue gets the old way for a freed lane: a new chat there.
-    const freedLane = selectedSessionId && !subagentView ? freedChatLaneRef.current : null;
-    const goneChat = selectedSessionId && !subagentView
+    // The chat's computer can't take a send now: its lane is moving or
+    // changing size, or its computer is gone. The account's queue takes the
+    // text, or it stays in the box with a line why (`chatAccountQueueRoute`).
+    const queueSavedLocation = selectedSessionId && !subagentView
       ? savedChatLocation(chatForeignPin, selectedSessionId, () => false)
       : null;
-    if (freedLane || goneChat?.computerGone) {
-      if (pendingToDecline.length > 0) {
-        setError({ message: PENDING_INPUT_SEND_BLOCKED_MESSAGE, kind: "status" });
+    const queueRoute = selectedSessionId && !subagentView
+      ? chatAccountQueueRoute({
+        laneJob: chatLaneJobRef.current,
+        carriesFiles: attachments.length > 0 || contextAttachments.length > 0
+          || (threadCommentsSessionIdRef.current === selectedSessionId && countThreadCommentsReadyToSend(selectedSessionId) > 0),
+        pendingInput: pendingToDecline.length > 0,
+        savedLocation: queueSavedLocation,
+        queueMachineKey: chatQueueMachineKey(chatRuntimePinRef.current, queueSavedLocation),
+        freedLane: freedChatLaneRef.current,
+      })
+      : null;
+    if (queueRoute && selectedSessionId) {
+      if (queueRoute.kind === "stay") {
+        setError({ message: queueRoute.message, kind: queueRoute.tone });
         return;
       }
-      const machineKey = goneChat?.machineKey ?? freedLane?.formerMachineKey ?? null;
-      const queued = machineKey && selectedSessionId
-        ? await sendThroughCloudQueue({ machineKey, chatId: selectedSessionId })
+      const queued = queueRoute.machineKey
+        ? await sendThroughCloudQueue({ machineKey: queueRoute.machineKey, chatId: selectedSessionId })
         : "unsupported";
-      if (queued === "unsupported" && freedLane) startFreedLaneChat(freedLane);
-      else if (queued === "unsupported") setError({ message: SAVED_CHAT_COMPUTER_GONE_MESSAGE, kind: "status" });
+      if (queued !== "unsupported") return;
+      if (queueRoute.unsupported.kind === "freed_lane") startFreedLaneChat(queueRoute.unsupported.lane);
+      else setError({ message: queueRoute.unsupported.message, kind: queueRoute.unsupported.tone });
       return;
     }
 
@@ -17340,7 +17387,10 @@ export function AgentChatPane({
       }
     }
     const draftSnapshot = draft;
-    const attachmentsSnapshot = attachments;
+    // Reassigned once, when files kept on this device are copied to the chat's
+    // machine: from then on the send, its retry and its put-back name them by
+    // their paths there.
+    let attachmentsSnapshot = attachments;
     // The ids that go with those attachments, and everything else the send
     // takes out of the composer: a pane that closes mid-send puts it all back
     // in the chat's saved draft.
@@ -17382,7 +17432,10 @@ export function AgentChatPane({
     // Show the optimistic bubble immediately when we already have a session.
     // Awaiting session-create roundtrips before this setter delays the bubble
     // by hundreds of ms on a typical send.
-    const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
+    // Reassigned with the snapshot below: once files kept on this device are
+    // copied, the bubble names the copies, as the chat's own copy of the
+    // message does, so the two match and the bubble gives way to it.
+    let selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
     let optimisticDisplayText = composedWithVisualContext.displayText;
     if (optimisticDisplayText == null) {
@@ -17421,6 +17474,29 @@ export function AgentChatPane({
     // The send's identity (chat + payload) and client id, once a send (not a steer) went out.
     let sendIdentity: { identityKey: string; record: UnconfirmedSend } | null = null;
     try {
+      // Files and comments kept on this device while the chat's computer
+      // rested go to it now, before the message and before the exclusion
+      // list below (`prepareDeviceHeldForSend`). One that can't go sends
+      // nothing: the text and every file go back in the box, and what did go
+      // is not sent again on the next try.
+      const deviceHeld = await prepareDeviceHeldForSend({
+        api: agentChatApiRef.current,
+        sessionId: selectedSessionId,
+        pin: selectedSessionId
+          ? chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current)
+          : draftExecutionBindingRef.current,
+        attachments: attachmentsSnapshot,
+        carriesComments: includeThreadComments && threadCommentsSessionAtSend != null,
+        machineRests: chatComputerRestingRef.current,
+      });
+      if (deviceHeld.stagedHeldPaths.length) {
+        for (const path of deviceHeld.stagedHeldPaths) sentHeldAttachmentPathsRef.current.add(path);
+        attachmentsSnapshot = deviceHeld.attachments;
+        unsentRestoreAtSend.attachments = attachmentsSnapshot;
+        if (!isLiteralSlashCommand) selectedAttachmentsForOptimistic = attachmentsSnapshot;
+        releaseSentHeldAttachments(sentHeldAttachmentPathsRef.current, optimisticOutgoingMessageRef.current, attachmentsRef.current);
+      }
+      const commentsHandedOver = deviceHeld.commentsHandedOver;
       let justCreatedSession = false;
       let finalText = composedWithVisualContext.text;
       if (!finalText.trim().length && attachmentsSnapshot.length && !hasPastedPrompt) {
@@ -17434,7 +17510,12 @@ export function AgentChatPane({
           : contextAttachmentsSnapshot.length || !includeThreadComments
             ? "Attached issue context"
             : "");
-      const guestCommentsForSend = includeThreadComments ? guestCommentsForNextSend(threadCommentsRef.current) : [];
+      // After a hand-over, the store's list: an edit applied there gave a guest's comment a new revision.
+      const guestCommentsForSend = includeThreadComments
+        ? guestCommentsForNextSend(commentsHandedOver && threadCommentsSessionAtSend
+          ? currentThreadComments(threadCommentsSessionAtSend)
+          : threadCommentsRef.current)
+        : [];
       const excludedThreadComments = includeThreadComments && threadCommentsSessionAtSend
         ? threadCommentClientIdsToExclude(threadCommentsSessionAtSend)
         : [];
@@ -19676,7 +19757,6 @@ export function AgentChatPane({
   // machine (no extra probe per send); after a turn stopped on its sign-in,
   // from that turn's error. It runs the sign-in on that machine
   // (`composerRuntimePin`, null for the tab's own) and shows above the prompt box.
-  const signInConnections = aiStatus?.providerConnections as Record<string, AiProviderConnectionStatus | undefined> | undefined;
   // A parallel draft starts one chat for each model in its set, so the check
   // follows the set: the first model whose provider has no login here, else
   // the first model. The composer's own model may not be in the set.
@@ -19692,8 +19772,8 @@ export function AgentChatPane({
         ? resolveChatRuntimeProvider(resolveScopedModelDescriptor(slot.modelId, modelCatalogScopeKey))
         : null))
       .filter((provider): provider is NonNullable<typeof provider> => Boolean(provider));
-    return providers.find((provider) => providerLoginMissing(provider, signInConnections?.[provider])) ?? providers[0] ?? null;
-  }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, signInConnections]);
+    return providers.find((provider) => providerLoginMissing(provider, connectionsByProvider?.[provider])) ?? providers[0] ?? null;
+  }, [modelCatalogScopeKey, parallelDraftActive, parallelModelSlots, selectedSession, selectedSessionId, sessionProvider, connectionsByProvider]);
   /**
    * The provider whose local login a send needs, or null when the composer's
    * route brings its own credentials. A saved preset or Run-in route decides
@@ -19756,12 +19836,12 @@ export function AgentChatPane({
     if (
       !sessionRunsInACloud
       && signInLoginProvider
-      && providerLoginMissing(signInLoginProvider, signInConnections?.[signInLoginProvider])
+      && providerLoginMissing(signInLoginProvider, connectionsByProvider?.[signInLoginProvider])
     ) {
       return { provider: signInLoginProvider, reason: "no-login", key: `${machineKey}:${signInLoginProvider}:no-login` };
     }
     return null;
-  }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, signInConnections, signInLoginProvider, signInProvider, subagentView, turnActive]);
+  }, [activeComposerRuntimeBinding?.key, chatComputerDeleted, chatSignInFailure, chatSignInOwnerOff, draftSkipsLocalSignIn, chatScope, sessionRunsInACloud, connectionsByProvider, signInLoginProvider, signInProvider, subagentView, turnActive]);
   // Free models (`shared/freeModels.ts`), from the composer machine's status
   // like the sign-in check above.
   const { offerFreeModel, handleUseFreeModel } = useFreeModelsDraft({
@@ -19788,7 +19868,7 @@ export function AgentChatPane({
   });
 
   // The connection of the provider the card signs in to.
-  const signInConnection = providerSignInNeed ? signInConnections?.[providerSignInNeed.provider] ?? null : null;
+  const signInConnection = providerSignInNeed ? connectionsByProvider?.[providerSignInNeed.provider] ?? null : null;
   // Not now hides this card until a different reason (another failed turn,
   // another machine) brings one back.
   const [dismissedSignInKey, setDismissedSignInKey] = useState<string | null>(null);
@@ -20083,22 +20163,28 @@ export function AgentChatPane({
    * cloud has no local sign-in to ask for, `draftSkipsLocalSignIn`), but a
    * chat on a cloud lane can need a sign-in while its tier change runs.
    */
-  // A chat on an ADE Cloud lane: a tier change's steps, or "no computer now", above the box. The chat's own binding.
-  const cloudLaneStatusBinding = selectedSessionId ? activeComposerRuntimeBinding : null;
+  // An agent's size requests in this chat: the open one is pinned above the
+  // box, and the agent hears the answer. The same array while they don't change.
+  const cloudTierRequestCards = useCloudTierRequestCards(
+    selectedSessionId && renderedSessionId === selectedSessionId ? selectedEvents : EMPTY_CHAT_EVENTS,
+  );
   const composerAboveSlot = useMemo(() => {
     const cloudTray = adeCloudNotice ? <AdeCloudTray notice={adeCloudNotice} onAction={openAdeCloudSettings} /> : null;
-    const laneStatus = cloudLaneStatusBinding?.kind === "remote"
-      ? <CloudLaneChatStatus binding={cloudLaneStatusBinding} laneId={selectedSession?.laneId ?? null} />
+    // The chat's ADE Cloud lane job (`chatLaneJob`, from the chat's own binding and lane), the one its Send reads too.
+    const laneStatus = selectedSessionId && chatLaneJob ? <CloudLaneChatStatus job={chatLaneJob} /> : null;
+    const tierRequests = selectedSessionId && cloudTierRequestCards.length > 0
+      ? <CloudTierRequestsAboveComposer cards={cloudTierRequestCards} sessionId={selectedSessionId} />
       : null;
-    if (!cloudTray && !laneStatus) return providerSignInSlot;
+    if (!cloudTray && !laneStatus && !tierRequests) return providerSignInSlot;
     return (
       <>
         {providerSignInSlot}
+        {tierRequests}
         {cloudTray}
         {laneStatus}
       </>
     );
-  }, [adeCloudNotice, cloudLaneStatusBinding, openAdeCloudSettings, providerSignInSlot, selectedSession?.laneId]);
+  }, [adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same
@@ -22676,7 +22762,7 @@ export function AgentChatPane({
   );
   return (
     <AgentChatApiProvider scope={chatScope}>
-    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
+    <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId} machineRests={chatComputerResting}>
     <ChatMachineWakeProvider>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
@@ -22761,7 +22847,8 @@ export function AgentChatPane({
           <CloudQueuedMessages
             messages={cloudQueue.messages.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
             failed={cloudQueue.failed.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
-            waking={cloudQueue.waking && !(cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching")}
+            state={chatLaneChangeKind
+              ?? (cloudQueue.waking && !(cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching") ? "waking" : "waiting")}
             style={RUNTIME_BANNER_STYLE}
             onCancel={cloudQueue.cancel}
             onPutBack={(message) => {
@@ -22973,6 +23060,9 @@ export function AgentChatPane({
                         sessionTurnActive={turnActive}
                         trailing={sponsoredSlot}
                         wakingSinceMs={!subagentView && cloudWakingSince ? Date.parse(cloudWakingSince) : null}
+                        // Connected again: the computer is awake (the header
+                        // says so too), and the send waits on the agent.
+                        wakingLabel={chatConnectionMark ? `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…` : null}
                         usageLimitResumeActive={usageLimitResume != null}
                         // Only a limit ADE is waiting out reads "Paused"; one with no
                         // reset or with auto-resume off reads "Usage limit".

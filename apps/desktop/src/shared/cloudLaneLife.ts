@@ -9,10 +9,11 @@
  * goes on with every window closed.
  */
 
-import type { AdeCardPayload, AdeCardRow } from "./adeCard";
+import type { AdeCardPayload } from "./adeCard";
 import type { CloudTierId } from "./cloudTiers";
 import type { CloudLaneWithoutComputer } from "./cloudLaneLaunch";
 import type { ChatLaunchStageStatus } from "./types/chatLaunch";
+import type { OpenProjectBinding } from "./types/core";
 
 export type { CloudLaneWithoutComputer };
 
@@ -128,6 +129,9 @@ export type CloudLaneJobStage = {
   endedAt: string | null;
 };
 
+/** The save step's detail when it couldn't write the chats' saved copy (a stuck brain): the job goes on. */
+export const CLOUD_LANE_SAVE_WARNING_DETAIL = "The chats' saved copy may be a few minutes old";
+
 /**
  * `waiting`: for the agent to be idle. `running`: the steps. `online`: ADE on
  * the computer answers (the lane says Online only now). `failed`: a step
@@ -156,6 +160,8 @@ export type CloudLaneJobSnapshot = {
   error: string | null;
   /** The agent's chat whose request card the person confirmed, or null. */
   requestedByChat: string | null;
+  /** That request card's id, so the card matches this job and no later one. Absent on older records. */
+  requestId?: string | null;
   /**
    * A resize that also grows the disk: the disk's new size in GB. Null (or
    * absent, from an older record) keeps the disk as it is.
@@ -170,6 +176,28 @@ export type CloudLaneJobSnapshot = {
    */
   dismissedAt?: string | null;
 };
+
+/** The job still waits for the agent or runs its steps. */
+export function cloudLaneJobIsLive(job: Pick<CloudLaneJobSnapshot, "phase">): boolean {
+  return job.phase === "waiting" || job.phase === "running";
+}
+
+/** One change of a computer at a time: a second one (a confirm, a Retry) is refused with this. */
+export const CLOUD_LANE_CHANGE_RUNNING_MESSAGE = "A change is already running for this lane.";
+
+/**
+ * A send to the lane's chats goes to the account's queue now, which holds it
+ * until the change is done: a move from its making on (once it no longer
+ * waits for the agent; the server's `HOLDING_STEPS` in
+ * `account-directory/src/cloud/moves.ts`), a size change once its resize was
+ * asked (before that its ADE still answers, and the restart would cut the
+ * turn the message started).
+ */
+export function cloudLaneJobHoldsSends(job: CloudLaneJobSnapshot): boolean {
+  if (job.phase !== "running") return false;
+  if (job.kind === "move") return true;
+  return job.stages.some((stage) => stage.id === "resize" && (stage.status === "done" || stage.status === "warning" || stage.status === "skipped"));
+}
 
 /** The calls `IPC.cloudLaneLifeCall` answers. */
 export type CloudLaneLifeMethod =
@@ -212,76 +240,44 @@ export type CloudLaneChangeTierArgs = {
   /** The request card the person confirmed, if any (`CloudTierRequest.requestId`). */
   requestId?: string | null;
   requestedByChat?: string | null;
+  /**
+   * That chat's runtime pin: the layer that runs the change tells the chat's
+   * own machine how it ended (`cloud.tier_request_answer` with its outcome).
+   */
+  requestedByChatPin?: OpenProjectBinding | null;
 };
 
 // ---------------------------------------------------------------------------
-// An agent asks for a tier change
+// A delete or free the person said yes to, in the agent's chat
 // ---------------------------------------------------------------------------
 
-/** The card an agent's `cloud.tier_request` posts in its chat. A person confirms it; the agent never changes a tier. */
-export const CLOUD_TIER_REQUEST_CARD_VARIANT = "cloud_tier_request";
+/**
+ * One card in the agent's chat for a lane delete, a free or a saved copy's
+ * delete the person approved on its card: "Deleting Stall Repro…", then its
+ * outcome. The verb's result also goes to the command that asked. The
+ * generic `ade_card` draws it (`KNOWN_ADE_CARD_VARIANTS`): live while it
+ * runs, one quiet line when done, amber with the reason when it failed.
+ */
+export const CLOUD_LANE_ACTION_CARD_VARIANT = "cloud_lane_action";
 
-/** The card's buttons. The client answers `idle` and `now` with `changeTier`. */
-export const CLOUD_TIER_REQUEST_ACTIONS = {
-  idle: "cloud_tier_change_idle",
-  now: "cloud_tier_change_now",
-  dismiss: "cloud_tier_request_dismiss",
-} as const;
-
-export type CloudTierRequest = {
-  requestId: string;
-  instanceId: string;
-  /** The computer's name (the lane's name). */
-  computerName: string;
-  fromSizeId: CloudTierId | null;
-  toSizeId: CloudTierId;
-  /** The agent's reason, in its words. */
-  reason: string;
-  chatSessionId: string;
-};
-
-/** Row keys the card carries its request in, so a client reads it back without parsing text. */
-const ROW = { computer: "tier_request_computer", size: "tier_request_size", reason: "tier_request_reason", from: "tier_request_from" } as const;
-
-export function buildCloudTierRequestCard(request: CloudTierRequest, labels: { from: string | null; to: string; rate: string | null }): AdeCardPayload {
-  const rows: AdeCardRow[] = [
-    { key: ROW.computer, icon: "info", text: request.computerName, detail: request.instanceId },
-    { key: ROW.size, icon: "info", text: `To ${labels.to}${labels.rate ? `, ${labels.rate}` : ""}`, detail: request.toSizeId },
-    ...(request.fromSizeId ? [{ key: ROW.from, icon: "info" as const, text: `Now ${labels.from ?? request.fromSizeId}`, detail: request.fromSizeId }] : []),
-    { key: ROW.reason, icon: "info", text: request.reason, detail: null },
-  ];
+export function buildCloudLaneActionCard(input: {
+  cardId: string;
+  state: "live" | "terminal";
+  title: string;
+  /** The outcome's sentence; null while it runs. */
+  detail?: string | null;
+  failed?: boolean;
+}): AdeCardPayload {
+  const detail = input.detail?.trim() || null;
   return {
-    cardId: `cloud-tier-request:${request.requestId}`,
-    variant: CLOUD_TIER_REQUEST_CARD_VARIANT,
-    state: "live",
-    title: `Change ${request.computerName} to ${labels.to}?`,
-    subtitle: "The agent asks. It changes nothing until you confirm.",
-    rows,
-    actions: [
-      { id: CLOUD_TIER_REQUEST_ACTIONS.idle, label: "Change when the agent is idle", kind: "primary" },
-      { id: CLOUD_TIER_REQUEST_ACTIONS.now, label: "Do it now", kind: "default" },
-      { id: CLOUD_TIER_REQUEST_ACTIONS.dismiss, label: "Keep the size", kind: "default" },
-    ],
-    fallbackText: `The agent asks to change ${request.computerName} to ${labels.to}: ${request.reason} Change it in ADE (Settings › ADE Cloud).`,
-  };
-}
-
-/** The request a `cloud_tier_request` card carries, or null for any other card. */
-export function cloudTierRequestOfCard(card: AdeCardPayload, chatSessionId: string): CloudTierRequest | null {
-  if (card.variant !== CLOUD_TIER_REQUEST_CARD_VARIANT) return null;
-  const requestId = card.cardId.startsWith("cloud-tier-request:") ? card.cardId.slice("cloud-tier-request:".length) : "";
-  const row = (key: string) => card.rows?.find((entry) => entry.key === key) ?? null;
-  const computer = row(ROW.computer);
-  const size = row(ROW.size);
-  if (!requestId || !computer?.detail || !size?.detail) return null;
-  return {
-    requestId,
-    instanceId: computer.detail,
-    computerName: computer.text,
-    fromSizeId: (row(ROW.from)?.detail as CloudTierId | undefined) ?? null,
-    toSizeId: size.detail as CloudTierId,
-    reason: row(ROW.reason)?.text ?? "",
-    chatSessionId,
+    cardId: input.cardId,
+    variant: CLOUD_LANE_ACTION_CARD_VARIANT,
+    state: input.state,
+    title: input.title,
+    // A failure's reason is its amber row; a subtitle too would say it twice.
+    subtitle: input.failed ? null : detail,
+    rows: detail ? [{ key: "cloud_lane_action_outcome", icon: input.failed ? "fail" : input.state === "live" ? "running" : "pass", text: detail, tone: input.failed ? "warning" : "neutral" }] : [],
+    fallbackText: detail ? `${input.title}. ${detail}` : input.title,
   };
 }
 

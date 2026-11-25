@@ -1,3 +1,4 @@
+import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type { OpenProjectBinding, RecentProjectSummary } from "./types/core";
 
 /**
@@ -37,6 +38,42 @@ export function findMachineProject<T extends { projectId: string; rootPath: stri
   const rootPath = comparableRootPath(ref.rootPath);
   if (!rootPath) return null;
   return projects.find((project) => comparableRootPath(project.rootPath) === rootPath) ?? null;
+}
+
+/** Which project on a machine: by id, then folder, then the account's project id, then the repository's origin (`pickMachineProject`). */
+export type MachineProjectRef = {
+  projectId?: string | null;
+  rootPath?: string | null;
+  originUrl?: string | null;
+  accountProjectId?: string | null;
+};
+
+/**
+ * The project a machine lists for a reference to it, of those still there:
+ * by id, then by folder (`findMachineProject`), then by the account's project
+ * id (the ADE Cloud tab's pin names the account's project, not the
+ * machine's), then by the repository's origin. Main and ADE Web find a chat's
+ * project on its machine with this one rule.
+ */
+export function pickMachineProject<T extends {
+  projectId: string;
+  rootPath: string;
+  exists?: boolean;
+  accountProjectId?: string | null;
+  gitOriginUrl?: string | null;
+}>(
+  projects: readonly T[] | null | undefined,
+  ref: MachineProjectRef,
+): T | null {
+  const present = (projects ?? []).filter((project) => project.exists !== false);
+  const found = findMachineProject(present, ref);
+  if (found) return found;
+  const accountProjectId = ref.accountProjectId?.trim();
+  const byAccount = accountProjectId ? present.find((project) => project.accountProjectId === accountProjectId) : undefined;
+  if (byAccount) return byAccount;
+  const origin = normalizeGitRemoteIdentity(ref.originUrl ?? null);
+  if (!origin) return null;
+  return present.find((project) => normalizeGitRemoteIdentity(project.gitOriginUrl) === origin) ?? null;
 }
 
 /** State key for an open project binding. Local projects key by root path. */

@@ -15,7 +15,7 @@ import {
   type PreparedDraftLaunch,
 } from "../../../lib/draftLaunchJobs";
 import { isRemoteCallNotSentError } from "../../../../shared/runtimeErrors";
-import { extractError } from "../../../lib/format";
+import { personErrorText } from "../../../lib/format";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import type { ComposerHandoff } from "./chatLaunchDock";
 
@@ -444,7 +444,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     }
     const message = isRemoteCallNotSentError(launchError)
       ? notStartedMessage(kind, deps.launchMachineName?.() ?? null, holdsComposerUntilOpen)
-      : extractError(launchError);
+      : personErrorText(launchError);
     const jobStillVisible = deps.draftLaunchJobExists(jobId);
     deps.patchDraftLaunchJob(jobId, {
       status: "failed",

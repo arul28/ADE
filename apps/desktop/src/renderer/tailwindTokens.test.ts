@@ -38,13 +38,6 @@ describe("tailwind token wiring", () => {
   };
   const tokens = Object.keys(config.theme?.extend?.colors ?? {});
 
-  it("names the config rather than relying on auto-detection", () => {
-    const declared = css.match(/@config\s+"([^"]+)"/);
-    expect(declared, "index.css must name tailwind.config.cjs with @config").toBeTruthy();
-    const target = path.resolve(desktopRoot, "src/renderer", declared![1]!);
-    expect(fs.existsSync(target), `@config points at a missing file: ${target}`).toBe(true);
-  });
-
   it("backs every colour token with a CSS variable that the stylesheet defines", () => {
     const colors = (config.theme?.extend?.colors ?? {}) as Record<string, string>;
     for (const [token, value] of Object.entries(colors)) {

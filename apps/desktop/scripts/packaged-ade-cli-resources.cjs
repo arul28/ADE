@@ -12,6 +12,7 @@ const REQUIRED_PACKAGED_ADE_CLI_PAYLOAD_PATHS = Object.freeze([
   "copilotSdkWorker.cjs",
   "piSdkWorker.cjs",
   "usageLedgerWorker.cjs",
+  "providerInlineImageWorker.cjs",
   "adeRpcServer.cjs",
   "bin/ade",
   "bin/ade.cmd",

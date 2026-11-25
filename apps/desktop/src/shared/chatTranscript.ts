@@ -164,6 +164,13 @@ function steerStayedInLiveTurn(
 }
 
 /**
+ * `system_notice.status` of "Getting <agent> ready": the turn waits for ADE to
+ * download the agent on this machine. The working line says that while it is
+ * the newest thing the turn did (`deriveAgentSetupWait` in the renderer).
+ */
+export const AGENT_DOWNLOAD_NOTICE_STATUS = "agent_download";
+
+/**
  * Whether a sent user message starts a new turn for tool activity: the line
  * that says what a live turn is running, and the turn's tool list. A message
  * that carries the open turn's id ran inside it: Codex writes a `!` shell

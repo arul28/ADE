@@ -16,9 +16,12 @@
  * is here", so the answer can be logged, shown, and acted on.
  *
  * Liveness is pid AND start time, never the pid alone: the OS recycles pid
- * numbers, and a stale record naming a reused pid would accuse an innocent
- * process. A record whose start time cannot be read (Windows, a dead process)
- * is treated as gone.
+ * numbers (and on Linux a thread id answers `kill(pid, 0)`), and a stale record
+ * naming a reused pid would accuse an innocent process. A pid that is now a
+ * thread of another process (`/proc/<pid>/status` Tgid) is gone; a process
+ * whose start time can't be read right now (`ps` failed or timed out under
+ * load) keeps its record. A record written without a start time (Windows,
+ * where `ps` start times don't exist) goes by the pid alone.
  */
 
 import fs from "node:fs";
@@ -43,8 +46,24 @@ export type BrainHomeRegistryDeps = {
   readProcessStartTimeMs: (pid: number) => number | null;
   /** `process.kill(pid, 0)` in production; a set in tests. */
   isPidAlive: (pid: number) => boolean;
+  /**
+   * The process a task id belongs to (Linux `Tgid`), or null when it can't
+   * be told: `readLinuxThreadGroupId` in production.
+   */
+  readThreadGroupId: (pid: number) => number | null;
   now?: () => Date;
 };
+
+/** `Tgid` from `/proc/<pid>/status`: the process a Linux thread id belongs to. Null off Linux or unreadable. */
+export function readLinuxThreadGroupId(pid: number): number | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const match = /^Tgid:\s+(\d+)/m.exec(fs.readFileSync(`/proc/${pid}/status`, "utf8"));
+    return match ? Number(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
 
 const REGISTRY_DIR = "brains";
 
@@ -65,11 +84,21 @@ function recordPath(home: string, pid: number): string {
  */
 export function isBrainRecordLive(
   record: BrainRegistryRecord,
-  deps: Pick<BrainHomeRegistryDeps, "isPidAlive" | "readProcessStartTimeMs">,
+  deps: Pick<BrainHomeRegistryDeps, "isPidAlive" | "readProcessStartTimeMs" | "readThreadGroupId">,
 ): boolean {
   if (!Number.isInteger(record.pid) || record.pid <= 0) return false;
   if (!deps.isPidAlive(record.pid)) return false;
+  // On Linux a thread id answers `kill(pid, 0)` too: an ADE Cloud computer
+  // restarts with the new brain's threads on the old brain's pid numbers, and
+  // the old record then warned of a second brain on every restart. A brain
+  // record names a process, so a pid that is another process's thread is gone.
+  const threadGroupId = deps.readThreadGroupId(record.pid);
+  if (threadGroupId != null && threadGroupId !== record.pid) return false;
+  // Written where start times can't be read (Windows): the pid is all there is.
   if (record.startedAtMs == null) return true;
+  // A real process whose start time can't be read right now (`ps` failed or
+  // hit its 2 s timeout under load) keeps its record: a live brain must not
+  // lose it to a slow `ps`.
   const actual = deps.readProcessStartTimeMs(record.pid);
   if (actual == null) return true;
   return Math.abs(actual - record.startedAtMs) <= PROCESS_START_TIME_TOLERANCE_MS;

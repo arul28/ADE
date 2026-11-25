@@ -35,6 +35,7 @@ import { joinParentAndName } from "../../lib/pathUtils";
 import { usageLeftLevel } from "../usage/usageDesign";
 import { Banner } from "../ui/notice";
 import { agentCheckPrompt, announceProjectMoveChanged, displayPath, formatBytes, formatReminder, volumeFor } from "./projectMoveModel";
+import { personErrorText } from "../../lib/format";
 import { OldCopyControls } from "./oldCopyActions";
 // The drive cards are the settings kit's choice cards; the dialog opens from anywhere.
 import "../settings/primitives/settingsModern.css";
@@ -255,7 +256,7 @@ export function MoveProjectDialog({
       onClose();
       window.location.hash = `#/work?sessionId=${encodeURIComponent(session.id)}&laneId=${encodeURIComponent(primary.id)}`;
     } catch (cause) {
-      showToast({ tone: "error", title: "Couldn't start the check", message: cause instanceof Error ? cause.message : String(cause) });
+      showToast({ tone: "error", title: "Couldn't start the check", message: personErrorText(cause) });
     } finally {
       setStartingCheck(false);
     }

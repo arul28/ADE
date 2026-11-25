@@ -915,6 +915,7 @@ export function applyBrowserMockCloud(ade: any): void {
       return { deleted: 1 };
     },
     clearCaches: async () => ({ freedGb: 1.2 }),
+    answerTierRequest: async () => ({ answered: true, toldAgent: true }),
     // The CTO's home on ADE Cloud, as the desktop makes it (`ctoCloudHomeService.ts`).
     // `?mockCtoCloud=fail` fails the clone step, so Retry and Cancel can be seen.
     ...mockCtoCloudHome(fix.planId !== "free", param("mockCtoCloud") === "fail"),

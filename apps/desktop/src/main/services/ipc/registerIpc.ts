@@ -13234,6 +13234,19 @@ export function registerIpc({
     machineConnector,
     remote: runtimeBridge.remoteForMain,
     laneBackups: cloudLaneBackups,
+    // A chat on this computer asked for the size: its project's runtime is
+    // told how the change ended. Only a project this computer knows.
+    callLocalAction: async (rootPath, request) => {
+      const pool = localRuntimeConnectionPool;
+      if (!pool) throw new Error("This ADE has no local runtime to tell the chat.");
+      const given = path.resolve(rootPath);
+      // The root as this computer knows it, compared as the platform compares paths (Windows and macOS fold case).
+      const known = listLocalRecentProjectSummaries().find((project) => pathsEqual(path.resolve(project.rootPath), given))?.rootPath
+        ?? (localProjectRegistryForAuthorization ??= new ProjectRegistry()).findAtRootPath(given)?.rootPath
+        ?? null;
+      if (!known) throw new Error("ADE doesn't know that project on this computer.");
+      return (await pool.callActionForRoot(path.resolve(known), request)).result;
+    },
     analytics: productAnalyticsService ?? null,
     logger: getMachineMainLogger(),
   });

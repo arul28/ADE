@@ -3,7 +3,7 @@ import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/typ
 import { agentChatLiveAppendOf, foldedOverAppends } from "../../../shared/chatHistoryMerge";
 import type { ChatTranscriptGroupedEnvelope, ChatWorkLogEntry } from "./chatTranscriptRows";
 import { dedupeChatToolActivityEntries } from "./ChatWorkLogBlock";
-import { userMessageStartsTurn } from "../../../shared/chatTranscript";
+import { AGENT_DOWNLOAD_NOTICE_STATUS, userMessageStartsTurn } from "../../../shared/chatTranscript";
 import {
   classifyProviderRetryCause,
   formatLegacyProviderRetryActivityDetail,
@@ -176,6 +176,24 @@ export function deriveTranscriptToolActivity(rows: ChatTranscriptGroupedEnvelope
     fileEntriesByDoneRowKey,
     activeFileEntries: dedupeWorkLogEntriesById(activeEntries),
   };
+}
+
+/**
+ * "Getting Claude Code ready…" while that notice (`AGENT_DOWNLOAD_NOTICE_STATUS`)
+ * is the newest thing in the chat: the turn waits for ADE to download the
+ * agent on its machine, which the working line says instead of "Thinking".
+ * Only the person's messages may come after it; anything else (the agent's
+ * first event or notice, the turn's end) means the wait is over.
+ */
+export function deriveAgentSetupWait(events: readonly AgentChatEventEnvelope[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const evt = events[i]!.event;
+    if (evt.type === "user_message") continue;
+    if (evt.type !== "system_notice" || evt.status !== AGENT_DOWNLOAD_NOTICE_STATUS) return null;
+    const message = evt.message.trim();
+    return message ? `${message}…` : null;
+  }
+  return null;
 }
 
 function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: string; detail?: string } | null {

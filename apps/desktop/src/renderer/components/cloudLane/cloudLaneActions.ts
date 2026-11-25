@@ -9,6 +9,7 @@ import type {
   CloudLaneWithoutComputer,
   CloudLaneWorkState,
 } from "../../../shared/cloudLaneLife";
+import type { CloudTierRequestAnswerArgs } from "../../../shared/cloudTierRequest";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import type { CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -103,6 +104,8 @@ export async function changeCloudLaneTier(input: {
   /** An agent's request card the person confirmed. */
   requestId?: string | null;
   requestedByChat?: string | null;
+  /** That chat's runtime pin: whatever runs the change tells the chat's own machine how it ended. */
+  requestedByChatPin?: OpenProjectBinding | null;
 }): Promise<CloudLaneJobSnapshot> {
   return await call("changeTier", input);
 }
@@ -190,6 +193,24 @@ export async function clearCloudLaneCaches(input: { instanceId: string | null; m
     onWaking: () => {},
   });
   return await clear(pin, instanceId);
+}
+
+/** Whether this window can send an answer to an agent's size request to the chat's machine. */
+export function cloudTierRequestAnswersAvailable(): boolean {
+  return isAdeAvailable(typeof window !== "undefined" ? window.ade?.cloud?.answerTierRequest : null);
+}
+
+/**
+ * The person's answer to an agent's size request, sent to the CHAT's own
+ * machine by the chat's runtime pin (never the tab's): the card is marked
+ * answered there, and its agent is told. How the change ended goes there
+ * from whatever runs it (`requestedByChatPin`), not from a window. Throws
+ * when this window or that machine can't take it.
+ */
+export async function answerCloudTierRequest(pin: OpenProjectBinding, args: CloudTierRequestAnswerArgs): Promise<{ answered: boolean; toldAgent: boolean }> {
+  const answer = window.ade?.cloud?.answerTierRequest;
+  if (!isAdeAvailable(answer)) throw new Error("This window can't send your answer to the agent.");
+  return await answer(pin, args);
 }
 
 /**

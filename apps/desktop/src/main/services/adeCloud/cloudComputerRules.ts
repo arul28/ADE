@@ -15,11 +15,30 @@
  *   (`agentChatService.ts`).
  */
 
+import os from "node:os";
 import { AdeExpectedError } from "../../../shared/expectedError";
 
 /** Whether this ADE runs on an ADE Cloud computer (the machine template sets the variable). */
 export function isAdeCloudComputer(env: NodeJS.ProcessEnv = process.env): boolean {
   return /^[a-z0-9]{10}$/.test(env.ADE_CLOUD_INSTANCE_ID?.trim() ?? "");
+}
+
+/**
+ * The agent prompt's one line, only on an ADE Cloud computer. Without it an
+ * agent there did not know it ran on its lane's own cloud computer, read ADE's
+ * memory guard stopping a build as a bare "Killed", and never thought to ask
+ * for a bigger size, which an agent may do only by asking the person on a card.
+ *
+ * The one copy: the runtime block of `buildCodingAgentSystemPrompt`
+ * (`ai/tools/systemPrompt.ts`) carries it for Claude, Codex, Copilot, Droid,
+ * OpenCode and Pi, and `buildAdeGuidanceForLane` (`agentChatService.ts`) for
+ * Cursor, Muse and the ACP agents. It lives here, not in `systemPrompt.ts`,
+ * because the chat tests replace that module whole.
+ */
+export function describeAdeCloudComputer(): string | null {
+  if (!isAdeCloudComputer()) return null;
+  const memoryGb = Math.round(os.totalmem() / 2 ** 30);
+  return `**ADE Cloud:** you run on this lane's own ADE Cloud computer (Linux, ${memoryGb} GB memory, no swap). A command that ends with "Killed" ran out of memory: ADE stopped the biggest process to save the computer. For more memory or disk, \`ade cloud resize --request --size <size> --reason "…"\` asks the user on a card. Details: **ade-cloud**.`;
 }
 
 /** What a person or an agent reads when a cloud computer refuses a second lane. Stable: the UI and the CLI show it as is. */

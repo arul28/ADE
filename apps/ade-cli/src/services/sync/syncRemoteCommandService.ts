@@ -81,6 +81,8 @@ import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/c
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
+import { cloudMoveSendRefusal, isSyncTurnStart } from "../power/cloudMoveMark";
+import { resolveMachineAdeDir } from "../projects/machineLayout";
 import {
   decodeCrossMachineDestinationPreflightArgs,
 } from "../../../../desktop/src/shared/crossMachineHandoff";
@@ -6965,9 +6967,13 @@ const CLOUD_REMOTE_READS: ReadonlySet<string> = new Set([
   "access", "status", "list", "hours", "limits", "make_status", "cloud_sign_in_status", "referral",
   "saved_chats_list", "saved_chats_read",
 ]);
-/** `invite_redeem`: the person enters someone's invite from their own phone (a controlling device only). */
+/**
+ * `invite_redeem`: the person enters someone's invite from their own phone (a controlling device only).
+ * `tier_request_answer`: the person's answer to an agent's size request card in a chat of this machine.
+ */
 const CLOUD_REMOTE_WRITES: ReadonlySet<string> = new Set([
   "create", "copy", "move", "sleep", "wake", "resize", "delete", "update", "set_limits", "invite_redeem",
+  "tier_request_answer",
 ]);
 
 /**
@@ -9065,6 +9071,15 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       const handler = registry.get(payload.action as SyncRemoteCommandAction);
       if (!handler) {
         throw new Error(`Unsupported remote command: ${payload.action}`);
+      }
+      // A move of this ADE Cloud computer holds it (`cloudMoveMark.ts`): a
+      // command that starts a turn (a send, a launch, text for a CLI) would
+      // have it cut. `computer_moving` tells ADE Web to queue a message to a
+      // chat it has on the account; a new chat has no queue, so its launch
+      // fails with the sentence.
+      if (isSyncTurnStart(payload.action, payload.args)) {
+        const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
+        if (moving) throw moving;
       }
       const commandArgs = isRecord(payload.args) ? payload.args : {};
       args.logger.debug?.("sync.remote_command.execute", {

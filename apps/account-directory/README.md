@@ -871,6 +871,17 @@ A send to a chat or CLI whose computer rests or is gone goes here
   provider key check: it settles `via_launch` rows from their launch, fails
   queued messages after 24 hours, and prunes final rows after 7 days, in
   batches of 200.
+- **A move.** While a server move of the chat's computer runs (`moves.ts`,
+  from `make` to `register`), a send is stored for the old computer, wakes
+  nothing and answers `wake.state: "moving"`; the old computer's list and
+  claim leave it out (`MOVE_HOLDS_MESSAGES_SQL`). `register` gives the queued
+  messages the new computer's instance id (their chat address stays) and runs
+  a detached drain there; one the old computer had claimed ends failed (it
+  may have reached the chat). A send after that, and after the move, follows
+  the move to the new computer (`moveMessageRouteOf`). A failed or
+  cancelled move gives them back to the old computer and asks it to drain.
+  A chat with no saved copy on a moved computer still takes a message by the
+  old address.
 - The message text is sealed. Its additional data has no machine key, so a
   chat move keeps it readable. No log line has the text.
 

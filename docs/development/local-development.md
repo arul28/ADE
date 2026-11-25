@@ -576,6 +576,13 @@ its own socket leaves the installed brain's other chats and scheduled work
 alone. The shared database still contains the same project state, so use a
 throwaway project when you need full data isolation. Starting a brain on a home
 that already has one prints who else is there and logs `brain.home_shared`.
+A record counts only while its pid is a process with the start time it wrote
+(`isBrainRecordLive`). On Linux a thread id also answers `kill(pid, 0)`, and an
+ADE Cloud computer restarts with the new brain's threads on the old brain's pid
+numbers, which used to warn of a second brain on every restart; a pid whose
+`/proc/<pid>/status` Tgid names another process is a thread, so its record is
+gone. A process whose start time `ps` can't read right now (it failed or timed
+out under load) keeps its record.
 List the brains, with their homes, before assuming:
 
 ```bash

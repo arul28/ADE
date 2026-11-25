@@ -216,7 +216,7 @@ import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
-import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
+import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudTierRequest";
 import { SPONSORED_PICK_CARD_VARIANT } from "../../../shared/sponsoredPick";
 import { SponsoredPickCard } from "./sponsored/SponsoredPickCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -272,6 +272,7 @@ import { formatTurnFoldHead, formatTurnFoldJobCount, formatTurnFoldLabel } from 
 import { pluralCount } from "../../../shared/formatting";
 import { sameKeyList, sameMapContents, sameSetContents, useLatestCallback, useStableIdentity } from "../../lib/stableIdentity";
 import {
+  deriveAgentSetupWait,
   getEventTurnId,
   useTranscriptPresentation,
 } from "./chatTranscriptPresentation";
@@ -3425,9 +3426,11 @@ function renderEvent(
               the page, even an invisible one, makes Chromium on macOS redraw
               the whole window for every change. */}
           <div data-ade-find-skip="" className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 rounded-md bg-black/30 px-1 py-0.5 opacity-0 transition-opacity duration-200 group-hover/user-card:opacity-100 group-hover/user-card:backdrop-blur-md focus-within:opacity-100 focus-within:backdrop-blur-md">
-            {envelope.timestampSynthetic === true
+            {/* When the person sent it: a send held while its computer woke
+                carries that time (`sentAt`); the row's own is when it got there. */}
+            {envelope.timestampSynthetic === true && !event.sentAt
               ? null
-              : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
+              : <RowHoverTimestamp iso={event.sentAt ?? envelope.timestamp} className="mr-0.5" />}
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"
@@ -6428,6 +6431,7 @@ function AgentChatMessageListMain({
   assistantLabel,
   sessionTurnActive = false,
   wakingSinceMs = null,
+  wakingLabel = null,
   usageLimitResumeActive = false,
   usageLimitResumeTurnId = null,
   onOpenWorkspacePath,
@@ -6519,6 +6523,12 @@ function AgentChatMessageListMain({
    * "Waking the computer…" and counts from here.
    */
   wakingSinceMs?: number | null;
+  /**
+   * What that wait says instead of "Waking the computer…" once the computer
+   * is awake and the send is still on its way (the pane passes "Starting
+   * Claude…" while the chat's computer is connected). Null: still waking.
+   */
+  wakingLabel?: string | null;
   /**
    * The host's live usage-limit resume state for this chat, or null. Only two
    * facts are read here — that a limit is live (the quota card stands down for
@@ -7129,6 +7139,12 @@ function AgentChatMessageListMain({
     showStreamingIndicator,
     sessionEnded,
   });
+  // "Getting Claude Code ready…" while the turn waits for ADE to download the
+  // agent, read only while a working line shows.
+  const agentSetupWait = useMemo(
+    () => ((showStreamingIndicator || wakingSinceMs != null) && !sessionEnded ? deriveAgentSetupWait(events) : null),
+    [events, sessionEnded, showStreamingIndicator, wakingSinceMs],
+  );
   // True once the active turn's reply has opened a ```scene fence: from then
   // on the reply's own drawing box stands for the scene, and the drafting box
   // under the working indicator goes. Text arrives in fragments, so a short
@@ -9620,9 +9636,11 @@ function AgentChatMessageListMain({
   // The same indicator element, so a live turn that follows the wake takes it
   // over in place instead of a second one fading in.
   const wakingIndicator = !liveTurnIndicator && !sessionEnded && wakingSinceMs != null;
+  // Each line says what the send waits for now: the computer to wake, then
+  // the agent to start (or to download), then what the turn does.
   const workingActivity = wakingIndicator
-    ? "Waking the computer…"
-    : activeProviderRetryActivity || resolveWorkingIndicatorLabel(
+    ? agentSetupWait ?? wakingLabel ?? "Waking the computer…"
+    : activeProviderRetryActivity || agentSetupWait || resolveWorkingIndicatorLabel(
       latestActivity?.activity ?? null,
       transcriptToolActivity.activeFileEntries,
       transcriptToolActivity.activeEntries,

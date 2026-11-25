@@ -275,6 +275,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { size: \"small\" | \"medium\" | \"large\" | \"xlarge\", reason: string, machine?: string (default: the cloud computer this runs on) }",
       example: "ade cloud resize --request --size large --reason \"Android needs a full computer\"",
     },
+    tier_request_answer: {
+      description: "The person's answer to an agent's tier_request card, from their own client on the chat's machine, and how the change they said yes to ended, from the ADE that ran it (person only; an agent never answers its own card). Reads the card from the chat, marks it answered for every surface and tells the agent once in ADE's words: at once when the person keeps the size (answer dismiss), a note for its next turn at a yes, and when the change ends (outcome online, failed or cancelled). Answers { answered, toldAgent }.",
+      input: "object { chatSessionId: string, requestId: string (the card's request), answer: \"idle\" | \"now\" | \"dismiss\", outcome?: \"online\" | \"failed\" | \"cancelled\", error?: string }",
+      example: "The chat's tier request card in ADE (Keep the size, Change size)",
+    },
     recommend: {
       description: "On an ADE Cloud computer, ask Gravity's Index (ADE's ad partner) for a tool or service the person needs right now, such as a hosted database or an email API. Call it only for a real, current need the person has, never to fill a gap or for something already set up. The account server decides whether there is a pick (ADE Cloud Free, the person's yes to sponsored cards, someone watching). A pick shows in your chat as a Sponsored card; it installs nothing. Answers { shown, pick, message }: follow `message`. Install or set up the pick only if the person asks. With no card (a CLI session), say it once in your reply, starting with \"Sponsored:\".",
       input: "object { need: string (what the person needs, in a sentence) }",

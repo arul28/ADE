@@ -240,8 +240,9 @@ export type SavedChatQueueSend = (location: SavedChatQueueTarget, args: AgentCha
 
 /**
  * Sends through the account's queue. `unsupported` (an older server or
- * computer, files with the message, a message longer than the queue takes,
- * no queue in this ADE): the caller wakes the computer and sends, as before.
+ * computer, files or thread comments with the message, a message longer than
+ * the queue takes, no queue in this ADE): the caller wakes the computer and
+ * sends, as before.
  * A refusal throws the server's sentence.
  */
 export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, args) => {
@@ -249,6 +250,9 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   if (!send) return "unsupported";
   // Files go with a direct send: the queue takes text only from here.
   if ((args.attachments?.length ?? 0) > 0 || (args.contextAttachments?.length ?? 0) > 0) return "unsupported";
+  // So do thread comments: the host adds them to the message, and a queued
+  // message is sent there without them (they would stay pending, unsent).
+  if (args.includeThreadComments) return "unsupported";
   const text = args.text;
   if (!text.trim()) return "unsupported";
   // Longer than the queue takes: the direct send carries it.
@@ -260,7 +264,9 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   // until the queue took this one.
   // A model goes only when the person picked one: the computer applies a sent
   // model as a pick, and a gone computer's launch falls back to the saved model.
-  const { modelId: pickedModel, ...settings } = peekQueuedChatPicks(location.chatId) ?? {};
+  const { modelId: pickedModel, ...picks } = peekQueuedChatPicks(location.chatId) ?? {};
+  // "Compact first" is this message's own choice, not a pick: it rides with it.
+  const settings = typeof args.compactFirst === "boolean" ? { ...picks, compactFirst: args.compactFirst } : picks;
   const answer = await send({
     machineKey: location.machineKey,
     chatId: location.chatId,
@@ -324,6 +330,7 @@ export function useAdeCloudChatQueue(args: { pin: OpenProjectBinding | null | un
   const dismiss = useCallback((messageId: string) => {
     if (machineKey && chatId) dismissAdeCloudFailedMessage(machineKey, chatId, messageId);
   }, [chatId, machineKey]);
-  const waking = state.messages.some((message) => message.state === "queued") && state.wake?.state !== "launching";
+  // A new computer (`launching`) or a move (`moving`) holds them: nothing wakes.
+  const waking = state.messages.some((message) => message.state === "queued") && state.wake?.state !== "launching" && state.wake?.state !== "moving";
   return { ...state, address: machineKey && chatId ? { machineKey, chatId } : null, waking, refresh, cancel, dismiss };
 }

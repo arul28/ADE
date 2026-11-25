@@ -59,6 +59,14 @@ function makeWebSocketHarness() {
   return { sockets, factory };
 }
 
+
+/**
+ * A project that has drained the relay before: these tests are about later
+ * drains. A first drain's history skip is the subject of the test "starts a
+ * project's first drain at the newest event and still ingests …".
+ */
+const DRAINED_BEFORE = { get: () => "seq:1", set: () => {} };
+
 describe("automationIngressService", () => {
   let service: AutomationIngressService | null = null;
 
@@ -361,10 +369,14 @@ describe("automationIngressService", () => {
     }));
   });
 
-  it("still ingests relay PR webhooks when the automations feature is unavailable", async () => {
+  it("starts a project's first drain at the newest event and still ingests relay PR webhooks when the automations feature is unavailable", async () => {
+    // A new machine (no cursor saved): the relay's history is skipped. The
+    // newest event's cursor is read first (newest first, one row), stacks are
+    // repaired as a cursor expiry would, and only events after it are ingested.
     const webSockets = makeWebSocketHarness();
     const cursors = new Map<string, string | null>();
     const onPrStateIngested = vi.fn();
+    const reconcileGithubStacks = vi.fn(async () => undefined);
     const ingestGithubWebhook = vi.fn(async () => ({
       processed: true,
       duplicate: false,
@@ -374,7 +386,18 @@ describe("automationIngressService", () => {
       linkedPrIds: ["pr-687"],
       reason: null,
     }));
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+    const history = {
+      cursor: "seq:2",
+      eventId: "delivery-2",
+      githubEvent: "pull_request",
+      summary: "GitHub pull_request · opened · arul28/ADE · #686",
+      createdAt: receivedAt,
+      payload: { action: "opened", repository: { full_name: "arul28/ADE" }, pull_request: { number: 686 } },
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => new Response(JSON.stringify(
+      String(input).includes("order=") ? newerEvents : { events: [history], nextCursor: "seq:2" },
+    ), { headers: { "content-type": "application/json" } }));
+    const newerEvents = {
       events: [
         {
           cursor: "seq:3",
@@ -402,12 +425,12 @@ describe("automationIngressService", () => {
         },
       ],
       nextCursor: "seq:4",
-    }), { headers: { "content-type": "application/json" } }));
+    };
 
     service = createAutomationIngressService({
       logger: makeLogger() as never,
       automationService: null,
-      prService: { ingestGithubWebhook } as never,
+      prService: { ingestGithubWebhook, reconcileGithubStacks } as never,
       secretService: {
         getSecret: () => null,
       } as never,
@@ -429,7 +452,13 @@ describe("automationIngressService", () => {
     // start() must not bind the local automation webhook server in this mode.
     await service.start();
     expect(fetchSpy).toHaveBeenCalledWith(
-      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events?order=asc&limit=100",
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events?limit=1",
+      expect.anything(),
+    );
+    expect(reconcileGithubStacks).toHaveBeenCalledWith({ owner: "arul28", name: "ADE" });
+    expect(ingestGithubWebhook).not.toHaveBeenCalledWith(expect.objectContaining({ deliveryId: "delivery-2" }));
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events?order=asc&limit=100&after=seq%3A2",
       expect.objectContaining({
         headers: expect.objectContaining({
           authorization: "Bearer ghu_app_user_token",
@@ -821,7 +850,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       webSocketFactory: makeWebSocketHarness().factory,
       subscribeToSignIn: (listener) => {
         signInListeners.add(listener);
@@ -1278,7 +1307,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
       webSocketFactory: webSockets.factory,
     });
@@ -1316,7 +1345,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       random: () => 0,
     });
 
@@ -1360,7 +1389,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       random: () => 0,
     });
 
@@ -1391,7 +1420,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       random: () => 0,
     });
 
@@ -1459,7 +1488,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
     });
 
@@ -1573,7 +1602,7 @@ describe("automationIngressService", () => {
       },
       getAccountAccessToken,
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
     });
 
     const firstStart = service.start();
@@ -1596,7 +1625,7 @@ describe("automationIngressService", () => {
         throw new Error("account lookup exploded");
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
     });
 
     await expect(service.pollNow()).rejects.toThrow("account lookup exploded");
@@ -1618,7 +1647,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       webSocketFactory: webSockets.factory,
     });
 
@@ -1650,7 +1679,7 @@ describe("automationIngressService", () => {
       },
       getAccountAccessToken: vi.fn(async () => "clerk-account-token"),
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       webSocketFactory: webSockets.factory,
     });
 
@@ -1686,7 +1715,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay,
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       webSocketFactory: webSockets.factory,
       random: () => 0,
     });
@@ -1726,7 +1755,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
       webSocketFactory: webSockets.factory,
     });
@@ -1756,7 +1785,7 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
       },
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
       pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
       webSocketFactory: webSockets.factory,
     });
@@ -1821,7 +1850,7 @@ describe("automationIngressService", () => {
       automationService: null,
       secretService: { getSecret: (ref: string) => secrets.get(ref) ?? null } as never,
       listRules: () => [],
-      ingressCursorStore: { get: () => null, set: () => {} },
+      ingressCursorStore: DRAINED_BEFORE,
     });
 
     await service.pollNow();

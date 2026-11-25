@@ -760,6 +760,21 @@ where it was (ADE's previous copy, or missing), never a PATH CLI.
 | `ade harness env` | the harness's tool |
 | Muse keeps its own `ensureMuseBinary` | `muse` |
 
+**A launch that knows its agent early.** An ADE Cloud computer's server launch
+(`cloudBootLaunch.ts`; a launch the desktop hands to ADE Cloud goes the same
+way) reads its facts before it clones. `launchAgentOf` names the agent: the
+chat's provider, a continued CLI copy as that provider's CLI, a CLI launch's
+profile from the app's args, or nothing (a lane alone from `ade lanes create
+--machine cloud`, a shell). `startPinnedToolsForLaunch` (`pinnedProviderTools.ts`)
+then starts or joins only that agent's tools and returns at once:
+`pinnedToolsForLaunch` gives a chat's runtime tool (`copilot` for Copilot) or a
+CLI's terminal tools (`copilot-cli`, `cursor-cli`, `pi` + `node`); a Cursor chat
+needs none (it runs the bundled SDK); Muse goes through `startMuseBinaryFetch`.
+Downloads off, already on disk or a recent failure start nothing, as for any
+`pinnedToolDownload`, which also records the use. The chat's start joins the
+running download. A move's new computer runs `ade tools ensure` after it
+registers its projects instead (`registerProjectsCommand`).
+
 **A status read never downloads.** Not the AI status refresh, not a model
 list, not a sign-in check (`acpAuthProbe.ts`, `claudeRuntimeProbe.ts`), not a
 usage or limits read (`requireInstalledPinnedProviderExecutable`). Those
@@ -792,7 +807,9 @@ at once. Neither do Codex's `model/list` (ADE's own list until Codex is here),
 Droid/Copilot model reads, ACP warm-up (only from a copy already on disk) or
 Devin cloud reads. A chat whose copy is still on its way shows no runtime
 banner (`runtimeDownloadPending`): the turn's "Getting <Agent> ready" line is
-the one place that wait shows.
+the one place that wait shows. The notice carries `status: "agent_download"`
+(`AGENT_DOWNLOAD_NOTICE_STATUS`), so while it is the newest event the working
+line reads "Getting <Agent> ready…" instead of "Thinking".
 
 Remote machines: every download runs in the process that owns the chat, lane or
 status (the brain on that machine), against that machine's tools root. A remote

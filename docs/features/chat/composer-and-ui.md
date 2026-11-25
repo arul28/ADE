@@ -22,7 +22,7 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `components/app/ChatLaunchesSlideOut.tsx`, `components/terminals/useChatLaunchCliDriver.ts` | The Launches slide-out, and the driver that starts this window's CLI launches at `awaiting-client`. |
 | `renderer/lib/handoffLaunchJobs.ts` | Handoff placeholder DTOs, ids, labels and search, shown in the Work sidebar (`TerminalsPage`). Fork is offered when `providerSupportsHandoffFork` (Claude, Codex, OpenCode, Droid, Cursor); Cursor's fork replays the transcript (`providerForkReplaysTranscript`). |
 | `renderer/lib/chatHandoffIntent.ts` | One-shot bridge from the session menu's **Hand off…** (`SessionContextMenu.tsx`, `openChatHandoff`, `"local"` \| `"remote"`) to the pane; only the active tile drains it. |
-| `renderer/lib/aiDiscoveryCache.ts` | AI status and model cache per runtime binding (local and remote copies never share). `getAiStatusCached`: 10 s freshness, deduplicated `ade.ai.getStatus`, change events instead of polling. |
+| `renderer/lib/aiDiscoveryCache.ts` | AI status and model cache per runtime binding (local and remote copies never share). `getAiStatusCached`: 10 s freshness, deduplicated `ade.ai.getStatus`, change events instead of polling. A chat pane reads its chat machine's status (by the chat's pin) when it shows, when a turn starts and ends, and when the chat moves; and past this cache on that machine's `providerLogins.onChanged` (an ADE Cloud computer applies the account's sign-ins about 30 s after ADE starts, so a read before that says "no login"), on a new connection to it (a wake), and at the end of a turn while the status says the provider cannot run. So the "<Provider> runtime" banner cannot outlive the sign-ins that fix it. |
 | `CrossMachineHandoffModal.tsx`, `crossMachineHandoffPresentation.tsx` | **Continue on another machine**: destination, brief or fork, model, effort, Fast, permission, note and clone choice, then `startCrossMachineHandoff`; the source brain runs it (`crossMachineHandoffOrchestrator.ts`). Options (`getCrossMachineHandoffOptions`), a read-only preview (`previewCrossMachineHandoff`) and progress come from that brain. Every call, including **Publish branch** / **Update branch** (`git.push` / `git.pull`), is pinned to the source chat's `runtimePin`. Blockers render through `BlockedReasons` / `BlockedActionButton`; Send is the confirmation. |
 | `ChatHandoffDialogs.tsx` | The **Local handoff** Radix dialog (fork/brief form, or "Handoff is not available for this chat."). Popovers inside stay clickable through `PortalContainerContext`; Escape closes an open lane list first. |
 | `ProviderSignInCard.tsx`, `ProviderSignInSlot.tsx` | The sign-in card above the prompt box (`aboveComposerSlot`) while the provider is signed out on the composer's machine. See [README › Inline agent download, and the sign-in card](README.md). |
@@ -47,7 +47,10 @@ Unqualified files are in `apps/desktop/src/renderer/components/chat/`.
 | `renderer/lib/attachmentImage.ts` | `readAttachmentImageDataUrl(path, pin)`, the one image reader (tray, chips, viewed images, drafts, draft transfer): a personal chat's own reader, else the pin's runtime; this computer's `app.getImageDataUrl` only when it owns the file and the runtime gave no final answer. |
 | `AttachmentChipPeek.tsx` | `useAttachmentThumbnail` and the hover peek shared by composer and transcript chips: the caller's preview, the URL of an `image-url`, else one pinned read keyed on `pin.key`. |
 | `shared/attachmentLabels.ts` | The prompt-attachment grammar for desktop, runtimes and iOS: the k-th image is `[Image #k]` (an `image-url` counts), the k-th file `[File #k: <basename>]` (`[ ] CR LF` become `_`). Tokens resolve by ordinal only; an unmatched token stays text. `formatAttachmentToken`, `labelAttachments` / `labelAttachmentsByRef`, `parseAttachmentTokens`, `resolveAttachmentToken`, `renumberAttachmentTokens`, `formatAttachedImageLegend`. |
-| `chatAttachmentStaging.ts` | Staging one file: `readAttachmentStagingMode(pin)` asks once per batch and never throws (`CONSERVATIVE_ATTACHMENT_STAGING_MODE` on no answer). `planAttachmentStaging` forces the bytes leg with no source path (paste, hosted web), a renderer conversion (HEIC → JPEG) or a `base64` host, and then caps at `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`. `stageAttachmentBytesFromFile` is that leg; `AttachmentConversionError` gets no retry. |
+| `chatAttachmentStaging.ts` | Staging one file: `readAttachmentStagingMode(pin)` asks once per batch and never throws (`CONSERVATIVE_ATTACHMENT_STAGING_MODE` on no answer). `planAttachmentStaging` forces the bytes leg with no source path (paste, hosted web), a renderer conversion (HEIC → JPEG) or a `base64` host, and then caps at `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`. `stageAttachmentBytesFromFile` is that leg (with `holdOnDevice` it keeps the bytes here instead); `AttachmentConversionError` gets no retry. |
+| `heldChatAttachments.ts` | Files attached while the chat's ADE Cloud computer rests, kept on this device under `ade-held:` stand-ins until the send copies them (`stageHeldAttachments`). See [Attachments](#attachments). |
+| `deviceHeldSend.ts` | `prepareDeviceHeldForSend`: right before a send, copies the files and hands over the comments this device kept while the chat's computer rested, the way the send reaches it. |
+| `useProviderStatusRefresh.ts` | The pane's provider-status re-reads past the 10 s cache: when the chat's machine applies sign-ins (`providerLogins.onChanged`, pinned), on a new connection to that machine, at the end of a turn while the provider can't run, and when the chat's pin key changes. Keyed on `pin?.key`. |
 | `shared/chatAttachmentLimits.ts` | The ceilings and messages for renderer, main and the CLI sync host: `MAX_CHAT_ATTACHMENT_BYTES` (50 MB, files), `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` (10 MB, base64 in a payload; 720 KiB frames under 25 MB over sync), `MAX_PROVIDER_INLINE_FILE_BYTES` (10 MB), `MAX_PROVIDER_INLINE_IMAGE_BYTES` (3.5 MB), `MAX_PROVIDER_INLINE_IMAGE_EDGE_PX` (2000 px). Messages render from the constants (`formatAttachmentSize`, `legacyAttachmentCapMessage`, `attachmentTooLargeMessage`). `maxBase64EncodedLength` refuses an oversized payload before decoding (`approxDecodedBytes`). |
 | `shared/chatAttachmentStagingFs.ts` | The Node-only write rule for `<projectRoot>/.ade/attachments` (UUID name, checked extension, containment, stat before copy); contract in the chat [README](README.md#source-file-map). Local Cursor may Read these and its own `~/.cursor/projects/<slug>/assets` copies. |
 | `attachmentViewerTarget.ts` | Finds an attachment's Files workspace on the client, pin-aware: both separators, segment compare through `normalizePathForComparison` (`/a/ADE-backup` never matches `/a/ADE`), the longest root wins. |
@@ -630,6 +633,31 @@ dismissal in a ref and has three close calls:
   host only.
 - A fixable staging failure offers **Try again**; a size rejection or a failed
   HEIC conversion does not.
+- **A resting ADE Cloud computer.** Copying a file to the chat's computer is
+  a write, and a write wakes it. While the chat's computer rests (the pane's
+  `chatComputerResting`, read as `useChatRuntimeScope().machineRests`), a
+  paste, drop or pick into a chat keeps the bytes on this device
+  (`heldChatAttachments.ts`) under a stand-in path `ade-held:<id>/<name>`,
+  after the same staging plan and ceiling (a resting computer answers
+  `base64`, so 10 MB). Previews read the bytes there
+  (`readAttachmentImageDataUrl`). The send copies each held file to the
+  chat's computer right before the message (`prepareDeviceHeldForSend`),
+  through the pane's chat API and the send's own reach (`chatSendReach`: a
+  resting chat's computer by its machine key, as `send` goes), and sends the
+  real paths; the send wakes the computer anyway, and a send with files
+  always goes direct, never through the account's queue. A copy that fails
+  sends nothing and puts the text and every file back; a file already copied
+  to that machine (by the chat pin's key) is not copied again on the next
+  try. After the copies the send, its bubble, its retry and its put-back
+  name the real paths. Held bytes live in this window's memory only, up to
+  64 MB (past that a new file is copied at once, as before), and go as soon
+  as nothing shows them: a file taken out of the box at once, a sent one
+  once its bubble names the copy. After a reload a send names the file to
+  attach again. An awake computer stages as before. Desktop and ADE Web;
+  iOS already keeps files on the phone while the chat sends through the
+  account and sends them with the queued message (`beginAttachmentUploads`).
+  The same flag makes Up-arrow history skip its stash, which is a saved
+  draft on the chat's machine.
 - Parallel mode caps attachments at `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`, since
   every lane gets the same list.
 
@@ -1018,7 +1046,11 @@ depth-first with the same mode, reported as `stoppedChildChatCount`).
   after five minutes. A turn cancels it; a timer over a minute late is dropped.
   Claude's `idleCompaction` setting is left alone.
 - Only a send with `compactFirst: true` compacts first; CLI, automation and
-  queued sends never do. No compaction while Claude's `resume_return` question
+  queued sends never do. A send to an ADE Cloud chat that goes through the
+  account's queue (its computer asleep or moving; desktop, ADE Web and the
+  phone) carries the choice in its settings (`CloudChatMessageSettings.compactFirst`),
+  and the computer passes it with that send when it delivers it, never as a
+  chat setting. An older server or computer drops it. No compaction while Claude's `resume_return` question
   waits, or while background work is live (`hasRuntimeActiveWorkload`).
 - **Shared values.** `shared/compactFirst.ts` (`compactFirstIdleMs`,
   `COMPACT_FIRST_MIN_TOKENS`); the summary carries `compactFirstMinTokens` and

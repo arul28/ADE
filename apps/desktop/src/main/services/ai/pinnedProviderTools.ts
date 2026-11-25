@@ -16,7 +16,8 @@
  * in the brain that owns the chat or lane: a remote chat downloads on its own
  * machine.
  */
-import { pinnedToolDownload, retryPinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { pinnedToolDownload, pinnedToolFetchAllowed, retryPinnedToolDownload, warnPinnedToolFetch } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { MUSE_TOOL_NAME } from "../../../../../ade-cli/src/services/tools/muse";
 import {
   getPinnedToolStatus,
   resolvePinnedTool,
@@ -44,6 +45,56 @@ export function pinnedToolForProvider(provider: string): { tool: string; label: 
     return { tool: provider, label: ACP_PROVIDER_METADATA[provider as AcpProviderId].label };
   }
   return null;
+}
+
+/**
+ * The pinned tools a chat or a CLI of `provider` runs on this machine: a
+ * chat's runtime (`pinnedToolForProvider`; Copilot's is `copilot`), a CLI's
+ * terminal tools (`copilot-cli`; Pi's CLI also needs `node`). A Cursor chat
+ * runs the Cursor SDK that ships with ADE, so it needs none; only Cursor's
+ * terminal runs `cursor-cli`. For a CLI, `provider` is the launch profile,
+ * which is the provider id (a shell needs none).
+ */
+export function pinnedToolsForLaunch(kind: "chat" | "cli", provider: string): string[] {
+  if (kind === "cli") return PINNED_PROVIDER_TOOLS[provider]?.terminal?.tools.map(({ tool }) => tool) ?? [];
+  if (provider === "cursor") return [];
+  const pinned = pinnedToolForProvider(provider);
+  return pinned ? [pinned.tool] : [];
+}
+
+/**
+ * Starts (or joins) the downloads of what a chat or a CLI of `provider` is
+ * about to run here, and returns at once with the tools now downloading. For
+ * a launch that knows its agent before the lane exists (an ADE Cloud
+ * computer's server launch, `cloudBootLaunch.ts`), so the download runs while
+ * the repository clones and the lane sets up instead of inside the first
+ * turn. The chat's own start then joins it (`pinnedToolDownload`, and
+ * `ensureMuseBinary` for Muse). `pinnedToolDownload` records the use, as
+ * that start would. Nothing when the tool is on disk or downloads are off
+ * here. Never throws.
+ */
+export function startPinnedToolsForLaunch(kind: "chat" | "cli", provider: string): string[] {
+  const started: string[] = [];
+  for (const tool of pinnedToolsForLaunch(kind, provider)) {
+    try {
+      if (tool === MUSE_TOOL_NAME) {
+        // Muse's chat and CLI wait on Muse's own fetch, so the download goes there.
+        if (pinnedToolFetchAllowed(tool) && startMuseBinaryFetch().state === "downloading") started.push(tool);
+        continue;
+      }
+      // Never awaited: onDemand.ts logs the outcome and keeps a failure for the status.
+      if (pinnedToolDownload(tool)) started.push(tool);
+    } catch (error) {
+      // A broken manifest or cache read: the chat's start downloads it, or says why not.
+      warnPinnedToolFetch("tools.launch_prefetch_failed", {
+        tool,
+        kind,
+        provider,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return started;
 }
 
 function hostTarget(): string {

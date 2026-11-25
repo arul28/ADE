@@ -29,6 +29,7 @@ import {
 } from "./customWebhookService";
 import { lowerCaseHeaders, queryRecord } from "./webhookRequest";
 import { WEBHOOK_MAX_BODY_BYTES } from "../../../shared/automationWebhooks";
+import { captureProblem } from "../../../shared/sentry/capture";
 
 /** GitHub's own webhook payload limit; the hosted relay enforces the same 25 MB. */
 const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
@@ -142,6 +143,14 @@ type AutomationIngressServiceArgs = {
 const GITHUB_WEBHOOK_SECRET_REF = "automations.githubWebhook.secret";
 const GITHUB_RELAY_POLL_TIMEOUT_MS = 20_000;
 const GITHUB_RELAY_PAGE_LIMIT = 100;
+/**
+ * Each relay event's ingest is synchronous SQLite work, and awaiting it only
+ * runs microtasks, so a 100-event page held the brain's event loop for the
+ * whole page (0.5-0.9 s idle, past 4 s while a lane setup's `npm ci` shares
+ * the CPU). Yielding after each event lets socket reads such as `lane.list`
+ * answer between events.
+ */
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 export const GITHUB_RELAY_MIN_POLL_INTERVAL_MS = 30_000;
 export const GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS = 5 * 60_000;
 export const GITHUB_RELAY_SUBSCRIPTION_CONNECT_TIMEOUT_MS = 20_000;
@@ -173,6 +182,8 @@ const GITHUB_RELAY_RATE_LIMIT_JITTER_SPAN_MS = 4_000;
 export const GITHUB_RELAY_IDLE_POLL_INTERVAL_MS = 5 * 60_000;
 export const GITHUB_RELAY_IDLE_DECAY_AFTER_MS = 2 * 60 * 60_000;
 const GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH = 500;
+/** Drains that may fail the first drain's stack repair before its cursor is saved anyway. */
+const GITHUB_RELAY_HISTORY_REPAIR_ATTEMPTS = 3;
 
 class GithubRelayPollError extends Error {
   constructor(
@@ -665,6 +676,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     return args.ingressCursorStore?.get(source) ?? null;
   };
 
+  /** The first drain's history skip read the relay once; a repo with no events yet leaves nothing to skip. */
+  let relayHistorySkipChecked = false;
+  /** Drains in this service run whose history-skip stack repair failed. */
+  let relayHistoryRepairFailures = 0;
   const setIngressCursor = (entry: { source: AutomationIngressSource; cursor: string | null }): void => {
     if (args.automationService) {
       args.automationService.setIngressCursor(entry);
@@ -1320,50 +1335,107 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         status: "polling",
       });
 
-      let pageCursor = initialCursor;
-      let lastSeenCursor = initialCursor;
-      let lastDeliveryAt: string | null = null;
-      while (true) {
-        const pageIngestedPrIds = new Set<string>();
-        const pageUrl = new URL(eventsUrl);
-        if (pageCursor) pageUrl.searchParams.set("after", pageCursor);
-        else pageUrl.searchParams.delete("after");
+      /** A relay answer that isn't OK, as the error a failed drain reports (message bounded). */
+      const relayResponseFailure = async (response: Response): Promise<GithubRelayPollError> => {
+        const responseText = await run.wait(response.text().catch(() => ""));
+        let responseMessage = responseText.trim();
+        try {
+          const parsed = JSON.parse(responseText) as { error?: unknown; message?: unknown };
+          if (typeof parsed.error === "string") responseMessage = parsed.error;
+          else if (typeof parsed.message === "string") responseMessage = parsed.message;
+        } catch {
+          // Keep the plain-text response.
+        }
+        responseMessage = responseMessage.trim().slice(0, GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH);
+        const failure = classifyRelayPollFailure(response.status, responseMessage, response.headers);
+        return new GithubRelayPollError(
+          responseMessage
+            ? `GitHub relay poll failed (${response.status}): ${responseMessage}`
+            : `GitHub relay poll failed (${response.status})`,
+          failure.retryAtMs,
+          failure.rateLimited,
+          response.status,
+        );
+      };
+      /** One relay GET with the poll timeout and the stop/supersede abort; a non-OK answer throws. */
+      const relayFetch = async (url: URL): Promise<Response> => {
         const controller = new AbortController();
         pollAbortController = controller;
         const timeout = setTimeout(() => controller.abort(), GITHUB_RELAY_POLL_TIMEOUT_MS);
         timeout.unref?.();
-        const response = await run.wait(fetch(pageUrl.toString(), {
+        const response = await run.wait(fetch(url.toString(), {
           headers: requestHeaders,
           signal: controller.signal,
         }).finally(() => {
           clearTimeout(timeout);
           if (pollAbortController === controller) pollAbortController = null;
         }));
-        if (!response.ok) {
-          const responseText = await run.wait(response.text().catch(() => ""));
-          let responseMessage = responseText.trim();
+        if (!response.ok) throw await relayResponseFailure(response);
+        return response;
+      };
+      // A project's first drain (a new ADE Cloud computer, a new install) has
+      // no cursor, and the relay would hand it every event it still keeps:
+      // about 1,500 for a busy repo. Those are history from before this
+      // machine had the project. Its PR poller reads every PR from GitHub on
+      // its first tick anyway, and their automation rules ran (or not) on the
+      // machines that had the project then. So start at the newest event
+      // (newest first, one row: `nextCursor` is its sequence) and repair
+      // stacks as a cursor expiry does. A failed read fails the drain like a
+      // page does, and the next drain tries again. The cursor is saved, and
+      // the check marked done, once the repair finished: a repair that fails,
+      // or a drain superseded while it runs, leaves no cursor, so the next
+      // drain skips and repairs again. A repair that fails on three drains
+      // (GitHub refuses the stacks read, or rate-limits it) saves the cursor
+      // anyway, with a warning, so this machine still ingests new events.
+      const skipRelayHistory = async (target: GitHubRepoRef): Promise<string | null> => {
+        const headUrl = new URL(eventsUrl);
+        headUrl.searchParams.delete("order");
+        headUrl.searchParams.set("limit", "1");
+        const headResponse = await relayFetch(headUrl);
+        const head = await run.wait(headResponse.json()) as { nextCursor?: unknown };
+        const headCursor = typeof head.nextCursor === "string" && head.nextCursor ? head.nextCursor : null;
+        if (headCursor) {
           try {
-            const parsed = JSON.parse(responseText) as { error?: unknown; message?: unknown };
-            if (typeof parsed.error === "string") responseMessage = parsed.error;
-            else if (typeof parsed.message === "string") responseMessage = parsed.message;
-          } catch {
-            // Keep the plain-text response.
+            await run.wait(Promise.resolve(args.prService?.reconcileGithubStacks(target)));
+          } catch (error) {
+            if (error instanceof GithubRelayPollSupersededError || !run.isCurrent()) throw error;
+            relayHistoryRepairFailures += 1;
+            if (relayHistoryRepairFailures < GITHUB_RELAY_HISTORY_REPAIR_ATTEMPTS) throw error;
+            const message = error instanceof Error ? error.message : String(error);
+            args.logger.warn("automations.github_relay_history_repair_failed", {
+              repo: `${target.owner}/${target.name}`,
+              attempts: relayHistoryRepairFailures,
+              error: message,
+            });
+            captureProblem("GitHub relay history skip saved its cursor without a stack repair", {
+              tags: { area: "automations", source: "github-relay" },
+              extra: { attempts: relayHistoryRepairFailures, error: message.slice(0, GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH) },
+              fingerprint: ["automations", "github-relay", "history-repair-failed"],
+            });
           }
-          responseMessage = responseMessage.trim().slice(0, GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH);
-          const failure = classifyRelayPollFailure(
-            response.status,
-            responseMessage,
-            response.headers,
-          );
-          throw new GithubRelayPollError(
-            responseMessage
-              ? `GitHub relay poll failed (${response.status}): ${responseMessage}`
-              : `GitHub relay poll failed (${response.status})`,
-            failure.retryAtMs,
-            failure.rateLimited,
-            response.status,
-          );
+          setIngressCursor({ source: "github-relay", cursor: headCursor });
+          args.logger.info("automations.github_relay_history_skipped", {
+            repo: `${target.owner}/${target.name}`,
+            cursor: headCursor,
+          });
         }
+        relayHistorySkipChecked = true;
+        return headCursor;
+      };
+      let startCursor = initialCursor;
+      if (!startCursor && !relayHistorySkipChecked && repo && !useLegacyProjectRoute) {
+        startCursor = await skipRelayHistory(repo);
+      }
+
+      let pageCursor = startCursor;
+      let lastSeenCursor = startCursor;
+      let lastDeliveryAt: string | null = null;
+      while (true) {
+        const pageIngestedPrIds = new Set<string>();
+        const pageUrl = new URL(eventsUrl);
+        if (pageCursor) pageUrl.searchParams.set("after", pageCursor);
+        else pageUrl.searchParams.delete("after");
+        const response = await relayFetch(pageUrl);
         const payload = await run.wait(response.json()) as {
           events?: Array<Record<string, unknown>>;
           nextCursor?: unknown;
@@ -1462,6 +1534,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             }
           }
           pageLastCursor = eventCursor ?? eventId;
+          await run.wait(yieldToEventLoop());
         }
         const responseCursor = typeof payload.nextCursor === "string" && payload.nextCursor
           ? payload.nextCursor

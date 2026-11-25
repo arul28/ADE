@@ -1,7 +1,31 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { threadCommentQuoteText, threadCommentRevision, type ChatThreadComment, type ChatThreadCommentAnchor, type ChatThreadCommentSelection } from "../../../shared/threadComments";
+import {
+  LOCAL_THREAD_COMMENT_ID_PREFIX,
+  THREAD_COMMENT_GONE_MESSAGE,
+  THREAD_COMMENT_MISSING_MESSAGE,
+  newThreadCommentClientId,
+  threadCommentQuoteText,
+  threadCommentRevision,
+  type ChatThreadComment,
+  type ChatThreadCommentAnchor,
+  type ChatThreadCommentSelection,
+} from "../../../shared/threadComments";
 import { withChatPin } from "./chatMachinePin";
+import {
+  dropAppliedHeldChange,
+  dropHeldComment,
+  forgetGoneHeldCopies,
+  heldChat,
+  heldComment,
+  holdChangeAgainst,
+  holdDeleteAgainst,
+  holdNewAgainst,
+  markHeldCommentTried,
+  subscribeHeld,
+  threadCommentsHeldOnDevice,
+  withHeldChanges,
+} from "./threadCommentsHeldOnDevice";
 
 /**
  * Pending thread comments per chat, as last reported by the chat's host.
@@ -14,6 +38,13 @@ import { withChatPin } from "./chatMachinePin";
  * One exception keeps commenting instant: a comment this client is still
  * creating shows at once (`addLocalThreadComment`) and stays on top of
  * whatever list the host reports until its create call answers.
+ *
+ * Another keeps a resting ADE Cloud computer asleep: a comment written while
+ * the chat's computer rests, and an edit, a tick or a delete of one the host
+ * already has, stays on this device (`threadCommentsHeldOnDevice.ts`), shows
+ * here at once, and is handed over by the next send that carries comments,
+ * or by any send once the computer is awake (`handOverHeldThreadComments`,
+ * `prepareDeviceHeldForSend`).
  */
 const EMPTY: ChatThreadComment[] = [];
 const bySession = new Map<string, ChatThreadComment[]>();
@@ -29,18 +60,61 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
-function publish(sessionId: string): void {
+function rebuild(sessionId: string): void {
   let host = bySession.get(sessionId) ?? EMPTY;
   const local = localBySession.get(sessionId) ?? EMPTY;
+  const held = heldChat(sessionId);
   // A comment whose Discard could not delete the host's copy shows once, as
   // the failed local comment, not also as that copy.
-  const discarding = new Set<string>();
+  const shadowed = new Set<string>();
   for (const comment of local) {
-    if (comment.clientId && failedLocal.get(comment.id)?.discard) discarding.add(comment.clientId);
+    if (comment.clientId && failedLocal.get(comment.id)?.discard) shadowed.add(comment.clientId);
   }
-  if (discarding.size) host = host.filter((comment) => !comment.clientId || !discarding.has(comment.clientId));
-  visibleBySession.set(sessionId, local.length ? [...host, ...local] : host);
+  // So does a copy a lost hand-over answer left on the host: once, as the
+  // comment this device holds (its text is the newest), and not at all after
+  // it was deleted here.
+  for (const comment of held.comments) if (comment.clientId) shadowed.add(comment.clientId);
+  for (const clientId of held.gone) shadowed.add(clientId);
+  if (shadowed.size) host = host.filter((comment) => !comment.clientId || !shadowed.has(comment.clientId));
+  // A host comment changed or deleted here while the computer rested shows as
+  // changed; the next send applies the change there first.
+  if (held.changes.length) host = withHeldChanges(host, held.changes);
+  visibleBySession.set(sessionId, local.length || held.comments.length ? [...host, ...held.comments, ...local] : host);
+}
+
+function publish(sessionId: string): void {
+  rebuild(sessionId);
   notify();
+}
+
+// What this device holds shows through this store's list: every change to it
+// (a save here, or another window's) rebuilds the chats it touched.
+subscribeHeld((sessionIds) => {
+  for (const sessionId of sessionIds) rebuild(sessionId);
+  notify();
+});
+
+/**
+ * The holds of `threadCommentsHeldOnDevice.ts`, checked against the host's
+ * latest list for the chat. Each shows through `subscribeHeld` above.
+ */
+export function holdThreadCommentOnDevice(
+  sessionId: string,
+  fields: Pick<ChatThreadComment, "messageKey" | "messageExcerpt" | "anchor" | "body">,
+): ChatThreadComment {
+  return holdNewAgainst(sessionId, bySession.get(sessionId) ?? EMPTY, fields);
+}
+
+export function holdThreadCommentChange(
+  sessionId: string,
+  commentId: string,
+  patch: { body?: string; includeInNextSend?: boolean },
+): ChatThreadComment {
+  return holdChangeAgainst(sessionId, bySession.get(sessionId) ?? EMPTY, commentId, patch);
+}
+
+export function holdThreadCommentDelete(sessionId: string, commentId: string): { deleted: boolean } {
+  return holdDeleteAgainst(sessionId, bySession.get(sessionId) ?? EMPTY, commentId);
 }
 
 export function setThreadComments(sessionId: string, comments: ChatThreadComment[]): void {
@@ -49,13 +123,6 @@ export function setThreadComments(sessionId: string, comments: ChatThreadComment
   if (comments.some((comment) => typeof comment.clientId === "string")) hostKeepsClientIds.add(sessionId);
   dropLocalCommentsTheHostHas(sessionId);
   publish(sessionId);
-}
-
-const LOCAL_ID_PREFIX = "local:";
-
-/** True for a comment shown before its host has it; it has no host id to act on yet. */
-export function isLocalThreadComment(commentId: string): boolean {
-  return commentId.startsWith(LOCAL_ID_PREFIX);
 }
 
 /**
@@ -156,11 +223,6 @@ function dropLocalCommentsTheHostHas(sessionId: string): void {
   }
 }
 
-function newClientId(): string {
-  const random = globalThis.crypto?.randomUUID?.();
-  return random ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
-}
-
 /**
  * Shows a comment before the host has saved it. Returns `settle`: pass the
  * host's comment on success (it joins the list unless an update already
@@ -174,10 +236,10 @@ export function addLocalThreadComment(
   fields: Omit<ChatThreadComment, "id" | "sessionId" | "includeInNextSend" | "createdAt" | "updatedAt" | "clientId">,
 ): ((saved?: ChatThreadComment | null, error?: string) => void) & { localId: string; clientId: string } {
   const at = new Date().toISOString();
-  const clientId = newClientId();
+  const clientId = newThreadCommentClientId();
   const local: ChatThreadComment = {
     ...fields,
-    id: `${LOCAL_ID_PREFIX}${clientId}`,
+    id: `${LOCAL_THREAD_COMMENT_ID_PREFIX}${clientId}`,
     sessionId,
     includeInNextSend: true,
     createdAt: at,
@@ -285,6 +347,12 @@ const discardingClientIds = new Map<string, Set<string>>();
 export function threadCommentClientIdsToExclude(sessionId: string): string[] {
   const ids = new Set(discardingClientIds.get(sessionId) ?? []);
   for (const comment of localBySession.get(sessionId) ?? EMPTY) if (comment.clientId) ids.add(comment.clientId);
+  // Read after `handOverHeldThreadComments`: what this device still holds then
+  // (held back, or deleted here after a hand-over try) never rides the send,
+  // even as a copy a lost answer left on the host.
+  const held = heldChat(sessionId);
+  for (const comment of held.comments) if (comment.clientId) ids.add(comment.clientId);
+  for (const clientId of held.gone) ids.add(clientId);
   return [...ids];
 }
 
@@ -445,7 +513,13 @@ export function refreshThreadComments(sessionId: string, pin: OpenProjectBinding
 }
 
 function getThreadComments(sessionId: string | null | undefined): ChatThreadComment[] {
-  return sessionId ? visibleBySession.get(sessionId) ?? EMPTY : EMPTY;
+  if (!sessionId) return EMPTY;
+  const visible = visibleBySession.get(sessionId);
+  if (visible) return visible;
+  // After a reload, what this device holds shows before (or without) the host's list.
+  if (!heldChat(sessionId).comments.length) return EMPTY;
+  rebuild(sessionId);
+  return visibleBySession.get(sessionId) ?? EMPTY;
 }
 
 function subscribe(listener: () => void): () => void {
@@ -471,6 +545,161 @@ export function useThreadComments(
     if (sessionId) void refreshThreadComments(sessionId, pin);
   }, [pin, sessionId]);
   return comments;
+}
+
+// ── Handing over what this device holds (`threadCommentsHeldOnDevice.ts`) ──
+
+/** The comments as this device shows them now, read past the last render (a send reads them after its hand-over). */
+export function currentThreadComments(sessionId: string): ChatThreadComment[] {
+  return getThreadComments(sessionId);
+}
+
+type ThreadCommentsApi = NonNullable<ReturnType<typeof threadCommentsApi>>;
+
+/**
+ * Runs one of a hand-over's writes on the machine the send goes to: for a
+ * chat whose ADE Cloud computer rests, that computer reached the way the send
+ * reaches it (`ChatSendReach`); for any other chat, the chat's pin as it is.
+ */
+export type ThreadCommentSendReach = <T>(write: (pin: OpenProjectBinding) => Promise<T>) => Promise<T>;
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The host's answer for a comment that is not there anymore: a send took it, or it was deleted elsewhere. */
+function commentGone(error: unknown): boolean {
+  const text = errorText(error);
+  return text.includes(THREAD_COMMENT_GONE_MESSAGE) || text.includes(THREAD_COMMENT_MISSING_MESSAGE);
+}
+
+/**
+ * Applies the changes kept here to the host's comments, in the order they
+ * were made. A comment the host no longer has has nothing left to change.
+ * Throws on any other failure: the send must not go with the host's older
+ * text or ticks, and each change not applied stays here.
+ */
+async function applyHeldChanges(
+  sessionId: string,
+  api: ThreadCommentsApi,
+  reach: ThreadCommentSendReach,
+): Promise<void> {
+  // A change made while a call was out goes in the next pass.
+  for (let pass = 0; pass < 3; pass += 1) {
+    const pending = heldChat(sessionId).changes;
+    if (!pending.length) return;
+    for (const change of pending) {
+      try {
+        if (change.deleted) {
+          await reach((callPin) => api.delete({ sessionId, commentId: change.commentId }, callPin));
+          const host = bySession.get(sessionId) ?? EMPTY;
+          if (host.some((comment) => comment.id === change.commentId)) {
+            setThreadComments(sessionId, host.filter((comment) => comment.id !== change.commentId));
+          }
+        } else {
+          const saved = await reach((callPin) => api.update({
+            sessionId,
+            commentId: change.commentId,
+            ...(change.body !== undefined ? { body: change.body } : {}),
+            ...(change.includeInNextSend !== undefined ? { includeInNextSend: change.includeInNextSend } : {}),
+          }, callPin));
+          const host = bySession.get(sessionId) ?? EMPTY;
+          if (saved?.id && host.some((comment) => comment.id === saved.id)) {
+            setThreadComments(sessionId, host.map((comment) => (comment.id === saved.id ? saved : comment)));
+          }
+        }
+      } catch (error) {
+        if (!commentGone(error)) throw error;
+      }
+      // Applied, unless it changed again while the call was out.
+      dropAppliedHeldChange(sessionId, change);
+    }
+  }
+}
+
+/**
+ * Hands the comments this device holds for the next send to the chat's
+ * computer, in the order they were written, right before the send goes (the
+ * send wakes the computer anyway). Each create carries the comment's client
+ * id, so after a lost answer the host answers with the copy it made, never a
+ * second one; a copy with other text or flag is brought up to date; one the
+ * host says a send already took is dropped here. Copies of comments deleted
+ * here after a try are deleted there (best effort: the send's exclusion list
+ * keeps them out meanwhile). Edits, ticks and deletes of the host's own
+ * comments made here go first (`applyHeldChanges`). Throws when a comment
+ * could not be handed over: the send must not go without it, and each
+ * comment not handed over stays here. Every write goes through `reach`, so
+ * it reaches a resting chat's computer the way the send does; the one read
+ * (the host's list, for the deleted copies) goes to `pin`.
+ */
+export async function handOverHeldThreadComments(
+  sessionId: string,
+  pin: OpenProjectBinding | null | undefined,
+  api: ThreadCommentsApi | null | undefined,
+  reach: ThreadCommentSendReach,
+): Promise<void> {
+  if (!threadCommentsHeldOnDevice(sessionId)) return;
+  if (!api) throw new Error("This version of ADE can't hand your comments to the chat's computer.");
+  await applyHeldChanges(sessionId, api, reach);
+  for (const planned of heldChat(sessionId).comments.filter((comment) => comment.includeInNextSend)) {
+    // Edited, held back or deleted while an earlier one was out: the latest word counts.
+    const held = heldComment(sessionId, planned.id);
+    const clientId = held?.clientId;
+    if (!held || !clientId || !held.includeInNextSend) continue;
+    markHeldCommentTried(sessionId, clientId);
+    let saved: ChatThreadComment | null;
+    try {
+      saved = await reach((callPin) => api.create(createArgsFor(sessionId, held), callPin));
+      // An edit made while a call was out, or an older copy, wins over nothing: the host copy follows this device's.
+      for (let pass = 0; pass < 3 && saved; pass += 1) {
+        const latest = heldComment(sessionId, held.id);
+        // Deleted here meanwhile: it is in `gone`, and its copy goes below.
+        if (!latest) {
+          saved = null;
+          break;
+        }
+        if (saved.body === latest.body && saved.includeInNextSend === latest.includeInNextSend) break;
+        const hostId: string = saved.id;
+        saved = await reach((callPin): Promise<ChatThreadComment> => api.update({
+          sessionId,
+          commentId: hostId,
+          body: latest.body,
+          includeInNextSend: latest.includeInNextSend,
+        }, callPin));
+      }
+    } catch (error) {
+      // A send already took this comment (its earlier hand-over landed): it left once, and never goes twice.
+      if (!errorText(error).includes(THREAD_COMMENT_GONE_MESSAGE)) throw error;
+      saved = null;
+    }
+    dropHeldComment(sessionId, held.id);
+    const host = bySession.get(sessionId) ?? EMPTY;
+    if (saved && !host.some((comment) => comment.id === saved!.id)) setThreadComments(sessionId, [...host, saved]);
+  }
+  await deleteGoneHostCopies(sessionId, pin, api, reach);
+}
+
+async function deleteGoneHostCopies(
+  sessionId: string,
+  pin: OpenProjectBinding | null | undefined,
+  api: ThreadCommentsApi,
+  reach: ThreadCommentSendReach,
+): Promise<void> {
+  const gone = new Set(heldChat(sessionId).gone);
+  if (!gone.size) return;
+  try {
+    const list = await withChatPin(pin ?? null, (chatPin) => api.list({ sessionId }, chatPin));
+    if (!Array.isArray(list)) return;
+    for (const copy of list) {
+      if (copy.clientId && gone.has(copy.clientId)) {
+        await reach((callPin) => api.delete({ sessionId, commentId: copy.id }, callPin));
+      }
+    }
+    forgetGoneHeldCopies(sessionId, gone);
+  } catch (error) {
+    // The send names these copies in its exclusion list, so none rides it; the next hand-over tries again.
+    console.warn("[thread-comments] held-gone-cleanup-failed", { sessionId, error: errorText(error) });
+  }
 }
 
 /**

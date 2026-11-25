@@ -8,6 +8,7 @@ import { askFirstNativeControls } from "../../lib/nativeLaunchControls";
 import { ensureHarnessPresetOnBrain } from "../../lib/harnessPresetAccountSync";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { personErrorText } from "../../lib/format";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 import { SessionLaunchModelControls, type SessionLaunchModelConfig } from "./SessionLaunchModelControls";
 import { useModelRecents } from "./ModelPicker/useModelRecents";
@@ -106,7 +107,7 @@ export function AgentLaunchSetup({
       openChat(session, laneId, pin, projectRoot);
       onLaunched?.();
     } catch (cause) {
-      showToast({ tone: "error", title: failureTitle, message: cause instanceof Error ? cause.message : String(cause) });
+      showToast({ tone: "error", title: failureTitle, message: personErrorText(cause) });
     } finally {
       setStarting(false);
     }
