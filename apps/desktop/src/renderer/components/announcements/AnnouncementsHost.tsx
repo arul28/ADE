@@ -111,11 +111,20 @@ export function AnnouncementsHost() {
   const inProject = useAppStore((state) => Boolean(state.project) && !state.showWelcome);
   const [showing, setShowing] = useState<Showing | null>(null);
   const [shownThisLaunch, setShownThisLaunch] = useState(false);
+  // A showing opens once its first page's code is in; the host may be gone by then.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const openAll = () => {
       const version = bundledReleaseNotes.version;
       const digest = releaseNotesDigest(version);
+      // Asked for, so it opens at once: a page still loading shows its placeholder, and has no arrival to wait out.
       // The after-update showing stays: replacing it would drop its onClose, and the next launch would show it again.
       setShowing((current) => current?.onClose ? current : {
         pages: allAnnouncements(),
@@ -135,13 +144,18 @@ export function AnnouncementsHost() {
       const inputWatch = watchInput();
       // The account's copy is read while the splash plays, and the pages are
       // picked once it is in (or given up on), like the in-project showing.
-      const accountRead = reconcileSeenAnnouncements();
+      // The page likely to show first loads while the splash plays too.
+      const accountRead = Promise.all([reconcileSeenAnnouncements(), firstPageReady(dueAnnouncements())]);
       let cancelled = false;
       let quietTimer: number | null = null;
-      const show = (from: ScreenBox | null) => {
+      const show = async (from: ScreenBox | null) => {
         inputWatch.stop();
+        const pages = unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : [];
+        // Already in unless the account's copy changed which page comes first.
+        await firstPageReady(pages);
+        if (cancelled || !mountedRef.current) return;
         setShowing({
-          pages: unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : [],
+          pages,
           notes: {
             digest: releaseNotesDigest(detail.version, detail.fromVersion),
             resumedChats: detail.resumedChats,
@@ -158,13 +172,13 @@ export function AnnouncementsHost() {
         void accountRead.then(() => {
           if (cancelled) return;
           // Straight from the splash only when nobody has touched ADE yet.
-          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return show(from);
+          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return void show(from);
           // Otherwise wait for a quiet moment, then rise in the middle.
           quietTimer = window.setInterval(() => {
             if (cancelled || !quietNow(inputWatch, inputWatch.lastInputAt())) return;
             if (quietTimer != null) window.clearInterval(quietTimer);
             quietTimer = null;
-            show(null);
+            void show(null);
           }, CHECK_INTERVAL_MS);
         });
       });
@@ -214,7 +228,9 @@ export function AnnouncementsHost() {
       const pages = dueAnnouncements();
       if (pages.length === 0) return;
       markShowing();
-      setShowing({ pages, notes: null, unasked: true });
+      void firstPageReady(pages).then(() => {
+        if (mountedRef.current) setShowing({ pages, notes: null, unasked: true });
+      });
     };
     const interval = window.setInterval(check, CHECK_INTERVAL_MS);
     return () => {
@@ -239,6 +255,17 @@ export function AnnouncementsHost() {
       onClose={close}
     />
   );
+}
+
+/**
+ * Resolves once the first page's code is in, or failed to load (its Suspense
+ * then tries again). The page's entrance is timed from when it mounts, so a
+ * showing that opened before its page loaded sat empty while it loaded.
+ */
+function firstPageReady(pages: readonly AnnouncementPageDef[]): Promise<void> {
+  const first = pages[0];
+  if (!first) return Promise.resolve();
+  return first.load().then(() => undefined, () => undefined);
 }
 
 type InputWatch = {
@@ -357,6 +384,11 @@ function AnnouncementsModal({
   useEffect(() => {
     if (item.page) markAnnouncementSeen(item.page);
   }, [item.page]);
+  // The next page loads while this one is read, so Next never lands on an empty page.
+  const nextPage = items[index + 1]?.page ?? null;
+  useEffect(() => {
+    nextPage?.load().catch(() => undefined);
+  }, [nextPage]);
 
   const glowColors = useGlowColors();
   const Page = item.page?.Page ?? null;
