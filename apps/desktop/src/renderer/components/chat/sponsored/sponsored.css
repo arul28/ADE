@@ -185,34 +185,25 @@
   margin-top: 4px;
   font-size: 12.5px;
 }
-/* At the reply's end: a little air between the reply's last line and the card. */
-.ade-sponsored-gravity--inline_response { margin-top: 10px; }
+/* At the reply's end: a little air between the reply's last line and the card,
+   and room on the right for the hide button, since the reply's text box clips anything past its edge. */
+.ade-sponsored-gravity--inline_response { width: calc(100% - 8px); margin-top: 10px; }
 .ade-sponsored-gravity [data-gravity-ad] a { cursor: pointer; }
-/* The hide button sits on the card's corner, clear of Gravity's "Sponsored" label. */
+/* The hide button is always on the card's corner (as on the iPhone), clear of Gravity's "Sponsored" label. */
 .ade-sponsored-gravity-hide {
   position: absolute;
-  top: -7px;
-  right: -7px;
+  top: -8px;
+  right: -8px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
   border: 1px solid var(--kit-rule);
   background: var(--color-bg, var(--kit-surface, #111));
-  color: var(--kit-text-3);
+  color: var(--kit-text-2, var(--color-fg));
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 120ms ease;
 }
-.ade-sponsored-gravity:hover .ade-sponsored-gravity-hide,
-.ade-sponsored-gravity:focus-within .ade-sponsored-gravity-hide { opacity: 1; }
-.ade-sponsored-gravity-hide:hover { color: var(--color-fg); }
-.ade-sponsored-gravity-hide:focus-visible { opacity: 1; outline: 2px solid var(--adec-400); outline-offset: 1px; }
-@media (hover: none) {
-  .ade-sponsored-gravity-hide { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ade-sponsored-gravity-hide { transition: none; }
-}
+.ade-sponsored-gravity-hide:hover { color: var(--color-fg); border-color: var(--kit-text-3); }
+.ade-sponsored-gravity-hide:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
