@@ -5454,6 +5454,11 @@ describe("sponsored cards", () => {
     expect(await look(fromUS)).toEqual({ ok: true });
     expect(computer(harness).multiplier_milli).toBe(0);
     expect((await accountState()).sponsored?.smallNeedsLook).toBeUndefined();
+    // A yes again from abroad keeps that US look: on a trip, Small stays free for the week.
+    expect((await fromCanada("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    expect(computer(harness).multiplier_milli).toBe(0);
+    const onTrip = ((await (await fromCanada("GET", "/cloud/account")).json()) as CloudAccountState).sponsored;
+    expect([onTrip?.smallOutsideUS, onTrip?.smallNeedsCards, onTrip?.smallNeedsLook]).toEqual([undefined, true, undefined]);
 
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);

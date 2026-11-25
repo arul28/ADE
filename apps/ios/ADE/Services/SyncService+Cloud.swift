@@ -773,7 +773,8 @@ extension SyncService {
     }
   }
 
-  /// Reads the account's ADE Cloud computers now and waits for the answer (a launch's new computer).
+  /// Reads the account's ADE Cloud computers and state now and waits for the answer (a launch's new computer, a
+  /// rate the server just moved); a read already out ends first, since it may predate the change.
   func refreshCloudServerInstances() async {
     // A read already out may have started before the launch: let it end, then read again.
     await cloudServerReadTask?.value

@@ -365,9 +365,10 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
     // Where Free's Small rule reaches the account, the answer may also have moved
     // Small's rate in the account's catalog (here, or abroad within a week of a
-    // US look): read the account again so Small's hours show it.
+    // US look): read the account again so Small's hours show it. A read already
+    // out may predate the answer, so it ends first and then the account is read.
     if state.smallNeedsCards == true || state.smallOutsideUS, generation == AccountCloudStore.shared.generation {
-      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+      Task { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
     }
     return .success(state)
   } catch {
@@ -761,7 +762,12 @@ final class CloudSponsoredStore: ObservableObject {
       if AccountCloudStore.shared.account?.sponsored?.smallNeedsLook == true {
         if !lookRefreshed {
           lookRefreshed = true
-          SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+          Task { @MainActor [weak self] in
+            // A read already out may predate the look: it ends first, then the account is read.
+            await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances()
+            // That read failed (the lapse still shows): the next look reads again.
+            if AccountCloudStore.shared.account?.sponsored?.smallNeedsLook == true { self?.lookRefreshed = false }
+          }
         }
       } else {
         lookRefreshed = false
