@@ -3500,6 +3500,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Preserved raw so the Work timeline can reopen the existing card without
   /// widening the shared lifecycle event enum.
   var subagentResumed: Bool?
+  /// A spawned chat that started read-only (`permissionMode "plan"`): a background helper.
+  var subagentReadOnly: Bool?
   /// HTTP status the host attached to a terminal SDK API error on a `done`
   /// frame (429 = provider usage limit).
   ///
@@ -3606,6 +3608,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink]? = nil,
     subagentResumed: Bool? = nil,
+    subagentReadOnly: Bool? = nil,
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
@@ -3625,6 +3628,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
     self.subagentResumed = subagentResumed
+    self.subagentReadOnly = subagentReadOnly
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
@@ -3652,6 +3656,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var resultTruncatedForMobile: Bool?
     var resultOriginalBytes: Int?
     var resumed: Bool?
+    var readOnly: Bool?
     var accountLabel: String?
     var failDetail: String?
     var summary: String?
@@ -3699,6 +3704,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case resultTruncatedForMobile
       case resultOriginalBytes
       case resumed
+      case readOnly
       case failDetail
       case accountLabel
       case summary
@@ -3725,6 +3731,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       resultTruncatedForMobile = try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)
       resultOriginalBytes = try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)
       resumed = try? container.decodeIfPresent(Bool.self, forKey: .resumed)
+      readOnly = try? container.decodeIfPresent(Bool.self, forKey: .readOnly)
       accountLabel = try? container.decodeIfPresent(String.self, forKey: .accountLabel)
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
@@ -3811,6 +3818,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     subagentResourceLinks = metadata?.resourceLinks
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
     subagentResumed = rawEvent?.resumed
+    subagentReadOnly = rawEvent?.readOnly
     apiErrorStatus = rawEvent?.apiErrorStatus
     compactionAccountLabel = rawEvent?.accountLabel
     compactionFailDetail = rawEvent?.failDetail

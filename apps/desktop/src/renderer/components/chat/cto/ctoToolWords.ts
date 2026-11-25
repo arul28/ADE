@@ -52,6 +52,13 @@ function resultRecord(value: unknown): Record<string, unknown> | null {
   return direct;
 }
 
+/** A finished call that did not do what it was asked: it errored, was stopped, or said `success: false`. */
+function isFailedToolEntry(entry: ChatWorkLogEntry): boolean {
+  if (entry.status === "failed" || entry.status === "interrupted") return true;
+  const result = resultRecord(entry.result);
+  return result?.success === false || (typeof result?.error === "string" && result.error.trim().length > 0);
+}
+
 function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -68,17 +75,23 @@ export function clipWords(text: string, max = 48): string {
   return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
-function providerFromModelId(modelId: unknown): string | null {
+/** The provider id a model id runs on (`anthropic/…` is `claude`), or null. */
+function providerIdFromModelId(modelId: unknown): string | null {
   const id = str(modelId);
   if (!id) return null;
   const slash = id.indexOf("/");
   const prefix = slash > 0 ? id.slice(0, slash) : null;
   if (!prefix) return null;
   const known: Record<string, string> = { anthropic: "claude", openai: "codex" };
-  return humanizeProvider(known[prefix] ?? prefix);
+  return known[prefix] ?? prefix;
 }
 
-export type CtoChipKind = "scheduled" | "cancelled" | "paused" | "resumed" | "remembered" | "forgot" | "tracking" | "done";
+function providerFromModelId(modelId: unknown): string | null {
+  const provider = providerIdFromModelId(modelId);
+  return provider ? humanizeProvider(provider) : null;
+}
+
+export type CtoChipKind = "scheduled" | "cancelled" | "paused" | "resumed" | "remembered" | "forgot" | "tracking" | "done" | "started";
 
 export type CtoToolChip = {
   /** The entry it came from; stable key for the row. */
@@ -90,7 +103,41 @@ export type CtoToolChip = {
   text: string | null;
   /** The call failed: the chip says it did not happen. */
   failed: boolean;
+  /**
+   * `started` only: a chat `spawnChat` started on another machine or on ADE
+   * Cloud. No subagent card lands here for it, so the call draws the
+   * "Started a new task" row itself.
+   */
+  remote?: { sessionId: string | null; laneId: string | null; machineName: string | null; provider: string | null };
 };
+
+/**
+ * A successful `spawnChat` that ran on another machine or ADE Cloud, read off
+ * its result; null for a local spawn (its subagent card draws the row), a
+ * failure, or anything else.
+ */
+export function ctoRemoteSpawnForEntry(entry: ChatWorkLogEntry): CtoToolChip["remote"] & { title: string | null } | null {
+  if (entry.entryKind !== "tool" || entryToolName(entry) !== "spawnChat" || entry.status !== "completed") return null;
+  const result = resultRecord(entry.result);
+  if (!result || result.success === false) return null;
+  const cloud = result.adeCloud === true;
+  const machineName = str(result.machineName) ?? (cloud ? (str(record(result.machine)?.name) ?? "ADE Cloud") : null);
+  if (!machineName) return null;
+  const args = record(entry.args) ?? {};
+  return {
+    sessionId: str(result.sessionId),
+    laneId: str(result.laneId),
+    machineName,
+    // An ADE Cloud launch result names no provider; the model the CTO asked for does.
+    provider: str(result.provider) ?? providerIdFromModelId(result.modelId) ?? providerIdFromModelId(args.modelId),
+    title: spawnTitle(args, result),
+  };
+}
+
+function spawnTitle(args: Record<string, unknown>, result: Record<string, unknown> | null): string | null {
+  const prompt = str(args.initialPrompt);
+  return str(result?.requestedTitle) ?? str(args.title) ?? str(result?.laneName) ?? (prompt ? clipWords(prompt) : null);
+}
 
 /** State-changing CTO tools that draw a chip instead of hiding in the tools toggle. */
 const CHIP_TOOL_NAMES: ReadonlySet<string> = new Set([
@@ -101,6 +148,8 @@ const CHIP_TOOL_NAMES: ReadonlySet<string> = new Set([
   "forget",
   "trackWork",
   "finishWork",
+  // Only a remote or ADE Cloud spawn (`ctoRemoteSpawnForEntry`) or a failed one draws.
+  "spawnChat",
 ]);
 
 export function isCtoChipEntry(entry: ChatWorkLogEntry): boolean {
@@ -130,6 +179,7 @@ const FAILED_VERB: Record<CtoChipKind, string> = {
   forgot: "Couldn't drop note",
   tracking: "Couldn't track",
   done: "Couldn't finish",
+  started: "Couldn't start",
 };
 
 /**
@@ -140,13 +190,22 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
   if (!isCtoChipEntry(entry)) return null;
   if (entry.status === "running") return null;
   const name = entryToolName(entry);
+  if (name === "spawnChat") {
+    const remote = ctoRemoteSpawnForEntry(entry);
+    if (remote) {
+      const { title, ...where } = remote;
+      return { id: entry.id, kind: "started", verb: "Started a new task", text: title ? clipWords(title) : null, failed: false, remote: where };
+    }
+    // A local spawn that started draws its row from its subagent card. One
+    // that failed, on any machine, says so in the thread.
+    if (!isFailedToolEntry(entry)) return null;
+    const title = spawnTitle(record(entry.args) ?? {}, resultRecord(entry.result));
+    return { id: entry.id, kind: "started", verb: FAILED_VERB.started, text: title ? clipWords(title) : null, failed: true };
+  }
   const args = record(entry.args) ?? {};
   const result = resultRecord(entry.result);
   const payload = record(result?.result) ?? record(result?.item) ?? result;
-  const failed = entry.status === "failed"
-    || entry.status === "interrupted"
-    || result?.success === false
-    || (typeof result?.error === "string" && result.error.trim().length > 0);
+  const failed = isFailedToolEntry(entry);
   // A declined confirm is not a failure of the call, but nothing changed.
   if (result?.declined === true || result?.cancelled === true) return null;
 
@@ -194,6 +253,7 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
     forgot: "Dropped note",
     tracking: "Tracking",
     done: "Done",
+    started: "Started a new task",
   };
   return {
     id: entry.id,

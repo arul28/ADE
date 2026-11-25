@@ -240,6 +240,8 @@ export type SubagentSpawnAnchorRenderEvent = {
   taskId: string | null;
   /** Cosmetic relationship + completion-report policy; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
+  /** A spawned ADE chat that started read-only: a background helper. */
+  readOnly?: boolean;
   /** Best-effort parent label (parent's description/agentType); null/absent if unknown. */
   parentLabel?: string | null;
   /** Claude dynamic-workflow snapshot, when this card is a workflow task. */
@@ -317,6 +319,8 @@ export type SubagentResultCardRenderEvent = {
   childSessionId: string | null;
   /** Cosmetic relationship; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
+  /** A spawned ADE chat that started read-only: a background helper. */
+  readOnly?: boolean;
   /**
    * Provider task id, carried over from the running card so a settled card can
    * still be recognized (stop, workflow grouping). Optional: older stored
@@ -807,6 +811,8 @@ type SubagentAnchorState = {
   taskId: string | null;
   /** Spawn-kind carried on the `subagent_started` event; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
+  /** The `subagent_started` said the spawned chat is read-only (a background helper). */
+  readOnly: boolean;
   /** Result-only usage/worktree metadata surfaced on the result card. */
   totalTokens: number | null;
   toolUseCount: number | null;
@@ -2745,6 +2751,7 @@ function spawnAnchorEvent(
     childSessionId: state.childSessionId,
     taskId: state.taskId,
     spawnKind: state.spawnKind,
+    ...(state.readOnly ? { readOnly: true } : {}),
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
     workflowProgress: state.workflowProgress,
     workflowName: state.workflowName,
@@ -2794,6 +2801,7 @@ function enrichSubagentStateFromEvent(
   if (record.spawnKind === "subagent" || record.spawnKind === "peer") {
     state.spawnKind = record.spawnKind;
   }
+  if (event.type === "subagent_started" && event.readOnly === true) state.readOnly = true;
   const parentAgentId = subagentText((event as { parentAgentId?: unknown }).parentAgentId);
   if (parentAgentId) state.parentAgentId = parentAgentId;
   const workflowName = subagentText((event as { workflowName?: unknown }).workflowName);
@@ -2899,6 +2907,7 @@ function handleSubagentLifecycleEvent(
       childSessionId: null,
       taskId: taskId && !taskId.startsWith("chat:") ? taskId : null,
       spawnKind: null,
+      readOnly: false,
       totalTokens: null,
       toolUseCount: null,
       worktreeBranch: null,
@@ -3103,6 +3112,7 @@ function handleSubagentLifecycleEvent(
     resultLanded: resultLandedBeforeStop,
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
+    ...(state.readOnly ? { readOnly: true } : {}),
     taskId: state.taskId,
     workflowProgress: state.workflowProgress,
     workflowName: state.workflowName,

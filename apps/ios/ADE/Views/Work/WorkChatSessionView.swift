@@ -926,6 +926,10 @@ struct WorkChatSessionView: View {
   /// `chat.continueUsageLimitOnAlternate` — starts the task on another account.
   var onContinueUsageLimitOnAlternate: (@MainActor () async -> Void)? = nil
   var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
+  /// Opens a spawned child chat on its machine; the CTO thread's spawn rows use it.
+  var onSelectSubagent: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Opens a chat the CTO started on another machine or ADE Cloud.
+  var onOpenRemoteSpawnedChat: (@MainActor (CtoRemoteSpawn) -> Void)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   /// Approve a Codex plan and implement it in a chat of its own. Nil when this
   /// screen's host cannot offer it; the plan card then shows Approve alone.

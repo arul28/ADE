@@ -1153,6 +1153,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
     subagentSpawnDepth: entry.subagentSpawnDepth,
     subagentResourceLinks: entry.subagentResourceLinks ?? [],
     subagentResumed: entry.subagentResumed,
+    subagentReadOnly: entry.subagentReadOnly,
     apiErrorStatus: entry.apiErrorStatus,
     isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
     stopSource: entry.stopSource,

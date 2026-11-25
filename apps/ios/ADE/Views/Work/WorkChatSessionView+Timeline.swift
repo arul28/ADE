@@ -156,6 +156,11 @@ extension WorkChatSessionView {
         onToggle: { toggleCard(fileChangeCard.id, entryId: entry.id) }
       )
       .equatable()
+    case .subagent(let row) where ctoLive != nil && row.kind != .backgroundCommand:
+      // The CTO thread draws what it started as quiet rows, not cards (as on desktop).
+      CtoSpawnRowsView(rows: [row], sessionProvider: chatSummaryContext.provider, onOpen: onSelectSubagent)
+    case .subagentGrid(let model) where ctoLive != nil:
+      CtoSpawnRowsView(rows: model.rows, sessionProvider: chatSummaryContext.provider, onOpen: onSelectSubagent)
     case .subagent(let row):
       WorkSubagentTimelineRowView(
         row: row,
@@ -183,7 +188,7 @@ extension WorkChatSessionView {
       if chips.isEmpty {
         Color.clear.frame(height: 1)
       } else {
-        CtoToolChipsRow(chips: chips, accent: ctoLive?.look.ctoAccent ?? ADEColor.ctoAccent)
+        CtoToolChipsRow(chips: chips, accent: ctoLive?.look.ctoAccent ?? ADEColor.ctoAccent, onOpenRemote: onOpenRemoteSpawnedChat)
       }
     case .toolGroup(let group):
       timelineToolGroup(group, entryId: entry.id)
@@ -197,7 +202,7 @@ extension WorkChatSessionView {
       if chips.isEmpty {
         Color.clear.frame(height: 4)
       } else {
-        CtoToolChipsRow(chips: chips, accent: ctoLive?.look.ctoAccent ?? ADEColor.ctoAccent)
+        CtoToolChipsRow(chips: chips, accent: ctoLive?.look.ctoAccent ?? ADEColor.ctoAccent, onOpenRemote: onOpenRemoteSpawnedChat)
       }
     case .turnEndMarker(let marker):
       WorkTurnEndMarkerView(
@@ -210,7 +215,7 @@ extension WorkChatSessionView {
     case .turnFold(let model):
       let activityKey = model.turnEndTurnId ?? model.turnId
       WorkTurnFoldRow(
-        model: model,
+        model: ctoLive != nil ? ctoFoldModel(model, activity: turnToolActivity.completedByTurnId[activityKey]) : model,
         work: model.isExpanded ? turnWorkDisclosure(turnKey: activityKey) : .none,
         onToggleWork: { toggleTurnWork($0, turnKey: activityKey) },
         onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: activityKey) },

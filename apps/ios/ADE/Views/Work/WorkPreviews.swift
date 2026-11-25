@@ -1620,6 +1620,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   case ctoAvatar = "cto-avatar"
   case ctoWelcome = "cto-welcome"
   case ctoThread = "cto-thread"
+  /// The CTO thread after it started work: task rows and the background tasks row.
+  case ctoSpawns = "cto-spawns"
   case ctoProfile = "cto-profile"
   case ctoProfileLibrary = "cto-profile-library"
   case ctoSettingsLook = "cto-settings-look"
@@ -1936,7 +1938,7 @@ struct ADEPreviewScreenHost: View {
       PasswordsPreviewHost(detail: false)
     case .passwordDetail:
       PasswordsPreviewHost(detail: true)
-    case .ctoAvatar, .ctoWelcome, .ctoThread, .ctoProfile, .ctoProfileLibrary,
+    case .ctoAvatar, .ctoWelcome, .ctoThread, .ctoSpawns, .ctoProfile, .ctoProfileLibrary,
          .ctoSettingsLook, .ctoSettingsBrain, .ctoSettingsMemory, .ctoOffline:
       CtoPreviewHost(screen: screen)
     case .updateGatePhone:

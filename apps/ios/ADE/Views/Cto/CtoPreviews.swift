@@ -158,6 +158,56 @@ enum CtoPreviewData {
     WorkChatEnvelope(sessionId: "preview-chat-session", timestamp: iso(minutesFromNow: -minutesAgo), sequence: sequence, event: event)
   }
 
+  private static func spawnEnvelope(
+    _ sequence: Int,
+    _ event: WorkChatEvent,
+    provider: String? = nil,
+    readOnly: Bool = false,
+    minutesAgo: Double
+  ) -> WorkChatEnvelope {
+    WorkChatEnvelope(
+      sessionId: "preview-chat-session",
+      timestamp: iso(minutesFromNow: -minutesAgo),
+      sequence: sequence,
+      event: event,
+      subagentTaskType: "subagent",
+      subagentProvider: provider,
+      subagentSpawnKind: provider == nil ? nil : .subagent,
+      subagentReadOnly: readOnly ? true : nil
+    )
+  }
+
+  /// A turn that started work the way the CTO does: two child chats, a chat
+  /// on another machine, one on ADE Cloud, a read-only helper chat, a native
+  /// subagent and a spawn that failed.
+  static var spawnTranscript: [WorkChatEnvelope] {
+    let spawn = { (id: String, name: String, args: String, result: String, minutesAgo: Double, sequence: Int) -> [WorkChatEnvelope] in
+      [
+        envelope(sequence, .toolCall(tool: "mcp__ade__\(name)", argsText: args, itemId: id, parentItemId: nil, turnId: "t1"), minutesAgo: minutesAgo),
+        envelope(sequence + 1, .toolResult(tool: "mcp__ade__\(name)", resultText: result, itemId: id, parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: minutesAgo - 0.01),
+      ]
+    }
+    var out: [WorkChatEnvelope] = [
+      envelope(1, .userMessage(text: "Fix the flaky checkout test, move the receipt to the new API, and find out why deploys got slow.", attachments: nil, turnId: "t1", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 12),
+    ]
+    out += spawn("sp-1", "spawnChat", #"{"title":"Fix the flaky checkout test"}"#, #"{"success":true,"sessionId":"child-1"}"#, 11.9, 2)
+    out.append(spawnEnvelope(4, .subagentStarted(taskId: "chat:child-1", agentId: "child-1", agentType: "codex", parentToolUseId: nil, description: "Fix the flaky checkout test", background: false, label: nil, model: "gpt-6-luna", reasoningEffort: nil, turnId: "t1"), provider: "codex", minutesAgo: 11.85))
+    out += spawn("sp-2", "spawnChat", #"{"title":"Move the receipt to the new API"}"#, #"{"success":true,"sessionId":"child-2"}"#, 11.8, 5)
+    out.append(spawnEnvelope(7, .subagentStarted(taskId: "chat:child-2", agentId: "child-2", agentType: "claude", parentToolUseId: nil, description: "Move the receipt to the new API", background: false, label: nil, model: "claude-sonnet-5-5", reasoningEffort: nil, turnId: "t1"), provider: "claude", minutesAgo: 11.75))
+    out += spawn("sp-3", "spawnChat", #"{"title":"Read the deploy logs","permissionMode":"plan"}"#, #"{"success":true,"sessionId":"helper-1"}"#, 11.7, 8)
+    out.append(spawnEnvelope(10, .subagentStarted(taskId: "chat:helper-1", agentId: "helper-1", agentType: "codex", parentToolUseId: nil, description: "Read the deploy logs", background: false, label: nil, model: "gpt-6-luna", reasoningEffort: nil, turnId: "t1"), provider: "codex", readOnly: true, minutesAgo: 11.65))
+    out.append(envelope(11, .toolCall(tool: "Agent", argsText: #"{"description":"Profile the deploy pipeline","run_in_background":true}"#, itemId: "ag-1", parentItemId: nil, turnId: "t1"), minutesAgo: 11.6))
+    out.append(spawnEnvelope(12, .subagentStarted(taskId: "native-1", agentId: "native-1", agentType: "Explore", parentToolUseId: "ag-1", description: "Profile the deploy pipeline", background: true, label: nil, model: nil, reasoningEffort: nil, turnId: "t1"), minutesAgo: 11.55))
+    out.append(envelope(13, .toolResult(tool: "Agent", resultText: "Async agent launched.", itemId: "ag-1", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 11.5))
+    out += spawn("sp-4", "spawnChat", #"{"title":"Check the Android build","machine":"Mac Studio"}"#, #"{"success":true,"machineName":"Mac Studio","sessionId":"remote-1","laneId":"lane-android","requestedTitle":"Check the Android build","provider":"codex"}"#, 11.45, 14)
+    out += spawn("sp-5", "spawnChat", #"{"title":"Draft the release notes","modelId":"anthropic/claude-sonnet-5-5","machine":"cloud"}"#, #"{"success":true,"adeCloud":true,"launchId":"cloud-1","phase":"starting","laneName":"release-notes","sessionId":"cloud-1","machine":{"name":null}}"#, 11.43, 16)
+    out += spawn("sp-6", "spawnChat", #"{"title":"Bump the SDK","modelId":"openai/gpt-6-luna"}"#, #"{"success":false,"error":"No lane named sdk-bump on this machine."}"#, 11.42, 18)
+    out.append(envelope(20, .assistantText(text: "On it. I'll tell you when they're done.", turnId: "t1", itemId: "m-1"), minutesAgo: 11.4))
+    out.append(envelope(21, .done(status: "completed", summary: "", usage: nil, turnId: "t1", model: "claude-opus-5-5", modelId: "anthropic/claude-opus-5-5"), minutesAgo: 11.35))
+    out.append(spawnEnvelope(22, .subagentResult(taskId: "native-1", agentId: "native-1", agentType: "Explore", parentToolUseId: "ag-1", status: "completed", summary: "Deploys wait 4 minutes on a cold Docker layer cache.", label: nil, model: nil, reasoningEffort: nil, turnId: nil), minutesAgo: 6))
+    return out
+  }
+
   static var transcript: [WorkChatEnvelope] {
     [
       envelope(1, .userMessage(text: "Morning. Where are we on the login flake?", attachments: nil, turnId: "t1", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 30),
@@ -198,6 +248,8 @@ struct CtoPreviewHost: View {
       CtoWelcomeFixture()
     case .ctoThread:
       CtoThreadFixture(live: workingLive, store: store)
+    case .ctoSpawns:
+      CtoThreadFixture(live: live, store: store, transcript: CtoPreviewData.spawnTranscript, isStreaming: false)
     case .ctoProfile:
       CtoThreadFixture(live: workingLive, store: store, presentsProfile: .activity)
     case .ctoProfileLibrary:
@@ -340,13 +392,15 @@ private struct CtoThreadFixture: View {
   @ObservedObject var live: CtoLiveModel
   @ObservedObject var store: CtoStore
   var presentsProfile: CtoProfileTab? = nil
+  var transcript: [WorkChatEnvelope] = CtoPreviewData.transcript
+  var isStreaming = true
 
   @State private var profile: CtoProfileTab? = nil
   @State private var detent: PresentationDetent = .large
 
   var body: some View {
     NavigationStack {
-      workPreviewChatSessionView(transcript: CtoPreviewData.transcript, isStreaming: true, ctoLive: live)
+      workPreviewChatSessionView(transcript: transcript, isStreaming: isStreaming, ctoLive: live)
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

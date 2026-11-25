@@ -175,6 +175,7 @@ struct WorkTimelineSignatureFold {
     combineOptional(envelope.subagentProvider, into: &hasher)
     combineOptional(envelope.subagentCommand, into: &hasher)
     combineOptional(envelope.subagentSpawnKind.map { String(describing: $0) }, into: &hasher)
+    hasher.combine(envelope.subagentReadOnly == true)
     combineOptional(envelope.subagentParentAgentId, into: &hasher)
     hasher.combine(envelope.subagentSpawnDepth ?? Int.min)
     hasher.combine(envelope.subagentResourceLinks)
@@ -1038,6 +1039,7 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        readOnly: envelope.subagentReadOnly == true || existing?.readOnly == true,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
@@ -1071,6 +1073,7 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        readOnly: envelope.subagentReadOnly == true || existing?.readOnly == true,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
@@ -1105,6 +1108,7 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        readOnly: envelope.subagentReadOnly == true || existing?.readOnly == true,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,

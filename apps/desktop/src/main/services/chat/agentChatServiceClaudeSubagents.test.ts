@@ -802,10 +802,12 @@ describe("createAgentChatService", () => {
       expect(notice.message).toBe('"Retry fix" · Claude · finished · PR #1234');
       expect(notice.message).not.toContain("rewrote the flaky helper");
 
-      // The subagent_result card restates the whole summary, so the CTO thread
-      // does not get one.
-      expect(events.some((event) =>
-        event.sessionId === cto.id && event.event.type === "subagent_result")).toBe(false);
+      // The CTO thread gets the child's result too, so its spawn row settles;
+      // the CTO surfaces draw only the line above, never the summary.
+      expect(events.filter((event) =>
+        event.sessionId === cto.id && event.event.type === "subagent_result").map((event) => event.event)).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
+      ]);
 
       // The model is still told, with the same single line.
       const wake = await vi.waitFor(() => {

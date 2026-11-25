@@ -2628,6 +2628,8 @@ struct WorkSessionDestinationView: View {
       onResumeUsageLimitNow: resumeUsageLimitNowAction,
       onContinueUsageLimitOnAlternate: continueUsageLimitOnAlternateAction,
       onStopSubagentTask: stopTaskAction,
+      onSelectSubagent: { snapshot in await handleSubagentSelection(snapshot) },
+      onOpenRemoteSpawnedChat: { spawn in openRemoteSpawnedChat(spawn) },
       onApproveRequest: approveRequest,
       onImplementPlanInNewChat: implementPlanInNewChat,
       onRespondToQuestion: respondToQuestion,
@@ -3490,7 +3492,33 @@ struct WorkSessionDestinationView: View {
     } else {
       return false
     }
-    let request = WorkSessionNavigationRequest(sessionId: childId, laneId: laneId)
+    requestWorkNavigation(WorkSessionNavigationRequest(sessionId: childId, laneId: laneId))
+    return true
+  }
+
+  /// Opens a chat the CTO started on another machine or ADE Cloud (its
+  /// "Started a new task … on <machine>" row). A chat the Work list holds for
+  /// another machine opens through that machine's namespaced lane id. When
+  /// this chat is itself on another machine, the child may be on the one the
+  /// phone is focused on, so its plain lane id goes to the Work root, which
+  /// says so if the chat is not there. Otherwise the phone cannot tell where
+  /// the chat runs, and nothing opens rather than the wrong machine.
+  @MainActor
+  func openRemoteSpawnedChat(_ spawn: CtoRemoteSpawn) {
+    guard let childId = spawn.sessionId else { return }
+    let laneId: String?
+    if let remote = syncService.remoteMachineChat(sessionId: childId) {
+      laneId = spawn.laneId.map { workRemoteLaneId(machineKey: remote.machineKey, laneId: $0) }
+    } else if isRemoteMachineChat {
+      laneId = spawn.laneId
+    } else {
+      return
+    }
+    requestWorkNavigation(WorkSessionNavigationRequest(sessionId: childId, laneId: laneId))
+  }
+
+  @MainActor
+  private func requestWorkNavigation(_ request: WorkSessionNavigationRequest) {
     if chatInfoPresented {
       // The sheet goes first: the request replaces this chat, and a sheet
       // still up over it would be torn down mid-presentation.
@@ -3498,7 +3526,6 @@ struct WorkSessionDestinationView: View {
     } else {
       syncService.requestedWorkSessionNavigation = request
     }
-    return true
   }
 
   /// Dismisses Chat Info, then runs `action` once the sheet's dismissal has

@@ -51533,6 +51533,8 @@ export function createAgentChatService(args: {
     model: string | null | undefined;
     reasoningEffort: string | null | undefined;
     resumed?: boolean;
+    /** Started read-only (`permissionMode "plan"`): a background helper. */
+    readOnly?: boolean;
   }): void => {
     if (!child.resumed) {
       emitChatEvent(parent, {
@@ -51547,6 +51549,7 @@ export function createAgentChatService(args: {
             title: child.label,
           },
           spawnKind: child.spawnKind,
+          ...(child.readOnly ? { readOnly: true } : {}),
           // A spawn always emits an inline `subagent_started` card below, so the
           // renderer suppresses the quiet deep-link pill.
           hasInlineCard: true,
@@ -51565,6 +51568,7 @@ export function createAgentChatService(args: {
       background: false,
       taskType: "subagent",
       spawnKind: child.spawnKind,
+      ...(child.readOnly ? { readOnly: true } : {}),
       ...optionalSubagentModelFields(child.model, child.reasoningEffort),
     });
   };
@@ -51584,6 +51588,7 @@ export function createAgentChatService(args: {
       provider: child.session.provider,
       model: child.session.model,
       reasoningEffort: child.session.reasoningEffort,
+      readOnly: child.session.permissionMode === "plan",
     });
     freshSpawnCards.add(child.session.id);
   };
@@ -51629,6 +51634,7 @@ export function createAgentChatService(args: {
       provider: child.session.provider,
       model: child.session.model,
       reasoningEffort: child.session.reasoningEffort,
+      readOnly: child.session.permissionMode === "plan",
       resumed: true,
     });
   };
@@ -52187,11 +52193,11 @@ export function createAgentChatService(args: {
             delivery.onDelivered?.();
             return;
           }
-          // The CTO thread takes one line per child turn and nothing else. The
-          // subagent_result card and the wake divider each restate the child's
-          // closing summary, which is the transcript dump a coordinator thread
-          // cannot afford; the notice below carries the same `spawnCompletion`
-          // so the delivery dedupe still anchors on it.
+          // The CTO thread takes one line per child turn. Its `subagent_result`
+          // only settles the child's row there (the CTO surfaces never draw the
+          // summary), so a background helper stops reading as running; the
+          // notice below carries the same `spawnCompletion` so the delivery
+          // dedupe still anchors on it.
           const parentIsCto = parent.session.identityKey === "cto";
           const ctoReportLine = parentIsCto
             ? formatCtoChildReportLine({
@@ -52201,7 +52207,7 @@ export function createAgentChatService(args: {
                 prNumber: delivery.ctoPrNumber,
               })
             : null;
-          if (!inlineEventEmitted && (!parentIsCto || delivery.emitCtoSubagentResult === true)) {
+          if (!inlineEventEmitted) {
             emitChatEvent(parent, {
               type: "subagent_result",
               taskId: `chat:${childSessionId}`,
