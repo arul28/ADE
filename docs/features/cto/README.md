@@ -143,14 +143,14 @@ A fresh CTO thread gets its history as one block (`buildCtoHistoryBlock` in `cto
 2. `<story_so_far>`: a running summary of the conversation older than the tail, in four sections (Where things stand, Decisions and preferences, Open threads, Earlier), at most 12,000 characters. Stored in `.ade/cto/story.json` (`ctoMemoryService.readStory/writeStory`, secrets redacted).
 3. Turns a move carried here, in `<conversation_history>`, until the thread has 40 of its own.
 4. A count of older messages that are in neither the story nor the tail, if any.
-5. The tail in `<conversation_history>`: the newest messages that fit 36,000 characters (at most 40, at least 4), each clipped to 6,000 with its start and end kept.
+5. The tail in `<conversation_history>`: the newest messages that fit 36,000 characters (at most 40, at least 4), each clipped to 6,000 with its start and end kept. Widened back over the messages just before it that the story does not cover yet, up to 24,000 more characters and 40 more messages (`selectCtoHistoryTail`), so a message that just left the tail is never in neither. Logged as `agent_chat.cto_tail_widened`.
 
 Text inside that quotes our tags is defused (`<` becomes `‹`), so a pasted `</conversation_history>` cannot end the block early.
 
 The story is written by the helper model that names chats, with the same rules (`buildSessionIntelligenceModelCandidates`): Haiku 5.5 on Claude, GPT-6 Luna on Codex, Composer 2.5 on Cursor, and the CTO's own model on the other providers, at the lowest effort, on the CTO's own account. When that account has no helper model, the CTO's own model writes it. Times in the prompt and the block are in the person's zone (the identity's `timeZone`), not the machine's. It runs in the background, never on the send path:
 
 - Every 6 completed CTO turns, when at least 12,000 characters outside the tail are not in the story yet.
-- On every fresh thread (`refreshCtoProviderThread`), forced: whatever fell out of the tail is folded, however little. The first send on the new thread rebuilds the block, so an update that finished by then is in it.
+- On every fresh thread (`refreshCtoProviderThread`), forced: whatever fell out of the tail is folded, however little. The first send on the new thread rebuilds the block and does not wait for the update: one that finished by then is in the story, and the messages of one still running ride in the widened tail.
 - One update per chat at a time; a request during one runs once after it. One update folds at most 40,000 characters per helper call and 4 calls per run, oldest first; a long backlog takes several runs.
 - The story only moves forward (`coveredThrough`, the time of the last message folded; messages that share that time go in the same batch). A run re-reads the story before writing and drops its answer if a move replaced it meanwhile.
 - An answer must look like a story to replace one (`acceptCtoStoryAnswer`): at least one of its section names, and at least 35% of the previous story's length. A refusal or a fragment would otherwise replace the only record of what the story covers. A failed or rejected answer leaves the story as it was and that chat waits 10 minutes before trying again (a fresh thread still forces one).

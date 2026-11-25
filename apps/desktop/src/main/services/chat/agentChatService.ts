@@ -206,8 +206,7 @@ import {
 import { createCtoHistoryReader } from "../cto/ctoHistoryReader";
 import {
   buildCtoHistoryBlock,
-  countUncoveredBeforeTail,
-  selectCtoTail,
+  selectCtoHistoryTail,
   type CtoStoryRecord,
 } from "../cto/ctoStory";
 import { createCtoStoryUpdater, type CtoStorySession, type CtoStoryUpdateRequest } from "../cto/ctoStoryUpdater";
@@ -18780,13 +18779,18 @@ export function createAgentChatService(args: {
       // reads as a new instruction.
       const entries = sinceMove ?? collectConversationEntries(managed);
       const story = readCtoStorySafely();
-      const { kept: tailEntries, firstKeptIndex } = selectCtoTail(entries);
+      // Widened over what the story hasn't folded yet: a fresh thread's forced
+      // fold runs in the background, and this send doesn't wait for it.
+      const { kept: tailEntries, widenedBy, omitted } = selectCtoHistoryTail(entries, story);
+      if (widenedBy > 0) {
+        logger.info("agent_chat.cto_tail_widened", { sessionId: managed.session.id, widenedBy, omitted });
+      }
       const block = buildCtoHistoryBlock({
         title: RECENT_CONVERSATION_TAIL_TITLE,
         story,
         carried: carriedTurns,
         tail: tailEntries,
-        omitted: countUncoveredBeforeTail(entries, firstKeptIndex, story),
+        omitted,
         timeZone: ctoPersonTimeZone(),
       });
       if (block.length) sections.push({ id: "tail", text: block });

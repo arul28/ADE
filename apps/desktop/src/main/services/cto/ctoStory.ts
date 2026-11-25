@@ -107,6 +107,45 @@ export function selectCtoTail(entries: readonly CtoStoryEntry[]): { kept: CtoSto
   return { kept, firstKeptIndex };
 }
 
+/** Extra room a fresh thread's tail gets for messages the story has not folded yet. */
+export const CTO_TAIL_CATCHUP_MAX_CHARS = 24_000;
+export const CTO_TAIL_CATCHUP_MAX_MESSAGES = 40;
+
+/**
+ * The tail a fresh thread gets: the newest messages (`selectCtoTail`), widened
+ * back over the messages just before them that the story does not cover yet,
+ * within a budget of its own. A fresh thread starts a forced fold in the
+ * background and its first send does not wait for it, so a message that just
+ * left the tail would otherwise be in neither the story nor the tail. Once
+ * the fold lands there is nothing to widen. `omitted` counts what is still
+ * in neither (`countUncoveredBeforeTail`).
+ */
+export function selectCtoHistoryTail(
+  entries: readonly CtoStoryEntry[],
+  story: Pick<CtoStoryRecord, "coveredThrough"> | null,
+): { kept: CtoStoryEntry[]; widenedBy: number; omitted: number } {
+  const base = selectCtoTail(entries);
+  const catchUp: CtoStoryEntry[] = [];
+  let chars = 0;
+  let firstKeptIndex = base.firstKeptIndex;
+  for (let index = base.firstKeptIndex - 1; index >= 0 && catchUp.length < CTO_TAIL_CATCHUP_MAX_MESSAGES; index -= 1) {
+    const entry = entries[index]!;
+    if (story && entry.at && entry.at <= story.coveredThrough) break;
+    const text = clipMiddle(entry.text, CTO_TAIL_MESSAGE_MAX_CHARS);
+    if (!text) continue;
+    if (chars + text.length > CTO_TAIL_CATCHUP_MAX_CHARS) break;
+    catchUp.push({ ...entry, text });
+    chars += text.length;
+    firstKeptIndex = index;
+  }
+  catchUp.reverse();
+  return {
+    kept: [...catchUp, ...base.kept],
+    widenedBy: catchUp.length,
+    omitted: countUncoveredBeforeTail(entries, firstKeptIndex, story),
+  };
+}
+
 /** Messages before the tail that the story doesn't cover yet (or all of them, with no story). */
 export function countUncoveredBeforeTail(
   entries: readonly CtoStoryEntry[],
