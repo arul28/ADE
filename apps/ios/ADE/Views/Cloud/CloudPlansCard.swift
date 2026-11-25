@@ -67,7 +67,7 @@ struct CloudPlansCard: View {
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and an ADE Cloud chat opened there each week." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       howRow("clock", "\(words.title) run the bigger sizes", "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
@@ -227,7 +227,7 @@ struct CloudPlansCard: View {
     var parts: [String] = []
     if let computers = computerLimit(column) {
       parts.append(cloudComputersPhrase(computers))
-      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US" : "unlimited Small computers")
+      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US, with an ADE Cloud chat there each week" : "unlimited Small computers")
       parts.append(words.planSentence(column.facts.includedMilli))
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) credits a month")
     } else {

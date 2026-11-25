@@ -660,13 +660,13 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at) values (?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
       source = excluded.source, country = excluded.country, gpc = excluded.gpc,
-      looked_at = case when excluded.consent = 'granted' then coalesce(excluded.looked_at, case when cloud_sponsored_consent.consent = 'granted' then cloud_sponsored_consent.looked_at end) end${guard}
+      looked_at = case when excluded.consent = 'granted' then nullif(max(coalesce(excluded.looked_at, 0), case when cloud_sponsored_consent.consent = 'granted' then coalesce(cloud_sponsored_consent.looked_at, 0) else 0 end), 0) end${guard}
   `).bind(
     userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
-    // A yes from the US makes Small free from now. One from elsewhere keeps the US look the row holds
-    // when it is written (a trip's, or one saved meanwhile), never the one read before the email.
+    // A yes from the US makes Small free from now. Over a yes, the later of this and the row's look
+    // when it is written holds (a trip's, or one saved while the email was read): never moved back.
     consent === "granted" && smallFreeFrom(who.country) ? now : null,
     ...(guard && before ? [before.decided_at] : []),
   );

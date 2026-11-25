@@ -261,7 +261,7 @@ function RateSection() {
                 detail={`${size.full ? "Full computer · " : ""}${size.cpu} CPU · ${size.memoryGb} GB memory · ${size.use}`}
                 per="Each hour uses"
                 value={size.rate > 0 ? UNIT.count(size.rate) : "None"}
-                note={size.rate > 0 ? undefined : GRAVITY_ADS_ON_WEBSITE ? "Unlimited on paid plans, and on Free in the US with sponsored cards" : "Unlimited, on every plan"}
+                note={size.rate > 0 ? undefined : GRAVITY_ADS_ON_WEBSITE ? "Unlimited on paid plans, and on Free in the US with sponsored cards and an ADE Cloud chat there each week" : "Unlimited, on every plan"}
               />
             ))}
             {PHONE_IN_CREDITS ? (
@@ -631,7 +631,7 @@ function ExtraCard() {
         </ul>
       )}
       <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
-        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working{GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards" : ""}.
+        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working{GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards and an ADE Cloud chat there each week" : ""}.
       </p>
     </DetailCard>
   );
@@ -738,7 +738,7 @@ function FaqSection() {
           <FaqItem question={`What happens when my ${UNIT.many} run out?`}>
             On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers{PHONE_IN_CREDITS ? " and the ADE Cloud iPhone" : ""} stop
             until next month, or until you pick a paid plan; {SMALL_SIZE.label} computers keep working
-            {GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards" : ""}. On a paid plan, turn on {UNIT.extra} in Settings and
+            {GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards and an ADE Cloud chat there each week" : ""}. On a paid plan, turn on {UNIT.extra} in Settings and
             your agents keep working: each extra {UNIT.one} costs {extraPriceList()}, billed after use. With {UNIT.extra}{" "}
             off, work on the bigger sizes stops at your plan's {UNIT.many}.
           </FaqItem>

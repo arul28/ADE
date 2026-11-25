@@ -361,7 +361,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on. Elsewhere, or with them off, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
+                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open an ADE Cloud chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${formatCloudHours(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
                   ) : (
@@ -403,7 +403,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Sparkle size={14} /></span>
-              <p><b>{freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on." : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
+              <p><b>{freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and an ADE Cloud chat opened there each week." : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
             </div>
             <div className="adecd-howto-item adecd-howto-rates">
               <span className="adecd-howto-icon"><Clock size={14} /></span>

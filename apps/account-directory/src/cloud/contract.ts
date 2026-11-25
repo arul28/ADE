@@ -3273,8 +3273,9 @@ export type CloudSponsoredState = {
    */
   smallNeedsCards?: boolean;
   /**
-   * The account said yes, but nobody has opened one of its ADE Cloud chats
-   * (or terminals) from the US for 7 days, or ever (away, or a yes given from
+   * The account said yes, but neither that yes nor a look at one of its ADE
+   * Cloud chats (or terminals) came from the US in the last 7 days (plus
+   * the hour a look's save may lag; away, or a yes given from
    * elsewhere): Small uses credits until the next such chat. Read in the US
    * only. Settings says so. Absent otherwise.
    */
