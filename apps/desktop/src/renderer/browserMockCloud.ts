@@ -5,7 +5,7 @@
  * `?mockCloud=<scenario>` turns it on. Without the flag nothing here runs.
  *  - `free` (default): Free plan, one lane (1 of its 2 computers).
  *  - `empty`: Free plan, nothing made yet.
- *  - `plus`: Plus plan at all 3 of its computers, extra hours on, earned hours.
+ *  - `plus`: Plus plan at all 3 of its computers, extra credits on, earned credits.
  *  - `pro`: Pro plan, a busy account over Plus's computers ("Move to Plus" asks first).
  *  - `downgrade`: Pro with a move to Plus waiting (made in the billing portal), over Plus.
  *  - `over`: Free plan in force, over its limits (a cancel made in the billing portal).
@@ -307,7 +307,7 @@ function fixture(scenario: Scenario): Fixture {
     case "plus":
       return {
         planId: "plus",
-        usedMilli: 212_400,
+        usedMilli: 72_400,
         extraHours: true,
         earnedMilli: 40_000,
         recentUsedMilli: 61_000,
@@ -321,7 +321,7 @@ function fixture(scenario: Scenario): Fixture {
     case "pro":
       return {
         planId: "pro",
-        usedMilli: 640_000,
+        usedMilli: 410_000,
         recentUsedMilli: 140_000,
         extraHours: true,
         lanes: Array.from({ length: 9 }, (_, index): LaneSpec => ({
@@ -471,7 +471,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       usedMilli: used,
       leftMilli: left,
       percentUsed: percent,
-      state: left <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
+      state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
     phone: fix.planId === "free" ? undefined : {

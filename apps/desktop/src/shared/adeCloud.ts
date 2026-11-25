@@ -1011,7 +1011,7 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     // A Free account whose Small uses hours (sponsored cards off) stops every size.
     const bigger = cloudSmallUsesHours(catalog)
       ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ADE Cloud to keep Small computers unlimited.`
-      : `Medium, Large and X-Large computers and the ADE Cloud iPhone are stopped until ${resetDate}. Small computers keep working.`;
+      : `Medium, Large and X-Large computers${account.phone?.access === "on" ? " and the ADE Cloud iPhone" : ""} are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
       ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)

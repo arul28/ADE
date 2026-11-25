@@ -191,7 +191,7 @@ export type HeroBarPart = { key: "computers" | "phone" | "used" | "left"; label:
 
 /**
  * The hero's balance, as the bar and its legend show it: the whole plan,
- * split by what used it (computers and the iPhone) and what is left. Thousandths, clamped so the parts fill the plan.
+ * split by what used it (computers, and the iPhone when the account has it) and what is left. Thousandths, clamped so the parts fill the plan.
  */
 export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
   const { includedMilli, leftMilli } = account.hours;
@@ -208,9 +208,11 @@ export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
   const periodTotal = Math.max(phoneTotal, account.hours.usedMilli);
   const phone = periodTotal > 0 ? Math.round((used * phoneTotal) / periodTotal) : 0;
   const computersTotal = Math.max(0, account.hours.usedMilli - phoneTotal);
+  // An account without the iPhone (and nothing on it this period) has no iPhone part to show.
+  const hasPhone = account.phone?.access === "on" || phoneTotal > 0;
   return [
     { key: "computers", label: "Computers", milli: used - phone, shownMilli: computersTotal },
-    { key: "phone", label: "iPhone", milli: phone, shownMilli: phoneTotal },
+    ...(hasPhone ? [{ key: "phone" as const, label: "iPhone", milli: phone, shownMilli: phoneTotal }] : []),
     { key: "left", label: "Left", milli: left, shownMilli: left },
   ];
 }
