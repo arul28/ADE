@@ -8,7 +8,7 @@ import type {
 import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, AUTOMATION_HOME_HANDOVER_MS, isAdeCloudHome } from "../../../shared/automationHome";
 import { automationCloudHomeProblem, localTimeZone } from "../../../shared/automationCloud";
 import type { Logger } from "../logging/logger";
-import { isAutomationAllowedAdeAction } from "../adeActions/actionPolicy";
+import { isAllowedAdeAction } from "../adeActions/actionPolicy";
 import type { AdeActionDomain } from "../adeActions/domains";
 import {
   AUTOMATION_RULE_KEY_PREFIX,
@@ -87,14 +87,18 @@ type AccountRule = {
   version?: string;
 };
 
-/** Whether a rule has an `ade-action` step whose action this ADE cannot run in a rule. */
+/**
+ * Whether a rule has an `ade-action` step naming an action this build does not
+ * know at all, as a newer ADE's would. An action this build knows but refuses
+ * in a rule (CTO-only, user-only) stays editable: saving names the step.
+ */
 function hasUnknownAdeActionStep(rule: Pick<ConfigAutomationRule, "actions" | "execution">): boolean {
   const steps = [...(rule.actions ?? []), ...(rule.execution?.builtIn?.actions ?? [])];
   return steps.some((step) => {
     if (step?.type !== "ade-action") return false;
     const domain = step.adeAction?.domain?.trim();
     const action = step.adeAction?.action?.trim();
-    return Boolean(domain && action) && !isAutomationAllowedAdeAction(domain as AdeActionDomain, action!);
+    return Boolean(domain && action) && !isAllowedAdeAction(domain as AdeActionDomain, action!);
   });
 }
 

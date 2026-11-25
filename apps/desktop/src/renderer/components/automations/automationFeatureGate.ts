@@ -9,9 +9,11 @@
  */
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import type { AutomationCapabilities } from "../../../shared/types";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import {
+  AUTOMATION_CLOUD_LANES_ID,
   automationFeatureGateReason,
   automationFeatureMissing,
   type AutomationFeatureKind,
@@ -21,7 +23,8 @@ import type { LaneMachine } from "../../state/laneMachineRouting";
 import { eventLabel } from "./triggerCatalog";
 import { isNotifyAdeAction, NOTIFY_STEP, STEP_DEFS, type StepKind } from "./actionCatalog";
 
-const LANE_MODE_LABELS: Record<string, string> = {
+/** The "Run in" choices, as the builder names them. */
+export const LANE_MODE_LABELS: Record<string, string> = {
   create: "A new lane each run",
   reuse: "An existing lane",
   "require-on-trigger": "The lane that triggered it",
@@ -39,6 +42,7 @@ export function automationFeatureLabel(kind: AutomationFeatureKind, id: string):
       return isNotifyAdeAction({ domain, action }) ? NOTIFY_STEP.label : `ADE action ${id}`;
     }
     case "cloudLanes": return "Run on ADE Cloud";
+    case "notifyLink": return "A notification that opens this run's history";
   }
 }
 
@@ -49,11 +53,24 @@ function readCapabilities(key: string, pin: NonNullable<LaneMachine["pin"]>): Pr
   const cached = capabilitiesCache.get(key);
   if (cached) return cached;
   const getCapabilities = window.ade?.automations?.getCapabilities;
-  const read = typeof getCapabilities === "function"
-    ? getCapabilities(pin).catch((error: unknown) => {
+  const read = isAdeAvailable(getCapabilities)
+    ? getCapabilities(pin).then((answer) => {
+        // A brain still starting has not bound its actions (`adeActions` is
+        // null, ADE Cloud lanes read as absent): not an answer to keep. The
+        // version table decides until the builder asks again.
+        if (answer.adeActions == null) {
+          capabilitiesCache.delete(key);
+          return null;
+        }
+        return answer;
+      }, (error: unknown) => {
         // An older brain refuses the call for good; anything else (offline,
-        // a timeout) is asked again next time.
-        if (!isUnsupportedAdeActionError(error)) capabilitiesCache.delete(key);
+        // a timeout) is asked again next time. Either way the version table
+        // decides meanwhile.
+        if (!isUnsupportedAdeActionError(error)) {
+          capabilitiesCache.delete(key);
+          console.warn("[automations] could not read the rule machine's capabilities; using the version table", error);
+        }
         return null;
       })
     : Promise.resolve(null);
@@ -94,6 +111,26 @@ export type AutomationFeatureGate = {
   /** Why the rule's machine can't use a feature ("Needs ADE 1.2.96 on Mac Studio"), or null. */
   blockedReason: (kind: AutomationFeatureKind, id: string, label?: string | null) => string | null;
 };
+
+/**
+ * A select option for a gated feature: disabled with the reason in its label,
+ * except the one already picked, which stays choosable.
+ */
+export function gatedOption(
+  gate: AutomationFeatureGate,
+  kind: AutomationFeatureKind,
+  id: string,
+  label: string,
+  picked: boolean,
+): { disabled: boolean; label: string } {
+  const blocked = picked ? null : gate.blockedReason(kind, id, label);
+  return { disabled: blocked != null, label: blocked ? `${label} (${blocked})` : label };
+}
+
+/** Why the rule's machine can't run each run on ADE Cloud, or null. */
+export function cloudLanesBlockedReason(gate: AutomationFeatureGate): string | null {
+  return gate.blockedReason("cloudLanes", AUTOMATION_CLOUD_LANES_ID);
+}
 
 const OPEN_GATE: AutomationFeatureGate = { machineName: null, blockedReason: () => null };
 

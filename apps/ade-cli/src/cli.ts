@@ -42738,6 +42738,9 @@ function createLinkOwnershipResolver(
   options: GlobalOptions,
 ): (target: OwnedDeeplinkTarget) => Promise<DeeplinkOwnership | null> {
   return async (target) => {
+    // A run link names this project only through its chat; the brain has no
+    // other check for a run, so one without a chat stays unowned.
+    if (target.kind === "automation-run" && !target.sessionId) return null;
     let connection: CliConnection | null = null;
     try {
       const linked = await connectForLink(options);
@@ -42748,7 +42751,7 @@ function createLinkOwnershipResolver(
         : target.kind === "lane"
           ? { laneId: target.laneId }
           : target.kind === "automation-run"
-            ? (target.sessionId ? { sessionId: target.sessionId } : {})
+            ? { sessionId: target.sessionId ?? "" }
             : target.repoOwner && target.repoName ? { repo: `${target.repoOwner}/${target.repoName}` } : {};
       return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership", subject)));
     } catch {

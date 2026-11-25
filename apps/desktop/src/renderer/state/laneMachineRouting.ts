@@ -104,6 +104,8 @@ export type LaneMachine = {
   /**
    * The brain's own version, bare ("1.2.125"). `version` is a label that can
    * name the app too; anything the brain runs (automations) compares this.
+   * Optional: rows built elsewhere (the Lanes page, an ADE Cloud lane with no
+   * computer) have no brain to name.
    */
   brainVersion?: string | null;
   /**
@@ -566,7 +568,7 @@ export function buildAllMachineLanes(input: {
         deviceId: connectionDeviceId(connection),
         hostname: connection.target.hostname ?? null,
         version: connectionVersionLabel(connection),
-        brainVersion: connection?.version?.trim() || null,
+        brainVersion: connection.version?.trim() || null,
         ...connectionMachineScope(connection),
       }));
     }

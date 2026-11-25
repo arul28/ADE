@@ -55,7 +55,10 @@ export const RUN_LANE_VALUE = "{{run.laneId}}";
 export const RUN_HISTORY_LINK = "ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}";
 
 /** Which "From this run" choice a link is, or null. */
-export function runChoiceOf(link: NotifyLink): "chat" | "lane" | "run" | null {
+/** A "From this run" choice: the run's chat, its lane, or its history. */
+export type NotifyRunChoice = "chat" | "lane" | "run";
+
+export function runChoiceOf(link: NotifyLink): NotifyRunChoice | null {
   if (link.kind === "run") return "run";
   if (link.kind === "chat" && link.fields.sessionId?.trim() === RUN_CHAT_VALUE) return "chat";
   if (link.kind === "lane" && link.fields.laneId?.trim() === RUN_LANE_VALUE) return "lane";

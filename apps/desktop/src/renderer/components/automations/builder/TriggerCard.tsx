@@ -29,7 +29,7 @@ import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
 import { WebhookTriggerPanel } from "./WebhookTriggerPanel";
 import { settingsRouteFor } from "../../settings/settingsManifest";
-import { useAutomationFeatureGate } from "../automationFeatureGate";
+import { gatedOption, useAutomationFeatureGate } from "../automationFeatureGate";
 
 function SmallField({
   label,
@@ -275,10 +275,10 @@ export function TriggerCard({
             {events.map((event) => {
               // The selected event stays choosable, so the select never shows
               // a value it cannot render; the builder's banner names it.
-              const blocked = event.value === trigger.type ? null : gate.blockedReason("trigger", event.value, event.label);
+              const option = gatedOption(gate, "trigger", event.value, event.label, event.value === trigger.type);
               return (
-                <option key={event.value} value={event.value} disabled={blocked != null}>
-                  {blocked ? `${event.label} (${blocked})` : event.label}
+                <option key={event.value} value={event.value} disabled={option.disabled}>
+                  {option.label}
                 </option>
               );
             })}

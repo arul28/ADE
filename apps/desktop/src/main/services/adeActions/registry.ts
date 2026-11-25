@@ -5382,6 +5382,7 @@ export function createAutomationAdeActionLookup(
     getService(domain) {
       return (getServices()[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
     },
+    getServices,
     listDomains() {
       return Object.keys(ADE_ACTION_ALLOWLIST);
     },

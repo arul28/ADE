@@ -17,7 +17,13 @@
 import type { AutomationCapabilities } from "./types";
 import { compareUpdateVersions } from "./updateVersions";
 
-export type AutomationFeatureKind = "trigger" | "step" | "laneMode" | "adeAction" | "cloudLanes";
+export type AutomationFeatureKind = "trigger" | "step" | "laneMode" | "adeAction" | "cloudLanes" | "notifyLink";
+
+/**
+ * The `notifyLink` id of "This run's history". It shipped with
+ * `getCapabilities`: a sender older than that drops the link it cannot parse.
+ */
+export const AUTOMATION_RUN_LINK_ID = "automation-run";
 
 export type AutomationFeatureRequirement = {
   /** `kind:id`, unique per feature. */
@@ -56,19 +62,22 @@ const TRIGGER_MIN_VERSIONS: Record<string, VersionRow> = {
   "github.pr_checks_failed": { label: "When a PR's checks fail", minVersion: "1.2.126" },
 };
 
-/** Step types. Every type in the add menu predates the version table. */
-const STEP_MIN_VERSIONS: Record<string, VersionRow> = {};
+/** The one id of the `cloudLanes` feature, which has no variants. */
+export const AUTOMATION_CLOUD_LANES_ID = "cloud";
 
 /** "Run on ADE Cloud" for each run's lane. */
-const CLOUD_LANES_ROW: VersionRow = { label: "Run on ADE Cloud", minVersion: "1.2.130-beta.0" };
+const CLOUD_LANES_ROW: VersionRow = { label: "Run on ADE Cloud", minVersion: "1.2.130-beta.12" };
 
 function versionRow(kind: AutomationFeatureKind, id: string): VersionRow | undefined {
   switch (kind) {
     case "trigger": return TRIGGER_MIN_VERSIONS[id];
-    case "step": return STEP_MIN_VERSIONS[id];
+    // Every step type in the add menu predates the version table; add a table
+    // here when one ships later.
+    case "step": return undefined;
     case "laneMode": return LANE_MODE_MIN_VERSIONS[id];
     case "adeAction": return ACTION_MIN_VERSIONS[id];
     case "cloudLanes": return CLOUD_LANES_ROW;
+    case "notifyLink": return undefined;
   }
 }
 
@@ -80,6 +89,8 @@ function listedByCapabilities(capabilities: AutomationCapabilities, kind: Automa
     // An unknown list (the brain had not bound its actions) is not a refusal.
     case "adeAction": return capabilities.adeActions == null || capabilities.adeActions.includes(id);
     case "cloudLanes": return capabilities.cloudLanes;
+    // Every brain that answers `getCapabilities` parses run links.
+    case "notifyLink": return id === AUTOMATION_RUN_LINK_ID;
   }
 }
 
@@ -100,7 +111,9 @@ export function automationFeatureMissing(
   const olderThanRow = Boolean(row && version && compareUpdateVersions(version, row.minVersion) < 0);
   const missing = support.capabilities
     ? !listedByCapabilities(support.capabilities, kind, id)
-    : olderThanRow;
+    // A notification link kind newer than the version table needs the
+    // machine's own answer.
+    : kind === "notifyLink" || olderThanRow;
   if (!missing) return null;
   return {
     key: `${kind}:${id}`,
@@ -121,7 +134,10 @@ type DraftLike = {
   } | null;
   actions?: ReadonlyArray<StepLike> | null;
 };
-type StepLike = { type?: string | null; adeAction?: { domain?: string | null; action?: string | null } | null };
+type StepLike = {
+  type?: string | null;
+  adeAction?: { domain?: string | null; action?: string | null; args?: unknown } | null;
+};
 
 /** The features in a draft its machine's ADE cannot run, oldest requirement first. */
 export function automationFeaturesNeedingNewerAde(
@@ -139,11 +155,14 @@ export function automationFeaturesNeedingNewerAde(
   };
   for (const trigger of draft.triggers ?? []) consider("trigger", trigger?.type);
   consider("laneMode", draft.execution?.laneMode);
-  if (draft.execution?.cloud) consider("cloudLanes", "cloud");
+  if (draft.execution?.cloud) consider("cloudLanes", AUTOMATION_CLOUD_LANES_ID);
   if (draft.execution?.kind === "agent-session") consider("step", "agent-session");
   for (const step of [...(draft.actions ?? []), ...(draft.execution?.builtIn?.actions ?? [])]) {
     consider("step", step?.type);
-    if (step?.type === "ade-action") consider("adeAction", `${step.adeAction?.domain ?? ""}.${step.adeAction?.action ?? ""}`);
+    if (step?.type !== "ade-action") continue;
+    consider("adeAction", `${step.adeAction?.domain ?? ""}.${step.adeAction?.action ?? ""}`);
+    const open = (step.adeAction?.args as { open?: unknown } | null | undefined)?.open;
+    if (typeof open === "string" && open.trim().startsWith(`ade://${AUTOMATION_RUN_LINK_ID}/`)) consider("notifyLink", AUTOMATION_RUN_LINK_ID);
   }
   return [...needed.values()].sort((a, b) => {
     if (a.minVersion && b.minVersion) return compareUpdateVersions(a.minVersion, b.minVersion);

@@ -275,6 +275,8 @@ function hasConfiguredGitHubOrigin(projectRoot: string): boolean {
 export type AutomationAdeActionRegistry = {
   isAllowed(domain: string, action: string): boolean;
   getService(domain: string): Record<string, unknown> | null;
+  /** Every domain's service from one build, for callers that read many domains at once. */
+  getServices?(): Partial<Record<string, unknown>>;
   listDomains(): string[];
   listActions(domain: string): string[];
 };
@@ -5833,7 +5835,12 @@ export function createAutomationService({
      */
     getCapabilities(): AutomationCapabilities {
       const registry = adeActionRegistryRef;
-      const cloud = registry?.getService("cloud") ?? null;
+      // One build of the service map for every domain read below.
+      const services = registry?.getServices?.() ?? null;
+      const serviceFor = (domain: string) => (services
+        ? (services[domain] ?? null) as Record<string, unknown> | null
+        : registry?.getService(domain) ?? null);
+      const cloud = serviceFor("cloud");
       return {
         triggerTypes: [...AUTOMATION_TRIGGER_TYPES],
         stepTypes: [...AUTOMATION_STEP_TYPES],
@@ -5841,7 +5848,7 @@ export function createAutomationService({
         cloudLanes: typeof cloud?.lane_launch === "function" && typeof cloud?.lane_launch_status === "function",
         adeActions: registry
           ? registry.listDomains().flatMap((domain) => {
-              const service = registry.getService(domain);
+              const service = serviceFor(domain);
               // A service not bound yet is not proof of absence.
               return registry.listActions(domain)
                 .filter((action) => !service || typeof service[action] === "function")

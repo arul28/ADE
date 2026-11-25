@@ -8,7 +8,8 @@ import { isPullRequestTriggerType } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { labelCls, recessedCls, selectCls } from "../designTokens";
 import { VariableInput } from "./VariableMenu";
-import { useAutomationFeatureGate } from "../automationFeatureGate";
+import { gatedOption, LANE_MODE_LABELS, useAutomationFeatureGate } from "../automationFeatureGate";
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 
 export type LaneTargetingValue = {
   laneMode: string;
@@ -72,12 +73,6 @@ function previewResolve(template: string, sample: Record<string, unknown>): stri
   });
 }
 
-const RUN_IN_OPTIONS = [
-  { value: "create", label: "A new lane each run" },
-  { value: "reuse", label: "An existing lane" },
-  { value: "require-on-trigger", label: "The lane that triggered it" },
-  { value: "pr-branch", label: "The PR's branch" },
-];
 
 export function LaneTargeting({
   value,
@@ -87,7 +82,7 @@ export function LaneTargeting({
 }: {
   value: LaneTargetingValue;
   trigger: AutomationTrigger;
-  lanes: Array<{ id: string; name: string }>;
+  lanes: Array<{ id: string; name: string; laneType?: string | null }>;
   onChange: (patch: LaneTargetingPatch) => void;
 }) {
   const gate = useAutomationFeatureGate();
@@ -105,6 +100,9 @@ export function LaneTargeting({
   // Only a pull request trigger has a branch to open. A saved rule keeps its
   // option visible so the select never shows a value it cannot render.
   const supportsPrBranch = isPullRequestTriggerType(triggerType) || mode === "pr-branch";
+  const prBranchOption = supportsPrBranch
+    ? gatedOption(gate, "laneMode", "pr-branch", LANE_MODE_LABELS["pr-branch"]!, mode === "pr-branch")
+    : null;
 
   const { kind: triggerKind } = sampleContext(trigger);
   const template = presetTemplate(value.laneNamePreset, value.laneNameTemplate);
@@ -135,22 +133,17 @@ export function LaneTargeting({
             if (v.startsWith("reuse:")) return onChange({ laneMode: "reuse", targetLaneId: v.slice(6) });
           }}
         >
-          <option value="create">{RUN_IN_OPTIONS[0]!.label}</option>
+          <option value="create">{LANE_MODE_LABELS.create}</option>
           {supportsTriggerLane ? (
-            <option value="require-on-trigger">{RUN_IN_OPTIONS[2]!.label}</option>
+            <option value="require-on-trigger">{LANE_MODE_LABELS["require-on-trigger"]}</option>
           ) : null}
-          {supportsPrBranch ? (() => {
-            const blocked = mode === "pr-branch" ? null : gate.blockedReason("laneMode", "pr-branch");
-            return (
-              <option value="pr-branch" disabled={blocked != null}>
-                {blocked ? `${RUN_IN_OPTIONS[3]!.label} (${blocked})` : RUN_IN_OPTIONS[3]!.label}
-              </option>
-            );
-          })() : null}
-          <option value="reuse:">The primary lane</option>
+          {prBranchOption ? (
+            <option value="pr-branch" disabled={prBranchOption.disabled}>{prBranchOption.label}</option>
+          ) : null}
+          <option value="reuse:">The main checkout</option>
           {sortedLanes.map((lane) => (
             <option key={lane.id} value={`reuse:${lane.id}`}>
-              {lane.name}
+              {laneDisplayName(lane)}
             </option>
           ))}
         </select>

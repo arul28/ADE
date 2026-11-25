@@ -47,9 +47,8 @@ import {
   automationDraftScope,
   clearStoredAutomationDraft,
   loadStoredAutomationDraft,
-  storeAutomationDraft,
-  type StoredAutomationDraftEntry,
 } from "./automationDraftStore";
+import { useAutomationDraftPersistence } from "./useAutomationDraftPersistence";
 import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
 import {
   AutomationFeatureGateContext,
@@ -148,9 +147,6 @@ export async function readCursorCloudConnectionForAutomation(
 }
 
 /** "3:42 PM" today, else "Oct 7, 3:42 PM". */
-/** How long typing in the builder waits before the draft is written to local storage. */
-const DRAFT_WRITE_DELAY_MS = 300;
-
 function formatRestoredDraftTime(iso: string): string {
   const at = new Date(iso);
   if (!Number.isFinite(at.getTime())) return "earlier";
@@ -201,7 +197,8 @@ export function AutomationsWorkspace({
   const requestedRuleId = searchParams.get("rule");
   // `&run=<id>` (a notification's "This run's history") opens that run in History.
   const requestedRunId = searchParams.get("run");
-  const [historyRunId, setHistoryRunId] = useState<string | null>(null);
+  /** The run a link opened, shown in that rule's History until the view changes. */
+  const [linkedRun, setLinkedRun] = useState<{ ruleKey: string; runId: string } | null>(null);
   const [draft, setDraft] = useState<AutomationRuleDraft | null>(null);
   const [issues, setIssues] = useState<AutomationDraftIssue[]>([]);
   const [requiredConfirmations, setRequiredConfirmations] = useState<AutomationDraftConfirmationRequirement[]>([]);
@@ -225,19 +222,10 @@ export function AutomationsWorkspace({
   // so it survives the tab moving to another copy.
   const repositoryTab = useActiveRepositoryTab();
   const draftScope = useMemo(() => automationDraftScope(repositoryTab, projectRoot), [projectRoot, repositoryTab]);
-  /** An older machine's "action not callable" in plain words; any other error as it is. */
   /** True once the first rule list has loaded, so a stored draft can find its rule. */
   const [rulesLoadedOnce, setRulesLoadedOnce] = useState(false);
   /** Set once the stored draft was restored or found absent; persisting waits for it. */
   const draftRestoreDoneRef = useRef(false);
-  /** When the restored draft was last edited; shown until it is saved or discarded. */
-  const [restoredDraftAt, setRestoredDraftAt] = useState<string | null>(null);
-  /**
-   * The draft the restore just applied. The persist effect can run in the
-   * same commit, still holding the draft from before; it skips that one run
-   * instead of clearing the stored copy and the banner.
-   */
-  const justRestoredDraftRef = useRef<AutomationRuleDraft | null>(null);
 
   // ── Machines ────────────────────────────────────────────────
   const {
@@ -537,26 +525,48 @@ export function AutomationsWorkspace({
     next.delete("run");
     setSearchParams(next, { replace: true });
     if (!key) return;
-    const openRun = () => {
-      if (!requestedRunId) return;
-      setHistoryRunId(requestedRunId);
-      setDetailView("history");
-    };
-    if (key === selectedRuleId) {
-      openRun();
-      return;
-    }
+    const opensRule = key !== selectedRuleId;
+    // Opening the rule, or its History, leaves the builder: ask first, as the
+    // History tab does.
+    if (!opensRule && !requestedRunId) return;
     void (async () => {
       if (isDirtyRef.current && !(await confirmDiscardIfDirty())) return;
-      setSelectedRuleId(key);
-      openRun();
+      if (opensRule) setSelectedRuleId(key);
+      if (!requestedRunId) return;
+      setLinkedRun({ ruleKey: key, runId: requestedRunId });
+      setDetailView("history");
     })();
   }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, requestedRunId, searchParams, selectedRuleId, setSearchParams]);
 
+  const draftRuleEntry = selectedRuleId ? entryByKey.get(selectedRuleId) ?? null : null;
+  const { restoredDraftAt, noteRestored: noteDraftRestored } = useAutomationDraftPersistence({
+    scope: draftScope,
+    restoreDoneRef: draftRestoreDoneRef,
+    draft,
+    isDirty,
+    savedSnapshotRef,
+    ruleKey: selectedRuleId,
+    ruleId: draftRuleEntry?.rule.id ?? null,
+    ruleMachineId: draftRuleEntry?.machine.machineId ?? null,
+    // By id even for the tab's own machine: another checkout may restore it.
+    targetMachineId: (draftTarget ?? machines.find((machine) => machine.isActiveBinding))?.machineId ?? null,
+    machineChosen: draftMachineChosen,
+    cloudChosen: draftCloudChosen,
+    rehomeChosen: draftRehomeChosen,
+  });
+
+  const linkedRunId = linkedRun && linkedRun.ruleKey === selectedRuleId ? linkedRun.runId : null;
+  // The linked run is shown once; History opened again later starts on the newest run.
+  useEffect(() => {
+    if (detailView !== "history") setLinkedRun(null);
+  }, [detailView]);
+
   // Bring back an unsaved draft from an earlier visit (another tab, a restart).
-  // A live edit in this session always wins over the stored copy.
+  // A live edit in this session always wins over the stored copy, and a link
+  // being opened goes first: the draft comes back once its run is left.
   useEffect(() => {
     if (!active || draftRestoreDoneRef.current || !draftScope || !rulesLoadedOnce) return;
+    if (requestedRuleId || linkedRun) return;
     const stored = loadStoredAutomationDraft(draftScope);
     if (!stored || isDirtyRef.current) {
       draftRestoreDoneRef.current = true;
@@ -566,7 +576,14 @@ export function AutomationsWorkspace({
       ? machines.find((machine) => machine.machineId === stored.targetMachineId) ?? null
       : null;
     if (stored.ruleKey) {
-      const entry = entryByKey.get(stored.ruleKey);
+      // The rule by its id and machine first: the list key differs between
+      // checkouts. Older records have only the key.
+      const byIdentity = stored.ruleId
+        ? [...entryByKey].find(([, candidate]) => candidate.rule.id === stored.ruleId
+          && (!stored.ruleMachineId || candidate.machine.machineId === stored.ruleMachineId))
+        : undefined;
+      const ruleKey = byIdentity?.[0] ?? stored.ruleKey;
+      const entry = byIdentity?.[1] ?? entryByKey.get(stored.ruleKey);
       if (!entry) {
         // The rule may live on a machine whose rules are still loading.
         if (Object.values(foreignLoads).some((load) => load.status === "loading")) return;
@@ -576,13 +593,14 @@ export function AutomationsWorkspace({
         return;
       }
       const origin = entry.machine.isActiveBinding ? null : entry.machine;
-      loadedRuleKeyRef.current = stored.ruleKey;
+      loadedRuleKeyRef.current = ruleKey;
       setDraftOrigin({ machine: origin });
-      setDraftTarget(stored.targetMachineId ? storedTarget ?? origin : null);
+      // Null is the tab's own machine; a target that has gone stays on the rule's.
+      setDraftTarget(!stored.targetMachineId ? null : storedTarget ? (storedTarget.isActiveBinding ? null : storedTarget) : origin);
       setDraftMachineChosen(true);
       setDraftRehomeChosen(stored.rehomeChosen);
       setDraftCloudChosen(stored.cloudChosen);
-      setSelectedRuleId(stored.ruleKey);
+      setSelectedRuleId(ruleKey);
     } else {
       draftingNewRef.current = true;
       loadedRuleKeyRef.current = null;
@@ -600,59 +618,10 @@ export function AutomationsWorkspace({
     setRequiredConfirmations([]);
     setAcceptedConfirmations(new Set());
     setDetailView("builder");
-    setRestoredDraftAt(stored.savedAt);
-    justRestoredDraftRef.current = stored.draft;
+    noteDraftRestored(stored);
     draftRestoreDoneRef.current = true;
-  }, [active, draftScope, entryByKey, foreignLoads, machines, rulesLoadedOnce]);
+  }, [active, draftScope, entryByKey, foreignLoads, linkedRun, machines, noteDraftRestored, requestedRuleId, rulesLoadedOnce]);
 
-  // Keep the stored copy in step with the draft: written shortly after each
-  // unsaved change (and at once when the page goes away), removed once the
-  // draft matches its saved rule (Save, Discard).
-  const pendingDraftWriteRef = useRef<{ scope: NonNullable<typeof draftScope>; entry: StoredAutomationDraftEntry } | null>(null);
-  const draftWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushDraftWrite = useCallback(() => {
-    if (draftWriteTimerRef.current) {
-      clearTimeout(draftWriteTimerRef.current);
-      draftWriteTimerRef.current = null;
-    }
-    const pending = pendingDraftWriteRef.current;
-    pendingDraftWriteRef.current = null;
-    if (pending) storeAutomationDraft(pending.scope, pending.entry);
-  }, []);
-  useEffect(() => {
-    if (!draftRestoreDoneRef.current || !draftScope) return;
-    const restored = justRestoredDraftRef.current;
-    justRestoredDraftRef.current = null;
-    if (restored && draft !== restored) return;
-    if (!draft || !isDirty || savedSnapshotRef.current == null) {
-      if (draftWriteTimerRef.current) clearTimeout(draftWriteTimerRef.current);
-      draftWriteTimerRef.current = null;
-      pendingDraftWriteRef.current = null;
-      clearStoredAutomationDraft(draftScope);
-      setRestoredDraftAt(null);
-      return;
-    }
-    pendingDraftWriteRef.current = {
-      scope: draftScope,
-      entry: {
-        draft,
-        savedSnapshot: savedSnapshotRef.current,
-        ruleKey: selectedRuleId,
-        targetMachineId: draftTarget?.machineId ?? null,
-        machineChosen: draftMachineChosen,
-        cloudChosen: draftCloudChosen,
-        rehomeChosen: draftRehomeChosen,
-      },
-    };
-    if (!draftWriteTimerRef.current) draftWriteTimerRef.current = setTimeout(flushDraftWrite, DRAFT_WRITE_DELAY_MS);
-  }, [draft, draftCloudChosen, draftMachineChosen, draftRehomeChosen, draftScope, draftTarget, flushDraftWrite, isDirty, selectedRuleId]);
-  useEffect(() => {
-    window.addEventListener("beforeunload", flushDraftWrite);
-    return () => {
-      window.removeEventListener("beforeunload", flushDraftWrite);
-      flushDraftWrite();
-    };
-  }, [flushDraftWrite]);
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.
@@ -853,6 +822,15 @@ export function AutomationsWorkspace({
     // (an update is on its way); otherwise it would fail on its first run.
     if (needsNewerAde.length > 0) {
       const machineName = ruleMachineName ?? "The machine that runs this rule";
+      // A machine that lists what it runs refuses to save an ADE action step
+      // it lacks, so there is nothing to save anyway.
+      const refused = ruleMachineSupport?.capabilities
+        ? needsNewerAde.filter((feature) => feature.key.startsWith("adeAction:"))
+        : [];
+      if (refused.length > 0) {
+        setError(`${machineName} can't run ${refused.map((feature) => feature.label).join(", ")}. Update ADE there, or remove the step.`);
+        return;
+      }
       const ok = await confirmDialog({
         title: `${machineName} can't run this rule yet.`,
         message: `It needs a newer ADE for ${needsNewerAde.map((feature) => feature.label).join(", ")}. Until ADE there is updated, the rule fails when it runs.`,
@@ -930,7 +908,7 @@ export function AutomationsWorkspace({
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftPin, draftTarget, machinePin, moveRule, needsNewerAde, refreshForeign, ruleMachineName, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftPin, draftTarget, machinePin, moveRule, needsNewerAde, refreshForeign, ruleMachineName, ruleMachineSupport, validateDraft]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -1240,9 +1218,9 @@ export function AutomationsWorkspace({
           <div className="min-h-0 flex-1 overflow-hidden">
             {detailView === "history" && selectedRule ? (
               <RuleHistory
-                key={`${selectedEntry?.key ?? selectedRule.id}::${historyRunId ?? ""}`}
+                key={`${selectedEntry?.key ?? selectedRule.id}::${linkedRunId ?? ""}`}
                 automationId={selectedRule.id}
-                initialRunId={historyRunId}
+                initialRunId={linkedRunId}
                 ruleName={selectedRule.name}
                 pin={selectedEntry?.machine.pin ?? null}
                 isActiveBinding={selectedEntry?.machine.isActiveBinding ?? true}

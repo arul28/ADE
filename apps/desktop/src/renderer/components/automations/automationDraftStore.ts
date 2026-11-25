@@ -22,7 +22,18 @@ export type StoredAutomationDraft = {
   savedSnapshot: string;
   /** The rule key being edited, or null for a new automation. */
   ruleKey: string | null;
-  /** The machine the draft targets; null means the tab's own machine. */
+  /**
+   * The edited rule's id and the machine it lives on. The list key changes
+   * with the checkout the tab is on (a bare id there, machine-scoped
+   * elsewhere); these find the rule from any checkout.
+   */
+  ruleId: string | null;
+  ruleMachineId: string | null;
+  /**
+   * The machine the draft targets, by id, including the tab's own machine
+   * (the draft can be restored on another checkout). Null in older records
+   * meant the tab's machine at the time.
+   */
   targetMachineId: string | null;
   machineChosen: boolean;
   /** "Runs on: ADE Cloud" was picked and not saved yet. */
@@ -81,6 +92,8 @@ function parseStored(raw: string): StoredAutomationDraft | null {
     draft: draft as AutomationRuleDraft,
     savedSnapshot: parsed.savedSnapshot,
     ruleKey: typeof parsed.ruleKey === "string" && parsed.ruleKey ? parsed.ruleKey : null,
+    ruleId: typeof parsed.ruleId === "string" && parsed.ruleId ? parsed.ruleId : null,
+    ruleMachineId: typeof parsed.ruleMachineId === "string" && parsed.ruleMachineId ? parsed.ruleMachineId : null,
     targetMachineId: typeof parsed.targetMachineId === "string" && parsed.targetMachineId ? parsed.targetMachineId : null,
     machineChosen: parsed.machineChosen !== false,
     cloudChosen: parsed.cloudChosen === true,

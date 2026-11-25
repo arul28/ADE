@@ -269,35 +269,61 @@ function StepMenu({
       className="max-h-[70vh] w-[280px] overflow-y-auto rounded-xl border border-fg/[0.08] bg-surface-overlay p-1 shadow-float"
       role="menu"
     >
-      {ADDABLE_CHOICES.map((kind) => {
-        const def = choiceDef(kind);
-        const Icon = def.icon;
-        const blocked = choiceBlockedReason(kind, gate);
-        return (
-          <button
-            key={kind}
-            type="button"
-            role="menuitem"
-            disabled={blocked != null}
-            aria-disabled={blocked != null}
-            title={blocked ?? undefined}
-            onClick={() => onPick(kind)}
-            className={cn(
-              "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
-              blocked ? "cursor-not-allowed opacity-50" : "hover:bg-fg/[0.05]",
-            )}
-          >
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
-              <Icon size={12} weight="fill" style={{ color: def.accent }} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-[12px] font-semibold text-fg">{def.label}</span>
-              <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{blocked ?? def.description}</span>
-            </span>
-          </button>
-        );
-      })}
+      {ADDABLE_CHOICES.map((kind) => (
+        <StepChoiceButton
+          key={kind}
+          kind={kind}
+          blocked={choiceBlockedReason(kind, gate)}
+          menuItem
+          className="w-full rounded-lg px-2.5 py-2"
+          hoverClassName="hover:bg-fg/[0.05]"
+          onPick={onPick}
+        />
+      ))}
     </AnchoredMenu>
+  );
+}
+
+/** One step kind to add; a kind the rule's machine can't run is shown disabled with the reason. */
+function StepChoiceButton({
+  kind,
+  blocked,
+  menuItem = false,
+  className,
+  hoverClassName,
+  onPick,
+}: {
+  kind: StepChoice;
+  blocked: string | null;
+  menuItem?: boolean;
+  className: string;
+  hoverClassName: string;
+  onPick: (kind: StepChoice) => void;
+}) {
+  const def = choiceDef(kind);
+  const Icon = def.icon;
+  return (
+    <button
+      type="button"
+      role={menuItem ? "menuitem" : undefined}
+      disabled={blocked != null}
+      aria-disabled={blocked != null}
+      title={blocked ?? undefined}
+      onClick={() => onPick(kind)}
+      className={cn(
+        "flex items-start gap-2.5 text-left transition-colors",
+        className,
+        blocked ? "cursor-not-allowed opacity-50" : hoverClassName,
+      )}
+    >
+      <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
+        <Icon size={12} weight="fill" style={{ color: def.accent }} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] font-semibold text-fg">{def.label}</span>
+        <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{blocked ?? def.description}</span>
+      </span>
+    </button>
   );
 }
 
@@ -307,32 +333,16 @@ function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
     <div className="rounded-xl border border-dashed border-fg/[0.1] bg-fg/[0.02] p-3">
       <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-fg/60">Pick a first step</div>
       <div className="mt-2.5 grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {ADDABLE_CHOICES.map((kind) => {
-          const def = choiceDef(kind);
-          const Icon = def.icon;
-          const blocked = choiceBlockedReason(kind, gate);
-          return (
-            <button
-              key={kind}
-              type="button"
-              disabled={blocked != null}
-              title={blocked ?? undefined}
-              onClick={() => onAdd(kind)}
-              className={cn(
-                "flex items-start gap-2.5 rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-2.5 text-left transition-colors",
-                blocked ? "cursor-not-allowed opacity-50" : "hover:border-accent/30 hover:bg-fg/[0.05]",
-              )}
-            >
-              <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
-                <Icon size={12} weight="fill" style={{ color: def.accent }} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-[12px] font-semibold text-fg">{def.label}</span>
-                <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{blocked ?? def.description}</span>
-              </span>
-            </button>
-          );
-        })}
+        {ADDABLE_CHOICES.map((kind) => (
+          <StepChoiceButton
+            key={kind}
+            kind={kind}
+            blocked={choiceBlockedReason(kind, gate)}
+            className="rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-2.5"
+            hoverClassName="hover:border-accent/30 hover:bg-fg/[0.05]"
+            onPick={onAdd}
+          />
+        ))}
       </div>
     </div>
   );

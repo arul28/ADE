@@ -205,7 +205,15 @@ modes, the ADE actions a step may call, ADE Cloud lanes), asked once per machine
 the machine lacks is greyed out in the builder (trigger list, step menu, "Run in", "Runs on: ADE
 Cloud", the notification test) with "Needs ADE X on <machine>". A draft that already has such a
 feature shows the warning banner, and Save asks "<machine> can't run this rule yet." with **Save
-anyway**. The brain also refuses, in `validateDraft`/`saveDraft`, an ADE action step it cannot
+anyway**; for an ADE action step on a machine that answered `getCapabilities`, Save names the step
+instead, since that machine would refuse it. **This run's history** needs a sender that answers
+`getCapabilities` (an older one drops a link it cannot parse), so it is greyed out on an older
+machine. An answer from a brain still starting (`adeActions: null`) is not kept. The stored draft
+names its rule by id and machine, and its target machine by id even when it is the tab's own,
+so a draft restored on another checkout keeps its rule and its computer. The stored draft is shared by every window on the
+repository, and a window removes it only when it wrote or restored it. A run link
+(`/automations?rule=&run=`) goes before a stored draft: History shows the run once, and the draft
+comes back when the run is left. The brain also refuses, in `validateDraft`/`saveDraft`, an ADE action step it cannot
 call. An `action_not_callable` error from an older machine is shown in the same plain words.
 
 ## Where a rule lives (account sync)

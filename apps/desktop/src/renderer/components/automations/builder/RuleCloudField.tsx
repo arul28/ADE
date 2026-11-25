@@ -6,7 +6,7 @@ import { CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import { useAdeCloudEnabled } from "../../../state/cloudAccess";
 import { useAdeCloudDraft } from "../../chat/useAdeCloudDraft";
 import { inputCls } from "../designTokens";
-import { useAutomationFeatureGate } from "../automationFeatureGate";
+import { cloudLanesBlockedReason, useAutomationFeatureGate } from "../automationFeatureGate";
 
 /**
  * "Run on ADE Cloud", beside "Runs on [machine]": each run makes its lane on
@@ -32,12 +32,17 @@ export function RuleCloudField({
   const cloudEnabled = useAdeCloudEnabled();
   const on = value != null;
   // The rule's machine starts each run's lane; an older ADE can't.
-  const machineBlocked = useAutomationFeatureGate().blockedReason("cloudLanes", "cloud");
+  const machineBlocked = cloudLanesBlockedReason(useAutomationFeatureGate());
   const cloud = useAdeCloudDraft({ enabled: cloudEnabled && on, originUrl: null });
   if (!cloudEnabled && !on) return null;
   const pickedSize = value?.sizeId ?? null;
   const defaultTier = cloud.tiers.find((tier) => tier.id === cloud.defaultTier) ?? null;
   const shownTier = pickedSize ?? defaultTier?.id ?? cloud.defaultTier;
+  const hint = machineBlocked && !on
+    ? machineBlocked
+    : on
+      ? "Each run gets a new lane on its own computer. The machine above still watches the trigger and keeps the history."
+      : "Give each run a new lane on its own ADE Cloud computer.";
   return (
     <div className="mb-3 rounded-md border border-fg/[0.06] bg-fg/[0.02] px-3 py-2" data-testid="automation-cloud-field">
       <div className="flex items-center justify-between gap-3">
@@ -46,11 +51,7 @@ export function RuleCloudField({
           <span className="min-w-0">
             <span className="block text-[11.5px] text-fg/90">Run on ADE Cloud</span>
             <span className="mt-0.5 block text-[10.5px] text-muted-fg/60">
-              {machineBlocked && !on
-                ? machineBlocked
-                : on
-                  ? "Each run gets a new lane on its own computer. The machine above still watches the trigger and keeps the history."
-                  : "Give each run a new lane on its own ADE Cloud computer."}
+              {hint}
             </span>
           </span>
         </span>
