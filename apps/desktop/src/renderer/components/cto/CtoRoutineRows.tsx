@@ -34,6 +34,8 @@ const RELOAD_DEBOUNCE_MS = 300;
 const FRESH_MS = 2_400;
 const PENDING = new Set<AgentChatScheduledWorkItem["status"]>(["scheduled", "paused"]);
 const FINISHED_LIMIT = 8;
+/** How long a Run now shows "Running now" before the chat takes over. */
+const RUNNING_HOLD_MS = 1_800;
 
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -118,7 +120,7 @@ function describeNext(iso: string | undefined, nowMs: number): string | null {
 export function describeRoutineSchedule(item: AgentChatScheduledWorkItem, nowMs: number): string {
   if ((item.kind === "cron" || item.kind === "loop") && item.cron?.trim()) {
     const cadence = cronCadence(item.cron);
-    const next = PENDING.has(item.status) ? describeNext(item.nextRunAt, nowMs) : null;
+    const next = PENDING.has(item.status) && !isRowPaused(item) ? describeNext(item.nextRunAt, nowMs) : null;
     return next ? `${cadence} · next ${next}` : cadence;
   }
   if (item.status === "fired" || item.status === "completed") {
@@ -165,12 +167,43 @@ function isRowPaused(item: AgentChatScheduledWorkItem): boolean {
 
 const MENU_ITEM = "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-fg/85 hover:bg-[var(--kit-hover)] disabled:opacity-50";
 
+type RoutineNote = { text: string; tone?: "crit" | "accent" };
+
+/**
+ * The one quiet line under a settings row's schedule, the most useful thing
+ * first: it is running, its check is failing, what came of the last run, or
+ * that it wakes only on a change.
+ */
+export function routineNote(item: AgentChatScheduledWorkItem, nowMs: number, running: boolean): RoutineNote | null {
+  if (running) return { text: "Running now", tone: "accent" };
+  const check = item.check?.trim();
+  if (check && item.checkFailing) return { text: "Check failing · quiet until it passes", tone: "crit" };
+  const lastRun = describeAgo(item.lastRunAt, nowMs);
+  const outcome = item.outcomeSummary?.trim();
+  if (outcome) return { text: lastRun ? `${outcome} · ${lastRun}` : outcome };
+  if (check) return { text: lastRun ? `Quiet since it last woke ${lastRun}` : "Nothing new yet" };
+  return null;
+}
+
+/** Panel rows are narrow: the cadence and the clock, without "next". */
+function panelScheduleLine(item: AgentChatScheduledWorkItem, nowMs: number): string {
+  if ((item.kind === "cron" || item.kind === "loop") && item.cron?.trim()) {
+    const cadence = cronCadence(item.cron);
+    // A watch runs when its check sees news, so how often it looks says more than the next clock time.
+    if (item.check?.trim()) return `On change · ${cadence.charAt(0).toLowerCase()}${cadence.slice(1)}`;
+    const next = PENDING.has(item.status) && !isRowPaused(item) ? describeNext(item.nextRunAt, nowMs) : null;
+    return next ? `${cadence} · ${next}` : cadence;
+  }
+  return describeRoutineSchedule(item, nowMs);
+}
+
 function RoutineRow({
   item,
   variant,
   nowMs,
   busy,
   fresh,
+  running,
   onPause,
   onRunNow,
   onCancel,
@@ -181,74 +214,70 @@ function RoutineRow({
   busy: boolean;
   /** It was scheduled while the list was on screen. */
   fresh: boolean;
+  /** A Run now is on its way, or the row is firing. */
+  running: boolean;
   onPause: (paused: boolean) => void;
   onRunNow: () => void;
   onCancel: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [open, setOpen] = useState(false);
   const moreRef = useRef<HTMLButtonElement | null>(null);
   const pending = PENDING.has(item.status);
   const rowPaused = isRowPaused(item);
   const check = item.check?.trim() || null;
-  // The panel truncates the schedule line, so a watch shows by its icon too.
   const Icon = check ? Binoculars : item.kind === "wakeup" ? Alarm : ArrowsClockwise;
   const title = routineTitle(item);
   const settings = variant === "settings";
-  const lastRun = describeAgo(item.lastRunAt, nowMs);
   const prompt = item.prompt.trim();
   // A row ADE armed itself (an auto-resume) or one its API cannot manage has
   // no extra run to offer.
   const canRunNow = !item.source && item.cancellable;
   const scheduleLine = [
-    describeRoutineSchedule(item, nowMs),
-    check ? "on change" : null,
-    rowPaused && pending ? "Off" : null,
-    item.late ? "Late" : null,
+    settings && !check ? describeRoutineSchedule(item, nowMs) : panelScheduleLine(item, nowMs),
+    item.late ? "late" : null,
   ].filter(Boolean).join(" · ");
-  // A finished row's schedule line already says when it ran.
-  const lastRunLine = [pending && lastRun ? `Last ran ${lastRun}` : null, item.outcomeSummary?.trim() || null].filter(Boolean).join(" · ");
+  const note = settings ? routineNote(item, nowMs, running) : running ? { text: "Running now", tone: "accent" as const } : null;
   const checkLine = check ? describeRoutineCheck(item, nowMs) : null;
+  const lastRun = describeAgo(item.lastRunAt, nowMs);
+  const state = running ? "running" : check && item.checkFailing ? "failing" : rowPaused || !pending ? "off" : "on";
+  const detailsId = `routine-details-${item.id}`;
 
   return (
     <li
-      className={cn(
-        "flex min-w-0 gap-2.5",
-        settings ? "items-start px-3.5 py-3" : "items-center px-2 py-1.5",
-        !pending && "opacity-70",
-      )}
+      className="ade-cto-routine"
+      data-variant={variant}
+      data-state={state}
+      data-open={open ? "true" : undefined}
       data-routine-id={item.id}
       data-fresh={fresh ? "true" : undefined}
     >
-      <span className={cn("flex w-4 shrink-0 justify-center text-[var(--kit-text-3)]", settings && "mt-[3px]")} aria-hidden>
-        <Icon size={14} />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className={cn("truncate font-medium text-fg", settings ? "text-[13px]" : "text-[12.5px]")} title={title}>
-          {title}
-        </div>
-        <div className="mt-0.5 truncate text-[12px] leading-[1.45] text-[var(--kit-text-3)]" title={scheduleLine}>
-          {scheduleLine}
-        </div>
-        {settings && prompt && prompt !== title ? (
-          <p className="m-0 mt-1 truncate text-[12px] leading-[1.5] text-[var(--kit-text-2)]" title={prompt}>
-            {prompt}
-          </p>
-        ) : null}
-        {settings && check ? (
-          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11.5px] leading-[1.45] text-[var(--kit-text-3)]">
-            <span className="shrink-0">Check</span>
-            <code className="min-w-0 truncate font-mono text-[11px] text-[var(--kit-text-2)]" title={check}>{check}</code>
-            {checkLine ? <span className={cn("shrink-0", item.checkFailing && "text-[var(--kit-crit)]")}>· {checkLine}</span> : null}
-          </div>
-        ) : null}
-        {settings && lastRunLine ? (
-          <div className="mt-0.5 truncate text-[11.5px] leading-[1.45] text-[var(--kit-text-3)]" title={lastRunLine}>
-            {lastRunLine}
-          </div>
-        ) : null}
-      </div>
+      <div className="ade-cto-routine-main">
+        <span className="ade-cto-routine-tile" aria-hidden>
+          <Icon size={settings ? 15 : 13} />
+          {state === "running" || state === "failing" ? <i className="ade-cto-routine-signal" /> : null}
+        </span>
+        <button
+          type="button"
+          className="ade-cto-routine-text"
+          aria-expanded={settings ? open : undefined}
+          aria-controls={settings ? detailsId : undefined}
+          disabled={!settings}
+          onClick={() => setOpen((value) => !value)}
+          title={settings ? undefined : [title, check ? `Wakes only when \`${check}\` changes` : null].filter(Boolean).join("\n")}
+        >
+          <span className="ade-cto-routine-title">{title}</span>
+          <span className="ade-cto-routine-when">
+            {scheduleLine}
+          </span>
+          {note ? (
+            <span key={`${note.tone ?? "plain"}:${note.text}`} className="ade-cto-routine-note" data-tone={note.tone}>
+              {note.text}
+            </span>
+          ) : null}
+        </button>
       {pending ? (
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="ade-cto-routine-controls">
           <SettingsToggle
             label={rowPaused ? `Turn on ${title}` : `Turn off ${title}`}
             checked={!rowPaused}
@@ -260,10 +289,11 @@ function RoutineRow({
               <button
                 ref={moreRef}
                 type="button"
-                className="kit-icon-btn"
+                className="kit-icon-btn ade-cto-routine-more"
                 aria-label={`More for ${title}`}
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
+                data-open={menuOpen ? "true" : undefined}
                 disabled={busy}
                 onClick={() => setMenuOpen((value) => !value)}
               >
@@ -303,6 +333,26 @@ function RoutineRow({
           ) : null}
         </div>
       ) : null}
+      </div>
+      {settings ? (
+        <div className="ade-cto-routine-details" id={detailsId} aria-hidden={!open}>
+          <div className="ade-cto-routine-details-inner">
+            {prompt && prompt !== title ? <p className="ade-cto-routine-prompt">{prompt}</p> : null}
+            {check ? (
+              <div className="ade-cto-routine-check">
+                <span className="kit-eyebrow">Wakes when this changes</span>
+                <code>{check}</code>
+                {checkLine ? (
+                  <span className="ade-cto-routine-check-state" data-tone={item.checkFailing ? "crit" : undefined}>
+                    {item.checkFailing ? "Failing. It wakes again once it passes." : `${checkLine.charAt(0).toUpperCase()}${checkLine.slice(1)}`}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {lastRun ? <span className="ade-cto-routine-meta">Last ran {lastRun}</span> : null}
+          </div>
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -317,6 +367,7 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [runningIds, setRunningIds] = useState<ReadonlySet<string>>(() => new Set());
   // Rows that appear after the first read light up, so a routine the CTO just
   // scheduled is seen arriving. Null until that first read.
   const seenIdsRef = useRef<Set<string> | null>(null);
@@ -415,15 +466,25 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
     );
   };
 
-  const runNow = (item: AgentChatScheduledWorkItem) => void act(
-    item,
-    async (target, sid) => {
-      const result = await window.ade.agentChat.runScheduledWorkNow({ sessionId: sid, scheduleId: item.id }, target);
-      // Not fired (the chat is busy, the row is gone) is an answer, not a throw.
-      if (result && result.fired === false) throw new Error(result.reason || "The routine didn't run.");
-    },
-    "Couldn't run the routine.",
-  );
+  const runNow = (item: AgentChatScheduledWorkItem) => {
+    setRunningIds((current) => new Set([...current, item.id]));
+    void act(
+      item,
+      async (target, sid) => {
+        const result = await window.ade.agentChat.runScheduledWorkNow({ sessionId: sid, scheduleId: item.id }, target);
+        // Not fired (the chat is busy, the row is gone) is an answer, not a throw.
+        if (result && result.fired === false) throw new Error(result.reason || "The routine didn't run.");
+      },
+      "Couldn't run the routine.",
+    ).finally(() => {
+      // Long enough to be seen; the chat itself shows the turn after that.
+      window.setTimeout(() => setRunningIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      }), RUNNING_HOLD_MS);
+    });
+  };
 
   const cancel = async (item: AgentChatScheduledWorkItem) => {
     const confirmed = await confirmDialog({
@@ -463,16 +524,16 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
     : [];
 
   const renderList = (rows: AgentChatScheduledWorkItem[]) => (
-    <ul className={cn("m-0 list-none p-0", settings && "ade-modern-rows")}>
-      {rows.map((item, index) => (
+    <ul className={cn("ade-cto-routine-list", settings && "ade-modern-rows")} data-variant={variant}>
+      {rows.map((item) => (
         <React.Fragment key={item.id}>
-          {settings && index > 0 ? <li aria-hidden className="h-px bg-[var(--kit-rule)]" /> : null}
           <RoutineRow
             item={item}
             variant={variant}
             nowMs={nowMs}
             busy={busyId === item.id}
             fresh={freshIds.has(item.id)}
+            running={runningIds.has(item.id) || item.status === "fired"}
             onPause={(paused) => pause(item, paused)}
             onRunNow={() => runNow(item)}
             onCancel={() => void cancel(item)}
@@ -510,7 +571,7 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
       )}
       {finished.length > 0 ? (
         <>
-          <div className="mt-5 text-[12px] font-medium text-[var(--kit-text-2)]">Recently ran</div>
+          <div className="kit-eyebrow mt-5">Recently ran</div>
           {renderList(finished)}
         </>
       ) : null}
