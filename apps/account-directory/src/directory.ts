@@ -161,6 +161,14 @@ type MachineRevocationRow = {
   revoked_at: number;
 };
 
+type MachineGateRow = {
+  machine_key: string | null;
+  device_id: string | null;
+  revoked_at: number | null;
+  /** Set while the account's deletion still runs again (`account_erasures`). */
+  account_deleted_at: number | null;
+};
+
 type MachineRecord = {
   machineKey: string;
   deviceId: string | null;
@@ -561,16 +569,25 @@ async function duplicateMachinesForDevice(
   ).all<{ machine_key: string; custom_name: string | null }>()).results ?? [];
 }
 
-async function machineRevocation(
+/**
+ * The machine's revocation and the account's deletion in one read: the
+ * register call runs every minute on every machine. Always one row.
+ */
+async function machineGate(
   env: Env,
   userId: string,
   machineKey: string,
-): Promise<MachineRevocationRow | null> {
-  return await env.DB.prepare(`
-    select machine_key, device_id, revoked_at
-      from revoked_machines
-     where user_id = ? and machine_key = ?
-  `).bind(userId, machineKey).first<MachineRevocationRow>();
+): Promise<{ revocation: MachineRevocationRow | null; accountDeletedAt: number | null }> {
+  const row = await env.DB.prepare(`
+    select r.machine_key, r.device_id, r.revoked_at,
+           (select e.deleted_at from account_erasures e where e.user_id = ?) as account_deleted_at
+      from (select 1) as one
+      left join revoked_machines r on r.user_id = ? and r.machine_key = ?
+  `).bind(userId, userId, machineKey).first<MachineGateRow>();
+  const revocation = row?.machine_key != null && row.revoked_at != null
+    ? { machine_key: row.machine_key, device_id: row.device_id, revoked_at: row.revoked_at }
+    : null;
+  return { revocation, accountDeletedAt: row?.account_deleted_at ?? null };
 }
 
 /**
@@ -582,6 +599,11 @@ async function machineRevocation(
  * send when the answer is no, `"repair"` when a removed machine proved a fresh
  * sign-in (its proof is reserved and the revocation still stands until
  * `completeRepair` runs after the write), and `null` when it was never removed.
+ *
+ * A deleted account removes every machine, with no way back: the deletion
+ * also deletes the account's revocations, and a machine still signed in holds
+ * a token that stays valid for up to an hour. Clerk never gives the account
+ * ID to a new account, so no sign-in can repair it.
  */
 async function enforceRevocationGate(
   env: Env,
@@ -593,7 +615,16 @@ async function enforceRevocationGate(
   },
 ): Promise<Response | "repair" | null> {
   const { userId, input, refuse } = args;
-  const revocation = await machineRevocation(env, userId, input.machineKey);
+  const { revocation, accountDeletedAt } = await machineGate(env, userId, input.machineKey);
+  if (accountDeletedAt !== null) {
+    // `machine_revoked`: the brain stops its heartbeat on it.
+    refuse("directory.register_refused", "machine_revoked", "account deleted");
+    return json({
+      error: "machine removed from account",
+      code: "machine_revoked",
+      revokedAt: accountDeletedAt,
+    }, { status: 403 });
+  }
   if (!revocation) return null;
 
   // `pairing` is honored ONLY together with proof of a freshly completed

@@ -23,10 +23,12 @@ import { nextFireAt } from "../src/cloud/automationSchedule";
 import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import { runAccountErasureRepeats } from "../src/accountErasure";
+import { handleRequest as handleDirectoryRequest, type Env as DirectoryEnv } from "../src/directory";
 import { applyCloudPlanChange, type CloudEnv, type ComputerRow } from "../src/cloud/store";
 import { runDailyCostReport } from "../src/cloud/costReport";
 import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
+import { registerBody, request as directoryRequest } from "./helpers";
 
 /**
  * ADE Cloud's money and ownership contracts, through the real routes, cron and
@@ -775,7 +777,15 @@ describe("ADE Cloud account", () => {
       expect((await deleteAccountOverClerk()).status).toBe(200);
       const relayPurges = () => harness.relayCalls.filter((call) => call.method === "DELETE").length;
       expect(relayPurges()).toBe(1);
-      // Its token is still valid: its next heartbeat registers the machine again.
+      // Its token is still valid, but its heartbeat cannot register the machine again,
+      // even as a re-pair: the deletion also took the machine's revocation.
+      for (const body of [registerBody("key-desk"), { ...registerBody("key-desk"), pairing: true }]) {
+        const heartbeat = await handleDirectoryRequest(directoryRequest("POST", "/account/machines/register", tokens[OWNER], body), harness.env as unknown as DirectoryEnv);
+        expect(heartbeat.status).toBe(403);
+        expect(await heartbeat.json()).toMatchObject({ code: "machine_revoked", revokedAt: NOW });
+      }
+      expect(harness.rows("select machine_key from machines")).toEqual([]);
+      // A write that started before the deletion still lands.
       harness.insert("machines", { user_id: OWNER, machine_key: "key-desk", name: "Studio", last_seen_at: NOW + 60_000 });
       const run = async (at: number) => { clock = NOW + at; await runAccountErasureRepeats(clerkDeletionEnv(), clock); };
 

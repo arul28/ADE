@@ -1156,7 +1156,9 @@ Tokens are checked offline, so a computer still signed in can write again
 until its token expires (about an hour for a device sign-in). The webhook
 records the account in `account_erasures` first, and the minute cron runs the
 whole deletion again at 15 min, 75 min, 3 h and 24 h; the row goes after the
-last run. The webhook relay reads that list (`GET
+last run. While the row is there, a machine register call for the account
+answers `403 machine_revoked`, re-pair included: the deletion also deleted the
+account's revocations, and the brain stops its heartbeat on that code. The webhook relay reads that list (`GET
 /cloud/internal/deleted-accounts`, secret `CLOUD_EVENT_WAKE_SECRET`) on each
 cron run after the deletion and after each repeat, and purges its own rows
 for each account. The privacy
