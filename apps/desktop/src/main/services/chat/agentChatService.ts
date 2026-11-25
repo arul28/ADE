@@ -84029,6 +84029,12 @@ export function createAgentChatService(args: {
             error: getErrorMessage(error),
           });
         });
+        // The wait can take seconds: a cancel or a pause made meanwhile wins.
+        const current = scheduledWorkScheduler?.list(schedule.sessionId).find((entry) => entry.id === schedule.id);
+        if (!current || current.status === "cancelled" || current.status === "done") {
+          return { complete: true, outcomeSummary: "Cancelled before it started." };
+        }
+        if (current.status === "paused" || current.pausedFlag) return { retry: true };
       }
       // The send runs with `awaitDispatch: false`, so a throw here is a refusal
       // before any turn started (provider signed out, pending input, a full
