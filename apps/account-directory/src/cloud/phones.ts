@@ -39,7 +39,7 @@
  */
 
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
-import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, creditsAtStart, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { captureCloudPhone, type CloudWaitUntil } from "./analytics";
 import { freeCapRefuses } from "./costReport";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
@@ -267,7 +267,7 @@ async function updatePhone(env: CloudEnv, session: PhoneSession, now: number): P
       .bind(userId).first<Pick<AccountRow, "plan" | "stripe_status" | "phone_start_credits" | "phone_start_credits_at">>()
     : null;
   if (!userId || !account) return null;
-  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: recoveredCredits(account, isoMs(session.created_at) ?? now) }))) return null;
+  if (!(await savePhone(env, userId, session, now, { free: accountRules(account) === "free", onlyLiveAccount: true, credits: await recoveredCredits(env, userId, account, isoMs(session.created_at) ?? now) }))) return null;
   logCloud("cloud.phone_recovered", { userId, phoneId: session.id });
   return { userId, wasEnded: false };
 }
@@ -278,15 +278,18 @@ const START_CLOCK_SLACK_MS = 5 * 60_000;
 /**
  * Whether a phone found with no row counts in credits: what the start that
  * made it decided (saved with its claim), when it is from the account's
- * latest start; else credits, as every start now is.
+ * latest start; else (an older start) what the switch said when it started,
+ * from the change log, so a phone from before credits keeps its minutes.
  */
-function recoveredCredits(
+async function recoveredCredits(
+  env: CloudEnv,
+  userId: string,
   account: Pick<AccountRow, "phone_start_credits" | "phone_start_credits_at">,
   startedAt: number,
-): boolean {
+): Promise<boolean> {
   const at = account.phone_start_credits_at;
   if (at != null && account.phone_start_credits != null && startedAt >= at - START_CLOCK_SLACK_MS) return account.phone_start_credits === 1;
-  return true;
+  return creditsAtStart(env, userId, startedAt);
 }
 
 /** The phones an account started in `[since, before)`. Billing counts only their settled minutes (`settledPhoneMinutes`). */

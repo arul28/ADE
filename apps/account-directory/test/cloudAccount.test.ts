@@ -4147,12 +4147,14 @@ describe("ADE Cloud iPhone minutes", () => {
 
   it.each([
     // A start whose answer was lost, its phone found later by NoMac's webhook: billed as that start decided.
-    { name: "a start under credits: credits", start: 1, expected: 1 },
-    { name: "a start on iPhone minutes (before credits reached everyone): iPhone minutes", start: 0, expected: 0 },
-    // No record of its start: credits, as every start is now.
-    { name: "no start record: credits", start: null, expected: 1 },
-  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, expected }) => {
+    { name: "a start under credits: credits", start: 1, flips: [], expected: 1 },
+    { name: "a start on iPhone minutes (before credits reached everyone): iPhone minutes", start: 0, flips: [], expected: 0 },
+    // No record of its start (a later start replaced it): what the switch said when it started, from the change log.
+    { name: "no start record, after credits reached everyone: credits", start: null, flips: [["all", -2 * HOUR]], expected: 1 },
+    { name: "no start record, before credits reached everyone: iPhone minutes", start: null, flips: [["off", -3 * HOUR], ["all", -1 * 60_000]], expected: 0 },
+  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, flips, expected }) => {
     seedPhoneAccount(start == null ? {} : { phone_start_credits: start, phone_start_credits_at: clock - 10 * 60_000 });
+    flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
     expect((await nomacReady("ses_lost", clock - 9 * 60_000)).status).toBe(200);
     expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(expected);
   });

@@ -83,7 +83,6 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | ADE has no chat to ask you in | See the terminal rule in section 2. |
 | the person said no, or nobody answered | Stop. Don't ask again in a loop. |
 | iPhone minutes are used up | Tell the person, with the reset day. A paid plan can turn on extra credits in Settings › ADE Cloud; the free plan picks a plan. |
-| Extra iPhone minutes reached ... monthly limit | The person raises the limit in Settings › ADE Cloud, or waits for the reset. |
 | iPhone minutes need the same check as its free hours | As the GitHub rows above. |
 | already holds a lane, or belongs to the archived lane | Start a new lane on ADE Cloud, or the person restores that lane. |
 | a launch step failed | Run it again with the same `--launch-id`. |

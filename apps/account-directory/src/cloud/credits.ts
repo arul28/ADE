@@ -25,6 +25,23 @@ import { liveUsedMilli, type AccountRow, type CloudEnv, type ComputerRow } from 
 /** What a running iPhone uses: one credit (a thousand thousandths) a minute. */
 export const PHONE_CREDIT_MILLI_PER_MINUTE = 1000;
 
+/**
+ * Whether a phone that started at `startedAt` counts in credits, for a phone
+ * found with no row (its start's answer was lost) whose start decision is no
+ * longer saved: what the `cloud_credits` switch said then, from the owner's
+ * change log (every flip wrote one; the switch itself is gone since credits
+ * reached everyone). `testers` was the iPhone's beta list. No entry: before
+ * credits, so iPhone minutes.
+ */
+export async function creditsAtStart(env: Pick<CloudEnv, "DB">, userId: string, startedAt: number): Promise<boolean> {
+  const row = await env.DB.prepare(`select json_extract(detail, '$.value') as value from cloud_owner_log
+    where action = 'setting' and json_extract(detail, '$.key') = 'cloud_credits' and at <= ? order by at desc, id desc limit 1`)
+    .bind(startedAt).first<{ value: string | null }>();
+  if (row?.value === "all") return true;
+  if (row?.value !== "testers") return false;
+  return Boolean(await env.DB.prepare("select 1 as listed from cloud_phone_beta where user_id = ?").bind(userId).first<{ listed: number }>());
+}
+
 /** A credits phone's row, as the balance reads it. */
 type CreditPhone = Pick<PhoneRow, "user_id" | "billed_seconds" | "ready_at" | "credited_milli" | "created_at" | "state">;
 
