@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatProvider } from "../../../shared/types/chat";
-import { stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
 
 const said = (text: string, turnId?: string): AgentChatEvent => ({ type: "text", text, ...(turnId ? { turnId } : {}) });
 const done = (turnId: string): AgentChatEvent => ({ type: "done", turnId, status: "completed" });
@@ -17,6 +17,8 @@ function run(start: CtoQuietTurnState, events: AgentChatEvent[], provider: Agent
   ));
   return { shown, state };
 }
+
+const review = person("m-review", { metadata: { hostContinuation: { reason: "cto_review" } } });
 
 const quietIn = (turnId: string | null): CtoQuietTurnState => ({ quiet: { turnId }, reactTarget: null });
 
@@ -63,6 +65,30 @@ describe("stepCtoQuietTurn", () => {
       shown: [],
       end: { quiet: null, reactTarget: null },
     },
+    {
+      name: "the person's correction is kept for the turn's end; a plain message keeps it",
+      start: { quiet: null, reactTarget: null },
+      events: [
+        person("m-1", { text: "No, never push straight to main", deliveryState: "delivered" }),
+        person("m-2", { text: "thanks", deliveryState: "delivered" }),
+      ],
+      shown: [],
+      end: { quiet: null, reactTarget: "message:m-2", correction: "No, never push straight to main" },
+    },
+    {
+      name: "the hidden review's message silences its turn up to its done",
+      start: { quiet: null, reactTarget: null },
+      events: [review, said("Saved a rule.", "t-2"), said("stray"), done("t-2"), said("next turn", "t-3")],
+      shown: ["next turn"],
+      end: { quiet: null, reactTarget: null, reviewPending: false },
+    },
+    {
+      name: "the person writing during the review makes the turn's reply visible",
+      start: { quiet: null, reactTarget: null },
+      events: [review, person("m-1", { deliveryState: "delivered" }), said("answer", "t-2")],
+      shown: ["answer"],
+      end: { quiet: null, reactTarget: "message:m-1", reviewPending: false },
+    },
   ])("$name", ({ start, events, shown, end }) => {
     const result = run(start, events);
     expect(result.shown).toEqual(shown);
@@ -80,5 +106,16 @@ describe("stepCtoQuietTurn", () => {
       provider,
     );
     expect(state.reactTarget).toBe(target);
+  });
+
+  it("a review message committed before its turn starts still silences that turn", () => {
+    const state: CtoQuietTurnState = { quiet: null, reactTarget: null };
+    stepCtoQuietTurn(state, review, "opencode");
+    startCtoQuietTurn(state);
+    expect(stepCtoQuietTurn(state, said("Nothing to save.", "t-2"), "opencode")).toBe(true);
+    // An ordinary next turn speaks again.
+    stepCtoQuietTurn(state, done("t-2"), "opencode");
+    startCtoQuietTurn(state);
+    expect(stepCtoQuietTurn(state, said("hello", "t-3"), "opencode")).toBe(false);
   });
 });

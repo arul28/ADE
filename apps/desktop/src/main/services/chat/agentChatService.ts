@@ -1094,7 +1094,7 @@ import {
   selectCrossMachineReturnSuffix,
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
-import { stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { buildCtoReviewPrompt, CTO_REVIEW_REASON, startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
 import {
   CrossMachineHandoffReturnRefusedError,
   createCrossMachineHandoffDestination,
@@ -5576,6 +5576,8 @@ const CTO_NO_HANDOFF_MESSAGE =
 const CTO_LIVE_STATE_SEND_WAIT_MS = 350;
 /** Quick replies one CTO turn may post, however many mid-task messages arrive. */
 const CTO_MID_TASK_REPLY_MAX = 3;
+/** At most one hidden review turn after a correction per CTO thread in this window. */
+const CTO_REVIEW_MIN_INTERVAL_MS = 5 * 60_000;
 const CTO_INTERIM_REPLY_MAX_CHARS = 600;
 
 type ManagedChatSession = {
@@ -23560,7 +23562,7 @@ export function createAgentChatService(args: {
       lastTurnIdBySession.delete(managed.session.id);
       // A quiet ending never outlives its turn, even one that ended with no
       // `done` or whose id came from a late event of the turn before.
-      if (managed.ctoTurn) managed.ctoTurn.quiet = null;
+      if (managed.ctoTurn) startCtoQuietTurn(managed.ctoTurn);
       managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
       managed.turnErrorCategory = null;
       managed.turnErrorKind = null;
@@ -23669,7 +23671,48 @@ export function createAgentChatService(args: {
     // Likewise a reaction target: a later wake turn must not react to a
     // message an earlier turn read.
     if (managed.ctoTurn) managed.ctoTurn.reactTarget = null;
-    if (managed.session.identityKey === "cto") emitCtoLearnedRow(managed);
+    if (managed.session.identityKey === "cto") {
+      const learned = emitCtoLearnedRow(managed);
+      maybeStartCtoReview(managed, learned);
+    }
+  };
+
+  /** When each CTO thread last got a hidden review turn (in memory: a restart may allow one more). */
+  const ctoReviewLastAtBySession = new Map<string, number>();
+
+  /**
+   * The person corrected the CTO this turn and the turn saved no lesson: ADE
+   * asks the CTO, in a hidden turn, to fix the cause (a rule, a skill, a
+   * note). At most one per thread every 5 minutes. Its text is dropped
+   * (`stepCtoQuietTurn`) and its message draws nothing; a lesson it saves
+   * shows as the usual Learned row with Undo.
+   */
+  const maybeStartCtoReview = (managed: ManagedChatSession, learnedThisTurn: boolean): void => {
+    const state = managed.ctoTurn;
+    const correction = state?.correction ?? null;
+    if (state) state.correction = null;
+    if (!correction || learnedThisTurn || managed.deleted) return;
+    const sessionId = managed.session.id;
+    const now = Date.now();
+    if (now - (ctoReviewLastAtBySession.get(sessionId) ?? 0) < CTO_REVIEW_MIN_INTERVAL_MS) {
+      logger.info("agent_chat.cto_review_skipped", { sessionId, reason: "rate_limited" });
+      return;
+    }
+    setTimeout(() => {
+      // Only into a quiet thread: when the person already wrote again, their
+      // turn comes first and this review is dropped.
+      if (managed.deleted || managed.session.status !== "idle") return;
+      ctoReviewLastAtBySession.set(sessionId, Date.now());
+      logger.info("agent_chat.cto_review_started", { sessionId });
+      void messageSession({
+        sessionId,
+        kind: "wake",
+        text: buildCtoReviewPrompt(correction),
+        metadata: { hostContinuation: { reason: CTO_REVIEW_REASON } },
+      }).catch((error) => {
+        logger.warn("agent_chat.cto_review_failed", { sessionId, error: getErrorMessage(error) });
+      });
+    }, 0);
   };
 
   /**
@@ -23677,7 +23720,7 @@ export function createAgentChatService(args: {
    * skills and notes. Measured now; drawn on the next tick, after the turn's
    * own last events (its `done` can follow the idle mark).
    */
-  const emitCtoLearnedRow = (managed: ManagedChatSession): void => {
+  const emitCtoLearnedRow = (managed: ManagedChatSession): boolean => {
     let learned: CtoLearnedPayload | null = null;
     try {
       learned = ctoMemoryService?.finishLearningTurn({
@@ -23687,7 +23730,7 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("agent_chat.cto_learned_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
     }
-    if (!learned) return;
+    if (!learned) return false;
     const event: AgentChatEvent = {
       type: "cto_learned",
       learnId: learned.learnId,
@@ -23699,6 +23742,7 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, event);
       persistChatState(managed);
     }, 0);
+    return true;
   };
 
   const regenStaleStatusLine = createStatusLineStaleRegen({
@@ -75457,6 +75501,35 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * The person's Undo on one change of a CTO "Learned" row. The row is drawn
+   * again with the same `learnId` and that change marked undone, so every
+   * client updates it in place.
+   */
+  const undoCtoLearned = async (args: CtoUndoLearnedArgs): Promise<CtoUndoLearnedResult> => {
+    if (!ctoMemoryService) return { undone: false, note: "The CTO's memory is not available here." };
+    const outcome = ctoMemoryService.undoLearned({ learnId: String(args?.learnId ?? ""), changeId: String(args?.changeId ?? "") });
+    if (!outcome.ok) return { undone: false, note: outcome.error };
+    const sessionId = outcome.payload.sessionId ?? (await listIdentitySessions("cto"))[0]?.sessionId ?? null;
+    let managed: ManagedChatSession | null = null;
+    try {
+      managed = sessionId ? ensureManagedSession(sessionId) : null;
+    } catch (error) {
+      // The files are already back; only the row's redraw is lost.
+      logger.warn("agent_chat.cto_learned_undo_redraw_failed", { sessionId, error: getErrorMessage(error) });
+    }
+    if (managed && !managed.deleted) {
+      emitChatEvent(managed, {
+        type: "cto_learned",
+        learnId: outcome.payload.learnId,
+        changes: outcome.payload.changes,
+        ...(outcome.payload.turnId ? { turnId: outcome.payload.turnId } : {}),
+      });
+      persistChatState(managed);
+    }
+    return { undone: true, ...(outcome.note ? { note: outcome.note } : {}) };
+  };
+
+  /**
    * Is the CTO thread blocked on the user?
    *
    * Canonical because the CTO chat is hidden from every session roster: it never
@@ -75474,29 +75547,6 @@ export function createAgentChatService(args: {
    * waiters plus an explicit hand-raise on the backing session row (`ade chat
    * ask`), which is a separate signal from `awaitingInput`.
    */
-  /**
-   * The person's Undo on one change of a CTO "Learned" row. The row is drawn
-   * again with the same `learnId` and that change marked undone, so every
-   * client updates it in place.
-   */
-  const undoCtoLearned = async (args: CtoUndoLearnedArgs): Promise<CtoUndoLearnedResult> => {
-    if (!ctoMemoryService) return { undone: false, note: "The CTO's memory is not available here." };
-    const outcome = ctoMemoryService.undoLearned({ learnId: String(args?.learnId ?? ""), changeId: String(args?.changeId ?? "") });
-    if (!outcome.ok) return { undone: false, note: outcome.error };
-    const sessionId = outcome.payload.sessionId ?? (await listIdentitySessions("cto"))[0]?.sessionId ?? null;
-    const managed = sessionId ? managedSessions.get(sessionId) ?? null : null;
-    if (managed && !managed.deleted) {
-      emitChatEvent(managed, {
-        type: "cto_learned",
-        learnId: outcome.payload.learnId,
-        changes: outcome.payload.changes,
-        ...(outcome.payload.turnId ? { turnId: outcome.payload.turnId } : {}),
-      });
-      persistChatState(managed);
-    }
-    return { undone: true, ...(outcome.note ? { note: outcome.note } : {}) };
-  };
-
   const getCtoAttention = async (): Promise<CtoAttentionState> => {
     const idle: CtoAttentionState = { status: "idle", awaitingInput: false, since: null };
     try {

@@ -656,6 +656,11 @@ export type AgentChatHostContinuationMetadata = {
      * notice already shows the line, so clients draw nothing for the wake.
      */
     | "cto_child_report"
+    /**
+     * ADE's hidden review after the person corrected the CTO: fix the cause
+     * (a rule, a skill, a note). Clients draw nothing for it; its text is dropped.
+     */
+    | "cto_review"
     /** The person answered a card the agent posted (an ADE Cloud size request), or the change it asked for ended. */
     | "card_answer"
     /** ADE's stall judge telling the CTO a chat it started is stuck. */
@@ -686,6 +691,7 @@ export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContin
   cto_intro: "Started the CTO's introduction",
   cto_handoff_note: "Asked for a hand-off note",
   cto_child_report: "A chat it started reported back",
+  cto_review: "Reviewed a correction",
   card_answer: "Told the agent the answer to its request",
 };
 

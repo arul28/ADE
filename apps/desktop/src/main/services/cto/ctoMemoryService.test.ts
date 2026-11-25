@@ -195,7 +195,7 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     expect(read(path.join(ctoDir, "MEMORY.md"))).toBe("- Deploys go through the release lane\n");
 
     // The CTO is refused each undone change, worded close or exactly.
-    expect(service.addRule({ rule: "Ask before you land a PR", why: "main deploys" })).toMatchObject({ ok: false });
+    expect(service.addRule({ rule: "Always ask before landing a PR", why: "main deploys" })).toMatchObject({ ok: false });
     expect(service.saveSkill({ name: "release-desktop", description: "x", body: "y" })).toMatchObject({ ok: false });
     expect(service.remember({ note: "Deploys go through the release lane on Thursdays", replaces: "release lane" }))
       .toMatchObject({ ok: false });
