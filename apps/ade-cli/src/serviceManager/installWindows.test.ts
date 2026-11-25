@@ -102,6 +102,15 @@ function makeTempHome(prefix: string): string {
   return dir;
 }
 
+/**
+ * The self-mutation guard's ancestry query, answered as Windows answers it for a
+ * test process outside every brain: a chain of the process alone.
+ */
+function outsideBrainAncestry(args: string[]): ServiceManagerProcessResult | null {
+  const pid = /\$cursor = (\d+)/.exec(args.at(-1) ?? "")?.[1];
+  return pid ? { status: 0, stdout: `P\t${pid}\t0\t\nE\troot`, stderr: "" } : null;
+}
+
 function spawnSequence(
   calls: Array<{ command: string; args: string[] }>,
   results: ServiceManagerProcessResult[],
@@ -112,6 +121,8 @@ function spawnSequence(
     // their lifecycle result sequence; the repair test below owns them.
     if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
     if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "", stderr: "" };
+    const ancestry = outsideBrainAncestry(args);
+    if (ancestry) return ancestry;
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
   };
@@ -131,6 +142,8 @@ function processTableSpawn(
   return (command, args, options) => {
     const script = args.at(-1) ?? "";
     if (command !== windowsPowerShellCommand()) return fallback(command, args, options);
+    const ancestry = outsideBrainAncestry(args);
+    if (ancestry) return ancestry;
     const killTarget = /GetProcessById\((\d+)\)/.exec(script);
     if (killTarget) {
       calls.push({ command, args });
@@ -163,6 +176,8 @@ function startupRegistrySpawn(
   supervisorProbeArgs: string[],
 ): ServiceManagerSpawnSync {
   return (command, args) => {
+    const ancestry = outsideBrainAncestry(args);
+    if (ancestry) return ancestry;
     calls.push({ command, args });
     if (command === windowsRegCommand()) {
       const valueAt = args.indexOf("/V");
@@ -370,7 +385,7 @@ describe("Windows background service helpers", () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
-      return { status: 0, stdout: "", stderr: "" };
+      return outsideBrainAncestry(args) ?? { status: 0, stdout: "", stderr: "" };
     };
     const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
     const result = operation === "install" ? await installWindowsService(deps) : await uninstallWindowsService(deps);
@@ -1590,7 +1605,7 @@ describe("Windows background service helpers", () => {
     ];
     const spawnSync: ServiceManagerSpawnSync = (command, args, options) => {
       calls.push({ command, args, options });
-      return results.shift() ?? { status: 0, stdout: "", stderr: "" };
+      return outsideBrainAncestry(args) ?? results.shift() ?? { status: 0, stdout: "", stderr: "" };
     };
     const launcherPath = path.join(
       makeTempHome("ade-windows-service-hidden-"),

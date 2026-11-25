@@ -8,7 +8,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
-  buildWindowsParentPidQueryArgs,
+  buildWindowsAncestryQueryArgs,
   buildWindowsProcessCommandLineQueryArgs,
   channelServeIdentity,
   isPidAlive,
@@ -19,7 +19,7 @@ import {
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
   PARENT_PID_UNKNOWN,
-  readParentPid,
+  readCurrentProcessAncestorPids,
   renderCommand,
   resolveAdeServeCommand,
   serviceManagerOwnsRuntimeRecovery,
@@ -365,68 +365,130 @@ describe("isCurrentProcessDescendantOfPid", () => {
   });
 });
 
-// These exercise the DEFAULT parent-pid backend. The suite above injects a fake
-// `parentPid` every time, which is exactly how a Windows host could ship a
-// `readParentPid` that always returned null — and therefore a self-shutdown
-// guard that never fired — with a green Windows CI job.
-describe("readParentPid on win32", () => {
+// These exercise the DEFAULT Windows ancestry backend. The suite above injects a
+// fake `parentPid` every time, which is exactly how a Windows host could ship an
+// ancestry read that always ended at the first hop — and therefore a
+// self-shutdown guard that never fired — with a green Windows CI job.
+describe("process ancestry on win32", () => {
   // A trusted powershell path, never a bare `powershell` resolved off PATH.
   const TRUSTED_POWERSHELL = /[\\/]system32[\\/]windowspowershell[\\/]v1\.0[\\/]powershell\.exe$/i;
 
-  const recordingRun = (
-    reply: (pid: number) => ServiceManagerProcessResult,
+  type FakeProcess = { parent: number; exe?: string };
+
+  /**
+   * A Windows host: `Win32_Process` answers from `processes` (a pid missing from
+   * it does not exist), and an MSYS `ps.exe` answers `ps` when one is asked.
+   */
+  const windowsHost = (
+    processes: Record<number, FakeProcess>,
+    ps?: ServiceManagerProcessResult,
   ): { run: ServiceManagerSpawnSync; calls: Array<{ command: string; args: string[] }> } => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const run: ServiceManagerSpawnSync = (command, args) => {
       calls.push({ command, args });
+      if (/[\\/]ps\.exe$/i.test(command)) return ps ?? { status: 1, stdout: "", stderr: "no ps" };
       if (!TRUSTED_POWERSHELL.test(command)) {
-        // Mirror the real host: Git Bash's `ps` is found and rejects the POSIX
-        // flags with status 1; a clean Windows box reports ENOENT. Both land on
-        // a non-zero status with no usable stdout.
+        // Git Bash's `ps` rejects the POSIX flags; a clean Windows box reports ENOENT.
         return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
       }
-      const filter = /ProcessId = (\d+)/.exec(args.join(" "));
-      return reply(Number(filter?.[1] ?? 0));
+      let cursor = Number(/\$cursor = (\d+)/.exec(args.join("\n"))?.[1] ?? 0);
+      const lines: string[] = [];
+      const seen = new Set<number>();
+      while (cursor > 0 && !seen.has(cursor)) {
+        seen.add(cursor);
+        const row = processes[cursor];
+        if (!row) return { status: 0, stdout: [...lines, "E\tbroken"].join("\n") };
+        lines.push(`P\t${cursor}\t${row.parent}\t${row.exe ?? ""}`);
+        cursor = row.parent;
+      }
+      return { status: 0, stdout: [...lines, "E\troot"].join("\n") };
     };
     return { run, calls };
   };
 
-  it("queries Win32_Process through the trusted PowerShell for the parent pid", () => {
-    const { run, calls } = recordingRun(() => ({ status: 0, stdout: "4321\r\n" }));
+  it("walks the whole chain in one trusted PowerShell call", () => {
+    const { run, calls } = windowsHost({ 400: { parent: 300 }, 300: { parent: 100 }, 100: { parent: 0 } });
 
-    expect(readParentPid(run, 1234, "win32")).toBe(4321);
+    expect(readCurrentProcessAncestorPids({ run, currentPid: 400, platform: "win32" })).toEqual(new Set([400, 300, 100]));
     expect(calls).toHaveLength(1);
     expect(calls[0]!.command).toMatch(TRUSTED_POWERSHELL);
-    expect(calls[0]!.command).not.toBe("ps");
-    expect(calls[0]!.args).toEqual(buildWindowsParentPidQueryArgs(1234));
+    expect(calls[0]!.args).toEqual(buildWindowsAncestryQueryArgs(400));
     const script = calls[0]!.args.join(" ");
     expect(script).toContain("Get-CimInstance Win32_Process");
-    expect(script).toContain("ParentProcessId");
     // wmic is deprecated and is being removed from Windows.
     expect(script).not.toMatch(/wmic/i);
   });
 
-  it("treats a missing process as the definitive end of the chain", () => {
-    const { run } = recordingRun(() => ({ status: 3, stdout: "" }));
-    expect(readParentPid(run, 1234, "win32")).toBeNull();
+  it.each([
+    ["inside the runtime's process tree", { 400: { parent: 300 }, 300: { parent: 100 }, 100: { parent: 0 } }, true],
+    ["an unrelated process tree", { 400: { parent: 300 }, 300: { parent: 1 }, 1: { parent: 0 } }, false],
+    // A parent that is gone (outside MSYS) is the end of the chain, as it always was.
+    ["a chain whose parent is gone", { 400: { parent: 300 }, 300: { parent: 250 } }, false],
+  ])("answers for %s", (_name, processes, expected) => {
+    const { run } = windowsHost(processes);
+    expect(isCurrentProcessDescendantOfPid({ targetPid: 100, currentPid: 400, platform: "win32", run })).toBe(expected);
   });
 
-  it("treats ParentProcessId 0 as the top of the tree", () => {
-    const { run } = recordingRun(() => ({ status: 0, stdout: "0" }));
-    expect(readParentPid(run, 1234, "win32")).toBeNull();
+  it.each<[string, ServiceManagerProcessResult]>([
+    ["the query fails", { status: 1, stdout: "", stderr: "Get-CimInstance is not recognized" }],
+    ["the query never ran", { status: null, stdout: null, stderr: null }],
+    ["the output has no end line", { status: 0, stdout: "P\t400\t300\t" }],
+    ["the output is not the walk", { status: 0, stdout: "not-a-pid" }],
+    ["the walk ran out of depth", { status: 0, stdout: "P\t400\t300\t\nE\tdepth" }],
+  ])("fails closed when %s", (_name, reply) => {
+    // Destroying a live runtime is unrecoverable; a refusal that names the
+    // ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION override is not.
+    expect(readCurrentProcessAncestorPids({ run: () => reply, currentPid: 400, platform: "win32" })).toBe(PARENT_PID_UNKNOWN);
+    expect(isCurrentProcessDescendantOfPid({ targetPid: 100, currentPid: 400, platform: "win32", run: () => reply })).toBe(true);
   });
 
-  it("reports an undetermined ancestry when the query itself fails", () => {
-    const failures: ServiceManagerProcessResult[] = [
-      { status: 1, stdout: "", stderr: "Get-CimInstance is not recognized" },
-      { status: null, stdout: null, stderr: null },
-      { status: 0, stdout: "not-a-pid" },
-      { status: 0, stdout: "" },
-    ];
-    for (const failure of failures) {
-      const { run } = recordingRun(() => failure);
-      expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
-    }
+  describe("inside Git Bash (MSYS)", () => {
+    let msysBin: string;
+    beforeAll(() => {
+      msysBin = fs.mkdtempSync(path.join(os.tmpdir(), "ade-msys-bin-"));
+      fs.writeFileSync(path.join(msysBin, "msys-2.0.dll"), "");
+    });
+    afterAll(() => { fs.rmSync(msysBin, { recursive: true, force: true }); });
+
+    // `ade` from Git Bash is a `#!/bin/sh … exec ade.exe` shim. MSYS replaces
+    // `sh.exe`'s Windows process on exec, so ade.exe (400) has a live `sh.exe`
+    // parent (350) whose own Windows parent (349) is gone. MSYS pid 12 is that
+    // script, now running as Windows pid 400; its MSYS parent 11 is the agent's
+    // bash, Windows pid 300, a child of the brain (100).
+    const brokenByExec = (): Record<number, FakeProcess> => ({
+      400: { parent: 350 },
+      350: { parent: 349, exe: path.join(msysBin, "sh.exe") },
+      300: { parent: 100, exe: path.join(msysBin, "bash.exe") },
+      100: { parent: 0 },
+    });
+    const psListing = (rows: string[]): ServiceManagerProcessResult => ({
+      status: 0,
+      stdout: ["      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND", ...rows].join("\n"),
+    });
+
+    it("follows MSYS's own parent across the exec and finds the brain", () => {
+      const { run } = windowsHost(brokenByExec(), psListing([
+        "       11       1      11        300  ?         197609 00:25:19 /usr/bin/bash",
+        "       12      11      11        400  ?         197609 00:25:19 /c/Program Files/ADE/ADE",
+        "    65540       0       0          4  ?              0   Oct 20 System",
+      ]));
+      expect(isCurrentProcessDescendantOfPid({ targetPid: 100, currentPid: 400, platform: "win32", run })).toBe(true);
+    });
+
+    it.each<[string, ServiceManagerProcessResult]>([
+      ["MSYS cannot list its processes", { status: 1, stdout: "", stderr: "ps failed" }],
+      ["MSYS does not know the process", psListing(["       11       1      11        300  ?    197609 00:25:19 /usr/bin/bash"])],
+    ])("fails closed when %s", (_name, ps) => {
+      const { run } = windowsHost(brokenByExec(), ps);
+      expect(readCurrentProcessAncestorPids({ run, currentPid: 400, platform: "win32" })).toBe(PARENT_PID_UNKNOWN);
+    });
+
+    it("ends the chain at an MSYS process that has no MSYS parent", () => {
+      const { run } = windowsHost(brokenByExec(), psListing([
+        "       12       1      12        400  ?         197609 00:25:19 /c/Program Files/ADE/ADE",
+      ]));
+      expect(isCurrentProcessDescendantOfPid({ targetPid: 100, currentPid: 400, platform: "win32", run })).toBe(false);
+    });
   });
 
   // A blown `timeout` budget is the one failure that is purely about the host
@@ -450,15 +512,17 @@ describe("readParentPid on win32", () => {
     const run: ServiceManagerSpawnSync = (_command, _args, options) => {
       const reply = replies[timeouts.length];
       timeouts.push(options?.timeout);
-      if (!reply) throw new Error("readWindowsParentPid ran more attempts than expected");
+      if (!reply) throw new Error("the ancestry query ran more attempts than expected");
       return reply();
     };
     return { run, timeouts };
   };
+  const rootWalk = (): ServiceManagerProcessResult => ({ status: 0, stdout: "P\t400\t0\t\nE\troot" });
+  const read = (run: ServiceManagerSpawnSync) => readCurrentProcessAncestorPids({ run, currentPid: 400, platform: "win32" });
 
   it("retries a timed-out query once, on a longer budget", () => {
-    const { run, timeouts } = budgetRecordingRun([timedOut, () => ({ status: 0, stdout: "77" })]);
-    expect(readParentPid(run, 1234, "win32")).toBe(77);
+    const { run, timeouts } = budgetRecordingRun([timedOut, rootWalk]);
+    expect(read(run)).toEqual(new Set([400]));
     expect(timeouts).toHaveLength(2);
     // The retry must be strictly more generous, or it just repeats the failure.
     expect(timeouts[1]).toBeGreaterThan(timeouts[0] ?? 0);
@@ -466,83 +530,32 @@ describe("readParentPid on win32", () => {
 
   it("stops after the retry also times out", () => {
     const { run, timeouts } = budgetRecordingRun([timedOut, timedOut]);
-    expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
+    expect(read(run)).toBe(PARENT_PID_UNKNOWN);
     expect(timeouts).toHaveLength(2);
   });
 
-  it("does not retry a query that actually answered", () => {
-    // Every non-timeout outcome is final: a real answer, "no such process", a
-    // real tool failure, and a spawn that never ran (powershell absent, so no
-    // ETIMEDOUT and no SIGTERM) all cost exactly one powershell start.
-    for (const [reply, expected] of [
-      [() => ({ status: 0, stdout: "42" }), 42],
-      [() => ({ status: 3, stdout: "" }), null],
-      [() => ({ status: 1, stdout: "", stderr: "CIM unavailable" }), PARENT_PID_UNKNOWN],
-      [() => ({ status: null, stdout: null, stderr: null }), PARENT_PID_UNKNOWN],
-    ] as const) {
-      const { run, timeouts } = budgetRecordingRun([reply]);
-      expect(readParentPid(run, 1234, "win32")).toBe(expected);
-      expect(timeouts).toHaveLength(1);
-    }
+  it.each<[string, () => ServiceManagerProcessResult]>([
+    ["an answer", rootWalk],
+    ["a real tool failure", () => ({ status: 1, stdout: "", stderr: "CIM unavailable" })],
+    // powershell absent: no ETIMEDOUT and no SIGTERM.
+    ["a spawn that never ran", () => ({ status: null, stdout: null, stderr: null })],
+  ])("does not retry %s", (_name, reply) => {
+    const { run, timeouts } = budgetRecordingRun([reply]);
+    read(run);
+    expect(timeouts).toHaveLength(1);
   });
 });
 
-describe("isCurrentProcessDescendantOfPid on win32", () => {
-  const win32Tree = (tree: Record<number, number>): ServiceManagerSpawnSync =>
-    (command, args) => {
-      if (!/powershell\.exe$/i.test(command)) {
-        // Anything that is not the Windows query is the old POSIX `ps` path,
-        // which cannot answer on this platform.
-        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
-      }
-      const pid = Number(/ProcessId = (\d+)/.exec(args.join(" "))?.[1] ?? 0);
-      const parent = tree[pid];
-      return parent == null
-        ? { status: 3, stdout: "" }
-        : { status: 0, stdout: String(parent) };
-    };
-
-  it("blocks a self-shutdown issued from inside the runtime's process tree", () => {
-    // No `parentPid` injection: this drives the real default backend, so a
-    // Windows build without a win32 branch answers false and fails here.
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      platform: "win32",
-      run: win32Tree({ 400: 300, 300: 100, 100: 0 }),
-    })).toBe(true);
-  });
-
-  it("allows a shutdown issued from an unrelated process tree", () => {
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      platform: "win32",
-      run: win32Tree({ 400: 300, 300: 1, 1: 0 }),
-    })).toBe(false);
-  });
-
-  it("fails closed when the ancestry query is unavailable", () => {
-    // Destroying a live runtime is unrecoverable; a refusal that names the
-    // ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION override is not.
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      platform: "win32",
-      run: () => ({ status: 1, stdout: "", stderr: "powershell unavailable" }),
-    })).toBe(true);
-  });
-});
-
-describe.runIf(process.platform === "win32")("readParentPid against the real Windows host", () => {
-  it("resolves this process's actual parent pid", () => {
-    // process.ppid is an independent oracle for the same fact. Before the win32
-    // branch existed this returned null on every Windows host.
-    expect(readParentPid(spawnChildSync, process.pid)).toBe(process.ppid);
-    // 90s, not 30s: the lookup's own worst case is a cold-start timeout plus its
-    // retry, and this suite runs alongside other Windows suites on a 2-core
-    // runner. A test budget under the code's budget turns a slow host into a
-    // failure that reads like a broken parent-pid query.
+describe.runIf(process.platform === "win32")("process ancestry against the real Windows host", () => {
+  // 90s, not 30s: the lookup's own worst case is a cold-start timeout plus its
+  // retry, and this suite runs alongside other Windows suites on a 2-core
+  // runner. A test budget under the code's budget turns a slow host into a
+  // failure that reads like a broken ancestry query.
+  it("includes this process's actual parent", () => {
+    // process.ppid is an independent oracle for the same fact.
+    const ancestors = readCurrentProcessAncestorPids();
+    expect(ancestors).not.toBe(PARENT_PID_UNKNOWN);
+    expect((ancestors as ReadonlySet<number>).has(process.ppid)).toBe(true);
   }, 90_000);
 
   it("reports the real parent as an ancestor of this process", () => {

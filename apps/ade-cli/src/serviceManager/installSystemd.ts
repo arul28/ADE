@@ -8,6 +8,7 @@ import {
   isPidAlive,
   processOutputRaw,
   readPidElapsedMs,
+  refuseSelfServiceMutation,
   renderCommand,
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
@@ -314,6 +315,18 @@ export async function installSystemdService(
     state = getSystemdUnitState(run, unitName);
   }
 
+  // From here the unit's brain is restarted. systemd stops its whole cgroup,
+  // so a command running inside that brain would take itself down with it.
+  const selfBlock = refuseSelfServiceMutation({
+    action: "install",
+    path: targetPath,
+    pids: [state?.mainPid],
+    env,
+    run,
+    platform: "linux",
+  });
+  if (selfBlock) return selfBlock;
+
   // A supervisor an earlier start ran while systemd was unavailable would
   // keep its own brain on the socket next to the unit's.
   if (hasLiveDetachedSupervisor({ env, homeDir })) {
@@ -447,18 +460,34 @@ export function readSystemdServiceHome(homeDir = os.homedir()): string | null {
   return value || path.join(homeDir, ".ade");
 }
 
-export async function uninstallSystemdService(): Promise<ServiceManagerResult> {
-  if (!isSystemdUserManagerUsable()) {
+export async function uninstallSystemdService(
+  deps: Pick<SystemdServiceManagerDeps, "spawnSync" | "env" | "homeDir"> = {},
+): Promise<ServiceManagerResult> {
+  const run = deps.spawnSync ?? spawnSync;
+  const env = deps.env ?? process.env;
+  const homeDir = deps.homeDir ?? os.homedir();
+  if (!isSystemdUserManagerUsable(run)) {
     // `stopUnsupervised` always yields a result.
-    return (await uninstallDetachedRuntimeService({ stopUnsupervised: true }))!;
+    return (await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run, stopUnsupervised: true }))!;
   }
+  const targetPath = servicePath(homeDir, ADE_RUNTIME_SERVICE_NAME, env);
+  const unitName = serviceUnitName();
+  // `disable --now` stops the unit's whole cgroup, this command included when it runs inside that brain.
+  const selfBlock = refuseSelfServiceMutation({
+    action: "uninstall",
+    path: targetPath,
+    pids: [getSystemdUnitState(run, unitName)?.mainPid],
+    env,
+    run,
+    platform: "linux",
+  });
+  if (selfBlock) return selfBlock;
   // A supervisor left from a time systemd was unavailable.
-  const detached = await uninstallDetachedRuntimeService();
+  const detached = await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run });
   if (detached?.selfMutationBlocked) return detached;
-  const targetPath = servicePath();
-  spawnSync("systemctl", ["--user", "disable", "--now", serviceUnitName()], { stdio: "ignore" });
+  run("systemctl", ["--user", "disable", "--now", unitName], { stdio: "ignore" });
   try { fs.unlinkSync(targetPath); } catch {}
-  spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
+  run("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,

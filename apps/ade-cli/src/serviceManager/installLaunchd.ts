@@ -9,13 +9,13 @@ import {
   BACKGROUND_ITEM_BLOCKED_MESSAGE,
   currentUid,
   type BackgroundItemStatus,
-  isCurrentProcessDescendantOfPid,
   launchAgentDisabledListArgs,
   loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
   parseLaunchAgentDisabled,
   readPidElapsedMs,
+  refuseSelfServiceMutation,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
@@ -206,29 +206,6 @@ export function parseLaunchdPrintPid(output: string): number | null {
   return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
 }
 
-function shouldAllowSelfServiceMutation(env: NodeJS.ProcessEnv): boolean {
-  return env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1";
-}
-
-function selfServiceMutationBlockedResult(args: {
-  action: "install" | "uninstall";
-  servicePath: string;
-  servicePid: number;
-}): ServiceManagerResult {
-  const verb = args.action === "install" ? "restart" : "stop";
-  return {
-    ok: false,
-    selfMutationBlocked: true,
-    serviceName: ADE_RUNTIME_SERVICE_NAME,
-    action: args.action,
-    path: args.servicePath,
-    message:
-      `Refusing to ${verb} ADE brain from a command running inside that brain ` +
-      `(pid ${args.servicePid}). Run this from an external terminal, or set ` +
-      "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
-  };
-}
-
 function selfServiceMutationBlock(args: {
   action: "install" | "uninstall";
   loadedPid: number | null | undefined;
@@ -238,20 +215,15 @@ function selfServiceMutationBlock(args: {
   currentPid?: number;
   parentPid?: (pid: number) => number | null;
 }): ServiceManagerResult | null {
-  const servicePid = args.loadedPid ?? null;
-  if (!servicePid || shouldAllowSelfServiceMutation(args.env)) return null;
-  if (!isCurrentProcessDescendantOfPid({
-    targetPid: servicePid,
+  return refuseSelfServiceMutation({
+    action: args.action,
+    path: args.servicePath,
+    pids: [args.loadedPid],
+    env: args.env,
     run: args.run,
+    platform: "darwin",
     currentPid: args.currentPid,
     parentPid: args.parentPid,
-  })) {
-    return null;
-  }
-  return selfServiceMutationBlockedResult({
-    action: args.action,
-    servicePath: args.servicePath,
-    servicePid,
   });
 }
 

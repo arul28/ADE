@@ -5,10 +5,10 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
-  isCurrentProcessDescendantOfPid,
   isPidAlive,
   isStaleChannelServeCommandLine,
   readPidElapsedMs,
+  refuseSelfServiceMutation,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
@@ -285,21 +285,7 @@ function selfMutationBlocked(
   env: NodeJS.ProcessEnv,
   run: ServiceManagerSpawnSync,
 ): ServiceManagerResult | null {
-  if (env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1") return null;
-  const owner = pids.find((pid): pid is number => pid != null && isCurrentProcessDescendantOfPid({ targetPid: pid, run }));
-  if (owner == null) return null;
-  const verb = action === "install" ? "restart" : "stop";
-  return {
-    ok: false,
-    selfMutationBlocked: true,
-    serviceName: ADE_RUNTIME_SERVICE_NAME,
-    action,
-    path: targetPath,
-    message:
-      `Refusing to ${verb} ADE brain from a command running inside that brain `
-      + `(pid ${owner}). Run this from an external terminal, or set `
-      + "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
-  };
+  return refuseSelfServiceMutation({ action, path: targetPath, pids, env, run, platform: "linux" });
 }
 
 async function stopPids(supervisorPid: number | null, brainPid: number | null): Promise<void> {

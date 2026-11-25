@@ -21,6 +21,7 @@ import {
   powerShellSingleQuotedLiteral,
   type PidStopOutcome,
   readWindowsProcessFacts,
+  refuseSelfServiceMutation,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -1446,6 +1447,44 @@ async function stopWindowsPredecessors(
   return { ok: true, removed };
 }
 
+/**
+ * The refusal when this command runs inside a process the install or uninstall
+ * would stop: the recorded supervisor and brain, and every supervisor of this
+ * launcher the plan found (another session's included) with its children. An
+ * agent's shell is a child of the brain, so without this an agent's `ade brain
+ * stop` or `restart` ended its own chats and left nothing to start the brain
+ * again until the next sign-in.
+ */
+function windowsSelfMutationRefusal(
+  run: ServiceManagerSpawnSync,
+  args: {
+    action: "install" | "uninstall";
+    serviceName: string;
+    path: string;
+    env: NodeJS.ProcessEnv;
+    record: WindowsServicePidRecord | null;
+    plan: Extract<WindowsStartupPlan, { ok: true }>;
+  },
+): ServiceManagerResult | null {
+  const { plan, record } = args;
+  return refuseSelfServiceMutation({
+    action: args.action,
+    path: args.path,
+    serviceName: args.serviceName,
+    env: args.env,
+    run,
+    platform: "win32",
+    // The brain first, so the refusal names the brain rather than its supervisor.
+    pids: [
+      record?.runtimePid,
+      plan.brain?.runtimePid,
+      record?.supervisorPid,
+      plan.supervisor?.pid,
+      ...plan.predecessors.flatMap((group) => [group.supervisor.pid, ...group.children.map((child) => child.pid)]),
+    ],
+  });
+}
+
 export async function installWindowsService(
   deps: WindowsServiceManagerDeps = {},
 ): Promise<ServiceManagerResult> {
@@ -1735,6 +1774,23 @@ async function installWindowsServiceImpl(
       path: taskName,
       message: startupPlan.message,
     };
+  }
+  const selfBlock = windowsSelfMutationRefusal(run, {
+    action: "install",
+    serviceName,
+    path: taskName,
+    env,
+    record: readPidRecord(pidPath),
+    plan: startupPlan,
+  });
+  if (selfBlock) {
+    // The launcher was rewritten above. Put the old one back, or the next
+    // install from outside would find it unchanged and keep the old brain.
+    try {
+      if (existingLauncher === null) fs.rmSync(launcherPath, { force: true });
+      else fs.writeFileSync(launcherPath, existingLauncher, { encoding: "utf8", mode: 0o600 });
+    } catch { /* the refusal stands either way */ }
+    return selfBlock;
   }
   if (currentTask.present) {
     const currentRemoval = endAndDeleteWindowsTask(
@@ -2029,6 +2085,15 @@ async function uninstallWindowsServiceImpl(
       message: startupPlan.message,
     };
   }
+  const selfBlock = windowsSelfMutationRefusal(run, {
+    action: "uninstall",
+    serviceName,
+    path: taskName,
+    env: targets.env,
+    record: (deps.readPidRecord ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target })))(pidPath),
+    plan: startupPlan,
+  });
+  if (selfBlock) return selfBlock;
   let currentRemoval: WindowsTaskRemovalResult = { ok: true, removed: false };
   if (!currentTask.ok) {
     currentRemoval = currentTask;

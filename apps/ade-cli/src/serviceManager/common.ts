@@ -228,31 +228,55 @@ export const PARENT_PID_UNKNOWN = "unknown" as const;
 
 export type ParentPidLookup = number | null | typeof PARENT_PID_UNKNOWN;
 
-/** Exit code the win32 parent-pid query uses for "no such process". */
-const WINDOWS_PARENT_PID_NOT_FOUND_EXIT = 3;
+/** First token of a win32 ancestry line: a process in the chain. */
+const WINDOWS_ANCESTRY_PROCESS = "P";
+/** First token of the line that ends a win32 ancestry walk. */
+const WINDOWS_ANCESTRY_END = "E";
 
 /**
- * PowerShell to print a pid's ParentProcessId, or exit 3 when the pid is gone.
+ * PowerShell that walks the parent chain of `pid` in ONE process start and
+ * prints a line per process (`P <pid> <parent pid> <executable>`), then how the
+ * walk ended (`E root`, `E broken` or `E depth`).
+ *
+ * One start rather than one per ancestor: a powershell.exe cold start is about
+ * half a second, and a chain from an agent's Git Bash to the brain is ten or
+ * more processes deep. `broken` means the next parent is gone, or its pid now
+ * names a process created after the child (a reused pid, not the real parent).
  *
  * `Get-CimInstance Win32_Process` rather than `wmic`: wmic is deprecated and is
  * being removed from Windows, and this matches the CIM queries already used by
  * `serviceManager/windowsSupervisor.ts`.
  */
-export function buildWindowsParentPidQueryArgs(pid: number): string[] {
+export function buildWindowsAncestryQueryArgs(pid: number): string[] {
   if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error(`Invalid pid for the Windows parent-process query: ${String(pid)}`);
+    throw new Error(`Invalid pid for the Windows process-ancestry query: ${String(pid)}`);
   }
-  const query = [
+  const P = WINDOWS_ANCESTRY_PROCESS;
+  const E = WINDOWS_ANCESTRY_END;
+  const script = [
     "$ErrorActionPreference = 'Stop'",
-    `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue`,
-    `if ($null -eq $process) { exit ${WINDOWS_PARENT_PID_NOT_FOUND_EXIT} }`,
-    "[Console]::Out.Write([string]$process.ParentProcessId)",
-  ].join("; ");
-  return ["-NoProfile", "-NonInteractive", "-Command", query];
+    "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
+    `$cursor = ${pid}`,
+    "$seen = @{}",
+    "$childCreated = $null",
+    "for ($depth = 0; $depth -lt 64; $depth++) {",
+    `  if ($cursor -le 0 -or $seen.ContainsKey($cursor)) { [Console]::Out.Write("${E}\`troot"); exit 0 }`,
+    "  $seen[$cursor] = $true",
+    "  $row = Get-CimInstance Win32_Process -Filter \"ProcessId = $cursor\" -ErrorAction SilentlyContinue",
+    `  if ($null -eq $row) { [Console]::Out.Write("${E}\`tbroken"); exit 0 }`,
+    "  $created = $row.CreationDate",
+    `  if ($null -ne $childCreated -and $null -ne $created -and $created -gt $childCreated) { [Console]::Out.Write("${E}\`tbroken"); exit 0 }`,
+    `  [Console]::Out.WriteLine("${P}\`t$($row.ProcessId)\`t$($row.ParentProcessId)\`t$($row.ExecutablePath)")`,
+    "  if ($null -ne $created) { $childCreated = $created }",
+    "  $cursor = [int]$row.ParentProcessId",
+    "}",
+    `[Console]::Out.Write("${E}\`tdepth")`,
+  ].join("\n");
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
 }
 
 /**
- * Per-attempt budgets for the win32 parent-pid query, in order.
+ * Per-attempt budgets for the win32 ancestry query, in order.
  *
  * 5s was not enough: powershell.exe cold start plus the first CIM call in a
  * session routinely exceeds it on a contended Windows host, and a timeout is
@@ -262,12 +286,9 @@ export function buildWindowsParentPidQueryArgs(pid: number): string[] {
  * suites in parallel), so a timeout gets ONE retry on a longer budget: by then
  * powershell.exe and the CIM infrastructure are warm, so the retry is the
  * steady-state cost, not another cold start. Only a timeout is retried — a real
- * answer (including "no such process") and a real failure are both final.
- *
- * The walk in isCurrentProcessDescendantOfPid stops at the first
- * PARENT_PID_UNKNOWN, so this budget is spent at most once per lookup chain.
+ * answer and a real failure are both final.
  */
-const WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS = [15_000, 25_000] as const;
+const WINDOWS_ANCESTRY_QUERY_TIMEOUTS_MS = [15_000, 25_000] as const;
 
 /**
  * Whether `spawnSync` killed the child because it blew its `timeout` budget, as
@@ -280,60 +301,182 @@ function isSpawnTimeout(result: ServiceManagerProcessResult): boolean {
   return code === "ETIMEDOUT" || result.signal === "SIGTERM";
 }
 
-function readWindowsParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
+type WindowsAncestor = { pid: number; parentPid: number; executablePath: string | null };
+type WindowsAncestrySegment = { chain: WindowsAncestor[]; end: "root" | "broken" };
+
+function parseWindowsAncestryOutput(text: string): WindowsAncestrySegment | typeof PARENT_PID_UNKNOWN {
+  const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+  const [endToken, end] = (lines.pop() ?? "").split("\t");
+  if (endToken !== WINDOWS_ANCESTRY_END || (end !== "root" && end !== "broken")) return PARENT_PID_UNKNOWN;
+  const chain: WindowsAncestor[] = [];
+  for (const line of lines) {
+    const [kind, pidText, parentText, ...executable] = line.split("\t");
+    if (kind !== WINDOWS_ANCESTRY_PROCESS || !/^\d+$/.test(pidText ?? "") || !/^\d+$/.test(parentText ?? "")) {
+      return PARENT_PID_UNKNOWN;
+    }
+    const pid = Number(pidText);
+    if (pid <= 0) return PARENT_PID_UNKNOWN;
+    chain.push({ pid, parentPid: Number(parentText), executablePath: executable.join("\t").trim() || null });
+  }
+  return { chain, end };
+}
+
+function readWindowsAncestrySegment(
+  run: ServiceManagerSpawnSync,
+  pid: number,
+): WindowsAncestrySegment | typeof PARENT_PID_UNKNOWN {
   let result: ServiceManagerProcessResult | undefined;
-  for (const [attempt, timeout] of WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS.entries()) {
+  for (const [attempt, timeout] of WINDOWS_ANCESTRY_QUERY_TIMEOUTS_MS.entries()) {
     try {
       // Resolve through the hardened GLOBALROOT lookup: a bare `powershell` is
       // redirectable via PATH/SystemRoot, and this guard protects a teardown.
       result = run(
         resolveTrustedWindowsTool("powershell"),
-        buildWindowsParentPidQueryArgs(pid),
+        buildWindowsAncestryQueryArgs(pid),
         { encoding: "utf8", timeout, windowsHide: true },
       );
     } catch {
       return PARENT_PID_UNKNOWN;
     }
-    const isLastAttempt = attempt === WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS.length - 1;
+    const isLastAttempt = attempt === WINDOWS_ANCESTRY_QUERY_TIMEOUTS_MS.length - 1;
     if (isLastAttempt || !isSpawnTimeout(result)) break;
   }
-  if (!result) return PARENT_PID_UNKNOWN;
-  // Only "the process does not exist" is a definitive end of the chain. Any
-  // other non-zero status (spawn failure, CIM unavailable, timeout) means the
-  // ancestry is undetermined, NOT that we reached the root.
-  if (result.status === WINDOWS_PARENT_PID_NOT_FOUND_EXIT) return null;
+  if (!result || result.status !== 0) return PARENT_PID_UNKNOWN;
+  return parseWindowsAncestryOutput(processOutputRaw(result));
+}
+
+/** The runtime DLL that marks a folder as an MSYS2 (Git for Windows) or Cygwin `bin`. */
+const MSYS_RUNTIME_DLLS = ["msys-2.0.dll", "cygwin1.dll"] as const;
+const MSYS_PROCESS_LIST_TIMEOUT_MS = 15_000;
+
+/**
+ * The Windows pid of the MSYS parent of the chain's broken end, when the chain
+ * broke inside an MSYS shell (Git Bash, which agents use on Windows).
+ *
+ * MSYS emulates `exec` of an MSYS program by starting a NEW Windows process and
+ * ending the old one, so a script (`#!/bin/sh … exec ade.exe`, the shape of
+ * ADE's own `ade` shim for Git Bash) leaves `sh.exe` with a Windows parent that
+ * no longer exists. Windows ancestry ends there, far below the brain. MSYS
+ * still knows the real parent: its own `ps -W` maps each MSYS pid to the
+ * Windows pid currently running it, and to its MSYS parent.
+ *
+ * - `null`: the break is not inside MSYS, or the MSYS process has no MSYS
+ *   parent (it was started by a Windows process, or its parent exited). The
+ *   chain genuinely ends here, as it always has.
+ * - `PARENT_PID_UNKNOWN`: the break is inside MSYS and MSYS could not say.
+ */
+function resolveMsysParentWinPid(
+  run: ServiceManagerSpawnSync,
+  chain: readonly WindowsAncestor[],
+): number | null | typeof PARENT_PID_UNKNOWN {
+  const broken = chain.at(-1);
+  if (!broken?.executablePath) return null;
+  // The chain comes from this host's Windows, so the host's path module is win32 there.
+  const binDir = path.dirname(broken.executablePath);
+  if (!MSYS_RUNTIME_DLLS.some((dll) => fs.existsSync(path.join(binDir, dll)))) return null;
+  // That same install's `ps`: an MSYS install only knows its own processes.
+  let result: ServiceManagerProcessResult;
+  try {
+    result = run(path.join(binDir, "ps.exe"), ["-W"], {
+      encoding: "utf8",
+      timeout: MSYS_PROCESS_LIST_TIMEOUT_MS,
+      windowsHide: true,
+    });
+  } catch {
+    return PARENT_PID_UNKNOWN;
+  }
   if (result.status !== 0) return PARENT_PID_UNKNOWN;
-  const text = processOutputText(result);
-  if (!/^\d+$/.test(text)) return PARENT_PID_UNKNOWN;
-  const parentPid = Number.parseInt(text, 10);
-  if (!Number.isFinite(parentPid)) return PARENT_PID_UNKNOWN;
-  // ParentProcessId 0 is the Idle pseudo-process: the top of the tree.
-  return parentPid > 0 ? parentPid : null;
+  // `ps -W` rows: [flag] PID PPID PGID WINPID TTY UID STIME COMMAND. A Windows
+  // process MSYS did not start is listed with PPID 0.
+  const byWinPid = new Map<number, { pid: number; ppid: number }>();
+  const winPidByPid = new Map<number, number>();
+  for (const line of processOutputRaw(result).split(/\r?\n/)) {
+    const match = /^\s*(?:[A-Za-z]\s+)?(\d+)\s+(\d+)\s+\d+\s+(\d+)\s/.exec(line);
+    if (!match) continue;
+    const [pid, ppid, winPid] = [Number(match[1]), Number(match[2]), Number(match[3])];
+    winPidByPid.set(pid, winPid);
+    const known = byWinPid.get(winPid);
+    if (!known || (known.ppid === 0 && ppid > 0)) byWinPid.set(winPid, { pid, ppid });
+  }
+  // The MSYS pid survives the exec; its Windows pid moved to the process that
+  // replaced it, which sits further down the chain than the broken end.
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const row = byWinPid.get(chain[index]!.pid);
+    if (!row || row.ppid === 0) continue;
+    if (row.ppid === 1) return null;
+    return winPidByPid.get(row.ppid) ?? null;
+  }
+  return PARENT_PID_UNKNOWN;
+}
+
+/** Most MSYS breaks one chain can recover from: one per script `exec` between the brain and this process. */
+const MAX_WINDOWS_ANCESTRY_SEGMENTS = 8;
+
+function readWindowsAncestorPids(
+  run: ServiceManagerSpawnSync,
+  startPid: number,
+): ReadonlySet<number> | typeof PARENT_PID_UNKNOWN {
+  const ancestors = new Set<number>();
+  let cursor = startPid;
+  for (let segment = 0; segment < MAX_WINDOWS_ANCESTRY_SEGMENTS; segment += 1) {
+    const walk = readWindowsAncestrySegment(run, cursor);
+    if (walk === PARENT_PID_UNKNOWN) return PARENT_PID_UNKNOWN;
+    for (const ancestor of walk.chain) {
+      if (ancestors.has(ancestor.pid)) return ancestors;
+      ancestors.add(ancestor.pid);
+    }
+    if (walk.end === "root") return ancestors;
+    const next = resolveMsysParentWinPid(run, walk.chain);
+    if (next === PARENT_PID_UNKNOWN) return PARENT_PID_UNKNOWN;
+    if (next == null || ancestors.has(next)) return ancestors;
+    cursor = next;
+  }
+  return PARENT_PID_UNKNOWN;
 }
 
 function readPosixParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
   // `ps` exits 1 both for "no such pid" and for a genuine failure, so a POSIX
-  // host cannot distinguish the two the way the win32 branch above can. `ps` is
-  // part of every POSIX base system, so treat a failure as end-of-chain.
+  // host cannot distinguish the two. `ps` is part of every POSIX base system,
+  // so treat a failure as end-of-chain.
   const result = run("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
   if (result.status !== 0) return null;
   const parentPid = Number.parseInt(processOutputText(result), 10);
   return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
 }
 
+type ProcessAncestryArgs = {
+  run?: ServiceManagerSpawnSync;
+  currentPid?: number;
+  /** The platform whose process table is read; a service backend names its own. */
+  platform?: NodeJS.Platform;
+  /** Replaces the per-platform parent lookup with one answer per pid. */
+  parentPid?: (pid: number) => ParentPidLookup;
+};
+
 /**
- * Parent pid of `pid`, dispatched per platform the same way
- * `serviceManager/index.ts` dispatches `getRuntimeServiceMainPid`.
+ * Every pid from this process up to the root of its tree, this process
+ * included, or `PARENT_PID_UNKNOWN` when the ancestry cannot be determined.
+ * One read answers any number of "is it inside X" questions.
  */
-export function readParentPid(
-  run: ServiceManagerSpawnSync,
-  pid: number,
-  platform: NodeJS.Platform = process.platform,
-): ParentPidLookup {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  return platform === "win32"
-    ? readWindowsParentPid(run, pid)
-    : readPosixParentPid(run, pid);
+export function readCurrentProcessAncestorPids(
+  args: ProcessAncestryArgs = {},
+): ReadonlySet<number> | typeof PARENT_PID_UNKNOWN {
+  const run = args.run ?? spawnSync;
+  const platform = args.platform ?? process.platform;
+  const start = Math.floor(args.currentPid ?? process.pid);
+  if (!Number.isFinite(start) || start <= 0) return new Set();
+  if (platform === "win32" && !args.parentPid) return readWindowsAncestorPids(run, start);
+  const readPid = args.parentPid ?? ((pid: number) => readPosixParentPid(run, pid));
+  const ancestors = new Set<number>();
+  let cursor = start;
+  while (Number.isFinite(cursor) && cursor > 0 && !ancestors.has(cursor)) {
+    ancestors.add(cursor);
+    const next = readPid(cursor);
+    if (next === PARENT_PID_UNKNOWN) return PARENT_PID_UNKNOWN;
+    if (!next) break;
+    cursor = next;
+  }
+  return ancestors;
 }
 
 /**
@@ -347,29 +490,52 @@ export function readParentPid(
  * destroys a live runtime and every active session on it. Only the first is
  * recoverable.
  */
-export function isCurrentProcessDescendantOfPid(args: {
-  targetPid: number;
-  run?: ServiceManagerSpawnSync;
-  currentPid?: number;
-  platform?: NodeJS.Platform;
-  parentPid?: (pid: number) => ParentPidLookup;
-}): boolean {
+export function isCurrentProcessDescendantOfPid(args: ProcessAncestryArgs & { targetPid: number }): boolean {
   const targetPid = Math.floor(args.targetPid);
   if (!Number.isFinite(targetPid) || targetPid <= 0) return false;
-  const run = args.run ?? spawnSync;
-  const platform = args.platform ?? process.platform;
-  const readPid = args.parentPid ?? ((pid: number) => readParentPid(run, pid, platform));
-  const seen = new Set<number>();
-  let cursor = Math.floor(args.currentPid ?? process.pid);
-  while (Number.isFinite(cursor) && cursor > 0 && !seen.has(cursor)) {
-    if (cursor === targetPid) return true;
-    seen.add(cursor);
-    const next = readPid(cursor);
-    if (next === PARENT_PID_UNKNOWN) return true;
-    if (!next || next === cursor) return false;
-    cursor = next;
-  }
-  return false;
+  const ancestors = readCurrentProcessAncestorPids(args);
+  return ancestors === PARENT_PID_UNKNOWN || ancestors.has(targetPid);
+}
+
+/**
+ * The refusal every service backend returns when a command running inside the
+ * brain asks to restart or stop it, or null when it may go ahead.
+ *
+ * `pids` is every process the action would stop (supervisor, brain, strays).
+ * The ancestry is read once for all of them, and only when there is one.
+ * `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` skips the check; ADE's own update
+ * helpers set it. Callers branch on `selfMutationBlocked`, never the message.
+ */
+export function refuseSelfServiceMutation(args: ProcessAncestryArgs & {
+  action: "install" | "uninstall";
+  path: string | null;
+  pids: ReadonlyArray<number | null | undefined>;
+  env: NodeJS.ProcessEnv;
+  serviceName?: string;
+}): ServiceManagerResult | null {
+  if (args.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1") return null;
+  const candidates = [...new Set(args.pids)].filter(
+    (pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0,
+  );
+  if (candidates.length === 0) return null;
+  const ancestors = readCurrentProcessAncestorPids(args);
+  const unknown = ancestors === PARENT_PID_UNKNOWN;
+  const owner = unknown ? candidates[0] : candidates.find((pid) => ancestors.has(pid));
+  if (owner == null) return null;
+  const verb = args.action === "install" ? "restart" : "stop";
+  const subject = unknown
+    ? `ADE brain (pid ${owner}): this command could not confirm that it runs outside that brain`
+    : `ADE brain from a command running inside that brain (pid ${owner})`;
+  return {
+    ok: false,
+    selfMutationBlocked: true,
+    serviceName: args.serviceName ?? ADE_RUNTIME_SERVICE_NAME,
+    action: args.action,
+    path: args.path,
+    message:
+      `Refusing to ${verb} ${subject}. Run this from an external terminal, or set `
+      + "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
+  };
 }
 
 const RUNTIME_ENV_PASSTHROUGH = [
