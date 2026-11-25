@@ -1102,6 +1102,8 @@ struct WorkChatSessionView: View {
   @State var sponsoredPlacedKey: String?
   /// What the slot under the reply draws, as a key: its row is re-measured when it changes.
   @State var sponsoredShownKey: String?
+  /// What the inline line at the reply's end draws, as a key: that reply row is re-measured when it changes.
+  @State var sponsoredInlineShownKey: String?
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -2016,6 +2018,7 @@ struct WorkChatSessionView: View {
           hasher.combine(revision)
           hasher.combine("sponsored-inline")
           hasher.combine(sponsoredPlacedKey)
+          hasher.combine(sponsoredInlineShownKey)
           revision = hasher.finalize()
         }
         rows.append(
@@ -3579,6 +3582,9 @@ struct WorkChatSessionView: View {
       }
       .onReceive(sponsoredSlot.$shownKey) { key in
         if sponsoredShownKey != key { sponsoredShownKey = key }
+      }
+      .onReceive(sponsoredSlot.$inlineShownKey) { key in
+        if sponsoredInlineShownKey != key { sponsoredInlineShownKey = key }
       }
     )
   }

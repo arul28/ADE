@@ -97,8 +97,6 @@
   margin-top: 4px;
   flex-wrap: wrap;
 }
-/* The ad's call to action sits on the right, under the hide button. */
-.ade-sponsored-actions--end { justify-content: flex-end; }
 .ade-sponsored-cta {
   display: inline-flex;
   align-items: center;
@@ -113,6 +111,9 @@
   cursor: pointer;
 }
 .ade-sponsored-cta:hover { background: var(--kit-hover); color: var(--color-fg); }
+/* In a card's top row the call to action sits on the right, beside the hide button. */
+.ade-sponsored-head .ade-sponsored-cta { flex: none; margin-left: auto; height: 22px; font-size: 11.5px; }
+.ade-sponsored-head .ade-sponsored-cta + .ade-sponsored-hide { margin-left: 0; }
 .ade-sponsored-link {
   margin-left: auto;
   padding: 0;
@@ -129,31 +130,20 @@
 .ade-sponsored-folded { margin: 0; font-size: 11.5px; color: var(--kit-text-3); }
 .ade-sponsored-folded .ade-sponsored-link { margin-left: 6px; }
 
-/* Above the prompt box: one row, the composer's width, the latest reply's card. */
+/* Above the prompt box: the composer's width, the latest reply's card. The
+   top row holds the buttons, so the ad gets the full width and wraps, never cut off. */
 .ade-sponsored--dock {
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
+  gap: 3px;
   margin: 0;
-  padding: 6px 6px 6px 10px;
-}
-.ade-sponsored--dock .ade-sponsored-hide { margin-left: 0; }
-.ade-sponsored-dock-copy {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
+  padding: 8px 10px 9px 12px;
 }
 .ade-sponsored-dock-line {
   min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  overflow: hidden;
   text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 .ade-sponsored-dock-line:hover .ade-sponsored-dock-title { text-decoration: underline; text-underline-offset: 2px; }
@@ -162,27 +152,21 @@
 .ade-sponsored-dock-text { color: var(--kit-text-2); }
 
 /* The reply's last sentence: same size as the reply, quieter, marked Sponsored. */
+/* Plain text flow, so a long ad wraps as one sentence (the tag, the link and
+   hide stay on the line they reach) instead of stacking as three rows. */
 .ade-sponsored-inline {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 2px 8px;
+  display: block;
   margin: 6px 0 0;
   color: var(--kit-text-2);
 }
 .ade-sponsored-inline-tag {
-  flex: none;
+  margin-right: 8px;
   font-size: 11px;
   color: var(--kit-text-3);
+  white-space: nowrap;
 }
 .ade-sponsored-inline-link {
-  display: inline;
-  padding: 0;
-  border: 0;
-  background: transparent;
   color: var(--color-fg);
-  font: inherit;
-  text-align: left;
   text-decoration: underline;
   text-decoration-color: color-mix(in srgb, var(--color-fg) 35%, transparent);
   text-underline-offset: 3px;
@@ -191,4 +175,32 @@
 .ade-sponsored-inline-link:hover { text-decoration-color: currentColor; }
 .ade-sponsored-inline-link:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }
 .ade-sponsored-inline-link svg { display: inline; margin-left: 2px; vertical-align: -1px; color: var(--kit-text-3); }
-.ade-sponsored-inline .ade-sponsored-hide { align-self: center; width: 18px; height: 18px; margin-left: 0; }
+.ade-sponsored-inline .ade-sponsored-hide { display: inline-flex; width: 18px; height: 18px; margin-left: 6px; vertical-align: middle; }
+
+/* A card drawn by Gravity's renderer (`SponsoredGravityCard.tsx`): Gravity's
+   design inside, ADE's place, colors and hide button around it. */
+.ade-sponsored-gravity {
+  position: relative;
+  width: 100%;
+  margin-top: 4px;
+  font-size: 12.5px;
+}
+.ade-sponsored-gravity [data-gravity-ad] a { cursor: pointer; }
+/* The hide button is always on the card's corner (as on the iPhone), clear of Gravity's "Sponsored" label. */
+.ade-sponsored-gravity-hide {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--kit-rule);
+  background: var(--color-bg, var(--kit-surface, #111));
+  color: var(--kit-text-2, var(--color-fg));
+  cursor: pointer;
+}
+.ade-sponsored-gravity-hide:hover { color: var(--color-fg); border-color: var(--kit-text-3); }
+.ade-sponsored-gravity-hide:focus-visible { outline: 2px solid var(--adec-400); outline-offset: 1px; }

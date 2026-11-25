@@ -101,7 +101,7 @@
   <key>NSMicrophoneUsageDescription</key>
   <string>ADE uses the microphone to dictate prompts. Audio is transcribed on your device and is never uploaded.</string>
   <key>NSUserTrackingUsageDescription</key>
-  <string>Sponsored cards in ADE Cloud chats can use your account's hashed email to show more useful ones. Cards still show if you say no.</string>
+  <string>ADE shares a one-way hash of your account email with Gravity, its ad partner, to show more relevant sponsored cards in ADE Cloud chats. Cards still show if you say no.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>ADE transcribes your dictated prompts on device so you can speak instead of type. Speech is processed locally.</string>
   <key>UIApplicationSceneManifest</key>
