@@ -42,8 +42,29 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   }
   return fold.finished(
     metadataByTurn: workTurnModelMetadataByTurn(from: transcript),
-    resolutionBySteerId: workUserMessageResolutionsBySteerId(from: transcript)
+    resolutionBySteerId: workUserMessageResolutionsBySteerId(from: transcript),
+    reactionByKey: workUserMessageReactionsByKey(from: transcript)
   )
+}
+
+/// The newest CTO `user_message_reaction` emoji per target key (timestamp,
+/// then sequence; a later row wins a tie). Applied to the folded messages by
+/// `WorkChatMessageFold.finished`.
+func workUserMessageReactionsByKey(from transcript: [WorkChatEnvelope]) -> [String: String] {
+  var emojiByKey: [String: String] = [:]
+  var orderByKey: [String: (timestamp: String, sequence: Int)] = [:]
+  for envelope in transcript {
+    guard case .userMessageReaction(let targetKey, let emoji, _) = envelope.event else { continue }
+    let sequence = envelope.sequence ?? 0
+    if let existing = orderByKey[targetKey],
+       envelope.timestamp < existing.timestamp
+        || (envelope.timestamp == existing.timestamp && sequence < existing.sequence) {
+      continue
+    }
+    emojiByKey[targetKey] = emoji
+    orderByKey[targetKey] = (envelope.timestamp, sequence)
+  }
+  return emojiByKey
 }
 
 /// Steer ids whose NEWEST `user_message` row is `queued`. A steer's newest row
@@ -162,6 +183,9 @@ struct WorkChatMessageFold {
       // Nor the message that continues a chat after a restart: the restart
       // notice says so (desktop `isRestartResumeScheduleId`).
       if envelope.userMessageIsRestartResume { return }
+      // Nor the CTO's child report: its `spawn_completed` line already shows
+      // it (desktop `transcriptEventDrawsNothing`).
+      if envelope.userMessageAdeReason == "cto_child_report" { return }
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         return
@@ -184,6 +208,7 @@ struct WorkChatMessageFold {
         )
         if envelope.userMessageFromSideChat { messages[lastIndex].fromSideChat = true }
         if let guest = envelope.userMessageGuestAuthorName { messages[lastIndex].guestAuthorName = guest }
+        addReactionKey(envelope.userMessageReactionKey, to: lastIndex)
       } else if let duplicateIndex = duplicateUserMessageVariantIndex(
         in: messages,
         text: text,
@@ -199,6 +224,7 @@ struct WorkChatMessageFold {
         )
         if envelope.userMessageFromSideChat { messages[duplicateIndex].fromSideChat = true }
         if let guest = envelope.userMessageGuestAuthorName { messages[duplicateIndex].guestAuthorName = guest }
+        addReactionKey(envelope.userMessageReactionKey, to: duplicateIndex)
       } else {
         metadataTurnKeys.append([])
         messages.append(WorkChatMessage(
@@ -216,7 +242,8 @@ struct WorkChatMessageFold {
           adeReason: envelope.userMessageAdeReason,
           adeReasonLabel: envelope.userMessageAdeReasonLabel,
           guestAuthorName: envelope.userMessageGuestAuthorName,
-          attachments: attachments
+          attachments: attachments,
+          reactionKeys: envelope.userMessageReactionKey.map { [$0] } ?? []
         ))
       }
     case .assistantText(let text, let turnId, let itemId):
@@ -282,7 +309,8 @@ struct WorkChatMessageFold {
 
   func finished(
     metadataByTurn: [String: WorkTurnModelMetadata],
-    resolutionBySteerId: [String: WorkUserMessageResolution]
+    resolutionBySteerId: [String: WorkUserMessageResolution],
+    reactionByKey: [String: String]
   ) -> [WorkChatMessage] {
     var result = messages
     if !metadataByTurn.isEmpty {
@@ -299,16 +327,34 @@ struct WorkChatMessageFold {
         result[index].turnModelId = modelId
       }
     }
-    guard !resolutionBySteerId.isEmpty else { return result }
-    for index in result.indices {
-      guard let steerId = result[index].steerId?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !steerId.isEmpty,
-            let resolution = resolutionBySteerId[steerId] else {
-        continue
+    if !resolutionBySteerId.isEmpty {
+      for index in result.indices {
+        guard let steerId = result[index].steerId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !steerId.isEmpty,
+              let resolution = resolutionBySteerId[steerId] else {
+          continue
+        }
+        result[index].unprocessedResolution = resolution
       }
-      result[index].unprocessedResolution = resolution
+    }
+    if !reactionByKey.isEmpty {
+      // Like desktop `attachUserMessageReaction`: each reaction lands on the
+      // newest message its key names; one whose message is not here draws nothing.
+      var unplaced = reactionByKey
+      for index in result.indices.reversed() where result[index].role == "user" {
+        guard !unplaced.isEmpty else { break }
+        for key in result[index].reactionKeys {
+          guard let emoji = unplaced.removeValue(forKey: key) else { continue }
+          result[index].ctoReaction = emoji
+        }
+      }
     }
     return result
+  }
+
+  private mutating func addReactionKey(_ key: String?, to index: Int) {
+    guard let key, !messages[index].reactionKeys.contains(key) else { return }
+    messages[index].reactionKeys.append(key)
   }
 
   private mutating func appendAssistant(_ message: WorkChatMessage, metadataKey: String?) {
@@ -1124,6 +1170,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
   envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
   envelope.userMessageClientSendId = entry.userMessageClientSendId
+  envelope.userMessageReactionKey = entry.userMessageReactionKey
   envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)
@@ -2577,6 +2624,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
       resolvedAt,
       replacementMessageId ?? "",
     ].joined(separator: "|")
+  case .userMessageReaction(let targetKey, let emoji, let turnId):
+    return ["user_message_reaction", turnId ?? "", targetKey, emoji].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
     let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !normalizedItemId.isEmpty {

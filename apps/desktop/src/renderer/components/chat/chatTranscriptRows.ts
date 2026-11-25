@@ -24,6 +24,7 @@ import {
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
+import { userMessageReactionKey } from "../../../shared/types/chat";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -3125,6 +3126,30 @@ function handleSubagentLifecycleEvent(
   return true;
 }
 
+/** How far back a reaction looks for its message: it targets the person's newest one. */
+const USER_MESSAGE_REACTION_LOOKBACK_ROWS = 400;
+
+/**
+ * The CTO's reaction lands on its message's row (`metadata.ctoReaction`); a
+ * newer reaction on the same message replaces it. A reaction whose message is
+ * not among the recent rows draws nothing.
+ */
+function attachUserMessageReaction(
+  rows: ChatTranscriptRenderEnvelope[],
+  event: Extract<AgentChatEvent, { type: "user_message_reaction" }>,
+): void {
+  const stop = Math.max(0, rows.length - USER_MESSAGE_REACTION_LOOKBACK_ROWS);
+  for (let index = rows.length - 1; index >= stop; index -= 1) {
+    const row = rows[index]!;
+    if (row.event.type !== "user_message" || userMessageReactionKey(row.event) !== event.targetKey) continue;
+    rows[index] = {
+      ...row,
+      event: { ...row.event, metadata: { ...(row.event.metadata ?? {}), ctoReaction: { emoji: event.emoji } } },
+    };
+    return;
+  }
+}
+
 export function appendCollapsedChatTranscriptEvent(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
@@ -3269,6 +3294,11 @@ export function appendCollapsedChatTranscriptEvent(
     } else if (steerId) {
       context?.unmatchedUserMessageResolutionsBySteer.set(steerId, event);
     }
+    return;
+  }
+
+  if (event.type === "user_message_reaction") {
+    attachUserMessageReaction(rows, event);
     return;
   }
 

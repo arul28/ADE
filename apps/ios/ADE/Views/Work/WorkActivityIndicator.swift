@@ -204,7 +204,7 @@ struct WorkActivityIndicator: View {
       case .done:
         return nil
 
-      case .userMessageResolution:
+      case .userMessageResolution, .userMessageReaction:
         continue
 
       case .userMessage:

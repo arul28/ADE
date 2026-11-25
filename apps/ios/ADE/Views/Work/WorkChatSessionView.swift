@@ -1964,7 +1964,7 @@ struct WorkChatSessionView: View {
   var transcriptRows: [WorkChatTranscriptRow] {
     var rows: [WorkChatTranscriptRow] = []
     let sponsoredTurn = sponsoredSlotTurn
-    let sponsoredInlineHost = sponsoredTurn.flatMap { sponsoredInlineHost(for: $0) }
+    let sponsoredInlineHost = sponsoredTurn.flatMap { self.sponsoredInlineHost(for: $0) }
     // A cache for the cells this apply configures, not state: nothing observes it.
     sponsoredSlot.inlineHost = sponsoredInlineHost
     if sessionOverviewHasContent {

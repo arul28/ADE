@@ -67,6 +67,8 @@ export function transcriptEventDrawsNothing(
       // The resume after a restart: the restart notice already says the agent
       // continues. The agent still reads the message.
       if (isRestartResumeScheduleId(event.metadata?.scheduledWake?.scheduleId)) return true;
+      // The CTO's child report: its `spawn_completed` line already shows it.
+      if (event.metadata?.hostContinuation?.reason === "cto_child_report") return true;
       // A subagent's or peer's report: the spawn_wake_divider row above it
       // already says who came back and what it said. Same test as the
       // divider's (chatTranscriptRows), so a report never loses both.

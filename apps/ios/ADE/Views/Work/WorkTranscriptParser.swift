@@ -475,6 +475,15 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           replacementMessageId: optionalString(eventDict["replacementMessageId"]),
           turnId: turnId
         )
+      case "user_message_reaction":
+        // A missing key or an emoji outside the fixed set is dropped: nothing draws.
+        if let targetKey = nonEmptyTrimmed(optionalString(eventDict["targetKey"])),
+           let emoji = eventDict["emoji"] as? String,
+           ctoReactionMeanings[emoji] != nil {
+          event = .userMessageReaction(targetKey: targetKey, emoji: emoji, turnId: turnId)
+        } else {
+          event = .unknown(type: type)
+        }
       case "text":
         event = .assistantText(
           text: stringValue(eventDict["text"]),
@@ -1212,6 +1221,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           ? optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
           : nil
       )
+      if type == "user_message" {
+        parsed.userMessageReactionKey = workUserMessageReactionKey(
+          steerId: eventDict["steerId"] as? String,
+          messageId: eventDict["messageId"] as? String,
+          turnId: turnId
+        )
+      }
       if type == "user_message", let metadata = eventDict["metadata"] as? [String: Any] {
         parsed.userMessageWrittenByAde = agentChatAdeAuthoredMetadataKeys.contains { name in
           guard let value = metadata[name] else { return false }

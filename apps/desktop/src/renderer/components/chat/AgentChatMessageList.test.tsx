@@ -7688,3 +7688,60 @@ describe("AgentChatMessageList self-paced wake loops", () => {
     expect(text.indexOf("Watching the deploy.")).toBeLessThan(text.indexOf("Check 2: still queued."));
   });
 });
+
+describe("AgentChatMessageList — the CTO's quiet turns", () => {
+  const at = (second: number, event: AgentChatEventEnvelope["event"]): AgentChatEventEnvelope => ({
+    sessionId: "cto-1",
+    timestamp: `2026-11-24T10:00:${String(second).padStart(2, "0")}.000Z`,
+    event,
+  });
+
+  it("puts the newest reaction on the person's bubble and draws no reply", () => {
+    const view = renderMessageList([
+      at(0, { type: "user_message", text: "Ship it when green", messageId: "m-1", turnId: "t-1" }),
+      at(1, { type: "user_message_reaction", targetKey: "message:m-1", emoji: "👀", turnId: "t-1" }),
+      at(2, { type: "user_message_reaction", targetKey: "message:m-1", emoji: "👍", turnId: "t-1" }),
+      at(3, { type: "done", turnId: "t-1", status: "completed" }),
+    ], { sessionId: "cto-1" });
+    const bubble = view.container.querySelector("[data-chat-user-message-card]");
+    expect(bubble?.textContent).toContain("Ship it when green");
+    const reactions = view.container.querySelectorAll('[data-testid="chat-user-message-reaction"]');
+    expect(reactions).toHaveLength(1);
+    expect(reactions[0]?.textContent).toBe("👍");
+    expect(reactions[0]?.getAttribute("aria-label")).toBe("Reacted got it");
+  });
+
+  it("draws nothing for a reaction whose message is not on screen", () => {
+    const view = renderMessageList([
+      at(0, { type: "user_message", text: "Hello", messageId: "m-1", turnId: "t-1" }),
+      at(1, { type: "user_message_reaction", targetKey: "message:other", emoji: "🎉", turnId: "t-1" }),
+      at(2, { type: "done", turnId: "t-1", status: "completed" }),
+    ], { sessionId: "cto-1" });
+    expect(view.container.querySelector('[data-testid="chat-user-message-reaction"]')).toBeNull();
+    expect(view.container.textContent ?? "").not.toContain("🎉");
+  });
+
+  it("leaves no bubble for a child report the CTO ended quietly", () => {
+    const view = renderMessageList([
+      at(0, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_completed",
+        message: "Fix login (Codex) pushed PR #12",
+        detail: { spawnCompletion: { childSessionId: "child-1", childTitle: "Fix login", spawnKind: "subagent", childTurnId: "ct-1", status: "completed", summary: "Fix login (Codex) pushed PR #12" } },
+      }),
+      at(1, {
+        type: "user_message",
+        text: "Fix login (Codex) pushed PR #12",
+        turnId: "t-2",
+        metadata: { hostContinuation: { reason: "cto_child_report" } },
+      }),
+      at(2, { type: "tool_call", tool: "noReply", args: {}, itemId: "tool-1", turnId: "t-2" }),
+      at(3, { type: "tool_result", tool: "noReply", result: { success: true, quiet: true }, itemId: "tool-1", turnId: "t-2" }),
+      at(4, { type: "done", turnId: "t-2", status: "completed" }),
+    ], { sessionId: "cto-1" });
+    // The notice owns the report; the wake ADE wrote is neither a bubble nor a folded row.
+    expect(view.container.querySelector("[data-chat-user-message-card]")).toBeNull();
+    expect(view.container.querySelector("[data-chat-folded-message]")).toBeNull();
+  });
+});

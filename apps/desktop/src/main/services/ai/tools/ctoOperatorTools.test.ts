@@ -342,6 +342,31 @@ describe("createCtoOperatorTools", () => {
     expect((tools.gitStatus as any).inputSchema.safeParse({}).success).toBe(true);
   });
 
+  it("offers react only the fixed emoji set, and both quiet endings reach the CTO chat", async () => {
+    const endTurnQuietly = vi.fn().mockResolvedValue({ quiet: true });
+    const reactToMessage = vi.fn().mockResolvedValue({ reacted: false, note: "Not done: no turn is running." });
+    const tools = createCtoOperatorTools(buildDeps({ endTurnQuietly, reactToMessage }));
+    const schema = (tools.react as any).inputSchema;
+    for (const emoji of ["👍", "👀", "✅", "🎉", "❤️", "😂", "😢"]) {
+      expect(schema.safeParse({ emoji }).success, emoji).toBe(true);
+    }
+    for (const emoji of ["🔥", "thumbs up", ""]) {
+      expect(schema.safeParse({ emoji }).success, emoji).toBe(false);
+    }
+
+    await expect((tools.react as any).execute({ emoji: "❤️" })).resolves.toEqual({
+      success: true,
+      reacted: false,
+      note: "Not done: no turn is running.",
+    });
+    expect(reactToMessage).toHaveBeenCalledWith({ emoji: "❤️" });
+    await expect((tools.noReply as any).execute({})).resolves.toEqual({ success: true, quiet: true });
+
+    const bare = createCtoOperatorTools(buildDeps());
+    await expect((bare.react as any).execute({ emoji: "👍" })).resolves.toMatchObject({ success: false });
+    await expect((bare.noReply as any).execute({})).resolves.toMatchObject({ success: false });
+  });
+
   // ── Chat tools ──────────────────────────────────────────────────
 
   describe("chat tools", () => {

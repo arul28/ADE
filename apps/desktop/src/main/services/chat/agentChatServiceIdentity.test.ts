@@ -26,6 +26,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { openFreshKvDb } from "../../../test/freshKvDb";
+import { userMessageReactionKey, type AgentChatEvent, type AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
 
 const originalCodexExecutable = process.env.CODEX_EXECUTABLE;
@@ -2277,5 +2278,57 @@ describe("createAgentChatService", () => {
         .toMatchObject({ state: "reconstructed", provider: "claude" }));
       expect(recoverySend).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe("CTO quiet turns (noReply and react)", () => {
+  const completeCodexTurn = async (events: AgentChatEventEnvelope[], turnId: string, text: string) => {
+    mockState.emitCodexPayload({ jsonrpc: "2.0", method: "item/agentMessage/delta", params: { turnId, itemId: `msg-${turnId}`, delta: text } });
+    mockState.emitCodexPayload({ jsonrpc: "2.0", method: "turn/completed", params: { turn: { id: turnId, status: "completed" } } });
+    await waitFor(() => events.some((envelope) => envelope.event.type === "done" && envelope.event.turnId === turnId));
+  };
+  const textOf = (events: AgentChatEventEnvelope[], turnId: string) => events
+    .flatMap((envelope) => envelope.event.type === "text" && envelope.event.turnId === turnId ? [envelope.event.text] : [])
+    .join("");
+
+  it("reacts on the person's message, drops the turn's text, and lets the next turn reply", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (envelope: AgentChatEventEnvelope) => events.push(envelope) });
+    const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4", identityKey: "cto" });
+
+    await service.sendMessage({ sessionId: session.id, text: "ok" }, { awaitDispatch: true });
+    const person = events.find((envelope) => envelope.event.type === "user_message")?.event;
+    expect(person?.type).toBe("user_message");
+    expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "👍" })).toEqual({ reacted: true });
+    // A second reaction on the same message is a new event with the same key: clients keep the newest.
+    expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "✅" })).toEqual({ reacted: true });
+    await completeCodexTurn(events, "turn-1", "Got it.");
+
+    const reactions = events.flatMap((envelope) => envelope.event.type === "user_message_reaction" ? [envelope.event] : []);
+    expect(reactions.map((reaction) => reaction.emoji)).toEqual(["👍", "✅"]);
+    expect(new Set(reactions.map((reaction) => reaction.targetKey))).toEqual(
+      new Set([userMessageReactionKey(person as Extract<AgentChatEvent, { type: "user_message" }>)]),
+    );
+    expect(textOf(events, "turn-1")).toBe("");
+    // No turn is running now: nothing to react in.
+    expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "👍" }).reacted).toBe(false);
+    expect(service.endCtoTurnQuietly({ sessionId: session.id }).quiet).toBe(false);
+
+    await service.sendMessage({ sessionId: session.id, text: "What is left?" }, { awaitDispatch: true });
+    await completeCodexTurn(events, "turn-2", "Two PRs.");
+    expect(textOf(events, "turn-2")).toBe("Two PRs.");
+
+    await service.sendMessage({ sessionId: session.id, text: "Thanks" }, { awaitDispatch: true });
+    expect(service.endCtoTurnQuietly({ sessionId: session.id })).toEqual({ quiet: true });
+    await completeCodexTurn(events, "turn-3", "You're welcome.");
+    expect(textOf(events, "turn-3")).toBe("");
+  });
+
+  it("refuses both tools outside the CTO's own chat", async () => {
+    const { service } = createService();
+    const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+    await service.sendMessage({ sessionId: session.id, text: "ok" }, { awaitDispatch: true });
+    expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "👍" }).reacted).toBe(false);
+    expect(service.endCtoTurnQuietly({ sessionId: session.id }).quiet).toBe(false);
   });
 });

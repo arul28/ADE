@@ -227,6 +227,8 @@ import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
+  CTO_REACTION_EMOJIS,
+  CTO_REACTION_MEANINGS,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
 
@@ -1552,6 +1554,27 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "noReply",
+    description: "End this turn with no reply: a child chat, a schedule or ADE woke you and the person needs nothing new (progress, a push, a PR opened, checks running, a review round). Call it last; text after it is not shown.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
+    }
+  },
+  {
+    name: "react",
+    description: `Put an emoji on the person's newest message instead of replying, when they wrote and need no words back. ${CTO_REACTION_EMOJIS.map((emoji) => `${emoji} ${CTO_REACTION_MEANINGS[emoji]}`).join(", ")}. A newer reaction replaces the old one. Ends the turn with no reply.`,
+    inputSchema: {
+      type: "object",
+      required: ["emoji"],
+      additionalProperties: false,
+      properties: {
+        emoji: { type: "string", enum: [...CTO_REACTION_EMOJIS] }
+      }
+    }
+  },
+  {
     name: "listChats",
     description: "List ADE Work chat sessions available to the CTO.",
     inputSchema: {
@@ -1825,6 +1848,8 @@ const MUTATION_TOOLS = new Set([
   "remember",
   "forget",
   "replyNow",
+  "noReply",
+  "react",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
   // A chat on another machine whose turn ended letting go of the devices it holds here.
@@ -5966,6 +5991,13 @@ async function runCtoOperatorBridgeTool(
     postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({
       sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
       text,
+    }),
+    endTurnQuietly: async () => agentChatService.endCtoTurnQuietly({
+      sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
+    }),
+    reactToMessage: async ({ emoji }) => agentChatService.reactToCtoMessage({
+      sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
+      emoji,
     }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
