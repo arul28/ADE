@@ -1505,7 +1505,9 @@ and a `load` that fetches its code ahead; both share one fetch).
   waits for its first page's `load`, and decides and opens in one step: inside
   a project the page loads while the project settles, and a check that finds
   it still loading waits for the next check; after an update it loads while
-  the splash plays, and the quiet moment is judged after it is in. The next
+  the splash plays, the quiet moment is judged after it is in, and a showing
+  that waited for a quiet moment picks its pages again then
+  (`firstPageLoader`). The next
   page loads while one is read. Help › What's new opens at once.
 - **When:** inside a project (never Home), a few seconds after it opens, with
   no dialog, setup or tour, only once onboarding finished or was skipped
