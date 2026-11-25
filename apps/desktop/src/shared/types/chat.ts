@@ -6184,6 +6184,9 @@ export type CtoReactionEmoji = keyof typeof CTO_REACTION_MEANINGS;
 
 export const CTO_REACTION_EMOJIS = Object.keys(CTO_REACTION_MEANINGS) as CtoReactionEmoji[];
 
+/** "👍 got it, 👀 looking into it, …" for the CTO's prompt and tool descriptions. */
+export const CTO_REACTION_LEGEND = CTO_REACTION_EMOJIS.map((emoji) => `${emoji} ${CTO_REACTION_MEANINGS[emoji]}`).join(", ");
+
 export function isCtoReactionEmoji(value: unknown): value is CtoReactionEmoji {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(CTO_REACTION_MEANINGS, value);
 }

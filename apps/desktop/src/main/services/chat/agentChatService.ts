@@ -930,7 +930,8 @@ import {
   CTO_CONTEXT_REFRESHED_STATUS,
   CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS,
   CTO_INTERIM_REPLY_ID_PREFIX,
-  userMessageReactionKey,
+  CTO_REACTION_EMOJIS,
+  isCtoReactionEmoji,
   type CtoReactionEmoji,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -1091,6 +1092,7 @@ import {
   selectCrossMachineReturnSuffix,
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
+import { stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
 import {
   CrossMachineHandoffReturnRefusedError,
   createCrossMachineHandoffDestination,
@@ -1211,6 +1213,7 @@ import {
 } from "./ctoTurnContext";
 import {
   applyCtoToolPackVisibility,
+  createCtoExecutionLaneResolver,
   createCtoOperatorTools,
   type CtoOperatorToolDeps,
   type CtoOperatorToolMap,
@@ -5982,19 +5985,8 @@ type ManagedChatSession = {
    * posted. Cleared when the turn settles.
    */
   ctoMidTaskReplies?: { granted: number; posted: number } | null;
-  /**
-   * CTO only: the running turn ends with no written reply (`noReply`, or a
-   * `react` in place of one). Text the turn writes from here on is dropped.
-   * A new message from the person lifts it; the turn's end clears it.
-   */
-  ctoQuietTurn?: { turnId: string | null } | null;
-  /**
-   * CTO only: the `userMessageReactionKey` of the person's newest message the
-   * running turn has read, for `react`. Set when that message is written,
-   * cleared at a turn's end. In memory only: after a brain restart `react`
-   * refuses and the CTO replies instead.
-   */
-  ctoReactTarget?: string | null;
+  /** CTO only: `noReply` / `react` state, stepped by every committed event (`stepCtoQuietTurn`). */
+  ctoTurn?: CtoQuietTurnState;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -16125,36 +16117,7 @@ export function createAgentChatService(args: {
     request: PendingInputRequest | null | undefined,
   ): boolean => Boolean(request?.subagent) && !subagentCardIsLive(managed, request);
 
-  /**
-   * Where CTO-launched work runs. An explicit lane wins; otherwise the work
-   * gets a *fresh* lane. It deliberately never falls back to the CTO's own
-   * lane: that lane is the project's primary lane, so the old fallback landed
-   * every spawned agent on the primary worktree. If lane creation fails we let
-   * the error surface (spawnChat reports it) rather than quietly re-targeting
-   * primary, which is the failure mode this exists to prevent.
-   */
-  const resolveCtoExecutionLane: CtoOperatorToolDeps["resolveExecutionLane"] = async ({
-    requestedLaneId,
-    purpose,
-    freshLaneName,
-    freshLaneDescription,
-  }) => {
-    const explicit = requestedLaneId?.trim();
-    if (explicit) return explicit;
-    const name = freshLaneName?.trim() || purpose?.trim() || "CTO work";
-    const lane = await laneService.create({
-      name,
-      ...(freshLaneDescription?.trim()
-        ? { description: freshLaneDescription.trim() }
-        : {}),
-    });
-    logger.info("agent_chat.cto_execution_lane_created", {
-      laneId: lane.id,
-      name,
-      purpose: purpose ?? null,
-    });
-    return lane.id;
-  };
+  const resolveCtoExecutionLane = createCtoExecutionLaneResolver(laneService, logger);
 
   /**
    * The CTO operator tool dependency set.
@@ -23549,6 +23512,9 @@ export function createAgentChatService(args: {
       // A new turn starts: the last turn's id no longer applies. Proof filed
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
+      // A quiet ending never outlives its turn, even one that ended with no
+      // `done` or whose id came from a late event of the turn before.
+      if (managed.ctoTurn) managed.ctoTurn.quiet = null;
       managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
       managed.turnErrorCategory = null;
       managed.turnErrorKind = null;
@@ -25290,20 +25256,6 @@ export function createAgentChatService(args: {
       instanceId: managed.session.instanceId?.trim() || defaultProviderInstanceId("codex"),
     });
 
-  /**
-   * Whether `react` may land on this message: the person wrote it (not a wake,
-   * a child's report or a resend ADE made), and the turn read it (not a steer
-   * still queued, one that never arrived, or one the turn ended without).
-   */
-  const ctoMessageCanTakeReaction = (event: Extract<AgentChatEvent, { type: "user_message" }>): boolean => (
-    event.deliveryState !== "queued"
-    && event.deliveryState !== "failed"
-    && event.deliveryState !== "unprocessed"
-    && isPersonAuthoredUserMessage(event.metadata)
-    && !event.metadata?.boardMove
-    && !event.metadata?.ctoResend
-  );
-
   const commitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -25311,26 +25263,8 @@ export function createAgentChatService(args: {
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
     if (managed.session.identityKey === "cto") {
-      if (decoratedEvent.type === "done") {
-        managed.ctoReactTarget = null;
-      } else if (decoratedEvent.type === "user_message") {
-        const key = userMessageReactionKey(decoratedEvent);
-        if (ctoMessageCanTakeReaction(decoratedEvent)) managed.ctoReactTarget = key;
-        // The target steer turned out unread (the turn ended first, or it failed).
-        else if (key && key === managed.ctoReactTarget) managed.ctoReactTarget = null;
-      }
-    }
-    const quiet = managed.ctoQuietTurn;
-    if (quiet) {
-      if (decoratedEvent.type === "text") {
-        const eventTurnId = decoratedEvent.turnId?.trim() || null;
-        if (!quiet.turnId || !eventTurnId || eventTurnId === quiet.turnId) return;
-      } else if (decoratedEvent.type === "done") {
-        if (!quiet.turnId || decoratedEvent.turnId === quiet.turnId) managed.ctoQuietTurn = null;
-      } else if (decoratedEvent.type === "user_message" && isPersonAuthoredUserMessage(decoratedEvent.metadata)) {
-        // The person wrote mid-turn: what comes next may answer them.
-        managed.ctoQuietTurn = null;
-      }
+      managed.ctoTurn ??= { quiet: null, reactTarget: null };
+      if (stepCtoQuietTurn(managed.ctoTurn, decoratedEvent, managed.session.provider)) return;
     }
     if (decoratedEvent.type === "user_message" && isPersonAuthoredUserMessage(decoratedEvent.metadata)) {
       // Before the write: a queued move is cancelled by a NEW message from the
@@ -68007,14 +67941,10 @@ export function createAgentChatService(args: {
    * `partial_answer` visible above the fold.
    */
   const postCtoInterimReply = async (args: { sessionId: string; text: string }): Promise<{ posted: boolean; note?: string }> => {
-    const managed = managedSessions.get(args.sessionId.trim());
-    if (!managed || managed.deleted || managed.session.identityKey !== "cto") {
-      return { posted: false, note: "Not posted: replyNow is only for the CTO's own chat." };
-    }
-    const turnId = lastTurnIdBySession.get(managed.session.id) ?? undefined;
-    if (managed.session.status !== "active" && !runtimeMidTurn(managed)) {
-      return { posted: false, note: "Not posted: no turn is running. Answer in your reply." };
-    }
+    const turn = runningCtoTurn(args.sessionId, "replyNow", "Not posted");
+    if ("note" in turn) return { posted: false, note: turn.note };
+    const { managed } = turn;
+    const turnId = turn.turnId ?? undefined;
     const replies = managed.ctoMidTaskReplies;
     if (!replies || replies.posted >= replies.granted) {
       return { posted: false, note: "Not posted: nobody asked mid-task. Keep working and answer in your final reply." };
@@ -68040,19 +67970,28 @@ export function createAgentChatService(args: {
     return { posted: true };
   };
 
-  /** The running CTO turn, or why there is none (shared by `noReply` and `react`). */
+  /** The running CTO turn, or why there is none (shared by `replyNow`, `noReply` and `react`). */
   const runningCtoTurn = (
     sessionId: string,
     toolName: string,
+    refusal = "Not done",
   ): { managed: ManagedChatSession; turnId: string | null } | { note: string } => {
     const managed = managedSessions.get(sessionId.trim());
     if (!managed || managed.deleted || managed.session.identityKey !== "cto") {
-      return { note: `Not done: ${toolName} is only for the CTO's own chat.` };
+      return { note: `${refusal}: ${toolName} is only for the CTO's own chat.` };
     }
     if (managed.session.status !== "active" && !runtimeMidTurn(managed)) {
-      return { note: "Not done: no turn is running." };
+      return { note: `${refusal}: no turn is running.` };
     }
     return { managed, turnId: lastTurnIdBySession.get(managed.session.id) ?? null };
+  };
+
+  /** What the turn already streamed goes out; text it writes from here on is dropped. */
+  const endCtoTurnWithoutText = (managed: ManagedChatSession, turnId: string | null): void => {
+    flushBufferedReasoning(managed);
+    flushBufferedText(managed, "interleave");
+    managed.ctoTurn ??= { quiet: null, reactTarget: null };
+    managed.ctoTurn.quiet = { turnId };
   };
 
   /**
@@ -68063,9 +68002,7 @@ export function createAgentChatService(args: {
   const endCtoTurnQuietly = (args: { sessionId: string }): { quiet: boolean; note?: string } => {
     const turn = runningCtoTurn(args.sessionId, "noReply");
     if ("note" in turn) return { quiet: false, note: turn.note };
-    flushBufferedReasoning(turn.managed);
-    flushBufferedText(turn.managed, "interleave");
-    turn.managed.ctoQuietTurn = { turnId: turn.turnId };
+    endCtoTurnWithoutText(turn.managed, turn.turnId);
     return { quiet: true };
   };
 
@@ -68076,9 +68013,13 @@ export function createAgentChatService(args: {
    * newest `user_message_reaction` per key).
    */
   const reactToCtoMessage = (args: { sessionId: string; emoji: CtoReactionEmoji }): { reacted: boolean; note?: string } => {
+    // The MCP bridge hands the model's arguments over unparsed.
+    if (!isCtoReactionEmoji(args.emoji)) {
+      return { reacted: false, note: `Not done: the emoji must be one of ${CTO_REACTION_EMOJIS.join(" ")}.` };
+    }
     const turn = runningCtoTurn(args.sessionId, "react");
     if ("note" in turn) return { reacted: false, note: turn.note };
-    const targetKey = turn.managed.ctoReactTarget ?? null;
+    const targetKey = turn.managed.ctoTurn?.reactTarget ?? null;
     if (!targetKey) {
       return { reacted: false, note: "Not done: the person wrote nothing this turn. End with noReply, or reply." };
     }
@@ -68090,7 +68031,7 @@ export function createAgentChatService(args: {
       emoji: args.emoji,
       ...(turn.turnId ? { turnId: turn.turnId } : {}),
     });
-    turn.managed.ctoQuietTurn = { turnId: turn.turnId };
+    endCtoTurnWithoutText(turn.managed, turn.turnId);
     return { reacted: true };
   };
 

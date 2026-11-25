@@ -5,6 +5,7 @@ import { isCredentialKey, normalizeConfigKey } from "../../../../shared/credenti
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
 import type { CtoCrossMachineDeps } from "./ctoCrossMachine";
+import type { Logger } from "../../logging/logger";
 import {
   asRemoteChat,
   asRemoteChats,
@@ -68,7 +69,7 @@ import {
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_SPAWN_KIND_VALUES,
   CTO_REACTION_EMOJIS,
-  CTO_REACTION_MEANINGS,
+  CTO_REACTION_LEGEND,
   isUnsupportedActiveTurnDispatchModeError,
   type AgentChatSteerResult,
   type CtoReactionEmoji,
@@ -534,6 +535,30 @@ function summarizeToolDescription(description: string): string {
   const stop = flat.indexOf(". ");
   const head = stop > 0 ? flat.slice(0, stop + 1) : flat;
   return head.length > 180 ? `${head.slice(0, 177)}...` : head;
+}
+
+/**
+ * Where CTO-launched work runs, for the in-process CTO and the MCP bridge
+ * alike. An explicit lane wins; otherwise the work gets a *fresh* lane. It
+ * never falls back to the CTO's own lane: that is the project's main checkout.
+ * A failed lane create surfaces (spawnChat reports it) instead of quietly
+ * re-targeting the main checkout.
+ */
+export function createCtoExecutionLaneResolver(
+  laneService: Pick<CtoOperatorToolDeps["laneService"], "create">,
+  logger: Pick<Logger, "info">,
+): CtoOperatorToolDeps["resolveExecutionLane"] {
+  return async ({ requestedLaneId, purpose, freshLaneName, freshLaneDescription }) => {
+    const explicit = requestedLaneId?.trim();
+    if (explicit) return explicit;
+    const name = freshLaneName?.trim() || purpose?.trim() || "CTO work";
+    const lane = await laneService.create({
+      name,
+      ...(freshLaneDescription?.trim() ? { description: freshLaneDescription.trim() } : {}),
+    });
+    logger.info("agent_chat.cto_execution_lane_created", { laneId: lane.id, name, purpose: purpose ?? null });
+    return lane.id;
+  };
 }
 
 /**
@@ -1070,6 +1095,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           freshLaneName: title?.trim() || "implementation chat",
           freshLaneDescription: "Dedicated implementation lane launched from the CTO coordinator chat.",
         });
+        // The main checkout takes only a read-only helper; work that may edit goes to a lane of its own.
+        // Without a laneId the resolver made a new lane, so only a named one needs the check.
+        if (laneId?.trim() && permissionMode !== "plan") {
+          const lanes = await deps.laneService.list({ includeArchived: false, includeStatus: false });
+          if (lanes.find((lane) => lane.id === executionLaneId)?.laneType === "primary") {
+            throw new Error(
+              "The main checkout takes only a read-only helper (permissionMode \"plan\"). "
+              + "For work that may edit files, leave out laneId so a new lane is made, or pass another lane.",
+            );
+          }
+        }
         const session = await deps.createChat({
           laneId: executionLaneId,
           provider: resolved.provider,
@@ -3138,7 +3174,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async () => {
       if (!deps.endTurnQuietly) return { success: false, error: "Ending quietly is not available on this runtime." };
       try {
-        return { success: true, ...(await deps.endTurnQuietly()) };
+        // A refusal means the turn still needs a reply: not a success.
+        const result = await deps.endTurnQuietly();
+        return result.quiet ? { success: true, quiet: true } : { success: false, error: result.note ?? "Not done." };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -3148,7 +3186,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   defineLazyTool(tools, "react", () => core({
     description:
       "Put an emoji on the person's newest message instead of replying, when they wrote and need no words back "
-      + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_EMOJIS.map((emoji) => `${emoji} ${CTO_REACTION_MEANINGS[emoji]}`).join(", ")}. `
+      + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_LEGEND}. `
       + "A newer reaction replaces the old one. It ends the turn with no reply: write nothing after it.",
     inputSchema: z.object({
       emoji: z.enum(CTO_REACTION_EMOJIS as [CtoReactionEmoji, ...CtoReactionEmoji[]]),
@@ -3156,7 +3194,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async ({ emoji }) => {
       if (!deps.reactToMessage) return { success: false, error: "Reactions are not available on this runtime." };
       try {
-        return { success: true, ...(await deps.reactToMessage({ emoji })) };
+        const result = await deps.reactToMessage({ emoji });
+        return result.reacted ? { success: true, reacted: true } : { success: false, error: result.note ?? "Not done." };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

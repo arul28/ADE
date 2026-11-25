@@ -24,7 +24,7 @@ import {
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
-import { userMessageReactionKey } from "../../../shared/types/chat";
+import { isCtoReactionEmoji, userMessageReactionKey } from "../../../shared/types/chat";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -3126,20 +3126,19 @@ function handleSubagentLifecycleEvent(
   return true;
 }
 
-/** How far back a reaction looks for its message: it targets the person's newest one. */
-const USER_MESSAGE_REACTION_LOOKBACK_ROWS = 400;
-
 /**
  * The CTO's reaction lands on its message's row (`metadata.ctoReaction`); a
  * newer reaction on the same message replaces it. A reaction whose message is
- * not among the recent rows draws nothing.
+ * not loaded draws nothing. The scan runs back from the newest row, where its
+ * target almost always is; a long turn's tool rows may sit in between.
  */
 function attachUserMessageReaction(
   rows: ChatTranscriptRenderEnvelope[],
   event: Extract<AgentChatEvent, { type: "user_message_reaction" }>,
 ): void {
-  const stop = Math.max(0, rows.length - USER_MESSAGE_REACTION_LOOKBACK_ROWS);
-  for (let index = rows.length - 1; index >= stop; index -= 1) {
+  // Like iOS: a reaction outside the fixed set draws nothing.
+  if (!isCtoReactionEmoji(event.emoji)) return;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
     const row = rows[index]!;
     if (row.event.type !== "user_message" || userMessageReactionKey(row.event) !== event.targetKey) continue;
     rows[index] = {

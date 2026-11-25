@@ -196,9 +196,6 @@ struct WorkChatMessage: Identifiable, Equatable {
   var guestAuthorName: String? = nil
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
-  /// The keys a CTO `user_message_reaction` can name this user message by:
-  /// one per transcript row folded into it (`workUserMessageReactionKey`).
-  var reactionKeys: [String] = []
   /// The CTO's newest reaction on this user message (one of `ctoReactionMeanings`).
   var ctoReaction: String? = nil
   /// Monotonic content revision for the incremental streaming path. The

@@ -146,6 +146,10 @@ struct WorkChatMessageFold {
   /// Per message (parallel to `messages`): the trimmed turn ids whose model
   /// metadata the full fold would consult, in order. Empty for user messages.
   private var metadataTurnKeys: [[String?]] = []
+  /// Per message (parallel to `messages`): the keys a CTO
+  /// `user_message_reaction` can name it by, one per row folded into it
+  /// (`workUserMessageReactionKey`). Empty for assistant messages.
+  private var reactionKeys: [[String]] = []
   // Tracks whether the previous envelope was assistantText so nil-itemId
   // streaming fragments can merge into it. MUST be reset to false on every
   // non-assistantText branch below — otherwise a subsequent nil-itemId
@@ -227,6 +231,7 @@ struct WorkChatMessageFold {
         addReactionKey(envelope.userMessageReactionKey, to: duplicateIndex)
       } else {
         metadataTurnKeys.append([])
+        reactionKeys.append(envelope.userMessageReactionKey.map { [$0] } ?? [])
         messages.append(WorkChatMessage(
           id: envelope.id,
           role: "user",
@@ -242,8 +247,7 @@ struct WorkChatMessageFold {
           adeReason: envelope.userMessageAdeReason,
           adeReasonLabel: envelope.userMessageAdeReasonLabel,
           guestAuthorName: envelope.userMessageGuestAuthorName,
-          attachments: attachments,
-          reactionKeys: envelope.userMessageReactionKey.map { [$0] } ?? []
+          attachments: attachments
         ))
       }
     case .assistantText(let text, let turnId, let itemId):
@@ -301,6 +305,7 @@ struct WorkChatMessageFold {
       guard retracted.contains(true) else { return }
       messages = messages.indices.filter { !retracted[$0] }.map { messages[$0] }
       metadataTurnKeys = metadataTurnKeys.indices.filter { !retracted[$0] }.map { metadataTurnKeys[$0] }
+      reactionKeys = reactionKeys.indices.filter { !retracted[$0] }.map { reactionKeys[$0] }
       rebuildAssistantIndices()
     default:
       previousEnvelopeWasAssistantText = false
@@ -343,7 +348,7 @@ struct WorkChatMessageFold {
       var unplaced = reactionByKey
       for index in result.indices.reversed() where result[index].role == "user" {
         guard !unplaced.isEmpty else { break }
-        for key in result[index].reactionKeys {
+        for key in reactionKeys[index] {
           guard let emoji = unplaced.removeValue(forKey: key) else { continue }
           result[index].ctoReaction = emoji
         }
@@ -353,14 +358,15 @@ struct WorkChatMessageFold {
   }
 
   private mutating func addReactionKey(_ key: String?, to index: Int) {
-    guard let key, !messages[index].reactionKeys.contains(key) else { return }
-    messages[index].reactionKeys.append(key)
+    guard let key, !reactionKeys[index].contains(key) else { return }
+    reactionKeys[index].append(key)
   }
 
   private mutating func appendAssistant(_ message: WorkChatMessage, metadataKey: String?) {
     let index = messages.count
     messages.append(message)
     metadataTurnKeys.append([metadataKey])
+    reactionKeys.append([])
     registerAssistant(message, at: index)
   }
 

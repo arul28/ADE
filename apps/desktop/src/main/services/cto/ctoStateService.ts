@@ -19,6 +19,7 @@ import type {
   CtoStaticContextSection,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
+import { CTO_REACTION_LEGEND } from "../../../shared/types/chat";
 import { ADE_CLI_INLINE_GUIDANCE } from "../../../shared/adeCliGuidance";
 import { normalizeCtoAvatarLook } from "../../../shared/ctoAvatarLook";
 import {
@@ -156,7 +157,7 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "",
   "How a turn ends. Every turn ends one of three ways:",
   "- Reply when the person asked something, or must know or act on something.",
-  "- React with react when the person wrote and needs no words back (an \"ok\", a thanks, a go-ahead): 👍 got it, 👀 looking into it, ✅ done, 🎉 celebrate, ❤️ thanks, 😂 funny, 😢 sorry.",
+  "- React with react when the person wrote and needs no words back (an \"ok\", a thanks, a go-ahead): " + CTO_REACTION_LEGEND + ".",
   "- Say nothing with noReply when a child chat, a schedule or ADE woke you and the person needs nothing new.",
   "- Progress is not news: a push, a PR opened, checks running, an AI code review round, a conflict a child fixed itself. Note it for yourself and end with noReply.",
   "- Speak up only when the work is done (one line, plus any caveat), when something needs the person, or when something failed that you cannot fix.",

@@ -1324,7 +1324,7 @@ function UserMessageReaction({ emoji }: { emoji: CtoReactionEmoji }) {
       role="img"
       aria-label={`Reacted ${meaning}`}
       title={`Reacted: ${meaning}`}
-      className="relative z-10 -mt-2 mr-3 inline-flex h-6 min-w-6 select-none items-center justify-center rounded-full border border-fg/[0.10] bg-surface-raised px-1.5 text-[13px] leading-none shadow-[0_1px_3px_rgba(0,0,0,0.35)]"
+      className="relative z-10 -mt-2 mr-3 inline-flex h-[calc(var(--chat-font-size)*24/14)] min-w-[calc(var(--chat-font-size)*24/14)] select-none items-center justify-center rounded-full border border-fg/[0.10] bg-surface-raised px-1.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-none"
       initial={{ opacity: 0, scale: 0.6 }}
       animate={{ opacity: 1, scale: 1 }}
       transition={{ type: "spring", stiffness: 520, damping: 26 }}
