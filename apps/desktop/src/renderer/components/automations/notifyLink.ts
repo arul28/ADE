@@ -1,6 +1,7 @@
 import { describeTarget, parseDeeplink } from "../../../shared/deeplinks";
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL, type WorkBoardColumn } from "../../../shared/types/chat";
+import { isPullRequestTriggerType } from "../../../shared/types";
 
 /**
  * The "When tapped, open" choice of the Send notification step, as fields a
@@ -23,6 +24,8 @@ export type NotifyLinkKind =
   | "commit"
   | "branch"
   | "proof"
+  /** This run's history: the desktop opens it; the phone opens the run's chat, or offers the run to the computer. */
+  | "run"
   | "custom";
 
 export type NotifyLinkFields = {
@@ -44,6 +47,34 @@ export type NotifyLinkFields = {
 export type NotifyLink = { kind: NotifyLinkKind; fields: NotifyLinkFields };
 
 const VARIABLE_RE = /\{\{[^}]*\}\}/g;
+
+/** Values the run fills in as it goes. */
+export const RUN_CHAT_VALUE = "{{run.chatSessionId}}";
+export const RUN_LANE_VALUE = "{{run.laneId}}";
+/** "This run's history"; `session` lets the phone open the run's chat instead. */
+export const RUN_HISTORY_LINK = "ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}";
+
+/** Which "From this run" choice a link is, or null. */
+export function runChoiceOf(link: NotifyLink): "chat" | "lane" | "run" | null {
+  if (link.kind === "run") return "run";
+  if (link.kind === "chat" && link.fields.sessionId?.trim() === RUN_CHAT_VALUE) return "chat";
+  if (link.kind === "lane" && link.fields.laneId?.trim() === RUN_LANE_VALUE) return "lane";
+  return null;
+}
+
+/**
+ * What a new "Send notification" step opens: what the rule makes before it
+ * (the chat an earlier agent step starts), else what the trigger names (its
+ * PR, its chat), else Activity. Never a bare "Just open ADE".
+ */
+export function defaultNotifyOpen(args: { agentStepBefore: boolean; triggerType: string }): string {
+  if (args.agentStepBefore) return `ade://session/${RUN_CHAT_VALUE}`;
+  if (isPullRequestTriggerType(args.triggerType)) return "ade://pr/{{trigger.pr.number}}";
+  if (args.triggerType.startsWith("session.") || args.triggerType === "session-end") {
+    return "ade://session/{{trigger.session.sessionId}}";
+  }
+  return "ade://activity";
+}
 
 export function hasVariable(value: string): boolean {
   return /\{\{[^}]*\}\}/.test(value);
@@ -126,6 +157,8 @@ export function buildNotifyLink({ kind, fields }: NotifyLink): string {
     }
     case "proof":
       return f.artifactId?.trim() ? `ade://artifact/${encodePart(f.artifactId)}` : "";
+    case "run":
+      return RUN_HISTORY_LINK;
     case "custom":
       return f.custom?.trim() ?? "";
   }
@@ -183,6 +216,8 @@ export function readNotifyLink(raw: string | null | undefined): NotifyLink {
           : null;
       case "artifact":
         return segments.length === 1 && only() ? { kind: "proof", fields: { artifactId: segments[0] } } : null;
+      case "automation-run":
+        return link === RUN_HISTORY_LINK ? { kind: "run", fields: {} } : null;
       default:
         return null;
     }
@@ -202,6 +237,7 @@ export const NOTIFY_LINK_PHONE_EFFECT: Record<NotifyLinkKind, string> = {
   commit: "The phone can't show a commit. It offers to open it on your computer.",
   branch: "The phone can't show a branch. It offers to open it on your computer.",
   proof: "The phone can't show proof. It offers to open it on your computer.",
+  run: "Opens the chat the run started on the phone, or offers the run's history to your computer, where it opens in Automations.",
   custom: "Opens the link you pasted.",
 };
 

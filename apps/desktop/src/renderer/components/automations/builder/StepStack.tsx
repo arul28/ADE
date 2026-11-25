@@ -5,7 +5,9 @@ import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { cn } from "../../ui/cn";
 import { ADD_STEP_ORDER, NOTIFY_STEP, stepDef, type StepKind } from "../actionCatalog";
 import { blankStep, type WorkflowStep } from "./draftBridge";
+import { defaultNotifyOpen } from "../notifyLink";
 import { StepCard } from "./StepCard";
+import { useAutomationFeatureGate, type AutomationFeatureGate } from "../automationFeatureGate";
 
 function newKey(): string {
   const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
@@ -29,11 +31,25 @@ function choiceDef(choice: StepChoice) {
   return choice === NOTIFY_STEP.id ? NOTIFY_STEP : stepDef(choice);
 }
 
-function newStepFor(choice: StepChoice, defaultSuiteId?: string): WorkflowStep {
+function newStepFor(
+  choice: StepChoice,
+  context: { defaultSuiteId?: string; agentStepBefore: boolean; triggerType: string },
+): WorkflowStep {
   if (choice === NOTIFY_STEP.id) {
-    return { kind: "ade-action", adeAction: { domain: "attention", action: "sendNotification", args: { title: "" } } };
+    // A tap opens what the rule makes or names, not just the app.
+    const open = defaultNotifyOpen({ agentStepBefore: context.agentStepBefore, triggerType: context.triggerType });
+    return { kind: "ade-action", adeAction: { domain: "attention", action: "sendNotification", args: { title: "", open } } };
   }
+  const defaultSuiteId = context.defaultSuiteId;
   return blankStep(choice, defaultSuiteId);
+}
+
+/** Why the rule's machine can't run this step, or null. */
+function choiceBlockedReason(choice: StepChoice, gate: AutomationFeatureGate): string | null {
+  if (choice === NOTIFY_STEP.id) {
+    return gate.blockedReason("step", "ade-action") ?? gate.blockedReason("adeAction", "attention.sendNotification");
+  }
+  return gate.blockedReason("step", choice);
 }
 
 function isCleanupStep(step: WorkflowStep): boolean {
@@ -72,7 +88,11 @@ export function StepStack({
     keys.splice(at, 0, newKey());
     keysRef.current = keys;
     const next = [...steps];
-    next.splice(at, 0, newStepFor(kind, suites[0]?.id));
+    next.splice(at, 0, newStepFor(kind, {
+      defaultSuiteId: suites[0]?.id,
+      agentStepBefore: steps.slice(0, at).some((step) => step.kind === "agent-session"),
+      triggerType,
+    }));
     onChange(next);
   };
 
@@ -240,6 +260,7 @@ function StepMenu({
   onClose: () => void;
   onPick: (kind: StepChoice) => void;
 }) {
+  const gate = useAutomationFeatureGate();
   return (
     <AnchoredMenu
       open={open}
@@ -251,20 +272,27 @@ function StepMenu({
       {ADDABLE_CHOICES.map((kind) => {
         const def = choiceDef(kind);
         const Icon = def.icon;
+        const blocked = choiceBlockedReason(kind, gate);
         return (
           <button
             key={kind}
             type="button"
             role="menuitem"
+            disabled={blocked != null}
+            aria-disabled={blocked != null}
+            title={blocked ?? undefined}
             onClick={() => onPick(kind)}
-            className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-fg/[0.05]"
+            className={cn(
+              "flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors",
+              blocked ? "cursor-not-allowed opacity-50" : "hover:bg-fg/[0.05]",
+            )}
           >
             <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
               <Icon size={12} weight="fill" style={{ color: def.accent }} />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-[12px] font-semibold text-fg">{def.label}</span>
-              <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{def.description}</span>
+              <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{blocked ?? def.description}</span>
             </span>
           </button>
         );
@@ -274,6 +302,7 @@ function StepMenu({
 }
 
 function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
+  const gate = useAutomationFeatureGate();
   return (
     <div className="rounded-xl border border-dashed border-fg/[0.1] bg-fg/[0.02] p-3">
       <div className="text-[10.5px] font-semibold uppercase tracking-[0.12em] text-muted-fg/60">Pick a first step</div>
@@ -281,19 +310,25 @@ function EmptyStepPicker({ onAdd }: { onAdd: (kind: StepChoice) => void }) {
         {ADDABLE_CHOICES.map((kind) => {
           const def = choiceDef(kind);
           const Icon = def.icon;
+          const blocked = choiceBlockedReason(kind, gate);
           return (
             <button
               key={kind}
               type="button"
+              disabled={blocked != null}
+              title={blocked ?? undefined}
               onClick={() => onAdd(kind)}
-              className="flex items-start gap-2.5 rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-2.5 text-left transition-colors hover:border-accent/30 hover:bg-fg/[0.05]"
+              className={cn(
+                "flex items-start gap-2.5 rounded-lg border border-fg/[0.06] bg-fg/[0.02] px-3 py-2.5 text-left transition-colors",
+                blocked ? "cursor-not-allowed opacity-50" : "hover:border-accent/30 hover:bg-fg/[0.05]",
+              )}
             >
               <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-fg/[0.04]">
                 <Icon size={12} weight="fill" style={{ color: def.accent }} />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block text-[12px] font-semibold text-fg">{def.label}</span>
-                <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{def.description}</span>
+                <span className="mt-0.5 block text-[10.5px] leading-snug text-muted-fg/65">{blocked ?? def.description}</span>
               </span>
             </button>
           );

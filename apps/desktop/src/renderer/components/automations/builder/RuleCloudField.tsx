@@ -6,6 +6,7 @@ import { CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import { useAdeCloudEnabled } from "../../../state/cloudAccess";
 import { useAdeCloudDraft } from "../../chat/useAdeCloudDraft";
 import { inputCls } from "../designTokens";
+import { useAutomationFeatureGate } from "../automationFeatureGate";
 
 /**
  * "Run on ADE Cloud", beside "Runs on [machine]": each run makes its lane on
@@ -30,6 +31,8 @@ export function RuleCloudField({
 }) {
   const cloudEnabled = useAdeCloudEnabled();
   const on = value != null;
+  // The rule's machine starts each run's lane; an older ADE can't.
+  const machineBlocked = useAutomationFeatureGate().blockedReason("cloudLanes", "cloud");
   const cloud = useAdeCloudDraft({ enabled: cloudEnabled && on, originUrl: null });
   if (!cloudEnabled && !on) return null;
   const pickedSize = value?.sizeId ?? null;
@@ -43,9 +46,11 @@ export function RuleCloudField({
           <span className="min-w-0">
             <span className="block text-[11.5px] text-fg/90">Run on ADE Cloud</span>
             <span className="mt-0.5 block text-[10.5px] text-muted-fg/60">
-              {on
-                ? "Each run gets a new lane on its own computer. The machine above still watches the trigger and keeps the history."
-                : "Give each run a new lane on its own ADE Cloud computer."}
+              {machineBlocked && !on
+                ? machineBlocked
+                : on
+                  ? "Each run gets a new lane on its own computer. The machine above still watches the trigger and keeps the history."
+                  : "Give each run a new lane on its own ADE Cloud computer."}
             </span>
           </span>
         </span>
@@ -53,7 +58,7 @@ export function RuleCloudField({
           id="automation-run-on-ade-cloud"
           label="Run on ADE Cloud"
           checked={on}
-          disabled={disabled || (!cloudEnabled && !on)}
+          disabled={disabled || (!cloudEnabled && !on) || (machineBlocked != null && !on)}
           onChange={(next) => onChange(next ? {} : null)}
         />
       </div>

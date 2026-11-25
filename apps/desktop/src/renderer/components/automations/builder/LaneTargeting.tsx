@@ -8,6 +8,7 @@ import { isPullRequestTriggerType } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { labelCls, recessedCls, selectCls } from "../designTokens";
 import { VariableInput } from "./VariableMenu";
+import { useAutomationFeatureGate } from "../automationFeatureGate";
 
 export type LaneTargetingValue = {
   laneMode: string;
@@ -89,6 +90,7 @@ export function LaneTargeting({
   lanes: Array<{ id: string; name: string }>;
   onChange: (patch: LaneTargetingPatch) => void;
 }) {
+  const gate = useAutomationFeatureGate();
   const sortedLanes = useMemo(() => [...lanes].sort((a, b) => a.name.localeCompare(b.name)), [lanes]);
   const mode =
     value.laneMode === "create" || value.laneMode === "pr-branch"
@@ -137,9 +139,14 @@ export function LaneTargeting({
           {supportsTriggerLane ? (
             <option value="require-on-trigger">{RUN_IN_OPTIONS[2]!.label}</option>
           ) : null}
-          {supportsPrBranch ? (
-            <option value="pr-branch">{RUN_IN_OPTIONS[3]!.label}</option>
-          ) : null}
+          {supportsPrBranch ? (() => {
+            const blocked = mode === "pr-branch" ? null : gate.blockedReason("laneMode", "pr-branch");
+            return (
+              <option value="pr-branch" disabled={blocked != null}>
+                {blocked ? `${RUN_IN_OPTIONS[3]!.label} (${blocked})` : RUN_IN_OPTIONS[3]!.label}
+              </option>
+            );
+          })() : null}
           <option value="reuse:">The primary lane</option>
           {sortedLanes.map((lane) => (
             <option key={lane.id} value={`reuse:${lane.id}`}>

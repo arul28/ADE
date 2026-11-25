@@ -1641,6 +1641,14 @@ function AppNavigationBridge() {
       return true;
     }
 
+    if (target.kind === "automation-run") {
+      // The Automations page finds the rule on whichever machine lists it and
+      // opens its History on the run.
+      const params = new URLSearchParams({ rule: target.ruleId, run: target.runId });
+      navigate(`/automations?${params.toString()}`);
+      return true;
+    }
+
     if (target.kind === "lane-share") {
       // An invite link: the shared lanes page opens it (sign in, accept or open).
       navigate(laneShareGuestPath(target.grantId));

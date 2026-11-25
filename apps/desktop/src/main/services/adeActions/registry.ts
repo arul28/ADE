@@ -83,6 +83,7 @@ import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
+import type { AutomationCapabilities } from "../../../shared/types/config";
 import type {
   AutomationManualTriggerRequest,
   AutomationTestCleanupResult,
@@ -437,6 +438,7 @@ type AutomationsDomainService = {
   listRuns(args?: AutomationRunListArgs): AutomationRun[];
   getRunDetail(args: { runId: string }): Promise<AutomationRunDetail | null>;
   getIngressStatus(): AutomationIngressStatus;
+  getCapabilities(): AutomationCapabilities;
   startIngress(): Promise<AutomationIngressStatus>;
   refreshWebhookGatewayStatus(): Promise<AutomationIngressStatus["webhookGateway"]>;
   setWebhookGatewayPublicUrl(args?: { publicUrl?: string | null }): Promise<AutomationIngressStatus["webhookGateway"]>;
@@ -513,6 +515,7 @@ function buildAutomationsDomainService(runtime: AdeRuntime): AutomationsDomainSe
     listRuns: (args = {}) => automationService.listRuns(args),
     getRunDetail: ({ runId }) => automationService.getRunDetail({ runId }),
     getIngressStatus: () => automationService.getIngressStatus(),
+    getCapabilities: () => automationService.getCapabilities(),
     startIngress: async () => {
       if (!runtime.automationIngressService) throw new Error("Automation ingress service is not available.");
       await runtime.automationIngressService.start();

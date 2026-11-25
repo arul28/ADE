@@ -8,6 +8,8 @@ import type {
 import { ADE_CLOUD_HOME_DEVICE_ID, ADE_CLOUD_HOME_NAME, AUTOMATION_HOME_HANDOVER_MS, isAdeCloudHome } from "../../../shared/automationHome";
 import { automationCloudHomeProblem, localTimeZone } from "../../../shared/automationCloud";
 import type { Logger } from "../logging/logger";
+import { isAutomationAllowedAdeAction } from "../adeActions/actionPolicy";
+import type { AdeActionDomain } from "../adeActions/domains";
 import {
   AUTOMATION_RULE_KEY_PREFIX,
   automationRuleAccountId,
@@ -85,6 +87,17 @@ type AccountRule = {
   version?: string;
 };
 
+/** Whether a rule has an `ade-action` step whose action this ADE cannot run in a rule. */
+function hasUnknownAdeActionStep(rule: Pick<ConfigAutomationRule, "actions" | "execution">): boolean {
+  const steps = [...(rule.actions ?? []), ...(rule.execution?.builtIn?.actions ?? [])];
+  return steps.some((step) => {
+    if (step?.type !== "ade-action") return false;
+    const domain = step.adeAction?.domain?.trim();
+    const action = step.adeAction?.action?.trim();
+    return Boolean(domain && action) && !isAutomationAllowedAdeAction(domain as AdeActionDomain, action!);
+  });
+}
+
 export type AutomationRuleAccountSync = ReturnType<typeof createAutomationRuleAccountSync>;
 
 export function createAutomationRuleAccountSync(args: {
@@ -124,7 +137,9 @@ export function createAutomationRuleAccountSync(args: {
       // ADE (a trigger, step or field it does not know). Editing it here
       // would strip what it cannot see, and running it would run the wrong
       // thing, so it is shown paused and left alone.
-      let needsNewerAde = stableJson(stored) !== stableJson(row.value);
+      // A step that calls an ADE action this ADE does not have reads back
+      // fine but cannot run here; it is a newer ADE's rule too.
+      let needsNewerAde = stableJson(stored) !== stableJson(row.value) || hasUnknownAdeActionStep(stored);
       const home = args.coerceHome(row.home);
       let rule: ConfigAutomationRule = { ...stored, ...(home ? { home } : {}) };
       if (needsNewerAde) rule = { ...rule, enabled: false };

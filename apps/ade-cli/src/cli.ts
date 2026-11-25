@@ -42747,7 +42747,9 @@ function createLinkOwnershipResolver(
         ? { sessionId: target.sessionId, ...(target.laneId ? { laneId: target.laneId } : {}) }
         : target.kind === "lane"
           ? { laneId: target.laneId }
-          : target.repoOwner && target.repoName ? { repo: `${target.repoOwner}/${target.repoName}` } : {};
+          : target.kind === "automation-run"
+            ? (target.sessionId ? { sessionId: target.sessionId } : {})
+            : target.repoOwner && target.repoName ? { repo: `${target.repoOwner}/${target.repoName}` } : {};
       return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership", subject)));
     } catch {
       return null;

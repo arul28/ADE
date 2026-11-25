@@ -42,9 +42,21 @@ import { parseMachineScopedId } from "../../state/foreignMachineReads";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { isAdeCloudLaneComputer } from "../lanes/laneMachines";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { useTabCopyPin } from "../../state/repositoryScope";
-import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
+import { useActiveRepositoryTab, useTabCopyPin } from "../../state/repositoryScope";
+import {
+  automationDraftScope,
+  clearStoredAutomationDraft,
+  loadStoredAutomationDraft,
+  storeAutomationDraft,
+  type StoredAutomationDraftEntry,
+} from "./automationDraftStore";
 import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
+import {
+  AutomationFeatureGateContext,
+  automationFeatureLabel,
+  buildAutomationFeatureGate,
+  useAutomationMachineSupport,
+} from "./automationFeatureGate";
 import { automationRunLaneNeed } from "../../../shared/automationRunLane";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
@@ -136,6 +148,9 @@ export async function readCursorCloudConnectionForAutomation(
 }
 
 /** "3:42 PM" today, else "Oct 7, 3:42 PM". */
+/** How long typing in the builder waits before the draft is written to local storage. */
+const DRAFT_WRITE_DELAY_MS = 300;
+
 function formatRestoredDraftTime(iso: string): string {
   const at = new Date(iso);
   if (!Number.isFinite(at.getTime())) return "earlier";
@@ -145,10 +160,10 @@ function formatRestoredDraftTime(iso: string): string {
     : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-/** An error in plain words: an older ADE's missing step names the release that has it. */
-function explainError(err: unknown): string {
+/** An error in plain words: an older ADE's missing step names the machine and the release that has it. */
+function explainError(err: unknown, machineName?: string | null): string {
   const message = extractError(err);
-  return explainAutomationActionError(message) ?? message;
+  return explainAutomationActionError(message, machineName) ?? message;
 }
 
 export function AutomationsWorkspace({
@@ -184,6 +199,9 @@ export function AutomationsWorkspace({
   // `?rule=<id>` (from Settings → Linear → ADE agent) opens that rule once it loads.
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedRuleId = searchParams.get("rule");
+  // `&run=<id>` (a notification's "This run's history") opens that run in History.
+  const requestedRunId = searchParams.get("run");
+  const [historyRunId, setHistoryRunId] = useState<string | null>(null);
   const [draft, setDraft] = useState<AutomationRuleDraft | null>(null);
   const [issues, setIssues] = useState<AutomationDraftIssue[]>([]);
   const [requiredConfirmations, setRequiredConfirmations] = useState<AutomationDraftConfirmationRequirement[]>([]);
@@ -203,6 +221,10 @@ export function AutomationsWorkspace({
   const loadRef = useRef<(() => Promise<void>) | null>(null);
   const savedSnapshotRef = useRef<string | null>(null);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The draft belongs to the repository, not to the copy the tab is bound to,
+  // so it survives the tab moving to another copy.
+  const repositoryTab = useActiveRepositoryTab();
+  const draftScope = useMemo(() => automationDraftScope(repositoryTab, projectRoot), [projectRoot, repositoryTab]);
   /** An older machine's "action not callable" in plain words; any other error as it is. */
   /** True once the first rule list has loaded, so a stored draft can find its rule. */
   const [rulesLoadedOnce, setRulesLoadedOnce] = useState(false);
@@ -210,6 +232,12 @@ export function AutomationsWorkspace({
   const draftRestoreDoneRef = useRef(false);
   /** When the restored draft was last edited; shown until it is saved or discarded. */
   const [restoredDraftAt, setRestoredDraftAt] = useState<string | null>(null);
+  /**
+   * The draft the restore just applied. The persist effect can run in the
+   * same commit, still holding the draft from before; it skips that one run
+   * instead of clearing the stored copy and the banner.
+   */
+  const justRestoredDraftRef = useRef<AutomationRuleDraft | null>(null);
 
   // ── Machines ────────────────────────────────────────────────
   const {
@@ -506,19 +534,30 @@ export function AutomationsWorkspace({
     if (!key && Object.values(foreignLoads).some((load) => load.status === "loading")) return;
     const next = new URLSearchParams(searchParams);
     next.delete("rule");
+    next.delete("run");
     setSearchParams(next, { replace: true });
-    if (!key || key === selectedRuleId) return;
+    if (!key) return;
+    const openRun = () => {
+      if (!requestedRunId) return;
+      setHistoryRunId(requestedRunId);
+      setDetailView("history");
+    };
+    if (key === selectedRuleId) {
+      openRun();
+      return;
+    }
     void (async () => {
       if (isDirtyRef.current && !(await confirmDiscardIfDirty())) return;
       setSelectedRuleId(key);
+      openRun();
     })();
-  }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, searchParams, selectedRuleId, setSearchParams]);
+  }, [confirmDiscardIfDirty, entryByKey, foreignLoads, requestedRuleId, requestedRunId, searchParams, selectedRuleId, setSearchParams]);
 
   // Bring back an unsaved draft from an earlier visit (another tab, a restart).
   // A live edit in this session always wins over the stored copy.
   useEffect(() => {
-    if (!active || draftRestoreDoneRef.current || !projectRoot || !rulesLoadedOnce) return;
-    const stored = loadStoredAutomationDraft(projectRoot);
+    if (!active || draftRestoreDoneRef.current || !draftScope || !rulesLoadedOnce) return;
+    const stored = loadStoredAutomationDraft(draftScope);
     if (!stored || isDirtyRef.current) {
       draftRestoreDoneRef.current = true;
       return;
@@ -532,7 +571,7 @@ export function AutomationsWorkspace({
         // The rule may live on a machine whose rules are still loading.
         if (Object.values(foreignLoads).some((load) => load.status === "loading")) return;
         // The rule is gone; its draft has nothing to save into.
-        clearStoredAutomationDraft(projectRoot);
+        clearStoredAutomationDraft(draftScope);
         draftRestoreDoneRef.current = true;
         return;
       }
@@ -541,12 +580,16 @@ export function AutomationsWorkspace({
       setDraftOrigin({ machine: origin });
       setDraftTarget(stored.targetMachineId ? storedTarget ?? origin : null);
       setDraftMachineChosen(true);
+      setDraftRehomeChosen(stored.rehomeChosen);
+      setDraftCloudChosen(stored.cloudChosen);
       setSelectedRuleId(stored.ruleKey);
     } else {
       draftingNewRef.current = true;
       loadedRuleKeyRef.current = null;
       setDraftOrigin(null);
       setSelectedRuleId(null);
+      setDraftRehomeChosen(false);
+      setDraftCloudChosen(stored.cloudChosen);
       setDraftTarget(storedTarget && !storedTarget.isActiveBinding ? storedTarget : null);
       // A machine that has gone since asks to be chosen again.
       setDraftMachineChosen(stored.machineChosen && (!stored.targetMachineId || Boolean(storedTarget)));
@@ -558,26 +601,58 @@ export function AutomationsWorkspace({
     setAcceptedConfirmations(new Set());
     setDetailView("builder");
     setRestoredDraftAt(stored.savedAt);
+    justRestoredDraftRef.current = stored.draft;
     draftRestoreDoneRef.current = true;
-  }, [active, entryByKey, foreignLoads, machines, projectRoot, rulesLoadedOnce]);
+  }, [active, draftScope, entryByKey, foreignLoads, machines, rulesLoadedOnce]);
 
-  // Keep the stored copy in step with the draft: written on every unsaved
-  // change, removed once the draft matches its saved rule (Save, Discard).
+  // Keep the stored copy in step with the draft: written shortly after each
+  // unsaved change (and at once when the page goes away), removed once the
+  // draft matches its saved rule (Save, Discard).
+  const pendingDraftWriteRef = useRef<{ scope: NonNullable<typeof draftScope>; entry: StoredAutomationDraftEntry } | null>(null);
+  const draftWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushDraftWrite = useCallback(() => {
+    if (draftWriteTimerRef.current) {
+      clearTimeout(draftWriteTimerRef.current);
+      draftWriteTimerRef.current = null;
+    }
+    const pending = pendingDraftWriteRef.current;
+    pendingDraftWriteRef.current = null;
+    if (pending) storeAutomationDraft(pending.scope, pending.entry);
+  }, []);
   useEffect(() => {
-    if (!draftRestoreDoneRef.current) return;
+    if (!draftRestoreDoneRef.current || !draftScope) return;
+    const restored = justRestoredDraftRef.current;
+    justRestoredDraftRef.current = null;
+    if (restored && draft !== restored) return;
     if (!draft || !isDirty || savedSnapshotRef.current == null) {
-      clearStoredAutomationDraft(projectRoot);
+      if (draftWriteTimerRef.current) clearTimeout(draftWriteTimerRef.current);
+      draftWriteTimerRef.current = null;
+      pendingDraftWriteRef.current = null;
+      clearStoredAutomationDraft(draftScope);
       setRestoredDraftAt(null);
       return;
     }
-    storeAutomationDraft(projectRoot, {
-      draft,
-      savedSnapshot: savedSnapshotRef.current,
-      ruleKey: selectedRuleId,
-      targetMachineId: draftTarget?.machineId ?? null,
-      machineChosen: draftMachineChosen,
-    });
-  }, [draft, draftMachineChosen, draftTarget, isDirty, projectRoot, selectedRuleId]);
+    pendingDraftWriteRef.current = {
+      scope: draftScope,
+      entry: {
+        draft,
+        savedSnapshot: savedSnapshotRef.current,
+        ruleKey: selectedRuleId,
+        targetMachineId: draftTarget?.machineId ?? null,
+        machineChosen: draftMachineChosen,
+        cloudChosen: draftCloudChosen,
+        rehomeChosen: draftRehomeChosen,
+      },
+    };
+    if (!draftWriteTimerRef.current) draftWriteTimerRef.current = setTimeout(flushDraftWrite, DRAFT_WRITE_DELAY_MS);
+  }, [draft, draftCloudChosen, draftMachineChosen, draftRehomeChosen, draftScope, draftTarget, flushDraftWrite, isDirty, selectedRuleId]);
+  useEffect(() => {
+    window.addEventListener("beforeunload", flushDraftWrite);
+    return () => {
+      window.removeEventListener("beforeunload", flushDraftWrite);
+      flushDraftWrite();
+    };
+  }, [flushDraftWrite]);
 
   // The draft's machine supplies its own suites and ingress status; the tab
   // machine's would describe the wrong checkout.
@@ -756,8 +831,35 @@ export function AutomationsWorkspace({
     }
   }, [acceptedConfirmations, blockedReason, boundMachine, commitMachineRules, entryByKey, machineAccountRule, machineListsAccountRule, machinePin, refreshForeign, selectedRuleId, validateDraft]);
 
+  // The machine the draft runs on, and what its ADE can run. This window's
+  // own machine runs this build; ADE Cloud as the home is ADE Cloud's to run.
+  const ruleMachine = draftTarget ?? machines.find((machine) => machine.isActiveBinding) ?? null;
+  const ruleRunsOnAdeCloud = draftCloudChosen
+    || (!draftRehomeChosen && isAdeCloudHome((selectedRuleId ? entryByKey.get(selectedRuleId)?.rule : null)?.home));
+  const ruleMachineSupport = useAutomationMachineSupport(ruleRunsOnAdeCloud ? null : ruleMachine);
+  const ruleMachineName = ruleMachine?.machineName ?? null;
+  const needsNewerAde = useMemo(
+    () => automationFeaturesNeedingNewerAde(draft, ruleMachineSupport, automationFeatureLabel),
+    [draft, ruleMachineSupport],
+  );
+  const featureGate = useMemo(
+    () => buildAutomationFeatureGate(ruleMachineSupport, ruleMachineName),
+    [ruleMachineName, ruleMachineSupport],
+  );
+
   const saveDraft = useCallback(async () => {
     if (!draft) return;
+    // A rule its machine cannot run is saved only when the person says so
+    // (an update is on its way); otherwise it would fail on its first run.
+    if (needsNewerAde.length > 0) {
+      const machineName = ruleMachineName ?? "The machine that runs this rule";
+      const ok = await confirmDialog({
+        title: `${machineName} can't run this rule yet.`,
+        message: `It needs a newer ADE for ${needsNewerAde.map((feature) => feature.label).join(", ")}. Until ADE there is updated, the rule fails when it runs.`,
+        confirmLabel: "Save anyway",
+      });
+      if (!ok) return;
+    }
     // ADE Cloud as the home: saved through this draft's machine, which hands it to ADE Cloud's server.
     if (draftCloudChosen) {
       setSaving(true);
@@ -783,7 +885,7 @@ export function AutomationsWorkspace({
         savedSnapshotRef.current = JSON.stringify(nextDraft);
         setIssues([]);
       } catch (err) {
-        setError(explainError(err));
+        setError(explainError(err, ruleMachineName));
       } finally {
         setSaving(false);
       }
@@ -824,11 +926,11 @@ export function AutomationsWorkspace({
       savedSnapshotRef.current = JSON.stringify(nextDraft);
       setIssues([]);
     } catch (err) {
-      setError(explainError(err));
+      setError(explainError(err, ruleMachineName));
     } finally {
       setSaving(false);
     }
-  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftPin, draftTarget, machinePin, moveRule, refreshForeign, validateDraft]);
+  }, [acceptedConfirmations, blockedReason, commitMachineRules, draft, draftCloudChosen, draftMachineChosen, draftMoving, draftOrigin, draftPin, draftTarget, machinePin, moveRule, needsNewerAde, refreshForeign, ruleMachineName, validateDraft]);
 
   const createRule = useCallback(async () => {
     if (!(await confirmDiscardIfDirty())) return;
@@ -877,7 +979,7 @@ export function AutomationsWorkspace({
         if (!entry.machine.isActiveBinding) refreshMachine(entry.machine.machineId);
         else await refresh();
       } catch (err) {
-        setError(explainError(err));
+        setError(explainError(err, entry.machine.machineName));
       } finally {
         manualRunPendingRef.current = false;
         setManualRunPending(false);
@@ -955,14 +1057,6 @@ export function AutomationsWorkspace({
   const builderSuites = draftForeignTarget?.pin ? draftMachineSuites ?? [] : suites;
   const builderIngress = draftForeignTarget?.pin ? draftMachineIngress : ingressStatus;
   const draftMachineBlocked = blockedReason(draftTarget);
-  // The machine the draft runs on, and whether its ADE is new enough for it.
-  // This window's own machine always is; an unknown version is not guessed at.
-  const ruleMachine = draftTarget ?? machines.find((machine) => machine.isActiveBinding) ?? null;
-  const ruleMachineVersion = ruleMachine && !ruleMachine.isThisMachine ? ruleMachine.version : null;
-  const needsNewerAde = useMemo(
-    () => automationFeaturesNeedingNewerAde(draft, ruleMachineVersion),
-    [draft, ruleMachineVersion],
-  );
   const noComputerOnline = !tabPin && !machines.some((machine) => machine.online && machine.pin);
   const machineNotes = Object.keys(foreignLoads).length > 0 || noComputerOnline ? (
     <div
@@ -1095,9 +1189,11 @@ export function AutomationsWorkspace({
               model={{
                 id: "automation-needs-newer-ade",
                 tone: "warning",
-                title: `${ruleMachine.machineName} runs ADE ${ruleMachineVersion}, which is too old for this rule.`,
+                title: ruleMachine.brainVersion
+                  ? `${ruleMachine.machineName} runs ADE ${ruleMachine.brainVersion}, which is too old for this rule.`
+                  : `The ADE on ${ruleMachine.machineName} is too old for this rule.`,
                 detail: `Update ADE on ${ruleMachine.machineName} to use ${needsNewerAde
-                  .map((feature) => `${feature.label} (ADE ${feature.minVersion})`)
+                  .map((feature) => (feature.minVersion ? `${feature.label} (ADE ${feature.minVersion})` : feature.label))
                   .join(", ")}. Until then the rule cannot run there.`,
               }}
             />
@@ -1144,8 +1240,9 @@ export function AutomationsWorkspace({
           <div className="min-h-0 flex-1 overflow-hidden">
             {detailView === "history" && selectedRule ? (
               <RuleHistory
-                key={selectedEntry?.key ?? selectedRule.id}
+                key={`${selectedEntry?.key ?? selectedRule.id}::${historyRunId ?? ""}`}
                 automationId={selectedRule.id}
+                initialRunId={historyRunId}
                 ruleName={selectedRule.name}
                 pin={selectedEntry?.machine.pin ?? null}
                 isActiveBinding={selectedEntry?.machine.isActiveBinding ?? true}
@@ -1153,6 +1250,7 @@ export function AutomationsWorkspace({
                 offlineMessage={blockedReason(selectedEntry?.machine ?? null)}
               />
             ) : draft ? (
+              <AutomationFeatureGateContext.Provider value={featureGate}>
               <RuleBuilder
                 draft={draft}
                 setDraft={setDraft}
@@ -1177,7 +1275,9 @@ export function AutomationsWorkspace({
                     ? "Save this automation to test it."
                     : selectedRule.needsNewerAde
                       ? "Made with a newer ADE. Update ADE on this computer to test it."
-                      : null
+                      : needsNewerAde.length > 0
+                        ? `${ruleMachineName ?? "The machine that runs this rule"} can't run this rule yet. Update ADE there to test it.`
+                        : null
                 }
                 onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
                 runBlockedReason={selectedRule ? ruleElsewhereReason(selectedRule) : null}
@@ -1237,6 +1337,7 @@ export function AutomationsWorkspace({
                 running={running}
                 dirty={isDirty}
               />
+              </AutomationFeatureGateContext.Provider>
             ) : (
               <EmptyDetail onNew={createRule} onOpenTemplates={onOpenTemplates} />
             )}

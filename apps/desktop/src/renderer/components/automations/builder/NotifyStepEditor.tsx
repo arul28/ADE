@@ -4,6 +4,7 @@ import {
   CaretDown,
   ChatCircleText,
   Check,
+  ClockCounterClockwise,
   CircleNotch,
   DeviceMobile,
   FileText,
@@ -37,6 +38,9 @@ import {
   hasVariable,
   NOTIFY_LINK_PHONE_EFFECT,
   readNotifyLink,
+  RUN_CHAT_VALUE,
+  RUN_LANE_VALUE,
+  runChoiceOf,
   type NotifyLink,
   type NotifyLinkFields,
   type NotifyLinkKind,
@@ -44,6 +48,7 @@ import {
 import { variablesForTrigger } from "../variableCatalog";
 import { VariableInput } from "./VariableMenu";
 import { explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
+import { useAutomationFeatureGate } from "../automationFeatureGate";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 
 /**
@@ -67,8 +72,8 @@ function withVariableNames(text: string, triggerType: string): string {
  * never made one (its agent step failed first) sends the notification
  * without the link.
  */
-const RUN_CHAT = { label: "The chat this run started", value: "{{run.chatSessionId}}" };
-const RUN_LANE = { label: "The lane this run used", value: "{{run.laneId}}" };
+const RUN_CHAT = { label: "The chat this run started", value: RUN_CHAT_VALUE };
+const RUN_LANE = { label: "The lane this run used", value: RUN_LANE_VALUE };
 const RUN_VALUES = [RUN_CHAT, RUN_LANE];
 
 type Choice = { kind: NotifyLinkKind; label: string; icon: typeof Bell };
@@ -289,6 +294,70 @@ function CountedField({
   );
 }
 
+type RunChoice = { id: "chat" | "lane" | "run"; label: string; hint: string; icon: typeof Bell; link: NotifyLink };
+
+/**
+ * What the run makes, filled in as it goes: the usual answer for a rule that
+ * creates the thing to look at, so it comes first.
+ */
+const RUN_CHOICES: RunChoice[] = [
+  {
+    id: "chat",
+    label: RUN_CHAT.label,
+    hint: "Opens on the phone. If the run starts no chat, the tap opens ADE.",
+    icon: ChatCircleText,
+    link: { kind: "chat", fields: { sessionId: RUN_CHAT_VALUE } },
+  },
+  {
+    id: "lane",
+    label: RUN_LANE.label,
+    hint: "Opens on your computer; the phone offers to send it there.",
+    icon: Stack,
+    link: { kind: "lane", fields: { laneId: RUN_LANE_VALUE } },
+  },
+  {
+    id: "run",
+    label: "This run's history",
+    hint: "Opens the run in Automations on your computer. The phone opens the run's chat, or offers the run to your computer.",
+    icon: ClockCounterClockwise,
+    link: { kind: "run", fields: {} },
+  },
+];
+
+function RunChoiceRow({ selected, onSelect }: { selected: RunChoice["id"] | null; onSelect: (link: NotifyLink) => void }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] text-muted-fg/55">From this run</div>
+      <div className="grid grid-cols-1 gap-1 sm:grid-cols-3">
+        {RUN_CHOICES.map((choice) => {
+          const Icon = choice.icon;
+          const active = choice.id === selected;
+          return (
+            <button
+              key={choice.id}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              data-notify-run-choice={choice.id}
+              title={choice.hint}
+              onClick={() => onSelect(choice.link)}
+              className={cn(
+                "flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+                active
+                  ? "border-accent/45 bg-accent/10 text-fg"
+                  : "border-fg/[0.07] bg-fg/[0.02] text-muted-fg/85 hover:border-fg/[0.16] hover:text-fg",
+              )}
+            >
+              <Icon size={12} weight={active ? "fill" : "regular"} className={active ? "text-accent" : undefined} />
+              <span className="truncate">{choice.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ChoiceGrid({
   title,
   choices,
@@ -297,7 +366,8 @@ function ChoiceGrid({
 }: {
   title: string;
   choices: Choice[];
-  selected: NotifyLinkKind;
+  /** Null while a "From this run" choice is picked, so nothing here reads as picked. */
+  selected: NotifyLinkKind | null;
   onSelect: (kind: NotifyLinkKind) => void;
 }) {
   return (
@@ -601,6 +671,9 @@ function LinkFields({
           />
         </div>
       );
+    case "run":
+      // The run fills in its own ids; nothing to pick.
+      return null;
     case "proof":
       return (
         <PickField
@@ -688,6 +761,7 @@ export function NotifyStepEditor({
     updateLink({ kind, fields: kind === link.kind ? link.fields : {} });
 
   const builtLink = buildNotifyLink(link);
+  const runChoice = runChoiceOf(link);
   const check = checkNotifyLink(builtLink);
   const needsInput = link.kind !== "none" && check.state === "empty";
 
@@ -698,6 +772,9 @@ export function NotifyStepEditor({
     setTest((current) => (current.state === "done" ? { state: "idle" } : current));
   }, [title, body, open]);
   const canTest = isAdeAvailable(window.ade?.attention?.sendNotification);
+  // The test is sent from the rule's machine; an ADE there without the step can't.
+  const gate = useAutomationFeatureGate();
+  const machineBlocked = gate.blockedReason("adeAction", "attention.sendNotification");
   const titleProblem = !title.trim()
     ? "Add a title."
     : title.trim().length > CUSTOM_NOTIFICATION_TITLE_MAX
@@ -705,10 +782,11 @@ export function NotifyStepEditor({
       : body.trim().length > CUSTOM_NOTIFICATION_BODY_MAX
         ? `Shorten the message to ${CUSTOM_NOTIFICATION_BODY_MAX} characters.`
         : null;
+  const testBlocked = machineBlocked ? `Update ADE to send a test (${machineBlocked.replace(/^Needs /, "needs ")})` : titleProblem;
 
   const sendTest = async () => {
     const send = window.ade?.attention?.sendNotification;
-    if (!isAdeAvailable(send) || titleProblem || !runtimePin) return;
+    if (!isAdeAvailable(send) || testBlocked || !runtimePin) return;
     setTest({ state: "sending" });
     try {
       // A link with trigger values has nothing to fill them with yet, so the
@@ -736,7 +814,7 @@ export function NotifyStepEditor({
         message: (() => {
           const raw = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "") : String(error);
           // An older ADE on the rule's machine has no notification action yet.
-          return explainAutomationActionError(raw) ?? raw;
+          return explainAutomationActionError(raw, gate.machineName) ?? raw;
         })(),
       });
     }
@@ -773,16 +851,17 @@ export function NotifyStepEditor({
           <span className={labelCls}>When tapped, open</span>
         </div>
         <div className="space-y-2" role="radiogroup" aria-label="When tapped, open">
+          <RunChoiceRow selected={runChoice} onSelect={updateLink} />
           <ChoiceGrid
             title="On the phone"
             choices={PHONE_CHOICES}
-            selected={link.kind}
+            selected={runChoice ? null : link.kind}
             onSelect={selectKind}
           />
           <ChoiceGrid
             title="On your computer (the phone offers to open it there)"
             choices={COMPUTER_CHOICES}
-            selected={link.kind}
+            selected={runChoice ? null : link.kind}
             onSelect={selectKind}
           />
           <button
@@ -852,8 +931,8 @@ export function NotifyStepEditor({
           <button
             type="button"
             onClick={() => void sendTest()}
-            disabled={test.state === "sending" || Boolean(titleProblem)}
-            title={titleProblem ?? "Sends this notification to your phones now"}
+            disabled={test.state === "sending" || Boolean(testBlocked)}
+            title={testBlocked ?? "Sends this notification to your phones now"}
             className="flex h-7 items-center gap-1.5 rounded-md border border-fg/[0.1] bg-fg/[0.04] px-2.5 text-[11px] font-medium text-fg transition-colors hover:border-accent/35 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {test.state === "sending" ? <CircleNotch size={11} className="animate-spin" /> : <DeviceMobile size={12} />}
@@ -869,8 +948,8 @@ export function NotifyStepEditor({
             >
               {test.message}
             </span>
-          ) : titleProblem ? (
-            <span className="text-[11px] text-muted-fg/55">{titleProblem}</span>
+          ) : testBlocked ? (
+            <span className="text-[11px] text-muted-fg/55">{testBlocked}</span>
           ) : null}
         </div>
       ) : null}

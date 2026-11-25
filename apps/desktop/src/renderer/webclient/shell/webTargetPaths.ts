@@ -62,6 +62,10 @@ export function targetToWebPath(target: DeeplinkTarget): string {
     case "lane-share":
       params.set("grant", target.grantId);
       return withQuery("/shared", params);
+    case "automation-run":
+      params.set("rule", target.ruleId);
+      params.set("run", target.runId);
+      return withQuery("/automations", params);
     case "open": {
       const place = openPlaceById(target.place);
       return place?.target.kind === "route" ? place.target.route : "/work";

@@ -191,14 +191,22 @@ Test = `planTest` / `runTest` / `cleanUpTestRun` (see README, Test runs). Run no
 `triggerManually({ id })` (lane picker only when lane mode requires one, existing behavior
 preserved).
 
-The unsaved draft is kept in local storage per project (`automationDraftStore.ts`), so leaving
-the tab, switching project, or restarting ADE keeps it; a banner says it was restored and offers
-Discard. Save and Discard clear it.
+The unsaved draft is kept in this computer's local storage per repository (`automationDraftStore.ts`,
+keyed by the repository tab's id, so every copy of the repository shares one draft), with the
+"Runs on" choice it had. Leaving the tab, switching project, the tab moving to another copy, or
+restarting ADE keeps it; a banner says it was restored and offers Discard. Save and Discard clear
+it. It never syncs: an unfinished edit belongs to the computer it was typed on. Writes are
+throttled (300 ms) and flushed on unload.
 
-When the rule's machine runs an older ADE than a step or lane mode needs
-(`shared/automationFeatureVersions.ts`), the builder shows a warning banner that names the
-machine, its version, and the release each feature needs. An `action_not_callable` error from
-such a machine is shown in the same plain words.
+The rule's machine says what it can run (`automations.getCapabilities`: triggers, step types, lane
+modes, the ADE actions a step may call, ADE Cloud lanes), asked once per machine and brain version
+(`automationFeatureGate.ts`). A brain older than that call is judged by the version table in
+`shared/automationFeatureVersions.ts`, compared with the **brain's** version, not the app's. What
+the machine lacks is greyed out in the builder (trigger list, step menu, "Run in", "Runs on: ADE
+Cloud", the notification test) with "Needs ADE X on <machine>". A draft that already has such a
+feature shows the warning banner, and Save asks "<machine> can't run this rule yet." with **Save
+anyway**. The brain also refuses, in `validateDraft`/`saveDraft`, an ADE action step it cannot
+call. An `action_not_callable` error from an older machine is shown in the same plain words.
 
 ## Where a rule lives (account sync)
 

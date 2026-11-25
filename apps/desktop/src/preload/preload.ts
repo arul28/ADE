@@ -385,6 +385,7 @@ import type {
   ArchiveLaneArgs,
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
+  AutomationCapabilities,
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
@@ -7395,6 +7396,12 @@ const adeBridge = {
     getIngressStatus: async (pin?: OpenProjectBinding | null): Promise<AutomationIngressStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "automations", "getIngressStatus", {}, () =>
         ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+      ),
+    // An older brain has no such action and refuses it (`action_not_callable`);
+    // the builder then falls back to the version table.
+    getCapabilities: async (pin?: OpenProjectBinding | null): Promise<AutomationCapabilities> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "getCapabilities", {}, () =>
+        ipcRenderer.invoke(IPC.automationsGetCapabilities),
       ),
     refreshWebhookGatewayStatus: async (pin?: OpenProjectBinding | null): Promise<AutomationWebhookGatewayStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "automations", "refreshWebhookGatewayStatus", {}, () =>
