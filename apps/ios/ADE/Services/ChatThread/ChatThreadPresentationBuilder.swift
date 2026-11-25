@@ -169,6 +169,8 @@ private func workCombineTimelineEntryRowSignature(_ timelineEntry: WorkTimelineE
   hasher.combine(message.unprocessedResolution?.action)
   hasher.combine(message.unprocessedResolution?.state)
   hasher.combine(message.unprocessedResolution?.resolvedAt)
+  // The CTO's reaction badge adds height under the bubble.
+  hasher.combine(message.ctoReaction)
   workTimelineCombineMessageTextSignature(message, into: &hasher)
   if let preview = message.assistantPreview {
     // A preview is a pure function of the message text, and the text is

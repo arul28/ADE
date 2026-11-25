@@ -24,6 +24,7 @@ import {
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
+import { isCtoReactionEmoji, userMessageReactionKey } from "../../../shared/types/chat";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -3125,6 +3126,29 @@ function handleSubagentLifecycleEvent(
   return true;
 }
 
+/**
+ * The CTO's reaction lands on its message's row (`metadata.ctoReaction`); a
+ * newer reaction on the same message replaces it. A reaction whose message is
+ * not loaded draws nothing. The scan runs back from the newest row, where its
+ * target almost always is; a long turn's tool rows may sit in between.
+ */
+function attachUserMessageReaction(
+  rows: ChatTranscriptRenderEnvelope[],
+  event: Extract<AgentChatEvent, { type: "user_message_reaction" }>,
+): void {
+  // Like iOS: a reaction outside the fixed set draws nothing.
+  if (!isCtoReactionEmoji(event.emoji)) return;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.event.type !== "user_message" || userMessageReactionKey(row.event) !== event.targetKey) continue;
+    rows[index] = {
+      ...row,
+      event: { ...row.event, metadata: { ...(row.event.metadata ?? {}), ctoReaction: { emoji: event.emoji } } },
+    };
+    return;
+  }
+}
+
 export function appendCollapsedChatTranscriptEvent(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
@@ -3269,6 +3293,11 @@ export function appendCollapsedChatTranscriptEvent(
     } else if (steerId) {
       context?.unmatchedUserMessageResolutionsBySteer.set(steerId, event);
     }
+    return;
+  }
+
+  if (event.type === "user_message_reaction") {
+    attachUserMessageReaction(rows, event);
     return;
   }
 

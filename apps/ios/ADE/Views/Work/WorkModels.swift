@@ -196,6 +196,8 @@ struct WorkChatMessage: Identifiable, Equatable {
   var guestAuthorName: String? = nil
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
+  /// The CTO's newest reaction on this user message (one of `ctoReactionMeanings`).
+  var ctoReaction: String? = nil
   /// Monotonic content revision for the incremental streaming path. The
   /// off-main snapshot fold stamps `markdownDigest` once, but live deltas
   /// mutate the same message on the main actor and must invalidate preview
@@ -2407,6 +2409,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// The send id of the send that wrote this user message
   /// (`AgentChatEventEnvelope.userMessageClientSendId`).
   var userMessageClientSendId: String? = nil
+  /// The key a CTO reaction names this user message by
+  /// (`AgentChatEventEnvelope.userMessageReactionKey`).
+  var userMessageReactionKey: String? = nil
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.
@@ -2518,6 +2523,9 @@ enum WorkChatEvent: Equatable {
     replacementMessageId: String?,
     turnId: String?
   )
+  /// CTO only: an emoji on the person's message (`AgentChatEvent.userMessageReaction`).
+  /// Folded onto the bubble by `buildWorkChatMessages`; draws no row.
+  case userMessageReaction(targetKey: String, emoji: String, turnId: String?)
   case assistantText(text: String, turnId: String?, itemId: String?)
   case toolCall(tool: String, argsText: String, itemId: String, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
@@ -2585,6 +2593,7 @@ enum WorkChatEvent: Equatable {
     switch self {
     case .userMessage: return "user_message"
     case .userMessageResolution: return "user_message_resolution"
+    case .userMessageReaction: return "user_message_reaction"
     case .assistantText: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"

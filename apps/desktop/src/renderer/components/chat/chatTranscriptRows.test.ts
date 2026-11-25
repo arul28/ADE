@@ -5883,3 +5883,31 @@ describe("workflow script rows", () => {
     expect(rows).toEqual(full);
   });
 });
+
+describe("CTO reactions on the person's message", () => {
+  const reactionsOf = (rows: ChatTranscriptRenderEnvelope[]) => rows.map((row) => (
+    row.event.type === "user_message" ? row.event.metadata?.ctoReaction?.emoji ?? null : row.event.type
+  ));
+
+  it.each([
+    ["a steer", { steerId: "s-1" }, "steer:s-1"],
+    ["a message id", { messageId: "m-1" }, "message:m-1"],
+    ["a turn only", { turnId: "t-1" }, "turn:t-1"],
+  ] as const)("puts the newest reaction on a message keyed by %s, and adds no row", (_label, ids, targetKey) => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-11-24T10:00:00.000Z", { type: "user_message", text: "older", messageId: "m-0" }),
+      env("2026-11-24T10:00:01.000Z", { type: "user_message", text: "ship it", ...ids }),
+      env("2026-11-24T10:00:02.000Z", { type: "user_message_reaction", targetKey, emoji: "👀" }),
+      env("2026-11-24T10:00:03.000Z", { type: "user_message_reaction", targetKey, emoji: "👍" }),
+    ]);
+    expect(reactionsOf(rows)).toEqual([null, "👍"]);
+  });
+
+  it("changes nothing when the reacted message is not in the window", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-11-24T10:00:00.000Z", { type: "user_message", text: "hello", messageId: "m-1" }),
+      env("2026-11-24T10:00:01.000Z", { type: "user_message_reaction", targetKey: "message:gone", emoji: "🎉" }),
+    ]);
+    expect(reactionsOf(rows)).toEqual([null]);
+  });
+});

@@ -67,8 +67,11 @@ import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_SPAWN_KIND_VALUES,
+  CTO_REACTION_EMOJIS,
+  CTO_REACTION_LEGEND,
   isUnsupportedActiveTurnDispatchModeError,
   type AgentChatSteerResult,
+  type CtoReactionEmoji,
 } from "../../../../shared/types/chat";
 
 export interface CtoOperatorToolDeps {
@@ -169,6 +172,10 @@ export interface CtoOperatorToolDeps {
    * keeps running. Allowed only for a person's mid-task message.
    */
   postInterimReply?: (args: { text: string }) => Promise<{ posted: boolean; note?: string }>;
+  /** `noReply`: end the CTO's running turn with no written reply. */
+  endTurnQuietly?: () => Promise<{ quiet: boolean; note?: string }>;
+  /** `react`: an emoji on the person's newest message, in place of a reply. */
+  reactToMessage?: (args: { emoji: CtoReactionEmoji }) => Promise<{ reacted: boolean; note?: string }>;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   /** Durable wait: wake this thread when other chats reach a state. */
@@ -942,12 +949,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       "config-toml; for Droid's finer-grained levels, pass droidPermissionMode. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead. " +
-      "It is for real work (code changes, long investigations) — NOT for answering questions: to find out what is on a machine " +
+      "It is for real work (code changes, long investigations), or a read-only background helper (permissionMode 'plan' on your own lane) " +
+      "when your harness has no background subagent that reports back. NOT for a quick question: to find out what is on a machine " +
       "(lanes, chats, status, files), call the read tools yourself (listLanes, listChats, getChatStatus, runMachineAction) with machine. " +
       "Pass machine to start it on another of the account's machines (call listMachines first): the chat runs on the machine that owns its lane. " +
       "A chat on another machine cannot wake you, so a one-time check-in on your own thread is scheduled for checkBackMinutes later.",
     inputSchema: z.object({
-      laneId: z.string().optional().describe("Existing lane to run in, on the machine the chat runs on. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
+      laneId: z.string().optional().describe("Existing lane to run in, on the machine the chat runs on. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane (the primary lane), except for a read-only helper with permissionMode 'plan'."),
       modelId: z.string().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). Required."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
@@ -1062,6 +1070,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           freshLaneName: title?.trim() || "implementation chat",
           freshLaneDescription: "Dedicated implementation lane launched from the CTO coordinator chat.",
         });
+        // The main checkout takes only a read-only helper; work that may edit goes to a lane of its own.
+        // Without a laneId the resolver made a new lane, so only a named one needs the check.
+        if (laneId?.trim() && permissionMode !== "plan") {
+          const lanes = await deps.laneService.list({ includeArchived: false, includeStatus: false });
+          if (lanes.find((lane) => lane.id === executionLaneId)?.laneType === "primary") {
+            throw new Error(
+              "The main checkout takes only a read-only helper (permissionMode \"plan\"). "
+              + "For work that may edit files, leave out laneId so a new lane is made, or pass another lane.",
+            );
+          }
+        }
         const session = await deps.createChat({
           laneId: executionLaneId,
           provider: resolved.provider,
@@ -3115,6 +3134,43 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         const result = await deps.postInterimReply({ text: message });
         return { success: true, ...result };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "noReply", () => core({
+    description:
+      "End this turn with no reply. Use it when a child chat, a schedule or ADE woke you and the person needs "
+      + "nothing new: progress, a push, a PR opened, checks running, a review round, a conflict the child fixed. "
+      + "Call it last and write nothing after it; any text after it is not shown.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      if (!deps.endTurnQuietly) return { success: false, error: "Ending quietly is not available on this runtime." };
+      try {
+        // A refusal means the turn still needs a reply: not a success.
+        const result = await deps.endTurnQuietly();
+        return result.quiet ? { success: true, quiet: true } : { success: false, error: result.note ?? "Not done." };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "react", () => core({
+    description:
+      "Put an emoji on the person's newest message instead of replying, when they wrote and need no words back "
+      + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_LEGEND}. `
+      + "A newer reaction replaces the old one. It ends the turn with no reply: write nothing after it.",
+    inputSchema: z.object({
+      emoji: z.enum(CTO_REACTION_EMOJIS as [CtoReactionEmoji, ...CtoReactionEmoji[]]),
+    }),
+    execute: async ({ emoji }) => {
+      if (!deps.reactToMessage) return { success: false, error: "Reactions are not available on this runtime." };
+      try {
+        const result = await deps.reactToMessage({ emoji });
+        return result.reacted ? { success: true, reacted: true } : { success: false, error: result.note ?? "Not done." };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

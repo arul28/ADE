@@ -650,7 +650,12 @@ export type AgentChatHostContinuationMetadata = {
     /** A subagent waits on a card only the user can answer; ADE tells the parent agent. */
     | "subagent_awaiting_user"
     /** The status check the stall card's Nudge sends, in ADE's words. */
-    | "stall_nudge";
+    | "stall_nudge"
+    /**
+     * The CTO's one-line report of a child chat's turn. Its `spawn_completed`
+     * notice already shows the line, so clients draw nothing for the wake.
+     */
+    | "cto_child_report";
   /**
    * The ADE row's one line for `reason` (`HOST_CONTINUATION_REASON_LABEL`),
    * stamped by the host so clients need no table of their own. Older hosts
@@ -675,6 +680,7 @@ export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContin
   provider_schedule_cleanup: "Cleaning up old provider schedules",
   cto_intro: "Started the CTO's introduction",
   cto_handoff_note: "Asked for a hand-off note",
+  cto_child_report: "A chat it started reported back",
 };
 
 /** The line for a reason, or null for a reason this build does not know. */
@@ -1468,6 +1474,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */
   unprocessedMessageResolution?: AgentChatUnprocessedMessageResolutionMetadata;
+  /** Renderer-folded: the CTO's newest `user_message_reaction` on this message. */
+  ctoReaction?: { emoji: CtoReactionEmoji };
   /**
    * Marks the continue prompt the host sends for Resume now. That path cancels
    * the durable row itself, and AWAITS the cancellation, before dispatching —
@@ -1658,6 +1666,17 @@ export type AgentChatEvent =
       state: "completed";
       resolvedAt: string;
       replacementMessageId?: string;
+      turnId?: string;
+    }
+  | {
+      /**
+       * CTO only: an emoji the CTO put on the person's message instead of a
+       * written reply. `targetKey` is `userMessageReactionKey` of that
+       * message; a newer reaction on the same key replaces the older one.
+       */
+      type: "user_message_reaction";
+      targetKey: string;
+      emoji: CtoReactionEmoji;
       turnId?: string;
     }
   | {
@@ -6146,6 +6165,51 @@ export type AgentChatSetRootFullAccessArgs = { allowed: boolean };
  * merged into the provider's streaming text.
  */
 export const CTO_INTERIM_REPLY_ID_PREFIX = "cto-reply:";
+
+/**
+ * The reactions the CTO may put on the person's message (`react`), each with
+ * what it means. A fixed set, so every client draws the same thing.
+ */
+export const CTO_REACTION_MEANINGS = {
+  "👍": "got it",
+  "👀": "looking into it",
+  "✅": "done",
+  "🎉": "celebrate",
+  "❤️": "thanks",
+  "😂": "funny",
+  "😢": "sorry",
+} as const;
+
+export type CtoReactionEmoji = keyof typeof CTO_REACTION_MEANINGS;
+
+export const CTO_REACTION_EMOJIS = Object.keys(CTO_REACTION_MEANINGS) as CtoReactionEmoji[];
+
+/** "👍 got it, 👀 looking into it, …" for the CTO's prompt and tool descriptions. */
+export const CTO_REACTION_LEGEND = CTO_REACTION_EMOJIS.map((emoji) => `${emoji} ${CTO_REACTION_MEANINGS[emoji]}`).join(", ");
+
+export function isCtoReactionEmoji(value: unknown): value is CtoReactionEmoji {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(CTO_REACTION_MEANINGS, value);
+}
+
+/**
+ * The key a `user_message_reaction` names its message by: its steer id, else
+ * its message id, else its turn. Null for a message with none of them.
+ * Clients compute the same key for each bubble (iOS mirrors this).
+ */
+export function userMessageReactionKey(event: {
+  messageId?: string;
+  steerId?: string;
+  turnId?: string;
+}): string | null {
+  // A steer writes one row per delivery state; its steer id is the one id
+  // every row shares.
+  const steerId = event.steerId?.trim();
+  if (steerId) return `steer:${steerId}`;
+  const messageId = event.messageId?.trim();
+  if (messageId) return `message:${messageId}`;
+  const turnId = event.turnId?.trim();
+  return turnId ? `turn:${turnId}` : null;
+}
 
 /** True when `provider` can redirect a turn that is already running. */
 export function providerSupportsLiveRedirect(provider: string): boolean {

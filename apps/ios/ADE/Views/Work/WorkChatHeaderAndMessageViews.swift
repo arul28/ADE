@@ -693,6 +693,16 @@ struct WorkChatMessageBubble: View, Equatable {
           // One accessibility element per message: the first piece speaks it.
           .accessibilityHidden(segment.map { !$0.isFirst } ?? false)
         }
+        // The CTO's reaction tucks under the bubble's bottom trailing corner,
+        // overlapping it a little (desktop `UserMessageReaction`).
+        if isLastPiece, hasText || hasAttachments, let reaction = message.ctoReaction {
+          WorkUserMessageReactionBadge(emoji: reaction)
+            // A new emoji is a new badge, so it pops in again.
+            .id(reaction)
+            .padding(.top, -14)
+            .padding(.trailing, 12)
+            .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
+        }
         // The CTO answers mid-task input on its own, so its thread shows no
         // delivery receipts; only a send that actually failed is worth a word.
         if isLastPiece, let deliveryBadge,
@@ -2411,6 +2421,30 @@ extension View {
   }
 }
 
+/// The CTO's emoji on the person's message: a small round badge on a raised
+/// surface with a hairline edge, popping in when it lands or changes
+/// (desktop `UserMessageReaction`).
+struct WorkUserMessageReactionBadge: View {
+  let emoji: String
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var appeared = false
+
+  var body: some View {
+    Text(emoji)
+      .font(.system(size: 13))
+      .frame(width: 24, height: 24)
+      .background(ADEColor.raisedBackground, in: Circle())
+      .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.75))
+      .scaleEffect(appeared || reduceMotion ? 1 : 0.4)
+      .opacity(appeared ? 1 : 0)
+      .onAppear {
+        withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) { appeared = true }
+      }
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("Reacted \(ctoReactionMeanings[emoji] ?? emoji)")
+  }
+}
+
 /// Why ADE wrote a message into the chat (`metadata.hostContinuation.reason`),
 /// for an older host that sends no `label`. A current host stamps the line
 /// itself (desktop `HOST_CONTINUATION_REASON_LABEL`), so a new reason needs no
@@ -2429,6 +2463,7 @@ func workAdeMessageReasonLabel(_ reason: String) -> String {
   case "provider_schedule_cleanup": return "Cleaning up old provider schedules"
   case "cto_intro": return "Started the CTO's introduction"
   case "cto_handoff_note": return "Asked for a hand-off note"
+  case "cto_child_report": return "A chat it started reported back"
   default: return "Sent a message for you"
   }
 }

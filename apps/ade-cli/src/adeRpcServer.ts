@@ -69,6 +69,7 @@ import {
 } from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
+import { createCtoExecutionLaneResolver } from "../../desktop/src/main/services/ai/tools/ctoExecutionLane";
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
@@ -227,6 +228,8 @@ import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
+  CTO_REACTION_EMOJIS,
+  CTO_REACTION_LEGEND,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
 
@@ -1552,6 +1555,27 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "noReply",
+    description: "End this turn with no reply: a child chat, a schedule or ADE woke you and the person needs nothing new (progress, a push, a PR opened, checks running, a review round, a conflict the child fixed). Call it last; text after it is not shown.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
+    }
+  },
+  {
+    name: "react",
+    description: `Put an emoji on the person's newest message instead of replying, when they wrote and need no words back. ${CTO_REACTION_LEGEND}. A newer reaction replaces the old one. Ends the turn with no reply.`,
+    inputSchema: {
+      type: "object",
+      required: ["emoji"],
+      additionalProperties: false,
+      properties: {
+        emoji: { type: "string", enum: [...CTO_REACTION_EMOJIS] }
+      }
+    }
+  },
+  {
     name: "listChats",
     description: "List ADE Work chat sessions available to the CTO.",
     inputSchema: {
@@ -1825,6 +1849,8 @@ const MUTATION_TOOLS = new Set([
   "remember",
   "forget",
   "replyNow",
+  "noReply",
+  "react",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
   // A chat on another machine whose turn ended letting go of the devices it holds here.
@@ -5950,11 +5976,13 @@ async function runCtoOperatorBridgeTool(
   // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
   // only when a create or update actually runs.
   const bridgeActor = async () => (await callerRuntimeActor(runtime, session, false)) ?? undefined;
+  // The caller is the CTO chat itself; the service refuses any other session.
+  const ctoChatSessionId = session.identity.chatSessionId?.trim() || session.identity.callerId;
   const tools = createCtoOperatorTools({
     currentSessionId: session.identity.callerId || "ade-cli-cto",
     defaultLaneId,
     sessionService: runtime.sessionService,
-    resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
+    resolveExecutionLane: createCtoExecutionLaneResolver(runtime.laneService, runtime.logger),
     laneService: runtime.laneService,
     prService: runtime.prService ?? null,
     terminalWatchService: runtime.terminalWatchService ?? null,
@@ -5962,11 +5990,9 @@ async function runCtoOperatorBridgeTool(
     issueTracker: runtime.linearIssueTracker ?? null,
     ctoMemoryService: runtime.ctoMemoryService ?? null,
     readHistory: (historyArgs) => agentChatService.readCtoHistory(historyArgs),
-    // The caller is the CTO chat itself; the service refuses any other session.
-    postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({
-      sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
-      text,
-    }),
+    postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({ sessionId: ctoChatSessionId, text }),
+    endTurnQuietly: async () => agentChatService.endCtoTurnQuietly({ sessionId: ctoChatSessionId }),
+    reactToMessage: async ({ emoji }) => agentChatService.reactToCtoMessage({ sessionId: ctoChatSessionId, emoji }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,

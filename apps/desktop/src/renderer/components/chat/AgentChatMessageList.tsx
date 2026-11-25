@@ -61,7 +61,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
-import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS } from "../../../shared/types/chat";
+import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, CTO_REACTION_MEANINGS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS, type CtoReactionEmoji } from "../../../shared/types/chat";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -1306,6 +1306,31 @@ function UserMessageSendConfirmations({
         </motion.div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The CTO's reaction to this message, in place of a written reply: a small
+ * badge tucked under the bubble's corner. Keyed on the emoji, so a newer
+ * reaction pops in again.
+ */
+function UserMessageReaction({ emoji }: { emoji: CtoReactionEmoji }) {
+  const meaning = CTO_REACTION_MEANINGS[emoji];
+  return (
+    <motion.span
+      key={emoji}
+      data-ade-find-skip=""
+      data-testid="chat-user-message-reaction"
+      role="img"
+      aria-label={`Reacted ${meaning}`}
+      title={`Reacted: ${meaning}`}
+      className="relative z-10 -mt-2 mr-3 inline-flex h-[calc(var(--chat-font-size)*24/14)] min-w-[calc(var(--chat-font-size)*24/14)] select-none items-center justify-center rounded-full border border-fg/[0.10] bg-surface-raised px-1.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-none"
+      initial={{ opacity: 0, scale: 0.6 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ type: "spring", stiffness: 520, damping: 26 }}
+    >
+      {emoji}
+    </motion.span>
   );
 }
 
@@ -3512,6 +3537,7 @@ function renderEvent(
             </div>
           ) : null}
         </div>
+        {event.metadata?.ctoReaction ? <UserMessageReaction emoji={event.metadata.ctoReaction.emoji} /> : null}
         <UserMessageStatusRow
           event={event}
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}

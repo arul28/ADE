@@ -3526,6 +3526,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// message ADE Cloud held for the chat carries its held message's id, so
   /// the chat finds the real message by id, not by text.
   var userMessageClientSendId: String?
+  /// `workUserMessageReactionKey` of a `user_message`: the key a CTO
+  /// `user_message_reaction` names it by. Kept beside the event so
+  /// `AgentChatEvent.userMessage` does not grow a message id.
+  var userMessageReactionKey: String?
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3612,6 +3616,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var metadataMarksRestartResume = false
     var metadataGuestAuthorName: String?
     var clientSendId: String?
+    var messageId: String?
+    var steerId: String?
+    var turnId: String?
 
     private struct MessageAuthor: Decodable {
       var kind: String?
@@ -3649,6 +3656,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case accountLabel
       case summary
       case clientSendId
+      case messageId
+      case steerId
+      case turnId
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -3672,6 +3682,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       failDetail = try? container.decodeIfPresent(String.self, forKey: .failDetail)
       summary = try? container.decodeIfPresent(String.self, forKey: .summary)
       clientSendId = (try? container.decodeIfPresent(String.self, forKey: .clientSendId)).flatMap { $0 }
+      messageId = (try? container.decodeIfPresent(String.self, forKey: .messageId)).flatMap { $0 }
+      steerId = (try? container.decodeIfPresent(String.self, forKey: .steerId)).flatMap { $0 }
+      turnId = (try? container.decodeIfPresent(String.self, forKey: .turnId)).flatMap { $0 }
       if let metadata = try? container.nestedContainer(keyedBy: MetadataKey.self, forKey: .metadata) {
         metadataMarksAdeAuthor = agentChatAdeAuthoredMetadataKeys.contains { name in
           let key = MetadataKey(name)
@@ -3766,6 +3779,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true
     userMessageClientSendId = rawEvent?.type == "user_message" ? rawEvent?.clientSendId.flatMap { nonEmptyTrimmed($0) } : nil
+    userMessageReactionKey = rawEvent?.type == "user_message"
+      ? workUserMessageReactionKey(steerId: rawEvent?.steerId, messageId: rawEvent?.messageId, turnId: rawEvent?.turnId)
+      : nil
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.
@@ -4260,6 +4276,28 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 /// `metadata.sideChat` on a message a side chat sent to its main chat.
 let agentChatSideChatMetadataKey = "sideChat"
 
+/// The reactions the CTO may put on the person's message (`react`), each with
+/// what it means. A fixed set; the same as desktop `CTO_REACTION_MEANINGS`.
+let ctoReactionMeanings: [String: String] = [
+  "👍": "got it",
+  "👀": "looking into it",
+  "✅": "done",
+  "🎉": "celebrate",
+  "❤️": "thanks",
+  "😂": "funny",
+  "😢": "sorry",
+]
+
+/// The key a `user_message_reaction` names its message by: its steer id, else
+/// its message id, else its turn (each trimmed). Nil for a message with none.
+/// The same as desktop `userMessageReactionKey`; keep the two the same.
+func workUserMessageReactionKey(steerId: String?, messageId: String?, turnId: String?) -> String? {
+  if let steerId = nonEmptyTrimmed(steerId) { return "steer:\(steerId)" }
+  if let messageId = nonEmptyTrimmed(messageId) { return "message:\(messageId)" }
+  if let turnId = nonEmptyTrimmed(turnId) { return "turn:\(turnId)" }
+  return nil
+}
+
 let agentChatAdeAuthoredMetadataKeys = [
   "boardMove", "prWatchWake", "terminalWatchWake", "scheduledWake", "spawnCompletion",
   "agentRelay", "hostContinuation", "usageLimitResume", "automationRun",
@@ -4290,6 +4328,10 @@ enum AgentChatEvent: Decodable, Equatable {
     replacementMessageId: String?,
     turnId: String?
   )
+  /// CTO only: an emoji the CTO put on the person's message instead of a
+  /// reply. `targetKey` is `workUserMessageReactionKey` of that message; the
+  /// newest reaction per key wins. Draws on the bubble, never as a row.
+  case userMessageReaction(targetKey: String, emoji: String, turnId: String?)
   case text(text: String, messageId: String?, turnId: String?, itemId: String?, phase: String? = nil)
   case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
@@ -4549,6 +4591,8 @@ extension AgentChatEvent {
     case processed
     case resolvedAt
     case replacementMessageId
+    case targetKey
+    case emoji
     case messageId
     case itemId
     case phase
@@ -4730,6 +4774,19 @@ extension AgentChatEvent {
         state: try container.decode(String.self, forKey: .state),
         resolvedAt: try container.decode(String.self, forKey: .resolvedAt),
         replacementMessageId: try container.decodeIfPresent(String.self, forKey: .replacementMessageId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "user_message_reaction":
+      // A missing key or an emoji outside the fixed set is dropped: nothing draws.
+      guard let targetKey = try decodeNonEmptyString(forKey: .targetKey),
+            let emoji = try container.decodeIfPresent(String.self, forKey: .emoji),
+            ctoReactionMeanings[emoji] != nil else {
+        self = .unknown(type: type)
+        return
+      }
+      self = .userMessageReaction(
+        targetKey: targetKey,
+        emoji: emoji,
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "text":
@@ -5333,6 +5390,7 @@ extension AgentChatEvent {
     switch self {
     case .userMessage: return "user_message"
     case .userMessageResolution: return "user_message_resolution"
+    case .userMessageReaction: return "user_message_reaction"
     case .text: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"

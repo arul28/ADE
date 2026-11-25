@@ -17,6 +17,7 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 ### Chat runtime (`apps/desktop/src/main/services/chat/`)
 
 - `agentChatService.ts` — the CTO session (`ensureIdentitySession`, `listIdentitySessions`), the disposable provider thread `refreshCtoProviderThread()` and the settled-turn decisions in `onCtoTurnSettled()`, the fallback model switch, the once-per-thread staging of the static context and conversation tail, `seedCtoIntroTurn()`, the attention probe `getCtoAttention()`, and `readCtoHistory()` behind the `readHistory` tool.
+- `ctoQuietTurn.ts` — `stepCtoQuietTurn()`, the pure state behind `noReply` and `react`: which text a quiet turn drops, which message a reaction may land on, and what ends the quiet (see [How a turn ends](#how-a-turn-ends)).
 - `chatScheduledWorkScheduler.ts` — the scheduled-work rows behind routines, including the per-row pause and run-now operations. Run now takes the same shared claim a timer fire takes (so two brains cannot both deliver), saves the `fired` row before delivering and rolls it back with the claim when that save fails, and gives a cron's claim back when its occurrence did not move.
 - `ctoTurnContext.ts` — the pure pieces: `truncateTailToLineBoundary()`, `readChildPullRequestNumber()`, `formatCtoChildReportLine()`.
 - `providerThreadContinuity.ts` — which provider-side thread the next send will land on (`persistedPointerState()`, `providerThreadRef()`, `armIfStale()`), the signal that decides whether the static block and conversation tail ride a turn.
@@ -25,6 +26,7 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 ### Operator tools (`apps/desktop/src/main/services/ai/tools/`)
 
 - `ctoOperatorTools.ts` — the CTO's tool factory: the memory tools (`remember`, `forget`, `trackWork`, `finishWork`, `readHistory`, `readDiscoveries`), the pack loader `loadCtoTools`, scheduling, chat spawn and supervision, lanes/PRs/git/tests, Linear, proof and the cross-machine tools.
+- `ctoExecutionLane.ts` — `createCtoExecutionLaneResolver()`: where `spawnChat` work runs, shared by the in-process CTO and the MCP bridge (see [Where CTO-launched work runs](#where-cto-launched-work-runs)).
 - `ctoToolPacks.ts` — the closed list of packs and their one-line scopes. No imports, so the prompt builder can read it without the tool runtime.
 - `ctoCrossMachine.ts`, `ctoCrossMachineTools.ts` — the cross-machine tool contract and implementation (`listMachines`, `listMachineActions`, `runMachineAction`, the `machine` argument).
 - `universalTools.ts` — hosts `recordDiscovery`, the append-only tool every agent gets.
@@ -217,6 +219,54 @@ It applies only when the identity is `cto`, the delivery is inline (OpenCode's `
 
 Each delivered wrapped message grants the turn one `replyNow({ message })` (core pack, 1–600 characters), at most three, cleared when the turn settles. Without one the tool answers `{ posted: false, note: "Not posted: nobody asked mid-task. Keep working and answer in your final reply." }`. `postCtoInterimReply()` flushes the provider's buffered text, then commits a `text` event of its own (`messageId` and `itemId` `cto-reply:<uuid>`, `CTO_INTERIM_REPLY_ID_PREFIX`, phase `partial_answer`, secret-scrubbed), so it never merges with the provider's streaming text; the turn fold keeps `partial_answer` prose visible, and it reaches the conversation tail and `readHistory` as an assistant entry of its own.
 
+### How a turn ends
+
+Every CTO turn ends one of three ways: a written reply, a reaction, or nothing. Two core-pack tools give the last two.
+
+- `noReply()` ends the turn with no visible reply. It is for a wake (a child chat's report, a schedule, ADE itself) that gives the person nothing new: progress, a push, a PR opened, checks running, a review round, a conflict the child fixed.
+- `react({ emoji })` puts one emoji on the person's newest message instead of words. The set is fixed (`CTO_REACTION_MEANINGS` in `shared/types/chat.ts`): 👍 got it, 👀 looking into it, ✅ done, 🎉 celebrate, ❤️ thanks, 😂 funny, 😢 sorry. The brain writes a `user_message_reaction` event (`targetKey`, `emoji`, `turnId`). Clients put the newest reaction per `targetKey` on that message's bubble, so a newer reaction replaces the old one.
+
+Both reach Claude in-process and every other CTO provider through the ADE MCP bridge (`ade-cto_noReply`, `ade-cto_react`). Either way they land in `endCtoTurnQuietly()` and `reactToCtoMessage()` in `agentChatService`:
+
+- After either call, the rest of the turn's text is dropped at `commitChatEvent`: same turn, or untagged. What the turn had already written before the call stays.
+- Quiet ends at that turn's `done`, at the next turn's start, or when the person writes a message the turn reads.
+- A reaction lands on the person's newest message that the running turn has read (`ctoTurnReadsPersonMessage`): not a queued, failed or unprocessed steer, and not a message ADE wrote. An `accepted` steer counts only on Codex; on other providers the later `delivered` row counts.
+- The brain stamps a `messageId` on CTO user messages that carry no id (Codex sends none), so the message has a key to react to.
+- The target lives in memory. After a brain restart `react` refuses, and the CTO replies instead.
+- Both tools return `success: false` with a note when they refuse: no turn is running, the person wrote nothing, or the emoji is outside the set. The CTO then has to reply.
+
+The child-report wake is written as a `user_message` with `metadata.hostContinuation.reason: "cto_child_report"`. The `spawn_completed` line already shows the report, so the wake draws no row on desktop, web or iOS. A quiet turn after it leaves only the turn's footer: no empty bubble and no error.
+
+The doctrine in `IMMUTABLE_CTO_DOCTRINE` (`ctoStateService.ts`) tells the CTO which way to end:
+
+- Reply when the person asked something or must know or act.
+- React when they wrote and need no words back.
+- Say nothing when a wake brings nothing new. Progress is not news.
+- Speak up only when the work is done, something needs the person, or something failed that the CTO can't fix.
+- Never announce that it started or messaged a helper or child.
+
+### How the CTO delegates
+
+The doctrine keeps the CTO chat free for the person:
+
+- **Inline:** what it already knows, or a call or two.
+- **Background helper:** research, log checks and other multi-step work that changes no repository. The CTO tells the helper not to edit files.
+- **A lane:** anything that changes a repository or needs a branch or PR, through `spawnChat`.
+
+When a helper or child reports back, the CTO passes on only what matters, in a line, or ends with `noReply`.
+
+Which background helper depends on the harness:
+
+| Harness | Background helper that wakes the CTO when done |
+| --- | --- |
+| Claude | `Agent` with `run_in_background` (`Explore` for read-only work) |
+| OpenCode | the `subagent` tool |
+| Codex | none: `spawn_agent` can't wake the CTO after its turn ends, so it uses a `spawnChat` helper |
+| Cursor | none: a background `task` gives no completion signal, so it uses a `spawnChat` helper |
+| Copilot | none: no native subagent, so it uses a `spawnChat` helper |
+
+A `spawnChat` helper runs with `permissionMode "plan"` on the CTO's own lane. ADE does not block a provider's native subagents in the CTO chat.
+
 ### The opening turn
 
 A brand-new CTO thread gets one visible opening message (`CTO_INTRO_PROMPT`): introduce yourself, say what you can do here, then scan the project and say what you see. It is a real user turn, not a canned assistant message, so nothing fabricated enters the transcript. `intro` in the onboarding marker list makes it once per project; there is no setup wizard.
@@ -243,7 +293,7 @@ A new home takes the copy when it moves in (`adopt`): the notes, open work and i
 
 ### Where CTO-launched work runs
 
-The CTO session is pinned to the project's primary lane, and its own work never runs there. `spawnChat` without a `laneId` creates a fresh lane for the work; an explicit `laneId` is honoured when the person named an existing lane. On another machine, `machine` names where the lane and its chat live, and a one-time check-in wakes the CTO when that child should report. A finished child comes back as one line — its title, provider, outcome and PR if there is one — never a pasted transcript.
+The CTO session is pinned to the project's primary lane (the main checkout), and its own work never runs there. `spawnChat` without a `laneId` creates a fresh lane for the work, in-process and over the MCP bridge alike (`createCtoExecutionLaneResolver`); an explicit `laneId` is honoured when the person named an existing lane. A local spawn onto the main checkout is refused unless `permissionMode` is `plan`, so only a read-only helper runs there. On another machine, `machine` names where the lane and its chat live, and a one-time check-in wakes the CTO when that child should report. A finished child comes back as one line — its title, provider, outcome and PR if there is one — never a pasted transcript.
 
 ## The page
 
@@ -274,6 +324,7 @@ The CTO thread is drawn differently from every other chat, keyed on `presentatio
 
 - **One working line.** During a live turn, the tool and work rows collapse into `CtoWorkingLine`: a 16 px working avatar, the latest step in plain words ("Checking PR #12", "Reading a chat", "Starting a chat on Codex"), and the elapsed time. Click it to see every step; a second click shows the raw tool calls. When the turn ends, the normal turn fold takes over.
 - **Quiet chips.** A finished call to a state-changing tool draws a chip instead of a tool row: Scheduled · `<title>`, Cancelled · `<title>`, Paused / Resumed · `<title>`, Remembered · `<note>`, Forgot · `<note>`, Tracking · `<text>`, Done · `<text>`. A failed call says "Couldn't schedule" and so on. A call still running draws nothing here, because the working line names it.
+- **Reactions and quiet turns.** A `react` draws a small emoji badge on the person's bubble (`UserMessageReaction` in `AgentChatMessageList.tsx`; iOS `WorkUserMessageReactionBadge`), folded in by `attachUserMessageReaction` in `chatTranscriptRows.ts` (iOS `WorkChatMessageFold`). A turn ended with `noReply` or `react` shows only its footer.
 - **Fresh context.** The `cto_context_refreshed` notice is a hairline divider labelled "Fresh context", not a card.
 
 Non-CTO chats are unchanged.

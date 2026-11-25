@@ -392,6 +392,36 @@ describe("createCtoOperatorTools", () => {
       }));
     });
 
+    it("lets only a read-only helper run on the main checkout", async () => {
+      const deps = buildDeps({
+        resolveExecutionLane: vi.fn(async ({ requestedLaneId }) => requestedLaneId ?? "lane-fresh"),
+        laneService: {
+          list: vi.fn().mockResolvedValue([
+            { id: "lane-main", laneType: "primary" },
+            { id: "lane-work", laneType: "worktree" },
+          ]),
+          create: vi.fn(),
+        } as any,
+      });
+      const tools = createCtoOperatorTools(deps);
+      const modelId = "openai/gpt-5.6-sol";
+
+      for (const permissionMode of [undefined, "edit", "full-auto"] as const) {
+        const refused = await (tools.spawnChat as any).execute({ modelId, laneId: "lane-main", permissionMode });
+        expect(refused.success, String(permissionMode)).toBe(false);
+      }
+      expect(deps.createChat).not.toHaveBeenCalled();
+
+      await (tools.spawnChat as any).execute({ modelId, laneId: "lane-main", permissionMode: "plan" });
+      await (tools.spawnChat as any).execute({ modelId, laneId: "lane-work", permissionMode: "full-auto" });
+      await (tools.spawnChat as any).execute({ modelId });
+      expect((deps.createChat as any).mock.calls.map(([args]: any[]) => [args.laneId, args.permissionMode ?? null])).toEqual([
+        ["lane-main", "plan"],
+        ["lane-work", "full-auto"],
+        ["lane-fresh", null],
+      ]);
+    });
+
     it("accepts only the two spawn kinds at the schema layer, defaulting to subagent", () => {
       const tools = createCtoOperatorTools(buildDeps());
 

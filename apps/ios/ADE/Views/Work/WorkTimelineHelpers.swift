@@ -266,6 +266,10 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(resolvedAt)
     combineOptional(replacementMessageId, into: &hasher)
     combineOptional(turnId, into: &hasher)
+  case .userMessageReaction(let targetKey, let emoji, let turnId):
+    hasher.combine(targetKey)
+    hasher.combine(emoji)
+    combineOptional(turnId, into: &hasher)
   case .assistantText(let text, let turnId, let itemId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -4300,7 +4304,7 @@ struct WorkReasoningTimingFold: Equatable {
 private func workReasoningRunEndsAt(_ event: WorkChatEvent) -> Bool {
   switch event {
   case .reasoning, .activity, .sources, .tokens, .pendingInputResolved, .turnDiagnostics,
-       .userMessageResolution, .queueReordered, .unknown:
+       .userMessageResolution, .userMessageReaction, .queueReordered, .unknown:
     return false
   case .status(let turnStatus, let message, _):
     let status = turnStatus.lowercased()
@@ -4850,7 +4854,7 @@ func eventCard(
       // redundant rows under each tool group. Live streaming hints come from
       // WorkActivityIndicator, not the persisted timeline.
       return nil
-    case .userMessageResolution:
+    case .userMessageResolution, .userMessageReaction:
       // Folded into the originating user bubble by `buildWorkChatMessages`.
       return nil
     case .plan:
@@ -5778,6 +5782,7 @@ func workTurnId(for event: WorkChatEvent) -> String? {
   switch event {
   case .userMessage(_, _, let turnId, _, _, _),
        .userMessageResolution(_, _, _, _, _, let turnId),
+       .userMessageReaction(_, _, let turnId),
        .assistantText(_, let turnId, _),
        .toolCall(_, _, _, _, let turnId),
        .toolResult(_, _, _, _, let turnId, _, _, _),

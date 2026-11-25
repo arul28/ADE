@@ -310,6 +310,8 @@ func ctoStepWords(toolName: String, argsText: String?) -> String? {
   case "searchWorkspaceText", "searchCodebase", "searchProject", "Grep", "Glob": return "Searching the project"
   case "readHistory": return "Reading our history"
   case "replyNow": return "Replying"
+  case "noReply": return "Wrapping up"
+  case "react": return "Reacting"
   case "remember": return "Saving a note"
   case "forget": return "Dropping a note"
   case "trackWork": return "Noting open work"

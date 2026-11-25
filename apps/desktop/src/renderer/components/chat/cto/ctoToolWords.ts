@@ -275,6 +275,11 @@ export function ctoStepWords(toolName: string, rawArgs: unknown): string | null 
     case "replyNow":
       // A short visible reply mid-turn; it lands as an ordinary text row, never a chip.
       return "Replying";
+    case "noReply":
+      return "Wrapping up";
+    case "react":
+      // The reaction itself lands on the person's bubble.
+      return "Reacting";
     case "remember":
       return "Saving a note";
     case "forget":

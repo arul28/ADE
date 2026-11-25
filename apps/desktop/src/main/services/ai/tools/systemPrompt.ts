@@ -60,7 +60,7 @@ const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
   cursor: "Prefer Cursor's native task tool.",
   droid: "Prefer Droid's native subagent tool.",
   copilot: "Copilot has no native subagent tool here. Delegate with an ADE subagent chat.",
-  opencode: "Prefer OpenCode's native `task` tool.",
+  opencode: "Prefer OpenCode's native `subagent` tool.",
   pi: "Pi has no native subagent tool here. Delegate with `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"`: it runs as your subagent and reports back. Give it a self-contained brief.",
 };
 
