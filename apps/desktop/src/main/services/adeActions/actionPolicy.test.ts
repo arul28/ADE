@@ -3,6 +3,7 @@ import { getAdeActionInputContract } from "./actionInputContracts";
 import {
   ADE_ACTION_ALLOWLIST,
   ADE_ACTION_CTO_ONLY,
+  adeActionCallerRefusal,
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isUserOnlyAdeAction,
@@ -450,6 +451,19 @@ describe("secret-bearing action policy", () => {
     expect(isSecretBearingAdeAction("ai", "readPrivateKey")).toBe(true);
     expect(isSecretBearingAdeAction("project_secret", "listSecretNames")).toBe(false);
     expect(isSecretBearingAdeAction("lane", "list")).toBe(false);
+  });
+
+  // Another machine's brain: only a CTO may pull proof bytes (it copies them
+  // home to show them); an agent's bridge and every other secret stay refused.
+  it.each([
+    { domain: "computer_use_artifacts", action: "readArtifactRange", role: "cto", remoteBrain: true, refused: false },
+    { domain: "computer_use_artifacts", action: "readArtifactRange", role: "agent", remoteBrain: true, refused: true },
+    { domain: "account_vault", action: "get", role: "cto", remoteBrain: true, refused: true },
+    { domain: "passwords", action: "revealValue", role: "cto", remoteBrain: true, refused: true },
+    { domain: "computer_use_artifacts", action: "readArtifactRange", role: "agent", remoteBrain: false, refused: false },
+  ] as const)("$role from a remote brain ($remoteBrain) calling $domain.$action is refused: $refused", ({ domain, action, role, remoteBrain, refused }) => {
+    const refusal = adeActionCallerRefusal(domain, action, { role, userClient: false, remoteBrain });
+    expect(refusal?.kind ?? null).toBe(refused ? "policy" : null);
   });
 });
 

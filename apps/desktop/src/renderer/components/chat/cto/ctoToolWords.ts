@@ -389,6 +389,10 @@ export function ctoStepWords(toolName: string, rawArgs: unknown): string | null 
       return "Looking at proof";
     case "captureProof":
       return "Filing proof";
+    case "showMedia":
+      return "Adding a picture";
+    case "getChatProof":
+      return "Getting a chat's proof";
     case "gitStatus":
     case "gitListRecentCommits":
     case "gitListBranches":

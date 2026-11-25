@@ -1214,6 +1214,7 @@ import {
   readChildPullRequestNumber,
   truncateTailToLineBoundary,
 } from "./ctoTurnContext";
+import { formatProofForWake, shareChatProofWithCto } from "../cto/ctoProofShare";
 import {
   applyCtoToolPackVisibility,
   createCtoOperatorTools,
@@ -16198,6 +16199,7 @@ export function createAgentChatService(args: {
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
+        proofScratchDir: path.join(resolveAdeLayout(projectRoot).tmpDir, "cto-proof"),
         // These were `undefined`, so the CTO was advertised four tools that
         // could only ever answer "not available" — the same defect this whole
         // change set exists to remove.
@@ -52209,6 +52211,54 @@ export function createAgentChatService(args: {
   });
 
   /**
+   * What the CTO's wake says about the proof a child filed in the turn it
+   * reports. A child here: the proof is linked into the CTO chat (an MP4 copy
+   * for a video that needs one) and the wake carries the cite lines, so the
+   * CTO shows it without a tool call. A child on another machine: the wake
+   * says how to bring it here. Never throws; no proof is no line.
+   */
+  const ctoChildProofForWake = async (args: {
+    parentSessionId: string;
+    childSessionId: string;
+    spawnCompletion: AgentChatSpawnCompletion;
+  }): Promise<string | null> => {
+    const machineName = args.spawnCompletion.childMachineName?.trim();
+    if (machineName) {
+      return `It ran on ${machineName}. If its work shows on screen, getChatProof({ sessionId: "${args.childSessionId}", machine: ${JSON.stringify(machineName)} }) brings its screenshots and videos here to show.`;
+    }
+    const broker = computerUseArtifactBrokerRef;
+    if (!broker) return null;
+    // A chat stamps each proof with its turn; a tracked CLI does not, and one
+    // report covers its whole run.
+    const turnId = args.spawnCompletion.childTurnId?.trim();
+    const selection = turnId && managedSessions.has(args.childSessionId) ? { turnId } : "latest" as const;
+    try {
+      const shared = await shareChatProofWithCto({
+        broker,
+        chatSessionId: args.childSessionId,
+        ctoSessionId: args.parentSessionId,
+        selection,
+        scratchDir: path.join(resolveAdeLayout(projectRoot).tmpDir, "cto-proof"),
+        logger,
+      });
+      logger.info("cto.child_proof_shared", {
+        parentSessionId: args.parentSessionId,
+        childSessionId: args.childSessionId,
+        shown: shared.shown.length,
+        skipped: shared.skipped.length,
+      });
+      return formatProofForWake(shared);
+    } catch (error) {
+      logger.warn("cto.child_proof_share_failed", {
+        parentSessionId: args.parentSessionId,
+        childSessionId: args.childSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  /**
    * Route one child completion into its parent: the `subagent_result` that
    * closes the parent's card, then a wake (subagent), nothing more for a chat
    * that does not report back (`peer`), or the one-line CTO report. Shared by chat children (per finished turn) and
@@ -52381,9 +52431,15 @@ export function createAgentChatService(args: {
               // anyway, and the findings are usually about the work that just
               // finished.
               const discoveries = ctoMemoryService?.readNewDiscoveries() ?? null;
+              const proofLines = await ctoChildProofForWake({
+                parentSessionId,
+                childSessionId,
+                spawnCompletion,
+              });
               const wakeText = [
                 ctoReportLine,
                 delivery.wakeText,
+                ...(proofLines ? [proofLines] : []),
                 ...(discoveries?.text.length
                   ? [`New worker discoveries (unreviewed — save what is durable):\n${discoveries.text}`]
                   : []),

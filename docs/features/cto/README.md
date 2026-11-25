@@ -259,6 +259,8 @@ The doctrine keeps the CTO chat free for the person:
 
 When a helper or child reports back, the CTO passes on only what matters, in a line, or ends with `noReply`.
 
+**Showing proof.** The CTO puts pictures and videos in its reply as `![…](ade-proof://<id>)` lines, which play inline on desktop, web and iOS. A same-machine child's report wake carries the cite lines for the proof it filed in that turn, already linked to the CTO chat. For a child on another machine or an ADE Cloud lane, the CTO calls `getChatProof` with `machine`, which copies the files to the home. `showMedia` files a picture or video from a path. When a child's UI or remote work reports done with no proof, the CTO says what was not shown or tested. See [Proof › Proof in the CTO's answer](../proof.md#proof-in-the-ctos-answer).
+
 Which background helper depends on the harness:
 
 | Harness | Background helper that wakes the CTO when done |
