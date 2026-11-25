@@ -3197,6 +3197,12 @@ export type CloudAccountPhone = {
   /** The credits the iPhone used this period, in thousandths (0 when access is not `on`). Older servers may leave it out. */
   creditsUsedMilli?: number;
   /**
+   * Kept for CLI and desktop builds before 1.2.135, whose `ade cloud status`
+   * reads it from the account: the minutes the credits run the phone for (as
+   * on `/cloud/phone`). Sent only while access is `on`. New code never reads it.
+   */
+  minutes?: CloudPhoneMinutes;
+  /**
    * Kept for desktop builds before 1.2.135, which read `phone.extra.available`
    * unguarded; the server always sends it off and zero. Remove after. New
    * code never reads it.

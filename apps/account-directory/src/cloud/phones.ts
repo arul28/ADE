@@ -427,12 +427,15 @@ const minutesOf = (usage: PhoneUsage): CloudPhoneMinutes => ({ included: usage.u
 const LEGACY_PHONE_EXTRA: CloudAccountPhone["extra"] = { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 };
 
 /** `CloudAccountState.phone`, from D1 alone (no call to a provider): the account read is polled. */
-export async function phoneAccountState(env: CloudEnv, account: AccountRow, now: number): Promise<CloudAccountPhone> {
+export async function phoneAccountState(env: CloudEnv, account: AccountRow, now: number, credits: PhoneCredits): Promise<CloudAccountPhone> {
   const { access, choice } = await phoneAccess(env, account.user_id);
+  const rows = access === "on" ? await periodPhones(env, account.user_id, account.period_start) : [];
   return {
     access,
     ...(choice ? { providerChoice: choice.provider } : {}),
-    creditsUsedMilli: access === "on" ? phoneCreditsUsedOf(await periodPhones(env, account.user_id, account.period_start), now) : 0,
+    creditsUsedMilli: access === "on" ? phoneCreditsUsedOf(rows, now) : 0,
+    // Kept for CLI and desktop builds before 1.2.135 (`ade cloud status` reads it here); remove after.
+    ...(access === "on" ? { minutes: minutesOf(phoneUsageOf(account, rows, now, credits)) } : {}),
     extra: LEGACY_PHONE_EXTRA,
   };
 }
