@@ -5,8 +5,9 @@ export const ADE_WINDOWS_APP_USER_MODEL_ID = "com.ade.desktop";
 /**
  * Windows caption-strip geometry and colour.
  *
- * macOS gets both of these for free: `hiddenInset` traffic lights are laid out
- * and recoloured by the OS against the window's own appearance. Windows does
+ * macOS gets the colour for free: the OS recolours `hiddenInset` traffic
+ * lights against the window's own appearance. Their position does not follow
+ * zoom, which `macTrafficLightPosition` below handles. Windows does
  * neither — `titleBarOverlay` is a literal rectangle ADE declares in DIP with a
  * hardcoded colour, and it stays exactly where it was put until
  * `setTitleBarOverlay` says otherwise. Two things move underneath it:
@@ -25,7 +26,7 @@ export const ADE_WINDOWS_APP_USER_MODEL_ID = "com.ade.desktop";
  */
 
 /** ADE's header height in CSS px — mirrors `--shell-header-height` in foundation.css. */
-export const WINDOWS_TITLE_BAR_OVERLAY_CSS_HEIGHT = 32;
+export const SHELL_HEADER_CSS_HEIGHT = 32;
 
 export type WindowsTitleBarOverlayTheme = "dark" | "light";
 
@@ -57,11 +58,11 @@ export const WINDOWS_TITLE_BAR_OVERLAY_COLORS: Readonly<
  */
 export function windowsTitleBarOverlayHeight(zoomFactor: number): number {
   if (!Number.isFinite(zoomFactor) || zoomFactor <= 0) {
-    return WINDOWS_TITLE_BAR_OVERLAY_CSS_HEIGHT;
+    return SHELL_HEADER_CSS_HEIGHT;
   }
   return Math.max(
     1,
-    Math.round(WINDOWS_TITLE_BAR_OVERLAY_CSS_HEIGHT * zoomFactor),
+    Math.round(SHELL_HEADER_CSS_HEIGHT * zoomFactor),
   );
 }
 
@@ -92,7 +93,7 @@ export function windowsTitleBarOverlay(args: {
  * `y` is the top of the button row, whose centre sits 7 DIP below it (measured
  * on macOS 27: y=12 puts the centres at 19 DIP).
  */
-export const MAC_TRAFFIC_LIGHT_X = 12;
+const MAC_TRAFFIC_LIGHT_X = 12;
 const MAC_TRAFFIC_LIGHT_HALF_HEIGHT_DIP = 7;
 /** Display 100% renders at factor 1.1 (see `zoomFactorForDisplay`). */
 const MAC_DEFAULT_ZOOM_FACTOR = 1.1;
@@ -101,7 +102,7 @@ export function macTrafficLightPosition(zoomFactor: number): { x: number; y: num
   const factor = Number.isFinite(zoomFactor) && zoomFactor > 0
     ? zoomFactor
     : MAC_DEFAULT_ZOOM_FACTOR;
-  const headerCentreDip = (WINDOWS_TITLE_BAR_OVERLAY_CSS_HEIGHT * factor) / 2;
+  const headerCentreDip = (SHELL_HEADER_CSS_HEIGHT * factor) / 2;
   return {
     x: MAC_TRAFFIC_LIGHT_X,
     y: Math.max(0, Math.round(headerCentreDip - MAC_TRAFFIC_LIGHT_HALF_HEIGHT_DIP)),
