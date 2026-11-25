@@ -209,8 +209,8 @@ struct WorkSponsoredReplySlot: View {
         switch showing {
         case .consent(let notice):
           WorkSponsoredConsentCard(
-            smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format, words: CloudBalanceWords(accountStore.account),
-            notice: notice, onDismiss: { store.dismissNotice(turnKey: turnKey) }
+            smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, confirmYes: sponsored?.confirmYes == true, format: format,
+            words: CloudBalanceWords(accountStore.account), notice: notice, onDismiss: { store.dismissNotice(turnKey: turnKey) }
           )
         case .ad(let ad):
           if let gravity = ad.gravity {
@@ -446,13 +446,15 @@ struct WorkSponsoredInlineOutlet: View {
 /// The shared frame: quiet, native, never louder than the reply above it.
 /// No accent fill, no motion, no images from outside.
 private struct WorkSponsoredFrame<Content: View>: View {
+  /// More room inside, for the question and the notice.
+  var roomy = false
   @ViewBuilder var content: () -> Content
 
   var body: some View {
     let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     VStack(alignment: .leading, spacing: 5, content: content)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
+      .padding(.horizontal, roomy ? 14 : 12)
+      .padding(.vertical, roomy ? 13 : 10)
       // As wide as the chat column, so it lines up with the composer below.
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.textPrimary.opacity(0.02), in: shape)
@@ -489,6 +491,8 @@ private struct WorkSponsoredCTA: View {
   var compact = false
   /// The card's main answer: filled with the accent.
   var primary = false
+  /// As wide as its column (answers stacked on a narrow phone).
+  var fill = false
   let action: () -> Void
 
   var body: some View {
@@ -504,7 +508,7 @@ private struct WorkSponsoredCTA: View {
       .font(.system(size: compact ? 11.5 : 12.5, weight: primary ? .semibold : .medium))
       .foregroundStyle(primary ? Color.white : ADEColor.textSecondary)
       .padding(.horizontal, compact ? 8 : 10)
-      .frame(minHeight: compact ? 24 : 28)
+      .frame(maxWidth: fill ? .infinity : nil, minHeight: compact ? 24 : 28)
       .background(primary ? AnyShapeStyle(ADEColor.accentDeep) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEColor.textPrimary.opacity(primary ? 0 : 0.14), lineWidth: 0.75))
       .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -522,11 +526,15 @@ private func workSponsoredOpen(_ value: String?) {
 
 /// The one-time question, under the first finished reply of a Free cloud chat,
 /// or, where cards start on (`CloudSponsoredState.startsOn`), the notice that
-/// they are on with Turn off beside it. While the server's `smallNeedsCards`
-/// rule is on, a no has Free's Small computers use credits, so both say that
-/// on a line of its own.
+/// they are on with Turn off beside it: the glyph and title, one line on what
+/// the cards pay for, then what shows, what a no costs (while the server's
+/// `smallNeedsCards` rule is on, Free's Small computers then use credits) and
+/// what Gravity gets. The question's two answers look the same: a yes there
+/// is consent, so it is never the louder button.
 struct WorkSponsoredConsentCard: View {
   var smallNeedsCards = false
+  /// A yes is confirmed a second time (`CloudSponsoredState.confirmYes`).
+  var confirmYes = false
   /// Where the cards show, so the question names the place.
   var format: CloudSponsoredFormat = .belowReply
   /// The account's unit.
@@ -537,44 +545,49 @@ struct WorkSponsoredConsentCard: View {
   var onDismiss: () -> Void = {}
   @State private var busy = false
   @State private var error: String?
+  @State private var confirming = false
 
   var body: some View {
-    WorkSponsoredFrame {
-      Text("ADE Cloud Free")
-        .font(.system(size: 11.5))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported")
-        .font(.system(size: 13.5, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
+    WorkSponsoredFrame(roomy: true) {
+      HStack(alignment: .center, spacing: 10) {
+        Image(systemName: "megaphone.fill")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+          .frame(width: 30, height: 30)
+          .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(title)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(lead)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
         .fixedSize(horizontal: false, vertical: true)
-      Text("Free ADE Cloud chats show \(format.placeSentence), and an agent may recommend a sponsored tool."
-        + (notice && smallNeedsCards ? " They keep Small computers free." : "")
-        + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.")
-        .font(.system(size: 12.5))
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineSpacing(1.5)
-        .fixedSize(horizontal: false, vertical: true)
-      Text(costLine)
-        .font(.system(size: 12.5, weight: .medium))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineSpacing(1.5)
-        .fixedSize(horizontal: false, vertical: true)
+      }
+      VStack(alignment: .leading, spacing: 8) {
+        fact("eye", "You'll see \(format.placeSentence), and an agent may suggest a sponsored tool.")
+        fact("creditcard", costLine)
+        fact("point.3.connected.trianglepath.dotted", CloudSponsoredState.sends, fine: true)
+      }
+      .padding(.top, 9)
       ViewThatFits(in: .horizontal) {
         HStack(spacing: 8) {
-          answers
+          answers()
           Spacer(minLength: 8)
           howItWorks
         }
-        VStack(alignment: .leading, spacing: 8) {
-          HStack(spacing: 8) { answers }
+        VStack(alignment: .leading, spacing: 6) {
+          HStack(spacing: 8) { answers() }
           howItWorks
         }
-        VStack(alignment: .leading, spacing: 8) {
-          answers
+        VStack(alignment: .leading, spacing: 6) {
+          answers(fill: true)
           howItWorks
         }
       }
-      .padding(.top, 4)
+      .padding(.top, 10)
       if let error {
         Text(error)
           .font(.system(size: 11.5))
@@ -583,33 +596,70 @@ struct WorkSponsoredConsentCard: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored cards on ADE Cloud Free")
+    .alert("Turn on sponsored cards?", isPresented: $confirming) {
+      Button("Turn on") { answer(CloudSponsoredState.granted) }
+      Button("Keep them off", role: .cancel) {}
+    } message: {
+      Text(CloudSponsoredState.turnOnConfirm)
+    }
   }
 
-  /// What a no costs, on a line of its own, and where to change it.
+  private var title: String {
+    notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers free" : "Free cloud chats are ad-supported"
+  }
+
+  private var lead: String {
+    guard smallNeedsCards else { return "Sponsored cards help keep ADE Cloud free." }
+    return notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on ADE Cloud Free."
+  }
+
+  /// What a no costs, and where to change it.
   private var costLine: String {
-    let change = "You can change this in Settings › ADE Cloud."
+    let change = "You can change this any time in Settings\u{00A0}›\u{00A0}ADE\u{00A0}Cloud."
     guard smallNeedsCards else { return change }
     return "\(notice ? "Turn them off" : "Say no") and \(words.smallWithoutCards). \(change)"
   }
 
-  @ViewBuilder
-  private var answers: some View {
-    if notice {
-      WorkSponsoredCTA(title: "Got it", primary: true) { onDismiss() }
-        .disabled(busy)
-      WorkSponsoredCTA(title: smallNeedsCards ? "Turn off, use my \(words.unit)" : "Turn off") { answer(CloudSponsoredState.declined) }
-        .disabled(busy)
-    } else {
-      WorkSponsoredCTA(title: "Show sponsored cards", primary: true) { answer(CloudSponsoredState.granted) }
-        .disabled(busy)
-      WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my \(words.unit)" : "No thanks") { answer(CloudSponsoredState.declined) }
-        .disabled(busy)
+  /// One short fact with its glyph; `fine` for the small print.
+  private func fact(_ symbol: String, _ text: String, fine: Bool = false) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: fine ? 10.5 : 11.5, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 15)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(.system(size: fine ? 11.5 : 12.5))
+        .foregroundStyle(fine ? ADEColor.textMuted : ADEColor.textSecondary)
+        .lineSpacing(1.5)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
+  @ViewBuilder
+  private func answers(fill: Bool = false) -> some View {
+    if notice {
+      WorkSponsoredCTA(title: "Got it", primary: true, fill: fill) { onDismiss() }
+        .disabled(busy)
+    } else {
+      WorkSponsoredCTA(title: "Show sponsored cards", fill: fill) {
+        if confirmYes { confirming = true } else { answer(CloudSponsoredState.granted) }
+      }
+      .disabled(busy)
+    }
+    let no = notice ? "Turn off" : "No thanks"
+    WorkSponsoredCTA(title: smallNeedsCards ? "\(no), use my \(words.unit)" : no, fill: fill) { answer(CloudSponsoredState.declined) }
+      .disabled(busy)
+  }
+
   private var howItWorks: some View {
-    Button("How it works") {
+    Button {
       if let url = URL(string: "https://ade-app.dev/privacy#sponsored") { UIApplication.shared.open(url) }
+    } label: {
+      HStack(spacing: 3) {
+        Text("How it works")
+        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold))
+      }
     }
     .buttonStyle(.plain)
     .font(.system(size: 12))

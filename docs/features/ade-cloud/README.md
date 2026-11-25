@@ -720,7 +720,7 @@ move keeps the old disk.
 ### Sponsored cards and the Index (Free, behind a switch)
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`,
-migrations `0054`, `0055`, `0056`, `0062`). The account server decides everything and holds the partner
+migrations `0054`, `0055`, `0056`, `0062`, `0063`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
 under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
@@ -808,14 +808,21 @@ card, whatever the plan.
   later (`SPONSORED_REASK_MS`), and at once when it came before the ad switch
   last changed; until answered it still counts as a no.
 - **Start on in the US:** in `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`,
-  empty asks everywhere) the state carries `startsOn` instead of asking: the
+  empty asks everywhere; California, `ASK_FIRST_REGIONS` by Cloudflare's
+  `regionCode`, is asked, and so is an unknown US state) the state carries
+  `startsOn` instead of asking: the
   chat's card (and Settings › ADE Cloud) is the notice that cards are on, with
   Got it and Turn off. Shown, it is saved as `PUT /cloud/sponsored/consent
   {consent: "notice"}`, a yes with `source = notice` (migration `0062`) that
   holds only from those countries and never from a request with
   `Sec-GPC: 1`. The notice's reply asks for no card. A no given there holds
   12 months (`SPONSORED_OPT_OUT_HOLD_MS`); elsewhere the two-week re-ask
-  applies. A notice never overwrites an answer that holds. Details:
+  applies. A notice never overwrites an answer that holds. After a no, or
+  with `Sec-GPC: 1`, the state carries `confirmYes`: the question's yes and
+  Settings' switch confirm a second time (California's two-step opt-in).
+  A look at a chat keeps its state beside its country (`region`, migration
+  `0063`), so the Index checks a notice's yes where the person last looked.
+  Details:
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
 - **Testers abroad:** while ads are test ads (`gravity_live` off), an account
   on the testers list gets cards from any country; everyone else still needs

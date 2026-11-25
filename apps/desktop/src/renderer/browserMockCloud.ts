@@ -638,6 +638,10 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "starts-on") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, startsOn: true }, catalog: smallRate(null) };
   }
+  // `again`: as `small`, asked again after a no: a yes is confirmed a second time.
+  if (sponsoredParam === "again") {
+    state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, confirmYes: true }, catalog: smallRate(null) };
+  }
   // `&mockSponsoredFormat=below_reply|above_prompt|inline`: where the card shows (the server's `format`).
   const formatParam = param("mockSponsoredFormat");
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
@@ -702,8 +706,9 @@ export function applyBrowserMockCloud(ade: any): void {
       if (!state.sponsored) return null;
       // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
       const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
-      const { startsOn: _startsOn, ...sponsored } = state.sponsored;
-      state = { ...state, sponsored: { ...sponsored, consent } };
+      const { startsOn: _startsOn, confirmYes: _confirmYes, ...sponsored } = state.sponsored;
+      // After a no, a yes is confirmed a second time, as the server has it.
+      state = { ...state, sponsored: { ...sponsored, consent, ...(consent === "declined" ? { confirmYes: true } : {}) } };
       if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };
       for (const listener of statusListeners) listener();
       return state.sponsored ?? null;

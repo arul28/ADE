@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowSquareOut, Clock, CreditCard, Desktop, Info, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
 import { noteSponsoredNoticeShown, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
 import { useOnScreen } from "../../chat/sponsored/sponsoredOnScreen";
+import { turnOnSponsoredCards } from "../../chat/sponsored/SponsoredReplySlot";
 import { useDocumentVisible } from "../../chat/sponsored/useSponsoredViewer";
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
@@ -429,7 +430,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     checked={sponsoredOn}
                     disabled={busy}
                     label="Sponsored cards"
-                    onChange={(enabled) => void run(() => setCloudSponsoredConsent(enabled ? "granted" : "declined"))}
+                    onChange={(enabled) => void run(() => (enabled ? turnOnSponsoredCards(sponsoredToggle.confirmYes === true) : setCloudSponsoredConsent("declined")))}
                   />
                 </div>
                 <small className="adecd-addon-state">

@@ -39,22 +39,27 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// the first cloud chat (or Settings) tells them cards are on, with Turn
   /// off beside it. Sent only while there is no answer.
   let startsOn: Bool
+  /// A yes needs a second, separate confirm: the person said no before, or
+  /// (in a browser) Global Privacy Control is on. The question's yes and
+  /// Settings' switch ask again (`turnOnConfirm`).
+  let confirmYes: Bool
 
   static let granted = "granted"
   static let declined = "declined"
   /// The notice that cards are on was shown: saved as a yes of its own kind (`CloudSponsoredChoice`).
   static let notice = "notice"
 
-  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false) {
     self.ads = ads
     self.consent = consent
     self.test = test
     self.smallNeedsCards = smallNeedsCards
     self.format = format
     self.startsOn = startsOn
+    self.confirmYes = confirmYes
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -65,7 +70,13 @@ struct CloudSponsoredState: Decodable, Equatable {
     smallNeedsCards = c.lenient(Bool.self, forKey: .smallNeedsCards)
     format = c.lenient(String.self, forKey: .format).flatMap(CloudSponsoredFormat.init(rawValue:)) ?? .belowReply
     startsOn = c.lenient(Bool.self, forKey: .startsOn) ?? false
+    confirmYes = c.lenient(Bool.self, forKey: .confirmYes) ?? false
   }
+
+  /// What Gravity gets, as the question, the notice and Settings say it.
+  static let sends = "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
+  /// The second confirm before a yes (`confirmYes`).
+  static let turnOnConfirm = "\(sends) You can turn them off any time in Settings › ADE Cloud."
 
   var granted: Bool { consent == Self.granted }
   /// No answer yet, and cards start on here: the person is told, not asked.

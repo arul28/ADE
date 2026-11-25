@@ -124,11 +124,54 @@
   cursor: pointer;
 }
 .ade-sponsored-link:hover { color: var(--color-fg); text-decoration: underline; text-underline-offset: 2px; }
+.ade-sponsored-link svg { display: inline; margin-left: 2px; vertical-align: -1px; }
 .ade-sponsored-need { margin: 0; font-size: 11.5px; color: var(--kit-text-3); }
 .ade-sponsored-link--start { margin-left: 0; }
 .ade-sponsored-fine { margin-left: auto; font-size: 11px; color: var(--kit-text-3); }
 .ade-sponsored-folded { margin: 0; font-size: 11.5px; color: var(--kit-text-3); }
 .ade-sponsored-folded .ade-sponsored-link { margin-left: 6px; }
+
+/* The one-time question, or the notice that cards are on: the glyph in a
+   quiet tile, then the title, one line on what the cards pay for, three short
+   facts (what shows, what a no costs, what Gravity gets) and the answers. */
+.ade-sponsored--consent {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  column-gap: 12px;
+  padding: 14px 16px 14px 14px;
+}
+.ade-sponsored-consent-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--adec-400) 12%, transparent);
+  color: var(--adec-400);
+}
+.ade-sponsored-consent-body { display: flex; flex-direction: column; min-width: 0; }
+.ade-sponsored--consent .ade-sponsored-title { margin: 0; font-size: 13.5px; }
+.ade-sponsored-lead { margin: 1px 0 0; line-height: 1.45; color: var(--kit-text-2); }
+.ade-sponsored-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.ade-sponsored-facts li {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  column-gap: 9px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
+}
+.ade-sponsored-facts li svg { margin-top: 3px; color: var(--kit-text-3); }
+.ade-sponsored-facts li[data-fine] { font-size: 11.5px; color: var(--kit-text-3); }
+.ade-sponsored-facts li[data-fine] svg { margin-top: 2px; }
+.ade-sponsored--consent .ade-sponsored-actions { margin-top: 14px; }
 
 /* Above the prompt box: the composer's width, the latest reply's card. The
    top row holds the buttons, so the ad gets the full width and wraps, never cut off. */

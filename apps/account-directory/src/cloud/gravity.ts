@@ -108,6 +108,12 @@ const SPONSORED_REASK_MS = 14 * 24 * 60 * 60_000;
 const SPONSORED_OPT_OUT_HOLD_MS = 365 * 24 * 60 * 60_000;
 /** Where cards start on unless `GRAVITY_DEFAULT_ON_COUNTRIES` says otherwise. */
 const DEFAULT_ON_COUNTRIES = ["US"];
+/**
+ * States inside a starts-on country that are asked first (ISO 3166-2). In
+ * California free Small computers for the cards are a financial incentive
+ * (Civil Code 1798.125(b)), which needs the person's yes before it starts.
+ */
+const ASK_FIRST_REGIONS = ["US-CA"];
 const PLATFORM_URL = "https://platform.trygravity.com";
 const INDEX_REPORT_URL = "https://api-interface.trygravity.com/index/attributions";
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -190,22 +196,30 @@ function startsOnCountriesOf(env: GravityEnv): string[] {
   return env.GRAVITY_DEFAULT_ON_COUNTRIES === undefined ? DEFAULT_ON_COUNTRIES : countryCodesOf(env.GRAVITY_DEFAULT_ON_COUNTRIES);
 }
 
-/** Where a request comes from, as the consent rules read it: its country, and the browser's Global Privacy Control. */
-export type SponsoredRequester = { country: string | null; gpc: boolean };
+/** Where a request comes from, as the consent rules read it: its country and state, and the browser's Global Privacy Control. */
+export type SponsoredRequester = { country: string | null; region: string | null; gpc: boolean };
 
 export function sponsoredRequester(request: Request | null): SponsoredRequester {
-  return { country: request ? requestCountry(request) : null, gpc: request?.headers.get("sec-gpc")?.trim() === "1" };
+  const region = (request as (Request & { cf?: { regionCode?: unknown } }) | null)?.cf?.regionCode;
+  return {
+    country: request ? requestCountry(request) : null,
+    region: typeof region === "string" && region.trim() ? region.trim().toUpperCase() : null,
+    gpc: request?.headers.get("sec-gpc")?.trim() === "1",
+  };
 }
 
 /**
  * Whether cards start on for this person: told they are on and free to turn
  * them off, instead of asked first. Only in a country where that is the law's
- * way (opt-out), never from an unknown country, and never when the browser
- * sends Global Privacy Control: that is an opt-out already, so the person is
- * asked instead.
+ * way (opt-out), never from an unknown country or a state that is asked first
+ * (`ASK_FIRST_REGIONS`; an unknown state there is asked too), and never when
+ * the browser sends Global Privacy Control: that is an opt-out already, so
+ * the person is asked instead.
  */
 function startsOnFor(env: GravityEnv, who: SponsoredRequester): boolean {
-  return who.country != null && !who.gpc && startsOnCountriesOf(env).includes(who.country);
+  if (who.country == null || who.gpc || !startsOnCountriesOf(env).includes(who.country)) return false;
+  const askFirst = ASK_FIRST_REGIONS.filter((code) => code.startsWith(`${who.country}-`));
+  return askFirst.length === 0 || (who.region != null && !askFirst.includes(`${who.country}-${who.region}`));
 }
 
 /** Whether an answer given in this country falls under the opt-out rules (a no holds 12 months). */
@@ -292,6 +306,8 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     consent: answer,
     // Not asked where cards start on: the client tells the person they are on, and saves that (`PUT /consent` `notice`).
     ...(startsOnNow(env, consent, answer, who) && reason == null ? { startsOn: true } : {}),
+    // A yes after a no (theirs, or their browser's Global Privacy Control) is asked twice, as California has it.
+    ...(answer !== "granted" && (consent?.consent === "declined" || who.gpc) ? { confirmYes: true } : {}),
     test: !switches.live,
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
@@ -841,12 +857,13 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   if (!computer) return json({ ok: false });
   // Written only while the answer is still yes, in the same statement: a "no" that lands meanwhile wins.
   await env.DB.prepare(`
-    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, tracking, country, seen_at)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, tracking, country, region, seen_at)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     where exists (select 1 from cloud_sponsored_consent where user_id = ? and consent = 'granted')
     on conflict (user_id, instance_id) do update set ip = excluded.ip, ua = excluded.ua, device_type = excluded.device_type,
-      os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country, seen_at = excluded.seen_at
-  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, now, userId).run();
+      os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
+      region = excluded.region, seen_at = excluded.seen_at
+  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
   return json({ ok: true });
 }
 
@@ -1106,7 +1123,7 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return none("not_cloud");
   const viewer = await env.DB.prepare("select * from cloud_sponsored_viewers where user_id = ? and instance_id = ?")
-    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; seen_at: number }>();
+    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; region: string | null; seen_at: number }>();
   // The country is the person's, from their last look at the chat: the agent's computer is not where they are.
   const switches = await gravitySwitches(env);
   const blocked = await blockedReason(env, account, viewer?.country ?? null, switches);
@@ -1116,8 +1133,8 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   if (!switches.live && switches.mode !== "testers") return none("off");
   if (outsideCountryList(env, viewer?.country ?? null)) return none("country");
   const consent = await readConsent(env, userId);
-  // The person's country and browser are those of their last look at the chat (a viewer row exists only after a yes that held there).
-  if (!yesHolds(env, consent, { country: viewer?.country ?? null, gpc: false })) return none("consent");
+  // The person's country, state and browser are those of their last look at the chat (a viewer row exists only after a yes that held there).
+  if (!yesHolds(env, consent, { country: viewer?.country ?? null, region: viewer?.region ?? null, gpc: false })) return none("consent");
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");
   const chatId = shortString(body.chatId, 160);
   if (chatId && ROW_ID.test(chatId)) {

@@ -3237,12 +3237,19 @@ export type CloudSponsoredState = {
   consent: CloudSponsoredConsent | null;
   /**
    * Cards start on for this person (their country's law lets ADE tell them
-   * instead of asking, and their browser sent no Global Privacy Control).
+   * instead of asking, they are not in a state that is asked first, such as
+   * California, and their browser sent no Global Privacy Control).
    * With `consent` null, the client shows the notice that they are on, with
    * a way to turn them off, instead of the question, and saves it
    * (`PUT /consent` `notice`). Absent: ask.
    */
   startsOn?: boolean;
+  /**
+   * A yes now needs a second, separate confirm: the person said no before, or
+   * their browser sends Global Privacy Control (California's rule for opting
+   * back in to sharing). The question's yes and Settings' switch ask again.
+   */
+  confirmYes?: boolean;
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */
   test: boolean;
   /**
