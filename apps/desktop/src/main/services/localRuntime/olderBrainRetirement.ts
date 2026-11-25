@@ -99,9 +99,9 @@ export async function askOlderBrainToShutDown(args: {
  * Whether this process runs inside the process tree of `targetPid`, read
  * without blocking the main process.
  *
- * `isCurrentProcessDescendantOfPid` (serviceManager/common) answers the same
- * question with one synchronous query per ancestor, which on Windows is a
- * PowerShell CIM call with a 15 s budget. That is fine in a CLI and a frozen
+ * `isCurrentProcessDescendantOfPid` (serviceManager/processAncestry) answers the same
+ * question synchronously, which on Windows is a PowerShell CIM walk with a
+ * 15 s budget. That is fine in a CLI and a frozen
  * window in the desktop. This reads the whole process table once, off the
  * event loop, and walks it here.
  *

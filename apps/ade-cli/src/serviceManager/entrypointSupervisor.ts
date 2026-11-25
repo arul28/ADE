@@ -4,7 +4,6 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
-  isCurrentProcessDescendantOfPid,
   isPidAlive,
   isSameServeSocketPath,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
@@ -14,6 +13,7 @@ import {
   type ServiceManagerSpawnSync,
 } from "./common";
 import { hasLiveDetachedSupervisor, uninstallDetachedRuntimeService } from "./detachedSupervisor";
+import { refuseSelfServiceMutation } from "./processAncestry";
 import {
   awaitServiceHandover,
   defaultResponsivenessProbe,
@@ -168,16 +168,15 @@ export async function restartEntrypointSupervisedBrain(deps: EntrypointSuperviso
     );
   }
 
-  const run = deps.spawnSync;
-  if (env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION !== "1") {
-    const owner = running.find((pid) => isCurrentProcessDescendantOfPid({ targetPid: pid, ...(run ? { run } : {}) }));
-    if (owner != null) {
-      return result(false, entrypoint,
-        `Refusing to restart ADE brain from a command running inside that brain (pid ${owner}). Run this from an external terminal, `
-        + "or set ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
-        { selfMutationBlocked: true });
-    }
-  }
+  const selfBlock = refuseSelfServiceMutation({
+    action: "install",
+    path: entrypoint,
+    pids: running,
+    env,
+    run: deps.spawnSync,
+    platform: "linux",
+  });
+  if (selfBlock) return selfBlock;
 
   // A supervisor an earlier, broken restart started beside the loop would
   // fight it for the socket.

@@ -68,6 +68,8 @@ export type ConnectServiceInstallResult = {
   message?: string | null;
   /** Set when the caller is running inside the very brain it tried to mutate. */
   selfMutationBlocked?: boolean;
+  /** With `selfMutationBlocked`: refused because the caller could not tell, not because it is inside. */
+  selfMutationUnconfirmed?: boolean;
   /**
    * The service is registered and its brain is alive, but it had not answered
    * on the socket yet. Installed, not running — reporting it as "running" is a
@@ -276,7 +278,7 @@ function formatStepLine(id: string, state: string, detail: string): string {
  */
 function renderConnectEpilogue(result: ConnectResult): string {
   const lines: string[] = [""];
-  if (result.connected) {
+  if (result.connected && result.ok) {
     lines.push(
       `This machine is now reachable from ADE desktop, web (${result.webClientUrl}), and iOS.`,
     );
@@ -303,7 +305,7 @@ function renderConnectEpilogue(result: ConnectResult): string {
  * are already on stderr, so this stays short enough to pipe somewhere useful.
  */
 export function renderConnectSummary(result: ConnectResult): string {
-  if (result.connected) {
+  if (result.connected && result.ok) {
     const identity = result.account.identity ?? "ADE account";
     const machine = result.machine.name ?? result.machine.machineKey ?? "this machine";
     return `Connected as ${identity} · machine "${machine}"`;
@@ -439,9 +441,10 @@ export async function runConnectCommand(
           ? `${mechanism} installed — the background service is still starting`
           : `${mechanism} installed and running`,
       });
-    } else if (install.selfMutationBlocked) {
+    } else if (install.selfMutationBlocked && !install.selfMutationUnconfirmed) {
       // Running inside the brain it would replace. Not a failure: the service
-      // is already doing its job.
+      // is already doing its job. A refusal that could not tell is a failure:
+      // nothing says this process is that brain.
       pushStep({
         id: "service",
         state: "ok",
@@ -552,10 +555,12 @@ export async function runConnectCommand(
       online: Boolean(publishedMachine?.online),
     },
     webClientUrl,
-    message: connected
-      ? `This machine is now reachable from ADE desktop, web (${webClientUrl}), and iOS.`
-      : failedStep
-        ? failedStep.detail
+    // A failed step outranks the directory listing this machine: the command
+    // did not finish, whatever an earlier run left published.
+    message: failedStep
+      ? failedStep.detail
+      : connected
+        ? `This machine is now reachable from ADE desktop, web (${webClientUrl}), and iOS.`
         : "This machine is set up for local use; it is not linked to an ADE account.",
     ...(failedStep?.nextAction ? { nextAction: failedStep.nextAction } : {}),
   };

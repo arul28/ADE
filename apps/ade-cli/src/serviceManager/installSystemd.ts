@@ -17,6 +17,11 @@ import {
   type ServiceManagerStatusResult,
 } from "./common";
 import {
+  allowsSelfServiceMutation,
+  refuseSelfServiceMutation,
+  selfServiceMutationRefusal,
+} from "./processAncestry";
+import {
   awaitServiceHandover,
   awaitYoungBrainStart,
   defaultResponsivenessProbe,
@@ -116,7 +121,12 @@ WantedBy=default.target
 `;
 }
 
-export type SystemdUnitState = { active: boolean; mainPid: number | null };
+export type SystemdUnitState = {
+  active: boolean;
+  mainPid: number | null;
+  /** The unit's cgroup (`/user.slice/…/<unit>`), present only while it has one. */
+  controlGroup?: string;
+};
 
 /**
  * Parses `systemctl show`'s `KEY=value` output. Values are taken verbatim after
@@ -133,7 +143,8 @@ export function parseSystemdShowOutput(output: string): Map<string, string> {
 }
 
 /**
- * One `systemctl show` round trip for both properties the handover needs.
+ * One `systemctl show` round trip for the properties the handover and the
+ * self-mutation guard need.
  * `null` means the query itself failed (no systemd user bus, unit unknown to
  * this systemd) — distinct from "known and inactive", which is `active:false`.
  */
@@ -143,7 +154,7 @@ export function getSystemdUnitState(
 ): SystemdUnitState | null {
   const show = run(
     "systemctl",
-    ["--user", "show", unitName, "-p", "ActiveState", "-p", "MainPID"],
+    ["--user", "show", unitName, "-p", "ActiveState", "-p", "MainPID", "-p", "ControlGroup"],
     { encoding: "utf8" },
   );
   if (show.status !== 0) return null;
@@ -155,7 +166,12 @@ export function getSystemdUnitState(
   // `activating` is systemd's own "still coming up" and must not be read as
   // dead: restarting a unit in that state is exactly the booting-brain kill
   // this whole change exists to stop.
-  return { active: activeState === "active" || activeState === "activating", mainPid };
+  const controlGroup = properties.get("ControlGroup");
+  return {
+    active: activeState === "active" || activeState === "activating",
+    mainPid,
+    ...(controlGroup ? { controlGroup } : {}),
+  };
 }
 
 /**
@@ -168,6 +184,53 @@ export function getSystemdUnitState(
 export function isSystemdUserManagerUsable(run: ServiceManagerSpawnSync = spawnSync): boolean {
   const probe = run("systemctl", ["--user", "show-environment"], { encoding: "utf8" });
   return probe.status === 0 && !probe.error;
+}
+
+/**
+ * Whether this process sits in the unit's cgroup. systemd stops a unit by its
+ * cgroup, not its process tree, so a command the brain started that has since
+ * left the tree (`nohup … &` from a shell that exited) still dies with the
+ * brain, partway through whatever it was doing.
+ */
+function isInsideUnitCgroup(unitGroup: string | undefined): boolean {
+  if (!unitGroup || unitGroup === "/") return false;
+  let own: string;
+  try {
+    own = fs.readFileSync("/proc/self/cgroup", "utf8");
+  } catch {
+    return false;
+  }
+  // `<id>:<controllers>:<path>` per hierarchy; cgroup v2 is the single `0::<path>`.
+  return own.split("\n").some((line) => {
+    const group = line.split(":").slice(2).join(":").trim();
+    return group === unitGroup || group.startsWith(`${unitGroup}/`);
+  });
+}
+
+/** The refusal for a restart or stop of the unit from inside its brain, by process tree or by cgroup. */
+function systemdSelfMutationRefusal(args: {
+  action: "install" | "uninstall";
+  path: string;
+  state: SystemdUnitState | null;
+  env: NodeJS.ProcessEnv;
+  run: ServiceManagerSpawnSync;
+}): ServiceManagerResult | null {
+  const byTree = refuseSelfServiceMutation({
+    action: args.action,
+    path: args.path,
+    pids: [args.state?.mainPid],
+    env: args.env,
+    run: args.run,
+    platform: "linux",
+  });
+  if (byTree || allowsSelfServiceMutation(args.env)) return byTree;
+  // A failed `systemctl show` named neither the brain nor its cgroup, so
+  // nothing cleared this command. An unknown unit still answers, as inactive.
+  if (args.state === null) {
+    return selfServiceMutationRefusal({ action: args.action, path: args.path, unconfirmed: true });
+  }
+  if (!isInsideUnitCgroup(args.state.controlGroup)) return null;
+  return selfServiceMutationRefusal({ action: args.action, path: args.path, brainPid: args.state.mainPid });
 }
 
 function handoverFailure(
@@ -314,6 +377,17 @@ export async function installSystemdService(
     state = getSystemdUnitState(run, unitName);
   }
 
+  // From here the unit's brain is restarted. systemd stops its whole cgroup,
+  // so a command running inside that brain would take itself down with it.
+  const selfBlock = systemdSelfMutationRefusal({
+    action: "install",
+    path: targetPath,
+    state,
+    env,
+    run,
+  });
+  if (selfBlock) return selfBlock;
+
   // A supervisor an earlier start ran while systemd was unavailable would
   // keep its own brain on the socket next to the unit's.
   if (hasLiveDetachedSupervisor({ env, homeDir })) {
@@ -447,18 +521,33 @@ export function readSystemdServiceHome(homeDir = os.homedir()): string | null {
   return value || path.join(homeDir, ".ade");
 }
 
-export async function uninstallSystemdService(): Promise<ServiceManagerResult> {
-  if (!isSystemdUserManagerUsable()) {
+export async function uninstallSystemdService(
+  deps: Pick<SystemdServiceManagerDeps, "spawnSync" | "env" | "homeDir"> = {},
+): Promise<ServiceManagerResult> {
+  const run = deps.spawnSync ?? spawnSync;
+  const env = deps.env ?? process.env;
+  const homeDir = deps.homeDir ?? os.homedir();
+  if (!isSystemdUserManagerUsable(run)) {
     // `stopUnsupervised` always yields a result.
-    return (await uninstallDetachedRuntimeService({ stopUnsupervised: true }))!;
+    return (await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run, stopUnsupervised: true }))!;
   }
+  const targetPath = servicePath(homeDir, ADE_RUNTIME_SERVICE_NAME, env);
+  const unitName = serviceUnitName();
+  // `disable --now` stops the unit's whole cgroup, this command included when it runs inside that brain.
+  const selfBlock = systemdSelfMutationRefusal({
+    action: "uninstall",
+    path: targetPath,
+    state: getSystemdUnitState(run, unitName),
+    env,
+    run,
+  });
+  if (selfBlock) return selfBlock;
   // A supervisor left from a time systemd was unavailable.
-  const detached = await uninstallDetachedRuntimeService();
+  const detached = await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run });
   if (detached?.selfMutationBlocked) return detached;
-  const targetPath = servicePath();
-  spawnSync("systemctl", ["--user", "disable", "--now", serviceUnitName()], { stdio: "ignore" });
+  run("systemctl", ["--user", "disable", "--now", unitName], { stdio: "ignore" });
   try { fs.unlinkSync(targetPath); } catch {}
-  spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
+  run("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,

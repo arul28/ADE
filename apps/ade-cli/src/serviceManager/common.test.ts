@@ -2,13 +2,12 @@ import fs from "node:fs";
 import net from "node:net";
 import { EventEmitter, once } from "node:events";
 import { createHash } from "node:crypto";
-import { spawn, spawnSync as spawnChildSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
-  buildWindowsParentPidQueryArgs,
   buildWindowsProcessCommandLineQueryArgs,
   channelServeIdentity,
   isPidAlive,
@@ -16,10 +15,7 @@ import {
   listStaleChannelServePids,
   parsePsElapsedMs,
   readWindowsProcessFacts,
-  isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
-  PARENT_PID_UNKNOWN,
-  readParentPid,
   renderCommand,
   resolveAdeServeCommand,
   serviceManagerOwnsRuntimeRecovery,
@@ -324,230 +320,6 @@ describe("resolveAdeServeCommand", () => {
       },
     });
   });
-});
-
-describe("isCurrentProcessDescendantOfPid", () => {
-  it("detects when the current process descends from the target pid", () => {
-    const parentPid = (pid: number) => ({
-      400: 300,
-      300: 100,
-      100: 1,
-    })[pid] ?? null;
-
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      parentPid,
-    })).toBe(true);
-  });
-
-  it("returns false when the current process is in an unrelated process tree", () => {
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      parentPid: (pid) => ({
-        400: 300,
-        300: 1,
-      })[pid] ?? null,
-    })).toBe(false);
-  });
-
-  it("returns false for parent cycles", () => {
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      parentPid: (pid) => ({
-        400: 300,
-        300: 200,
-        200: 300,
-      })[pid] ?? null,
-    })).toBe(false);
-  });
-});
-
-// These exercise the DEFAULT parent-pid backend. The suite above injects a fake
-// `parentPid` every time, which is exactly how a Windows host could ship a
-// `readParentPid` that always returned null — and therefore a self-shutdown
-// guard that never fired — with a green Windows CI job.
-describe("readParentPid on win32", () => {
-  // A trusted powershell path, never a bare `powershell` resolved off PATH.
-  const TRUSTED_POWERSHELL = /[\\/]system32[\\/]windowspowershell[\\/]v1\.0[\\/]powershell\.exe$/i;
-
-  const recordingRun = (
-    reply: (pid: number) => ServiceManagerProcessResult,
-  ): { run: ServiceManagerSpawnSync; calls: Array<{ command: string; args: string[] }> } => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const run: ServiceManagerSpawnSync = (command, args) => {
-      calls.push({ command, args });
-      if (!TRUSTED_POWERSHELL.test(command)) {
-        // Mirror the real host: Git Bash's `ps` is found and rejects the POSIX
-        // flags with status 1; a clean Windows box reports ENOENT. Both land on
-        // a non-zero status with no usable stdout.
-        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
-      }
-      const filter = /ProcessId = (\d+)/.exec(args.join(" "));
-      return reply(Number(filter?.[1] ?? 0));
-    };
-    return { run, calls };
-  };
-
-  it("queries Win32_Process through the trusted PowerShell for the parent pid", () => {
-    const { run, calls } = recordingRun(() => ({ status: 0, stdout: "4321\r\n" }));
-
-    expect(readParentPid(run, 1234, "win32")).toBe(4321);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.command).toMatch(TRUSTED_POWERSHELL);
-    expect(calls[0]!.command).not.toBe("ps");
-    expect(calls[0]!.args).toEqual(buildWindowsParentPidQueryArgs(1234));
-    const script = calls[0]!.args.join(" ");
-    expect(script).toContain("Get-CimInstance Win32_Process");
-    expect(script).toContain("ParentProcessId");
-    // wmic is deprecated and is being removed from Windows.
-    expect(script).not.toMatch(/wmic/i);
-  });
-
-  it("treats a missing process as the definitive end of the chain", () => {
-    const { run } = recordingRun(() => ({ status: 3, stdout: "" }));
-    expect(readParentPid(run, 1234, "win32")).toBeNull();
-  });
-
-  it("treats ParentProcessId 0 as the top of the tree", () => {
-    const { run } = recordingRun(() => ({ status: 0, stdout: "0" }));
-    expect(readParentPid(run, 1234, "win32")).toBeNull();
-  });
-
-  it("reports an undetermined ancestry when the query itself fails", () => {
-    const failures: ServiceManagerProcessResult[] = [
-      { status: 1, stdout: "", stderr: "Get-CimInstance is not recognized" },
-      { status: null, stdout: null, stderr: null },
-      { status: 0, stdout: "not-a-pid" },
-      { status: 0, stdout: "" },
-    ];
-    for (const failure of failures) {
-      const { run } = recordingRun(() => failure);
-      expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
-    }
-  });
-
-  // A blown `timeout` budget is the one failure that is purely about the host
-  // being busy: powershell.exe cold start plus the first CIM call of a session
-  // can outrun the budget on a saturated box. Treating that as "ancestry
-  // unknown" refuses a teardown the user is entitled to, so it gets one retry.
-  const timedOut = (): ServiceManagerProcessResult => ({
-    status: null,
-    stdout: null,
-    stderr: null,
-    signal: "SIGTERM",
-    error: Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), {
-      code: "ETIMEDOUT",
-    }),
-  });
-
-  const budgetRecordingRun = (
-    replies: Array<() => ServiceManagerProcessResult>,
-  ): { run: ServiceManagerSpawnSync; timeouts: Array<number | undefined> } => {
-    const timeouts: Array<number | undefined> = [];
-    const run: ServiceManagerSpawnSync = (_command, _args, options) => {
-      const reply = replies[timeouts.length];
-      timeouts.push(options?.timeout);
-      if (!reply) throw new Error("readWindowsParentPid ran more attempts than expected");
-      return reply();
-    };
-    return { run, timeouts };
-  };
-
-  it("retries a timed-out query once, on a longer budget", () => {
-    const { run, timeouts } = budgetRecordingRun([timedOut, () => ({ status: 0, stdout: "77" })]);
-    expect(readParentPid(run, 1234, "win32")).toBe(77);
-    expect(timeouts).toHaveLength(2);
-    // The retry must be strictly more generous, or it just repeats the failure.
-    expect(timeouts[1]).toBeGreaterThan(timeouts[0] ?? 0);
-  });
-
-  it("stops after the retry also times out", () => {
-    const { run, timeouts } = budgetRecordingRun([timedOut, timedOut]);
-    expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
-    expect(timeouts).toHaveLength(2);
-  });
-
-  it("does not retry a query that actually answered", () => {
-    // Every non-timeout outcome is final: a real answer, "no such process", a
-    // real tool failure, and a spawn that never ran (powershell absent, so no
-    // ETIMEDOUT and no SIGTERM) all cost exactly one powershell start.
-    for (const [reply, expected] of [
-      [() => ({ status: 0, stdout: "42" }), 42],
-      [() => ({ status: 3, stdout: "" }), null],
-      [() => ({ status: 1, stdout: "", stderr: "CIM unavailable" }), PARENT_PID_UNKNOWN],
-      [() => ({ status: null, stdout: null, stderr: null }), PARENT_PID_UNKNOWN],
-    ] as const) {
-      const { run, timeouts } = budgetRecordingRun([reply]);
-      expect(readParentPid(run, 1234, "win32")).toBe(expected);
-      expect(timeouts).toHaveLength(1);
-    }
-  });
-});
-
-describe("isCurrentProcessDescendantOfPid on win32", () => {
-  const win32Tree = (tree: Record<number, number>): ServiceManagerSpawnSync =>
-    (command, args) => {
-      if (!/powershell\.exe$/i.test(command)) {
-        // Anything that is not the Windows query is the old POSIX `ps` path,
-        // which cannot answer on this platform.
-        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
-      }
-      const pid = Number(/ProcessId = (\d+)/.exec(args.join(" "))?.[1] ?? 0);
-      const parent = tree[pid];
-      return parent == null
-        ? { status: 3, stdout: "" }
-        : { status: 0, stdout: String(parent) };
-    };
-
-  it("blocks a self-shutdown issued from inside the runtime's process tree", () => {
-    // No `parentPid` injection: this drives the real default backend, so a
-    // Windows build without a win32 branch answers false and fails here.
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      platform: "win32",
-      run: win32Tree({ 400: 300, 300: 100, 100: 0 }),
-    })).toBe(true);
-  });
-
-  it("allows a shutdown issued from an unrelated process tree", () => {
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      platform: "win32",
-      run: win32Tree({ 400: 300, 300: 1, 1: 0 }),
-    })).toBe(false);
-  });
-
-  it("fails closed when the ancestry query is unavailable", () => {
-    // Destroying a live runtime is unrecoverable; a refusal that names the
-    // ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION override is not.
-    expect(isCurrentProcessDescendantOfPid({
-      targetPid: 100,
-      currentPid: 400,
-      platform: "win32",
-      run: () => ({ status: 1, stdout: "", stderr: "powershell unavailable" }),
-    })).toBe(true);
-  });
-});
-
-describe.runIf(process.platform === "win32")("readParentPid against the real Windows host", () => {
-  it("resolves this process's actual parent pid", () => {
-    // process.ppid is an independent oracle for the same fact. Before the win32
-    // branch existed this returned null on every Windows host.
-    expect(readParentPid(spawnChildSync, process.pid)).toBe(process.ppid);
-    // 90s, not 30s: the lookup's own worst case is a cold-start timeout plus its
-    // retry, and this suite runs alongside other Windows suites on a 2-core
-    // runner. A test budget under the code's budget turns a slow host into a
-    // failure that reads like a broken parent-pid query.
-  }, 90_000);
-
-  it("reports the real parent as an ancestor of this process", () => {
-    expect(isCurrentProcessDescendantOfPid({ targetPid: process.ppid })).toBe(true);
-  }, 90_000);
 });
 
 describe("isStaleChannelServeCommandLine", () => {

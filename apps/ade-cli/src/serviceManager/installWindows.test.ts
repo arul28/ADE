@@ -16,6 +16,7 @@ import {
   type ServiceManagerSpawnSync,
   type WindowsProcessFacts,
 } from "./common";
+import { buildWindowsAncestryQueryArgs } from "./processAncestry";
 import {
   buildWindowsCreateTaskArgs,
   buildWindowsDeleteTaskArgs,
@@ -102,6 +103,15 @@ function makeTempHome(prefix: string): string {
   return dir;
 }
 
+/**
+ * The self-mutation guard's ancestry query, answered as Windows answers it for a
+ * test process outside every brain: a chain of the process alone.
+ */
+function outsideBrainAncestry(args: string[]): ServiceManagerProcessResult | null {
+  if (JSON.stringify(args) !== JSON.stringify(buildWindowsAncestryQueryArgs(process.pid))) return null;
+  return { status: 0, stdout: `P\t${process.pid}\t0\t\nE\troot`, stderr: "" };
+}
+
 function spawnSequence(
   calls: Array<{ command: string; args: string[] }>,
   results: ServiceManagerProcessResult[],
@@ -112,6 +122,8 @@ function spawnSequence(
     // their lifecycle result sequence; the repair test below owns them.
     if (command === windowsRegCommand() && JSON.stringify(args) === JSON.stringify(buildWindowsRunKeyListArgs())) return { status: 0, stdout: "", stderr: "" };
     if (command === windowsPowerShellCommand() && args.at(-1)?.includes("GetOwnerSid")) return { status: 0, stdout: "", stderr: "" };
+    const ancestry = outsideBrainAncestry(args);
+    if (ancestry) return ancestry;
     calls.push({ command, args });
     return results.shift() ?? { status: 0, stdout: "", stderr: "" };
   };
@@ -131,6 +143,8 @@ function processTableSpawn(
   return (command, args, options) => {
     const script = args.at(-1) ?? "";
     if (command !== windowsPowerShellCommand()) return fallback(command, args, options);
+    const ancestry = outsideBrainAncestry(args);
+    if (ancestry) return ancestry;
     const killTarget = /GetProcessById\((\d+)\)/.exec(script);
     if (killTarget) {
       calls.push({ command, args });
@@ -163,6 +177,8 @@ function startupRegistrySpawn(
   supervisorProbeArgs: string[],
 ): ServiceManagerSpawnSync {
   return (command, args) => {
+    const ancestry = outsideBrainAncestry(args);
+    if (ancestry) return ancestry;
     calls.push({ command, args });
     if (command === windowsRegCommand()) {
       const valueAt = args.indexOf("/V");
@@ -370,7 +386,7 @@ describe("Windows background service helpers", () => {
         return { status: 0, stdout: "", stderr: "" };
       }
       if ([taskName, "ADE Runtime"].some((name) => JSON.stringify(args) === JSON.stringify(buildWindowsQueryTaskArgs(name)))) return { status: 3, stdout: "", stderr: "" };
-      return { status: 0, stdout: "", stderr: "" };
+      return outsideBrainAncestry(args) ?? { status: 0, stdout: "", stderr: "" };
     };
     const deps = { ...immediateReadiness, command: serviceCommand, launcherPath, serviceName, userName: taskUser, spawnSync: run };
     const result = operation === "install" ? await installWindowsService(deps) : await uninstallWindowsService(deps);
@@ -621,8 +637,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
@@ -675,6 +693,7 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
       staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
@@ -953,11 +972,11 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 0, stdout: "Running", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      // The install scans for stale same-channel serve brains before it stops
+      // anything (the self-mutation check counts them). Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
-      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -974,10 +993,12 @@ describe("Windows background service helpers", () => {
 
     expect(result.ok).toBe(true);
     // The startup entry is identified before the channel task is ended and deleted.
-    expect(calls.slice(0, 5)).toEqual([
+    expect(calls.slice(0, 3)).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+    ]);
+    expect(calls.filter(isRegistrationChange).slice(0, 2)).toEqual([
       { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
     ]);
@@ -992,13 +1013,14 @@ describe("Windows background service helpers", () => {
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: ownLegacyAction, stderr: "" },
-      { status: 0, stdout: "SUCCESS: ended", stderr: "" },
-      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // Stale same-channel serve brains: nothing running.
       { status: 0, stdout: "", stderr: "" },
+      // A running legacy task may run the brain this command is in, so it is
+      // ended only after the self-mutation check, not first.
+      { status: 0, stdout: "SUCCESS: ended", stderr: "" },
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -1014,9 +1036,12 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(calls.slice(0, 4)).toEqual([
+    expect(calls.slice(0, 2)).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+    ]);
+    // Ended and deleted before anything is registered.
+    expect(calls.filter(isRegistrationChange).slice(0, 2)).toEqual([
       { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs("ADE Runtime") },
     ]);
@@ -1030,8 +1055,10 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: stableLegacyAction, stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
@@ -1072,6 +1099,7 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       staleServeScanCall,
+      staleServeScanCall,
       { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
         command: windowsPowerShellCommand(),
@@ -1089,9 +1117,9 @@ describe("Windows background service helpers", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
-      { status: 1, stdout: "", stderr: "ERROR: value not found" },
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: stableLegacyAction, stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
     ]);
     const launcherPath = path.join(
       makeTempHome("ade-windows-service-foreign-legacy-uninstall-"),
@@ -1110,9 +1138,9 @@ describe("Windows background service helpers", () => {
     expect(result.ok).toBe(true);
     expect(calls).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
-      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
     expect(calls.filter((call) => call.command === windowsSchtasksCommand())).toEqual([]);
     expect(fs.existsSync(launcherPath)).toBe(false);
@@ -1176,6 +1204,10 @@ describe("Windows background service helpers", () => {
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: ownLegacyAction, stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
+      // Stale same-channel serve brains: nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: access is denied" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-migrate-fail-"), "brain-service.ps1");
@@ -1190,9 +1222,8 @@ describe("Windows background service helpers", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("legacy ADE Runtime scheduled task");
-    expect(calls).toEqual([
-      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+    // The failed end is the only change: nothing is registered or started.
+    expect(calls.filter(isRegistrationChange)).toEqual([
       { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
     ]);
   });
@@ -1203,8 +1234,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       // Both job-escaping handovers are unavailable, so the launch falls all the
@@ -1244,6 +1277,7 @@ describe("Windows background service helpers", () => {
       buildWindowsQueryTaskArgs(taskName),
       buildWindowsRunKeyQueryArgs(taskName),
       buildWindowsProcessCommandLineQueryArgs(),
+      buildWindowsProcessCommandLineQueryArgs(),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
       buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       buildWindowsWmiStartArgs(launcherPath),
@@ -1258,8 +1292,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
-      // launchd parity: the install now scans for stale same-channel serve
-      // brains before registering. Nothing running.
+      // launchd parity: the install scans for stale same-channel serve brains
+      // before it stops anything (the self-mutation check counts them), and
+      // again after the stops, before registering. Nothing running either time.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: registration failed" },
     ]);
@@ -1280,6 +1316,7 @@ describe("Windows background service helpers", () => {
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       staleServeScanCall,
+      staleServeScanCall,
       expect.objectContaining({ command: windowsRegCommand(), args: expect.arrayContaining(["ADD"]) }),
     ]);
   });
@@ -1288,10 +1325,11 @@ describe("Windows background service helpers", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },                // channel task: present, idle
-      { status: 0, stdout: "startup value", stderr: "" },        // Run entry: installed
-      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // channel task delete
       { status: 0, stdout: "Running", stderr: "" },              // legacy task: running
       { status: 0, stdout: ownLegacyAction, stderr: "" },
+      { status: 0, stdout: "", stderr: "" },                     // its brain among serve processes: none
+      { status: 0, stdout: "startup value", stderr: "" },        // Run entry: installed
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // channel task delete
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // Run entry delete
@@ -1314,12 +1352,14 @@ describe("Windows background service helpers", () => {
       path: taskName,
       message: "ADE background service startup entry removed.",
     });
-    expect(calls).toEqual([
+    // Everything is read before anything is removed.
+    expect(calls.slice(0, 3)).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
-      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+    ]);
+    expect(calls.filter(isRegistrationChange)).toEqual([
+      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs("ADE Runtime") },
       { command: windowsRegCommand(), args: buildWindowsRunKeyDeleteArgs(taskName) },
@@ -1379,7 +1419,34 @@ describe("Windows background service helpers", () => {
       parentPid: supervisorPid,
       ok: true,
     },
-  ])("$name", async ({ operation, commandLine, parentPid, ok }) => {
+    // An agent's shell is a child of the brain. Its `ade brain stop` / `restart`
+    // must not end the brain and every chat on it, and must leave the service as it was.
+    {
+      operation: "uninstall",
+      name: "refuses to stop the brain this command runs inside, and stops nothing",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: false,
+      insideBrain: true,
+    },
+    {
+      operation: "install",
+      name: "install refuses to replace the brain this command runs inside, and writes no launcher",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: false,
+      insideBrain: true,
+    },
+    {
+      operation: "uninstall",
+      name: "stops the brain this command runs inside when the self-mutation override is set",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: true,
+      insideBrain: true,
+      env: { ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1" },
+    },
+  ])("$name", async ({ operation, commandLine, parentPid, ok, insideBrain, env }) => {
     // A real live process stands in for the recorded brain, so the liveness check is real.
     const brain = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
@@ -1404,19 +1471,31 @@ describe("Windows background service helpers", () => {
       // identity check shows up in `calls`, and a refusal must leave both alone.
       const startupValue = `powershell.exe -File "${launcherPath}"`;
       const startup = new Map([[taskName, startupValue]]);
-      const spawnSync = processTableSpawn(calls, processes, startupRegistrySpawn(
+      const host = processTableSpawn(calls, processes, startupRegistrySpawn(
         calls,
         startup,
         taskName,
         buildWindowsSupervisorQueryArgs(supervisorPid, launcherPath),
       ));
-      const deps = { command: serviceCommand, launcherPath, serviceName, spawnSync, userName: taskUser };
+      // Inside the brain, Windows reports this process under the brain and its supervisor.
+      const spawnSync: ServiceManagerSpawnSync = (command, args, options) =>
+        insideBrain && JSON.stringify(args) === JSON.stringify(buildWindowsAncestryQueryArgs(process.pid))
+          ? { status: 0, stdout: `P\t${process.pid}\t${brainPid}\t\nP\t${brainPid}\t${supervisorPid}\t\nP\t${supervisorPid}\t0\t\nE\troot`, stderr: "" }
+          : host(command, args, options);
+      const deps = { command: serviceCommand, launcherPath, serviceName, spawnSync, userName: taskUser, env: env ?? {} };
       const result = operation === "install"
         ? await installWindowsService(deps)
         : await uninstallWindowsService(deps);
 
       expect(result.ok).toBe(ok);
-      if (!ok) expect(result.message).toContain(`the brain process ${brainPid}; it was left running`);
+      const refusedFromInside = insideBrain && !ok;
+      if (refusedFromInside) {
+        expect(result.selfMutationBlocked).toBe(true);
+        expect(result.message).toContain(`pid ${brainPid}`);
+        expect(fs.existsSync(launcherPath)).toBe(false);
+      } else if (!ok) {
+        expect(result.message).toContain(`the brain process ${brainPid}; it was left running`);
+      }
       expect(killedPids(calls)).toEqual(ok ? [supervisorPid, brainPid] : []);
       if (!ok) {
         expect(calls.filter(isRegistrationChange)).toEqual([]);
@@ -1499,9 +1578,9 @@ describe("Windows background service helpers", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." },
-      { status: 3, stdout: "", stderr: "" },
     ]);
 
     const result = await uninstallWindowsService({
@@ -1515,9 +1594,9 @@ describe("Windows background service helpers", () => {
     expect(result.message).toContain("ERROR: The system cannot find the file specified.");
     expect(calls).toEqual([
       { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
-      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
     ]);
   });
 
@@ -1525,8 +1604,8 @@ describe("Windows background service helpers", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
-      { status: 1, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
     ]);
     const launcherPath = makeTempHome("ade-windows-service-launcher-dir-");
 
@@ -1581,16 +1660,16 @@ describe("Windows background service helpers", () => {
     const results: ServiceManagerProcessResult[] = [
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: ownLegacyAction, stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ];
     const spawnSync: ServiceManagerSpawnSync = (command, args, options) => {
       calls.push({ command, args, options });
-      return results.shift() ?? { status: 0, stdout: "", stderr: "" };
+      return outsideBrainAncestry(args) ?? results.shift() ?? { status: 0, stdout: "", stderr: "" };
     };
     const launcherPath = path.join(
       makeTempHome("ade-windows-service-hidden-"),
