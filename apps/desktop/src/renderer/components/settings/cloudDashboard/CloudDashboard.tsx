@@ -479,7 +479,9 @@ function CloudHero({
             {smallRateMilli > 0 ? (
               <li>
                 {`${cloudSmallHoursSentence(catalog, words)} ${cloudTierHoursAt({ multiplierMilli: smallRateMilli }, cloudHoursLeftMilli(account))} left at that size.`}
-                {account.sponsored?.smallNeedsCards ? " Sponsored cards make it unlimited." : ""}
+                {account.sponsored?.smallNeedsLook
+                  ? " Opening an ADE Cloud chat in the US makes it unlimited again."
+                  : account.sponsored?.smallNeedsCards ? " Sponsored cards make it unlimited." : ""}
               </li>
             ) : null}
           </ul>

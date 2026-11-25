@@ -8,6 +8,7 @@ import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/gravity";
+import { syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
@@ -5279,7 +5280,7 @@ describe("sponsored cards", () => {
     setting("gravity_ads", "all");
     seedAccount(harness, OWNER);
     seedComputer(harness);
-    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW });
+    harness.insert("cloud_sponsored_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW, looked_at: NOW });
     // The computer saved a copy of the chat after its turn: it runs there.
     harness.insert("cloud_chat_copies", { user_id: OWNER, machine_key: "mk-1", chat_id: "chat-1", instance_id: INSTANCE, r2_key: "chats/1", updated_at: NOW });
   });
@@ -5448,24 +5449,25 @@ describe("sponsored cards", () => {
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(500);
     // A yes from where Gravity shows no cards would be unlimited Small for nothing: refused.
-    const fromBrazil = (method: string, path: string, body?: Row) => {
+    const fromWhere = (cf: Row) => (method: string, path: string, body?: Row) => {
       const request = new Request(`https://directory.test${path}`, {
         method,
-        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      Object.defineProperty(request, "cf", { value: { country: "BR" } });
+      Object.defineProperty(request, "cf", { value: cf });
       return handleCloudRequest(request, harness.env);
     };
+    const fromBrazil = fromWhere({ country: "BR" });
     expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(403);
     expect(computer(harness).multiplier_milli).toBe(500);
     // A tester sees Gravity's test ads from anywhere, so its cards show abroad; never with real ads.
     harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
     const abroad = async () => ((await (await fromBrazil("GET", "/cloud/account")).json()) as CloudAccountState).sponsored?.ads;
     expect(await abroad()).toBe(true);
-    // Its yes from abroad counts too, and frees Small; with real ads it is refused.
+    // Its yes from abroad counts too, but cards keep Small free only in the US; with real ads it is refused.
     expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
-    expect(computer(harness).multiplier_milli).toBe(0);
+    expect(computer(harness).multiplier_milli).toBe(500);
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     goLive();
     expect(await abroad()).toBe(false);
@@ -5481,6 +5483,30 @@ describe("sponsored cards", () => {
     // An hour on the yes adds nothing to the meter.
     clock += HOUR;
     expect((await accountState()).hours.usedMilli - used).toBe(500);
+    // The yes keeps Small free only while the person opens a cloud chat from the US: 7 days without
+    // (away, or a yes given once through a VPN) and Small uses credits until the next one.
+    clock += 7 * DAY + HOUR;
+    expect(await syncAllSmallRates(harness.env as never, clock)).toBe(1);
+    expect(computer(harness).multiplier_milli).toBe(500);
+    expect((await accountState()).sponsored).toMatchObject({ consent: "granted", smallNeedsLook: true });
+    const fromUS = fromWhere({ country: "US", regionCode: "TX" });
+    const fromCanada = fromWhere({ country: "CA" });
+    const look = (from: typeof fromBrazil) => from("POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE }).then((response) => response.json());
+    // No look from where Gravity shows no cards; Canada shows cards, but there Small uses credits.
+    expect(await look(fromBrazil)).toEqual({ ok: false });
+    expect(await look(fromCanada)).toEqual({ ok: true });
+    expect(computer(harness).multiplier_milli).toBe(500);
+    const inCanada = ((await (await fromCanada("GET", "/cloud/account")).json()) as CloudAccountState).sponsored;
+    expect([inCanada?.smallOutsideUS, inCanada?.smallNeedsCards]).toEqual([true, undefined]);
+    // A look from the US frees Small at once.
+    expect(await look(fromUS)).toEqual({ ok: true });
+    expect(computer(harness).multiplier_milli).toBe(0);
+    expect((await accountState()).sponsored?.smallNeedsLook).toBeUndefined();
+    // A yes again from abroad keeps that US look: on a trip, Small stays free for the week.
+    expect((await fromCanada("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    expect(computer(harness).multiplier_milli).toBe(0);
+    const onTrip = ((await (await fromCanada("GET", "/cloud/account")).json()) as CloudAccountState).sponsored;
+    expect([onTrip?.smallOutsideUS, onTrip?.smallNeedsCards, onTrip?.smallNeedsLook]).toEqual([undefined, true, undefined]);
 
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);

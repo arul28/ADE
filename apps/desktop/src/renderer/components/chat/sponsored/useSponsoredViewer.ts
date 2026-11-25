@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { CloudSponsoredConsent } from "../../../../shared/adeCloud";
-import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { refreshCloudAccount, useCloudAccount } from "../../../state/cloudAccountStore";
 import { sponsoredDevice } from "./sponsoredTurn";
 
 /**
@@ -18,6 +18,8 @@ const SEEN_EVERY_MS = 4 * 60_000;
 const lastSeenAt = new Map<string, number>();
 /** The answer the last report was throttled under: a change reports at once, a new pane doesn't. */
 let lastConsent: CloudSponsoredConsent | null | undefined;
+/** The account was read again after a look that may have ended a lapse (`smallNeedsLook`): once per lapse. */
+let lookRefreshed = false;
 
 function subscribeVisibility(listener: () => void): () => void {
   document.addEventListener("visibilitychange", listener);
@@ -32,20 +34,30 @@ export function useSponsoredViewer(instanceId: string | null, enabled: boolean):
   const visible = useDocumentVisible();
   // A new answer reports at once: a no deleted the account's viewer rows on the server, and a
   // yes makes the look count for the Index (the one sent while unanswered was dropped).
-  const consent = useCloudAccount(Boolean(instanceId))?.sponsored?.consent ?? null;
+  const sponsored = useCloudAccount(Boolean(instanceId))?.sponsored;
+  const consent = sponsored?.consent ?? null;
+  // A yes whose US looks lapsed: this look may make Small free again, so the account is read once after it.
+  const needsLook = sponsored?.smallNeedsLook === true;
   useEffect(() => {
     if (lastConsent !== undefined && lastConsent !== consent) lastSeenAt.clear();
     lastConsent = consent;
   }, [consent]);
   useEffect(() => {
+    if (!needsLook) lookRefreshed = false;
+  }, [needsLook]);
+  useEffect(() => {
     if (!instanceId || !enabled || !visible) return;
     const tell = () => {
       if (Date.now() - (lastSeenAt.get(instanceId) ?? 0) < SEEN_EVERY_MS) return;
       lastSeenAt.set(instanceId, Date.now());
-      void window.ade?.cloud?.sponsoredSeen?.({ instanceId, device: sponsoredDevice() });
+      const seen = window.ade?.cloud?.sponsoredSeen?.({ instanceId, device: sponsoredDevice() });
+      if (needsLook && !lookRefreshed) {
+        lookRefreshed = true;
+        void Promise.resolve(seen).then(refreshCloudAccount, () => { lookRefreshed = false; });
+      }
     };
     tell();
     const timer = window.setInterval(tell, SEEN_EVERY_MS);
     return () => window.clearInterval(timer);
-  }, [instanceId, enabled, visible, consent]);
+  }, [instanceId, enabled, visible, consent, needsLook]);
 }

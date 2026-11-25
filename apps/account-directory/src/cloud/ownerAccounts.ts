@@ -1,4 +1,6 @@
-import { gravitySwitches, isSponsoredFormat, sponsoredAbReport, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
+import { isSponsoredFormat, sponsoredAbReport, type GravityEnv } from "./gravity";
+import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
+import { gravitySwitches } from "./sponsoredSwitch";
 import { fail, json } from "./http";
 import { CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
 import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";

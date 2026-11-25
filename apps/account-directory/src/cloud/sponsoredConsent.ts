@@ -93,11 +93,22 @@ export const gpcOptsOut = (who: SponsoredRequester): boolean => who.gpc && optOu
  * with the notice that cards are on (`notice`), or the no a browser's Global
  * Privacy Control made (`gpc`). `gpc` 1: a yes given, past the second
  * confirm, from a US browser that sends the signal (it holds there).
+ * `looked_at`: the last time the yes was given, or a look found it holding,
+ * from the US (Free's Small is free only while that is recent, `gravity.ts`
+ * `SMALL_FREE_LOOK_MS`); null for a no.
  */
-export type ConsentRow = { consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number; source: "answer" | "notice" | "gpc"; country: string | null; gpc: number };
+export type ConsentRow = {
+  consent: CloudSponsoredConsent;
+  email_hash: string | null;
+  decided_at: number;
+  source: "answer" | "notice" | "gpc";
+  country: string | null;
+  gpc: number;
+  looked_at: number | null;
+};
 
 export async function readConsent(env: CloudDb, userId: string): Promise<ConsentRow | null> {
-  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc from cloud_sponsored_consent where user_id = ?")
+  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc, looked_at from cloud_sponsored_consent where user_id = ?")
     .bind(userId).first<ConsentRow>();
 }
 

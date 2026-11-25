@@ -28,9 +28,12 @@ struct CloudSponsoredState: Decodable, Equatable {
   let consent: String?
   /// Gravity's test ads: nothing is paid or counted.
   let test: Bool
-  /// Free's Small computers are unlimited only while sponsored cards are on:
-  /// a no (or no answer) has them use hours, at half a Medium-hour an hour.
-  /// Nil while the server's rule is off. The question and Settings say so.
+  /// Free's Small computers are unlimited only while sponsored cards are on,
+  /// in the US: here a no (or no answer) has them use hours, at half a
+  /// Medium-hour an hour. Also sent abroad while a US look in the last week
+  /// keeps Small free. Nil while the server's rule is off, on a paid plan,
+  /// and otherwise outside the US (`smallOutsideUS`). The question and
+  /// Settings say so.
   let smallNeedsCards: Bool?
   /// Where this account's cards show, as the server assigns it. An older
   /// server sends nothing, and an unknown value reads the same: under the reply.
@@ -46,13 +49,19 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// The no came from a browser's Global Privacy Control (it opts the whole
   /// account out from the US): Settings says so (`gpcOffLine`).
   let gpcOff: Bool
+  /// A yes, but nobody has opened a cloud chat from the US for 7 days (or
+  /// ever): Small uses credits until the next one. Settings says so.
+  let smallNeedsLook: Bool
+  /// Free, read from outside the US: cards keep Small free only in the US, so
+  /// here it uses credits, cards or not. Settings says so.
+  let smallOutsideUS: Bool
 
   static let granted = "granted"
   static let declined = "declined"
   /// The notice that cards are on was shown: saved as a yes of its own kind (`CloudSponsoredChoice`).
   static let notice = "notice"
 
-  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false, smallNeedsLook: Bool = false, smallOutsideUS: Bool = false) {
     self.ads = ads
     self.consent = consent
     self.test = test
@@ -61,9 +70,11 @@ struct CloudSponsoredState: Decodable, Equatable {
     self.startsOn = startsOn
     self.confirmYes = confirmYes
     self.gpcOff = gpcOff
+    self.smallNeedsLook = smallNeedsLook
+    self.smallOutsideUS = smallOutsideUS
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff, smallNeedsLook, smallOutsideUS }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -76,6 +87,8 @@ struct CloudSponsoredState: Decodable, Equatable {
     startsOn = c.lenient(Bool.self, forKey: .startsOn) ?? false
     confirmYes = c.lenient(Bool.self, forKey: .confirmYes) ?? false
     gpcOff = c.lenient(Bool.self, forKey: .gpcOff) ?? false
+    smallNeedsLook = c.lenient(Bool.self, forKey: .smallNeedsLook) ?? false
+    smallOutsideUS = c.lenient(Bool.self, forKey: .smallOutsideUS) ?? false
   }
 
   /// What Gravity gets, as the question, the notice and Settings say it.
@@ -350,10 +363,12 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
-    // While Free's Small needs cards, the answer also moved Small's rate in the
-    // account's catalog: read the account again so Small's hours show it.
-    if state.smallNeedsCards == true, generation == AccountCloudStore.shared.generation {
-      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    // Where Free's Small rule reaches the account, the answer may also have moved
+    // Small's rate in the account's catalog (here, or abroad within a week of a
+    // US look): read the account again so Small's hours show it. A read already
+    // out may predate the answer, so it ends first and then the account is read.
+    if state.smallNeedsCards == true || state.smallOutsideUS, generation == AccountCloudStore.shared.generation {
+      Task { await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances() }
     }
     return .success(state)
   } catch {
@@ -506,6 +521,8 @@ final class CloudSponsoredStore: ObservableObject {
   /// The seen request in flight per computer: the next one waits for it, so
   /// an older answer can never land after a newer one.
   private var seenInFlight: [String: Task<Void, Never>] = [:]
+  /// The account was read again after a look that may have ended a lapse (`smallNeedsLook`): once per lapse.
+  private var lookRefreshed = false
   /// Account changes this run: an ask that spans one publishes nothing.
   private var resetCount = 0
   private var observers: [NSObjectProtocol] = []
@@ -741,6 +758,20 @@ final class CloudSponsoredStore: ObservableObject {
     lastSeenTracking[instanceId] = device.tracking
     do {
       try await client.sponsoredSeen(instanceId: instanceId, device: device)
+      // A yes whose US looks lapsed: this look may make Small free again, so the account is read once after it.
+      if AccountCloudStore.shared.account?.sponsored?.smallNeedsLook == true {
+        if !lookRefreshed {
+          lookRefreshed = true
+          Task { @MainActor [weak self] in
+            // A read already out may predate the look: it ends first, then the account is read.
+            await SyncMenuSafePublisher.shared.service.refreshCloudServerInstances()
+            // That read failed (the lapse still shows): the next look reads again.
+            if AccountCloudStore.shared.account?.sponsored?.smallNeedsLook == true { self?.lookRefreshed = false }
+          }
+        }
+      } else {
+        lookRefreshed = false
+      }
     } catch {
       // Not said: the next look tries again instead of waiting out the interval.
       if lastSeenAt[instanceId] == now {
@@ -758,6 +789,7 @@ final class CloudSponsoredStore: ObservableObject {
   func forgetSeen() {
     lastSeenAt = [:]
     lastSeenTracking = [:]
+    lookRefreshed = false
   }
 
   func reset() {

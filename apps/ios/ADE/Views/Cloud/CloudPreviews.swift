@@ -17,7 +17,7 @@ import SwiftUI
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
-    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-again", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings", "duo-cloud-sponsored-settings-gpc",
+    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-again", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings", "duo-cloud-sponsored-settings-gpc", "duo-cloud-sponsored-settings-lapsed", "duo-cloud-sponsored-settings-abroad",
     "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
   ]
 
@@ -47,7 +47,10 @@ enum CloudPreviews {
     default:
       break
     }
-    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON().utf8)) else { return nil }
+    // Settings where Small uses credits (cards off, away, outside the US): the catalog rates Small as the server would.
+    let smallCosts = ["duo-cloud-sponsored-settings-gpc", "duo-cloud-sponsored-settings-lapsed", "duo-cloud-sponsored-settings-abroad"].contains(name)
+    let json = smallCosts ? listJSON().replacingOccurrences(of: #""multiplierMilli":0,"tier":"small""#, with: #""multiplierMilli":500,"tier":"small""#) : listJSON()
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(json.utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
     // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
     // Only the fixture account's entry changes: every other account's record on this device stays.
@@ -65,6 +68,10 @@ enum CloudPreviews {
       // `duo-cloud-sponsored-settings-gpc`: Settings after a browser's Global Privacy Control turned a yes off.
       var account = list.account
       let gpc = name == "duo-cloud-sponsored-settings-gpc"
+      // `duo-cloud-sponsored-settings-lapsed`: Settings for a yes with no cloud chat opened from the US in 7 days.
+      let lapsed = name == "duo-cloud-sponsored-settings-lapsed"
+      // `duo-cloud-sponsored-settings-abroad`: Settings for a yes, read from outside the US (Small uses credits there).
+      let abroad = name == "duo-cloud-sponsored-settings-abroad"
       let notice = name == "duo-cloud-sponsored-notice"
       let again = name == "duo-cloud-sponsored-again"
       let unanswered = name == "duo-cloud-sponsored-consent" || name == "duo-cloud-sponsored-small" || notice || again
@@ -73,17 +80,29 @@ enum CloudPreviews {
         ads: true,
         consent: unanswered ? nil : gpc ? CloudSponsoredState.declined : CloudSponsoredState.granted,
         test: true,
-        smallNeedsCards: name == "duo-cloud-sponsored-small" || notice || again || gpc ? true : nil,
+        smallNeedsCards: name == "duo-cloud-sponsored-small" || name == "duo-cloud-sponsored-settings" || notice || again || gpc || lapsed ? true : nil,
         format: format ?? .belowReply,
         startsOn: notice,
         confirmYes: again || gpc,
-        gpcOff: gpc
+        gpcOff: gpc,
+        smallNeedsLook: lapsed,
+        smallOutsideUS: abroad
       )
       AccountCloudStore.shared.seedPreview(access: nil, account: account)
       if format != nil { return AnyView(CloudSponsoredFormatChatFixture()) }
-      if name == "duo-cloud-sponsored-settings" || gpc {
+      if name == "duo-cloud-sponsored-settings" || gpc || lapsed || abroad {
+        // As on the ADE Cloud page: under the sizes, above the invite.
         return AnyView(NavigationStack {
-          ScrollView { CloudSponsoredCard(pageAccount: account).padding(16) }
+          ScrollView {
+            VStack(spacing: 16) {
+              if let account, account.catalog != nil { CloudSizesCard(account: account, tiers: store.tiers) }
+              CloudSponsoredCard(pageAccount: account)
+              if let referral = account?.referral {
+                CloudInviteCard(referral: referral, syncService: sync, words: CloudBalanceWords(account), onChanged: {})
+              }
+            }
+            .padding(16)
+          }
             .background(ADEColor.pageBackground.ignoresSafeArea())
             .navigationTitle("ADE Cloud")
             .navigationBarTitleDisplayMode(.inline)
