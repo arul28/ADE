@@ -1,33 +1,72 @@
 /**
- * The one unsaved automation draft per project, kept in this window's local
- * storage so it survives leaving the Automations tab, a project switch, and an
- * app or brain restart. Save and Discard clear it.
+ * The one unsaved automation draft per repository, kept in this window's local
+ * storage so it survives leaving the Automations tab, a project switch, the
+ * tab moving to another copy, and an app or brain restart. Save and Discard
+ * clear it.
  *
- * It is per project and per Mac: a draft is a person's unfinished edit, not
- * project data, so it never syncs. The target machine is stored by id and
- * matched again on restore; a machine that has gone keeps the draft but asks
- * for a machine again.
+ * It is per repository and per computer: a draft is a person's unfinished
+ * edit, not project data, so it never syncs. The target machine is stored by
+ * id and matched again on restore; a machine that has gone keeps the draft but
+ * asks for a machine again.
  */
 
 import type { AutomationRuleDraft } from "../../../shared/types";
+import type { RepositoryTab } from "../../../shared/repositoryTab";
 
 const STORAGE_KEY_PREFIX = "ade.automations.draft.v1";
 
 export type StoredAutomationDraft = {
-  version: 1;
+  version: 2;
   draft: AutomationRuleDraft;
   /** The snapshot the draft is compared with: the saved rule, or the blank or template start. */
   savedSnapshot: string;
   /** The rule key being edited, or null for a new automation. */
   ruleKey: string | null;
-  /** The machine the draft targets; null means the tab's own machine. */
+  /**
+   * The edited rule's id and the machine it lives on. The list key changes
+   * with the checkout the tab is on (a bare id there, machine-scoped
+   * elsewhere); these find the rule from any checkout.
+   */
+  ruleId: string | null;
+  ruleMachineId: string | null;
+  /**
+   * The machine the draft targets, by id, including the tab's own machine
+   * (the draft can be restored on another checkout). Null in older records
+   * meant the tab's machine at the time.
+   */
   targetMachineId: string | null;
   machineChosen: boolean;
+  /** "Runs on: ADE Cloud" was picked and not saved yet. */
+  cloudChosen: boolean;
+  /** "Runs on" was picked for a rule that follows the account, as a change of home. */
+  rehomeChosen: boolean;
   savedAt: string;
 };
 
-function storageKey(projectRoot: string): string {
-  return `${STORAGE_KEY_PREFIX}::${projectRoot}`;
+export type StoredAutomationDraftEntry = Omit<StoredAutomationDraft, "version" | "savedAt">;
+
+/**
+ * Where a repository's draft is stored. `key` is written; `aliases` are read
+ * (and removed) too, so a draft survives the tab's id settling (an origin
+ * address becomes the account project once the list loads) and drafts saved
+ * under a copy's folder path before the tab was the repository.
+ */
+export type AutomationDraftScope = { key: string; aliases: string[] };
+
+export function automationDraftScope(tab: RepositoryTab | null, copyRootPath: string | null): AutomationDraftScope | null {
+  const root = copyRootPath?.trim() || null;
+  const key = tab?.id ?? root;
+  if (!key) return null;
+  const aliases = new Set<string>([
+    ...(tab?.kind === "account" ? tab.repoKeys : []),
+    ...(root ? [root] : []),
+  ]);
+  aliases.delete(key);
+  return { key, aliases: [...aliases] };
+}
+
+function storageKey(scopeKey: string): string {
+  return `${STORAGE_KEY_PREFIX}::${scopeKey}`;
 }
 
 function storage(): Storage | null {
@@ -38,50 +77,77 @@ function storage(): Storage | null {
   }
 }
 
-export function loadStoredAutomationDraft(projectRoot: string | null): StoredAutomationDraft | null {
-  if (!projectRoot) return null;
-  try {
-    const raw = storage()?.getItem(storageKey(projectRoot));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<StoredAutomationDraft>;
-    const draft = parsed?.draft as Partial<AutomationRuleDraft> | undefined;
-    if (
-      parsed?.version !== 1
-      || !draft || typeof draft !== "object" || !Array.isArray(draft.triggers)
-      || typeof parsed.savedSnapshot !== "string"
-    ) {
-      // A record this window cannot use would fail again on every restore.
-      clearStoredAutomationDraft(projectRoot);
-      return null;
-    }
-    return {
-      version: 1,
-      draft: draft as AutomationRuleDraft,
-      savedSnapshot: parsed.savedSnapshot,
-      ruleKey: typeof parsed.ruleKey === "string" && parsed.ruleKey ? parsed.ruleKey : null,
-      targetMachineId: typeof parsed.targetMachineId === "string" && parsed.targetMachineId ? parsed.targetMachineId : null,
-      machineChosen: parsed.machineChosen !== false,
-      savedAt: typeof parsed.savedAt === "string" ? parsed.savedAt : new Date().toISOString(),
-    };
-  } catch {
+function parseStored(raw: string): StoredAutomationDraft | null {
+  const parsed = JSON.parse(raw) as Partial<Omit<StoredAutomationDraft, "version">> & { version?: number };
+  const draft = parsed?.draft as Partial<AutomationRuleDraft> | undefined;
+  if (
+    (parsed?.version !== 1 && parsed?.version !== 2)
+    || !draft || typeof draft !== "object" || !Array.isArray(draft.triggers)
+    || typeof parsed.savedSnapshot !== "string"
+  ) {
     return null;
   }
+  return {
+    version: 2,
+    draft: draft as AutomationRuleDraft,
+    savedSnapshot: parsed.savedSnapshot,
+    ruleKey: typeof parsed.ruleKey === "string" && parsed.ruleKey ? parsed.ruleKey : null,
+    ruleId: typeof parsed.ruleId === "string" && parsed.ruleId ? parsed.ruleId : null,
+    ruleMachineId: typeof parsed.ruleMachineId === "string" && parsed.ruleMachineId ? parsed.ruleMachineId : null,
+    targetMachineId: typeof parsed.targetMachineId === "string" && parsed.targetMachineId ? parsed.targetMachineId : null,
+    machineChosen: parsed.machineChosen !== false,
+    cloudChosen: parsed.cloudChosen === true,
+    rehomeChosen: parsed.rehomeChosen === true,
+    savedAt: typeof parsed.savedAt === "string" ? parsed.savedAt : new Date().toISOString(),
+  };
 }
 
-export function storeAutomationDraft(projectRoot: string | null, entry: Omit<StoredAutomationDraft, "version" | "savedAt">): void {
-  if (!projectRoot) return;
+/** The newest usable draft under the scope's key or any alias; unusable records are removed. */
+export function loadStoredAutomationDraft(scope: AutomationDraftScope | null): StoredAutomationDraft | null {
+  if (!scope) return null;
+  const store = storage();
+  if (!store) return null;
+  let newest: StoredAutomationDraft | null = null;
+  for (const scopeKey of [scope.key, ...scope.aliases]) {
+    try {
+      const raw = store.getItem(storageKey(scopeKey));
+      if (!raw) continue;
+      const stored = parseStored(raw);
+      if (!stored) {
+        // A record this window cannot use would fail again on every restore.
+        store.removeItem(storageKey(scopeKey));
+        continue;
+      }
+      if (!newest || stored.savedAt > newest.savedAt) newest = stored;
+    } catch {
+      // Unreadable: skip it.
+    }
+  }
+  return newest;
+}
+
+export function storeAutomationDraft(scope: AutomationDraftScope | null, entry: StoredAutomationDraftEntry): void {
+  if (!scope) return;
+  const store = storage();
+  if (!store) return;
   try {
-    storage()?.setItem(storageKey(projectRoot), JSON.stringify({ ...entry, version: 1, savedAt: new Date().toISOString() }));
+    store.setItem(storageKey(scope.key), JSON.stringify({ ...entry, version: 2, savedAt: new Date().toISOString() }));
+    // One draft per repository: the copy under an old key is now stale.
+    for (const alias of scope.aliases) store.removeItem(storageKey(alias));
   } catch {
     // Storage full or unavailable: the draft only lives in memory, as before.
   }
 }
 
-export function clearStoredAutomationDraft(projectRoot: string | null): void {
-  if (!projectRoot) return;
-  try {
-    storage()?.removeItem(storageKey(projectRoot));
-  } catch {
-    // Nothing to clear.
+export function clearStoredAutomationDraft(scope: AutomationDraftScope | null): void {
+  if (!scope) return;
+  const store = storage();
+  if (!store) return;
+  for (const scopeKey of [scope.key, ...scope.aliases]) {
+    try {
+      store.removeItem(storageKey(scopeKey));
+    } catch {
+      // Nothing to clear.
+    }
   }
 }

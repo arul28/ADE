@@ -746,7 +746,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "webhookSendTest", "webhookCreateAutomation", "webhookRetire",
     ],
     read: [
-      "list", "get", "getHistory", "listRuns", "getRunDetail", "getIngressStatus",
+      "list", "get", "getHistory", "listRuns", "getRunDetail", "getIngressStatus", "getCapabilities",
       "listIngressEvents", "listScheduledCleanups", "linearIngressGetStatus",
       "webhookListDeliveries", "webhookGetDelivery",
     ],

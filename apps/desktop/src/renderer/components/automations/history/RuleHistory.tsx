@@ -17,6 +17,7 @@ export function RuleHistory({
   isActiveBinding = true,
   machineName = null,
   offlineMessage = null,
+  initialRunId = null,
 }: {
   automationId: string;
   ruleName: string;
@@ -27,10 +28,12 @@ export function RuleHistory({
   machineName?: string | null;
   /** Set while the owning machine is unreachable; nothing is read. */
   offlineMessage?: string | null;
+  /** The run to open first (a link to it); otherwise the newest. */
+  initialRunId?: string | null;
 }) {
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [loading, setLoading] = useState(false);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId);
   const [detail, setDetail] = useState<AutomationRunDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +56,8 @@ export function RuleHistory({
         { pin, machineName: machineName ?? "That machine", isActiveBinding },
       );
       setRuns(next);
-      setSelectedRunId((current) => current ?? next[0]?.id ?? null);
+      // A linked run that is not in the list (too old, another rule) falls back to the newest.
+      setSelectedRunId((current) => (current && next.some((run) => run.id === current) ? current : next[0]?.id ?? null));
     } catch (err) {
       setError(extractError(err));
     } finally {

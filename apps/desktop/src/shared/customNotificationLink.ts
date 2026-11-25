@@ -93,7 +93,7 @@ export function stampCustomNotificationLinkOwner(
     return link;
   }
   const host = url.host.toLowerCase();
-  if (url.protocol !== "ade:" || (host !== "session" && host !== "pr")) return link;
+  if (url.protocol !== "ade:" || (host !== "session" && host !== "pr" && host !== "automation-run")) return link;
   // The desktop parser takes the two only together, so a half-stamped link
   // would be refused; a link that already names either is left as written.
   if (url.searchParams.has("accountMachineKey") || url.searchParams.has("projectId")) return link;

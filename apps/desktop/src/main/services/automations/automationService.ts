@@ -51,7 +51,8 @@ import type {
 } from "../../../shared/types";
 import type { ChatLaunchArgs, ChatLaunchLaneConfig } from "../../../shared/types/chatLaunch";
 import { followCloudLaneLaunch } from "../../../shared/cloudLaneLaunch";
-import { triggerDeliveryKeyForType } from "../../../shared/types";
+import { AUTOMATION_LANE_MODES, AUTOMATION_STEP_TYPES, AUTOMATION_TRIGGER_TYPES, triggerDeliveryKeyForType } from "../../../shared/types";
+import type { AutomationCapabilities } from "../../../shared/types";
 import { advanceLaneToPrHead, resolvePrBranchLane, type AutomationPrLaneService } from "./automationPrBranchLane";
 import {
   createAutomationTestRuns,
@@ -274,6 +275,8 @@ function hasConfiguredGitHubOrigin(projectRoot: string): boolean {
 export type AutomationAdeActionRegistry = {
   isAllowed(domain: string, action: string): boolean;
   getService(domain: string): Record<string, unknown> | null;
+  /** Every domain's service from one build, for callers that read many domains at once. */
+  getServices?(): Partial<Record<string, unknown>>;
   listDomains(): string[];
   listActions(domain: string): string[];
 };
@@ -782,22 +785,33 @@ export function isWebhookTrigger(trigger: TriggerContext): boolean {
 /** `{{run.*}}` values. `laneId` falls back to the trigger's lane, which every lane mode writes. */
 export type AutomationRunTemplateContext = {
   id: string;
+  /** The rule's id, for `ade://automation-run/{{run.automationId}}/{{run.id}}`. */
+  automationId?: string;
   laneId?: string;
   laneName?: string;
   chatSessionId?: string;
+  /**
+   * The run's lane is on another computer (ADE Cloud), so the trigger's lane
+   * is not the run's and `run.laneId` must not fall back to it.
+   */
+  laneElsewhere?: boolean;
 };
 
 const PLACEHOLDER_PATH = String.raw`(?:trigger|run)\.[^}\s]+`;
 const WHOLE_PLACEHOLDER = new RegExp(String.raw`^\{\{\s*(${PLACEHOLDER_PATH})\s*\}\}$`);
 const ANY_PLACEHOLDER = new RegExp(String.raw`\{\{\s*(${PLACEHOLDER_PATH})\s*\}\}`, "g");
 
-/** One `trigger.*` or `run.*` value; `run.laneId` / `run.laneName` fall back to the trigger's lane. */
+/**
+ * One `trigger.*` or `run.*` value. `run.laneId` / `run.laneName` fall back to
+ * the trigger's lane, unless the run made its own lane on another computer.
+ */
 function readTemplateValue(trigger: TriggerContext, expr: string): unknown {
   if (expr.startsWith("run.")) {
     const key = expr.slice("run.".length);
     const run = trigger.run;
-    if (key === "laneId") return run?.laneId ?? trigger.laneId;
-    if (key === "laneName") return run?.laneName ?? trigger.laneName;
+    if (key === "laneId") return run?.laneId ?? (run?.laneElsewhere ? undefined : trigger.laneId);
+    if (key === "laneName") return run?.laneName ?? (run?.laneElsewhere ? undefined : trigger.laneName);
+    if (key === "laneElsewhere") return undefined;
     return run ? (run as Record<string, unknown>)[key] : undefined;
   }
   return readTriggerPath(trigger, expr);
@@ -2516,7 +2530,7 @@ export function createAutomationService({
       billing_code: args.rule.billingCode,
     });
     // `{{run.id}}` for later steps; a test waits for this row to answer.
-    args.trigger.run = { ...args.trigger.run, id: runId };
+    args.trigger.run = { ...args.trigger.run, id: runId, automationId: args.rule.id };
     testRunStartedListeners.get(args.trigger)?.(inserted);
     return inserted;
   };
@@ -4010,6 +4024,8 @@ export function createAutomationService({
         try {
           const started = await startRunOnAdeCloud({ rule, trigger, runId: run.id, chat: null });
           trigger.laneName = started.laneName;
+          // Later steps name the run's lane, which lives on that computer.
+          trigger.run = { ...trigger.run, id: trigger.run?.id ?? run.id, laneName: started.laneName, laneElsewhere: true };
         } catch (error) {
           runStatus = "failed";
           runError = error instanceof Error ? error.message : String(error);
@@ -5810,6 +5826,54 @@ export function createAutomationService({
 
     bindAdeActionRegistry(registry: AutomationAdeActionRegistry | null) {
       adeActionRegistryRef = registry;
+    },
+
+    /**
+     * What a rule on this machine can use. The builder on another machine
+     * reads it to grey out steps this ADE does not have, instead of a raw
+     * `action_not_callable` once the rule runs.
+     */
+    getCapabilities(): AutomationCapabilities {
+      const registry = adeActionRegistryRef;
+      // One build of the service map for every domain read below.
+      const services = registry?.getServices?.() ?? null;
+      const serviceFor = (domain: string) => (services
+        ? (services[domain] ?? null) as Record<string, unknown> | null
+        : registry?.getService(domain) ?? null);
+      const cloud = serviceFor("cloud");
+      return {
+        triggerTypes: [...AUTOMATION_TRIGGER_TYPES],
+        stepTypes: [...AUTOMATION_STEP_TYPES],
+        laneModes: [...AUTOMATION_LANE_MODES],
+        cloudLanes: typeof cloud?.lane_launch === "function" && typeof cloud?.lane_launch_status === "function",
+        adeActions: registry
+          ? registry.listDomains().flatMap((domain) => {
+              const service = serviceFor(domain);
+              // A service not bound yet is not proof of absence.
+              return registry.listActions(domain)
+                .filter((action) => !service || typeof service[action] === "function")
+                .map((action) => `${domain}.${action}`);
+            })
+          : null,
+      };
+    },
+
+    /**
+     * Why an `ade-action` step cannot run on this machine, or null. Checked
+     * when a rule is saved here, so a step this ADE lacks is refused in plain
+     * words instead of failing on its first run.
+     */
+    adeActionStepProblem(domain: string, action: string): string | null {
+      const registry = adeActionRegistryRef;
+      if (!registry) return null;
+      if (!registry.isAllowed(domain, action)) {
+        return `The ADE on this machine can't run '${domain}.${action}' in an automation. Update ADE here, or remove the step.`;
+      }
+      const service = registry.getService(domain);
+      if (service && typeof service[action] !== "function") {
+        return `The ADE on this machine doesn't have '${domain}.${action}' yet. Update ADE here, then try again.`;
+      }
+      return null;
     },
 
     setLinearIngressAvailable(check: () => boolean) {

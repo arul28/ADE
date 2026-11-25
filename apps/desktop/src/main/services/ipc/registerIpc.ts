@@ -254,6 +254,7 @@ import type {
   ArchiveAndReclaimLaneArgs,
   ArchiveAndReclaimLaneResult,
   AutomationIngressEventRecord,
+  AutomationCapabilities,
   AutomationIngressStatus,
   AutomationScheduledCleanup,
   AutomationWebhookTestRequest,
@@ -7236,6 +7237,11 @@ export function registerIpc({
   handle(IPC.automationsGetIngressStatus, async (): Promise<AutomationIngressStatus> => {
     const ctx = ensureAutomationContext();
     return ctx.automationService.getIngressStatus();
+  });
+
+  handle(IPC.automationsGetCapabilities, async (): Promise<AutomationCapabilities> => {
+    const ctx = ensureAutomationContext();
+    return ctx.automationService.getCapabilities();
   });
 
   handle(IPC.automationsRefreshWebhookGatewayStatus, async (): Promise<AutomationIngressStatus["webhookGateway"]> => {

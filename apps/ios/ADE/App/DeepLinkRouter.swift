@@ -136,6 +136,16 @@ final class DeepLinkRouter {
       guard let laneId = pathComponents.first,
             ADEDeepLinkURLParsing.isValidUUID(laneId) else { return landOnBrokenLink() }
       routeLane(laneId: laneId, ownership: ownershipParse(from: url), accountProject: accountProjectParse(from: url), url: url)
+    case "automation-run":
+      // `ade://automation-run/<rule>/<run>[?session=<chat>]` — an automation's
+      // "This run's history". The phone has no run list: it opens the chat the
+      // run started, or offers the run to the computer.
+      guard pathComponents.count == 2,
+            ADEDeepLinkURLParsing.isValidOpaqueId(pathComponents[0]),
+            ADEDeepLinkURLParsing.isValidOpaqueId(pathComponents[1]),
+            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+      else { return landOnBrokenLink() }
+      routeAutomationRun(query: ADEDeepLinkURLParsing.adeQueryValues(from: components), url: url, attentionItemId: attentionItemId)
     case "file":
       let path = pathComponents.joined(separator: "/")
       guard isValidFileTarget(path: path, url: url) else { return }
@@ -315,6 +325,13 @@ final class DeepLinkRouter {
         accountProject: ADEDeepLinkURLParsing.accountProjectId(from: query),
         attentionItemId: attentionItemId
       )
+    case "automation-run":
+      guard ADEDeepLinkURLParsing.isValidOpaqueId(query["rule"]),
+            ADEDeepLinkURLParsing.isValidOpaqueId(query["id"]) else {
+        landOnBrokenLink()
+        return true
+      }
+      routeAutomationRun(query: query, url: url, attentionItemId: attentionItemId)
     case "file":
       guard isValidFileTarget(path: query["path"] ?? "", query: query) else { return true }
       postSendToMac(url: url)
@@ -1088,6 +1105,24 @@ final class DeepLinkRouter {
   /// send-to-mac channel so the presentation layer can pop the confirmation
   /// card. We pass the raw URL through so the card can render the target
   /// plainly without the router needing to know about each shape.
+  /// An automation run: its chat when the run started one (on the machine the
+  /// link names), otherwise the "Send to your computer" card for the run.
+  private func routeAutomationRun(query: [String: String], url: URL, attentionItemId: String?) {
+    if let sessionId = query["session"], !sessionId.isEmpty,
+       ADEDeepLinkURLParsing.isValidOpaqueId(sessionId),
+       let scope = sessionNavigationScope(from: query) {
+      routeSession(
+        sessionId: sessionId,
+        scope: scope,
+        ownership: ADEDeepLinkURLParsing.ownership(from: query),
+        accountProject: ADEDeepLinkURLParsing.accountProjectId(from: query),
+        attentionItemId: attentionItemId
+      )
+      return
+    }
+    postSendToMac(url: url)
+  }
+
   private func postSendToMac(
     url: URL,
     analyticsSource: ADEAnalyticsSource = .sendToMacLink

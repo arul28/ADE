@@ -95,10 +95,10 @@ export function isAccountProjectId(value: unknown): value is string {
 }
 
 /** Link kinds that name the computer and project they belong to. */
-export type OwnedDeeplinkTarget = Extract<DeeplinkTarget, { kind: "lane" | "session" | "pr" }>;
+export type OwnedDeeplinkTarget = Extract<DeeplinkTarget, { kind: "lane" | "session" | "pr" | "automation-run" }>;
 
 export function deeplinkTargetTakesOwnership(target: DeeplinkTarget): target is OwnedDeeplinkTarget {
-  return target.kind === "lane" || target.kind === "session" || target.kind === "pr";
+  return target.kind === "lane" || target.kind === "session" || target.kind === "pr" || target.kind === "automation-run";
 }
 
 /** The ownership a target carries, or null for a link any project can open. */
@@ -147,6 +147,20 @@ export type DeeplinkSessionTarget = {
   event?: number;
   offset?: number;
   envelope?: DeeplinkEnvelope;
+  ownership?: DeeplinkOwnership;
+  /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
+  accountProjectId?: string;
+};
+/**
+ * One automation run (`ade://automation-run/<ruleId>/<runId>`): the desktop
+ * opens the rule's History on that run. `session` names the chat the run
+ * started, so the phone, which has no run list, can open that instead.
+ */
+export type DeeplinkAutomationRunTarget = {
+  kind: "automation-run";
+  ruleId: string;
+  runId: string;
+  sessionId?: string;
   ownership?: DeeplinkOwnership;
   /** The account project (`accountProjectId=ap_…`). It may come without the pair. */
   accountProjectId?: string;
@@ -262,6 +276,7 @@ export type DeeplinkTarget =
   | DeeplinkInviteTarget
   | DeeplinkLaneTarget
   | DeeplinkSessionTarget
+  | DeeplinkAutomationRunTarget
   | DeeplinkFileTarget
   | DeeplinkCommitTarget
   | DeeplinkArtifactTarget
@@ -539,6 +554,14 @@ function buildAdeUrl(target: DeeplinkTarget): string {
       const base = `${ADE_DEEPLINK_SCHEME}://file/${encodeBranchSegment(target.path)}`;
       return qs ? `${base}?${qs}` : base;
     }
+    case "automation-run": {
+      const params = new URLSearchParams();
+      if (target.sessionId) params.set("session", target.sessionId);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
+      const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://automation-run/${encodeURIComponent(target.ruleId)}/${encodeURIComponent(target.runId)}`;
+      return qs ? `${base}?${qs}` : base;
+    }
     case "commit": {
       const params = new URLSearchParams();
       if (target.laneId) params.set("lane", target.laneId);
@@ -601,6 +624,13 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget |
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
+      appendOwnershipParams(params, target.ownership, target.accountProjectId);
+      break;
+    case "automation-run":
+      params.set("type", "automation-run");
+      params.set("rule", target.ruleId);
+      params.set("id", target.runId);
+      if (target.sessionId) params.set("session", target.sessionId);
       appendOwnershipParams(params, target.ownership, target.accountProjectId);
       break;
     case "file":
@@ -709,6 +739,13 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
       return { ok: false, error: { kind: "malformed", reason: "invalid session id" }, rawUrl };
     }
     return buildSessionTarget(sessionId, url.searchParams, rawUrl);
+  }
+
+  if (host === "automation-run") {
+    if (pathSegments.length !== 2) {
+      return { ok: false, error: { kind: "malformed", reason: "expected automation-run/<rule>/<run>" }, rawUrl };
+    }
+    return buildAutomationRunTarget(safeDecode(pathSegments[0]), safeDecode(pathSegments[1]), url.searchParams, rawUrl);
   }
 
   if (host === "file") return buildFileTarget(decodeBranchPath(pathSegments.join("/")), url.searchParams, rawUrl);
@@ -839,6 +876,9 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     }
     return buildSessionTarget(sessionId, url.searchParams, rawUrl);
   }
+  if (type === "automation-run") {
+    return buildAutomationRunTarget(url.searchParams.get("rule") ?? "", url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
+  }
   if (type === "file") return buildFileTarget(url.searchParams.get("path") ?? "", url.searchParams, rawUrl);
   if (type === "commit") return buildCommitTarget(url.searchParams.get("sha") ?? "", url.searchParams, rawUrl);
   if (type === "artifact") return buildArtifactTarget(url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
@@ -965,6 +1005,34 @@ function buildLaneTarget(laneId: string, searchParams: URLSearchParams, rawUrl: 
   };
 }
 
+function buildAutomationRunTarget(ruleId: string, runId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
+  if (!ruleId.trim() || !isValidOpaqueId(ruleId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid automation id" }, rawUrl };
+  }
+  if (!runId.trim() || !isValidOpaqueId(runId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid run id" }, rawUrl };
+  }
+  // An empty `session=` is a run that started no chat: the link still opens.
+  const sessionId = searchParams.get("session")?.trim() ?? "";
+  if (sessionId && !isValidOpaqueId(sessionId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid session id" }, rawUrl };
+  }
+  const ownershipResult = readOwnershipParams(searchParams, rawUrl);
+  if (!ownershipResult.ok) return ownershipResult;
+  return {
+    ok: true,
+    target: {
+      kind: "automation-run",
+      ruleId: ruleId.trim(),
+      runId: runId.trim(),
+      ...(sessionId ? { sessionId } : {}),
+      ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+      ...(ownershipResult.accountProjectId ? { accountProjectId: ownershipResult.accountProjectId } : {}),
+    },
+    rawUrl,
+  };
+}
+
 function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
   const laneId = searchParams.get("lane") ?? undefined;
   if (laneId != null && !isUuid(laneId)) {
@@ -1074,6 +1142,8 @@ export function describeTarget(target: DeeplinkTarget): string {
       return "lane link";
     case "session":
       return "work session";
+    case "automation-run":
+      return "automation run";
     case "file":
       return target.line ? `${target.path}:${target.line}` : target.path;
     case "commit":
@@ -1124,6 +1194,14 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         envelope: target.envelope ?? null,
         event: target.event ?? null,
         offset: target.offset ?? null,
+        ...(target.ownership ? { ownership: target.ownership } : {}),
+        ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
+      };
+    case "automation-run":
+      return {
+        kind: "automation-run",
+        ruleId: target.ruleId,
+        runId: target.runId,
         ...(target.ownership ? { ownership: target.ownership } : {}),
         ...(target.accountProjectId ? { accountProjectId: target.accountProjectId } : {}),
       };

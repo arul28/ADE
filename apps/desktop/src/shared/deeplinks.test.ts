@@ -540,6 +540,36 @@ describe("parseDeeplink — linear-issue", () => {
   });
 });
 
+describe("parseDeeplink — automation-run", () => {
+  const ownership = { accountMachineKey: "machine-b", projectId: "project-b" };
+
+  it.each([
+    ["bare run", { kind: "automation-run", ruleId: "rule-1", runId: "run-9" }],
+    ["run with its chat and owner", { kind: "automation-run", ruleId: "rule-1", runId: "run-9", sessionId: "chat-4", ownership }],
+  ] as const)("round-trips a %s in both forms", (_label, target) => {
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target)))).toEqual(target);
+  });
+
+  it("opens a run that started no chat (empty session)", () => {
+    expect(expectOk(parseDeeplink("ade://automation-run/rule-1/run-9?session="))).toEqual({
+      kind: "automation-run",
+      ruleId: "rule-1",
+      runId: "run-9",
+    });
+  });
+
+  it.each([
+    "ade://automation-run/rule-1",
+    "ade://automation-run/rule-1/run-9/extra",
+    "ade://automation-run/rule-1/run-9?session=bad%01id",
+    "https://ade-app.dev/open?type=automation-run&rule=rule-1",
+    "https://ade-app.dev/open?type=automation-run&id=run-9",
+  ])("rejects %s", (url) => {
+    expect(parseDeeplink(url).ok).toBe(false);
+  });
+});
+
 describe("looksLikeAdeDeeplink", () => {
   it("matches ade:// urls", () => {
     expect(looksLikeAdeDeeplink("ade://lane/abc")).toBe(true);
