@@ -484,6 +484,16 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         } else {
           event = .unknown(type: type)
         }
+      case "cto_learned":
+        // Changes this build can't read are dropped; a row with none draws nothing.
+        let changes = ((eventDict["changes"] as? [Any]) ?? []).compactMap { item in
+          (item as? [String: Any]).flatMap(CtoLearnedChange.init(json:))
+        }
+        if let learnId = nonEmptyTrimmed(optionalString(eventDict["learnId"])), !changes.isEmpty {
+          event = .ctoLearned(learnId: learnId, changes: changes, turnId: turnId)
+        } else {
+          event = .unknown(type: type)
+        }
       case "text":
         event = .assistantText(
           text: stringValue(eventDict["text"]),

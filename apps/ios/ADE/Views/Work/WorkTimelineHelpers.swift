@@ -270,6 +270,10 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(targetKey)
     hasher.combine(emoji)
     combineOptional(turnId, into: &hasher)
+  case .ctoLearned(let learnId, let changes, let turnId):
+    hasher.combine(learnId)
+    hasher.combine(changes)
+    combineOptional(turnId, into: &hasher)
   case .assistantText(let text, let turnId, let itemId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -4817,6 +4821,24 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
     )
   }
+  if existing.kind == "ctoLearned" {
+    // An Undo re-sends the row with the same `learnId`: the newest copy draws
+    // in the first one's place (desktop `appendCtoLearnedRow`), so the card
+    // keeps the first copy's timestamp and turn.
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: existing.timestamp,
+      turnId: existing.turnId ?? incoming.turnId,
+      body: nil,
+      bullets: incoming.bullets,
+      metadata: [],
+      ctoLearned: incoming.ctoLearned
+    )
+  }
   if existing.kind == "contextCompact", existing.isInProgress, incoming.isInProgress {
     // A host that repeats Claude's `compacting` status while one compaction
     // runs emits another "started" under the same card id. Last-wins would
@@ -4857,6 +4879,22 @@ func eventCard(
     case .userMessageResolution, .userMessageReaction:
       // Folded into the originating user bubble by `buildWorkChatMessages`.
       return nil
+    case .ctoLearned(let learnId, let changes, let turnId):
+      // One card per `learnId`; a later copy (an Undo) replaces it in place
+      // through `mergedWorkEventCard`.
+      return WorkEventCardModel(
+        id: "cto-learned:\(learnId)",
+        kind: "ctoLearned",
+        title: "Learned",
+        icon: "lightbulb",
+        tint: .secondary,
+        timestamp: envelope.timestamp,
+        turnId: turnId,
+        body: nil,
+        bullets: changes.map(\.text),
+        metadata: [],
+        ctoLearned: WorkCtoLearnedModel(learnId: learnId, changes: changes)
+      )
     case .plan:
       // Non-proposal plan events feed the chat's single task-list card below.
       return nil
@@ -5783,6 +5821,7 @@ func workTurnId(for event: WorkChatEvent) -> String? {
   case .userMessage(_, _, let turnId, _, _, _),
        .userMessageResolution(_, _, _, _, _, let turnId),
        .userMessageReaction(_, _, let turnId),
+       .ctoLearned(_, _, let turnId),
        .assistantText(_, let turnId, _),
        .toolCall(_, _, _, _, let turnId),
        .toolResult(_, _, _, _, let turnId, _, _, _),

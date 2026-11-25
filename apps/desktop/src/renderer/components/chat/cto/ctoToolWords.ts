@@ -92,13 +92,15 @@ export type CtoToolChip = {
   failed: boolean;
 };
 
-/** State-changing CTO tools that draw a chip instead of hiding in the tools toggle. */
+/**
+ * State-changing CTO tools that draw a chip instead of hiding in the tools
+ * toggle. Notes, rules and skills draw none: the turn's "Learned" row lists
+ * each of those changes with its Undo.
+ */
 const CHIP_TOOL_NAMES: ReadonlySet<string> = new Set([
   "scheduleWork",
   "cancelScheduledWork",
   "setScheduledWorkPaused",
-  "remember",
-  "forget",
   "trackWork",
   "finishWork",
 ]);
@@ -284,6 +286,16 @@ export function ctoStepWords(toolName: string, rawArgs: unknown): string | null 
       return "Saving a note";
     case "forget":
       return "Dropping a note";
+    case "addRule":
+      return "Saving a rule";
+    case "removeRule":
+      return "Dropping a rule";
+    case "saveSkill":
+      return "Saving a skill";
+    case "readSkill":
+      return "Reading a skill";
+    case "deleteSkill":
+      return "Deleting a skill";
     case "trackWork":
       return "Noting open work";
     case "finishWork":

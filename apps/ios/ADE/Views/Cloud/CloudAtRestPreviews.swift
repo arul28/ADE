@@ -286,6 +286,11 @@ enum CloudAtRestPreviews {
       projectNotes: "Northwind ships the web app from main every Thursday. The upload path is the part customers notice first, so its tests must never be flaky.",
       userNotes: "Sam likes short PR descriptions and one change per PR.",
       openWork: "Fix flaky upload test is pushed and waits for review on PR #412. Next: the changelog for Thursday.",
+      rules: "- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews.",
+      skills: [
+        CloudCtoCopy.Skill(name: "release-web", description: "Cut the Thursday web release from main"),
+        CloudCtoCopy.Skill(name: "triage-flaky-test", description: "Find why a test flakes before retrying it"),
+      ],
       routines: [
         CloudCtoCopy.Routine(title: "Morning PR sweep", cron: "0 9 * * 1-5", paused: false),
         CloudCtoCopy.Routine(title: "Weekly dependency check", cron: "0 8 * * 1", paused: true),

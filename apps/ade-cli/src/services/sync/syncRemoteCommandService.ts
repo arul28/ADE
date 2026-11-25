@@ -7275,8 +7275,8 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   // the CTO or another device saved in between. `baseHash` refuses that too.
   register("cto.updateNotes", { viewerAllowed: true, queueable: false }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
-    const scope = payload.scope === "user" ? "user" : payload.scope === "project" ? "project" : null;
-    if (!scope) throw new Error("cto.updateNotes requires scope: project or user.");
+    const scope = payload.scope === "user" || payload.scope === "project" || payload.scope === "rules" ? payload.scope : null;
+    if (!scope) throw new Error("cto.updateNotes requires scope: project, user or rules.");
     if (typeof payload.text !== "string") throw new Error("cto.updateNotes requires text.");
     ctoMemoryService.writeNotes(scope, payload.text, {
       baseHash: typeof payload.baseHash === "string" ? payload.baseHash : null,
@@ -7294,6 +7294,37 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
     }
     return ctoMemoryService.getSnapshot();
+  });
+  register("cto.getSkill", { viewerAllowed: true }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    return ctoMemoryService.readSkill(requireString(payload.name, "cto.getSkill requires name."));
+  });
+  // Not queueable, like cto.updateNotes: a whole-file write replayed later
+  // would land over a newer skill. `baseHash` refuses that too.
+  register("cto.writeSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    if (typeof payload.text !== "string") throw new Error("cto.writeSkill requires text.");
+    ctoMemoryService.writeSkillText({
+      name: requireString(payload.name, "cto.writeSkill requires name."),
+      text: payload.text,
+      baseHash: typeof payload.baseHash === "string" ? payload.baseHash : null,
+    });
+    return ctoMemoryService.getSnapshot();
+  });
+  register("cto.deleteSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    const result = ctoMemoryService.deleteSkill(requireString(payload.name, "cto.deleteSkill requires name."), { by: "person" });
+    if (!result.ok) throw new Error(result.error);
+    return ctoMemoryService.getSnapshot();
+  });
+  // Undo on a CTO "Learned" row; the row redraws on every client from the
+  // `cto_learned` event the host emits again. Returns CtoUndoLearnedResult.
+  register("cto.undoLearned", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    return agentChatService.undoCtoLearned({
+      learnId: requireString(payload.learnId, "cto.undoLearned requires learnId."),
+      changeId: requireString(payload.changeId, "cto.undoLearned requires changeId."),
+    });
   });
   // The person moved the CTO here: take it from its account copy. The phone
   // that made the move asks the new home itself.

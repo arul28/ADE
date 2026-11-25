@@ -2632,6 +2632,11 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     ].joined(separator: "|")
   case .userMessageReaction(let targetKey, let emoji, let turnId):
     return ["user_message_reaction", turnId ?? "", targetKey, emoji].joined(separator: "|")
+  case .ctoLearned(let learnId, let changes, let turnId):
+    // Each copy keeps its own row (an Undo re-sends the learnId with a change
+    // marked undone); the card fold draws the newest in the first one's place.
+    let state = changes.map { "\($0.id):\($0.undone ? "1" : "0")" }.joined(separator: ",")
+    return ["cto_learned", turnId ?? "", learnId, state].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
     let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !normalizedItemId.isEmpty {

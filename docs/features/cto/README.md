@@ -7,6 +7,8 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 ### Main services (`apps/desktop/src/main/services/cto/`)
 
 - `ctoStateService.ts` — identity (name, persona, model preferences, standing instructions) in `.ade/cto/identity.yaml` mirrored to the `cto_identity_state` row, with the fallback models, avatar look and personality in the `.ade/cto/preferences.json` sidecar (see [Where the identity is stored](#where-the-identity-is-stored)); the prompt layers (`IMMUTABLE_CTO_DOCTRINE`, `CTO_CONTINUITY_OPERATING_MODEL`, `CTO_MEMORY_SYSTEM_GUIDANCE`, the ADE environment document, the capability manifest); `previewSystemPrompt()` and `buildStaticContextSection()`; the per-turn volatile block `buildReconstructionContext()`; and the live project state block (`captureLiveState()`, `getLiveStateSnapshot()`, the pure `renderCtoLiveStateBlock()`, `CTO_LIVE_STATE_MAX_CHARS`). Its `getLiveStateSources` argument is a thunk because the service is built at boot, before the chat, PR and automation services exist.
+- `ctoLearningService.ts` — how the CTO learns: the rules (`.ade/cto/RULES.md`), the skills (`.ade/cto/skills/<name>/SKILL.md`), each turn's baseline, the "Learned" journal (`.ade/cto/learning/turns/`) and the undone list (`.ade/cto/learning/undone.json`). Composed by `ctoMemoryService`, which exposes it.
+- `ctoNoteText.ts` — the note-line parser and the near-duplicate check both stores share.
 - `ctoMemoryService.ts` — the whole memory store. Project notes (`.ade/cto/MEMORY.md`), notes about the person (`<ADE home>/cto/USER.md`), open work (`.ade/cto/open-work.json`), the one-time v1 reset, the worker-discovery queue (`discoveries.md`, `discoveries-archive.md`, `discoveries.cursor`) and `buildMemoryContextSections()`, the three sections injected every turn.
 - `ctoStory.ts` — the story so far and the history block a fresh thread gets (see [The story so far](#the-story-so-far)). Pure: choosing the tail, planning a fold, the helper's prompt, and cleaning and accepting its answer.
 - `ctoStoryUpdater.ts` — runs the story updates: one at a time per chat, batches, the failure wait, the supersede check. `agentChatService` hands it the chat (transcript, helper model, prompt runner).
@@ -27,7 +29,7 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 
 ### Operator tools (`apps/desktop/src/main/services/ai/tools/`)
 
-- `ctoOperatorTools.ts` — the CTO's tool factory: the memory tools (`remember`, `forget`, `trackWork`, `finishWork`, `readHistory`, `readDiscoveries`), the pack loader `loadCtoTools`, scheduling, chat spawn and supervision, lanes/PRs/git/tests, Linear, proof and the cross-machine tools.
+- `ctoOperatorTools.ts` — the CTO's tool factory: the memory tools (`remember`, `forget`, `trackWork`, `finishWork`, `readHistory`, `readDiscoveries`), the learning tools (`addRule`, `removeRule`, `saveSkill`, `readSkill`, `deleteSkill`), the pack loader `loadCtoTools`, scheduling, chat spawn and supervision, lanes/PRs/git/tests, Linear, proof and the cross-machine tools.
 - `ctoExecutionLane.ts` — `createCtoExecutionLaneResolver()`: where `spawnChat` work runs, shared by the in-process CTO and the MCP bridge (see [Where CTO-launched work runs](#where-cto-launched-work-runs)).
 - `ctoToolPacks.ts` — the closed list of packs and their one-line scopes. No imports, so the prompt builder can read it without the tool runtime.
 - `ctoCrossMachine.ts`, `ctoCrossMachineTools.ts` — the cross-machine tool contract and implementation (`listMachines`, `listMachineActions`, `runMachineAction`, the `machine` argument).
@@ -118,6 +120,23 @@ Open work is a small list of `CtoOpenWorkItem`s. `trackWork({ text })` adds one 
 
 A notes editor sends `baseHash`, the sha256 of the text it started from (`CtoMemorySnapshot.memoryHash` / `userNotesHash`). When the file changed since (the CTO wrote a note, another device saved), `writeNotes` refuses with `CTO_NOTES_CHANGED_ERROR` ("Notes changed since you opened them."); match it with `isCtoNotesChangedError()`, since the class does not survive IPC or sync. A write without `baseHash` still replaces the file. `cto.updateNotes` over sync is not queueable: a whole-file write replayed later would overwrite what changed meanwhile.
 
+### How the CTO learns: rules, skills and the Learned row
+
+Beside the notes, the CTO keeps two more things (`ctoLearningService.ts`):
+
+| File | What it is | Cap |
+| --- | --- | --- |
+| `.ade/cto/RULES.md` | Standing rules, one `- rule — why.` line each. The person and the CTO both edit it; the person's headings and wording are kept. Injected in full every turn. | `CTO_RULES_MAX_BYTES` = 4096 |
+| `.ade/cto/skills/<name>/SKILL.md` | One how-to per kind of task: frontmatter `name` and `description`, then the steps. Only the index (name and description) is injected; the CTO calls `readSkill` before that kind of task. | 40 skills, 8 KB each |
+
+The doctrine (`CTO_MEMORY_SYSTEM_GUIDANCE`, "How you learn") says where a lesson goes: a standing rule the person gives goes to rules (`addRule`), how to do a kind of task goes to a skill (`saveSkill`), a fact goes to notes (`remember`). A lesson is the rule plus one clause of why, never a log of what happened, and `addRule` requires the `why`. A rule close to an existing one (Dice 0.6 on the rule part) is refused with that rule, so the CTO sharpens it with `replaces`. Rules come only from the person or the CTO's own judgment, never from a child's report, a page, a file or a tool result. When the person corrects it or a child fails, the CTO fixes the cause (the brief, the rule, the skill) before its turn ends.
+
+Each CTO turn has a baseline: the rules, skills and both notes files as the turn found them (`beginLearningTurn`, called from `setSessionActive`). When the turn ends (`setSessionIdle`), `finishLearningTurn` diffs against it and, when anything changed, the chat service emits one `cto_learned` event: `{ learnId, changes[] }`, each change `{ id, area: rules | skill | project_notes | user_notes, op: added | changed | removed, text, previous?, detail?, undone? }`. A removed line and an added one that say nearly the same thing are one `changed` line. The turn's record (its changes and the files it touched, as they were) is saved under `.ade/cto/learning/turns/<learnId>.json`, the newest 60 kept. The person's own writes during a turn (Settings, another device, an account copy) move the baseline, so they never show as something the CTO learned.
+
+Undo (`cto_memory.undoLearned`, person-only in `ADE_ACTION_USER_ONLY`; sync `cto.undoLearned`) puts one change back from the record: an added line is dropped, a removed line comes back, a changed line gets its old text, a skill gets its old file or goes. The host then emits the same `learnId` again with that change marked `undone`, and every client draws the newest copy in the first one's place. The change goes on the undone list: the CTO's `addRule`, `removeRule`, `remember`, `forget`, `saveSkill` and `deleteSkill` refuse the same change again (exact, or Dice 0.8), and the newest eight are injected every turn under "Undone by the person". Only when the person asks for it again in their own words does the CTO pass `personAskedAgain: true`. When the person writes the change back themselves, its undone entry is dropped.
+
+Rules and skills travel in the account copy (`rules`, `skills`), and a move restores them; a copy from an older build leaves this machine's as they are.
+
 CTO v2 starts with empty notes. A one-time reset runs on first load, guarded by `.ade/cto/.v2-migrated`. When v1 files are present, it moves them (`context-store.json`, `thread-state.md`, `daily/`, `memory-archive.md`, `CURRENT.md`, `sessions.jsonl`) and the v1 `MEMORY.md` into `.ade/cto/legacy-v1/`. Nothing is imported and nothing is deleted.
 
 ### What the CTO is given each turn
@@ -129,10 +148,13 @@ The turn context has two halves with different lifetimes.
 **Volatile, every turn.** `buildReconstructionContext()` builds, in this order:
 
 1. `CTO Context` — name, persona, preferred model.
-2. `## Notes (project) — N of 4096 bytes` and the notes file.
-3. `## Notes about the person — N of 2048 bytes` and the user notes file.
-4. `## Open work` — open items with their ids, then up to five recently finished ones marked done.
-5. The live project state block, **last**.
+2. `## Rules — N of 4096 bytes` and the rules file.
+3. `## Skills` — each skill's name and description.
+4. `## Undone by the person` — only when there is something: the newest eight undone changes.
+5. `## Notes (project) — N of 4096 bytes` and the notes file.
+6. `## Notes about the person — N of 2048 bytes` and the user notes file.
+7. `## Open work` — open items with their ids, then up to five recently finished ones marked done.
+8. The live project state block, **last**.
 
 The live state block is captured per turn, with a bounded wait. `refreshCtoLiveStateForTurn` waits at most `CTO_LIVE_STATE_SEND_WAIT_MS` (350 ms) before a send; a capture still running then finishes into the cache for the next turn (`refreshLiveState` is single-flight, so a second send joins it), and this send carries the previous snapshot, whose header reads "as of 40 s ago" once it is more than 5 s old. Inside the capture, the two slow reads (lanes, which run git status, and the chat summaries) run in parallel; PRs, machines and automation runs are synchronous reads. The block covers who is waiting on the person, the account's machines, lanes, active chats with their lineage, open PRs with checks and review state, scheduled work, recent automation runs, and any source that failed this turn. It is capped at `CTO_LIVE_STATE_MAX_CHARS` (6000) with per-section row caps and "…and N more" lines. It stays last because the volatile prefix is truncated by keeping its tail: the freshest, most perishable section must be where a budgeted send cannot cut it.
 
@@ -350,7 +372,8 @@ Live updates come from chat events for the CTO and its children, debounced at 80
 The CTO thread is drawn differently from every other chat, keyed on `presentation.profile === "persistent_identity"`.
 
 - **One working line.** During a live turn, the tool and work rows collapse into `CtoWorkingLine`: a 16 px working avatar, the latest step in plain words ("Checking PR #12", "Reading a chat", "Starting a chat on Codex"), and the elapsed time. Click it to see every step; a second click shows the raw tool calls. When the turn ends, the normal turn fold takes over.
-- **Quiet chips.** A finished call to a state-changing tool draws a chip instead of a tool row: Scheduled · `<title>`, Cancelled · `<title>`, Paused / Resumed · `<title>`, Remembered · `<note>`, Forgot · `<note>`, Tracking · `<text>`, Done · `<text>`. A failed call says "Couldn't schedule" and so on. A call still running draws nothing here, because the working line names it.
+- **Quiet chips.** A finished call to a state-changing tool draws a chip instead of a tool row: Scheduled · `<title>`, Cancelled · `<title>`, Paused / Resumed · `<title>`, Tracking · `<text>`, Done · `<text>`. A failed call says "Couldn't schedule" and so on. A call still running draws nothing here, because the working line names it. Notes, rules and skills draw no chip: the Learned row lists them.
+- **Learned.** A turn that changed rules, skills or notes ends with one `cto_learned` row (`CtoLearnedRow`; iOS `CtoLearnedCard`): one line per change (Rule, Skill, Note, About you; "Sharpened" for a rewrite, struck through for a removal) and an Undo on each. Undo goes to the chat's machine by its pin.
 - **Reactions and quiet turns.** A `react` draws a small emoji badge on the person's bubble (`UserMessageReaction` in `AgentChatMessageList.tsx`; iOS `WorkUserMessageReactionBadge`), folded in by `attachUserMessageReaction` in `chatTranscriptRows.ts` (iOS `WorkChatMessageFold`). A turn ended with `noReply` or `react` shows only its footer.
 - **Fresh context.** The `cto_context_refreshed` notice is a hairline divider labelled "Fresh context", not a card.
 
@@ -366,7 +389,7 @@ A project with no model picked shows `CtoWelcome` instead of the thread: the big
 
 - **Look** — a live preview with a state strip (Idle, Working, Thinking, Waiting, Asleep, Happy, Error) that plays each state; the name; shape (seven tiles drawing the real shapes); colour (ten swatches tuned for dark and light, plus a hex input); eyes (four tiles); energy (Calm / Lively); personality (Focused / Friendly / Playful, each with an example sentence). Every change saves as you make it through `cto.updateIdentity({ patch }, pin)`, and the page says "Saved" quietly.
 - **Brain** — the main model (the standard picker, filtered to models the CTO can run on) with reasoning effort and Fast; up to three backup models as an ordered list with add, move up/down and remove, under one line explaining the switch; a **Refresh context** button with its one-sentence explanation; the **Home machine** row when the account has more than one machine; and the cross-machine switch.
-- **Memory** — the project notes editor with a byte meter ("1,240 of 4,096"), the "About you" editor (2,048), and the open-work list. Saves through `cto.updateNotes` and `cto.updateOpenWork`. A text over the cap is not sent; the meter says how many bytes over.
+- **Memory** — the Rules editor (4,096, `scope: "rules"`), the Skills list (`CtoSkillsList`: open one to edit its whole SKILL.md, delete, add), the project notes editor with a byte meter ("1,240 of 4,096"), the "About you" editor (2,048), and the open-work list. Saves through `cto.updateNotes`, `cto.writeSkill`, `cto.deleteSkill` and `cto.updateOpenWork`. A text over the cap is not sent; the meter says how many bytes over.
 - **Routines** — every row of the CTO chat's scheduled work, with the prompt, when it last ran, and what came of it, plus recently finished one-off wake-ups. The same rows as the panel.
 - **Instructions** — standing instructions (`systemPromptExtension`), then "What the CTO is told": the assembled prompt, folded.
 
@@ -375,13 +398,13 @@ A project with no model picked shows `CtoWelcome` instead of the thread: the big
 Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached as `window.ade.cto.*`. Every call that acts on the CTO takes a `pin` and routes to the CTO's home machine.
 
 - Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoGetNeeds`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
-- Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`.
+- Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`, `ctoGetSkill`, `ctoWriteSkill`, `ctoDeleteSkill`, `ctoUndoLearned`.
 - Onboarding markers: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`.
 - Linear reads, credentials and OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoGetLinearIssue`, `ctoCreateLinearIssue`, `ctoCreateLinearIssueComment`, `ctoCountLinearIssues`, `ctoGetLinearCustomViews`, `ctoGetLinearIssueCreateOptions`, `ctoListLinearProjectMilestones`, `ctoUploadLinearFile`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
 
 Scheduled work has its own generic channels: `ade.agentChat.scheduledWork.pauseItem` (`agentChat.setScheduledWorkItemPaused`) and `ade.agentChat.scheduledWork.runNow` (`agentChat.runScheduledWorkNow`).
 
-The action surface follows the same contract. `cto_state` exposes `refreshContext` and `cto_memory` exposes `getSnapshot`, `updateNotes`, `updateOpenWork` and `recordDiscovery`; both carry input contracts and the `cto_memory` domain is `allExcept`, so a method added there later is CTO-only by default. `recordDiscovery` and `getSnapshot` are the two deliberate exceptions. The hosted web client implements the CTO namespace method by method in `apps/desktop/src/renderer/webclient/adapter/misc.ts` (`getMemory`, `updateNotes`, `updateOpenWork`, `updateIdentity`, `refreshContext`, `previewSystemPrompt`).
+The action surface follows the same contract. `cto_state` exposes `refreshContext` and `cto_memory` exposes `getSnapshot`, `updateNotes`, `updateOpenWork`, `getSkill`, `writeSkill`, `deleteSkill`, `undoLearned` (person-only) and `recordDiscovery`; both carry input contracts and the `cto_memory` domain is `allExcept`, so a method added there later is CTO-only by default. `recordDiscovery` and `getSnapshot` are the two deliberate exceptions. The hosted web client implements the CTO namespace method by method in `apps/desktop/src/renderer/webclient/adapter/misc.ts` (`getMemory`, `updateNotes`, `updateOpenWork`, `getSkill`, `writeSkill`, `deleteSkill`, `undoLearned`, `updateIdentity`, `refreshContext`, `previewSystemPrompt`).
 
 ## Sync command surface
 
@@ -392,7 +415,9 @@ Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syn
 - `cto.getAttention` — the mobile attention probe. Read-only: it delegates to `getCtoAttention()` and never materializes a session.
 - `cto.getNeeds` — the "Waiting on you" lines (`CtoNeedsSnapshot`). Read-only and optional: an older brain has none, and clients show no card.
 - `cto.getMemory` — the `CtoMemorySnapshot`.
-- `cto.updateNotes` — the notes write, with optional `baseHash`; not queueable. `cto.updateOpenWork` — the queueable open-work write. Both are used by the hosted web client.
+- `cto.updateNotes` — the notes or rules write (`scope: project | user | rules`), with optional `baseHash`; not queueable.
+- `cto.getSkill`, `cto.writeSkill` (with `baseHash`, not queueable), `cto.deleteSkill` — the skills editor.
+- `cto.undoLearned` — Undo on a Learned row; returns `{ undone, note? }` and the host re-emits the row. `cto.updateOpenWork` — the queueable open-work write. Both are used by the hosted web client.
 - `cto.refreshContext` — the hosted web client's "Refresh context".
 - `cto.previewSystemPrompt` — the prompt preview in the hosted web client's CTO settings.
 - The Linear surface: `cto.getLinearConnectionStatus`, `cto.getLinearQuickView`, `cto.getLinearIssuePickerData`, `cto.searchLinearIssues`, `cto.getLinearIssueComments`, `cto.getLinearIssue`, `cto.createLinearIssueComment`, `cto.createLinearIssue`, `cto.updateLinearIssue`, `cto.countLinearIssues`, `cto.getLinearCustomViews`, `cto.getLinearIssueCreateOptions`, `cto.listLinearProjectMilestones`, `cto.uploadLinearFile`, `cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken`.

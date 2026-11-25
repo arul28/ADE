@@ -330,21 +330,44 @@ struct CloudCtoCopy: Decodable, Equatable {
     }
   }
 
+  /// A skill by name and its one-line description; the how-to stays in the copy.
+  struct Skill: Decodable, Equatable {
+    let name: String
+    let description: String
+
+    private enum CodingKeys: String, CodingKey { case name, description }
+
+    init(name: String, description: String) {
+      self.name = name
+      self.description = description
+    }
+
+    init(from decoder: Decoder) throws {
+      let c = try decoder.container(keyedBy: CodingKeys.self)
+      name = try c.decode(String.self, forKey: .name)
+      description = c.lenient(String.self, forKey: .description) ?? ""
+    }
+  }
+
   let ownerName: String?
   let savedAt: String?
   let projectNotes: String
   let userNotes: String
   let openWork: String?
+  /// `.ade/cto/RULES.md`; "" when it has none or the copy is from an older build.
+  let rules: String
+  @ADELossyArray var skills: [Skill]
   @ADELossyArray var routines: [Routine]
   let tail: String
   let tailTruncated: Bool
   let storySummary: String?
 
-  private enum CodingKeys: String, CodingKey { case ownerName, savedAt, projectNotes, userNotes, openWork, routines, tail, tailTruncated, story }
+  private enum CodingKeys: String, CodingKey { case ownerName, savedAt, projectNotes, userNotes, openWork, rules, skills, routines, tail, tailTruncated, story }
   private struct Story: Decodable { let summary: String? }
 
   init(
     ownerName: String?, savedAt: String?, projectNotes: String, userNotes: String, openWork: String?,
+    rules: String = "", skills: [Skill] = [],
     routines: [Routine], tail: String, tailTruncated: Bool, storySummary: String?
   ) {
     self.ownerName = ownerName
@@ -352,6 +375,8 @@ struct CloudCtoCopy: Decodable, Equatable {
     self.projectNotes = projectNotes
     self.userNotes = userNotes
     self.openWork = openWork
+    self.rules = rules
+    _skills = ADELossyArray(wrappedValue: skills)
     _routines = ADELossyArray(wrappedValue: routines)
     self.tail = tail
     self.tailTruncated = tailTruncated
@@ -365,6 +390,8 @@ struct CloudCtoCopy: Decodable, Equatable {
     projectNotes = c.lenient(String.self, forKey: .projectNotes) ?? ""
     userNotes = c.lenient(String.self, forKey: .userNotes) ?? ""
     openWork = c.lenient(String.self, forKey: .openWork)
+    rules = c.lenient(String.self, forKey: .rules) ?? ""
+    _skills = c.lenient(ADELossyArray<Skill>.self, forKey: .skills) ?? ADELossyArray(wrappedValue: [])
     _routines = c.lenient(ADELossyArray<Routine>.self, forKey: .routines) ?? ADELossyArray(wrappedValue: [])
     tail = c.lenient(String.self, forKey: .tail) ?? ""
     tailTruncated = c.lenient(Bool.self, forKey: .tailTruncated) ?? false

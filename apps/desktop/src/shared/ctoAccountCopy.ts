@@ -43,6 +43,10 @@ export type CtoAccountCopy = {
   userNotes: string;
   /** `.ade/cto/open-work.json` as written, or null when it has none. */
   openWork: string | null;
+  /** `.ade/cto/RULES.md` as written. Missing in copies from older builds. */
+  rules?: string;
+  /** Each skill's whole SKILL.md, by name. Missing in copies from older builds. */
+  skills?: Array<{ name: string; text: string }>;
   routines: CtoAccountCopyRoutine[];
   /** The last turns, as the CTO's own conversation tail renders them. */
   tail: string;

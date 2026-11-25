@@ -157,3 +157,124 @@ describe("ctoMemoryService discoveries", () => {
     expect(service.readNewDiscoveries().lines).toEqual(["- short"]);
   });
 });
+
+describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () => {
+  const read = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
+
+  it("reports one turn's rule, note and skill changes, and Undo puts each back and refuses it again", () => {
+    const { service, ctoDir } = createFixture();
+    service.remember({ note: "Deploys go through the release lane" });
+    service.beginLearningTurn();
+
+    expect(service.addRule({ rule: "Ask before landing a PR", why: "merges to main deploy at once" }).ok).toBe(true);
+    expect(service.remember({ note: "Deploys go through the release lane on Thursdays", replaces: "release lane" }).ok).toBe(true);
+    expect(service.saveSkill({ name: "Release Desktop", description: "Ship a desktop release", body: "1. Bump\n2. Tag" }).ok).toBe(true);
+
+    const learned = service.finishLearningTurn({ sessionId: "cto-1", turnId: "t-1" });
+    expect(learned?.changes.map(({ area, op, text, previous }) => ({ area, op, text, previous }))).toEqual([
+      { area: "rules", op: "added", text: "Ask before landing a PR — merges to main deploy at once.", previous: undefined },
+      { area: "skill", op: "added", text: "release-desktop", previous: undefined },
+      {
+        area: "project_notes",
+        op: "changed",
+        text: "Deploys go through the release lane on Thursdays",
+        previous: "Deploys go through the release lane",
+      },
+    ]);
+    // A turn that changed nothing draws no row.
+    service.beginLearningTurn();
+    expect(service.finishLearningTurn({})).toBeNull();
+
+    const byArea = (area: string) => learned!.changes.find((change) => change.area === area)!;
+    for (const area of ["rules", "skill", "project_notes"]) {
+      const outcome = service.undoLearned({ learnId: learned!.learnId, changeId: byArea(area).id });
+      expect(outcome.ok && outcome.payload.changes.find((change) => change.id === byArea(area).id)?.undone).toBe(true);
+    }
+    expect(read(path.join(ctoDir, "RULES.md")).trim()).toBe("");
+    expect(fs.existsSync(path.join(ctoDir, "skills", "release-desktop"))).toBe(false);
+    expect(read(path.join(ctoDir, "MEMORY.md"))).toBe("- Deploys go through the release lane\n");
+
+    // The CTO is refused each undone change, worded close or exactly.
+    expect(service.addRule({ rule: "Ask before you land a PR", why: "main deploys" })).toMatchObject({ ok: false });
+    expect(service.saveSkill({ name: "release-desktop", description: "x", body: "y" })).toMatchObject({ ok: false });
+    expect(service.remember({ note: "Deploys go through the release lane on Thursdays", replaces: "release lane" }))
+      .toMatchObject({ ok: false });
+    // Unless the person asks for it again.
+    expect(service.addRule({ rule: "Ask before landing a PR", why: "merges deploy", personAskedAgain: true }).ok).toBe(true);
+    // The undone list is in the CTO's context, so it knows before it tries.
+    const context = service.buildMemoryContextSections().map((section) => `${section.title}\n${section.body}`).join("\n");
+    expect(context).toContain("Undone by the person");
+    expect(context).toContain("Skill added: release-desktop");
+  });
+
+  it("restores a removed rule and an edited skill from the turn's baseline", () => {
+    const { service, ctoDir } = createFixture();
+    service.writeNotes("rules", "# Mine\n- Keep PRs small — reviews stay fast.\n");
+    service.saveSkill({ name: "triage", description: "Triage a bug", body: "1. Reproduce" });
+    const skillBefore = read(path.join(ctoDir, "skills", "triage", "SKILL.md"));
+
+    service.beginLearningTurn();
+    expect(service.removeRule({ rule: "Keep PRs small" }).ok).toBe(true);
+    service.saveSkill({ name: "triage", description: "Triage a bug", body: "1. Guess" });
+    const learned = service.finishLearningTurn({})!;
+    expect(learned.changes.map(({ area, op }) => `${area}:${op}`)).toEqual(["rules:removed", "skill:changed"]);
+
+    for (const change of learned.changes) service.undoLearned({ learnId: learned.learnId, changeId: change.id });
+    expect(read(path.join(ctoDir, "RULES.md"))).toContain("- Keep PRs small — reviews stay fast.");
+    expect(read(path.join(ctoDir, "RULES.md"))).toContain("# Mine");
+    expect(read(path.join(ctoDir, "skills", "triage", "SKILL.md"))).toBe(skillBefore);
+    // The CTO may not remove the rule the person kept.
+    expect(service.removeRule({ rule: "Keep PRs small" })).toMatchObject({ ok: false });
+    // A second Undo of the same change is a no-op, not a second restore.
+    expect(service.undoLearned({ learnId: learned.learnId, changeId: learned.changes[0]!.id }).ok).toBe(true);
+    expect(read(path.join(ctoDir, "RULES.md")).match(/Keep PRs small/g)).toHaveLength(1);
+  });
+
+  it("never reports the person's own edits during a turn as learned, and forgives what they write back", () => {
+    const { service } = createFixture();
+    service.beginLearningTurn();
+    service.writeNotes("rules", "- Use pnpm — the lockfile is pnpm's.\n");
+    service.writeNotes("project", "- The API lives in apps/api\n");
+    service.writeSkillText({ name: "deploy", text: "1. Push to main" });
+    expect(service.finishLearningTurn({})).toBeNull();
+
+    service.beginLearningTurn();
+    service.addRule({ rule: "Run the linter before review", why: "CI fails on lint" });
+    const learned = service.finishLearningTurn({})!;
+    service.undoLearned({ learnId: learned.learnId, changeId: learned.changes[0]!.id });
+    expect(service.addRule({ rule: "Run the linter before review", why: "CI fails on lint" })).toMatchObject({ ok: false });
+    // The person writes it back themselves: the CTO may manage it again.
+    service.writeNotes("rules", "- Use pnpm — the lockfile is pnpm's.\n- Run the linter before review — CI fails on lint.\n");
+    expect(service.removeRule({ rule: "Run the linter" }).ok).toBe(true);
+  });
+
+  it("still reports a turn a brain restart cut short", () => {
+    const { service, adeDir, root } = createFixture();
+    service.beginLearningTurn();
+    service.addRule({ rule: "Ship on Thursdays", why: "the team reviews on Wednesday" });
+    // A new brain opens the same project before the turn ended.
+    const restarted = createCtoMemoryService({ adeDir, userNotesDir: path.join(root, "home-cto") });
+    restarted.beginLearningTurn();
+    const learned = restarted.finishLearningTurn({});
+    expect(learned?.changes.map(({ area, op }) => `${area}:${op}`)).toEqual(["rules:added"]);
+    // The baseline is gone once used: the next turn starts fresh.
+    restarted.beginLearningTurn();
+    expect(restarted.finishLearningTurn({})).toBeNull();
+  });
+
+  it("refuses a near-copy of a rule and sharpens it in place with replaces", () => {
+    const { service, ctoDir } = createFixture();
+    service.addRule({ rule: "Run iOS tests on the iPhone 17 simulator", why: "older ones lack iOS 26" });
+    expect(service.addRule({ rule: "Run the iOS tests on an iPhone 17 simulator", why: "runtime" })).toMatchObject({
+      ok: false,
+      candidates: ["Run iOS tests on the iPhone 17 simulator — older ones lack iOS 26."],
+    });
+    expect(service.addRule({ rule: "Never skip tests", why: "" })).toMatchObject({ ok: false });
+    expect(service.addRule({
+      rule: "Run iOS tests on the iPhone 17 Pro simulator",
+      why: "older ones lack iOS 26",
+      replaces: "iPhone 17 simulator",
+    })).toMatchObject({ ok: true, replaced: "Run iOS tests on the iPhone 17 simulator — older ones lack iOS 26." });
+    expect(read(path.join(ctoDir, "RULES.md"))).toBe("- Run iOS tests on the iPhone 17 Pro simulator — older ones lack iOS 26.\n");
+  });
+});

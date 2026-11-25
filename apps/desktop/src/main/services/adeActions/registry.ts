@@ -196,6 +196,13 @@ import type {
   CursorCloudServiceTier,
   CtoRefreshContextResult,
   CtoUpdateNotesArgs,
+  CtoGetSkillArgs,
+  CtoWriteSkillArgs,
+  CtoDeleteSkillArgs,
+  CtoSkillFile,
+  CtoMemorySnapshot,
+  CtoUndoLearnedArgs,
+  CtoUndoLearnedResult,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -1807,8 +1814,8 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
     updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
-      if (args?.scope !== "project" && args?.scope !== "user") {
-        throw new Error("updateNotes requires `scope`: \"project\" or \"user\".");
+      if (args?.scope !== "project" && args?.scope !== "user" && args?.scope !== "rules") {
+        throw new Error("updateNotes requires `scope`: \"project\", \"user\" or \"rules\".");
       }
       if (typeof args.text !== "string") throw new Error("updateNotes requires a string `text` field.");
       ctoMemoryService.writeNotes(args.scope, args.text, {
@@ -1835,6 +1842,35 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
      * is CTO-only by omission. Append-only: it cannot read or change the
      * notes, so a worker handing up a finding gains no view of them.
      */
+    getSkill: (args?: Partial<CtoGetSkillArgs>): CtoSkillFile | null => {
+      if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("getSkill requires `name`.");
+      return ctoMemoryService.readSkill(args.name);
+    },
+    writeSkill: (args?: Partial<CtoWriteSkillArgs>): CtoMemorySnapshot => {
+      if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("writeSkill requires `name`.");
+      if (typeof args.text !== "string") throw new Error("writeSkill requires a string `text` field.");
+      ctoMemoryService.writeSkillText({
+        name: args.name,
+        text: args.text,
+        baseHash: typeof args.baseHash === "string" ? args.baseHash : null,
+      });
+      return ctoMemoryService.getSnapshot();
+    },
+    deleteSkill: (args?: Partial<CtoDeleteSkillArgs>): CtoMemorySnapshot => {
+      if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("deleteSkill requires `name`.");
+      const result = ctoMemoryService.deleteSkill(args.name, { by: "person" });
+      if (!result.ok) throw new Error(result.error);
+      return ctoMemoryService.getSnapshot();
+    },
+    /** Person-only (`ADE_ACTION_USER_ONLY`): the CTO never undoes the person's way back. */
+    undoLearned: async (args?: Partial<CtoUndoLearnedArgs>): Promise<CtoUndoLearnedResult> => {
+      if (typeof args?.learnId !== "string" || typeof args.changeId !== "string") {
+        throw new Error("undoLearned requires `learnId` and `changeId`.");
+      }
+      const chat = runtime.agentChatService;
+      if (!chat) return { undone: false, note: "Chat is not available on this runtime." };
+      return await chat.undoCtoLearned({ learnId: args.learnId, changeId: args.changeId });
+    },
     recordDiscovery: (args?: { fact?: string; tags?: CtoMemoryTags }) => {
       if (typeof args?.fact !== "string" || !args.fact.trim().length) {
         throw new Error("recordDiscovery requires a non-empty string `fact` field.");

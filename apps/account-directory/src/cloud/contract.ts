@@ -2999,6 +2999,10 @@ export type CloudCtoCopy = {
   projectNotes: string;
   userNotes: string;
   openWork: string | null;
+  /** `.ade/cto/RULES.md`; "" when it has none or the copy is from an older build. */
+  rules: string;
+  /** The CTO's skills by name and one-line description; the how-tos stay in the copy. */
+  skills: Array<{ name: string; description: string }>;
   routines: Array<{ title: string; cron: string; timeZone?: string; paused: boolean }>;
   tail: string;
   tailTruncated: boolean;

@@ -98,7 +98,7 @@ export type CtoAccountCopyServiceArgs = {
     updateIdentity: (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>) => unknown;
   };
   ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText">
-    & Partial<Pick<CtoMemoryService, "readStory" | "writeStory">>;
+    & Partial<Pick<CtoMemoryService, "readStory" | "writeStory" | "readRules" | "listSkills" | "readSkill" | "writeSkillText" | "deleteSkill">>;
   /** The CTO thread's tail and routines, read when a copy is written. */
   readSources: () => Promise<CtoAccountCopySources>;
   /** Re-creates routines on this machine's CTO thread, replacing the ones it had. Null: the thread doesn't exist yet. */
@@ -179,6 +179,13 @@ export function decodeCtoAccountCopy(value: string | null | undefined): CtoAccou
       projectNotes: typeof parsed.projectNotes === "string" ? parsed.projectNotes : "",
       userNotes: typeof parsed.userNotes === "string" ? parsed.userNotes : "",
       openWork: typeof parsed.openWork === "string" ? parsed.openWork : null,
+      ...(typeof parsed.rules === "string" ? { rules: parsed.rules } : {}),
+      ...(Array.isArray(parsed.skills)
+        ? {
+          skills: parsed.skills.filter((skill): skill is { name: string; text: string } =>
+            Boolean(skill) && typeof skill.name === "string" && typeof skill.text === "string"),
+        }
+        : {}),
       routines: Array.isArray(parsed.routines)
         ? parsed.routines.filter((routine): routine is CtoAccountCopyRoutine =>
           Boolean(routine) && typeof routine.prompt === "string" && typeof routine.cron === "string" && routine.cron.trim().length > 0)
@@ -325,6 +332,15 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       projectNotes: args.ctoMemory.readNotes("project"),
       userNotes: args.ctoMemory.readNotes("user"),
       openWork: args.ctoMemory.readOpenWorkText(),
+      ...(args.ctoMemory.readRules ? { rules: args.ctoMemory.readRules() } : {}),
+      ...(args.ctoMemory.listSkills && args.ctoMemory.readSkill
+        ? {
+          skills: args.ctoMemory.listSkills().flatMap((summary) => {
+            const skill = args.ctoMemory.readSkill?.(summary.name);
+            return skill ? [{ name: skill.name, text: skill.text }] : [];
+          }),
+        }
+        : {}),
       // Routines a move brought that have no CTO thread to land on yet.
       routines: readJson<{ routines?: CtoAccountCopyRoutine[] }>(carriedRoutinesPath)?.routines ?? sources.routines,
       tail,
@@ -511,6 +527,17 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       ["user_notes", () => args.ctoMemory.writeNotes("user", mergeUserNotes(args.ctoMemory.readNotes("user"), copy.userNotes))],
       // No open work in the copy: this machine's list is from an earlier stay, and goes.
       ["open_work", () => args.ctoMemory.replaceOpenWorkText(copy.openWork)],
+      // Rules and skills travel with the CTO; a copy from an older build has
+      // neither, and this machine's stay as they are.
+      ["rules", () => { if (copy.rules !== undefined) args.ctoMemory.writeNotes("rules", copy.rules); }],
+      ["skills", () => {
+        if (!copy.skills || !args.ctoMemory.writeSkillText || !args.ctoMemory.listSkills || !args.ctoMemory.deleteSkill) return;
+        const keep = new Set(copy.skills.map((skill) => skill.name));
+        for (const local of args.ctoMemory.listSkills()) {
+          if (!keep.has(local.name)) args.ctoMemory.deleteSkill(local.name, { by: "person" });
+        }
+        for (const skill of copy.skills) args.ctoMemory.writeSkillText({ name: skill.name, text: skill.text });
+      }],
       // The old home's story, with the carried turns waiting to be folded into
       // it. It covers through the move: this machine's older turns are from an
       // earlier stay, older than anything the copy holds. Required: a save

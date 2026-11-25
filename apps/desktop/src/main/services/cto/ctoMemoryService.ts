@@ -6,8 +6,10 @@ import {
   CTO_OPEN_WORK_MAX_DONE,
   CTO_OPEN_WORK_MAX_OPEN,
   CTO_PROJECT_NOTES_MAX_BYTES,
+  CTO_RULES_MAX_BYTES,
   CTO_USER_NOTES_MAX_BYTES,
   type CtoMemorySnapshot,
+  type CtoNotesFile,
   type CtoNotesScope,
   type CtoOpenWorkItem,
   type CtoUpdateOpenWorkArgs,
@@ -16,6 +18,15 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
 import type { CtoStoryRecord } from "./ctoStory";
+import { createCtoLearningService } from "./ctoLearningService";
+import {
+  CTO_MEMORY_TAG_KEYS,
+  noteSimilarity,
+  parseNoteLines,
+  type CtoMemoryTags,
+} from "./ctoNoteText";
+
+export { CTO_MEMORY_TAG_KEYS, noteSimilarity, type CtoMemoryTagKey, type CtoMemoryTags } from "./ctoNoteText";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -86,14 +97,6 @@ const LEGACY_ENTRIES = [
 
 /* ── Tags (discoveries) ── */
 
-export const CTO_MEMORY_TAG_KEYS = ["lane", "pr", "path", "topic"] as const;
-export type CtoMemoryTagKey = (typeof CTO_MEMORY_TAG_KEYS)[number];
-export type CtoMemoryTags = Partial<Record<CtoMemoryTagKey, string | number | null>>;
-
-const TAG_SUFFIX_PATTERN = new RegExp(
-  `\\[((?:${CTO_MEMORY_TAG_KEYS.join("|")}):[^\\]\\s]+(?:\\s+(?:${CTO_MEMORY_TAG_KEYS.join("|")}):[^\\]\\s]+)*)\\]\\s*$`,
-);
-
 function normalizeTagValue(value: string | number | null | undefined): string | null {
   if (value == null) return null;
   const text = String(value).replace(/[\s\]]+/g, "-").replace(/^-+|-+$/g, "").trim();
@@ -110,42 +113,6 @@ export function formatMemoryTagSuffix(tags?: CtoMemoryTags | null): string {
     if (value) parts.push(`${key}:${value}`);
   }
   return parts.length ? ` [${parts.join(" ")}]` : "";
-}
-
-/* ── Near-duplicate check ── */
-
-const SIMILARITY_STOPWORDS = new Set([
-  "the", "and", "for", "are", "was", "were", "with", "that", "this", "from", "into", "its", "has", "have",
-]);
-const NEGATION_WORDS = new Set(["not", "no", "never", "don't", "dont", "doesn't", "isn't", "can't", "cannot", "won't", "avoid", "without", "stop"]);
-
-function isNegated(text: string): boolean {
-  return text.replace(/[‘’ʼ]/g, "'").toLowerCase().split(/[^a-z']+/).some((word) => NEGATION_WORDS.has(word));
-}
-
-function similarityTerms(text: string): Set<string> {
-  const terms = new Set<string>();
-  for (const part of text.replace(TAG_SUFFIX_PATTERN, "").toLowerCase().split(/[^a-z0-9]+/)) {
-    // Numbers count however short: "Node 22" and "Node 20" are different notes.
-    const numeric = /\d/.test(part);
-    if (!part || (!numeric && (part.length < 3 || SIMILARITY_STOPWORDS.has(part)))) continue;
-    terms.add(part);
-  }
-  return terms;
-}
-
-/**
- * Overlap of two notes' content words, 0..1 (Dice). A negated note and a plain
- * one are opposites however many words they share: "Use pnpm" / "Do not use pnpm".
- */
-export function noteSimilarity(a: string, b: string): number {
-  if (isNegated(a) !== isNegated(b)) return 0;
-  const left = similarityTerms(a);
-  const right = similarityTerms(b);
-  if (!left.size || !right.size) return a.trim().toLowerCase() === b.trim().toLowerCase() ? 1 : 0;
-  let shared = 0;
-  for (const term of left) if (right.has(term)) shared += 1;
-  return (2 * shared) / (left.size + right.size);
 }
 
 /** `.ade/cto/story.json` exists but is not a story this build can read. */
@@ -182,15 +149,6 @@ function utf8Bytes(text: string): number {
 function normalizeNote(raw: string): string {
   const single = raw.replace(/\s+/g, " ").trim().replace(/^(?:[-*•]\s+)+/, "").trim();
   return clipText(redactSecrets(single), NOTE_MAX_CHARS);
-}
-
-/** The note lines of a notes file, without their bullets. Headings and blanks are not notes. */
-function parseNoteLines(content: string): string[] {
-  return content.split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"))
-    .map((line) => line.replace(/^(?:[-*•]\s+)+/, "").trim())
-    .filter((line) => line.length > 0);
 }
 
 function renderNotes(lines: readonly string[]): string {
@@ -272,6 +230,16 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   fs.mkdirSync(ctoDir, { recursive: true });
 
+  // Rules, skills and the per-turn learning journal (`ctoLearningService.ts`).
+  const learning = createCtoLearningService({
+    ctoDir,
+    projectNotesPath: memoryPath,
+    userNotesPath,
+    logger,
+    onChanged: () => args.onChanged?.(),
+  });
+  const notesArea = (scope: CtoNotesScope) => (scope === "user" ? "user_notes" as const : "project_notes" as const);
+
   const warn = (message: string, error: unknown, meta?: Record<string, unknown>): void => {
     logger?.warn(message, {
       ...(meta ?? {}),
@@ -303,7 +271,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
    * longer matches the file (the CTO wrote a note, another device saved), the
    * write is refused rather than silently overwriting what changed.
    */
-  const writeNotes = (scope: CtoNotesScope, text: string, options?: { baseHash?: string | null }): void => {
+  const writeNotes = (scope: CtoNotesFile, text: string, options?: { baseHash?: string | null }): void => {
+    if (scope === "rules") {
+      learning.writeRulesText(text, options);
+      return;
+    }
     const baseHash = options?.baseHash?.trim().toLowerCase();
     if (baseHash && notesHash(readNotes(scope)) !== baseHash) {
       throw new AdeExpectedError(`${CTO_NOTES_CHANGED_ERROR} Reload to see the new version, then save again.`, "user");
@@ -313,6 +285,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const limit = notesLimit(scope);
     if (bytes > limit) throw new AdeExpectedError(notesFullMessage(bytes, limit), "user");
     writeNoteLines(scope, lines);
+    // The person's (or an account copy's) version: never something the CTO learned.
+    learning.personWrote(notesArea(scope));
   };
 
   /** Lines that contain `needle` exactly (case-sensitive). An exact line wins over a substring. */
@@ -322,7 +296,13 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     return lines.flatMap((line, index) => (line.includes(needle) ? [index] : []));
   };
 
-  const remember = (input: { note: string; scope?: CtoNotesScope; replaces?: string | null }): CtoRememberResult => {
+  const remember = (input: {
+    note: string;
+    scope?: CtoNotesScope;
+    replaces?: string | null;
+    /** The person asked for this again after undoing it. */
+    personAskedAgain?: boolean;
+  }): CtoRememberResult => {
     const scope = input.scope ?? "project";
     const note = normalizeNote(input.note);
     if (!note.length) return { ok: false, error: "The note is empty." };
@@ -352,6 +332,10 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       if (duplicate) return { ok: true, saved: false, note, duplicateOf: duplicate, scope };
       next = [...lines, note];
     }
+    if (!input.personAskedAgain) {
+      const refusal = learning.undoneRefusal(notesArea(scope), "write", note);
+      if (refusal) return { ok: false, error: refusal };
+    }
     const limit = notesLimit(scope);
     const bytes = utf8Bytes(renderNotes(next));
     if (bytes > limit) {
@@ -361,7 +345,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     return { ok: true, saved: true, note, ...(replaced ? { replaced } : {}), scope, bytes, limitBytes: limit };
   };
 
-  const forget = (input: { note: string; scope?: CtoNotesScope }): CtoForgetResult => {
+  const forget = (input: { note: string; scope?: CtoNotesScope; personAskedAgain?: boolean }): CtoForgetResult => {
     const scope = input.scope ?? "project";
     const needle = input.note.trim().replace(/^(?:[-*•]\s+)+/, "");
     if (!needle.length) return { ok: false, error: "Say which note to forget." };
@@ -377,6 +361,10 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       };
     }
     const forgotten = lines[matches[0]];
+    if (!input.personAskedAgain) {
+      const refusal = learning.undoneRefusal(notesArea(scope), "remove", forgotten);
+      if (refusal) return { ok: false, error: refusal };
+    }
     writeNoteLines(scope, lines.filter((_, index) => index !== matches[0]));
     return { ok: true, forgotten, scope };
   };
@@ -745,6 +733,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       memoryHash: notesHash(memory),
       userNotesHash: notesHash(userNotes),
       openWork: readOpenWork(),
+      rules: learning.readRules(),
+      rulesBytes: utf8Bytes(learning.readRules()),
+      rulesLimitBytes: CTO_RULES_MAX_BYTES,
+      rulesHash: learning.rulesHash(),
+      skills: learning.listSkills(),
       updatedAt: updatedCandidates.length ? updatedCandidates[updatedCandidates.length - 1] : null,
     };
   };
@@ -765,6 +758,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       ...done.map((item) => `- [x] ${item.id}: ${item.text} (done)`),
     ];
     return [
+      ...learning.buildContextSections(),
       {
         title: `## Notes (project) — ${utf8Bytes(readNotes("project"))} of ${CTO_PROJECT_NOTES_MAX_BYTES} bytes`,
         body: project || "(none yet)",
@@ -831,6 +825,17 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     readNewDiscoveries,
     getSnapshot,
     buildMemoryContextSections,
+    readRules: learning.readRules,
+    addRule: learning.addRule,
+    removeRule: learning.removeRule,
+    listSkills: learning.listSkills,
+    readSkill: learning.readSkill,
+    saveSkill: learning.saveSkill,
+    writeSkillText: learning.writeSkillText,
+    deleteSkill: learning.deleteSkill,
+    beginLearningTurn: learning.beginTurn,
+    finishLearningTurn: learning.finishTurn,
+    undoLearned: learning.undo,
   };
 }
 

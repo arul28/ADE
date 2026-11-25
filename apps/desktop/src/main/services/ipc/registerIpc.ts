@@ -746,6 +746,12 @@ import type {
   CtoGetMemoryArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoGetSkillArgs,
+  CtoWriteSkillArgs,
+  CtoDeleteSkillArgs,
+  CtoSkillFile,
+  CtoUndoLearnedArgs,
+  CtoUndoLearnedResult,
   CtoRefreshContextResult,
   CtoMemorySnapshot,
   CtoGetLinearOAuthSessionArgs,
@@ -14390,7 +14396,7 @@ export function registerIpc({
   handle(IPC.ctoUpdateNotes, async (_event, arg: CtoUpdateNotesArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    if (arg?.scope !== "project" && arg?.scope !== "user") throw new Error("updateNotes requires a scope.");
+    if (arg?.scope !== "project" && arg?.scope !== "user" && arg?.scope !== "rules") throw new Error("updateNotes requires a scope.");
     if (typeof arg.text !== "string") throw new Error("updateNotes requires a string `text` field.");
     ctx.ctoMemoryService.writeNotes(arg.scope, arg.text, {
       baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
@@ -14403,6 +14409,40 @@ export function registerIpc({
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     ctx.ctoMemoryService.updateOpenWork(arg);
     return ctx.ctoMemoryService.getSnapshot();
+  });
+
+  handle(IPC.ctoGetSkill, async (_event, arg: CtoGetSkillArgs): Promise<CtoSkillFile | null> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    if (typeof arg?.name !== "string" || !arg.name.trim()) throw new Error("getSkill requires a name.");
+    return ctx.ctoMemoryService.readSkill(arg.name);
+  });
+
+  handle(IPC.ctoWriteSkill, async (_event, arg: CtoWriteSkillArgs): Promise<CtoMemorySnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    if (typeof arg?.name !== "string" || typeof arg.text !== "string") throw new Error("writeSkill requires a name and text.");
+    ctx.ctoMemoryService.writeSkillText({
+      name: arg.name,
+      text: arg.text,
+      baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
+    });
+    return ctx.ctoMemoryService.getSnapshot();
+  });
+
+  handle(IPC.ctoDeleteSkill, async (_event, arg: CtoDeleteSkillArgs): Promise<CtoMemorySnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    if (typeof arg?.name !== "string") throw new Error("deleteSkill requires a name.");
+    const result = ctx.ctoMemoryService.deleteSkill(arg.name, { by: "person" });
+    if (!result.ok) throw new Error(result.error);
+    return ctx.ctoMemoryService.getSnapshot();
+  });
+
+  handle(IPC.ctoUndoLearned, async (_event, arg: CtoUndoLearnedArgs): Promise<CtoUndoLearnedResult> => {
+    const ctx = getCtx();
+    if (!ctx.agentChatService) throw new Error("Chat is not available.");
+    return ctx.agentChatService.undoCtoLearned({ learnId: String(arg?.learnId ?? ""), changeId: String(arg?.changeId ?? "") });
   });
 
   // -- Linear connection & credentials --

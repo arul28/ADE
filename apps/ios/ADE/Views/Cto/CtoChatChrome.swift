@@ -31,6 +31,9 @@ final class CtoLiveModel: ObservableObject {
   var onOpenProfile: (() -> Void)? = nil
   /// Opens settings (the rail's gear on a phone).
   var onOpenSettings: (() -> Void)? = nil
+  /// Fixture only: answers a "Learned" card's Undo without a host. Nil sends
+  /// `cto.undoLearned` to the CTO's home machine.
+  var fixtureUndoLearned: ((_ learnId: String, _ changeId: String) async -> CtoUndoLearnedResult)? = nil
 
   init() {}
 
@@ -170,7 +173,7 @@ func ctoClipWords(_ text: String, max: Int = 48) -> String {
 }
 
 enum CtoChipKind: String {
-  case scheduled, cancelled, paused, resumed, remembered, forgot, tracking, done
+  case scheduled, cancelled, paused, resumed, tracking, done
 
   var verb: String {
     switch self {
@@ -178,8 +181,6 @@ enum CtoChipKind: String {
     case .cancelled: return "Cancelled"
     case .paused: return "Paused"
     case .resumed: return "Resumed"
-    case .remembered: return "Saved note"
-    case .forgot: return "Dropped note"
     case .tracking: return "Tracking"
     case .done: return "Done"
     }
@@ -191,8 +192,6 @@ enum CtoChipKind: String {
     case .cancelled: return "Couldn't cancel"
     case .paused: return "Couldn't pause"
     case .resumed: return "Couldn't resume"
-    case .remembered: return "Couldn't save note"
-    case .forgot: return "Couldn't drop note"
     case .tracking: return "Couldn't track"
     case .done: return "Couldn't finish"
     }
@@ -204,8 +203,6 @@ enum CtoChipKind: String {
     case .cancelled: return "calendar.badge.minus"
     case .paused: return "pause.circle"
     case .resumed: return "play.circle"
-    case .remembered: return "bookmark"
-    case .forgot: return "eraser"
     case .tracking: return "circle"
     case .done: return "checkmark.circle.fill"
     }
@@ -220,9 +217,11 @@ struct CtoToolChip: Identifiable, Hashable {
   let failed: Bool
 }
 
-/// State-changing CTO tools that draw a chip instead of hiding in the tools list.
+/// State-changing CTO tools that draw a chip instead of hiding in the tools
+/// list. Notes, rules and skills draw none: the turn's "Learned" card lists
+/// each of those changes with its Undo (desktop `CHIP_TOOL_NAMES`).
 private let ctoChipToolNames: Set<String> = [
-  "scheduleWork", "cancelScheduledWork", "setScheduledWorkPaused", "remember", "forget", "trackWork", "finishWork",
+  "scheduleWork", "cancelScheduledWork", "setScheduledWorkPaused", "trackWork", "finishWork",
 ]
 
 /// The chip for one finished state-changing CTO call, or nil while it runs
@@ -250,12 +249,6 @@ func ctoChip(for card: WorkToolCardModel) -> CtoToolChip? {
   case "setScheduledWorkPaused":
     kind = (args["paused"] as? Bool) == false ? .resumed : .paused
     text = ctoStr(payload?["title"]) ?? (args["scheduleId"] == nil ? "every routine on that chat" : nil)
-  case "remember":
-    kind = .remembered
-    text = ctoStr(args["note"])
-  case "forget":
-    kind = .forgot
-    text = ctoStr(args["note"])
   case "trackWork":
     kind = .tracking
     text = ctoStr(args["text"]) ?? ctoStr(payload?["text"])
@@ -314,6 +307,11 @@ func ctoStepWords(toolName: String, argsText: String?) -> String? {
   case "react": return "Reacting"
   case "remember": return "Saving a note"
   case "forget": return "Dropping a note"
+  case "addRule": return "Saving a rule"
+  case "removeRule": return "Dropping a rule"
+  case "saveSkill": return "Saving a skill"
+  case "readSkill": return "Reading a skill"
+  case "deleteSkill": return "Deleting a skill"
   case "trackWork": return "Noting open work"
   case "finishWork": return "Closing out open work"
   case "scheduleWork": return "Scheduling a check-in"
@@ -379,7 +377,7 @@ func ctoLatestStepWords(_ members: [WorkToolGroupMember]) -> String? {
 // MARK: - Chips
 
 /// The CTO's state changes as quiet chips: "Scheduled · Daily check-in",
-/// "Saved note · Deploys go through staging first". One line each.
+/// "Tracking · Ship the release notes". One line each.
 struct CtoToolChipsRow: View {
   let chips: [CtoToolChip]
   let accent: Color
@@ -424,6 +422,140 @@ struct CtoToolChipView: View {
     .overlay(Capsule().strokeBorder(tint.opacity(0.18), lineWidth: 0.5))
     .accessibilityElement(children: .combine)
     .accessibilityLabel(chip.text.map { "\(chip.verb): \($0)" } ?? chip.verb)
+  }
+}
+
+// MARK: - Learned
+
+/// What one CTO turn changed in its rules, skills and notes, with an Undo per
+/// change (desktop `CtoLearnedRow`). Undo goes to the CTO's home machine; the
+/// host sends the row again with the change marked undone, so the card keeps
+/// no undone state of its own beyond the call in flight.
+struct CtoLearnedCard: View {
+  let model: WorkCtoLearnedModel
+  let accent: Color
+  var live: CtoLiveModel? = nil
+
+  @State private var pending: String? = nil
+  @State private var note: String? = nil
+
+  private var canUndo: Bool {
+    live?.fixtureUndoLearned != nil || SyncService.shared?.supportsRemoteAction("cto.undoLearned") == true
+  }
+
+  var body: some View {
+    let canUndo = canUndo
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        Image(systemName: "lightbulb")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(accent)
+        Text("Learned")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.isHeader)
+      VStack(alignment: .leading, spacing: 4) {
+        ForEach(model.changes) { change in
+          row(change, canUndo: canUndo)
+        }
+      }
+      if let note {
+        Text(note)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityAddTraits(.updatesFrequently)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(accent.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ADEColor.glassBorder, lineWidth: 0.5))
+    .accessibilityIdentifier("Cto.Learned")
+  }
+
+  private func opWord(_ op: CtoLearnedOp) -> String? {
+    switch op {
+    case .added: return nil
+    case .changed: return "Sharpened"
+    case .removed: return "Removed"
+    }
+  }
+
+  private func line(_ change: CtoLearnedChange) -> Text {
+    let main = Text(change.text)
+      .foregroundStyle(ADEColor.textPrimary.opacity(0.85))
+      .strikethrough(change.op == .removed, color: ADEColor.textMuted)
+    let lead = opWord(change.op).map { Text("\($0) · ").foregroundStyle(ADEColor.textMuted) } ?? Text("")
+    let tail = change.detail.map { Text(" · \($0)").foregroundStyle(ADEColor.textMuted) } ?? Text("")
+    return Text("\(lead)\(main)\(tail)")
+  }
+
+  private func row(_ change: CtoLearnedChange, canUndo: Bool) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Text(change.area.label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 64, alignment: .leading)
+      line(change)
+        .font(.footnote)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .opacity(change.undone ? 0.5 : 1)
+      if change.undone {
+        Text("Undone")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+      } else if canUndo {
+        Button {
+          Task { await undo(change) }
+        } label: {
+          Text(pending == change.id ? "Undoing…" : "Undo")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 9)
+            .frame(minHeight: 24)
+            .overlay(Capsule().strokeBorder(ADEColor.glassBorder, lineWidth: 0.75))
+            .contentShape(Capsule())
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, -10)
+        .disabled(pending != nil)
+        .accessibilityLabel("Undo: \(change.text)")
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityHint(change.previous.map { "Was: \($0)" } ?? "")
+  }
+
+  private func undo(_ change: CtoLearnedChange) async {
+    pending = change.id
+    note = nil
+    defer { pending = nil }
+    do {
+      let result: CtoUndoLearnedResult
+      if let fixture = live?.fixtureUndoLearned {
+        result = await fixture(model.learnId, change.id)
+      } else if let sync = SyncService.shared {
+        result = try await sync.undoCtoLearned(learnId: model.learnId, changeId: change.id)
+      } else {
+        note = "Couldn't undo that."
+        return
+      }
+      if !result.undone || result.note != nil {
+        note = result.note ?? "Couldn't undo that."
+      } else {
+        ADEHaptics.light()
+      }
+    } catch {
+      note = ctoShortError(error, fallback: "Couldn't undo that.")
+      ADEHaptics.error()
+    }
   }
 }
 

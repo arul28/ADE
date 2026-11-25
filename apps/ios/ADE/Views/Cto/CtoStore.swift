@@ -157,12 +157,16 @@ func ctoRelativeDay(_ iso: String, now: Date = Date()) -> String {
 
 @MainActor
 final class CtoStore: ObservableObject {
-  enum NotesScope: String { case project, user }
+  /// A file Settings › Memory edits whole: the two notes files, or the rules
+  /// (`.ade/cto/RULES.md`).
+  enum NotesScope: String { case project, user, rules }
   enum NotesSaveResult: Equatable { case saved, conflict, failed(String) }
 
   @Published var memory: CtoMemory?
   @Published var memoryLoaded = false
   @Published var memoryError: String?
+  /// Fixture only: the skills' whole SKILL.md, by name.
+  private var fixtureSkillTexts: [String: String] = [:]
   @Published var routines: [AgentChatScheduledWorkItem] = []
   @Published var routinesLoaded = false
   @Published var children: [CtoChildRow] = []
@@ -202,6 +206,7 @@ final class CtoStore: ObservableObject {
   init(
     fixtureSnapshot: CtoSnapshot? = nil,
     fixtureMemory: CtoMemory?,
+    fixtureSkillTexts: [String: String] = [:],
     routines: [AgentChatScheduledWorkItem] = [],
     children: [CtoChildRow] = [],
     library: [CtoLibraryItem] = [],
@@ -210,6 +215,7 @@ final class CtoStore: ObservableObject {
     isFixture = true
     snapshot = fixtureSnapshot
     memory = fixtureMemory
+    self.fixtureSkillTexts = fixtureSkillTexts
     memoryLoaded = true
     self.routines = routines
     routinesLoaded = true
@@ -240,6 +246,12 @@ final class CtoStore: ObservableObject {
   var canEditNotes: Bool { isFixture || sync?.supportsRemoteAction("cto.updateNotes") == true }
   var canEditOpenWork: Bool { isFixture || sync?.supportsRemoteAction("cto.updateOpenWork") == true }
   var canRefreshContext: Bool { isFixture || sync?.supportsRemoteAction("cto.refreshContext") == true }
+  /// Skills need all three calls; an older host lists none of them.
+  var canEditSkills: Bool {
+    isFixture || (sync?.supportsRemoteAction("cto.getSkill") == true
+      && sync?.supportsRemoteAction("cto.writeSkill") == true)
+  }
+  var canDeleteSkills: Bool { isFixture || sync?.supportsRemoteAction("cto.deleteSkill") == true }
 
   private func supportsRoutineAction(_ action: String) -> Bool {
     if isFixture { return true }
@@ -572,7 +584,11 @@ final class CtoStore: ObservableObject {
 
   func saveNotes(_ scope: NotesScope, text: String, baseHash: String?) async -> NotesSaveResult {
     if isFixture {
-      if scope == .project { memory?.memory = text } else { memory?.userNotes = text }
+      switch scope {
+      case .project: memory?.memory = text
+      case .user: memory?.userNotes = text
+      case .rules: memory?.rules = text
+      }
       return .saved
     }
     guard let sync else { return .failed("Not connected") }
@@ -583,6 +599,62 @@ final class CtoStore: ObservableObject {
       let message = (error as NSError).localizedDescription
       if message.contains(ctoNotesChangedError) { return .conflict }
       return .failed(ctoShortError(error, fallback: "Couldn't save"))
+    }
+  }
+
+  // MARK: Skills
+
+  /// The whole SKILL.md, or nil when it is gone. Throws on a failed read.
+  func loadSkill(_ name: String) async throws -> CtoSkillFile? {
+    if isFixture {
+      guard let text = fixtureSkillTexts[name] else { return nil }
+      let description = memory?.skills?.first { $0.name == name }?.description ?? ""
+      return CtoSkillFile(name: name, description: description, text: text, hash: "fixture-\(text.hashValue)")
+    }
+    guard let sync else { return nil }
+    return try await sync.fetchCtoSkill(name: name)
+  }
+
+  /// Writes a whole SKILL.md; `.conflict` when it changed since `baseHash`.
+  func saveSkill(_ name: String, text: String, baseHash: String?) async -> NotesSaveResult {
+    if isFixture {
+      fixtureSkillTexts[name] = text
+      if memory?.skills?.contains(where: { $0.name == name }) != true {
+        memory?.skills = (memory?.skills ?? []) + [CtoSkillSummary(name: name, description: ctoSkillDescription(text) ?? "")]
+      } else if let description = ctoSkillDescription(text), let index = memory?.skills?.firstIndex(where: { $0.name == name }) {
+        memory?.skills?[index].description = description
+      }
+      return .saved
+    }
+    guard let sync else { return .failed("Not connected") }
+    do {
+      memory = try await sync.writeCtoSkill(name: name, text: text, baseHash: baseHash)
+      return .saved
+    } catch {
+      let message = (error as NSError).localizedDescription
+      if message.contains(ctoNotesChangedError) { return .conflict }
+      return .failed(ctoShortError(error, fallback: "Couldn't save"))
+    }
+  }
+
+  @discardableResult
+  func deleteSkill(_ name: String) async -> Bool {
+    if isFixture {
+      fixtureSkillTexts[name] = nil
+      memory?.skills?.removeAll { $0.name == name }
+      return true
+    }
+    guard let sync else { return false }
+    busyIds.insert("skill:\(name)")
+    defer { busyIds.remove("skill:\(name)") }
+    do {
+      memory = try await sync.deleteCtoSkill(name: name)
+      ADEHaptics.light()
+      return true
+    } catch {
+      errorText = ctoShortError(error, fallback: "Couldn't delete the skill")
+      ADEHaptics.error()
+      return false
     }
   }
 
@@ -670,4 +742,41 @@ func ctoShortError(_ error: Error, fallback: String) -> String {
   let message = (error as? LocalizedError)?.errorDescription ?? (error as NSError).localizedDescription
   let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
   return trimmed.isEmpty ? fallback : ctoClipWords(trimmed, max: 48)
+}
+
+/// A new skill's starting SKILL.md (desktop `newSkillText`).
+func ctoNewSkillText(_ name: String) -> String {
+  "---\nname: \(name)\ndescription: When to use this skill, in one line\n---\n\n1. First step\n2. Check that it worked\n"
+}
+
+/// A typed skill name as the host stores it: lower case, runs of anything
+/// else turned into single dashes (desktop `CtoSkillsList.create`).
+func ctoSkillSlug(_ raw: String) -> String {
+  var slug = ""
+  var pendingDash = false
+  for scalar in raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().unicodeScalars {
+    if ("a"..."z").contains(scalar) || ("0"..."9").contains(scalar) {
+      if pendingDash, !slug.isEmpty { slug.append("-") }
+      pendingDash = false
+      slug.unicodeScalars.append(scalar)
+    } else {
+      pendingDash = true
+    }
+  }
+  return slug
+}
+
+/// The `description:` line of a SKILL.md's frontmatter, if it has one.
+func ctoSkillDescription(_ text: String) -> String? {
+  let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+  guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
+  for line in lines.dropFirst() {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed == "---" { break }
+    if trimmed.hasPrefix("description:") {
+      let value = trimmed.dropFirst("description:".count).trimmingCharacters(in: .whitespaces)
+      return value.isEmpty ? nil : value
+    }
+  }
+  return nil
 }

@@ -132,6 +132,54 @@ export const CTO_OPEN_WORK_MAX_DONE = 30;
 
 export type CtoNotesScope = "project" | "user";
 
+/**
+ * A file the person edits whole in Settings › Memory: the two notes files, or
+ * the rules (`.ade/cto/RULES.md`), which the person and the CTO share.
+ */
+export type CtoNotesFile = CtoNotesScope | "rules";
+
+/** Hard cap on `.ade/cto/RULES.md`, in UTF-8 bytes: it rides every turn. */
+export const CTO_RULES_MAX_BYTES = 4096;
+/** Skills the CTO keeps at once (`.ade/cto/skills/<name>/SKILL.md`). */
+export const CTO_SKILLS_MAX = 40;
+/** One SKILL.md, frontmatter included, in UTF-8 bytes. */
+export const CTO_SKILL_MAX_BYTES = 8192;
+/** A skill's one-line description, shown to the CTO on every turn. */
+export const CTO_SKILL_DESCRIPTION_MAX_CHARS = 240;
+
+/** One skill as the index shows it: the how-to itself is read on demand. */
+export type CtoSkillSummary = {
+  name: string;
+  description: string;
+  bytes: number;
+  updatedAt: string | null;
+};
+
+/** One whole skill, as `cto_memory.getSkill` answers it. */
+export type CtoSkillFile = CtoSkillSummary & {
+  /** The whole SKILL.md: frontmatter (`name`, `description`) and the how-to. */
+  text: string;
+  /** sha256 (hex) of `text`; pass it back as `CtoWriteSkillArgs.baseHash`. */
+  hash: string;
+};
+
+export type CtoGetSkillArgs = { name: string };
+
+export type CtoWriteSkillArgs = {
+  name: string;
+  /** The whole SKILL.md. A missing frontmatter gets one with this name. */
+  text: string;
+  /** sha256 (hex) of the text the editor started from; a changed file refuses the write. */
+  baseHash?: string;
+};
+
+export type CtoDeleteSkillArgs = { name: string };
+
+/** Undo one change a CTO turn's "Learned" row lists. Only the person may. */
+export type CtoUndoLearnedArgs = { learnId: string; changeId: string };
+
+export type CtoUndoLearnedResult = { undone: boolean; note?: string };
+
 export type CtoOpenWorkItem = {
   id: string;
   text: string;
@@ -141,7 +189,7 @@ export type CtoOpenWorkItem = {
 };
 
 export type CtoUpdateNotesArgs = {
-  scope: CtoNotesScope;
+  scope: CtoNotesFile;
   /** The whole notes file, one note per line. Over the cap is refused. */
   text: string;
   /**
@@ -655,6 +703,14 @@ export type CtoMemorySnapshot = {
   memoryHash?: string;
   /** sha256 (hex) of `userNotes`; pass it back as `CtoUpdateNotesArgs.baseHash`. */
   userNotesHash?: string;
+  /** `.ade/cto/RULES.md`: standing rules the person and the CTO both edit. */
+  rules?: string;
+  rulesBytes?: number;
+  rulesLimitBytes?: number;
+  /** sha256 (hex) of `rules`; pass it back as `CtoUpdateNotesArgs.baseHash`. */
+  rulesHash?: string;
+  /** The CTO's skills, one how-to per kind of task, by name. */
+  skills?: CtoSkillSummary[];
   /** Open and recently finished work items, open first. */
   openWork?: CtoOpenWorkItem[];
   updatedAt: string | null;

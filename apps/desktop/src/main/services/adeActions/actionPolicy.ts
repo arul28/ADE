@@ -399,6 +399,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   archive: ["delete"],
   // Where the CTO lives is the person's choice: no agent moves it (or itself).
   cto_state: ["adoptAccountCopy"],
+  // The person's way back from what the CTO learned: no agent, the CTO included, undoes it.
+  cto_memory: ["undoLearned"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
   // A secret's value is the person's to read (Settings, or the desktop's own
@@ -1191,7 +1193,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "runProjectScan",
     "updateIdentity",
   ],
-  cto_memory: ["getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery"],
+  cto_memory: [
+    "getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery",
+    "getSkill", "writeSkill", "deleteSkill", "undoLearned",
+  ],
   session: [
     "backfillDeltas",
     "clearWokeMarker",
