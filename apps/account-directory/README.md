@@ -1142,6 +1142,16 @@ reconcile (`scripts/analytics/reconcile-signups.mjs`,
 `.github/workflows/analytics-reconcile.yml`) are in `docs/logging.md`,
 "Sign-up (server-side)".
 
+Before its event, a `user.deleted` deletes what the account server keeps for
+the account (`signupAnalytics.ts`, then `cloud/accountDeletion.ts`). The
+machine list and the computers' logs go too (`forgetDeletedAccountComputers`).
+Some rows stay under the one-way hash `deleted:<sha256>`: the anti-abuse
+claims, blocks and referrals, and the computers' usage and cost rows for the
+cost report. The `cloud_accounts` row stays under the account ID, marked
+deleted, so the minute cron deletes a computer whose create was still running.
+The privacy policy's Retention section lists the kept rows; change it with
+this code.
+
 ## Sentry
 
 Only `production` reports: `env.production` sets `SENTRY_ENVIRONMENT`, and

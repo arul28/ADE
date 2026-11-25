@@ -2,6 +2,7 @@ import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessag
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
+import { forgetDeletedAccountComputers } from "./accountDeletion";
 import { resolvePendingPhoneBeta } from "./phoneBeta";
 import { enforcePhoneAllowance, runPhoneChecks, stopPhonesDue } from "./phones";
 import { unsettledPhoneMilliByUser } from "./credits";
@@ -316,6 +317,7 @@ async function settleAccounts(env: CloudEnv, provider: CloudProvider, computers:
         for (const computer of byUser.get(row.user_id) ?? []) {
           await deleteComputer(env, provider, computer, { who: "system", reason: "account_deleted" }, now);
         }
+        await forgetDeletedAccountComputers(env, row.user_id);
         return;
       }
       const account = await rollPeriodIfDue(env, row, now);

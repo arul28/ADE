@@ -762,6 +762,9 @@ describe("account deletion", () => {
 
     expect((await deleteAccount(GIVER)).status).toBe(200);
     expect(data.row("select state, closed_reason from lane_shares where id = ?", pending)).toEqual({ state: "revoked", closed_reason: "account_deleted" });
-    expect((await hostRead()).grants).toEqual([]);
+    // The deleted account's machine list went with it, so its host has no grant to serve.
+    const host = await send(GIVER, "POST", "/lane-shares/host", { machineKey: MACHINE });
+    expect(host.status).toBe(404);
+    expect(((await host.json()) as { error: { code: string } }).error.code).toBe("unknown_machine");
   });
 });

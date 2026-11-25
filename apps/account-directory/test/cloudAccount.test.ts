@@ -731,9 +731,15 @@ describe("ADE Cloud account", () => {
       expect(providerCalls(harness, /POST .*\/sleep$/)).toEqual([]);
       expect(computer(harness).awake_since).toBe(NOW);
     }],
-    ["a deleted account loses its plan, computers and saved chats even with analytics off", async () => {
+    ["a deleted account loses its plan, computers, machine list and saved chats even with analytics off", async () => {
       harness.exec("update cloud_accounts set plan = 'paid', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
       seedComputer(harness);
+      // The account's own desktop, a removed one, and the computer's logs and daily usage.
+      harness.insert("machines", { user_id: OWNER, machine_key: "key-desk", name: "Studio", reachable_endpoints: "[\"10.0.0.2\"]", last_seen_at: NOW - DAY });
+      harness.insert("revoked_machines", { user_id: OWNER, machine_key: "key-old", device_id: "dev-old", revoked_at: NOW - DAY });
+      harness.insert("cloud_power_log", { instance_id: INSTANCE, user_id: OWNER, action: "wake", reason: "user", created_at: NOW - HOUR });
+      harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: "2026-01-01", user_id: OWNER, multiplier_milli: 1000, metered_ms: HOUR });
+      harness.insert("cloud_disk_days", { user_id: OWNER, day: "2026-01-01", peak_gb: 20, plan_gb: 20 });
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
       // Its status menu's facts carry no user id: they go with the computer.
@@ -749,6 +755,15 @@ describe("ADE Cloud account", () => {
       expect(computer(harness).deleted_at).toBe(NOW);
       expect(harness.rows("select user_id from cloud_user_keys where user_id = ?", OWNER)).toEqual([]);
       expect([...harness.rows("select instance_id from cloud_instance_events"), ...harness.rows("select instance_id from cloud_computer_activity")]).toEqual([]);
+      // No table names the account any more, except its row marked deleted (a create
+      // still running must find it). The usage and cost stay, under the hash, unnamed.
+      const tables = harness.rows("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'") as Array<{ name: string }>;
+      expect(tables.filter(({ name }) => harness.rows(`select * from "${name}"`).some((row) => Object.values(row).includes(OWNER))).map(({ name }) => name))
+        .toEqual(["cloud_accounts"]);
+      const hashed = expect.stringMatching(/^deleted:[0-9a-f]{64}$/);
+      expect(harness.rows("select user_id, name, machine_key from cloud_computers")).toEqual([{ user_id: hashed, name: null, machine_key: null }]);
+      expect(harness.rows("select user_id, metered_ms from cloud_computer_days")).toEqual([{ user_id: hashed, metered_ms: HOUR }]);
+      expect(harness.rows("select user_id, peak_gb from cloud_disk_days")).toEqual([{ user_id: hashed, peak_gb: 20 }]);
       // Its vault and settings live in the push relay's D1, so the relay is asked to remove them.
       expect(harness.relayCalls).toEqual([
         { method: "DELETE", url: `https://relay.test/directory/accounts/${OWNER}`, directoryAuth: "directory-secret" },
@@ -761,7 +776,10 @@ describe("ADE Cloud account", () => {
       await harness.tick();
 
       expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
-      expect(harness.row("select reason from cloud_delete_log where instance_id = 'madenew12345'").reason).toBe("account_deleted");
+      // The cron's delete clears it as the webhook's would: no log, and the row under the hash.
+      expect(harness.rows("select instance_id from cloud_delete_log")).toEqual([]);
+      expect(harness.rows("select user_id, deleted_at is not null as deleted from cloud_computers where instance_id = 'madenew12345'"))
+        .toEqual([{ user_id: expect.stringMatching(/^deleted:[0-9a-f]{64}$/), deleted: 1 }]);
     }],
     ["a grow whose answer was lost goes to the provider again on retry", async () => {
       harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);

@@ -123,9 +123,54 @@ export async function deleteCloudAccount(
     env.DB.prepare(`update cloud_earned_hours set reference = ? where reference = ? and reason in ('${CLOUD_REFERRAL_REFERRER_REASON}', '${CLOUD_REFERRAL_FRIEND_REASON}')`).bind(gone, userId),
   ]);
 
+  await forgetDeletedAccountComputers(env, userId);
+
   // Last, after the computers: a cloud computer still running holds the
   // account's session and could write its sign-ins back into the vault.
   const relay = await purgeRelayAccountData(env, userId);
   if (!relay.ok) throw new Error(`relay_purge_failed: ${relay.reason}`);
   if (phoneFailure) throw phoneFailure;
+}
+
+/**
+ * The rest of a deleted account's machines and computers. These go: the
+ * machine list (names, addresses, folder paths, hardware hashes, device
+ * keys), its revocations and pairing grants, the jobs, the bonus days, and
+ * the computers' power, delete and idle-cleanup logs. Each deleted
+ * computer's row and the daily usage and cost rows stay for the cost report
+ * and the provider's late usage (`cron.ts` reconcile), re-keyed to the hash
+ * with the names cleared.
+ *
+ * A computer whose create still ran keeps the account ID until the minute
+ * cron deletes it, and the cron runs this again then. The `cloud_accounts`
+ * row stays under the account ID, marked deleted: a sign-in token still valid
+ * for a moment must find it, so the computer it makes is deleted too.
+ * Safe to repeat.
+ */
+export async function forgetDeletedAccountComputers(env: Pick<CloudEnv, "DB">, userId: string): Promise<void> {
+  const gone = `${CLOUD_DELETED_ACCOUNT_PREFIX}${await sha256Hex(userId)}`;
+  const deletedComputers = "select instance_id from cloud_computers where user_id = ? and deleted_at is not null";
+  await env.DB.batch([
+    env.DB.prepare("delete from machines where user_id = ?").bind(userId),
+    env.DB.prepare("delete from revoked_machines where user_id = ?").bind(userId),
+    env.DB.prepare("delete from machine_pairing_grants where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_jobs where user_id = ?").bind(userId),
+    env.DB.prepare("delete from jev_bonus_days where user_id = ?").bind(userId),
+    env.DB.prepare(`delete from cloud_power_log where user_id = ? and instance_id in (${deletedComputers})`).bind(userId, userId),
+    env.DB.prepare(`delete from cloud_delete_log where user_id = ? and instance_id in (${deletedComputers})`).bind(userId, userId),
+    env.DB.prepare(`delete from cloud_idle_cleanup_log where user_id = ? and instance_id in (${deletedComputers})`).bind(userId, userId),
+    env.DB.prepare(`update cloud_computer_days set user_id = ? where user_id = ? and instance_id in (${deletedComputers})`).bind(gone, userId, userId),
+    // Keyed by account and day: a day the hash already has (a late computer's) keeps its first row.
+    env.DB.prepare("update or ignore cloud_disk_days set user_id = ? where user_id = ?").bind(gone, userId),
+    env.DB.prepare("delete from cloud_disk_days where user_id = ?").bind(userId),
+    env.DB.prepare("update or ignore cloud_account_days set user_id = ? where user_id = ?").bind(gone, userId),
+    env.DB.prepare("delete from cloud_account_days where user_id = ?").bind(userId),
+    // Last: the statements above find the deleted computers by the account ID.
+    env.DB.prepare(`
+      update cloud_computers set user_id = ?, name = null, machine_key = null, request_id = null, moving_from = null,
+        update_error = null, ade_features = null
+      where user_id = ? and deleted_at is not null
+    `).bind(gone, userId),
+    env.DB.prepare("update cloud_accounts set test_note = null, plan_cleanup_choice_json = null, plan_cleanup_result_json = null, plan_cleanup_warned_json = null where user_id = ?").bind(userId),
+  ]);
 }
