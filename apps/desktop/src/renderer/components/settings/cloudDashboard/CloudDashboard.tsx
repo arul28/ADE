@@ -433,7 +433,10 @@ function CloudHero({
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
   const keepsGoing = extra.available && extra.enabled;
   // Small never uses credits (unless the catalog rates it), so only the bigger sizes pause.
-  const pauseLine = smallRateMilli > 0
+  // Free credits held (GitHub rules, or another account used them here) don't come back at the reset, and nothing runs.
+  const pauseLine = held
+    ? "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
+    : smallRateMilli > 0
     ? `Cloud computers pause until ${formatCloudDate(account.billing.periodEnd)}.`
     : `Bigger computers pause until ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
   return (
@@ -506,7 +509,7 @@ function CloudHero({
             <span className="adecd-part-line">
               {keepsGoing
                 ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
-                : `${pauseLine}${account.plan === "free" ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}`}
+                : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}`}
             </span>
           </div>
         </div>

@@ -344,7 +344,10 @@ struct CloudHero: View {
       let used = extra.usedMilli ?? 0
       return ("Keep going", used > 0 ? "\(words.amount(used)) extra this month" : "Extra \(words.unit), billed after use")
     }
-    if account.plan == "free" { return ("Pause", "Bigger computers pause until next month") }
+    if account.plan == "free" {
+      // Free with sponsored cards off rates Small too: then every computer pauses.
+      return ("Pause", cloudSmallTierUsingHours(account) != nil ? "Cloud computers pause until next month" : "Bigger computers pause until next month")
+    }
     return nil
   }
 }
