@@ -8,11 +8,44 @@ import { ClerkSignInPanel } from "./ClerkSignInPanel";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { AdeWordmark } from "../ui/AdeWordmark";
+import { PRIVACY_URL, TERMS_URL } from "../../../shared/legalLinks";
+import { openExternalUrl } from "../../lib/openExternal";
+import { markPrivacyPolicyNoticeSeen } from "../../lib/privacyPolicyNotice";
 
 // The notice system (popover, issue report) loads only when a sign-in error
 // shows. Imported here eagerly, it added 7 requests and about 105 KB of JS to
 // ADE Web's signed-out page (#1951).
 const Banner = lazy(() => import("../ui/notice/Banner").then((module) => ({ default: module.Banner })));
+
+/**
+ * Every ADE sign-up passes this card (the desktop gate, ADE Web, and the page
+ * a desktop or `ade login` sign-in opens), so the agreement lives here. The
+ * links open the system browser in the desktop app and a new tab on the web.
+ */
+function LegalLink({ href, children }: { href: string; children: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      onClick={(event) => {
+        event.preventDefault();
+        openExternalUrl(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function LegalAgreementLine() {
+  return (
+    <p className="ade-glass-legal" data-testid="sign-in-legal">
+      By continuing, you agree to ADE's <LegalLink href={TERMS_URL}>Terms</LegalLink> and{" "}
+      <LegalLink href={PRIVACY_URL}>Privacy Policy</LegalLink>.
+    </p>
+  );
+}
 
 /**
  * The launch gate's sign-in: a frosted card floating over the window mesh.
@@ -36,8 +69,14 @@ export function GlassSignInCard({
   subtitle?: string;
   clerk?: ClerkSignInSetup;
 }) {
+  // This card shows the agree line for the current policy, so a sign-in here
+  // needs no "We updated our Privacy Policy" notice afterwards.
+  const onSignedInHere = useCallback(() => {
+    markPrivacyPolicyNoticeSeen();
+    onSignedIn();
+  }, [onSignedIn]);
   const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel, otherDevice } = useSignInFlow({
-    onSignedIn,
+    onSignedIn: onSignedInHere,
     sessionState,
   });
   const blocked = busy || !configured;
@@ -115,6 +154,8 @@ export function GlassSignInCard({
           ) : null}
         </div>
       )}
+
+      <LegalAgreementLine />
 
       {phase === "awaiting" ? (
         <div className="ade-glass-awaiting">

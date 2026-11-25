@@ -67,6 +67,8 @@ struct ContentView: View {
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
   }()
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
+  /// "We updated our Privacy Policy" is still owed on this phone.
+  @State private var privacyNoticeOwed = !PrivacyPolicyNotice.isSeen
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -85,14 +87,22 @@ struct ContentView: View {
     let connectLabel: String?
     let updateVersion: String?
     let updateDismissed: Bool
+    let privacyNotice: Bool
   }
 
   private var topBannerKey: TopBannerKey {
     TopBannerKey(
       connectLabel: syncService.accountConnectSuccessLabel,
       updateVersion: appUpdateAdvisor.availableVersion,
-      updateDismissed: appUpdateAdvisor.isAvailableUpdateDismissed
+      updateDismissed: appUpdateAdvisor.isAvailableUpdateDismissed,
+      privacyNotice: showsPrivacyNotice
     )
+  }
+
+  /// Past the access gate only. A sign-in in the gate's sheet showed the agree
+  /// line and marked the version seen, so the stored mark is read here too.
+  private var showsPrivacyNotice: Bool {
+    privacyNoticeOwed && hasMobileAccess && !PrivacyPolicyNotice.isSeen
   }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -245,6 +255,17 @@ struct ContentView: View {
             )
             .transition(.move(edge: .top).combined(with: .opacity))
           }
+
+          if showsPrivacyNotice {
+            PrivacyPolicyNoticeBanner(
+              onRead: {
+                UIApplication.shared.open(PrivacyPolicyNotice.changesURL)
+                closePrivacyNotice()
+              },
+              onClose: closePrivacyNotice
+            )
+            .transition(.move(edge: .top).combined(with: .opacity))
+          }
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
@@ -308,6 +329,11 @@ struct ContentView: View {
     ProductAnalytics.shared.captureScreen(
       syncService.shouldShowProjectHub ? .hub : selectedTab.analyticsScreen
     )
+  }
+
+  private func closePrivacyNotice() {
+    PrivacyPolicyNotice.markSeen()
+    privacyNoticeOwed = false
   }
 
   private func openAppUpdate() {
@@ -475,6 +501,81 @@ struct AccountConnectStatusToast: View {
     .overlay(Capsule().stroke(ADEColor.success.opacity(0.3), lineWidth: 0.75))
     .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
     .accessibilityElement(children: .combine)
+  }
+}
+
+/// The privacy policy version this phone last told the person about, and the
+/// link to the policy's list of changes. `version` is the policy's "Last updated" date; change it with
+/// `PRIVACY_POLICY_VERSION` (`apps/desktop/src/shared/legalLinks.ts`) so the
+/// notice shows once again. Per device: a notice, not a consent.
+enum PrivacyPolicyNotice {
+  static let version = "2026-11-24"
+  static let changesURL = URL(string: "https://ade-app.dev/privacy#changes")!
+  private static let seenVersionKey = "ade.privacyPolicyNotice.seenVersion"
+
+  static var isSeen: Bool {
+    UserDefaults.standard.string(forKey: seenVersionKey) == version
+  }
+
+  static func markSeen() {
+    UserDefaults.standard.set(version, forKey: seenVersionKey)
+  }
+}
+
+/// "We updated our Privacy Policy", once per policy version. Any answer counts
+/// as seen. It sends no analytics event.
+private struct PrivacyPolicyNoticeBanner: View {
+  let onRead: () -> Void
+  let onClose: () -> Void
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "checkmark.shield.fill")
+        .foregroundStyle(ADEColor.purpleAccent)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text("We updated our Privacy Policy")
+          .font(.system(.footnote, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("It now lists everything ADE collects.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .lineLimit(2)
+      .minimumScaleFactor(0.8)
+
+      Spacer(minLength: 0)
+
+      Button("OK", action: onClose)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .buttonStyle(.plain)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityIdentifier("privacy-notice-ok")
+
+      Button("Read", action: onRead)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.purpleAccent, in: Capsule())
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
+        .accessibilityIdentifier("privacy-notice-read")
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 9)
+    .background(ADEColor.cardBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .glassEffect()
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
+    )
+    .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("We updated our Privacy Policy")
   }
 }
 

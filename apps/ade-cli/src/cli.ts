@@ -731,6 +731,7 @@ import { createRemoteProviderSignIn, type ClaudePassRunner } from "./services/ac
 import { startCloudBootLaunch, takeCloudLaunch } from "./services/account/cloudBootLaunch";
 import { createProviderReady } from "./services/account/cloudLaunchSignInWait";
 import {
+  SIGN_IN_LEGAL_LINE,
   deviceSignInInstructions,
   readDeviceSignInPoll,
   readDeviceSignInStart,
@@ -42326,7 +42327,7 @@ async function runAccountLogin(
       let intervalSec = device.intervalSec;
       const deadlineMs = deadlineFor(device.expiresAt);
       process.stderr.write(
-        `\n${deviceSignInInstructions("To finish signing in", device)}\nWaiting for sign-in…\n`,
+        `\n${deviceSignInInstructions("To finish signing in", device)}${SIGN_IN_LEGAL_LINE}\n\nWaiting for sign-in…\n`,
       );
       while (true) {
         const sleepMs = Math.max(1, intervalSec) * 1000;
@@ -42405,6 +42406,7 @@ async function runAccountLogin(
     }
     process.stderr.write(
       `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
+      `${SIGN_IN_LEGAL_LINE}\n` +
       (otherDevice ? `\n${deviceSignInInstructions("Or, to sign in on another device", otherDevice)}` : "") +
       "\nWaiting for sign-in…\n",
     );

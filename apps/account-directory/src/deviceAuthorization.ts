@@ -1,4 +1,4 @@
-import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "./brandPage";
+import { BRAND_IMG_SRC, LEGAL_AGREEMENT_HTML, brandDocument, escapeHtml } from "./brandPage";
 import { isLoopbackHostname, trustedHttpsOrigin } from "./trustedOrigin";
 import { boundedDisplayText } from "./displayText";
 import { readBoundedBody, readBoundedFormData } from "./sinkUtils";
@@ -198,7 +198,8 @@ function approvalForm(userCode = ""): Response {
         <label class="field-label" for="user_code">Device code</label>
         <input id="user_code" name="user_code" value="${escapeHtml(userCode)}" autocomplete="one-time-code" maxlength="9" required autofocus>
         <button class="primary" type="submit">Continue</button>
-      </form>`,
+      </form>
+      ${LEGAL_AGREEMENT_HTML}`,
     foot: "Did not run <code>ade login</code>? Close this page.",
   });
 }
@@ -228,6 +229,7 @@ function confirmationPage(userCode: string, machineName: string | null): Respons
         <input type="hidden" name="user_code" value="${escapeHtml(userCode)}">
         <button class="primary" type="submit">Continue</button>
       </form>
+      ${LEGAL_AGREEMENT_HTML}
       <p class="stop"><strong>Did not start this?</strong> Close this page. Nothing signs in until you press Continue.</p>`,
   });
 }

@@ -267,6 +267,7 @@ form input + .primary { margin-top: 14px; }
   line-height: 1.5;
 }
 .foot { margin: 0; color: var(--text-3); font-size: 12.5px; text-align: center; text-wrap: balance; }
+.legal { margin: 16px 0 0; color: var(--text-3); font-size: 12px; line-height: 1.5; text-wrap: balance; }
 .field-label { display: block; margin: 22px 0 8px; font-size: 13px; font-weight: 600; text-align: left; }
 input {
   width: 100%;
@@ -326,6 +327,14 @@ export function identityChain(input: {
     `<div class="who">${badge}<span><span class="label">${escapeHtml(item.label)}</span><span class="value${item.dim ? " dim" : ""}">${escapeHtml(item.value)}</span></span></div>`;
   return `<div class="chain">${row(`<span class="badge badge-gh">${GITHUB_MARK}</span>`, input.github)}<div class="bond" data-state="${input.state}" aria-hidden="true"></div>${row(`<span class="badge badge-ade"><span class="logo"></span></span>`, input.ade)}</div>`;
 }
+
+/**
+ * The agree-to-Terms-and-Privacy line for a page that signs a person in or
+ * up. A computer's sign-in can start here, so it carries the same line as the
+ * apps' sign-in card.
+ */
+export const LEGAL_AGREEMENT_HTML =
+  '<p class="legal">By continuing, you agree to ADE\'s <a href="https://ade-app.dev/terms" target="_blank" rel="noreferrer">Terms</a> and <a href="https://ade-app.dev/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>.</p>';
 
 /**
  * The whole document. `card` is the card's inner HTML after the heading;

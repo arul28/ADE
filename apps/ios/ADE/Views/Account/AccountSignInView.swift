@@ -73,6 +73,9 @@ struct AccountSignInView: View {
         }
       }
       .onChange(of: account.phase) { _, newValue in
+        // This sheet showed the agree line for the current policy, so a
+        // sign-in here needs no "We updated our Privacy Policy" notice.
+        if newValue == .signedIn { PrivacyPolicyNotice.markSeen() }
         // A completed authentication (from any provider) advances to the
         // machines step.
         if newValue == .signedIn, finishesOnSignIn {
@@ -219,8 +222,24 @@ struct AccountSignInView: View {
       }
 
       errorView
+
+      legalAgreement
     }
     .disabled(busy != nil)
+  }
+
+  /// Every sign-up on the phone passes this step, so the agreement lives here.
+  private var legalAgreement: some View {
+    // A literal, so SwiftUI reads the Markdown links (an interpolated URL is not parsed).
+    Text("By continuing, you agree to ADE's [Terms](https://ade-app.dev/terms) and [Privacy Policy](https://ade-app.dev/privacy).")
+      .font(.caption)
+      .foregroundStyle(ADEColor.textMuted)
+      .tint(ADEColor.accent)
+      .multilineTextAlignment(.center)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity)
+      .padding(.top, 4)
+      .accessibilityIdentifier("account-sign-in-legal")
   }
 
   // MARK: - Email code step

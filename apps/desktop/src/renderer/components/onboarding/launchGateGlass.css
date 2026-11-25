@@ -599,3 +599,26 @@ html[data-motion="reduced"] .ade-gate *::after {
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+/* The agree-to-Terms-and-Privacy line under every sign-in. */
+.ade-glass-legal {
+  margin: 22px auto 0;
+  max-width: 300px;
+  text-wrap: balance;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--gate-text-2);
+}
+
+.ade-glass-legal a {
+  color: var(--color-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  border-radius: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.ade-glass-legal a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
+  outline-offset: 2px;
+}

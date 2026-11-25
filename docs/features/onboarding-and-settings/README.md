@@ -1520,6 +1520,34 @@ pager.
   entry, beside a looping muted recording, a screenshot crossfade (`holdMs`,
   optional `caption`) or phones.
 
+### The agree line and the privacy policy notice
+
+Every sign-up shows "By continuing, you agree to ADE's Terms and Privacy
+Policy" with links: the shared sign-in card (`onboarding/GlassSignInCard.tsx`,
+which covers the desktop gate, ADE Web and the `/sign-in` page that a desktop
+or `ade login` sign-in opens), the device-code pages on the account directory
+(`LEGAL_AGREEMENT_HTML` in `apps/account-directory/src/brandPage.ts`), the
+`ade login` text (`SIGN_IN_LEGAL_LINE`), and the iPhone's
+`AccountSignInView`. Clerk's own hosted page, the fallback when Clerk's API
+cannot be reached from the card, shows Clerk's legal-consent setting instead.
+
+When the policy changes, existing users see "We updated our Privacy Policy"
+once: a floating app banner on desktop and ADE Web
+(`app/PrivacyPolicyUpdateNotice.tsx`) and a top banner on the iPhone
+(`PrivacyPolicyNoticeBanner` in `apps/ios/ADE/App/ContentView.swift`). Read,
+Got it/OK and × all count as seen. The seen version is per device
+(`ade.privacyPolicyNotice.seenVersion` in localStorage or UserDefaults): it is
+a notice, not a consent, so it does not use an account setting. A sign-in
+through a card that showed the agree line marks the version seen, so a new
+account does not get the notice. It sends no analytics event.
+
+It is not a What's new page and does not spend the unasked budget: those can
+hold a page back for days or skip it, and a policy notice must show.
+
+To reshow it, change the policy's `LAST_UPDATED` and its changelog
+(`apps/web/src/app/pages/PrivacyPage.tsx`), `PRIVACY_POLICY_VERSION`
+(`shared/legalLinks.ts`) and `PrivacyPolicyNotice.version` (iOS) together.
+
 ### Boot splash and the ADE logo
 
 "Starting ADE" plays a WebGL2 liquid glass reveal

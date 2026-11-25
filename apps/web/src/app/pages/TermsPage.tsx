@@ -6,6 +6,44 @@ import { LINKS } from "../../lib/links";
 import { ANALYTICS_FEATURE_ATTRIBUTE, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
+const UPDATED_DATE = "November 24, 2026";
+
+/** Plain sections at the top of the page: what you agree to when you use ADE. */
+const agreementSections: Array<{ title: string; body: string[] }> = [
+  {
+    title: "Accepting these terms",
+    body: [
+      "By creating an ADE account, signing in, or using ADE's apps, ADE Cloud or this website, you agree to these Terms and to the Privacy Policy. If you do not agree, do not use ADE.",
+    ],
+  },
+  {
+    title: "Your account and your data",
+    body: [
+      "ADE needs an account. You are responsible for what happens under your account and for keeping your sign-in methods safe.",
+      "You let ADE handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your ADE account so your other computers and ADE Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and ADE Cloud data the policy lists; and sending product analytics, error reports and diagnostic reports.",
+      "You can turn off the features that have a switch, as the Privacy Policy's “Your choices” section says, and you can delete your account at any time.",
+    ],
+  },
+  {
+    title: "Other services",
+    body: [
+      "ADE works with services you choose, such as AI providers, GitHub, Linear and AI coding tools. Their own terms apply to your use of them. You are responsible for using your logins and keys with ADE, on your computers and on ADE Cloud, in a way those terms allow.",
+    ],
+  },
+  {
+    title: "No warranty",
+    body: [
+      "ADE is provided as is, without warranties of any kind, to the extent the law allows. Agents can make mistakes and can run commands on your computers.",
+    ],
+  },
+  {
+    title: "Changes to these terms",
+    body: [
+      "ADE may change these Terms. When it does, it updates the date on this page. If you keep using ADE after a change, you accept the changed Terms.",
+    ],
+  },
+];
+
 export function TermsPage() {
   useDocumentTitle("ADE Terms");
 
@@ -15,13 +53,26 @@ export function TermsPage() {
         <Container>
           <Reveal>
             <h1 className="text-4xl font-semibold tracking-tight text-fg sm:text-5xl">Terms</h1>
+            <p className="mt-3 text-sm text-muted-fg">Updated {UPDATED_DATE}</p>
             <p className="mt-4 max-w-2xl text-sm leading-relaxed text-muted-fg">
-              ADE is under active development. This site is informational and the project’s repository (license and docs)
-              is the authoritative reference.
+              ADE is under active development. These Terms and the Privacy Policy apply to your use of ADE. The
+              project’s repository holds the software license and the technical docs.
             </p>
           </Reveal>
 
           <div className="mt-10 grid gap-6">
+            {agreementSections.map((section) => (
+              <Reveal key={section.title}>
+                <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
+                  <div className="text-sm font-semibold text-fg">{section.title}</div>
+                  <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
+                    {section.body.map((paragraph) => (
+                      <p key={paragraph}>{paragraph}</p>
+                    ))}
+                  </div>
+                </div>
+              </Reveal>
+            ))}
             <Reveal>
               <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                 <div className="text-sm font-semibold text-fg">Software availability</div>

@@ -6,6 +6,7 @@
 
 import { renderTerminalQr } from "../lib/terminalQr";
 import { detectTerminalCapabilities } from "./setupRender";
+import { PRIVACY_URL, TERMS_URL } from "../../../desktop/src/shared/legalLinks";
 
 type Json = Record<string, unknown>;
 
@@ -70,6 +71,9 @@ export function readDeviceSignInPoll(poll: Json): DeviceSignInPoll {
   }
   return { kind: "ended", message: text(poll.message), authStatus: authStatusOf(poll) };
 }
+
+/** The agree line every ADE sign-in shows, as `ade login` prints it. */
+export const SIGN_IN_LEGAL_LINE = `By continuing, you agree to ADE's Terms (${TERMS_URL}) and Privacy Policy (${PRIVACY_URL}).`;
 
 /**
  * How to finish a device sign-in on a phone or another computer. A phone can
