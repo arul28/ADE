@@ -756,18 +756,24 @@ private struct CtoWaitingOnYouCard: View {
     }
   }
 
+  private var header: some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(accent)
+        .frame(width: 6, height: 6)
+      Text("Waiting on you")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 0)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+
   /// The lines could not be read and none are known: say so, with a retry.
   private var failedCard: some View {
     VStack(alignment: .leading, spacing: 4) {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(accent)
-          .frame(width: 6, height: 6)
-        Text("Waiting on you")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 0)
-      }
+      header
       HStack(spacing: 10) {
         Text("Couldn't load what's waiting on you.")
           .font(.subheadline)
@@ -794,20 +800,10 @@ private struct CtoWaitingOnYouCard: View {
     let rows = expanded ? store.needs : Array(store.needs.prefix(Self.maxRows))
     let more = store.needs.count - rows.count
     return VStack(alignment: .leading, spacing: 0) {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(accent)
-          .frame(width: 6, height: 6)
-        Text("Waiting on you")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, 14)
-      .padding(.top, 10)
-      .padding(.bottom, 2)
-      .accessibilityElement(children: .combine)
-      .accessibilityAddTraits(.isHeader)
+      header
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
 
       ForEach(Array(rows.enumerated()), id: \.element.id) { index, need in
         if index > 0 {

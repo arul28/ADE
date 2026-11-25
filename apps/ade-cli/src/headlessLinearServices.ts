@@ -53,6 +53,7 @@ import type {
   GitHubRequestBudget,
   GitHubStatus,
   CtoAttentionState,
+  CtoNeedsSnapshot,
 } from "../../desktop/src/shared/types";
 import type {
   GithubService,
@@ -245,7 +246,7 @@ type HeadlessLinearServices = {
     /** Mirrors the desktop chat service so `cto_state.getAttention` resolves headlessly. */
     getCtoAttention: () => Promise<CtoAttentionState>;
     /** Mirrors the desktop chat service so `cto_state.getNeeds` resolves headlessly. */
-    getCtoNeeds: () => Promise<{ needs: [] }>;
+    getCtoNeeds: () => Promise<CtoNeedsSnapshot>;
     getChatTranscript: (args: {
       sessionId: string;
       limit?: number;
@@ -3236,7 +3237,7 @@ function createHeadlessAgentChatService(
     },
     async getCtoNeeds() {
       // Headless sessions start no children, so nothing waits on the person.
-      return { needs: [] as [] };
+      return { needs: [] };
     },
     async getChatTranscript({
       sessionId,

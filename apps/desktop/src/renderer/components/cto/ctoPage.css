@@ -859,16 +859,3 @@
 .ade-cto-needs-more:hover {
   color: var(--color-fg);
 }
-
-.ade-cto-needs-failed {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 3px 8px 2px;
-  font-size: 12px;
-  color: var(--cto-text-2);
-}
-
-.ade-cto-needs-failed .ade-cto-needs-more {
-  margin: 0;
-}

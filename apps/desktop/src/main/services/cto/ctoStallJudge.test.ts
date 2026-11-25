@@ -17,11 +17,14 @@ function child(overrides: Partial<CtoChildFacts> = {}): CtoChildFacts {
     sessionId: "child-1",
     title: "Fix login",
     lastActivityAt: new Date(T0).toISOString(),
+    turnStartedAt: null,
+    lastTurnFailedAt: null,
     ended: false,
     turnActive: false,
     awaitingInput: false,
     pendingKind: null,
     pendingText: null,
+    pendingSeenAt: null,
     quietOnPurpose: false,
     pr: null,
     lastWords: "Opened PR #12.",
@@ -81,6 +84,12 @@ describe("judgeCtoChildStall", () => {
     expect(next?.stateKey).not.toBe(judgeCtoChildStall(waiting("card-1"), T0 + 10 * MIN)?.stateKey);
   });
 
+  it("keys a card the same before and after its chat loads here (kind unknown, then known)", () => {
+    const unloaded = child({ awaitingInput: true, pendingKind: null, pendingKey: "card-1" });
+    const loaded = child({ awaitingInput: true, pendingKind: "permission", pendingKey: "card-1" });
+    expect(judgeCtoChildStall(unloaded, T0 + 10 * MIN)?.stateKey).toBe(judgeCtoChildStall(loaded, T0 + 10 * MIN)?.stateKey);
+  });
+
   it("gives a child that moved and stalled again a new key", () => {
     const first = judgeCtoChildStall(child(), T0 + 5 * MIN)!;
     const again = judgeCtoChildStall(child({ lastActivityAt: new Date(T0 + 6 * MIN).toISOString() }), T0 + 12 * MIN)!;
@@ -97,17 +106,21 @@ function harness(store: Map<string, unknown> = new Map(), seeded = true) {
   // Children a pass leaves out (quiet for a day, a failed summary) but that still exist.
   const unlisted = new Map<string, CtoChildFacts>();
   let needReadFails = false;
+  let ctoListFails = false;
   const wakes: Array<{ cto: string; text: string }> = [];
   let busy = false;
   const judge = createCtoStallJudge({
     db: { getJson: (key) => store.get(key) ?? null, setJson: (key, value) => { store.set(key, JSON.parse(JSON.stringify(value))); } },
-    listCtoSessionIds: async () => ["cto"],
+    listCtoSessionIds: async () => {
+      if (ctoListFails) throw new Error("listing failed");
+      return ["cto"];
+    },
     readChildren: async () => [...children.values()],
     readNeedChild: async (id) => {
       if (needReadFails) throw new Error("summary read failed");
       const facts = children.get(id) ?? unlisted.get(id);
       return facts
-        ? { title: facts.title, laneId: "lane-1", lastActivityAt: ctoChildMovedAt(facts), ended: facts.ended, pendingKey: facts.pendingKey }
+        ? { title: facts.title, laneId: "lane-1", movedAt: ctoChildMovedAt(facts), ended: facts.ended, pendingKey: facts.pendingKey }
         : null;
     },
     ctoBusy: () => busy,
@@ -126,6 +139,7 @@ function harness(store: Map<string, unknown> = new Map(), seeded = true) {
     children,
     unlisted,
     setNeedReadFails: (value: boolean) => { needReadFails = value; },
+    setCtoListFails: (value: boolean) => { ctoListFails = value; },
     setNow: (ms: number) => { now = ms; },
     setBusy: (value: boolean) => { busy = value; },
     put: (facts: CtoChildFacts) => children.set(facts.sessionId, facts),
@@ -172,6 +186,16 @@ describe("createCtoStallJudge", () => {
     expect(h.wakes).toHaveLength(1);
     expect(h.wakes[0].text).toContain("child-2");
     expect(h.wakes[0].text).not.toContain("child-1");
+  });
+
+  it("keeps its first-run baseline until a pass could read every CTO", async () => {
+    const h = harness(new Map(), false);
+    h.put(child());
+    h.setCtoListFails(true);
+    await pass(h, T0 + 10 * MIN);
+    h.setCtoListFails(false);
+    await pass(h, T0 + 11 * MIN);
+    expect(h.wakes).toHaveLength(0);
   });
 
   it("keeps nudges to one CTO apart and folds the stalls in between into the next", async () => {

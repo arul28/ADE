@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { ArrowRight, HandPalm } from "@phosphor-icons/react";
 import type { CtoNeed } from "../../../shared/types";
+import { Banner } from "../ui/notice";
 
 /** Rows shown before "+N more" opens the rest. */
 const COLLAPSED_ROWS = 3;
@@ -25,20 +26,16 @@ export function CtoWaitingOnYou({
   const [expanded, setExpanded] = useState(false);
   if (!needs.length && failed) {
     return (
-      <section className="ade-cto-needs" aria-label="Waiting on you" data-testid="cto-waiting-on-you">
-        <header className="ade-cto-needs-head">
-          <HandPalm size={13} weight="fill" aria-hidden />
-          <span>Waiting on you</span>
-        </header>
-        <div className="ade-cto-needs-failed" role="status">
-          <span>Couldn't load what's waiting on you.</span>
-          {onRetry ? (
-            <button type="button" className="ade-cto-needs-more" onClick={onRetry}>
-              Retry
-            </button>
-          ) : null}
-        </div>
-      </section>
+      <Banner
+        layout="inline"
+        model={{
+          id: "cto-needs-failed",
+          tone: "warning",
+          title: "Couldn't load what's waiting on you",
+          actions: onRetry ? [{ label: "Retry", onClick: onRetry }] : undefined,
+          report: { surface: "cto_needs", code: "needs_read_failed" },
+        }}
+      />
     );
   }
   if (!needs.length) return null;
