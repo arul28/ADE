@@ -353,7 +353,11 @@ Routes that need the `x-ade-directory-auth` header:
 
 - `POST /attention/account/machines/:machineKey/pairing`. It clears a
   revocation, and a removed machine can still hold a valid bearer.
-- `DELETE /directory/accounts/:userId`. A deleted account has no token.
+- `DELETE /directory/accounts/:userId`. A deleted account has no token. It
+  deletes every row of the account: vault, settings, passwords, alerts, machine
+  links and revocations, phones and their push tokens, and the legacy push rows
+  of the machines it claimed. The directory calls it again on each repeat of
+  the deletion.
 - `PUT /directory/accounts/:userId/vault/linear-lease`.
 
 A missing or wrong header answers `403 directory_auth_required`. With the

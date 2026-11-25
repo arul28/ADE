@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleLaneShareRequest, type LaneShareEnv } from "../src/laneShares/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
 import type { LaneShareConnectResponse, LaneShareGiverView, LaneShareHostResponse, LaneShareRedeemResponse } from "../src/laneShares/contract";
-import { cleanupLaneShares } from "../src/laneShares/routes";
+import { cleanupLaneShares, closeLaneSharesForAccount } from "../src/laneShares/routes";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
 
 /**
@@ -766,5 +766,13 @@ describe("account deletion", () => {
     const host = await send(GIVER, "POST", "/lane-shares/host", { machineKey: MACHINE });
     expect(host.status).toBe(404);
     expect(((await host.json()) as { error: { code: string } }).error.code).toBe("unknown_machine");
+
+    // The deletion's next run, after the close had time to reach the other side: the grants
+    // (addresses, labels, the other person's ID) go. The webhook's own run kept them.
+    expect(data.row("select count(*) as n from lane_shares").n).toBe(2);
+    clock = NOW + 15 * 60_000;
+    await closeLaneSharesForAccount({ DB: data.DB }, GUEST);
+    await closeLaneSharesForAccount({ DB: data.DB }, GIVER);
+    expect(data.row("select count(*) as n from lane_shares").n).toBe(0);
   });
 });

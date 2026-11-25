@@ -285,6 +285,31 @@ POST /cloud/internal/event-wake   { topic }   header x-ade-event-wake-secret
 Without `CLOUD_EVENT_WAKE_SECRET` (see "Secrets"), no event wakes a resting
 cloud computer.
 
+### Deleted accounts
+
+Rows here carry the raw account ID, and the relay hears of no account
+deletion itself. On each cron run (`src/accountPurge.ts`) it asks both account
+directories for the accounts deleted in the last day, with the same secret:
+
+```text
+GET /cloud/internal/deleted-accounts   header x-ade-event-wake-secret
+```
+
+- For each account, one batch deletes its custom hooks and their events, its
+  GitHub, Linear and Cursor events, its Cursor secrets and its Linear agent
+  memberships. Shared rows stay with the account cleared: repositories and
+  Linear workspaces (another account can link them), agent sessions, and
+  agent installs (no runner means replies).
+- An account stays listed for a day. The relay purges it on the first run
+  after its deletion, and again on the first run after each time the
+  directory runs the deletion again (15 min, 75 min, 3 h, and 23 h, before
+  the account leaves the list). So rows that a sign-in token still valid
+  wrote after the deletion go too. One run purges at most 40 accounts; the
+  rest wait for the next run.
+- A directory that does not answer is skipped with a warning and asked next
+  run. A refusal from the production directory, and a failed purge, are
+  reported after the other accounts ran.
+
 ## Beta timer
 
 The cron (`17,47 * * * *`) also starts ADE's Beta workflow
@@ -337,7 +362,7 @@ Do not commit these values.
 | `LINEAR_APP_WEBHOOK_SECRET` | Optional. ADE Linear OAuth app deliveries. |
 | `LINEAR_AGENT_TOKEN_KEY` | Optional. The Linear agent. |
 | `CURSOR_WEBHOOK_SECRET` | Optional. Cursor deliveries. |
-| `CLOUD_EVENT_WAKE_SECRET` | Optional. ADE Cloud event wakes; same value on both account directories. |
+| `CLOUD_EVENT_WAKE_SECRET` | Optional. ADE Cloud event wakes and the list of deleted accounts; same value on both account directories. Without it, no deleted account leaves this relay. |
 | `GITHUB_BETA_DISPATCH_TOKEN` | Optional. The Beta timer. |
 | `RELAY_ACCESS_TOKEN` | Only for self-hosted legacy project tokens. |
 
@@ -391,7 +416,7 @@ The Worker writes single-line JSON to `npx wrangler tail`. ADE Cloud lines:
 
 | File | What |
 |---|---|
-| `src/index.ts` | The Worker entry and the cron (Beta timer, forward retries). |
+| `src/index.ts` | The Worker entry and the cron (Beta timer, forward retries, deleted accounts). |
 | `src/relay.ts` | Routing, GitHub deliveries and reads, the access cache, account integrations. |
 | `src/repoEventsDurableObject.ts` | Wake-up sockets for repositories and topics. |
 | `src/linearEvents.ts` | Linear deliveries, organization registration and reads. |
@@ -399,6 +424,7 @@ The Worker writes single-line JSON to `npx wrangler tail`. ADE Cloud lines:
 | `src/cursorEvents.ts` | Cursor Cloud deliveries. |
 | `src/customHooks.ts` | Custom webhook URLs and ADE Cloud forwards. |
 | `src/cloudEventWakes.ts` | ADE Cloud event wakes. |
+| `src/accountPurge.ts` | Purges deleted accounts, listed by the account directories. |
 | `src/betaTimer.ts` | The Beta timer. |
 | `src/auth.ts` | Account token checks. |
 | `src/shared.ts` | The Worker env and shared helpers. |

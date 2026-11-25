@@ -28,15 +28,13 @@
 
 import type { RelayAccountPurgeEnv } from "./activityRelay";
 import { alertSignupBurst, recordSignupIp, signupClientIp } from "./cloud/abuseSignals";
-import { deleteCloudAccount } from "./cloud/accountDeletion";
-import { closeLaneSharesForAccount } from "./laneShares/routes";
-import { deleteAccountProjects } from "./accountProjects/store";
-import { deleteGithubAppAccount, type GithubAppEnv } from "./githubApp/grants";
+import { eraseAccountData, recordAccountErasure } from "./accountErasure";
+import type { GithubAppEnv } from "./githubApp/grants";
 import { reportCloudFailure } from "./cloud/store";
 import { hasInternalFlag } from "./cloud/email";
 import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
 import { verifyWebhookSignature } from "./webhookSignature";
-import { deleteWelcomeEmailRows, scheduleWelcomeEmail } from "./welcomeEmail";
+import { scheduleWelcomeEmail } from "./welcomeEmail";
 
 /** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
 export type SignupAnalyticsEnv = RelayAccountPurgeEnv & Partial<Omit<GithubAppEnv, "DB">> & {
@@ -177,42 +175,18 @@ export async function handleSignupAnalyticsRequest(
   if (!userId || userId.length > 512) return json(400, { error: "bad_user" });
 
   if (payload.type === "user.deleted" && env.DB) {
-    // Before the capture, so a failure here asks Clerk to deliver again. Lane
-    // shares first: one D1 write that must not wait on the provider below.
+    // Before the capture, so a failure here asks Clerk to deliver again. The
+    // record first: the minute cron runs the deletion again until no token
+    // from before it works (`accountErasure.ts`), even if every delivery fails.
+    const erasureEnv = { ...env, DB: env.DB };
     try {
-      await closeLaneSharesForAccount({ DB: env.DB }, userId);
+      await recordAccountErasure(env.DB, userId, Date.now());
     } catch (error) {
-      reportCloudFailure("lane_share.account_close_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
-      return json(502, { error: "lane_share_close_failed" });
+      reportCloudFailure("account.erasure_record_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+      return json(502, { error: "erasure_record_failed" });
     }
-    // The getting-started email's row and opt-out: D1 only, safe to repeat.
-    try {
-      await deleteWelcomeEmailRows(env.DB, userId);
-    } catch (error) {
-      reportCloudFailure("welcome_email.account_delete_failed", { message: error instanceof Error ? error.message : "unknown" }, "signup");
-      return json(502, { error: "welcome_email_delete_failed" });
-    }
-    // The project list (folder paths included): D1 only, safe to repeat.
-    try {
-      await deleteAccountProjects(env.DB, userId);
-    } catch (error) {
-      reportCloudFailure("account_project.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "account_projects");
-      return json(502, { error: "account_project_delete_failed" });
-    }
-    // The GitHub App grant: its token is deleted at GitHub where the secrets
-    // allow (best effort), then the rows go. D1 only decides the answer.
-    try {
-      await deleteGithubAppAccount({ ...env, DB: env.DB } as GithubAppEnv, userId);
-    } catch (error) {
-      reportCloudFailure("github_app.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" }, "github_app");
-      return json(502, { error: "github_app_delete_failed" });
-    }
-    try {
-      await deleteCloudAccount({ ...env, DB: env.DB }, userId);
-    } catch (error) {
-      reportCloudFailure("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
-      return json(502, { error: "cloud_delete_failed" });
-    }
+    const failure = await eraseAccountData(erasureEnv, userId);
+    if (failure) return json(502, failure);
   }
   // The sign-up's address, hashed, for the daily report's burst alarm (`cloud/abuseSignals.ts`). Never fails the webhook.
   if (payload.type === "user.created" && env.DB) {

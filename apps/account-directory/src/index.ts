@@ -3,6 +3,7 @@ import { createComputerSettled, forkComputerSettled, handleCloudRequest, isCloud
 import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/automations";
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
+import { runAccountErasureRepeats } from "./accountErasure";
 import { pruneSponsored, syncAllSmallRates } from "./cloud/gravity";
 import { expireAccountTests } from "./cloud/ownerAccounts";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
@@ -212,6 +213,10 @@ export default Sentry.withSentry(sentryOptions, {
         settle("model_registry", () => runModelRegistryCron(env)),
         // Jev bonus: per-account day counts past a week.
         settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
+        // Deleted accounts: the deletion runs again at 15 min, 75 min, 3 h and
+        // 24 h, for writes by a sign-in token still valid (`accountErasure.ts`).
+        // One indexed read when none is due.
+        settle("account_erasures", () => runAccountErasureRepeats(env, Date.now())),
         // Lane shares: clock-derived states written, rows closed 90 days ago
         // deleted, invite budget rows past a week. Bounded per tick.
         settle("lane_shares", () => cleanupLaneShares(env)),

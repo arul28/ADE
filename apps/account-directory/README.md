@@ -1143,14 +1143,24 @@ reconcile (`scripts/analytics/reconcile-signups.mjs`,
 "Sign-up (server-side)".
 
 Before its event, a `user.deleted` deletes what the account server keeps for
-the account (`signupAnalytics.ts`, then `cloud/accountDeletion.ts`). The
-machine list and the computers' logs go too (`forgetDeletedAccountComputers`).
-Some rows stay under the one-way hash `deleted:<sha256>`: the anti-abuse
-claims, blocks and referrals, and the computers' usage and cost rows for the
-cost report. The `cloud_accounts` row stays under the account ID, marked
-deleted, so the minute cron deletes a computer whose create was still running.
-The privacy policy's Retention section lists the kept rows; change it with
-this code.
+the account (`accountErasure.ts`: lane shares, the getting-started email,
+projects, the GitHub App grant, then `cloud/accountDeletion.ts`, which ends
+with the push relay's purge). The machine list and the computers' logs go too
+(`forgetDeletedAccountComputers`). Some rows stay under the one-way hash
+`deleted:<sha256>`: the anti-abuse claims, blocks and referrals, and the
+computers' usage and cost rows for the cost report. The `cloud_accounts` row
+stays under the account ID, marked deleted, so the minute cron deletes a
+computer whose create was still running.
+
+Tokens are checked offline, so a computer still signed in can write again
+until its token expires (about an hour for a device sign-in). The webhook
+records the account in `account_erasures` first, and the minute cron runs the
+whole deletion again at 15 min, 75 min, 3 h and 24 h; the row goes after the
+last run. The webhook relay reads that list (`GET
+/cloud/internal/deleted-accounts`, secret `CLOUD_EVENT_WAKE_SECRET`) on each
+cron run after the deletion and after each repeat, and purges its own rows
+for each account. The privacy
+policy's Retention section lists what stays; change it with this code.
 
 ## Sentry
 
@@ -1211,7 +1221,8 @@ To set up either one:
    - `CLOUD_CHAT_MASTER_KEY` (saved copies, the queue, the per-computer free
      plan key) and `CLOUD_LAUNCH_JOIN_KEY` (the server launcher).
    - `RESEND_API_KEY` and `CLOUD_ALERT_EMAIL` (else `cloud.email_skipped`).
-   - `CLOUD_EVENT_WAKE_SECRET`, the same value on the webhook relay.
+   - `CLOUD_EVENT_WAKE_SECRET`, the same value on the webhook relay. It
+     also lets the webhook relay read the list of deleted account IDs.
    - `CLOUD_OWNER_TOKEN`, and the Stripe secrets.
 7. Deploy with `npm run deploy:production` (or `npm run deploy` for
    development). Each script checks only its own environment's configuration

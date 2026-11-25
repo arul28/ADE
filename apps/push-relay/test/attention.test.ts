@@ -7429,6 +7429,38 @@ describe("account deletion purge", () => {
     `).run(userId);
   }
 
+  /** The account's alerts, machine links, phones and push state, and the legacy push rows of a machine it claimed. */
+  const ATTENTION_TABLES = [
+    "attention_items", "attention_tombstones", "attention_revisions", "attention_machine_links", "attention_revoked_machines",
+    "attention_devices", "attention_device_ownership", "attention_activity_tokens", "attention_activity_state",
+    "attention_presence", "attention_preferences", "attention_delivery_receipts", "attention_alert_log",
+  ];
+  function seedAttentionRows(database: SqliteD1Database, userId: string, machineKey: string): void {
+    const at = "2026-11-10T00:00:00.000Z";
+    const run = (sql: string, ...values: unknown[]) => database.native.prepare(sql).run(...values);
+    // Device ids are unique across accounts.
+    const phone = `phone-${machineKey}`;
+    run("insert into attention_items (user_id, item_id, machine_key, source_revision, account_revision, fingerprint, event_kind, phase, payload_json, updated_at) values (?, 'item-1', ?, 1, 1, 'fp', 'approval', 'open', '{}', ?)", userId, machineKey, at);
+    run("insert into attention_tombstones (user_id, item_id, source_revision, account_revision, deleted_at) values (?, 'item-0', 1, 1, ?)", userId, at);
+    run("insert into attention_revisions (user_id, revision, updated_at) values (?, 2, ?)", userId, at);
+    run("insert into attention_machine_links (machine_key, user_id, machine_name, last_seen_at, linked_at) values (?, ?, 'Studio', ?, ?)", machineKey, userId, at, at);
+    run("insert into attention_revoked_machines (user_id, machine_key, revoked_at) values (?, 'removed-machine', ?)", userId, at);
+    run(`insert into attention_devices (user_id, device_id, apns_token, bundle_id, aps_environment, device_name, preferences_json, registered_at, updated_at, lease_expires_at) values (?, '${phone}', ?, 'com.ade.ios', 'production', 'iPhone', '{}', ?, ?, ?)`, userId, `apns-${machineKey}`, at, at, at);
+    run("insert into attention_device_ownership (device_id, user_id, ownership_epoch, active, updated_at) values (?, ?, 1, 1, ?)", `phone-${userId}`, userId, at);
+    run(`insert into attention_activity_tokens (user_id, device_id, activity_id, token, updated_at) values (?, '${phone}', 'activity-1', 'token', ?)`, userId, at);
+    run(`insert into attention_activity_state (user_id, device_id, activity_id, updated_at) values (?, '${phone}', 'activity-1', ?)`, userId, at);
+    run(`insert into attention_presence (user_id, device_id, payload_json, observed_at) values (?, '${phone}', '{}', ?)`, userId, at);
+    run("insert into attention_preferences (user_id, payload_json, updated_at) values (?, '{}', ?)", userId, at);
+    run(`insert into attention_delivery_receipts (user_id, item_id, device_id, state, delivered_at) values (?, 'item-1', '${phone}', 'delivered', ?)`, userId, at);
+    run(`insert into attention_alert_log (user_id, alert_fingerprint, device_id, delivered_at) values (?, 'fp', '${phone}', ?)`, userId, at);
+    run("insert into machines (machine_key, secret, created_at, last_seen_at, account_user_id) values (?, 'secret', ?, ?, ?)", machineKey, at, at, userId);
+    run(`insert into device_registrations (machine_key, device_id, apns_token, bundle_id, aps_environment, device_name, registered_at, updated_at) values (?, '${phone}', ?, 'com.ade.ios', 'production', 'iPhone', ?, ?)`, machineKey, `legacy-${machineKey}`, at, at);
+    run(`insert into live_activity_tokens (machine_key, device_id, activity_id, token, updated_at) values (?, '${phone}', 'activity-1', 'token', ?)`, machineKey, at);
+    run("insert into publish_suppression (machine_key, suppression_key, content_hash, published_at) values (?, 'key', 'hash', ?)", machineKey, at);
+  }
+  const legacyRows = (database: SqliteD1Database, machineKey: string) => ["device_registrations", "live_activity_tokens", "publish_suppression"]
+    .map((table) => Number(row<{ n: number }>(database, `select count(*) as n from ${table} where machine_key = ?`, machineKey)?.n ?? 0));
+
   const purge = (database: SqliteD1Database, env: Omit<Partial<AttentionRelayEnv>, "DB">, headers: Record<string, string>) => {
     const request = new Request(`https://push.example/directory/accounts/${CLERK_USER}`, { method: "DELETE", headers });
     return handleDirectoryAccountPurge(request, makeAttentionEnv(database, { DIRECTORY_AUTH_SECRET, ...env }), new URL(request.url));
@@ -7443,6 +7475,7 @@ describe("account deletion purge", () => {
       const secondaryKey = await attentionAccountId(SECONDARY, CLERK_USER);
       const otherKey = await attentionAccountId(PRIMARY, "user_kept");
       for (const key of [primaryKey, secondaryKey, otherKey]) seedAccountRows(database, key);
+      for (const [key, machineKey] of [[primaryKey, "machine-a"], [otherKey, "machine-kept"]] as const) seedAttentionRows(database, key, machineKey);
 
       // Without the directory's secret, nothing is deleted.
       expect((await purge(database, issuers, {}))?.status).toBe(403);
@@ -7461,6 +7494,13 @@ describe("account deletion purge", () => {
       for (const table of ["account_vault_items", "account_settings", "password_items", "password_keys", "password_key_releases"]) {
         expect(count(database, table, otherKey)).toBe(1);
       }
+      // Its alerts, machine names, phones and push tokens go too; its machine's legacy push rows
+      // go and the machine is no longer claimed. Another account's stay.
+      expect(ATTENTION_TABLES.filter((table) => count(database, table, primaryKey) > 0)).toEqual([]);
+      expect(ATTENTION_TABLES.filter((table) => count(database, table, otherKey) === 0)).toEqual([]);
+      expect(legacyRows(database, "machine-a")).toEqual([0, 0, 0]);
+      expect(legacyRows(database, "machine-kept")).toEqual([1, 1, 1]);
+      expect(row<{ account_user_id: string | null }>(database, "select account_user_id from machines where machine_key = ?", "machine-a")?.account_user_id).toBeNull();
     } finally {
       database.close();
     }

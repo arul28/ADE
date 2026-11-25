@@ -68,6 +68,17 @@ export async function routeEventWakeSubscription(request: Request, env: CloudEnv
   return json({ topics } satisfies CloudEventWakesResult);
 }
 
+/**
+ * Whether a request carries the webhook relay's shared secret. `null`: no
+ * secret is set on this server, so every such route answers 503, never open.
+ */
+export function presentsEventWakeSecret(request: Request, env: { CLOUD_EVENT_WAKE_SECRET?: string }): boolean | null {
+  const expected = env.CLOUD_EVENT_WAKE_SECRET?.trim();
+  if (!expected) return null;
+  const presented = request.headers.get(CLOUD_EVENT_WAKE_HEADER)?.trim() ?? "";
+  return presented !== "" && sameSecret(presented, expected);
+}
+
 /** Constant time: the secret's length is public, its bytes are not. */
 function sameSecret(presented: string, expected: string): boolean {
   const left = new TextEncoder().encode(presented);
@@ -88,10 +99,9 @@ export function isInternalEventWakeRequest(path: string): boolean {
  * Unset secret: refused, never open.
  */
 export async function handleInternalEventWake(request: Request, env: EventWakeEnv, wake: EventWakeComputer, now: number): Promise<Response> {
-  const expected = env.CLOUD_EVENT_WAKE_SECRET?.trim();
-  if (!expected) return fail("unavailable", "Event wakes are not set up on this server.", 503);
-  const presented = request.headers.get(CLOUD_EVENT_WAKE_HEADER)?.trim() ?? "";
-  if (request.method !== "POST" || !presented || !sameSecret(presented, expected)) return fail("not_found", "ADE Cloud has no such route.", 404);
+  const proven = presentsEventWakeSecret(request, env);
+  if (proven === null) return fail("unavailable", "Event wakes are not set up on this server.", 503);
+  if (request.method !== "POST" || !proven) return fail("not_found", "ADE Cloud has no such route.", 404);
   const body = await readJson(request);
   const topic = typeof body?.topic === "string" ? body.topic : "";
   if (!TOPIC_PATTERN.test(topic)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
