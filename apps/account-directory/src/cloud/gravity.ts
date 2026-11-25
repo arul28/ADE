@@ -242,6 +242,14 @@ async function readConsent(env: GravityEnv, userId: string): Promise<ConsentRow 
 }
 
 /**
+ * Whether this person is told cards are on (not asked): nothing to show yet,
+ * they are where cards start on, and they never said no. Someone who said no
+ * is asked when the no runs out, never turned back on by a notice.
+ */
+const startsOnNow = (env: GravityEnv, consent: ConsentRow | null, shown: CloudSponsoredConsent | null, who: SponsoredRequester): boolean =>
+  shown === null && consent?.consent !== "declined" && startsOnFor(env, who);
+
+/**
  * Whether the account's yes lets cards go to Gravity for this person now. An
  * answer always does; the yes saved with the notice only where cards start
  * on (the person travelled, or turned on Global Privacy Control: they are
@@ -283,7 +291,7 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     ads: reason == null,
     consent: answer,
     // Not asked where cards start on: the client tells the person they are on, and saves that (`PUT /consent` `notice`).
-    ...(answer === null && reason == null && startsOnFor(env, who) ? { startsOn: true } : {}),
+    ...(startsOnNow(env, consent, answer, who) && reason == null ? { startsOn: true } : {}),
     test: !switches.live,
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
@@ -775,7 +783,8 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   if (choice === "notice") {
     if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so ADE asks first.", 409);
     before = await readConsent(env, userId);
-    if ((await shownAnswer(env, before, who, now)) !== null) return answered();
+    // An answer that holds, or any no (even one run out), stands: the person is asked, never told.
+    if (!startsOnNow(env, before, await shownAnswer(env, before, who, now), who)) return answered();
   }
   let emailHash: string | null = null;
   if (consent === "granted") {
@@ -820,7 +829,14 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   const account = await loadAccount(env, userId, now);
   const who = sponsoredRequester(request);
   const country = who.country;
-  if ((await blockedReason(env, account, country)) || !yesHolds(env, await readConsent(env, userId), who)) return json({ ok: false });
+  if ((await blockedReason(env, account, country)) || !yesHolds(env, await readConsent(env, userId), who)) {
+    // The latest look at this computer doesn't allow cards (the person travelled, or their browser
+    // now sends Global Privacy Control): an earlier look no longer lets the Index answer its agents.
+    if (typeof body.instanceId === "string") {
+      await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ? and instance_id = ?").bind(userId, body.instanceId).run();
+    }
+    return json({ ok: false });
+  }
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return json({ ok: false });
   // Written only while the answer is still yes, in the same statement: a "no" that lands meanwhile wins.

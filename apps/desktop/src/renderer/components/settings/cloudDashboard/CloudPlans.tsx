@@ -436,7 +436,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                   {!sponsoredOn
                     ? `Off. If you turn it on, ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
                     : sponsoredToggle.ads
-                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} ${SPONSORED_SETTINGS_WHAT}`
+                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
                 </small>
                 {sponsoredToggle.smallNeedsCards ? (

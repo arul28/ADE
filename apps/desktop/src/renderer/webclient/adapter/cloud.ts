@@ -233,6 +233,18 @@ export function createWebCloudNamespace(
     };
   };
 
+  /**
+   * Sponsored cards follow where this browser is (its country, its Global
+   * Privacy Control), so the page reads them itself: a computer's answer
+   * says where that computer is, and would tell a person cards are on (or
+   * ask) by the wrong country. A failed read shows none.
+   */
+  const withOwnSponsored = async (result: CloudMachinesResult): Promise<CloudMachinesResult> => {
+    if (!result.account?.sponsored) return result;
+    const own = await billing.readAccount().catch(() => null);
+    return { ...result, account: { ...result.account, sponsored: own?.sponsored } };
+  };
+
   const listMachines = async (): Promise<CloudMachinesResult | null> => {
     if (!(await access())) return null;
     if (!computerOnline()) return await accountOnly();
@@ -249,7 +261,8 @@ export function createWebCloudNamespace(
       throw error;
     }
     // A brain too old to answer still leaves the plan and hours to the server.
-    return machinesResultOf(answer) ?? await accountOnly();
+    const fromComputer = machinesResultOf(answer);
+    return fromComputer ? await withOwnSponsored(fromComputer) : await accountOnly();
   };
 
   const getStatus = async (): Promise<CloudStatus | null> => {

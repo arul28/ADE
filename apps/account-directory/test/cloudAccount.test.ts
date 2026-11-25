@@ -5488,7 +5488,7 @@ describe("sponsored cards", () => {
     expect(computer(harness).multiplier_milli).toBe(0);
   });
 
-  it("where cards start on (the US), the person is told and can turn them off: the notice's yes holds only there, a no holds a year there and two weeks elsewhere", async () => {
+  it("where cards start on (the US), the person is told and can turn them off: the notice's yes holds only there, a no holds a year there and two weeks elsewhere, and a no is never turned back on by a notice", async () => {
     const from = (country: string, method: string, path: string, body?: Row, headers: Record<string, string> = {}) => {
       const request = new Request(`https://directory.test${path}`, {
         method,
@@ -5519,6 +5519,11 @@ describe("sponsored cards", () => {
     expect((await state("GB"))?.consent).toBeNull();
     expect(await (await from("GB", "POST", "/cloud/sponsored/ad", adBody({ turnId: "turn-2" }))).json()).toEqual({ ad: null, reason: "consent" });
     expect(gravityCalls).toHaveLength(1);
+    // A look from a browser that now sends Global Privacy Control: the earlier look no longer lets the Index answer its agents.
+    const seen = (headers?: Record<string, string>) => from("US", "POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE }, headers).then((response) => response.json());
+    expect(await seen()).toEqual({ ok: true });
+    expect(await seen({ "sec-gpc": "1" })).toEqual({ ok: false });
+    expect(harness.rows("select instance_id from cloud_sponsored_viewers where user_id = ?", OWNER)).toEqual([]);
 
     // Turned off in the US: Small uses credits, a later notice never overwrites it, and it holds a year, whatever the switch does.
     expect(await choose("US", "declined")).toBe(200);
@@ -5528,8 +5533,15 @@ describe("sponsored cards", () => {
     harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + DAY);
     clock += 364 * DAY;
     expect((await state("US"))?.consent).toBe("declined");
+    // A year on the person is asked again, never told: a notice doesn't turn a no back on.
     clock += DAY;
-    expect(await state("US")).toMatchObject({ consent: null, startsOn: true });
+    expect(await state("US")).toMatchObject({ consent: null });
+    expect((await state("US"))?.startsOn).toBeUndefined();
+    expect(await choose("US", "notice")).toBe(200);
+    expect(saved()).toEqual({ consent: "declined", source: "answer", country: "US" });
+    // So is a no saved before answers kept their country (asked again after two weeks).
+    harness.exec("update cloud_sponsored_consent set country = null, decided_at = ? where user_id = ?", clock - 15 * DAY, OWNER);
+    expect((await state("US"))?.startsOn).toBeUndefined();
     // A no given in the UK is asked again after two weeks, or at once after the switch changes.
     expect(await choose("GB", "declined")).toBe(200);
     clock += 14 * DAY;

@@ -314,12 +314,11 @@ struct CloudSponsoredCard: View {
   }
 
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {
-    // Before the first yes, the toggle says everything the one-time question does.
-    guard sponsored.granted || sponsored.toldOn else {
-      return "Off. If you turn it on, a Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
-    }
+    // On or off, the row says everything the one-time question (or the notice) does.
+    let what = "A Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
+    guard sponsored.granted || sponsored.toldOn else { return "Off. If you turn it on: \(what)" }
     return sponsored.ads
-      ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
+      ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") \(what)"
       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
   }
 
