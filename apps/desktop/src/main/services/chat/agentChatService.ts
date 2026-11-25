@@ -73833,7 +73833,7 @@ export function createAgentChatService(args: {
           recurring: true,
           ...(routine.reason ? { reason: routine.reason } : {}),
           ...(routine.timeZone ? { timeZone: routine.timeZone } : {}),
-        }, { check: routine.check ?? null });
+        }, { check: routine.check ?? null, baseline: false });
         if (routine.paused) {
           await setScheduledWorkItemPaused({ sessionId: cto.sessionId, scheduleId: created.item.id, paused: true }).catch((error: unknown) => {
             logger.warn("agent_chat.cto_routine_pause_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -74171,9 +74171,13 @@ export function createAgentChatService(args: {
    * remote devices and `ade` callers reach this with args alone. Only the
    * CTO's scheduleWork tool and its routine restore pass one.
    */
+  /** A routine's check runs in the project folder, signed in to GitHub the way a project chat is. */
+  const runRoutineCheck = (command: string) =>
+    runScheduledWorkCheck(command, projectRoot, { extraEnv: getSessionGithubEnv });
+
   const createScheduledWork = async (
     args: AgentChatCreateScheduledWorkArgs,
-    internal: { check?: string | null } = {},
+    internal: { check?: string | null; baseline?: boolean } = {},
   ): Promise<AgentChatCreateScheduledWorkResult> => {
     await scheduledWorkReady;
     if (!scheduledWorkScheduler) {
@@ -74224,7 +74228,9 @@ export function createAgentChatService(args: {
       throw new Error(`Scheduled work check must be ${SCHEDULED_WORK_CHECK_MAX_CHARS} characters or fewer.`);
     }
     // The first run is the baseline, so the first fire wakes only on a change.
-    const baseline = check ? await runScheduledWorkCheck(check, projectRoot) : null;
+    // A restore skips it: the scheduler's first run is the baseline then, so a
+    // routine that is off runs nothing and a failure still wakes once.
+    const baseline = check && internal.baseline !== false ? await runRoutineCheck(check) : null;
 
     const reason = args.reason?.trim();
     const id = `action:${normalizedSessionId}:${randomUUID()}`;
@@ -74246,8 +74252,8 @@ export function createAgentChatService(args: {
       status: "scheduled",
       lateFlag: false,
       durable: true,
+      ...(check ? { check } : {}),
       ...(check && baseline ? {
-        check,
         ...(baseline.outputHash ? { checkHash: baseline.outputHash } : {}),
         // The caller sees a failing first run in this result: that is its one wake.
         ...(baseline.ok ? {} : { checkFailing: true }),
@@ -84385,7 +84391,7 @@ export function createAgentChatService(args: {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
     },
     runCheck: async (schedule) => {
-      const run = await runScheduledWorkCheck(schedule.check ?? "", projectRoot);
+      const run = await runRoutineCheck(schedule.check ?? "");
       logger.info("agent_chat.scheduled_work_check_ran", {
         scheduleId: schedule.id,
         sessionId: schedule.sessionId,
@@ -84440,7 +84446,10 @@ export function createAgentChatService(args: {
         try {
           const sent = await ptyService.sendToSession({
             sessionId: schedule.sessionId,
-            text: schedule.prompt,
+            // A CLI gets the same check verdict a chat does.
+            text: context.check && schedule.check
+              ? `${scheduledWorkCheckWakeText(schedule.check, context.check)}\n\n${schedule.prompt}`
+              : schedule.prompt,
           });
           // sendToSession relaunches an ended CLI. The parent card closed when
           // that process exited, so a resume has to reopen it the same way the

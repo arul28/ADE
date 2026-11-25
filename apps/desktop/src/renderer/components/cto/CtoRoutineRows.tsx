@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alarm, ArrowsClockwise, Binoculars, CalendarBlank, CloudSlash, DotsThree, Lightning, PauseCircle, Trash } from "@phosphor-icons/react";
 import type { AgentChatScheduledWorkItem, OpenProjectBinding } from "../../../shared/types";
 import { useMinuteClock } from "../../hooks/useMinuteClock";
@@ -145,7 +145,7 @@ function describeAgo(iso: string | undefined, nowMs: number): string | null {
  * How a routine's check last went: "failing", "no change 4 min ago" (the last
  * check woke nothing), or "checked 4 min ago" (it woke the routine's last run).
  */
-export function describeRoutineCheck(item: AgentChatScheduledWorkItem, nowMs: number): string | null {
+function describeRoutineCheck(item: AgentChatScheduledWorkItem, nowMs: number): string | null {
   if (item.checkFailing) return "failing";
   const checkedAt = item.lastCheckedAt ? Date.parse(item.lastCheckedAt) : Number.NaN;
   const ago = describeAgo(item.lastCheckedAt, nowMs);
@@ -174,7 +174,7 @@ type RoutineNote = { text: string; tone?: "crit" | "accent" };
  * first: it is running, its check is failing, what came of the last run, or
  * that it wakes only on a change.
  */
-export function routineNote(item: AgentChatScheduledWorkItem, nowMs: number, running: boolean): RoutineNote | null {
+function routineNote(item: AgentChatScheduledWorkItem, nowMs: number, running: boolean): RoutineNote | null {
   if (running) return { text: "Running now", tone: "accent" };
   const check = item.check?.trim();
   if (check && item.checkFailing) return { text: "Check failing · quiet until it passes", tone: "crit" };
@@ -276,63 +276,63 @@ function RoutineRow({
             </span>
           ) : null}
         </button>
-      {pending ? (
-        <div className="ade-cto-routine-controls">
-          <SettingsToggle
-            label={rowPaused ? `Turn on ${title}` : `Turn off ${title}`}
-            checked={!rowPaused}
-            disabled={busy}
-            onChange={(on) => onPause(!on)}
-          />
-          {canRunNow || item.cancellable ? (
-            <>
-              <button
-                ref={moreRef}
-                type="button"
-                className="kit-icon-btn ade-cto-routine-more"
-                aria-label={`More for ${title}`}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
-                data-open={menuOpen ? "true" : undefined}
-                disabled={busy}
-                onClick={() => setMenuOpen((value) => !value)}
-              >
-                <DotsThree size={16} weight="bold" />
-              </button>
-              <AnchoredMenu
-                open={menuOpen}
-                anchorRef={moreRef}
-                onClose={() => setMenuOpen(false)}
-                placement="bottom-end"
-                zIndex={Z_LAYERS.popover}
-                className={cn(MENU_SURFACE_CLASS, MENU_WIDTH_CLASS)}
-                role="menu"
-              >
-                {canRunNow ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={MENU_ITEM}
-                    onClick={() => { setMenuOpen(false); onRunNow(); }}
-                  >
-                    <Lightning size={14} /> Run now
-                  </button>
-                ) : null}
-                {item.cancellable ? (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className={cn(MENU_ITEM, "text-[var(--kit-crit)]")}
-                    onClick={() => { setMenuOpen(false); onCancel(); }}
-                  >
-                    <Trash size={14} /> Cancel routine
-                  </button>
-                ) : null}
-              </AnchoredMenu>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+        {pending ? (
+          <div className="ade-cto-routine-controls">
+            <SettingsToggle
+              label={rowPaused ? `Turn on ${title}` : `Turn off ${title}`}
+              checked={!rowPaused}
+              disabled={busy}
+              onChange={(on) => onPause(!on)}
+            />
+            {canRunNow || item.cancellable ? (
+              <>
+                <button
+                  ref={moreRef}
+                  type="button"
+                  className="kit-icon-btn ade-cto-routine-more"
+                  aria-label={`More for ${title}`}
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  data-open={menuOpen ? "true" : undefined}
+                  disabled={busy}
+                  onClick={() => setMenuOpen((value) => !value)}
+                >
+                  <DotsThree size={16} weight="bold" />
+                </button>
+                <AnchoredMenu
+                  open={menuOpen}
+                  anchorRef={moreRef}
+                  onClose={() => setMenuOpen(false)}
+                  placement="bottom-end"
+                  zIndex={Z_LAYERS.popover}
+                  className={cn(MENU_SURFACE_CLASS, MENU_WIDTH_CLASS)}
+                  role="menu"
+                >
+                  {canRunNow ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={MENU_ITEM}
+                      onClick={() => { setMenuOpen(false); onRunNow(); }}
+                    >
+                      <Lightning size={14} /> Run now
+                    </button>
+                  ) : null}
+                  {item.cancellable ? (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={cn(MENU_ITEM, "text-[var(--kit-crit)]")}
+                      onClick={() => { setMenuOpen(false); onCancel(); }}
+                    >
+                      <Trash size={14} /> Cancel routine
+                    </button>
+                  ) : null}
+                </AnchoredMenu>
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {settings ? (
         <div className="ade-cto-routine-details" id={detailsId} aria-hidden={!open}>
@@ -526,19 +526,19 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
   const renderList = (rows: AgentChatScheduledWorkItem[]) => (
     <ul className={cn("ade-cto-routine-list", settings && "ade-modern-rows")} data-variant={variant}>
       {rows.map((item) => (
-        <React.Fragment key={item.id}>
-          <RoutineRow
-            item={item}
-            variant={variant}
-            nowMs={nowMs}
-            busy={busyId === item.id}
-            fresh={freshIds.has(item.id)}
-            running={runningIds.has(item.id) || item.status === "fired"}
-            onPause={(paused) => pause(item, paused)}
-            onRunNow={() => runNow(item)}
-            onCancel={() => void cancel(item)}
-          />
-        </React.Fragment>
+        <RoutineRow
+          key={item.id}
+          item={item}
+          variant={variant}
+          nowMs={nowMs}
+          busy={busyId === item.id}
+          fresh={freshIds.has(item.id)}
+          // A one-shot that never reported done stays "fired"; only a cron's fired is a run in progress.
+          running={runningIds.has(item.id) || (item.status === "fired" && item.kind === "cron")}
+          onPause={(paused) => pause(item, paused)}
+          onRunNow={() => runNow(item)}
+          onCancel={() => void cancel(item)}
+        />
       ))}
     </ul>
   );

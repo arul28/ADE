@@ -113,12 +113,6 @@ export type ChatScheduledWorkCheckDecision = {
   checkFailing: boolean;
 };
 
-/**
- * Wake only on news. A passing check wakes when its output hash differs from
- * the stored one. A failing check wakes once, then stays quiet until it passes
- * again. The stored hash survives the failure, so a pass that brings back the
- * output from before it is not news either.
- */
 type ChatScheduledWorkCheckState = Pick<ChatScheduledWorkRecord, "checkHash" | "checkFailing" | "lastCheckedAt">;
 
 function snapshotCheckState(record: ChatScheduledWorkRecord): ChatScheduledWorkCheckState {
@@ -134,10 +128,21 @@ function restoreCheckState(record: ChatScheduledWorkRecord, state: ChatScheduled
   else delete record.lastCheckedAt;
 }
 
+/**
+ * Wake only on news. A passing check wakes when its output hash differs from
+ * the stored one. A failing check wakes once, then stays quiet until it passes
+ * again. The stored hash survives the failure, so a pass that brings back the
+ * output from before it is not news either. A row never checked before takes
+ * its first pass as the baseline.
+ */
 export function decideScheduledWorkCheck(
-  previous: Pick<ChatScheduledWorkRecord, "checkHash" | "checkFailing">,
+  previous: Pick<ChatScheduledWorkRecord, "checkHash" | "checkFailing" | "lastCheckedAt">,
   run: Pick<ChatScheduledWorkCheckRun, "ok" | "outputHash">,
 ): ChatScheduledWorkCheckDecision {
+  // Never checked (a restored routine): a pass is only the baseline.
+  if (run.ok && run.outputHash && previous.lastCheckedAt == null && !previous.checkHash && !previous.checkFailing) {
+    return { wake: false, checkHash: run.outputHash, checkFailing: false };
+  }
   if (!run.ok || !run.outputHash) {
     const wake = previous.checkFailing !== true;
     return {
@@ -544,6 +549,28 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
+    // The check runs before the claim: a brain that dies mid-check (up to a
+    // minute) then leaves no claim behind for the others to wait on. Brains
+    // sharing a project may each run it; the claim still picks one verdict.
+    let checkRun: ChatScheduledWorkCheckRun | null = null;
+    if (schedule.kind === "cron" && schedule.check && options.runCheck) {
+      inFlight.add(scheduleId);
+      try {
+        checkRun = await options.runCheck(cloneSchedule(schedule));
+      } catch (error) {
+        checkRun = { ok: false, detail: error instanceof Error ? error.message : String(error) };
+      } finally {
+        inFlight.delete(scheduleId);
+      }
+      // A cancel, a pause or a replacement can land while the check runs; it wins.
+      if (disposed || schedules.get(scheduleId) !== schedule || schedule.status !== "scheduled") return;
+      // The chat can get busy during a long check.
+      if (isDeferred(options.shouldDefer?.(cloneSchedule(schedule)))) {
+        armBusyDeferRetry(schedule);
+        return;
+      }
+    }
+
     if (options.claimFire && !options.claimFire(cloneSchedule(schedule))) {
       await followClaimOwner(schedule);
       return;
@@ -553,19 +580,8 @@ export function createChatScheduledWorkScheduler(
     let checkWake: ChatScheduledWorkCheckWake | undefined;
     // An undelivered wake must stay news for the next attempt, so its check state is put back.
     const previousCheck = snapshotCheckState(schedule);
-    if (schedule.kind === "cron" && schedule.check && options.runCheck) {
-      let run: ChatScheduledWorkCheckRun;
-      try {
-        run = await options.runCheck(cloneSchedule(schedule));
-      } catch (error) {
-        run = { ok: false, detail: error instanceof Error ? error.message : String(error) };
-      }
-      // A cancel, a pause or a replacement can land while the check runs; it wins.
-      if (disposed || schedules.get(scheduleId) !== schedule || schedule.status !== "scheduled") {
-        inFlight.delete(scheduleId);
-        options.releaseFire?.(cloneSchedule(schedule));
-        return;
-      }
+    if (checkRun) {
+      const run = checkRun;
       const decision = decideScheduledWorkCheck(schedule, run);
       // A check that wakes is stamped with the fire's own time, so a reader can
       // tell it from a later quiet one.

@@ -23,10 +23,12 @@ function tail(text: string, max = CHECK_DETAIL_CHARS): string {
  * the same PATH lane setup commands get. A brain started by launchd has only
  * `/usr/bin:/bin`, where `gh` or `npm` would not be found.
  */
-function checkEnv(): NodeJS.ProcessEnv {
+function checkEnv(extraEnv?: (env: NodeJS.ProcessEnv) => Record<string, string> | null): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   setPathEnvValue(env, augmentProcessPathWithShellAndKnownCliDirs({ env, includeInteractiveShell: true, preferShellOrder: true }));
-  return stripHostRuntimeEnv(env);
+  const stripped = stripHostRuntimeEnv(env);
+  const patch = extraEnv?.(stripped);
+  return patch ? { ...stripped, ...patch } : stripped;
 }
 
 /**
@@ -37,9 +39,14 @@ function checkEnv(): NodeJS.ProcessEnv {
 export async function runScheduledWorkCheck(
   command: string,
   cwd: string,
-  timeoutMs = SCHEDULED_WORK_CHECK_TIMEOUT_MS,
+  options: {
+    timeoutMs?: number;
+    /** Added to the env, e.g. the account's `GH_TOKEN` that chats get, so a `gh` check signs in the same way. */
+    extraEnv?: (env: NodeJS.ProcessEnv) => Record<string, string> | null;
+  } = {},
 ): Promise<ChatScheduledWorkCheckRun> {
-  const env = checkEnv();
+  const timeoutMs = options.timeoutMs ?? SCHEDULED_WORK_CHECK_TIMEOUT_MS;
+  const env = checkEnv(options.extraEnv);
   const invocation = process.platform === "win32"
     ? resolveWindowsCmdLineInvocation(command, env)
     : { command: "/bin/sh", args: ["-c", command], windowsVerbatimArguments: false };

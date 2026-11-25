@@ -4,6 +4,7 @@ import {
   type ChatScheduledWorkRecord,
   type ChatScheduledWorkState,
   createChatScheduledWorkScheduler,
+  decideScheduledWorkCheck,
 } from "./chatScheduledWorkScheduler";
 
 const START = Date.parse("2026-07-09T09:00:00.000Z");
@@ -1384,6 +1385,13 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
+  it.each([
+    ["a pass is the baseline", { ok: true, outputHash: "hash-a" }, { wake: false, checkHash: "hash-a", checkFailing: false }],
+    ["a failure still wakes once", { ok: false }, { wake: true, because: "failed", checkFailing: true }],
+  ] as const)("on a row never checked (a restored routine), %s", (_name, run, expected) => {
+    expect(decideScheduledWorkCheck({}, run)).toEqual(expected);
+  });
+
   it("keeps a wake that was never delivered as news for the retry", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -1456,6 +1464,7 @@ describe("a cron's check", () => {
     let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
     let finishCheck: (run: ChatScheduledWorkCheckRun) => void = () => undefined;
     const claims = sharedClaims();
+    const claimFire = vi.fn(claims.claimFire);
     const releaseFire = vi.fn(claims.releaseFire);
     const fire = createFireMock();
     const scheduler = createChatScheduledWorkScheduler({
@@ -1463,7 +1472,7 @@ describe("a cron's check", () => {
       saveState: (next) => { state = structuredClone(next); },
       isGlobalPaused: () => false,
       sessionState: () => "active",
-      claimFire: claims.claimFire,
+      claimFire,
       releaseFire,
       runCheck: () => new Promise((resolve) => { finishCheck = resolve; }),
       fire,
@@ -1476,7 +1485,9 @@ describe("a cron's check", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(fire).not.toHaveBeenCalled();
-    expect(releaseFire).toHaveBeenCalledTimes(1);
+    // The check runs before the claim, so there is nothing to release.
+    expect(releaseFire).not.toHaveBeenCalled();
+    expect(claimFire).not.toHaveBeenCalled();
     expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({ status: "cancelled", checkHash: "hash-a" }));
     scheduler.dispose();
   });

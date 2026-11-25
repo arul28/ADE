@@ -105,7 +105,8 @@ struct CtoRoutineRow: View {
     let value = item.check?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return value.isEmpty ? nil : value
   }
-  private var running: Bool { store.runningIds.contains(item.id) || item.status == "fired" }
+  // A one-shot that never reported done stays "fired"; only a cron's fired is a run in progress.
+  private var running: Bool { store.runningIds.contains(item.id) || (item.status == "fired" && item.kind == "cron") }
   private var failing: Bool { check != nil && item.checkFailing == true }
   private var off: Bool { !pending || ctoRoutineRowPaused(item) }
 
