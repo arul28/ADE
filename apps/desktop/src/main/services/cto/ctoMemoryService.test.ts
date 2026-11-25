@@ -228,6 +228,14 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     // A second Undo of the same change is a no-op, not a second restore.
     expect(service.undoLearned({ learnId: learned.learnId, changeId: learned.changes[0]!.id }).ok).toBe(true);
     expect(read(path.join(ctoDir, "RULES.md")).match(/Keep PRs small/g)).toHaveLength(1);
+
+    // A skill the person edited after the turn keeps their edit: Undo refuses instead of deleting it.
+    service.beginLearningTurn();
+    service.saveSkill({ name: "hotfix", description: "Ship a hotfix", body: "1. Branch from main" });
+    const added = service.finishLearningTurn({})!;
+    service.writeSkillText({ name: "hotfix", text: "1. Branch from main\n2. Announce it" });
+    expect(service.undoLearned({ learnId: added.learnId, changeId: added.changes[0]!.id })).toMatchObject({ ok: false });
+    expect(read(path.join(ctoDir, "skills", "hotfix", "SKILL.md"))).toContain("2. Announce it");
   });
 
   it("never reports the person's own edits during a turn as learned, and forgives what they write back", () => {
@@ -276,5 +284,8 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
       replaces: "iPhone 17 simulator",
     })).toMatchObject({ ok: true, replaced: "Run iOS tests on the iPhone 17 simulator — older ones lack iOS 26." });
     expect(read(path.join(ctoDir, "RULES.md"))).toBe("- Run iOS tests on the iPhone 17 Pro simulator — older ones lack iOS 26.\n");
+    // A rule that already carries its "— why" says the reason once.
+    expect(service.addRule({ rule: "Run the linter first — CI fails on lint", why: "CI fails on lint" }))
+      .toMatchObject({ ok: true, rule: "Run the linter first — CI fails on lint." });
   });
 });

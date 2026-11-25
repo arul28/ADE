@@ -84,6 +84,8 @@ type LearnedRecord = {
   changes: CtoLearnedChange[];
   /** The files the changes came from, as the turn found them. A skill the turn added is null. */
   before: Partial<Record<LineArea, string>> & { skills?: Record<string, string | null> };
+  /** Each changed skill as the turn left it (null: removed), so Undo never drops a later edit. */
+  after?: { skills?: Record<string, string | null> };
 };
 
 type UndoneItem = {
@@ -370,8 +372,16 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     replaces?: string | null;
     personAskedAgain?: boolean;
   }): CtoAddRuleResult => {
-    const rule = oneLine(input.rule, RULE_MAX_CHARS).replace(/[\s.;,]+$/, "");
-    const why = oneLine(input.why, RULE_WHY_MAX_CHARS).replace(/^(?:because|why:)\s*/i, "").replace(/[\s.;,]+$/, "");
+    let rule = oneLine(input.rule, RULE_MAX_CHARS).replace(/[\s.;,]+$/, "");
+    // A model that writes "rule — why" in `rule` too: keep the rule part, so the reason is said once.
+    const embeddedAt = rule.indexOf(RULE_WHY_SEPARATOR);
+    const embeddedWhy = embeddedAt > 0 ? rule.slice(embeddedAt + RULE_WHY_SEPARATOR.length).trim() : "";
+    if (embeddedAt > 0) rule = rule.slice(0, embeddedAt).trim();
+    const why = oneLine(input.why?.trim() ? input.why : embeddedWhy, RULE_WHY_MAX_CHARS)
+      .replace(/^(?:because|why:)\s*/i, "")
+      .replace(/[\s.;,]+$/, "")
+      // A clause after the dash: "— the user wants…", but "— CI runs…" keeps its acronym.
+      .replace(/^([A-Z])(?=[a-z])/, (letter) => letter.toLowerCase());
     if (!rule.length) return { ok: false, error: "The rule is empty." };
     if (!why.length) return { ok: false, error: "Say why in one clause: a rule without its reason gets misapplied." };
     const line = `${rule}${RULE_WHY_SEPARATOR}${why}.`;
@@ -757,15 +767,18 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     }
     const changes: Array<Omit<CtoLearnedChange, "id">> = [];
     const before: LearnedRecord["before"] = {};
+    const after: NonNullable<LearnedRecord["after"]> = {};
     for (const area of ["rules", "skill", "project_notes", "user_notes"] as const) {
       if (area === "skill") {
         const skills: Record<string, string | null> = {};
+        const skillsAfter: Record<string, string | null> = {};
         const names = new Set([...start.skills.keys(), ...end.skills.keys()]);
         for (const name of [...names].sort()) {
           const was = start.skills.get(name) ?? null;
           const now = end.skills.get(name) ?? null;
           if (was === now) continue;
           skills[name] = was;
+          skillsAfter[name] = now;
           const description = parseSkillText(now ?? was ?? "").description;
           changes.push({
             area,
@@ -774,7 +787,10 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
             ...(description ? { detail: description } : {}),
           });
         }
-        if (Object.keys(skills).length) before.skills = skills;
+        if (Object.keys(skills).length) {
+          before.skills = skills;
+          after.skills = skillsAfter;
+        }
         continue;
       }
       if (start[area] === end[area]) continue;
@@ -792,6 +808,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       at: nowIso(),
       changes: changes.map((change, index) => ({ ...change, id: `c${index + 1}` })),
       before,
+      ...(after.skills ? { after } : {}),
     };
     try {
       writeRecord(record);
@@ -822,6 +839,11 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     if (change.undone) return { ok: true, payload: payload() };
     let note: string | undefined;
     if (change.area === "skill") {
+      const left = record.after?.skills;
+      if (left && Object.hasOwn(left, change.text) && (readFileOrEmpty(skillPath(change.text)) || null) !== left[change.text]) {
+        // Someone edited it after that turn; putting the old file back would drop their edit.
+        return { ok: false, error: "This skill changed after that turn. Edit it in Settings › Memory." };
+      }
       const was = record.before.skills?.[change.text];
       if (was == null) removeSkillDir(change.text);
       else writeSkillFile(change.text, was);

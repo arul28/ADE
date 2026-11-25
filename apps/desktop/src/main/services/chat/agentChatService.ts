@@ -68148,7 +68148,8 @@ export function createAgentChatService(args: {
     flushBufferedReasoning(managed);
     flushBufferedText(managed, "interleave");
     managed.ctoTurn ??= { quiet: null, reactTarget: null };
-    managed.ctoTurn.quiet = { turnId };
+    // A hidden review turn stays hidden, reasoning too, after its noReply.
+    managed.ctoTurn.quiet = { turnId, ...(managed.ctoTurn.quiet?.review ? { review: true as const } : {}) };
   };
 
   /**

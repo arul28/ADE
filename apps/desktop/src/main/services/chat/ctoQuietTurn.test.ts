@@ -13,7 +13,7 @@ const person = (
 function run(start: CtoQuietTurnState, events: AgentChatEvent[], provider: AgentChatProvider = "claude") {
   const state = { ...start };
   const shown = events.flatMap((event) => (
-    !stepCtoQuietTurn(state, event, provider) && event.type === "text" ? [event.text] : []
+    !stepCtoQuietTurn(state, event, provider) && (event.type === "text" || event.type === "reasoning") ? [event.text] : []
   ));
   return { shown, state };
 }
@@ -78,7 +78,14 @@ describe("stepCtoQuietTurn", () => {
     {
       name: "the hidden review's message silences its turn up to its done",
       start: { quiet: null, reactTarget: null },
-      events: [review, said("Saved a rule.", "t-2"), said("stray"), done("t-2"), said("next turn", "t-3")],
+      events: [
+        review,
+        { type: "reasoning", text: "Is there a lesson?", turnId: "t-2" },
+        said("Saved a rule.", "t-2"),
+        said("stray"),
+        done("t-2"),
+        said("next turn", "t-3"),
+      ],
       shown: ["next turn"],
       end: { quiet: null, reactTarget: null, reviewPending: false },
     },

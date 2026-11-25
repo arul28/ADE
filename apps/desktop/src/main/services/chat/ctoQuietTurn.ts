@@ -6,8 +6,11 @@ import { isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
  * each committed event does to it.
  */
 export type CtoQuietTurnState = {
-  /** Set by `noReply` or `react`: this turn's later text is dropped. */
-  quiet: { turnId: string | null } | null;
+  /**
+   * Set by `noReply` or `react`: this turn's later text is dropped. `review`:
+   * ADE's hidden review turn, whose reasoning is dropped too.
+   */
+  quiet: { turnId: string | null; review?: true } | null;
   /**
    * The `userMessageReactionKey` of the person's newest message the running
    * turn has read, for `react`. In memory only: after a brain restart `react`
@@ -81,13 +84,14 @@ export function ctoTurnReadsPersonMessage(
 
 /** A CTO turn starts: a quiet ending never outlives its turn, unless this is the hidden review turn. */
 export function startCtoQuietTurn(state: CtoQuietTurnState): void {
-  state.quiet = state.reviewPending ? { turnId: null } : null;
+  state.quiet = state.reviewPending ? { turnId: null, review: true } : null;
   if (state.reviewPending) state.reviewPending = false;
 }
 
 /**
  * Applies one committed event to the state, in place. Returns true when the
- * event must be dropped: text the CTO wrote after ending its turn quietly.
+ * event must be dropped: text the CTO wrote after ending its turn quietly, or
+ * anything it wrote or thought in the hidden review turn.
  */
 export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent, provider: AgentChatProvider): boolean {
   if (event.type === "done") {
@@ -107,7 +111,7 @@ export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent
       if (correction) state.correction = correction;
     } else if (event.metadata?.hostContinuation?.reason === CTO_REVIEW_REASON) {
       // ADE's hidden review: the turn that reads it writes nothing visible.
-      state.quiet = { turnId: null };
+      state.quiet = { turnId: null, review: true };
       state.reviewPending = true;
     } else if (key && key === state.reactTarget) {
       // The target steer turned out unread (the turn ended first, or it failed).
@@ -115,7 +119,7 @@ export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent
     }
     return false;
   }
-  if (event.type === "text" && state.quiet) {
+  if ((event.type === "text" || (event.type === "reasoning" && state.quiet?.review)) && state.quiet) {
     const eventTurnId = event.turnId?.trim() || null;
     return !state.quiet.turnId || !eventTurnId || eventTurnId === state.quiet.turnId;
   }

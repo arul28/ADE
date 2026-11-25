@@ -473,21 +473,24 @@ struct CtoMemoryPage: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 0) {
         if let memory = store.memory {
-          CtoSectionTitle(title: "Rules") {
-            Text("Yours and the CTO's, followed every turn")
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+          // An older host sends no rules and refuses scope "rules": no editor.
+          if memory.rules != nil || memory.rulesHash != nil {
+            CtoSectionTitle(title: "Rules") {
+              Text("Yours and the CTO's, followed every turn")
+                .font(.footnote)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+            CtoNotesEditor(
+              store: store,
+              scope: .rules,
+              text: memory.rules ?? "",
+              hash: memory.rulesHash,
+              limit: memory.rulesLimitBytes ?? ctoRulesMaxBytes,
+              placeholder: "- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default.",
+              accent: live.look.ctoAccent
+            )
           }
-          CtoNotesEditor(
-            store: store,
-            scope: .rules,
-            text: memory.rules ?? "",
-            hash: memory.rulesHash,
-            limit: memory.rulesLimitBytes ?? ctoRulesMaxBytes,
-            placeholder: "- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default.",
-            accent: live.look.ctoAccent
-          )
           if store.canEditSkills || !(memory.skills ?? []).isEmpty {
             CtoSectionTitle(title: "Skills", count: memory.skills?.count) {
               Text("One how-to per kind of task")
