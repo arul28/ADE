@@ -208,6 +208,7 @@ import {
   buildCtoHistoryBlock,
   selectCtoHistoryTail,
   type CtoStoryRecord,
+  type CtoStoryToolEntry,
 } from "../cto/ctoStory";
 import { createCtoStoryUpdater, type CtoStorySession, type CtoStoryUpdateRequest } from "../cto/ctoStoryUpdater";
 import {
@@ -14437,6 +14438,15 @@ export function createAgentChatService(args: {
     ? createCtoStoryUpdater({
       readStory: () => ctoMemoryService.readStory(),
       writeStory: (record) => ctoMemoryService.writeStory(record),
+      recordFacts: (facts, { sessionId }) => {
+        ctoMemoryService.recordStoryFacts(facts.map((fact) => ({
+          kind: fact.kind,
+          text: fact.text,
+          sourceAt: fact.source?.at ?? null,
+          sourceLabel: fact.source?.label ?? null,
+          sourceSessionId: sessionId,
+        })));
+      },
       timeZone: ctoPersonTimeZone,
       logger,
     })
@@ -14452,30 +14462,38 @@ export function createAgentChatService(args: {
     }
   };
 
-  const ctoStorySession = (managed: ManagedChatSession): CtoStorySession => ({
-    id: managed.session.id,
-    isGone: () => Boolean(managed.closed || managed.deleted),
-    readEntries: () => collectConversationEntries(managed),
-    pickModel: async () => {
-      const auth = await detectAuth();
-      const availableModels = await getAvailableRegistryModels(auth);
-      return buildSessionIntelligenceModelCandidates({
-        availableModels,
-        provider: managed.session.provider,
-        sessionModelId: managed.session.modelId,
-        sessionModel: managed.session.model,
-      })[0] ?? managed.session.modelId ?? null;
-    },
-    runPrompt: ({ modelId, systemPrompt, prompt, timeoutMs }) => runSessionIntelligencePrompt({
-      cwd: managed.laneWorktreePath,
-      modelId,
-      systemPrompt,
-      prompt,
-      timeoutMs,
-      taskType: "continuity_summary",
-      providerAccount: sessionProviderAccount(managed),
-    }),
-  });
+  const ctoStorySession = (managed: ManagedChatSession): CtoStorySession => {
+    // One transcript read feeds both: the messages, and what tools returned beside them.
+    const toolEntries: CtoStoryToolEntry[] = [];
+    return {
+      id: managed.session.id,
+      isGone: () => Boolean(managed.closed || managed.deleted),
+      readEntries: () => {
+        toolEntries.length = 0;
+        return collectConversationEntries(managed, { toolSink: toolEntries });
+      },
+      readToolEntries: () => toolEntries,
+      pickModel: async () => {
+        const auth = await detectAuth();
+        const availableModels = await getAvailableRegistryModels(auth);
+        return buildSessionIntelligenceModelCandidates({
+          availableModels,
+          provider: managed.session.provider,
+          sessionModelId: managed.session.modelId,
+          sessionModel: managed.session.model,
+        })[0] ?? managed.session.modelId ?? null;
+      },
+      runPrompt: ({ modelId, systemPrompt, prompt, timeoutMs }) => runSessionIntelligencePrompt({
+        cwd: managed.laneWorktreePath,
+        modelId,
+        systemPrompt,
+        prompt,
+        timeoutMs,
+        taskType: "continuity_summary",
+        providerAccount: sessionProviderAccount(managed),
+      }),
+    };
+  };
 
   const updateCtoStory = (managed: ManagedChatSession, request: CtoStoryUpdateRequest): void => {
     if (managed.session.identityKey !== "cto" || !ctoStoryUpdater) return;
@@ -18487,11 +18505,27 @@ export function createAgentChatService(args: {
     });
   };
 
+  /** A tool's result as text for the CTO's story fold (`ctoStory.ts` clips it further). */
+  const ctoToolResultText = (value: unknown): string => {
+    if (typeof value === "string") return value.trim();
+    if (value == null) return "";
+    try {
+      return JSON.stringify(value).slice(0, 4_000);
+    } catch {
+      return "";
+    }
+  };
+
   const collectConversationEntries = (
     managed: ManagedChatSession,
-    options?: { sinceIso?: string | null },
+    options?: {
+      sinceIso?: string | null;
+      /** Filled, in the same pass, with what tools returned (the CTO story's facts). */
+      toolSink?: CtoStoryToolEntry[];
+    },
   ): Array<SessionMetadataConversationEntry & { displayText?: string; at?: string }> => {
     const sinceIso = options?.sinceIso ?? null;
+    const toolSink = options?.toolSink ?? null;
     // Assistant replies are stored as streamed chunks ("raises a", " Windows
     // admin"), so one reply is many `text` events: join each turn's chunks
     // with `joinAssistantChunk`, the same rule the live ring uses. Only the
@@ -18516,6 +18550,12 @@ export function createAgentChatService(args: {
           } else if (event.text.trim()) {
             fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId, at: timestamp });
           }
+        } else if (toolSink && event.type === "tool_result" && event.status !== "running") {
+          const text = ctoToolResultText(event.result);
+          if (text) toolSink.push({ tool: event.tool, text, at: timestamp });
+        } else if (toolSink && event.type === "command" && event.status !== "running") {
+          const output = event.output.trim();
+          toolSink.push({ tool: "shell", text: `$ ${event.command}${output ? `\n${output}` : ""}`, at: timestamp });
         }
       }
     } catch {

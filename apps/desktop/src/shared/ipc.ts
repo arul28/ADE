@@ -1489,6 +1489,8 @@ export const IPC = {
   ctoGetMemory: "ade.cto.getMemory",
   ctoUpdateNotes: "ade.cto.updateNotes",
   ctoUpdateOpenWork: "ade.cto.updateOpenWork",
+  ctoSearchMemoryArchive: "ade.cto.searchMemoryArchive",
+  ctoRecallArchivedNote: "ade.cto.recallArchivedNote",
   ctoGetLinearConnectionStatus: "ade.cto.getLinearConnectionStatus",
   ctoSetLinearToken: "ade.cto.setLinearToken",
   ctoClearLinearToken: "ade.cto.clearLinearToken",

@@ -171,6 +171,91 @@ export type CtoUpdateOpenWorkArgs =
   | { op: "reopen"; id: string }
   | { op: "remove"; id: string };
 
+/* ── The memory archive ── */
+
+/**
+ * What the archive (`.ade/cto/archive.db`) holds:
+ * - `note`: a pinned note that left the notes file (`reason`: `cold` when the
+ *   notes were full, `replaced`, `forgotten`). It can be recalled back.
+ * - `fact` / `decision`: atomic facts a story fold pulled from the messages
+ *   and tool results, with the turn they came from.
+ * - `discovery`: a worker discovery, once drained or evicted from the queue.
+ * - `story`: one version of the story so far. Every version is kept.
+ */
+export type CtoArchiveKind = "note" | "fact" | "decision" | "discovery" | "story";
+
+export const CTO_ARCHIVE_KINDS: readonly CtoArchiveKind[] = ["note", "fact", "decision", "discovery", "story"];
+
+export type CtoArchiveEntry = {
+  id: number;
+  kind: CtoArchiveKind;
+  /** Notes only: the file it left. Facts and discoveries recall into `project`. */
+  scope: CtoNotesScope | null;
+  /** The whole text, or a preview when `truncated` (story versions in a list). */
+  text: string;
+  truncated?: boolean;
+  /** Why it is here (notes: cold, replaced, forgotten; discoveries: drained, evicted, imported). */
+  reason: string | null;
+  /** When the source turn, discovery or story version was said or written (ISO). */
+  sourceAt: string | null;
+  /** Who said it: "Person", "CTO", "Tool result (createChat)". */
+  sourceLabel: string | null;
+  sourceSessionId: string | null;
+  archivedAt: string;
+};
+
+export type CtoArchiveQuery = {
+  /** Keywords, all of which must match. Without one: newest first. */
+  query?: string;
+  kinds?: CtoArchiveKind[];
+  /** Default 30, at most 100. */
+  limit?: number;
+  /** The previous page's `nextBefore` (lists without a query only). */
+  before?: number;
+  /** One entry, in full (a story version a list showed as a preview). */
+  id?: number;
+};
+
+export type CtoArchivePage = {
+  /** False when this machine's SQLite can't open the archive: nothing is archived, notes refuse when full. */
+  available: boolean;
+  /** `keyword`: full-text (or word) search; `recent`: newest first. Room for a semantic mode later. */
+  mode: "keyword" | "recent";
+  entries: CtoArchiveEntry[];
+  nextBefore: number | null;
+  /** Archived entries by kind, recalled notes not counted. */
+  counts: Record<CtoArchiveKind, number>;
+};
+
+/** An archive query from any caller (IPC, an action, a phone), with the junk dropped. */
+export function normalizeCtoArchiveQuery(raw: unknown): CtoArchiveQuery {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const int = (value: unknown): number | undefined => {
+    const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  };
+  const query = typeof record.query === "string" && record.query.trim() ? record.query.trim().slice(0, 200) : undefined;
+  const kinds = Array.isArray(record.kinds)
+    ? record.kinds.filter((kind): kind is CtoArchiveKind => typeof kind === "string" && (CTO_ARCHIVE_KINDS as readonly string[]).includes(kind))
+    : [];
+  const limit = int(record.limit);
+  const before = int(record.before);
+  const id = int(record.id);
+  return {
+    ...(query ? { query } : {}),
+    ...(kinds.length ? { kinds } : {}),
+    ...(limit ? { limit } : {}),
+    ...(before ? { before } : {}),
+    ...(id ? { id } : {}),
+  };
+}
+
+export type CtoRecallArchivedArgs = {
+  id: number;
+  /** Where the note goes; defaults to the note's own scope, else `project`. */
+  scope?: CtoNotesScope;
+};
+
 /** What `cto.refreshContext` did. A busy CTO is refreshed when its turn ends. */
 export type CtoRefreshContextResult = {
   refreshed: boolean;

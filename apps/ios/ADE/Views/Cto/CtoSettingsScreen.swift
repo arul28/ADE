@@ -495,6 +495,10 @@ struct CtoMemoryPage: View {
           )
           CtoSectionTitle(title: "Open work")
           CtoOpenWorkList(store: store, accent: live.look.ctoAccent)
+          if store.canReadArchive {
+            CtoSectionTitle(title: "Archive")
+            CtoArchiveSection(store: store, accent: live.look.ctoAccent)
+          }
         } else if let error = store.memoryError {
           CtoEmptyLine(symbol: "exclamationmark.triangle", text: error)
           Button("Try again") { Task { await store.loadMemory() } }
@@ -514,6 +518,183 @@ struct CtoMemoryPage: View {
       await store.loadMemory()
     }
   }
+}
+
+/// Settings › Memory › Archive (desktop `CtoArchiveList`): what left the
+/// notes, facts from past turns, read discoveries and story versions. A note,
+/// fact or discovery can be pinned again; a story version opens in full.
+struct CtoArchiveSection: View {
+  @ObservedObject var store: CtoStore
+  let accent: Color
+
+  @State private var expanded: [Int: String] = [:]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass")
+          .font(.system(size: 14))
+          .foregroundStyle(ADEColor.textMuted)
+        TextField("Search the archive", text: $store.archiveQuery)
+          .font(.body)
+          .submitLabel(.search)
+          .autocorrectionDisabled()
+          .textInputAutocapitalization(.never)
+          .accessibilityLabel("Search the archive")
+      }
+      .padding(.horizontal, 12)
+      .frame(minHeight: 40)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(CtoStore.ArchiveFilter.allCases) { filter in
+            filterChip(filter)
+          }
+        }
+      }
+
+      if let error = store.archiveError {
+        CtoEmptyLine(symbol: "exclamationmark.triangle", text: error)
+      }
+      if let page = store.archive {
+        if !page.available {
+          CtoEmptyLine(symbol: "archivebox", text: "No archive on this machine")
+        } else if page.entries.isEmpty {
+          CtoEmptyLine(
+            symbol: "archivebox",
+            text: store.archiveQuery.isEmpty ? "Nothing archived yet" : "No matches",
+            hint: store.archiveQuery.isEmpty ? "Full notes, past facts and story versions land here" : nil
+          )
+        } else {
+          VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(page.entries.enumerated()), id: \.element.id) { index, entry in
+              if index > 0 { CtoRowDivider(inset: 0) }
+              row(entry)
+            }
+          }
+          if page.nextBefore != nil {
+            Button(store.archiveLoadingMore ? "Loading…" : "Show older") {
+              Task { await store.loadArchive(more: true) }
+            }
+            .font(.subheadline)
+            .foregroundStyle(accent)
+            .disabled(store.archiveLoadingMore)
+            .frame(minHeight: 44)
+          }
+        }
+      } else {
+        CtoEmptyLine(symbol: "archivebox", text: "Loading…")
+      }
+    }
+    .task(id: "\(store.archiveFilter.rawValue)|\(store.archiveQuery)|\(store.memory?.memoryHash ?? "")|\(store.memory?.userNotesHash ?? "")") {
+      // A beat after typing stops; a filter or a notes change reads at once.
+      if !store.archiveQuery.isEmpty { try? await Task.sleep(nanoseconds: 250_000_000) }
+      guard !Task.isCancelled else { return }
+      await store.loadArchive()
+    }
+  }
+
+  private func count(_ filter: CtoStore.ArchiveFilter) -> Int {
+    guard let counts = store.archive?.counts else { return 0 }
+    let kinds = filter.kinds.isEmpty ? Array(counts.keys) : filter.kinds
+    return kinds.reduce(0) { $0 + (counts[$1] ?? 0) }
+  }
+
+  private func filterChip(_ filter: CtoStore.ArchiveFilter) -> some View {
+    let selected = store.archiveFilter == filter
+    let total = count(filter)
+    return Button {
+      store.archiveFilter = filter
+    } label: {
+      HStack(spacing: 4) {
+        Text(filter.label)
+        if total > 0 {
+          Text("\(total)")
+            .monospacedDigit()
+            .foregroundStyle(selected ? ADEColor.textPrimary.opacity(0.7) : ADEColor.textMuted)
+        }
+      }
+      .font(.footnote.weight(selected ? .semibold : .regular))
+      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+      .padding(.horizontal, 12)
+      .frame(minHeight: 32)
+      .background(
+        selected ? accent.opacity(0.18) : ADEKit.track,
+        in: Capsule(style: .continuous)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+
+  private func row(_ entry: CtoArchiveEntry) -> some View {
+    let full = expanded[entry.id]
+    let busy = store.busyIds.contains("archive:\(entry.id)")
+    return HStack(alignment: .top, spacing: 10) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(entry.kindLabel.uppercased())
+          .font(.caption2.weight(.semibold))
+          .tracking(0.6)
+          .foregroundStyle(entry.kind == "decision" ? accent : ADEColor.textMuted)
+        Text(full ?? entry.text)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(full == nil ? (entry.isStory ? 2 : 4) : nil)
+          .fixedSize(horizontal: false, vertical: true)
+        let meta = [entry.sourceLine, ctoArchiveDate(entry.sourceAt ?? entry.archivedAt)]
+          .filter { !$0.isEmpty }
+          .joined(separator: " · ")
+        if !meta.isEmpty {
+          Text(meta)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+      }
+      Spacer(minLength: 6)
+      if !entry.isStory && store.canRecallArchive {
+        Button {
+          Task { await store.recallArchived(entry) }
+        } label: {
+          Image(systemName: "pin")
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(accent)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Pin to the notes")
+      }
+    }
+    .padding(.vertical, 10)
+    .contentShape(Rectangle())
+    .opacity(busy ? 0.5 : 1)
+    .onTapGesture {
+      guard entry.isStory else { return }
+      if expanded[entry.id] != nil {
+        expanded[entry.id] = nil
+      } else {
+        Task { expanded[entry.id] = await store.fullArchiveText(entry) }
+      }
+    }
+  }
+}
+
+/// "Nov 16" (this year) or "Nov 16, 2025".
+func ctoArchiveDate(_ iso: String?) -> String {
+  guard let iso, let date = ISO8601DateFormatter.ctoArchive.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
+  let sameYear = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+  return date.formatted(sameYear ? .dateTime.month(.abbreviated).day() : .dateTime.month(.abbreviated).day().year())
+}
+
+private extension ISO8601DateFormatter {
+  static let ctoArchive: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
 }
 
 /// A notes file: saves a beat after the last keystroke, with a byte meter.

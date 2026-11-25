@@ -1530,6 +1530,33 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "searchMemory",
+    description: "Search the CTO's archive: notes that left the notes (moved out when full, replaced, forgotten), facts and decisions from past turns and tool results, worker discoveries and every story version. Keyword search, every word must match; without `query`, newest first. Pass `id` to read one entry in full.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 200 },
+        kinds: { type: "array", items: { type: "string", enum: ["note", "fact", "decision", "discovery", "story"] } },
+        id: { type: "integer", minimum: 1 },
+        limit: { type: "integer", minimum: 1, maximum: 50 }
+      }
+    }
+  },
+  {
+    name: "recallNote",
+    description: "Pin an archived note, fact or discovery back into the CTO's notes by its searchMemory id. When the notes are full, the least recently used notes move to the archive.",
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      additionalProperties: false,
+      properties: {
+        id: { type: "integer", minimum: 1 },
+        scope: { type: "string", enum: ["project", "user"] }
+      }
+    }
+  },
+  {
     name: "readHistory",
     description: "Page or search the CTO's whole conversation, newest first. With `query`, messages containing all its words, each with its neighbours. Pass `nextBefore` as `before` for older pages.",
     inputSchema: {
@@ -1844,6 +1871,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_review_comments",
   "get_cto_state",
   "readHistory",
+  "searchMemory",
   "listChats",
   "getChatStatus",
   "readChatTranscript",
@@ -1861,6 +1889,7 @@ const READ_ONLY_TOOLS = new Set([
 const MUTATION_TOOLS = new Set([
   "remember",
   "forget",
+  "recallNote",
   "replyNow",
   "noReply",
   "react",

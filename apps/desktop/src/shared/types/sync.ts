@@ -3279,6 +3279,8 @@ export type SyncRemoteCommandAction =
   | "cto.updateIdentity"
   | "cto.updateNotes"
   | "cto.updateOpenWork"
+  | "cto.searchMemoryArchive"
+  | "cto.recallArchivedNote"
   | "cto.refreshContext"
   | "cto.adoptAccountCopy"
   | "cto.getAccountCopyStatus"

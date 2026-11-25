@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   CtoMemorySnapshot,
+  CtoRecallArchivedArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
   OpenProjectBinding,
@@ -15,6 +16,8 @@ export type CtoMemoryState = {
   updateNotes: (args: CtoUpdateNotesArgs) => Promise<void>;
   /** Adds, completes, reopens or removes one open-work item. */
   updateOpenWork: (args: CtoUpdateOpenWorkArgs) => Promise<void>;
+  /** Pins an archived note, fact or discovery as a note again. */
+  recallArchived: (args: CtoRecallArchivedArgs) => Promise<void>;
 };
 
 function errorText(err: unknown, fallback: string): string {
@@ -91,5 +94,10 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
     [write],
   );
 
-  return { memory, loading, error, refresh, updateNotes, updateOpenWork };
+  const recallArchived = useCallback(
+    (args: CtoRecallArchivedArgs) => write((target) => window.ade.cto!.recallArchivedNote(args, target)),
+    [write],
+  );
+
+  return { memory, loading, error, refresh, updateNotes, updateOpenWork, recallArchived };
 }

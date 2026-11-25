@@ -161,7 +161,7 @@ import {
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
 import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
-import { isTrackedAgentCliToolType } from "../../../shared/types";
+import { isTrackedAgentCliToolType, normalizeCtoArchiveQuery } from "../../../shared/types";
 import {
   claimDraft,
   createDraft,
@@ -196,6 +196,8 @@ import type {
   CursorCloudServiceTier,
   CtoRefreshContextResult,
   CtoUpdateNotesArgs,
+  CtoArchiveQuery,
+  CtoRecallArchivedArgs,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -1827,6 +1829,15 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       } else {
         throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
       }
+      return ctoMemoryService.getSnapshot();
+    },
+    searchArchive: (args?: CtoArchiveQuery) => ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(args)),
+    /** Pins an archived entry as a note again; answers the new snapshot, like the other writes. */
+    recallArchived: (args?: Partial<CtoRecallArchivedArgs>) => {
+      const id = typeof args?.id === "number" ? args.id : Number(args?.id);
+      if (!Number.isInteger(id) || id <= 0) throw new Error("recallArchived requires a positive integer `id`.");
+      const scope = args?.scope === "user" || args?.scope === "project" ? args.scope : undefined;
+      ctoMemoryService.recallArchivedForUser({ id, ...(scope ? { scope } : {}) });
       return ctoMemoryService.getSnapshot();
     },
     /**

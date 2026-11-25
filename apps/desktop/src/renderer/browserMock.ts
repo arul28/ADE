@@ -9572,6 +9572,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
         updatedAt: now,
       }),
+      searchMemoryArchive: resolvedArg({
+        available: true,
+        mode: "recent",
+        nextBefore: null,
+        counts: { note: 2, fact: 2, decision: 1, discovery: 1, story: 1 },
+        entries: [
+          { id: 7, kind: "fact", scope: null, text: "PR #2492 adds reactions and quiet turns to the CTO; branch cto-reactions.", reason: null, sourceAt: now, sourceLabel: "Tool result (createPrFromLane)", sourceSessionId: "mock-cto-session", archivedAt: now },
+          { id: 6, kind: "decision", scope: null, text: "The person chose squash merges for release PRs.", reason: null, sourceAt: now, sourceLabel: "Person", sourceSessionId: "mock-cto-session", archivedAt: now },
+          { id: 5, kind: "note", scope: "project", text: "Desktop tests need Node 22 on PATH.", reason: "cold", sourceAt: null, sourceLabel: null, sourceSessionId: null, archivedAt: now },
+          { id: 4, kind: "story", scope: null, text: "## Where things stand\nThe CTO is landing the sync transport fixes; the person reviews in the morning…", truncated: true, reason: null, sourceAt: now, sourceLabel: "anthropic/claude-haiku-5-5", sourceSessionId: null, archivedAt: now },
+          { id: 3, kind: "discovery", scope: null, text: "Vitest localStorage suites need Node 22 [topic:testing]", reason: "drained", sourceAt: now, sourceLabel: "Worker discovery", sourceSessionId: null, archivedAt: now },
+          { id: 2, kind: "note", scope: "user", text: "Prefers short status updates.", reason: "replaced", sourceAt: null, sourceLabel: null, sourceSessionId: null, archivedAt: now },
+          { id: 1, kind: "fact", scope: null, text: "Lane sync-hardening runs on the Mac Studio.", reason: null, sourceAt: now, sourceLabel: "CTO", sourceSessionId: "mock-cto-session", archivedAt: now },
+        ],
+      }),
+      recallArchivedNote: resolvedArg({
+        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
+        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
+        updatedAt: now,
+      }),
       refreshContext: resolvedArg({ refreshed: true }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",

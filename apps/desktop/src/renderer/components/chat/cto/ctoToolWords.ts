@@ -162,6 +162,7 @@ const CHIP_TOOL_NAMES: ReadonlySet<string> = new Set([
   "forget",
   "trackWork",
   "finishWork",
+  "recallNote",
   // Only a remote or ADE Cloud spawn (`ctoRemoteSpawnForEntry`) or a failed one draws.
   "spawnChat",
 ]);
@@ -245,6 +246,10 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
     case "forget":
       kind = "forgot";
       text = str(args.note);
+      break;
+    case "recallNote":
+      kind = "remembered";
+      text = str(payload?.note) ?? str(payload?.alreadyPinnedAs);
       break;
     case "trackWork":
       kind = "tracking";
@@ -357,6 +362,10 @@ export function ctoStepWords(toolName: string, rawArgs: unknown): string | null 
       return "Saving a note";
     case "forget":
       return "Dropping a note";
+    case "searchMemory":
+      return "Searching my archive";
+    case "recallNote":
+      return "Pinning a note again";
     case "trackWork":
       return "Noting open work";
     case "finishWork":

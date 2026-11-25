@@ -21,6 +21,9 @@ import {
   type CtoUpdateIdentityArgs,
   type CtoUpdateNotesArgs,
   type CtoUpdateOpenWorkArgs,
+  type CtoArchiveQuery,
+  type CtoArchivePage,
+  type CtoRecallArchivedArgs,
   type CursorAgentUsage,
   type CursorCloudAgentSummary,
   type CursorCloudArtifactDownload,
@@ -1241,6 +1244,8 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getMemory: 0,
   updateNotes: 1,
   updateOpenWork: 1,
+  searchMemoryArchive: 1,
+  recallArchivedNote: 1,
   getLinearConnectionStatus: 0,
   setLinearToken: 1,
   clearLinearToken: 0,
@@ -1312,6 +1317,18 @@ function createCtoNamespace(
       "cto.updateOpenWork",
       args,
       unavailableOnHost("The CTO's open work can't be changed on the connected ADE host."),
+      false,
+    ),
+    // An older host has no archive: the section stays hidden rather than erroring.
+    searchMemoryArchive: (args: CtoArchiveQuery) => call<CtoArchivePage>(
+      "cto.searchMemoryArchive",
+      args,
+      { available: false, mode: "recent", entries: [], nextBefore: null, counts: { note: 0, fact: 0, decision: 0, discovery: 0, story: 0 } },
+    ),
+    recallArchivedNote: (args: CtoRecallArchivedArgs) => call<CtoMemorySnapshot>(
+      "cto.recallArchivedNote",
+      args,
+      unavailableOnHost("The CTO's archive can't be changed on the connected ADE host."),
       false,
     ),
     // `crossMachineEnabled` is the desktop's alone; the host strips it.

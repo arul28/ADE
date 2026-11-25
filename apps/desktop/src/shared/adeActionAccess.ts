@@ -297,10 +297,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   cto_memory: {
     read: [
-      "getSnapshot",
+      "getSnapshot", "searchArchive",
     ],
     write: [
-      "updateNotes", "updateOpenWork", "recordDiscovery",
+      "updateNotes", "updateOpenWork", "recordDiscovery", "recallArchived",
     ],
   },
   session: {

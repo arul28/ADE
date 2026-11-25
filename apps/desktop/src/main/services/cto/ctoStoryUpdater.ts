@@ -18,6 +18,8 @@ import {
   acceptCtoStoryAnswer,
   buildCtoStoryPrompt,
   cleanCtoStoryAnswer,
+  numberCtoFoldSources,
+  splitCtoStoryAnswer,
   CTO_STORY_MAX_BATCHES_PER_RUN,
   CTO_STORY_RETRY_AFTER_FAILURE_MS,
   CTO_STORY_SYSTEM_PROMPT,
@@ -25,7 +27,9 @@ import {
   CTO_STORY_TURNS_BETWEEN_CHECKS,
   planCtoStoryFold,
   type CtoStoryEntry,
+  type CtoStoryFact,
   type CtoStoryRecord,
+  type CtoStoryToolEntry,
 } from "./ctoStory";
 
 type Logger = {
@@ -40,6 +44,8 @@ export type CtoStorySession = {
   isGone: () => boolean;
   /** The transcript's recent window, oldest first, with times. */
   readEntries: () => CtoStoryEntry[];
+  /** What tools returned over the same window, for facts only a tool printed. Read after `readEntries`. */
+  readToolEntries?: () => CtoStoryToolEntry[];
   /** The helper model for this chat, or null when there is none. */
   pickModel: () => Promise<string | null>;
   runPrompt: (args: { modelId: string; systemPrompt: string; prompt: string; timeoutMs: number }) => Promise<{ text: string | null | undefined; model?: string | null }>;
@@ -49,6 +55,8 @@ export type CtoStoryUpdaterArgs = {
   /** Throws when the file is there but unreadable (`CtoStoryUnreadableError`). */
   readStory: () => CtoStoryRecord | null;
   writeStory: (record: CtoStoryRecord) => void;
+  /** After a fold is written: the facts and decisions it pulled out, for the archive. */
+  recordFacts?: (facts: CtoStoryFact[], meta: { sessionId: string }) => void;
   /** The person's zone, for the times in the helper's prompt. */
   timeZone: () => string | null;
   logger: Logger;
@@ -84,13 +92,14 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
     if (!request.force && now() < (retryAfter.get(sessionId) ?? 0)) return;
     // One transcript read per run: each batch only moves the cursor through it.
     const entries = session.readEntries();
+    const toolEntries = session.readToolEntries?.() ?? [];
     let modelId: string | null = null;
     for (let batch = 0; batch < CTO_STORY_MAX_BATCHES_PER_RUN; batch += 1) {
       if (session.isGone()) return;
       // An unreadable file throws: never write a fresh story over it.
       const story = args.readStory();
       const carried = story?.carried?.text.trim() ? story.carried : null;
-      const plan = planCtoStoryFold({ entries, story, force: request.force });
+      const plan = planCtoStoryFold({ entries, story, force: request.force, toolEntries });
       if (!plan && !carried) return;
       modelId ??= await session.pickModel();
       if (!modelId) {
@@ -107,6 +116,7 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
             previousSummary: story?.summary ?? null,
             carried,
             batch: plan?.batch ?? [],
+            tools: plan?.tools ?? [],
             // After a move: the old home's turns between its story's end and
             // the ones it carried were not in the copy.
             gap: plan?.gap ?? (story?.movedFrom
@@ -121,7 +131,8 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
         logger.warn("cto.story_update_failed", { sessionId, modelId, reason: request.reason, error: errorText(error) });
         return;
       }
-      const summary = acceptCtoStoryAnswer(cleanCtoStoryAnswer(answer.text), story?.summary ?? null);
+      const split = splitCtoStoryAnswer(answer.text, numberCtoFoldSources(plan?.batch ?? [], plan?.tools ?? []));
+      const summary = acceptCtoStoryAnswer(cleanCtoStoryAnswer(split.story), story?.summary ?? null);
       if (!summary) {
         // A refusal or a fragment would replace the only record of what the
         // story covers, and the cursor never goes back: keep the old one.
@@ -145,10 +156,21 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
         ...(story?.movedAt ? { movedAt: story.movedAt } : {}),
       });
       retryAfter.delete(sessionId);
+      // Facts ride on the accepted fold only: a rejected answer's facts would
+      // come again, cited to the same turns, on the retry.
+      if (split.facts.length && args.recordFacts) {
+        try {
+          args.recordFacts(split.facts, { sessionId });
+        } catch (error) {
+          logger.warn("cto.story_facts_failed", { sessionId, error: errorText(error) });
+        }
+      }
       logger.info("cto.story_updated", {
         sessionId,
         reason: request.reason,
         modelId,
+        facts: split.facts.length,
+        tools: plan?.tools.length ?? 0,
         folded: plan?.batch.length ?? 0,
         carried: Boolean(carried),
         gap: Boolean(plan?.gap),
