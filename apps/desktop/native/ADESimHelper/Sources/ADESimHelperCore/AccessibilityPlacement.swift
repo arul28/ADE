@@ -103,7 +103,7 @@ extension AccessibilityBridge {
     static func cover(_ node: [String: Any], into coverage: inout AccessibilityCoverage) {
         let children = (node["children"] as? [[String: Any]]) ?? []
         if let frame = frameOf(node) {
-            coverage.insert(frame, hasWalkedChildren: !children.isEmpty)
+            coverage.insert(frame, hasWalkedChildren: !children.isEmpty, role: node["type"] as? String)
         }
         for child in children { cover(child, into: &coverage) }
     }
@@ -474,14 +474,24 @@ extension AccessibilityCoverage {
     /// nav bar, a scroll view).
     static let barMinSide: CGFloat = 250
 
+    /// Roles that are one thing on the screen however large they are: a
+    /// paragraph or a full-width button is a leaf, never a bar, so the grid
+    /// skips the points over it and does not take it for a gap between a
+    /// bar's items.
+    static let leafRoles: Set<String> = [
+        "StaticText", "Heading", "Button", "Link", "TextField", "SecureTextField", "TextArea",
+    ]
+
     /// Records one element the walk or the grid found: an element with walked
     /// children is a container (frame dedup only), a large childless one a
-    /// bar, anything else a leaf that blocks probes over it.
-    mutating func insert(_ frame: NSRect, hasWalkedChildren: Bool) {
+    /// bar unless its role is a leaf's, anything else a leaf that blocks
+    /// probes over it. A large image stays a bar (an item drawn over it is
+    /// still found) but is not hollow: nothing sits between its points.
+    mutating func insert(_ frame: NSRect, hasWalkedChildren: Bool, role: String?) {
         if hasWalkedChildren {
             insertContainer(frame)
-        } else if max(frame.width, frame.height) >= Self.barMinSide {
-            insertBar(frame)
+        } else if max(frame.width, frame.height) >= Self.barMinSide, !Self.leafRoles.contains(role ?? "") {
+            insertBar(frame, hollow: role != "Image")
         } else {
             insertLeaf(frame)
         }
