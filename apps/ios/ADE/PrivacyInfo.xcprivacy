@@ -6,8 +6,8 @@
 	     privacy label. Default-on product analytics, masked session replay (PostHog), Sentry error reports with a masked
 	     screen recording, and a device ID hashed from identifierForVendor, all linked to the account hash once signed in.
 	     Account sign-in (Clerk: email, name), the push token, and chats, prompts and images sent to ADE Cloud computers,
-	     whose saved chats ADE's server keeps, are collected for app functionality. The day-2 getting-started email is
-	     the developer's own marketing. Dictation, camera pairing and Face ID stay on the device and are not collected. -->
+	     whose saved chats ADE's server keeps, are collected for app functionality. The day-2 getting-started email, which
+	     greets the person by first name, is the developer's own marketing. Dictation, camera pairing and Face ID stay on the device and are not collected. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
@@ -124,6 +124,7 @@
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
 					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+					<string>NSPrivacyCollectedDataTypePurposeDeveloperAdvertising</string>
 				</array>
 			</dict>
 			<dict>
