@@ -92,6 +92,7 @@ export async function decodeCtoCopy(raw: string | null): Promise<CloudCtoCopy | 
         title: text(routine.title),
         cron: routine.cron,
         ...(typeof routine.timeZone === "string" ? { timeZone: routine.timeZone } : {}),
+        ...(typeof routine.check === "string" && routine.check.trim() ? { check: clip(routine.check, 1_000) } : {}),
         paused: routine.paused === true,
       }];
     }).slice(0, 50),

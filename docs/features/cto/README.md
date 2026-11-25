@@ -391,7 +391,20 @@ A project with no model picked shows `CtoWelcome` instead of the thread: the big
 - **Look** — a live preview with a state strip (Idle, Working, Thinking, Waiting, Asleep, Happy, Error) that plays each state; the name; shape (seven tiles drawing the real shapes); colour (ten swatches tuned for dark and light, plus a hex input); eyes (four tiles); energy (Calm / Lively); personality (Focused / Friendly / Playful, each with an example sentence). Every change saves as you make it through `cto.updateIdentity({ patch }, pin)`, and the page says "Saved" quietly.
 - **Brain** — the main model (the standard picker, filtered to models the CTO can run on) with reasoning effort and Fast; up to three backup models as an ordered list with add, move up/down and remove, under one line explaining the switch; a **Refresh context** button with its one-sentence explanation; the **Home machine** row when the account has more than one machine; and the cross-machine switch.
 - **Memory** — the project notes editor with a byte meter ("1,240 of 4,096"), the "About you" editor (2,048), and the open-work list. Saves through `cto.updateNotes` and `cto.updateOpenWork`. A text over the cap is not sent; the meter says how many bytes over.
-- **Routines** — every row of the CTO chat's scheduled work, with the prompt, when it last ran, and what came of it, plus recently finished one-off wake-ups. The same rows as the panel.
+- **Routines** — every row of the CTO chat's scheduled work, with the prompt, when it last ran, and what came of it, plus recently finished one-off wake-ups. The same rows as the panel. A routine with a check shows binoculars, "on change", the command, and how its last check went ("no change 14 min ago", "checked …", or "failing" in red).
+
+### Routine checks
+
+A recurring cron can take a `check` (the `scheduleWork` tool's `check` argument): one shell line that ADE runs in the project folder before each fire (`/bin/sh -c` on macOS and Linux, `cmd.exe /d /s /c` on Windows, with the login-shell PATH, 60 s limit, 1 MiB of output). The fire goes ahead only when there is news:
+
+- It passes (exit 0) and the sha256 of its stdout differs from the stored `checkHash`. Stderr is not hashed.
+- It fails for the first time. Later failures stay quiet until it passes again. The hash from before the failure is kept, so a pass with that same output is not news either.
+
+A quiet run spends the occurrence without a turn and moves the cron on. A wake puts the check's verdict and the end of its output above the routine's prompt. `createScheduledWork` runs the check once when the routine is made: that run is the baseline, and the CTO gets it in the tool result. The record keeps `check`, `checkHash`, `checkFailing` and `lastCheckedAt` (`chatScheduledWorkScheduler.ts`, `scheduledWorkCheck.ts`).
+
+A check is a shell command, so only the CTO's `scheduleWork` tool and the routine restore after a home move can set one. The public `chat.createScheduledWork` (IPC, remote devices, `ade`) drops it. The account copy carries it, so a moved CTO's routines keep their checks. A chat moved between machines with a handoff does not carry it.
+
+The CTO's guidance tells it to use a check when it watches for a change, and to pick the longest interval that still serves the person.
 - **Instructions** — standing instructions (`systemPromptExtension`), then "What the CTO is told": the assembled prompt, folded.
 
 ## IPC surface

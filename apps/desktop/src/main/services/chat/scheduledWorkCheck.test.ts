@@ -1,0 +1,22 @@
+import os from "node:os";
+import { describe, expect, it } from "vitest";
+import { runScheduledWorkCheck } from "./scheduledWorkCheck";
+
+describe("runScheduledWorkCheck", () => {
+  it("hashes a passing line's stdout and reports a failing one's exit code", async () => {
+    const cwd = os.tmpdir();
+    const [first, again, other, failing] = await Promise.all([
+      runScheduledWorkCheck("echo one", cwd),
+      runScheduledWorkCheck("echo one", cwd),
+      runScheduledWorkCheck("echo two", cwd),
+      runScheduledWorkCheck("exit 3", cwd),
+    ]);
+
+    expect(first).toEqual(expect.objectContaining({ ok: true, exitCode: 0 }));
+    expect(first.outputHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(again.outputHash).toBe(first.outputHash);
+    expect(other.outputHash).not.toBe(first.outputHash);
+    expect(failing).toEqual(expect.objectContaining({ ok: false, exitCode: 3 }));
+    expect(failing.outputHash).toBeUndefined();
+  }, 30_000);
+});

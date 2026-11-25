@@ -148,6 +148,18 @@ func ctoDescribeRoutineSchedule(_ item: AgentChatScheduledWorkItem, now: Date) -
   return "Next \(next)"
 }
 
+/// How a routine's check last went: "failing", "no change 4 min ago" (the last
+/// check woke nothing) or "checked 4 min ago" (it woke the last run). The
+/// desktop's `describeRoutineCheck` says the same.
+func ctoDescribeRoutineCheck(_ item: AgentChatScheduledWorkItem, now: Date) -> String? {
+  if item.checkFailing == true { return "failing" }
+  guard let iso = item.lastCheckedAt, let checkedAt = workParsedDate(iso),
+        let ago = ctoDescribeAgo(iso, now: now) else { return nil }
+  // A check that wakes carries its run's own time; a later one was quiet.
+  let quiet = workParsedDate(item.lastRunAt).map { checkedAt > $0 } ?? true
+  return quiet ? "no change \(ago)" : "checked \(ago)"
+}
+
 /// "12 min ago", "3 h ago", "Nov 2".
 func ctoRelativeDay(_ iso: String, now: Date = Date()) -> String {
   ctoDescribeAgo(iso, now: now) ?? ""

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { Alarm, ArrowsClockwise, CalendarBlank, CloudSlash, DotsThree, Lightning, PauseCircle, Trash } from "@phosphor-icons/react";
+import { Alarm, ArrowsClockwise, Binoculars, CalendarBlank, CloudSlash, DotsThree, Lightning, PauseCircle, Trash } from "@phosphor-icons/react";
 import type { AgentChatScheduledWorkItem, OpenProjectBinding } from "../../../shared/types";
 import { useMinuteClock } from "../../hooks/useMinuteClock";
 import { ipcErrorMessage } from "../../lib/format";
@@ -139,6 +139,21 @@ function describeAgo(iso: string | undefined, nowMs: number): string | null {
   return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/**
+ * How a routine's check last went: "failing", "no change 4 min ago" (the last
+ * check woke nothing), or "checked 4 min ago" (it woke the routine's last run).
+ */
+export function describeRoutineCheck(item: AgentChatScheduledWorkItem, nowMs: number): string | null {
+  if (item.checkFailing) return "failing";
+  const checkedAt = item.lastCheckedAt ? Date.parse(item.lastCheckedAt) : Number.NaN;
+  const ago = describeAgo(item.lastCheckedAt, nowMs);
+  if (!Number.isFinite(checkedAt) || !ago) return null;
+  const ranAt = item.lastRunAt ? Date.parse(item.lastRunAt) : Number.NaN;
+  // A check that wakes carries its run's own time; a later one was quiet.
+  const quiet = !Number.isFinite(ranAt) || checkedAt > ranAt;
+  return quiet ? `no change ${ago}` : `checked ${ago}`;
+}
+
 function routineTitle(item: AgentChatScheduledWorkItem): string {
   return item.title?.trim() || item.reason?.trim() || item.prompt.trim().split("\n")[0] || "Routine";
 }
@@ -174,7 +189,9 @@ function RoutineRow({
   const moreRef = useRef<HTMLButtonElement | null>(null);
   const pending = PENDING.has(item.status);
   const rowPaused = isRowPaused(item);
-  const Icon = item.kind === "wakeup" ? Alarm : ArrowsClockwise;
+  const check = item.check?.trim() || null;
+  // The panel truncates the schedule line, so a watch shows by its icon too.
+  const Icon = check ? Binoculars : item.kind === "wakeup" ? Alarm : ArrowsClockwise;
   const title = routineTitle(item);
   const settings = variant === "settings";
   const lastRun = describeAgo(item.lastRunAt, nowMs);
@@ -184,11 +201,13 @@ function RoutineRow({
   const canRunNow = !item.source && item.cancellable;
   const scheduleLine = [
     describeRoutineSchedule(item, nowMs),
+    check ? "on change" : null,
     rowPaused && pending ? "Off" : null,
     item.late ? "Late" : null,
   ].filter(Boolean).join(" · ");
   // A finished row's schedule line already says when it ran.
   const lastRunLine = [pending && lastRun ? `Last ran ${lastRun}` : null, item.outcomeSummary?.trim() || null].filter(Boolean).join(" · ");
+  const checkLine = check ? describeRoutineCheck(item, nowMs) : null;
 
   return (
     <li
@@ -214,6 +233,13 @@ function RoutineRow({
           <p className="m-0 mt-1 truncate text-[12px] leading-[1.5] text-[var(--kit-text-2)]" title={prompt}>
             {prompt}
           </p>
+        ) : null}
+        {settings && check ? (
+          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11.5px] leading-[1.45] text-[var(--kit-text-3)]">
+            <span className="shrink-0">Check</span>
+            <code className="min-w-0 truncate font-mono text-[11px] text-[var(--kit-text-2)]" title={check}>{check}</code>
+            {checkLine ? <span className={cn("shrink-0", item.checkFailing && "text-[var(--kit-crit)]")}>· {checkLine}</span> : null}
+          </div>
         ) : null}
         {settings && lastRunLine ? (
           <div className="mt-0.5 truncate text-[11.5px] leading-[1.45] text-[var(--kit-text-3)]" title={lastRunLine}>

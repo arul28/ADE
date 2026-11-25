@@ -275,7 +275,7 @@ export interface CtoOperatorToolDeps {
     reasoningEffort?: string | null;
   }) => Promise<any>;
   scheduledWorkService?: {
-    create: (args: { sessionId: string; prompt: string; cron?: string; runAt?: string; delaySeconds?: number; recurring?: boolean; reason?: string }) => Promise<any>;
+    create: (args: { sessionId: string; prompt: string; cron?: string; runAt?: string; delaySeconds?: number; recurring?: boolean; reason?: string; check?: string }) => Promise<any>;
     list: (args?: { sessionId?: string; includeTerminal?: boolean }) => Promise<AgentChatScheduledWorkItem[]>;
     getState: (args: { sessionId: string }) => Promise<any>;
     cancel: (args: { sessionId: string; scheduleId: string }) => Promise<any>;
@@ -3721,6 +3721,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     ...(item.nextRunAt ? { nextRunAt: item.nextRunAt } : {}),
     ...(item.lastRunAt ? { lastRunAt: item.lastRunAt } : {}),
     ...(item.late ? { late: true } : {}),
+    ...(typeof item.check === "string" && item.check ? { check: item.check } : {}),
+    ...(item.checkFailing ? { checkFailing: true } : {}),
     // Guarded rather than trusted: these rows come back over the runtime RPC,
     // where the declared type is a promise about the sender and not about the
     // bytes. A row from an older brain with no `prompt` threw here and took the
@@ -3733,7 +3735,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   defineLazyTool(tools, "scheduleWork", () => scheduling({
     description:
       "Schedule durable work on a chat: a one-shot wakeup (delaySeconds or runAt) or a recurring five-field cron in the "
-      + "person's time zone (the one in your context). Survives restarts. Pass exactly one of cron, runAt, or delaySeconds.",
+      + "person's time zone (the one in your context). Survives restarts. Pass exactly one of cron, runAt, or delaySeconds. "
+      + "A cron can take a check: a shell command ADE runs in the project folder before each fire. The chat wakes only "
+      + "when the check's stdout differs from its last run, or the first time it fails (non-zero exit); a failing check "
+      + "stays quiet after that until it passes again. ADE runs it once now as the baseline and returns that run.",
     inputSchema: z.object({
       sessionId: z.string().min(1).describe("Chat to wake."),
       prompt: z.string().trim().min(1).max(4000).describe("What the chat should do when it wakes."),
@@ -3742,8 +3747,12 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       delaySeconds: z.number().int().positive().optional(),
       recurring: z.boolean().optional(),
       reason: z.string().max(500).optional(),
+      check: z.string().trim().min(1).max(1000).optional().describe(
+        "Recurring cron only. Shell command whose stdout changes when there is news, e.g. "
+        + "`gh pr checks 123 --json state --jq '.[].state'`. Keep timestamps and other noise out of it.",
+      ),
     }),
-    execute: async ({ sessionId, prompt, cron, runAt, delaySeconds, recurring, reason }) => {
+    execute: async ({ sessionId, prompt, cron, runAt, delaySeconds, recurring, reason, check }) => {
       const scheduledWork = deps.scheduledWorkService;
       if (!scheduledWork) return unavailable("Scheduled work");
       return attempt(() => scheduledWork.create({
@@ -3754,6 +3763,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         ...(delaySeconds != null ? { delaySeconds } : {}),
         ...(recurring != null ? { recurring } : {}),
         ...(reason?.trim() ? { reason: reason.trim() } : {}),
+        ...(check?.trim() ? { check: check.trim() } : {}),
       }));
     },
   }));

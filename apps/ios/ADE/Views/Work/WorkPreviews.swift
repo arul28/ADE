@@ -1627,6 +1627,7 @@ enum ADEPreviewScreen: String, CaseIterable {
   case ctoSettingsLook = "cto-settings-look"
   case ctoSettingsBrain = "cto-settings-brain"
   case ctoSettingsMemory = "cto-settings-memory"
+  case ctoSettingsRoutines = "cto-settings-routines"
   case ctoOffline = "cto-offline"
   /// The launch update gate: the phone's cover (App Store, TestFlight) and a
   /// machine's card (from the phone, too old, ADE Cloud). See `UpdateGateViews.swift`.
@@ -1939,7 +1940,7 @@ struct ADEPreviewScreenHost: View {
     case .passwordDetail:
       PasswordsPreviewHost(detail: true)
     case .ctoAvatar, .ctoWelcome, .ctoThread, .ctoSpawns, .ctoProfile, .ctoProfileLibrary,
-         .ctoSettingsLook, .ctoSettingsBrain, .ctoSettingsMemory, .ctoOffline:
+         .ctoSettingsLook, .ctoSettingsBrain, .ctoSettingsMemory, .ctoSettingsRoutines, .ctoOffline:
       CtoPreviewHost(screen: screen)
     case .updateGatePhone:
       PhoneUpdateGatePreviewHost()

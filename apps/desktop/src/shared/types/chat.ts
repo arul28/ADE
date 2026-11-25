@@ -6421,6 +6421,16 @@ export type AgentChatScheduledWorkItem = {
    * chat had a live turn. See `shared/chatAutoResume.ts`.
    */
   source?: "auto_resume_limit" | "update_restart";
+  /**
+   * A shell command run in the project folder before each fire of a cron. The
+   * chat wakes only when its output changed since the last run, or the first
+   * time it fails. Older hosts omit it.
+   */
+  check?: string;
+  /** When the check last ran (a quiet run included). */
+  lastCheckedAt?: string;
+  /** The check's last run failed; it wakes the chat again once it passes with new output. */
+  checkFailing?: boolean;
 };
 
 export type AgentChatListScheduledWorkArgs = {
@@ -6467,6 +6477,8 @@ export type AgentChatCreateScheduledWorkResult = {
   item: AgentChatScheduledWorkItem;
   /** IANA timezone the schedule was resolved in. */
   timeZone: string;
+  /** The check's first run, the baseline the next fires compare against. */
+  check?: { ok: boolean; exitCode: number | null; output: string };
 };
 
 /** One chat whose live turn an ADE restart would stop mid-flight. */

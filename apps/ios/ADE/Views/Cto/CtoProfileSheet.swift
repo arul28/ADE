@@ -99,10 +99,11 @@ struct CtoRoutineRow: View {
   private var title: String { ctoRoutineTitle(item) }
   private var canRunNow: Bool { item.source == nil && item.cancellable && store.canRunRoutines }
   private var canCancel: Bool { item.cancellable && store.canCancelRoutines }
+  private var hasCheck: Bool { item.check?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false }
 
   var body: some View {
     HStack(alignment: detailed ? .top : .center, spacing: 10) {
-      Image(systemName: item.kind == "wakeup" ? "alarm" : "arrow.triangle.2.circlepath")
+      Image(systemName: hasCheck ? "binoculars" : item.kind == "wakeup" ? "alarm" : "arrow.triangle.2.circlepath")
         .font(.system(size: 14, weight: .medium))
         .foregroundStyle(ADEColor.textMuted)
         .frame(width: 28)
@@ -125,6 +126,27 @@ struct CtoRoutineRow: View {
               .font(.footnote)
               .foregroundStyle(ADEColor.textSecondary)
               .lineLimit(2)
+          }
+          if let check = item.check?.trimmingCharacters(in: .whitespacesAndNewlines), !check.isEmpty {
+            TimelineView(.everyMinute) { context in
+              VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                  Text("Check")
+                    .foregroundStyle(ADEColor.textMuted)
+                  Text(check)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                }
+                if let status = ctoDescribeRoutineCheck(item, now: context.date) {
+                  Text(status.prefix(1).uppercased() + status.dropFirst())
+                    .foregroundStyle(item.checkFailing == true ? ADEColor.danger : ADEColor.textMuted)
+                }
+              }
+              .font(.footnote)
+            }
+            .accessibilityElement(children: .combine)
           }
           if let outcome = item.outcomeSummary?.trimmingCharacters(in: .whitespacesAndNewlines), !outcome.isEmpty {
             Text(outcome)
@@ -171,6 +193,7 @@ struct CtoRoutineRow: View {
 
   private func scheduleLine(now: Date) -> String {
     var parts = [ctoDescribeRoutineSchedule(item, now: now)]
+    if hasCheck { parts.append("on change") }
     if pending && ctoRoutineRowPaused(item) { parts.append("Off") }
     if item.late == true { parts.append("Late") }
     return parts.joined(separator: " · ")

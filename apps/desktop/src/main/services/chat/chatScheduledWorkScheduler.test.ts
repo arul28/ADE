@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  type ChatScheduledWorkCheckRun,
   type ChatScheduledWorkRecord,
   type ChatScheduledWorkState,
   createChatScheduledWorkScheduler,
@@ -1318,6 +1319,99 @@ describe("createChatScheduledWorkScheduler", () => {
     }));
     expect(scheduler.list()[0]?.activeTurnId).toBeUndefined();
     expect(requireState(state).schedules[0]?.activeTurnId).toBeUndefined();
+    scheduler.dispose();
+  });
+});
+
+describe("a cron's check", () => {
+  function checkedCron(overrides: Partial<ChatScheduledWorkRecord> = {}): ChatScheduledWorkRecord {
+    return wakeup({
+      id: "cron-check",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START + 60_000,
+      durable: true,
+      check: "gh pr checks 12",
+      checkHash: "hash-a",
+      ...overrides,
+    });
+  }
+
+  it("wakes only on new output, and once per failure", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const runs: ChatScheduledWorkCheckRun[] = [
+      { ok: true, outputHash: "hash-a", detail: "pending" },
+      { ok: true, outputHash: "hash-b", detail: "pass" },
+      { ok: false, detail: "Exited with code 1.", exitCode: 1 },
+      { ok: false, detail: "Exited with code 1.", exitCode: 1 },
+      // Back to the output from before the failure: not news.
+      { ok: true, outputHash: "hash-b", detail: "pass" },
+      { ok: true, outputHash: "hash-c", detail: "merged" },
+    ];
+    const runCheck = vi.fn(async () => runs.shift()!);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck,
+      fire,
+    });
+    await scheduler.start();
+
+    const woke: Array<string | undefined> = [];
+    for (let minute = 1; minute <= 6; minute += 1) {
+      const before = fire.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      const context = fire.mock.calls[before]?.[1] as { check?: { because: string } } | undefined;
+      woke.push(fire.mock.calls.length > before ? context?.check?.because ?? "no-check" : undefined);
+      // Every occurrence moves on, quiet or not.
+      expect(requireState(state).schedules[0]?.fireAt).toBe(START + (minute + 1) * 60_000);
+    }
+
+    expect(runCheck).toHaveBeenCalledTimes(6);
+    expect(woke).toEqual([undefined, "changed", "failed", undefined, undefined, "changed"]);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      checkHash: "hash-c",
+      lastCheckedAt: START + 6 * 60_000,
+      lastFiredAt: START + 6 * 60_000,
+    }));
+    expect(requireState(state).schedules[0]?.checkFailing).toBeUndefined();
+    scheduler.dispose();
+  });
+
+  it("lets a cancel that lands during the check win", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    let finishCheck: (run: ChatScheduledWorkCheckRun) => void = () => undefined;
+    const claims = sharedClaims();
+    const releaseFire = vi.fn(claims.releaseFire);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      claimFire: claims.claimFire,
+      releaseFire,
+      runCheck: () => new Promise((resolve) => { finishCheck = resolve; }),
+      fire,
+    });
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await scheduler.cancel("cron-check");
+    finishCheck({ ok: true, outputHash: "hash-new", detail: "news" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(releaseFire).toHaveBeenCalledTimes(1);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({ status: "cancelled", checkHash: "hash-a" }));
     scheduler.dispose();
   });
 });

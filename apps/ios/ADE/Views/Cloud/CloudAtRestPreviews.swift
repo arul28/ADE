@@ -287,7 +287,7 @@ enum CloudAtRestPreviews {
       userNotes: "Sam likes short PR descriptions and one change per PR.",
       openWork: "Fix flaky upload test is pushed and waits for review on PR #412. Next: the changelog for Thursday.",
       routines: [
-        CloudCtoCopy.Routine(title: "Morning PR sweep", cron: "0 9 * * 1-5", paused: false),
+        CloudCtoCopy.Routine(title: "Morning PR sweep", cron: "0 9 * * 1-5", paused: false, check: "gh pr list --json number,state"),
         CloudCtoCopy.Routine(title: "Weekly dependency check", cron: "0 8 * * 1", paused: true),
       ],
       tail: "Sam: Push it and open a PR.\n\nAtlas: Pushed fix-flaky-upload-test and opened PR #412. The test now waits on the upload's done event instead of a fixed sleep; 50 runs passed.",

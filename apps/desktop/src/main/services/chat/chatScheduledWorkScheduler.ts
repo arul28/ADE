@@ -81,6 +81,71 @@ export type ChatScheduledWorkRecord = {
    * resuming at a cap, so a chat that crashes ADE cannot loop (T3 #18461).
    */
   restartResumeStreak?: number;
+  /**
+   * A shell command run in the project folder before each fire of a cron.
+   * The fire goes ahead only when its output differs from the last run's, or
+   * the first time it fails (see `decideScheduledWorkCheck`).
+   */
+  check?: string;
+  /** sha256 of the check's last passing output. */
+  checkHash?: string;
+  /** The last check failed, and the fire it woke has been sent. */
+  checkFailing?: boolean;
+  lastCheckedAt?: number;
+};
+
+/** One run of a row's check. */
+export type ChatScheduledWorkCheckRun = {
+  ok: boolean;
+  /** sha256 of the output; set when `ok`. */
+  outputHash?: string;
+  /** The end of the output (or why it failed), for the wake message. */
+  detail: string;
+  exitCode?: number | null;
+};
+
+/** What a check run means for the fire it gates. */
+export type ChatScheduledWorkCheckDecision = {
+  wake: boolean;
+  /** Why it wakes; absent when it does not. */
+  because?: "changed" | "failed";
+  checkHash?: string;
+  checkFailing: boolean;
+};
+
+/**
+ * Wake only on news. A passing check wakes when its output hash differs from
+ * the stored one. A failing check wakes once, then stays quiet until it passes
+ * again. The stored hash survives the failure, so a pass that brings back the
+ * output from before it is not news either.
+ */
+export function decideScheduledWorkCheck(
+  previous: Pick<ChatScheduledWorkRecord, "checkHash" | "checkFailing">,
+  run: Pick<ChatScheduledWorkCheckRun, "ok" | "outputHash">,
+): ChatScheduledWorkCheckDecision {
+  if (!run.ok || !run.outputHash) {
+    const wake = previous.checkFailing !== true;
+    return {
+      wake,
+      ...(wake ? { because: "failed" as const } : {}),
+      ...(previous.checkHash ? { checkHash: previous.checkHash } : {}),
+      checkFailing: true,
+    };
+  }
+  const changed = run.outputHash !== previous.checkHash;
+  return {
+    wake: changed,
+    ...(changed ? { because: "changed" as const } : {}),
+    checkHash: run.outputHash,
+    checkFailing: false,
+  };
+}
+
+/** Handed to `fire` when a check let the fire through. */
+export type ChatScheduledWorkCheckWake = {
+  because: "changed" | "failed";
+  detail: string;
+  exitCode?: number | null;
 };
 
 export type ChatScheduledWorkState = {
@@ -138,8 +203,18 @@ export type ChatScheduledWorkSchedulerOptions = {
   fire(
     schedule: ChatScheduledWorkRecord,
     /** `manual`: a person pressed Run now; the schedule itself is unchanged. */
-    context: { late: boolean; manual?: boolean },
+    context: {
+      late: boolean;
+      manual?: boolean;
+      /** The check that let this fire through, and what it saw. */
+      check?: ChatScheduledWorkCheckWake;
+    },
   ): Promise<void | { complete: true; outcomeSummary?: string } | { retry: true }>;
+  /**
+   * Runs a cron's `check`. Absent: rows fire as if they had none. A throw
+   * counts as a failed check.
+   */
+  runCheck?(schedule: ChatScheduledWorkRecord): Promise<ChatScheduledWorkCheckRun>;
   onTransition?: (
     schedule: ChatScheduledWorkRecord,
     status: ChatScheduledWorkStatus,
@@ -274,6 +349,10 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
       && record.restartResumeStreak >= 0
       ? { restartResumeStreak: record.restartResumeStreak }
       : {}),
+    ...(typeof record.check === "string" && record.check.trim() ? { check: record.check } : {}),
+    ...(typeof record.checkHash === "string" && record.checkHash ? { checkHash: record.checkHash } : {}),
+    ...(record.checkFailing === true ? { checkFailing: true } : {}),
+    ...(readTimestamp(record.lastCheckedAt) != null ? { lastCheckedAt: readTimestamp(record.lastCheckedAt) } : {}),
   };
 }
 
@@ -456,6 +535,44 @@ export function createChatScheduledWorkScheduler(
     }
 
     inFlight.add(scheduleId);
+    let checkWake: ChatScheduledWorkCheckWake | undefined;
+    if (schedule.kind === "cron" && schedule.check && options.runCheck) {
+      let run: ChatScheduledWorkCheckRun;
+      try {
+        run = await options.runCheck(cloneSchedule(schedule));
+      } catch (error) {
+        run = { ok: false, detail: error instanceof Error ? error.message : String(error) };
+      }
+      // A cancel, a pause or a replacement can land while the check runs; it wins.
+      if (disposed || schedules.get(scheduleId) !== schedule || schedule.status !== "scheduled") {
+        inFlight.delete(scheduleId);
+        options.releaseFire?.(cloneSchedule(schedule));
+        return;
+      }
+      const decision = decideScheduledWorkCheck(schedule, run);
+      // A check that wakes is stamped with the fire's own time, so a reader can
+      // tell it from a later quiet one.
+      schedule.lastCheckedAt = decision.wake ? currentTime : now();
+      if (decision.checkHash) schedule.checkHash = decision.checkHash;
+      else delete schedule.checkHash;
+      if (decision.checkFailing) schedule.checkFailing = true;
+      else delete schedule.checkFailing;
+      if (!decision.wake) {
+        // Nothing new: the occurrence is spent without a turn. Its claim
+        // stays, so another brain follows the moved fireAt instead.
+        schedule.fireAt = nextCronOccurrence(schedule, now());
+        inFlight.delete(scheduleId);
+        await persist();
+        await emitTransition(schedule, schedule.status);
+        arm(schedule);
+        return;
+      }
+      checkWake = {
+        because: decision.because ?? "changed",
+        detail: run.detail,
+        ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
+      };
+    }
     const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
     const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
     const previousLastFiredAt = schedule.lastFiredAt;
@@ -494,7 +611,7 @@ export function createChatScheduledWorkScheduler(
     let retry = false;
     let outcomeSummary: string | undefined;
     try {
-      const result = await options.fire(cloneSchedule(schedule), { late });
+      const result = await options.fire(cloneSchedule(schedule), { late, ...(checkWake ? { check: checkWake } : {}) });
       complete = result != null && "complete" in result && result.complete === true;
       retry = result != null && "retry" in result && result.retry === true;
       if (result != null && "outcomeSummary" in result && result.outcomeSummary) {

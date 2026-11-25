@@ -32,10 +32,17 @@ export type ReapedCommandResult = {
 export function runReapedCommand(
   command: string,
   args: readonly string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number; maxBuffer?: number },
+  options: {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    timeoutMs: number;
+    maxBuffer?: number;
+    /** A `cmd.exe /d /s /c "…"` line (`resolveWindowsCmdLineInvocation`). The off-thread spawner cannot pass it. */
+    windowsVerbatimArguments?: boolean;
+  },
 ): Promise<ReapedCommandResult> {
   const maxBuffer = options.maxBuffer ?? 1024 * 1024;
-  if (offThreadSpawnEnabled()) {
+  if (offThreadSpawnEnabled() && !options.windowsVerbatimArguments) {
     return execFileOffThread(command, args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
@@ -51,6 +58,7 @@ export function runReapedCommand(
         env: options.env ?? process.env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        ...(options.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         // Its own process group, so the group kill below reaches its helpers.
         // Never on Windows: there it would start the command with no console.
         detached: process.platform !== "win32",

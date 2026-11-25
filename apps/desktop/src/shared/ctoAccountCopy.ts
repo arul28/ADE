@@ -29,6 +29,8 @@ export type CtoAccountCopyRoutine = {
   timeZone?: string;
   reason?: string;
   paused?: boolean;
+  /** The routine's check: it wakes the CTO only when this command's output changes. */
+  check?: string;
 };
 
 export type CtoAccountCopy = {
