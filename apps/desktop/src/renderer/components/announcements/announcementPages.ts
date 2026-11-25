@@ -43,7 +43,7 @@ type PageModule = { default: ComponentType<AnnouncementPageProps> };
 function lazyPage(importPage: () => Promise<PageModule>): Pick<AnnouncementPageDef, "Page" | "load"> {
   let loading: Promise<PageModule> | null = null;
   const load = () => {
-    // A failed fetch is not kept: the next showing tries again.
+    // A failed fetch ahead of time is not kept, so `Page` tries once more when it renders.
     loading ??= importPage().catch((error: unknown) => {
       loading = null;
       throw error;

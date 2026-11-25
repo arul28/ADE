@@ -111,14 +111,6 @@ export function AnnouncementsHost() {
   const inProject = useAppStore((state) => Boolean(state.project) && !state.showWelcome);
   const [showing, setShowing] = useState<Showing | null>(null);
   const [shownThisLaunch, setShownThisLaunch] = useState(false);
-  // A showing opens once its first page's code is in; the host may be gone by then.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
 
   useEffect(() => {
     const openAll = () => {
@@ -144,16 +136,15 @@ export function AnnouncementsHost() {
       const inputWatch = watchInput();
       // The account's copy is read while the splash plays, and the pages are
       // picked once it is in (or given up on), like the in-project showing.
+      const accountRead = reconcileSeenAnnouncements();
       // The page likely to show first loads while the splash plays too.
-      const accountRead = Promise.all([reconcileSeenAnnouncements(), firstPageReady(dueAnnouncements())]);
+      void firstPageReady(dueAnnouncements());
       let cancelled = false;
       let quietTimer: number | null = null;
-      const show = async (from: ScreenBox | null) => {
+      const show = (pages: readonly AnnouncementPageDef[], fromSplash: boolean) => {
         inputWatch.stop();
-        const pages = unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : [];
-        // Already in unless the account's copy changed which page comes first.
-        await firstPageReady(pages);
-        if (cancelled || !mountedRef.current) return;
+        // Read now, not when the splash went: after a long wait the box is stale, and the logo rises in the middle.
+        const from = fromSplash ? bootSplashLogoBox() : null;
         setShowing({
           pages,
           notes: {
@@ -168,17 +159,21 @@ export function AnnouncementsHost() {
         });
       };
       const cancelSplash = afterBootSplash(() => {
-        const from = bootSplashLogoBox();
-        void accountRead.then(() => {
+        void accountRead.then(async () => {
+          if (cancelled) return;
+          const pages = unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : [];
+          // Only a page that will show is waited for; it usually loaded while the splash played.
+          // The quiet moment is judged after the wait, so a wait never opens over new typing.
+          await firstPageReady(pages);
           if (cancelled) return;
           // Straight from the splash only when nobody has touched ADE yet.
-          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return void show(from);
+          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return show(pages, true);
           // Otherwise wait for a quiet moment, then rise in the middle.
           quietTimer = window.setInterval(() => {
             if (cancelled || !quietNow(inputWatch, inputWatch.lastInputAt())) return;
             if (quietTimer != null) window.clearInterval(quietTimer);
             quietTimer = null;
-            void show(null);
+            show(pages, false);
           }, CHECK_INTERVAL_MS);
         });
       });
@@ -213,6 +208,15 @@ export function AnnouncementsHost() {
     void reconcileSeenAnnouncements().then(() => {
       accountRead = true;
     });
+    // A showing opens only once its first page's code is in. The page loads
+    // while the project settles; a check that finds it still loading waits
+    // for the next check, which asks every question below again.
+    let readyPageId: string | null = null;
+    const prepare = (pages: readonly AnnouncementPageDef[]) => {
+      const first = pages[0];
+      if (first) void firstPageReady(pages).then(() => { readyPageId = first.id; });
+    };
+    prepare(dueAnnouncements());
     const check = () => {
       if (!accountRead || Date.now() - since < SETTLE_MS) return;
       if (!quietNow(input, input.lastInputAt() ?? since)) return;
@@ -223,14 +227,15 @@ export function AnnouncementsHost() {
         return;
       }
       if (launchGateOpen()) return;
+      const pages = inProjectShowingAllowed() ? dueAnnouncements() : [];
+      if (pages[0] && readyPageId !== pages[0].id) {
+        prepare(pages);
+        return;
+      }
       setShownThisLaunch(true);
-      if (!inProjectShowingAllowed()) return;
-      const pages = dueAnnouncements();
       if (pages.length === 0) return;
       markShowing();
-      void firstPageReady(pages).then(() => {
-        if (mountedRef.current) setShowing({ pages, notes: null, unasked: true });
-      });
+      setShowing({ pages, notes: null, unasked: true });
     };
     const interval = window.setInterval(check, CHECK_INTERVAL_MS);
     return () => {
@@ -258,9 +263,10 @@ export function AnnouncementsHost() {
 }
 
 /**
- * Resolves once the first page's code is in, or failed to load (its Suspense
- * then tries again). The page's entrance is timed from when it mounts, so a
- * showing that opened before its page loaded sat empty while it loaded.
+ * Resolves once the first page's code is in, or failed to load (the page then
+ * tries once more when it renders). The page's entrance is timed from when it
+ * mounts, so a showing that opened before its page loaded sat empty while it
+ * loaded.
  */
 function firstPageReady(pages: readonly AnnouncementPageDef[]): Promise<void> {
   const first = pages[0];
