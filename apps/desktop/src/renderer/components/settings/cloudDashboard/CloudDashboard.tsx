@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, Broom, Cpu, Desktop, MagnifyingGlass, Trash } from "@phosphor-icons/react";
 import {
   CLOUD_FREE_GITHUB_BANNER_ID,
   CLOUD_FREE_REFUSED_BANNER_ID,
   CLOUD_PLAN_LABELS,
   cloudAccountBanner,
+  type CloudAccountBanner,
   cloudAccountComputers,
   cloudEarnedHoursOf,
   cloudExtraHourCentsOf,
@@ -37,7 +38,7 @@ import { ADE_CLOUD_NAME, CloudLogo, CloudMark, CloudSizeIcon } from "../../remot
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
-import { Banner } from "../../ui/notice";
+import { Banner, type NoticeAction } from "../../ui/notice";
 import { cloudFreeGithubHeroLine } from "./CloudFreeGithubNotice";
 import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
@@ -278,36 +279,15 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
   return (
     <div id={CLOUD_DASHBOARD_ID} className="adecd" aria-label={`${ADE_CLOUD_NAME} dashboard`}>
-      <CloudHero account={account} now={now} celebrating={moment != null} />
+      <CloudHero
+        account={account}
+        now={now}
+        celebrating={moment != null}
+        moment={moment ? { key: moment.key, ...cloudPlanMomentWords(moment) } : null}
+        status={banner}
+        onUpdateCard={window.ade.cloud?.openBillingPortal ? () => void openBillingPortal() : null}
+      />
 
-      {moment ? (
-        <Banner
-          layout="inline"
-          model={{
-            id: `cloud-plan-moment-${moment.key}`,
-            tone: "success",
-            icon: <CloudLogo size={14} glow />,
-            ...cloudPlanMomentWords(moment),
-            actions: [{ label: "See your plan", onClick: () => document.getElementById("cloud-plan")?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" }) }],
-            dismiss: { onDismiss: dismissCloudPlanMoment },
-            report: false,
-          }}
-        />
-      ) : null}
-
-      {banner ? (
-        <Banner
-          layout="inline"
-          model={{
-            ...banner,
-            // A failed payment says to update the card: the way there, on the notice.
-            ...(banner.id === "cloud-hours-past-due" && window.ade.cloud?.openBillingPortal
-              ? { actions: [{ label: "Update card", variant: "primary" as const, onClick: () => void openBillingPortal() }] }
-              : {}),
-            report: false,
-          }}
-        />
-      ) : null}
       <PlanNotices account={account} onChanged={refresh} />
       <CloudIdleCleanupNotices account={account} now={now} onChanged={refresh} />
 
@@ -400,11 +380,20 @@ function CloudHero({
   account,
   now,
   celebrating,
+  moment,
+  status,
+  onUpdateCard,
 }: {
   account: CloudAccountState;
   now: number;
   /** A plan just landed: the plan's name glows once. */
   celebrating: boolean;
+  /** "You're on Plus", once after a plan lands (`cloudPlanMoment.ts`): said inside the hero, dismissable. */
+  moment: { key: string; title: string; detail: string } | null;
+  /** Out of credits, nearly out, a failed payment: said inside the hero, in its own sky (`cloudAccountBanner`). */
+  status: CloudAccountBanner | null;
+  /** Opens the billing portal, for a failed payment; null where there is none. */
+  onUpdateCard: (() => void) | null;
 }) {
   const heroRef = useRef<HTMLElement | null>(null);
   useStillWhenHidden(heroRef);
@@ -442,7 +431,16 @@ function CloudHero({
   const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.shownMilli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
   const extra = account.extraHours;
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
-  const stopsWhen = "Stops when credits run out";
+  const keepsGoing = extra.available && extra.enabled;
+  // Small never uses credits (unless the catalog rates it), so only the bigger sizes pause.
+  // Free credits held (GitHub rules, or another account used them here) don't come back at the reset, and nothing runs.
+  const pauseLine = held
+    ? earned > 0
+      ? "Your earned credits run your computers. Once they're used, cloud computers wait until the free plan's check clears, or you pick a paid plan."
+      : "Cloud computers wait until the free plan's check clears, or you pick a paid plan."
+    : smallRateMilli > 0
+    ? `Cloud computers pause until ${formatCloudDate(account.billing.periodEnd)}.`
+    : `Bigger computers pause until ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
   return (
     <section ref={heroRef} className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
       <CloudSky />
@@ -485,41 +483,99 @@ function CloudHero({
             ) : null}
           </ul>
         </div>
-        <div className="adecd-hero-part" role="group" aria-label="Cloud computers" title="Every cloud computer counts toward your plan, asleep or not.">
-          <span className="adecd-label">Cloud computers</span>
-          <div className="adecd-part-num">
-            <b className="kit-num" data-face="ui">{computers.total}</b>
-            <span>of {computers.limit}</span>
-          </div>
-          <span className="adecd-part-line">{account.computers.awake} awake now</span>
-        </div>
-        <div className="adecd-hero-part" role="group" aria-label="Past your plan">
-          <span className="adecd-label">Past your plan</span>
-          {extra.available ? (
-            <>
-              <div className="adecd-part-state" data-on={extra.enabled || undefined}>
-                <i aria-hidden="true" />
-                <b>{extra.enabled ? "On" : "Off"}</b>
+        <div className="adecd-hero-rail">
+          <div className="adecd-hero-stat" role="group" aria-label="Cloud computers" title="Every cloud computer counts toward your plan, asleep or not.">
+            <span className="adecd-label">Cloud computers</span>
+            <div className="adecd-stat-row">
+              <div className="adecd-part-num">
+                <b className="kit-num" data-face="ui">{computers.total}</b>
+                <span>of {computers.limit}</span>
               </div>
-              <span className="adecd-part-line">
-                {extra.enabled
-                  ? `${formatCloudCentsPerHour(extraCents)} ${words.perUnit}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} used past your plan this month.` : ""}`
-                  : `${stopsWhen}.`}
-              </span>
-              <button type="button" className="adecd-linkish adecd-part-link" onClick={toExtra}>{extra.enabled ? `Change ${words.extra.toLowerCase()}` : `Turn on ${words.extra.toLowerCase()}`}</button>
-            </>
-          ) : (
-            <>
-              <div className="adecd-part-state"><i aria-hidden="true" /><b>{account.plan === "free" ? "Stops" : "Off"}</b></div>
-              <span className="adecd-part-line">{`${stopsWhen}.`}{account.plan === "free" ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}</span>
-              {account.plan === "free" ? <button type="button" className="adecd-linkish adecd-part-link" onClick={toPlans}>See paid plans</button> : null}
-            </>
-          )}
+              <ComputerWindows total={computers.total} limit={computers.limit} awake={account.computers.awake} />
+            </div>
+            <span className="adecd-part-line">{account.computers.awake} awake now</span>
+          </div>
+          <div className="adecd-hero-stat" role="group" aria-label={WHEN_CREDITS_RUN_OUT}>
+            <span className="adecd-label">{WHEN_CREDITS_RUN_OUT}</span>
+            <div className="adecd-stat-row">
+              <div className="adecd-part-state" data-on={keepsGoing || undefined}>
+                <i aria-hidden="true" />
+                <b>{keepsGoing ? "Keep going" : "Pause"}</b>
+              </div>
+              {extra.available ? (
+                <button type="button" className="adecd-linkish adecd-part-link" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on"}</button>
+              ) : account.plan === "free" ? (
+                <button type="button" className="adecd-linkish adecd-part-link" onClick={toPlans}>See paid plans</button>
+              ) : null}
+            </div>
+            <span className="adecd-part-line">
+              {keepsGoing
+                ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
+                : `${pauseLine}${account.plan === "free" && !held ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}`}
+            </span>
+          </div>
         </div>
       </div>
+      {moment ? (
+        <Banner
+          layout="inline"
+          surface="night"
+          style={{ position: "relative", marginTop: 12 }}
+          model={{
+            id: `cloud-plan-moment-${moment.key}`,
+            tone: "success",
+            icon: <CloudLogo size={14} glow />,
+            title: moment.title,
+            detail: moment.detail,
+            actions: [{ label: "See your plan", onClick: toPlans }],
+            dismiss: { onDismiss: dismissCloudPlanMoment },
+            report: false,
+          }}
+        />
+      ) : null}
+      {status ? (
+        <Banner
+          layout="inline"
+          surface="night"
+          style={{ position: "relative", marginTop: 12 }}
+          model={{ ...status, actions: statusActions(status, account, { onExtra: toExtra, onPlans: toPlans, onUpdateCard }), report: false }}
+        />
+      ) : null}
     </section>
   );
 }
+
+/**
+ * The plan's lit windows: one per computer the plan allows (up to 20), lit for
+ * each computer the account has, glowing for each awake one, like the
+ * buildings on the pricing page.
+ */
+function ComputerWindows({ total, limit, awake }: { total: number; limit: number; awake: number }) {
+  const slots = Math.min(20, Math.max(limit, total));
+  if (slots <= 0) return null;
+  return (
+    <span className="adecd-windows" aria-hidden="true" data-many={slots > 10 || undefined} style={{ "--adecd-window-cols": Math.min(slots, slots > 10 ? 10 : 5) } as CSSProperties}>
+      {Array.from({ length: slots }, (_, index) => (
+        <i key={index} data-state={index < awake ? "awake" : index < total ? "asleep" : undefined} />
+      ))}
+    </span>
+  );
+}
+
+/** The one thing to do about the account's urgent line; none when there is nothing to do. */
+function statusActions(
+  status: CloudAccountBanner,
+  account: CloudAccountState,
+  to: { onExtra: () => void; onPlans: () => void; onUpdateCard: (() => void) | null },
+): NoticeAction[] {
+  if (status.id === "cloud-hours-past-due") return to.onUpdateCard ? [{ label: "Update card", variant: "primary", onClick: to.onUpdateCard }] : [];
+  if (status.id === "cloud-hours-restored") return [];
+  const extra = account.extraHours;
+  if (!extra.available) return [{ label: "Compare plans", onClick: to.onPlans }];
+  return extra.enabled ? [] : [{ label: `Turn on ${cloudUnitWords(account).extra.toLowerCase()}`, onClick: to.onExtra }];
+}
+
+const WHEN_CREDITS_RUN_OUT = "When credits run out";
 
 /** Every lane and every computer the account pays for, one row each; the selected row opens its actions under it. */
 function LaneTable({

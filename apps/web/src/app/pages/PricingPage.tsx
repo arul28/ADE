@@ -607,7 +607,7 @@ function ExtraCard() {
             <span className="font-display text-[56px] leading-none" style={{ color: AMBER.color }}>
               {formatCents(onePrice)}
             </span>
-            <span className="text-[15px] text-white/55">for each {UNIT.one} past your plan's</span>
+            <span className="text-[15px] text-white/55">for each {UNIT.one} once your plan's run out</span>
           </p>
           <div className="mt-6">
             <CheckList accent={AMBER} items={[`On ${listNames(PAID_PLANS.map((plan) => plan.name))}`, "Billed after use", "Turn it on in ADE Cloud settings"]} />

@@ -9,7 +9,7 @@
  * - `NoticePopover`: the card a one-line notice opens (`InlineErrorNotice`, a crash pin)
  * - `noticeTone`: the shared tone palette
  */
-export { Banner, type BannerDismiss, type BannerLayout, type BannerModel } from "./Banner";
+export { Banner, type BannerDismiss, type BannerLayout, type BannerModel, type BannerSurface } from "./Banner";
 export { AppBannerHost } from "./AppBannerHost";
 export { AppSuggestionCard, useVisibleAppSuggestion } from "./AppSuggestionStack";
 export {

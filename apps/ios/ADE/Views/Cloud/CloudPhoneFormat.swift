@@ -28,7 +28,7 @@ func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote
   if let earned = account.earnedHours, earned.leftMilli > 0 {
     notes.append(.init(text: "+\(words.amount(earned.leftMilli)) earned", tone: .lamp))
   }
-  // Extra credits have their own tile on the hero ("Past your plan").
+  // Extra credits have their own tile on the hero ("When credits run out").
   if let forecast = cloudHoursForecast(account, now: now) {
     notes.append(.init(text: forecast, tone: .chip))
   }

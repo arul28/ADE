@@ -444,9 +444,10 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-glassbtn:focus-visible { outline: 2px solid var(--adec-lamp); outline-offset: 2px; }
 
 /*
- * The hero: the night sky, the plan and when it resets on top, then three
- * parts in a row (stacked when narrow): what is left of the plan, the cloud
- * computers, and what happens past the plan. Every line wraps: nothing is
+ * The hero: the night sky, the plan and when it resets on top, then what is
+ * left of the plan beside a rail of the cloud computers and what happens when
+ * credits run out (stacked when narrow), then the account's notice if any (a
+ * `Banner` on the hero's glass). Every line wraps: nothing is
  * cut off at any width.
  */
 .adecd-hero {
@@ -486,7 +487,7 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-hero-parts {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
   gap: 12px;
   margin-top: 18px;
 }
@@ -593,10 +594,47 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   cursor: pointer;
 }
 
-/* Two rows (the balance, then the other two side by side), then one column. */
+/* The right rail: the computers and what happens past the plan, two short glass rows sized to what they say. */
+.adecd-hero-rail { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.adecd-hero-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--adecd-glass-edge);
+  border-radius: 14px;
+  background: rgba(14, 10, 40, 0.42);
+  backdrop-filter: blur(10px);
+}
+.adecd-hero-rail > .adecd-hero-stat:last-child { flex: 1; }
+.adecd-stat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.adecd-stat-row .adecd-linkish.adecd-part-link { margin-top: 0; padding-top: 0; align-self: center; white-space: nowrap; }
+
+/* The plan's computers as lit windows: lamp-gold when awake, dim violet when asleep, dark when free. */
+.adecd-windows {
+  display: grid;
+  grid-template-columns: repeat(var(--adecd-window-cols, 5), 9px);
+  gap: 4px;
+  padding: 6px;
+  border-radius: 6px;
+  background: rgba(8, 6, 26, 0.7);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+.adecd-windows[data-many] { grid-template-columns: repeat(var(--adecd-window-cols, 10), 7px); gap: 3px; }
+.adecd-windows i { height: 7px; border-radius: 2px; background: rgba(129, 115, 220, 0.18); }
+.adecd-windows[data-many] i { height: 6px; }
+.adecd-windows i[data-state="asleep"] { background: rgba(167, 139, 250, 0.55); }
+.adecd-windows i[data-state="awake"] { background: var(--adec-lamp); box-shadow: 0 0 6px rgba(255, 210, 122, 0.7); }
+
+/* Narrow: the balance on top, the two rail rows side by side under it, then one column. */
 @container adecdhero (max-width: 760px) {
-  .adecd-hero-parts { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .adecd-hero-balance { grid-column: 1 / -1; }
+  .adecd-hero-parts { grid-template-columns: minmax(0, 1fr); }
+  .adecd-hero-rail { flex-direction: row; }
+  .adecd-hero-rail > .adecd-hero-stat { flex: 1 1 0; }
+}
+@container adecdhero (max-width: 480px) {
+  .adecd-hero-rail { flex-direction: column; }
 }
 @container adecdhero (max-width: 460px) {
   .adecd-hero { padding: 16px 14px 18px; }

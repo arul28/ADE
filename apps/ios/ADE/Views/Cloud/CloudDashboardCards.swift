@@ -329,7 +329,7 @@ struct CloudHero: View {
         )
       }
       if let past = pastYourPlan(account, words: words) {
-        CloudMiniMeter(label: "Past your plan", value: past.value, of: nil, fraction: nil, note: past.note)
+        CloudMiniMeter(label: "When credits run out", value: past.value, of: nil, fraction: nil, note: past.note)
       }
     }
     // The two tiles stand as tall as the taller one.
@@ -340,11 +340,19 @@ struct CloudHero: View {
   /// stopping. No price here (App Store 3.1.1); the desktop shows it.
   private func pastYourPlan(_ account: CloudPhoneAccount, words: CloudBalanceWords) -> (value: String, note: String)? {
     if let extra = account.extraHours, extra.available {
-      guard extra.enabled else { return ("Off", "Stops when the plan's \(words.unit) run out") }
+      guard extra.enabled else { return ("Pause", "Bigger computers pause until the plan renews") }
       let used = extra.usedMilli ?? 0
-      return ("On", used > 0 ? "\(words.amount(used)) used past the plan" : "Keeps going when the plan's \(words.unit) run out")
+      return ("Keep going", used > 0 ? "\(words.amount(used)) extra this month" : "Extra \(words.unit), billed after use")
     }
-    if account.plan == "free" { return ("Stops", "The free plan stops when its \(words.unit) run out") }
+    if account.plan == "free" {
+      // Held free credits (GitHub check, or refused here) don't come back at the reset: say what clears the hold.
+      if freeHoursHeld(account) {
+        let wait = "cloud computers wait until the free plan's check clears, or you pick a plan"
+        return ("Pause", (account.earnedHours?.leftMilli ?? 0) > 0 ? "Earned \(words.unit) run them first; then \(wait)" : "C" + wait.dropFirst())
+      }
+      // Free with sponsored cards off rates Small too: then every computer pauses.
+      return ("Pause", cloudSmallTierUsingHours(account) != nil ? "Cloud computers pause until next month" : "Bigger computers pause until next month")
+    }
     return nil
   }
 }
