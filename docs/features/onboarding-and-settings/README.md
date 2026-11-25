@@ -1522,14 +1522,17 @@ pager.
 
 ### The agree line and the privacy policy notice
 
-Every sign-up shows "By continuing, you agree to ADE's Terms and Privacy
-Policy" with links: the shared sign-in card (`onboarding/GlassSignInCard.tsx`,
+Every sign-in path shows "By continuing, you agree to ADE's Terms and
+Privacy Policy" with links: the shared sign-in card (`onboarding/GlassSignInCard.tsx`,
 which covers the desktop gate, ADE Web and the `/sign-in` page that a desktop
 or `ade login` sign-in opens), the device-code pages on the account directory
 (`LEGAL_AGREEMENT_HTML` in `apps/account-directory/src/brandPage.ts`), the
 `ade login` text (`SIGN_IN_LEGAL_LINE`), and the iPhone's
 `AccountSignInView`. Clerk's own hosted page, the fallback when Clerk's API
 cannot be reached from the card, shows Clerk's legal-consent setting instead.
+The card, the device-code pages and `ade login` take the links from
+`shared/legalLinks.ts`; the iPhone keeps them as literals, because SwiftUI
+parses Markdown links only in a string literal.
 
 When the policy changes, existing users see "We updated our Privacy Policy"
 once: a floating app banner on desktop and ADE Web
