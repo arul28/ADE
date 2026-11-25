@@ -1336,6 +1336,57 @@ describe("createAgentChatService", () => {
     });
 
     /**
+     * A CTO model switch on OpenCode drops the provider session, so the next
+     * send opens a new one. The CTO rebuilds its context before the runtime
+     * starts. That thread has never seen the conversation, and its id
+     * is unknown until after the first send, so only the teardown can know the
+     * tail is owed.
+     */
+    it("sends the conversation tail on the first CTO send after an OpenCode model switch", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        ctoStateService,
+        ctoMemoryService,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        identityKey: "cto",
+      });
+      const turn = async (text: string): Promise<{ sessionID: string; text?: string }> => {
+        const before = events.filter((entry) => entry.event.type === "done").length;
+        mockState.openCodePromptCalls.length = 0;
+        await service.sendMessage({ sessionId: session.id, text }, { awaitDispatch: true });
+        await vi.waitFor(() => {
+          expect(mockState.openCodePromptCalls).toHaveLength(1);
+          expect(events.filter((entry) => entry.event.type === "done").length).toBeGreaterThan(before);
+        });
+        return mockState.openCodePromptCalls[0]!;
+      };
+
+      await turn("Remember the code word KIWI-7.");
+      // A thread that has run a turn: its key is a real id and nothing is armed.
+      await turn("Got it?");
+      const settled = await turn("Good.");
+      expect(settled.text).not.toContain("Recent Conversation Tail");
+      await service.updateSession({ sessionId: session.id, modelId: "opencode/anthropic/claude-sonnet-5" });
+      const afterSwitch = await turn("Which code word did I give you?");
+
+      expect(afterSwitch.text).toContain("Recent Conversation Tail");
+      expect(afterSwitch.text).toContain("KIWI-7");
+      // Delivered once: the new thread holds it from here on.
+      const next = await turn("Thanks.");
+      expect(next.text).not.toContain("Recent Conversation Tail");
+
+      service.forceDisposeAll();
+      db.close();
+    });
+
+    /**
      * A provider-side conversation reset opens a brand-new Claude conversation
      * under the SAME runtime handle. Nothing the staging looks at moves — the
      * handle is the thread's identity of last resort — so the doctrine that
