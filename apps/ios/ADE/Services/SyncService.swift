@@ -323,6 +323,22 @@ func syncResultTooLargeMessage(for error: Error) -> String {
   return "This was too large to send to your phone\(size). Open one item at a time instead."
 }
 
+/// An ADE Cloud computer that a move to a new computer holds refuses what
+/// starts a turn (a send, a launch, text for a CLI) with this code
+/// (`CLOUD_COMPUTER_MOVING_CODE`, `cloudMoveMark.ts`). The host sends its
+/// sentence as the message and the code apart, so the sentence shows as it
+/// is. An older brain never sends it.
+let syncCloudComputerMovingCode = "computer_moving"
+
+func isSyncCloudMoveRefusal(_ error: Error) -> Bool {
+  (error as NSError).userInfo["ADEErrorCode"] as? String == syncCloudComputerMovingCode
+}
+
+/// A refused send with files or comments during a move: the account's queue
+/// can't take what is already on the old computer, so they stay in the
+/// composer. The desktop's line (`CHAT_MOVE_HOLDS_FILES_MESSAGE`).
+let syncChatMoveHoldsFilesMessage = "Files and comments can't go while this chat's computer moves. They stay here; send them once the move is done."
+
 /// Same rule as the host's `prs.refresh` "active" default: open or draft PRs,
 /// and PRs whose lane is still live. Order follows the list.
 func syncActivePullRequestIds(_ prs: [PrSummary], liveLaneIds: Set<String>) -> [String] {
@@ -17220,24 +17236,75 @@ final class SyncService: ObservableObject {
     if (attachments ?? []).isEmpty, !cloudFiles.isEmpty {
       throw CloudChatFilesNeedLiveLink()
     }
-    let response = try await sendCommand(
-      action: chatActionName("chat.send", sessionId: sessionId),
-      args: args,
-      // A chat timeout is ambiguous: the host may have started the turn without
-      // returning the command result. Never auto-resend it. Do run the same
-      // health-gated liveness probe as other requests so a silent socket starts
-      // service-owned recovery while the composer restores the user's draft.
-      disconnectOnTimeout: true,
-      timeoutMessage: SyncRequestTimeout.chatSendMessage,
-      timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
-      targetProjectId: targetProjectId ?? scope.projectId,
-      targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
-      attemptedLiveFailurePolicy: .preserveForManualRetry
-    )
+    let response: Any
+    do {
+      response = try await sendCommand(
+        action: chatActionName("chat.send", sessionId: sessionId),
+        args: args,
+        // A chat timeout is ambiguous: the host may have started the turn without
+        // returning the command result. Never auto-resend it. Do run the same
+        // health-gated liveness probe as other requests so a silent socket starts
+        // service-owned recovery while the composer restores the user's draft.
+        disconnectOnTimeout: true,
+        timeoutMessage: SyncRequestTimeout.chatSendMessage,
+        timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
+        targetProjectId: targetProjectId ?? scope.projectId,
+        targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      )
+    } catch where isSyncCloudMoveRefusal(error) && targetProjectId == nil && targetProjectRootPath == nil {
+      // A move holds the chat's ADE Cloud computer: the account's queue takes
+      // the message. A caller that named the project (a new chat's first
+      // message from the Hub or New chat) keeps the computer's sentence, as
+      // the desktop's new chat does: its chat may not be known here by its
+      // machine yet, and the queue must go to that machine's account key.
+      return try await queueChatSendRefusedForMove(
+        error,
+        sessionId: sessionId,
+        text: text,
+        messageId: (args["clientSendId"] as? String) ?? UUID().uuidString,
+        carriesFilesOrComments: !(attachments ?? []).isEmpty || includeThreadComments
+      )
+    }
     // The host takes the comments it sends and publishes the new list; the
     // phone mirrors that update rather than guessing (a slash command or a
     // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
+  }
+
+  /// A send the chat's ADE Cloud computer refused because a move to a new
+  /// computer holds it (`computer_moving`), wherever the move was started:
+  /// the account's queue takes the message, holds it through the move and
+  /// hands it to the new computer, the way a send to a sleeping chat goes
+  /// (`sendChatMessage`). Nothing was sent, so what the queue can't take
+  /// from here stays with the person: files already uploaded to the old
+  /// computer and the chat's comments, and every message on a server with
+  /// no queue (the computer's own sentence).
+  private func queueChatSendRefusedForMove(
+    _ refusal: Error,
+    sessionId: String,
+    text: String,
+    messageId: String,
+    carriesFilesOrComments: Bool
+  ) async throws -> SyncChatMessageDelivery {
+    guard let key = chatThreadKey(for: sessionId),
+          isCloudFleetKey(key.machineKey),
+          let accountKey = cloudAccountMachineKey(fleetKey: key.machineKey)
+    else { throw refusal }
+    if carriesFilesOrComments {
+      throw NSError(domain: "ADE", code: 17, userInfo: [
+        NSLocalizedDescriptionKey: syncChatMoveHoldsFilesMessage,
+        "ADEErrorCode": syncCloudComputerMovingCode,
+      ])
+    }
+    switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: key.sessionId, messageId: messageId, text: text, using: self) {
+    case .queued:
+      return .heldByServer
+    case .refused(let message), .failed(let message):
+      throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
+    case .routeMissing:
+      throw refusal
+    }
   }
 
   func interruptChatSession(

@@ -126,7 +126,10 @@ Facts from those docs that ADE's design leans on:
 | A cloud computer's git identity | `apps/ade-cli/src/services/github/cloudGitIdentity.ts` |
 | Lane launch: the launch's steps and stage cards, the account status a launch checks first | `cloudLaneLaunchSteps.ts`, `cloudLaneComputerStages.ts`, `cloudAccountStatus.ts` |
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneAccount.ts` (the account side, shared by the desktop and the brain), `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
-| An agent's size request: the card, the answer, telling the agent how the change ended | `cloudTierRequestActions.ts` (`tier_request`, `tier_request_answer`); `apps/desktop/src/shared/cloudTierRequest.ts` |
+| An agent's size request: the card, the answer, telling the agent how the change ended | `cloudTierRequestActions.ts` (`tier_request`, `tier_request_answer`); `apps/desktop/src/shared/cloudTierRequest.ts`; the asking chat's pin parsed by `apps/desktop/src/shared/projectBinding.ts` (shared with `main.ts`'s renderer-pin sanitizer) |
+| The argument readers every ADE Cloud action builder shares (`record`, `text`, `clipReason`, `readApproval`) | `cloudActionArgs.ts` |
+| A running move or size change as one line (title, live step, size label) for the job card, the bar above the prompt box and the header's status menu | `apps/desktop/src/renderer/components/cloudLane/cloudLaneJobPresentation.ts` (pure; `cloudLaneStatus.ts` reads it) |
+| Where a send goes while the chat's lane is moving or its computer is gone (the account's queue, or files and comments kept in the box) | `apps/desktop/src/renderer/components/chat/chatAccountQueueRoute.ts` |
 | The account's lanes, saved chats, CLI copies, backups and server jobs from the CLI and agents (`ade cloud lanes`, `chats`, `sessions`, `backups`, `jobs`, `project`) | `cloudLaneVerbs.ts`; text in `apps/ade-cli/src/cliCloudLanes.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
@@ -309,9 +312,12 @@ holds the lane's messages and answers `wake.state: "moving"`:
   and a terminal started with its first input (`pty.create` /
   `work.startCliSession`), since a CLI's process does not survive the move.
   A chat made with no turn (`chat.create`) and a terminal started with no
-  first input are not refused. The desktop and ADE Web then send a message
-  to a chat that exists to the account's queue (`withSavedChatReads`), which
-  holds it; the phone shows the sentence. A new chat with its first message
+  first input are not refused. The desktop, ADE Web and the phone then send
+  a message to a chat that exists to the account's queue (desktop and web:
+  `withSavedChatReads`; the phone: `SyncService.sendChatMessage`), which
+  holds it. A refused send with files or comments is not queued: they stay
+  in the composer with the line "Files and comments can't go while this
+  chat's computer moves". A new chat with its first message
   has no queue: the desktop shows the sentence and keeps the text, and a
   launch fails with the sentence. `ade chat create --prompt` and
   `ade new chat --prompt` with `--machine` make the chat, then send to it:

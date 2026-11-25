@@ -79,6 +79,21 @@ describe("brain home registry", () => {
     // would name an innocent process as a rival brain.
     const recycled = createBrainHomeRegistry({ home, ...table({ 100: 9_999, 200: 2_000 }) });
     expect(recycled.join({ pid: 200, endpoint: "/tmp/b.sock", startedAtMs: 2_000, label: "dev" })).toEqual([]);
+
+    // Linux: the number now names a thread of the new brain (pid 300). It
+    // answers kill(pid, 0) but `ps -p` lists no start time for it; an ADE
+    // Cloud computer restarts with its threads on the old brain's numbers.
+    createBrainHomeRegistry({ home, ...table({ 100: 1_000 }) }).join({
+      pid: 100, endpoint: "/tmp/a.sock", startedAtMs: 1_000, label: "old",
+    });
+    const threaded = createBrainHomeRegistry({
+      home,
+      isPidAlive: (pid) => pid === 100 || pid === 300,
+      readProcessStartTimeMs: (pid) => (pid === 300 ? 3_000 : null),
+      readThreadGroupId: (pid) => (pid === 100 ? 300 : pid === 300 ? 300 : null),
+    });
+    expect(threaded.join({ pid: 300, endpoint: "/tmp/c.sock", startedAtMs: 3_000, label: "beta" })).toEqual([]);
+    expect(fs.existsSync(path.join(home, "brains", "100.json"))).toBe(false);
   });
 
   it("drops its record on leave, so the next brain sees an empty home", () => {

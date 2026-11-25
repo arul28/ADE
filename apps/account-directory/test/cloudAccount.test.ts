@@ -4460,6 +4460,54 @@ describe("ADE Cloud server moves", () => {
     expect((await record()).state).toBe("done");
   });
 
+  // A message sent to the lane while its computer moves is kept once and sent by one computer:
+  // the old one neither lists nor takes it while the move runs, and the new one only once it has the lane.
+  it("a message sent during a move waits in the queue: a cancel gives it back to the old computer, and the new one gets it, once, when it has the lane", async () => {
+    harness.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 9).toString("base64");
+    harness.env.CLOUD_CHATS = memoryBucket();
+    expect((await harness.send(OWNER, "PUT", "/cloud/chats/mk_source/c1/parts/1", {
+      instanceId: INSTANCE, text: "{}\n", row: { lastSeq: 1, laneId: "lane-1", projectKey: "github.com/acme/widgets", provider: "claude", model: "claude-sonnet" },
+    })).status).toBe(200);
+    const send = async (messageId: string) => {
+      const sent = await harness.send(OWNER, "POST", "/cloud/chats/mk_source/c1/messages", { messageId, text: "Fix the footer." });
+      return [sent.status, ((await sent.json()) as { wake: unknown }).wake];
+    };
+    const listedFor = async (id: string) => ((await (await harness.send(OWNER, "GET", `/cloud/instances/${id}/messages`)).json()) as { messages: Array<{ messageId: string }> })
+      .messages.map((message) => message.messageId);
+    const claim = (id: string, messageId: string) => harness.send(OWNER, "POST", `/cloud/instances/${id}/messages/${messageId}/claim`, { claimId: "claim-aaaaaaaaaaaaaaaa" });
+    const drains = (id: string) => onComputer(id, "ade cloud messages drain").length;
+
+    // From the making on, a send is kept but held: nothing wakes the old computer or asks it, and it can't take the message.
+    expect((await start({ moveId: OTHER_MOVE })).status).toBe(201);
+    expect(await send("m1")).toEqual([201, { state: "moving" }]);
+    expect(await listedFor(INSTANCE)).toEqual([]);
+    expect((await claim(INSTANCE, "m1")).status).toBe(409);
+    expect(drains(INSTANCE)).toBe(0);
+    // A cancel leaves the lane on the old computer: the message is its own again, and it is asked to send it.
+    expect((await harness.send(OWNER, "DELETE", `/cloud/moves/${OTHER_MOVE}`)).status).toBe(200);
+    expect(await listedFor(INSTANCE)).toEqual(["m1"]);
+    expect(drains(INSTANCE)).toBe(1);
+
+    // The next move holds it again, and one sent while the files copy, until the new computer has the lane.
+    clock += 1_000;
+    expect((await start()).status).toBe(201);
+    expect(await listedFor(INSTANCE)).toEqual([]);
+    await drive("join");
+    await signIn();
+    await drive("copy");
+    expect(await send("m2")).toEqual([201, { state: "moving" }]);
+    expect([await listedFor(INSTANCE), await listedFor(TARGET)]).toEqual([[], []]);
+    // Read as the old computer is deleted: the new one has the lane by then, both messages are its own, and it was asked to send them.
+    let atSourceDelete: unknown = null;
+    harness.net.after.push({ match: new RegExp(`DELETE .*/instances/${INSTANCE}$`), run: async () => { atSourceDelete = [await listedFor(TARGET), drains(TARGET)]; } });
+    shell.copy = "0";
+    await drive("end");
+    expect(atSourceDelete).toEqual([["m1", "m2"], 1]);
+    // The move's end hands over again for one sent in between: each is still there once, and the new computer takes it.
+    expect(await listedFor(TARGET)).toEqual(["m1", "m2"]);
+    expect((await claim(TARGET, "m1")).status).toBe(200);
+  });
+
   it("a step that dies after the provider made the new computer runs again and adopts it, never making a second one", async () => {
     // The provider made it, and the Worker stopped before it read the answer.
     harness.net.after.push({ match: /POST .*\/instances$/, run: () => { throw new Error("the Worker stopped"); } });

@@ -3,18 +3,24 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatThreadComment } from "../../../shared/threadComments";
+import { heldChat, threadCommentsHeldOnDevice } from "./threadCommentsHeldOnDevice";
 import {
   addLocalThreadComment,
   countCommentsForNextSend,
   countFailedThreadComments,
   countThreadCommentsReadyToSend,
+  currentThreadComments,
   discardFailedThreadComment,
+  handOverHeldThreadComments,
+  holdThreadCommentOnDevice,
   refreshThreadComments,
   retryFailedThreadComment,
   setThreadComments,
   threadCommentClientIdsToExclude,
   threadCommentSaveError,
+  threadCommentsApi,
   useThreadComments,
+  type ThreadCommentSendReach,
 } from "./threadCommentsStore";
 
 afterEach(() => {
@@ -43,6 +49,39 @@ function installList(list: (args: { sessionId: string }, pin: unknown) => Promis
   (window as unknown as { ade: unknown }).ade = {
     agentChat: { threadComments: { list } },
   };
+}
+
+const fields = (quote: string) => ({
+  messageKey: "message:1",
+  messageExcerpt: "reply",
+  anchor: { kind: "text" as const, quote, prefix: "", suffix: "" },
+  body: quote,
+});
+
+// A host that keeps client ids: the comment's id, not its text, says which
+// host comment is which, so a lost answer can be retried, discarded, or
+// kept out of a send without touching a twin with the same quote and body.
+function installClientIdHost(sessionId: string) {
+  let next = 0;
+  const host = { list: [] as ChatThreadComment[] };
+  const create = vi.fn(async (args: { clientId?: string; body: string; anchor: ChatThreadComment["anchor"] }) => {
+    const existing = host.list.find((entry) => entry.clientId === args.clientId);
+    if (existing) return existing;
+    const made = { ...comment(`host-${(next += 1)}`, sessionId), body: args.body, anchor: args.anchor, clientId: args.clientId };
+    host.list = [...host.list, made];
+    return made;
+  });
+  const list = vi.fn(async () => host.list);
+  const remove = vi.fn(async (args: { commentId: string }) => {
+    host.list = host.list.filter((entry) => entry.id !== args.commentId);
+    return { deleted: true };
+  });
+  const update = vi.fn(async (args: { commentId: string; includeInNextSend?: boolean }) => {
+    host.list = host.list.map((entry) => (entry.id === args.commentId ? { ...entry, includeInNextSend: args.includeInNextSend ?? entry.includeInNextSend } : entry));
+    return host.list.find((entry) => entry.id === args.commentId)!;
+  });
+  (window as unknown as { ade: unknown }).ade = { agentChat: { threadComments: { list, create, delete: remove, update } } };
+  return { host, create, remove, update };
 }
 
 describe("threadCommentsStore.refreshThreadComments", () => {
@@ -83,13 +122,6 @@ describe("threadCommentsStore.refreshThreadComments", () => {
 });
 
 describe("threadCommentsStore.addLocalThreadComment", () => {
-  const fields = (quote: string) => ({
-    messageKey: "message:1",
-    messageExcerpt: "reply",
-    anchor: { kind: "text" as const, quote, prefix: "", suffix: "" },
-    body: quote,
-  });
-
   it("shows a comment at once, keeps it through host lists, and confirms it once", async () => {
     const sessionId = "store-local-success";
     installList(vi.fn(async () => []));
@@ -173,32 +205,6 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     expect(countCommentsForNextSend(result.current)).toBe(2);
   });
 
-  // A host that keeps client ids: the comment's id, not its text, says which
-  // host comment is which, so a lost answer can be retried, discarded, or
-  // kept out of a send without touching a twin with the same quote and body.
-  function installClientIdHost(sessionId: string) {
-    let next = 0;
-    const host = { list: [] as ChatThreadComment[] };
-    const create = vi.fn(async (args: { clientId?: string; body: string; anchor: ChatThreadComment["anchor"] }) => {
-      const existing = host.list.find((entry) => entry.clientId === args.clientId);
-      if (existing) return existing;
-      const made = { ...comment(`host-${(next += 1)}`, sessionId), body: args.body, anchor: args.anchor, clientId: args.clientId };
-      host.list = [...host.list, made];
-      return made;
-    });
-    const list = vi.fn(async () => host.list);
-    const remove = vi.fn(async (args: { commentId: string }) => {
-      host.list = host.list.filter((entry) => entry.id !== args.commentId);
-      return { deleted: true };
-    });
-    const update = vi.fn(async (args: { commentId: string; includeInNextSend?: boolean }) => {
-      host.list = host.list.map((entry) => (entry.id === args.commentId ? { ...entry, includeInNextSend: args.includeInNextSend ?? entry.includeInNextSend } : entry));
-      return host.list.find((entry) => entry.id === args.commentId)!;
-    });
-    (window as unknown as { ade: unknown }).ade = { agentChat: { threadComments: { list, create, delete: remove, update } } };
-    return { host, create, remove, update };
-  }
-
   /** A create that reached the host whose answer never came back. */
   async function lostAnswer(sessionId: string, create: ReturnType<typeof installClientIdHost>["create"], quote: string) {
     let settle!: ReturnType<typeof addLocalThreadComment>;
@@ -281,5 +287,45 @@ describe("threadCommentsStore.addLocalThreadComment", () => {
     await act(() => discardFailedThreadComment(sessionId, failed.localId, CHAT_PIN, String));
     expect(host.list).toEqual([]);
     expect(result.current).toEqual([]);
+  });
+});
+
+describe("threadCommentsStore.handOverHeldThreadComments", () => {
+  // Comments written while the chat's computer rests stay on this device, and
+  // the send hands them over first. One the hand-over didn't confirm stays
+  // here and stops the send; its retry finds the copy a lost answer left (by
+  // client id) instead of making a second, and nothing stays held after.
+  it("keeps what a failed hand-over didn't confirm on this device, and a retry hands it over with no second copy on the host", async () => {
+    const sessionId = "store-held-hand-over";
+    const { host, create } = installClientIdHost(sessionId);
+    const first = holdThreadCommentOnDevice(sessionId, fields("first"));
+    const second = holdThreadCommentOnDevice(sessionId, fields("second"));
+    expect(currentThreadComments(sessionId).map((entry) => entry.id)).toEqual([first.id, second.id]);
+    expect(create).not.toHaveBeenCalled();
+
+    // The send's way to the computer: the second create lands there, and its answer is lost.
+    let writes = 0;
+    const reach: ThreadCommentSendReach = async (write) => {
+      writes += 1;
+      const answer = await write(CHAT_PIN);
+      if (writes === 2) throw new Error("Can't reach the computer");
+      return answer;
+    };
+    await expect(handOverHeldThreadComments(sessionId, CHAT_PIN, threadCommentsApi(), reach)).rejects.toThrow("Can't reach the computer");
+    // The first left this device; the second stays held, shown once though its copy landed, and kept out of any send.
+    expect(heldChat(sessionId).comments.map((entry) => entry.id)).toEqual([second.id]);
+    act(() => setThreadComments(sessionId, host.list));
+    expect(currentThreadComments(sessionId).map((entry) => entry.id)).toEqual(["host-1", second.id]);
+    expect(threadCommentsHeldOnDevice(sessionId)).toBe(true);
+    expect(threadCommentClientIdsToExclude(sessionId)).toEqual([second.clientId]);
+
+    // The retry sends the same client id: the host answers with the copy it made.
+    await handOverHeldThreadComments(sessionId, CHAT_PIN, threadCommentsApi(), reach);
+    expect(create).toHaveBeenLastCalledWith(expect.objectContaining({ clientId: second.clientId }), CHAT_PIN);
+    expect(host.list.map((entry) => entry.clientId)).toEqual([first.clientId, second.clientId]);
+    expect(heldChat(sessionId).comments).toEqual([]);
+    expect(threadCommentsHeldOnDevice(sessionId)).toBe(false);
+    expect(currentThreadComments(sessionId).map((entry) => entry.id)).toEqual(["host-1", "host-2"]);
+    expect(threadCommentClientIdsToExclude(sessionId)).toEqual([]);
   });
 });
