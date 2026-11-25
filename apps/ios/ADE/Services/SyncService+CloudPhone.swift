@@ -3,10 +3,12 @@ import Foundation
 // MARK: - ADE Cloud iPhone
 
 /// The `cloudPhone.status` answer: the account's access to the ADE Cloud
-/// iPhone, the plan's minutes this period, and the phone while one is up.
+/// iPhone, the minutes its credits run it for this period (one credit a
+/// minute), and the phone while one is up.
 /// `access` is `on`, `soon` (the beta list) or `off` (not set up on the
 /// server); `supported` is true only with access `on`.
 struct CloudIphoneStatus: Decodable, Equatable {
+  /// `left`: the minutes the credits left allow; `used`: this period's phone minutes.
   struct Minutes: Decodable, Equatable {
     let included: Int
     let used: Int

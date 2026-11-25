@@ -253,8 +253,6 @@ export const CLOUD_PATHS = {
   phoneProvider: "/cloud/phone/provider",
   /** `GET`: ADE's own page that shows a phone streamed over WebRTC (WHEP), for a view link's `#` part. Not an account route. */
   phoneViewer: "/cloud/phone/viewer",
-  /** `POST { enabled, monthlyLimitUsd? }`: extra iPhone minutes on a paid plan (`CloudAccountState.phone.extra`). */
-  billingExtraPhone: "/cloud/billing/extra-phone",
   /** NoMac's signed webhook (`phones.ts`): phone ready and ended, credit low. Not an account route. */
   nomacWebhook: "/cloud/nomac/webhook",
   /** The provider's signed status-change webhook (`computerStatus.ts`). Not an account route. */
@@ -644,10 +642,6 @@ export type CloudPlanFacts = {
    */
   diskGb: number;
   priceUsd: number;
-  /** ADE Cloud iPhone minutes a month (`phones.ts`). Older servers leave it out. */
-  phoneMinutes?: number;
-  /** What one iPhone minute past the plan costs, in cents; null on the free plan, where the phone stops. Older servers leave it out. */
-  extraPhoneMinuteCents?: number | null;
   /** What one hour past the plan costs, in cents; null on the free plan, where work stops. Older servers leave it out (`CloudCatalog.extraHourCents`). */
   extraHourCents?: number | null;
   /** How many cloud computers the account may have, asleep or not. Servers before Pricing v2 sent the hidden awake cap here. */
@@ -737,8 +731,7 @@ export type CloudAccountState = {
    * Credits: `hours` is one balance of credits (the same numbers: a Medium
    * computer uses one an hour), and the ADE Cloud iPhone draws from it at
    * `phoneMilliPerMinute` thousandths a minute (one credit). Surfaces say
-   * "credits" and show no separate iPhone minutes. Absent: hours, and the
-   * iPhone's own minutes (`phone.minutes`).
+   * "credits". Absent: an older server's hours.
    */
   credits?: { phoneMilliPerMinute: number };
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
@@ -756,7 +749,7 @@ export type CloudAccountState = {
     state: CloudHoursState;
   };
   extraHours: { available: boolean; enabled: boolean; usedMilli: number };
-  /** The ADE Cloud iPhone: access, this period's minutes and extra minutes. Older servers leave it out. */
+  /** The ADE Cloud iPhone: access and the credits it used this period. Older servers leave it out. */
   phone?: CloudAccountPhone;
   /**
    * Disk all computers hold. `limitGb` is null: there is no account-wide disk,
@@ -3092,7 +3085,12 @@ export const isCloudPhoneDevice = (value: unknown): value is CloudPhoneDevice =>
  */
 export type CloudPhoneAccess = "on" | "soon" | "off";
 
-/** The plan's phone minutes this period. `left` never goes below 0. */
+/**
+ * What the account's credits run the phone for this period, one credit a
+ * minute: `left` the minutes the credits left allow (extra credits not
+ * counted; never below 0), `used` the minutes the period's phones used, and
+ * `included` used plus left (older clients show "left of included").
+ */
 export type CloudPhoneMinutes = { included: number; used: number; left: number };
 
 /** A cloud iPhone as ADE shows it: never a NoMac credential. */
@@ -3122,7 +3120,7 @@ export type CloudPhoneState = {
   phone: CloudPhoneSummary | null;
   /**
    * This period's phones, newest first (at most `CLOUD_PHONE_RECENT_SHOWN`),
-   * so a person can see where the minutes went. Absent from an older server.
+   * so a person can see where the credits went. Absent from an older server.
    */
   recent?: CloudPhoneUse[];
   /**
@@ -3135,7 +3133,7 @@ export type CloudPhoneState = {
 /** How many of the period's phones `CloudPhoneState.recent` lists. */
 export const CLOUD_PHONE_RECENT_SHOWN = 10;
 
-/** One phone of this period, as the minutes count it. */
+/** One phone of this period, as its credits count it. */
 export type CloudPhoneUse = {
   /** When it was asked for (ms). */
   startedAt: number;
@@ -3145,7 +3143,7 @@ export type CloudPhoneUse = {
   minutes: number;
   device: string | null;
   /**
-   * How it ended: `stopped` (a stop), `stop_at` (the minutes ran out), a
+   * How it ended: `stopped` (a stop), `stop_at` (the credits ran out), a
    * provider's reason (`idle`, `time_limit`, …), or `on_its_own` when it ended
    * with no reason given (NoMac's idle stop or time limit). Null while it runs.
    */
@@ -3191,25 +3189,19 @@ export type CloudPhoneCallRequest = {
  */
 export type CloudPhoneView = { url: string; expiresAt: number; control: boolean; provider?: CloudPhoneProvider };
 
-/** Where an account's iPhone minutes stand this period, for the warnings and the meter. */
-export type CloudPhoneMinutesState = "none" | "warn80" | "zero";
-
 /** `CloudAccountState.phone`. */
 export type CloudAccountPhone = {
   access: CloudPhoneAccess;
   /** A tester's pick (`CloudPhoneProviderChoice`): sent only to accounts on the beta list, which may change it. */
   providerChoice?: CloudPhoneProviderChoice;
-  /** Under credits (`CloudAccountState.credits`): the credits the iPhone used this period, in thousandths. */
+  /** The credits the iPhone used this period, in thousandths (0 when access is not `on`). Older servers may leave it out. */
   creditsUsedMilli?: number;
-  /** The plan's minutes this period; null when access is not `on`. */
-  minutes: CloudPhoneMinutes | null;
-  state: CloudPhoneMinutesState;
   /**
-   * Extra minutes past the plan (paid plans only): `available` false on the
-   * free plan or while the server doesn't sell them. `monthlyLimitCents` null
-   * is no limit. `usedMinutes` and `usedCents` are this period's so far.
+   * Kept for desktop builds before 1.2.135, which read `phone.extra.available`
+   * unguarded; the server always sends it off and zero. Remove after. New
+   * code never reads it.
    */
-  extra: {
+  extra?: {
     available: boolean;
     enabled: boolean;
     centsPerMinute: number | null;

@@ -2,7 +2,6 @@ import { carryLaunchMessagesForComputer, expireChatMessages } from "./chatMessag
 import { runLinearRenewalCron } from "./linearRenewal";
 import { captureCloudDay, type CloudWaitUntil } from "./analytics";
 import { cancelTimedWakes, type WakeBlock } from "./accountNotices";
-import { reportExtraPhoneMinutes } from "./phoneBilling";
 import { resolvePendingPhoneBeta } from "./phoneBeta";
 import { enforcePhoneAllowance, runPhoneChecks, stopPhonesDue } from "./phones";
 import { unsettledPhoneMilliByUser } from "./credits";
@@ -479,17 +478,11 @@ async function runOwnerChecks(env: CloudEnv, provider: CloudProvider, instances:
   } catch (error) {
     reportCloudFailure("cloud.move_end_failed", { message: error instanceof Error ? error.message : "unknown" });
   }
-  // The ADE Cloud iPhone: live phones read again and the minutes warnings, then extra minutes to Stripe.
-  // Separate, so a failed check never holds back billing (or the other way round).
+  // The ADE Cloud iPhone: live phones read again and held to their credits, and the balance's warnings.
   try {
     await runPhoneChecks(env, now);
   } catch (error) {
     reportCloudFailure("cloud.phone_checks_failed", { step: "checks", message: error instanceof Error ? error.message : "unknown" });
-  }
-  try {
-    await reportExtraPhoneMinutes(env, now);
-  } catch (error) {
-    reportCloudFailure("cloud.phone_checks_failed", { step: "meter", message: error instanceof Error ? error.message : "unknown" });
   }
   // Tester emails the owner added before their account had them: asked of Clerk again, each about hourly.
   try {

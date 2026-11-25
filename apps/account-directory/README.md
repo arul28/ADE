@@ -535,7 +535,7 @@ variant only.
 
 An iOS Simulator in the cloud, one per account, run by NoMac or Revyl and
 driven from any machine with `ade apple` (`src/cloud/phones.ts` for the rows,
-minutes, access and routes; one provider record each in `phoneNomac.ts` and
+credits, access and routes; one provider record each in `phoneNomac.ts` and
 `phoneRevyl.ts` behind `phoneProvider.ts`; which provider (lock, router,
 failover) in `phoneRoute.ts`; Revyl's viewer page in
 `phoneViewerPage.ts`; the owner's beta list in `phoneBeta.ts`; migrations `0047_cloud_phone_beta.sql`,
@@ -557,7 +557,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
 
 - `GET /cloud/phone` answers `CloudPhoneState`: `access` (`on` or `off`; older
   servers sent `soon`),
-  the period's `minutes`, the live `phone`, and `abilities` (the live phone's,
+  `minutes` (what the credits run the phone for this period: `left`, `used`), the live `phone`, and `abilities` (the live phone's,
   or what a new one could have). `POST /cloud/phone`
   `{ device?, providers?, needs? }` starts the account's phone (or answers its live one).
   `providers` lists the providers the client drives (`["nomac", "revyl"]`);
@@ -580,25 +580,20 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   passed back as it is. `proxy.<name>` is an allowlisted device call;
   `build.upload_url|start|status|logs|install` build the brain's packed source
   (or a prebuilt `.app`) on Revyl's runners into the workspace's app.
-- The plan's `phoneMinutes` are the period's (`plans.ts`: Free 60, Plus 80,
-  Pro 300, Max 800; none on a free plan held by the free-plan checks, 402
-  `phone_free_held`). Each phone is a `cloud_phones` row (label
+- The phone draws from the account's credits at one a minute (`credits.ts`):
+  the plan's, then earned ones, then any minute while extra credits (the
+  extra-hours switch) are on. Each phone is a `cloud_phones` row (label
   `ade:<userId>` at NoMac), settled by NoMac's webhook and by the ten-minute
-  check, which also reads live phones again, sends the 80% and
-  out-of-minutes emails once a period, and reports extra minutes to Stripe.
-  The account read (`CloudAccountState.phone`) comes from D1 only.
-- Past the plan's minutes: the free plan stops (402 `phone_minutes_out`). A paid
-  plan with extra iPhone minutes on (`POST /cloud/billing/extra-phone`
-  `{ enabled, monthlyLimitUsd? }`, its own switch beside extra hours) keeps going at 2.5¢ a minute up to its monthly limit (402
-  `phone_extra_limit` at it). A NoMac phone starts with NoMac's spend cap and
-  time limit set to what the account may still use, so it stops by itself
-  there. A Revyl phone has no limit of its own: the Worker writes its
-  `stop_at` at the start and the minute tick stops it.
-  Minutes used while the switch was on stay owed after it goes off. A change
-  while an ended period is still being billed (a phone of it still running)
-  answers 409 `billing_busy`; it goes through once that period is settled.
-  An ended period is billed to the Stripe customer, dated inside that period,
-  so a cancelled plan's last minutes reach its final invoice.
+  check, which also reads live phones again and sends the credit balance's
+  warnings to accounts that used the phone. A settled phone's minutes go into
+  `used_milli`. Rows from before credits (`credits = 0`) are history only and
+  charge nothing. The account read (`CloudAccountState.phone`) comes from D1
+  only.
+- Out of credits with extra credits off: a start answers 402
+  `phone_credits_out`, and a running phone stops. A NoMac phone starts with
+  NoMac's spend cap and time limit set to what the account may still use, so
+  it stops by itself there. A Revyl phone has no limit of its own: the Worker
+  writes its `stop_at` at the start and the minute tick stops it.
 - `GET /cloud/instances/:id/status` (`src/cloud/computerStatus.ts`,
   migration `0050_cloud_computer_status.sql`): a lane computer's status menu,
   read when it opens and kept 15 seconds. Up since (the provider webhook's
@@ -627,10 +622,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   `revyl+<hash>@ade-app.dev` owner, `cloud_phone_revyl`) and mints short
   session credentials kept in memory only; deleting the account disconnects
   it. With neither key set the read answers `off` and the other phone routes
-  503. Vars `STRIPE_PHONE_MINUTE_PRICE_ID` and
-  `STRIPE_PHONE_METER_EVENT` (from `scripts/stripe-setup.mjs`) sell extra
-  minutes; unset, the switch isn't offered. The
-  account key stays in this Worker; a brain gets a token for one phone (2 hours)
+  503. The account key stays in this Worker; a brain gets a token for one phone (2 hours)
   that cannot start, list or stop phones. Apply
   `0047_cloud_phone_beta.sql`, `0048_cloud_phone_usage.sql` and
   `0057_cloud_phone_provider.sql` before the Worker that reads them deploys.
@@ -700,14 +692,14 @@ least 30 days old, one free plan per GitHub account).
   - A blocked GitHub account on a new ADE account reads as `github_used`; a
     blocked card can't unlock free hours. Both alert the owner.
 - **The account test tool and instant switches.** `POST /cloud/owner/account`
-  `{ email | userId, plan?, computers?, hours?, phoneMinutes?, phone?, days?, note?, tester?, reset? }`
+  `{ email | userId, plan?, computers?, hours?, phone?, days?, note?, tester?, reset? }`
   and `POST /cloud/owner/settings` `{ key?, value?, note? }`
-  (`ownerAccounts.ts`, `settings.ts`, migrations 0056 and 0058; script
+  (`ownerAccounts.ts`, `settings.ts`, migration 0056; script
   `scripts/cloud-owner.mjs`; guide `docs/features/ade-cloud/account-test-tool.md`).
   A test plan changes limits, hours, cards and Small's rate, never billing,
-  and ends at `test_until` (minute tick). `phoneMinutes` sets the iPhone
-  minutes the limits count (`phoneMinutesForLimits`; billing keeps the plan's),
-  and `phone` sets the account's place on the iPhone beta list.
+  and ends at `test_until` (minute tick). The iPhone draws from the credits
+  in force, so `hours` reaches it too; `phone` sets the account's place on
+  the iPhone beta list.
   Every change goes to `cloud_owner_log`.
 - **The iPhone beta list.** `POST /cloud/owner/phone-beta` `{ "email": "…" }`
   or `{ "userId": "user_…" }` adds an account (an email is looked up in Clerk

@@ -4596,12 +4596,12 @@ function cloudPhoneServiceFor(runtime: AccountDomainRuntime): CloudPhoneService 
 
 /**
  * Refusals that are the account's or the caller's state, not a failure: out
- * of minutes, a held free plan, not on the list, paused by the owner, signed
- * out, an agent the person's settings hold back, a bad argument. They reach
- * the person as their sentence and never Sentry.
+ * of credits, not on the list, paused by the owner, signed out, an agent the
+ * person's settings hold back, a bad argument. They reach the person as their
+ * sentence and never Sentry.
  */
 const CLOUD_PHONE_EXPECTED_CODES: ReadonlySet<string> = new Set([
-  "phone_free_held", "phone_minutes_out", "phone_extra_limit", "phone_not_on_account", "phone_paused",
+  "phone_credits_out", "phone_not_on_account", "phone_paused",
   "phone_not_running", "phone_running", "no_account", "declined", "bad_request", "out_path_outside_root",
   "device_build", CLOUD_ACCESS_REFUSED,
 ]);

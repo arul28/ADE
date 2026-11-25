@@ -90,9 +90,8 @@
   // webhook secret is the one NoMac shows once when the webhook to
   // /cloud/nomac/webhook is made. Apply migrations/0048_cloud_phone_usage.sql
   // first too. Vars (here and under env.production): CLOUD_PHONE_ACCESS
-  // (`beta` by default, `all` at launch, `off`), CLOUD_PHONES_PAUSED (`1`
-  // stops new phones), STRIPE_PHONE_MINUTE_PRICE_ID and
-  // STRIPE_PHONE_METER_EVENT (scripts/stripe-setup.mjs prints both).
+  // (`beta` by default, `all` at launch, `off`) and CLOUD_PHONES_PAUSED (`1`
+  // stops new phones). The phone draws from the account's credits.
   //
   // SECRET — REVYL_PARTNER_API_KEY (ADE Cloud iPhone on Revyl)
   // Revyl's partner key: makes one Revyl workspace per account and mints short
@@ -233,9 +232,6 @@
     "STRIPE_MAX_PRICE_ID": "price_1UbEC9Bsy4QVYccD16fLtkI2",
     "STRIPE_DISK_PRICE_ID": "price_1UbECBBsy4QVYccDXcCUZEYt",
     "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-    // Extra ADE Cloud iPhone minutes (2.5 cents a minute, its own meter). Same script, same sandbox.
-    "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1Ud7x8Bsy4QVYccDQcdVWRfk",
-    "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
     "STRIPE_PORTAL_CONFIG_ID": "bpc_1UaJvHBsy4QVYccDU70Jf6tD",
     // The ADE GitHub App's public client id (also a constant in the desktop),
     // and the two GitHub bases the sign-in calls. The bases are settings so a
@@ -333,8 +329,6 @@
         "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbMTjPWulQjqSYPROgTWr6C,price_1UbMTkPWulQjqSYPhPcWm3l6",
         "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-        "STRIPE_PHONE_MINUTE_PRICE_ID": "price_1UdF4HPWulQjqSYPydFHhXGd",
-        "STRIPE_PHONE_METER_EVENT": "ade_cloud_phone_minutes",
         "CLOUD_PHONE_ACCESS": "beta",
         // Revyl may start phones (owner's yes, 2026-11-23): second, after NoMac,
         // and only on paid plans (or a tester's own pick).

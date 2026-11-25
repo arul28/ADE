@@ -9,12 +9,12 @@ ADE Cloud computer. The Work tools pane shows it in 3D or flat on the desktop;
 ADE Web shows the same pane as a flat live view, and the ADE iPhone app shows it
 from a chat's Tools menu. The launch plan is `docs/plans/ade-cloud-iphone-launch.md`.
 
-Server: `apps/account-directory/src/cloud/phones.ts` (routes, minutes, the
+Server: `apps/account-directory/src/cloud/phones.ts` (routes, credits, the
 guard), one record per provider behind `phoneProvider.ts` (`phoneNomac.ts`,
 `phoneRevyl.ts` for Revyl's workspaces and calls), `phoneRoute.ts` (which
 provider: the lock, the router, failover), `phoneViewerPage.ts` (the
-viewer page for Revyl's stream), `phoneBeta.ts` (the owner's beta list) and
-`phoneBilling.ts` (extra minutes to Stripe). Brain:
+viewer page for Revyl's stream) and `phoneBeta.ts` (the owner's beta list).
+Brain:
 `apps/desktop/src/main/services/adeCloud/cloudPhoneService.ts`, with one driver
 per provider (`cloudPhoneDriver.ts`, `cloudPhoneNomacDriver.ts`,
 `cloudPhoneRevylDriver.ts`, `cloudPhoneScreenText.ts`).
@@ -43,12 +43,14 @@ The Worker var `CLOUD_PHONE_ACCESS` decides who has it, with no app release:
   `ade devices use ios@cloud`; `ade devices` lists the `ios@cloud` row only
   with access.
 
-## Minutes and the money guard
+## Credits and the money guard
 
-Each plan includes `phoneMinutes` a billing period (`src/cloud/plans.ts`: Free
-60, Plus 80, Pro 300, Max 800). A free plan held by the free-plan checks (one
-per computer, a too-new GitHub account) gets 0, as with free hours, and a start
-answers 402 `phone_free_held`. A phone start settles those checks itself, as a
+The phone has no minutes of its own: it draws from the account's one credit
+balance at one credit a minute (`src/cloud/credits.ts`,
+`PHONE_CREDIT_MILLI_PER_MINUTE`): the plan's credits, then earned ones, then
+any minute while extra credits (the extra-hours switch, paid plans) are on.
+Out of credits with extra credits off, a start answers 402
+`phone_credits_out`. A phone start settles the free-plan checks itself, as a
 computer's start does, once the account may use the phone at all
 (`routePhone`), so calling the phone route alone can't skip them.
 
@@ -61,62 +63,44 @@ computer's start does, once the account may use the phone at all
   are left alone); a delivery whose work
   fails is given back, so NoMac's retry is done. The ten-minute check reads
   every live phone again, so a missed delivery can't leave one counted forever.
-  Used minutes are the period's billed minutes plus the running phone's time so
-  far (two hours at most). The account read (`CloudAccountState.phone`) is D1
-  only.
-- **Free plan:** stops at its minutes (402 `phone_minutes_out`). There is no
-  pay as you go on Free; a card saved for the free-hours check is never charged.
-- **Paid plans:** "Extra iPhone minutes" is its own switch in Settings › ADE
-  Cloud (beside Extra Linux hours and Extra Linux disk), with a monthly limit or
-  none (`POST /cloud/billing/extra-phone`). Off, the phone stops at the plan's
-  minutes. On, it keeps going at 2.5¢ a minute (`EXTRA_PHONE_MINUTE_CENTS`) up
-  to the limit (402 `phone_extra_limit` there). The ten-minute check reports the
-  settled minutes past the plan to Stripe's meter (`STRIPE_PHONE_METER_EVENT`,
-  price `STRIPE_PHONE_MINUTE_PRICE_ID` from `scripts/stripe-setup.mjs`), each
-  report identified by where it starts (the minutes already sent): a crash
-  after Stripe took one resends the same identifier, which Stripe drops, so a
-  minute is never billed twice (at worst a few go unbilled). Minutes used under
-  the settings before a change stay owed: turning the switch off, or lowering
-  the limit, stops further use and never erases a minute already used
-  (`phoneBilling.ts`).
-- **Period changes:** a renewal, a cancel, a failed payment or going free starts
-  a new period while minutes of the old one may still settle. A phone from the
-  old period stops (the ten-minute check, or a new start). The old period's
-  extra minutes are billed after it ends, once none of its phones runs, at its
-  own plan's minutes (`phone_extra_included`, never fewer than the plan bought
-  now), so a downgrade at the renewal can't bill minutes the old plan included.
-  When a plan ends or its payment fails, extra minutes become "was on"
-  (`phone_extra_enabled = 2`): no new minute uses them, the ended period is
-  still billed for them, then they turn off, so buying a plan again never turns
-  them on by itself. A `past_due` account is billed once it pays (or its plan
-  ends).
+- **Charging:** a phone's billed minutes go into the account's `used_milli` in
+  the same write as its row (`phoneCreditStatements`); `credited_milli` holds
+  what is already in, so a repeated answer adds nothing. A running phone's
+  time its provider hasn't billed yet counts in the balance too
+  (`unsettledPhoneMilli`), so a computer can't spend it. Rows from before
+  credits (`credits = 0`, the old iPhone minutes, gone since 2026-11-25) are
+  history only: they charge nothing and count nothing. The account read
+  (`CloudAccountState.phone`, with `creditsUsedMilli`) is D1 only.
+- **Period changes:** a phone from the old period stops (the ten-minute check,
+  or a new start); its time so far is charged to the period that ends
+  (`startFreshPeriod`), and nothing of it to the new one.
 - **The guard:** every phone starts with NoMac's spend cap and time limit set
-  to what the account may still use (the plan's minutes left, then extra
-  minutes left, two hours at most), so a phone stops by itself there. NoMac
-  can't lower a running phone's limits, so when what the account may use
-  shrinks (extra minutes off, a lower limit, a new period, access removed, the
+  to what the account may still use (the credits left, then with extra credits
+  on two hours at most), so a phone stops by itself there. NoMac can't lower a
+  running phone's limits, so when what the account may use shrinks (extra
+  credits off, a computer using credits, a new period, access removed, the
   account blocked), `enforcePhoneAllowance` stops the phone at once if nothing
-  is left, or sets its `stop_at` to when its minutes run out; the minute tick
+  is left, or sets its `stop_at` to when its credits run out; the minute tick
   stops it then (`stopPhonesDue`). The ten-minute check runs the same for every
   live phone. ADE never pays NoMac for a minute nobody pays for.
 - **Free-use cap:** a free-plan phone start is refused (503, never naming why)
   once the month's free use reached the owner's cap, as a free computer is.
 - **Agents:** a person and an attended chat use the phone freely within the
-  minutes. An agent nobody watches (full-auto chat, automation run, ADE MCP
+  credits. An agent nobody watches (full-auto chat, automation run, ADE MCP
   app) uses it only when the agent limits let agents spend (`unattendedSpend`,
   the same switch as hours); a plan-mode chat never. The RPC server stamps who
   is asking on the spending `cloud_phone` actions (`CLOUD_PHONE_SPEND_ACTIONS`);
   `cloudPhoneAgentGuard` in `registry.ts` checks it.
-- **What agents read:** `ade cloud status` carries `iphone` (access, minutes,
-  reset day, extra minutes) and `plans` (each plan's price, hours, disk, iPhone
-  minutes and prices past the plan), so an agent answers plan and minutes
-  questions from one read. On a machine that isn't a Mac, the `ade-apple` skill
+- **What agents read:** `ade cloud status` carries `credits` (the iPhone's
+  rate), `iphone` (access, the credits it used this period, reset day) and
+  `plans` (each plan's price, credits and price past the plan), so an agent
+  answers plan and credit questions from one read. On a machine that isn't a Mac, the `ade-apple` skill
   is shown only while the account has the iPhone (`refreshIphoneSkill` in
   `cloudAccess.ts`, cached 10 minutes like ADE Cloud's own access); on a Mac it
   always shows (its own simulators).
-- **Warnings:** an email at 80% and one when the minutes run out, once each a
-  period; the wording says whether extra minutes keep the phone going. Settings
-  shows the minutes and the extra-minutes card.
+- **Warnings:** the credit balance's emails (80%, 95% and out), once each a
+  period; the ten-minute check sends them to accounts that used the phone,
+  with the iPhone's wording. Settings shows the credits.
 - **Owner:** the phones' NoMac cost counts in the month's cost estimate, in
   the alerts' top accounts and, for free-plan phones, toward the free-use cap.
   Blocking an account stops its phone. NoMac's `credit.low` emails the owner. Analytics: `ade_cloud_phone` (`started`, `ended`, `refused`).
@@ -162,7 +146,7 @@ both used, without changing anything an agent or a person sees.
   phone starts on. `ade apple status`, `ade devices
   use ios@cloud` and `ade apple --help` on the cloud iPhone print the
   ability lines.
-- **What is shared.** The server owns minutes, `stop_at`, the minute tick, the
+- **What is shared.** The server owns the credits, `stop_at`, the minute tick, the
   allowance, the ten-minute checks, the beta list and deletion for both. The
   brain's `cloudPhoneService.ts` owns starting and waiting, argument checks,
   packing a checkout or an app, screenshots and recordings to the proof drawer,
@@ -235,14 +219,14 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   before `attach` that starts one anyway gets it stopped at once). When an
   agent chat's call starts a new phone, that chat gets one quiet notice, and
   one more when the phone stops (a stop, or found ended on a later read: idle,
-  its 2-hour limit, the period's minutes). The end is noticed only when
+  its 2-hour limit, the credits used up). The end is noticed only when
   something reads this brain (a pane, the top bar, the next phone call), so a
   phone a terminal agent started may tell its end late. The notice and run
   bookkeeping live in `cloudPhoneRun.ts`.
 - **CLI.** `cliCloudIphone.ts` turns each `ade apple` verb into one
   `cloud_phone` action on this machine's brain. `cliDevices.ts` adds the
   `ios@cloud` row and the `ade devices use ios@cloud` choice.
-- **Tools pane.** `CloudIphonePanel.tsx` shows minutes left, Start/Stop, and the
+- **Tools pane.** `CloudIphonePanel.tsx` shows the credits left, Start/Stop, and the
   phone in 3D (ADE's device body) or Flat. `useCloudPhoneFrames.ts` holds the
   picture; `cloudPhoneViewHost.ts` paints NoMac's control page in an offscreen
   window in the desktop main process and streams the cropped canvas as JPEG.
@@ -258,12 +242,12 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   web through the `cloudPhone.*` sync commands on the chat's machine. The
   chat's agents drive the phone with `ade apple` from every client.
 - **Running strip and top bar.** While the phone runs, the pane's strip says
-  its model, how long it has been on, the plan's minutes left and when the
+  its model, how long it has been on, the credits left (about how many minutes) and when the
   idle stop comes; in its last 90 s it counts in seconds and offers Keep on
   (`cloud_phone.keepAlive`: one cheap call NoMac counts as use) beside Stop.
   The top bar shows a phone icon only while a phone starts or runs (a dot for
   its state), and opens the same facts with Keep on, Stop and a link to the
-  minutes. Both read one shared state (`renderer/state/cloudPhoneLive.ts`):
+  credits. Both read one shared state (`renderer/state/cloudPhoneLive.ts`):
   every read of `getStatus` is published there, the pane reads every 30 s
   while the phone runs, and the top bar reads on focus, every 30 s while a
   phone runs and every 2 minutes while none does, never while the window is
@@ -282,7 +266,7 @@ tools pane (CloudIphonePanel)     CLI (ade apple …)     any provider's agent
   (`isCloudPhoneMissingAnswer`), never that the account lacks the phone.
 - **ADE iPhone app.** A Work chat's ⋯ › Tools › ADE Cloud iPhone (also the Duo
   and iPad Tools rails) opens a sheet over the same `cloudPhone.*` commands,
-  sent to the chat's machine: minutes left, Start and Stop, why it ended, and
+  sent to the chat's machine: the credits left, Start and Stop, why it ended, and
   the live phone in a sandboxed web view of NoMac's player (only
   `https://nomac.app` may load), with Screenshot. Status is read every 3 s
   while starting, every 20 s while off, every 30 s while live (so a phone that
