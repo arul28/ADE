@@ -3,6 +3,7 @@ import { Check, Copy } from "@phosphor-icons/react";
 import { usageLeftLevel } from "../usage/usageDesign";
 import { SavedFlash, useSavedFlash } from "../settings/primitives";
 import { isCtoNotesChangedError } from "../../../shared/types/cto";
+import { ipcErrorMessage } from "../../lib/format";
 
 /**
  * Small pieces the CTO surfaces share (the side panel and the settings
@@ -190,7 +191,7 @@ export function AutosaveTextArea({
       flash();
     } catch (err) {
       if (isCtoNotesChangedError(err)) setConflict(true);
-      else fail(err instanceof Error && err.message ? err.message : "Couldn't save.");
+      else fail(ipcErrorMessage(err) || "Couldn't save.");
     } finally {
       savingRef.current = false;
     }
@@ -209,7 +210,7 @@ export function AutosaveTextArea({
       <textarea
         className="kit-input"
         aria-label={ariaLabel}
-        aria-invalid={over ? true : undefined}
+        aria-invalid={over && !overflowMovesOut ? true : undefined}
         rows={rows}
         spellCheck={false}
         placeholder={placeholder}

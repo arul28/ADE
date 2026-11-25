@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ipcErrorMessage } from "../../lib/format";
 import type {
   CtoMemorySnapshot,
   CtoRecallArchivedArgs,
@@ -21,7 +22,7 @@ export type CtoMemoryState = {
 };
 
 function errorText(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
+  return ipcErrorMessage(err) || fallback;
 }
 
 /**
