@@ -81,7 +81,16 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
   const current = generation;
-  const next = await set(consent, confirmed);
+  const refresh = () => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
+  let next: Awaited<ReturnType<typeof set>>;
+  try {
+    next = await set(consent, confirmed);
+  } catch (error) {
+    // A refusal often means this copy is stale (the answer changed on another device, or a yes
+    // now needs the second confirm): read the account again so the next try asks right.
+    if (current === generation) refresh();
+    throw error;
+  }
   if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
   // Another account signed in meanwhile: this answer was the old account's.
   if (current !== generation) return;
@@ -89,7 +98,7 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, co
   // While Free's Small needs cards, the answer also moved Small's rate in the
   // account's catalog: read the account again so Small's hours show it. (Lazy:
   // the shared list's module imports this one.)
-  if (next.smallNeedsCards) void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
+  if (next.smallNeedsCards) refresh();
 }
 
 let noticeSave: Promise<void> | null = null;

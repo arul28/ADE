@@ -817,9 +817,18 @@ card, whatever the plan.
   holds only from those countries and never from a request with
   `Sec-GPC: 1`. The notice's reply asks for no card. A no given there holds
   12 months (`SPONSORED_OPT_OUT_HOLD_MS`); elsewhere the two-week re-ask
-  applies. A notice never overwrites an answer that holds. After a no, or
-  with `Sec-GPC: 1`, the state carries `confirmYes`: the question's yes and
-  Settings' switch confirm a second time (California's two-step opt-in).
+  applies. A notice never overwrites an answer that holds. After a no in
+  the US, or with `Sec-GPC: 1` from the US, the state carries `confirmYes`:
+  the question's yes and Settings' switch confirm a second time
+  (California's two-step opt-in), and `PUT` refuses an unconfirmed yes
+  (409 `sponsored_confirm`). Elsewhere a yes after a no is one click.
+- **Global Privacy Control:** `Sec-GPC: 1` from the US opts the whole
+  account out (CCPA §7025): any request that reads or reports sponsored
+  state turns a yes not given from such a browser into a no
+  (`source = gpc`), deletes the viewer rows and moves Small's rate. The
+  state then says `gpcOff`, and Settings says why. A yes given from that
+  browser, past the second confirm, is saved with `gpc = 1` (migration
+  `0063`) and holds there.
   A look at a chat keeps its state beside its country (`region`, migration
   `0063`), so the Index checks a notice's yes where the person last looked.
   Details:

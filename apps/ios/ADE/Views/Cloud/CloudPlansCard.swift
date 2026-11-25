@@ -259,6 +259,8 @@ struct CloudSponsoredCard: View {
   @ObservedObject private var sponsoredStore = CloudSponsoredStore.shared
   /// Turning cards on after a no asks once more (`CloudSponsoredState.confirmYes`).
   @State private var confirming = false
+  /// Where the switch is going while its save runs, so it doesn't snap back before the answer.
+  @State private var pendingOn: Bool?
 
   /// The shared account's answer wins even when it is none (the switch went off).
   private var sponsored: CloudSponsoredState? {
@@ -274,7 +276,7 @@ struct CloudSponsoredCard: View {
           Toggle("Sponsored cards", isOn: Binding(
             // Where cards start on, they read on before any answer (this card is then the notice).
             // On while the second confirm is up, so the switch doesn't snap back under it.
-            get: { sponsored.granted || sponsored.toldOn || confirming },
+            get: { pendingOn ?? (sponsored.granted || sponsored.toldOn || confirming) },
             set: { on in
               if on, sponsored.confirmYes { confirming = true } else { save(on ? CloudSponsoredState.granted : CloudSponsoredState.declined) }
             }
@@ -327,7 +329,9 @@ struct CloudSponsoredCard: View {
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {
     // On or off, the row says everything the one-time question (or the notice) does.
     let what = "A Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. \(CloudSponsoredState.sends)"
-    guard sponsored.granted || sponsored.toldOn else { return "Off. If you turn it on: \(what)" }
+    guard sponsored.granted || sponsored.toldOn else {
+      return "Off.\(sponsored.gpcOff ? " \(CloudSponsoredState.gpcOffLine)" : "") If you turn it on: \(what)"
+    }
     return sponsored.ads
       ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") \(what)"
       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
@@ -336,6 +340,7 @@ struct CloudSponsoredCard: View {
   private func save(_ consent: String, confirmed: Bool = false) {
     guard !saving else { return }
     saving = true
+    pendingOn = consent == CloudSponsoredState.granted
     error = nil
     Task {
       switch await cloudSaveSponsoredConsent(consent, confirmed: confirmed) {
@@ -343,6 +348,7 @@ struct CloudSponsoredCard: View {
       case .failure(let failure): error = failure.message
       }
       saving = false
+      pendingOn = nil
     }
   }
 }

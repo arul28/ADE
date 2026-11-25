@@ -47,6 +47,10 @@ import "./cloudPlans.css";
 const SPONSORED_SETTINGS_WHAT =
   "Free ADE Cloud chats can show one sponsored card with a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email.";
 
+/** Why cards are off when a browser's Global Privacy Control turned them off (`CloudSponsoredState.gpcOff`). */
+const SPONSORED_GPC_OFF =
+  "A browser you use sends Global Privacy Control, which turned sponsored cards off for your account. To keep them on there, turn them on from that browser.";
+
 /** The extra credits switch on this card: the hero's "When credits run out" links here. */
 export const CLOUD_EXTRA_ANCHOR = "cloud-extra";
 
@@ -440,6 +444,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                       ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
                 </small>
+                {!sponsoredOn && sponsoredToggle.gpcOff ? (
+                  <small className="adecd-addon-state">{SPONSORED_GPC_OFF}</small>
+                ) : null}
                 {sponsoredToggle.smallNeedsCards ? (
                   <small className="adecd-addon-state">Small computers use your {noun} while sponsored cards are off.</small>
                 ) : null}

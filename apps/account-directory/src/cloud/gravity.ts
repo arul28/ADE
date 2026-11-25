@@ -248,11 +248,45 @@ async function blockedReason(env: GravityEnv, account: AccountRow, country: stri
   return null;
 }
 
-type ConsentRow = { consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number; source: "answer" | "notice"; country: string | null };
+/**
+ * The account's answer. `source`: the person's own (`answer`), the yes saved
+ * with the notice that cards are on (`notice`), or the no a browser's Global
+ * Privacy Control made (`gpc`). `gpc` 1: a yes given from a browser that
+ * sends the signal (it holds there).
+ */
+type ConsentRow = { consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number; source: "answer" | "notice" | "gpc"; country: string | null; gpc: number };
 
 async function readConsent(env: GravityEnv, userId: string): Promise<ConsentRow | null> {
-  return env.DB.prepare("select consent, email_hash, decided_at, source, country from cloud_sponsored_consent where user_id = ?")
+  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc from cloud_sponsored_consent where user_id = ?")
     .bind(userId).first<ConsentRow>();
+}
+
+/**
+ * Whether this request's Global Privacy Control overrides the account's yes:
+ * from the US (where it is an opt-out of sale and sharing for the whole
+ * account), over a yes not given from such a browser. A yes given there,
+ * after the second confirm, holds.
+ */
+const gpcOverrides = (env: GravityEnv, consent: ConsentRow | null, who: SponsoredRequester): boolean =>
+  who.gpc && optOutCountry(env, who.country) && consent?.consent === "granted" && !consent.gpc;
+
+/**
+ * Turns the account's yes into a no when this request's Global Privacy Control
+ * overrides it (`gpcOverrides`): cards stop on every device, the Index stops,
+ * and Small uses credits, as a no does. Saved only over the yes it read. Returns
+ * the account's answer as it now is.
+ */
+async function honorGpc(env: GravityEnv, account: AccountRow, consent: ConsentRow | null, who: SponsoredRequester, now: number): Promise<ConsentRow | null> {
+  if (!gpcOverrides(env, consent, who) || !consent) return consent;
+  const saved = await env.DB.prepare(`
+    update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0
+    where user_id = ? and consent = 'granted' and decided_at = ?
+  `).bind(now, who.country, account.user_id, consent.decided_at).run();
+  if (!saved.meta?.changes) return readConsent(env, account.user_id);
+  await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(account.user_id).run();
+  logCloud("cloud.sponsored.consent", { consent: "declined", source: "gpc" });
+  await syncSmallRates(env, account, now);
+  return { ...consent, consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0 };
 }
 
 /**
@@ -270,17 +304,21 @@ const startsOnNow = (env: GravityEnv, consent: ConsentRow | null, shown: CloudSp
  * asked first).
  */
 const yesHolds = (env: GravityEnv, consent: ConsentRow | null, who: SponsoredRequester): consent is ConsentRow =>
-  consent?.consent === "granted" && (consent.source !== "notice" || startsOnFor(env, who));
+  consent?.consent === "granted" && (consent.source !== "notice" || startsOnFor(env, who)) && !gpcOverrides(env, consent, who);
 
 /**
  * Whether a yes now needs a second, separate confirm (`confirmYes`): no yes
- * holds, and the person said no before or their browser sends Global Privacy
- * Control (California's two-step opt-in after an opt-out). `PUT /consent`
- * refuses a yes without `confirmed` then, so an app too old to ask twice
- * can't turn cards back on in one click.
+ * holds, and the person opted out under US rules (a no given or read in the
+ * US, or their browser's Global Privacy Control from the US): California's
+ * two-step opt-in after an opt-out. Elsewhere a yes after a no is one click.
+ * `PUT /consent` refuses a yes without `confirmed` then, so an app too old to
+ * ask twice can't turn cards back on in one click.
  */
-const yesNeedsConfirm = (consent: ConsentRow | null, shown: CloudSponsoredConsent | null, who: SponsoredRequester): boolean =>
-  shown !== "granted" && (consent?.consent === "declined" || who.gpc);
+const yesNeedsConfirm = (env: GravityEnv, consent: ConsentRow | null, shown: CloudSponsoredConsent | null, who: SponsoredRequester): boolean =>
+  shown !== "granted" && (
+    (consent?.consent === "declined" && (optOutCountry(env, consent.country) || optOutCountry(env, who.country)))
+    || (who.gpc && optOutCountry(env, who.country))
+  );
 
 /**
  * The answer clients see: null when the person is to be asked (or told)
@@ -309,7 +347,9 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
   const reason = await blockedReason(env, account, who.country, switches);
   if (reason === "off") return undefined;
   // An account joins the A/B test's arm only once ads reach it.
-  const [consent, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings, now, reason == null)]);
+  const [read, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings, now, reason == null)]);
+  // A browser's Global Privacy Control from the US opts the whole account out.
+  const consent = await honorGpc(env, account, read, who, now);
   const answer = await shownAnswer(env, consent, who, now);
   return {
     ads: reason == null,
@@ -317,7 +357,9 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     // Not asked where cards start on: the client tells the person they are on, and saves that (`PUT /consent` `notice`).
     ...(startsOnNow(env, consent, answer, who) && reason == null ? { startsOn: true } : {}),
     // A yes after a no (theirs, or their browser's Global Privacy Control) is asked twice, as California has it.
-    ...(yesNeedsConfirm(consent, answer, who) ? { confirmYes: true } : {}),
+    ...(yesNeedsConfirm(env, consent, answer, who) ? { confirmYes: true } : {}),
+    // The no came from a browser's Global Privacy Control: Settings says so.
+    ...(answer === "declined" && consent?.source === "gpc" ? { gpcOff: true } : {}),
     test: !switches.live,
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
@@ -807,9 +849,9 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   const answered = async () => json((await sponsoredAccountState(env, account, who, now)) ?? { ads: false, consent: null, test: !switches.live });
   let before: ConsentRow | null = null;
   if (choice === "granted") {
-    before = await readConsent(env, userId);
-    if (body.confirmed !== true && yesNeedsConfirm(before, await shownAnswer(env, before, who, now), who)) {
-      return fail("confirm", "You turned sponsored cards off before, so turning them on takes a second confirm. Update ADE if it doesn't ask.", 409);
+    before = await honorGpc(env, account, await readConsent(env, userId), who, now);
+    if (body.confirmed !== true && yesNeedsConfirm(env, before, await shownAnswer(env, before, who, now), who)) {
+      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.", 409);
     }
   }
   if (choice === "notice") {
@@ -830,10 +872,15 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // A notice saves only over the row it read (none, or one no longer shown): a yes or no saved meanwhile holds.
   const guard = choice !== "notice" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
   await env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country) values (?, ?, ?, ?, ?, ?)
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc) values (?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
-      source = excluded.source, country = excluded.country${guard}
-  `).bind(userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country, ...(guard && before ? [before.decided_at] : [])).run();
+      source = excluded.source, country = excluded.country, gpc = excluded.gpc${guard}
+  `).bind(
+    userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
+    // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
+    choice === "granted" && who.gpc ? 1 : 0,
+    ...(guard && before ? [before.decided_at] : []),
+  ).run();
   // A no keeps nothing of where the person watched from: their address and device go too.
   if (consent === "declined") await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId).run();
   logCloud("cloud.sponsored.consent", { consent: choice });
@@ -861,7 +908,9 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   const account = await loadAccount(env, userId, now);
   const who = sponsoredRequester(request);
   const country = who.country;
-  if ((await blockedReason(env, account, country)) || !yesHolds(env, await readConsent(env, userId), who)) {
+  // A browser's Global Privacy Control from the US opts the whole account out (cards stop on every device).
+  const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
+  if ((await blockedReason(env, account, country)) || !yesHolds(env, consent, who)) {
     // The latest look at this computer doesn't allow cards (the person travelled, or their browser
     // now sends Global Privacy Control): an earlier look no longer lets the Index answer its agents.
     if (typeof body.instanceId === "string") {

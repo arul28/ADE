@@ -113,14 +113,18 @@ the cards is a financial incentive, which needs a yes before it starts.
   From anywhere else (they travelled) the account reads as unanswered there:
   no cards go to Gravity, and the person is asked.
 - A browser that sends Global Privacy Control (`Sec-GPC: 1`) is asked
-  instead, never told.
+  instead, never told. From the US it also opts the whole account out: the
+  first look turns a yes into a no (`source = gpc`) on every device, and
+  Settings says why. A yes then given from that browser holds there
+  (`gpc = 1`).
 - A no given there holds 12 months (`SPONSORED_OPT_OUT_HOLD_MS`, California's
   rule), whatever the switch does. A no given anywhere else is asked again
   after two weeks, as above.
 - A notice never overwrites an answer that still holds.
-- After a no, or from a browser with Global Privacy Control, the state
-  carries `confirmYes`: a yes from the question or Settings asks once more
-  before it is saved (California's two-step opt-in after an opt-out).
+- After a no in the US, or from a US browser with Global Privacy Control,
+  the state carries `confirmYes`: a yes from the question or Settings asks
+  once more before it is saved (California's two-step opt-in after an
+  opt-out). Elsewhere a yes after a no is one click.
 
 Every answer records where it was given (`country`).
 

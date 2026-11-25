@@ -17,7 +17,7 @@ import SwiftUI
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
-    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-again", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
+    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-again", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings", "duo-cloud-sponsored-settings-gpc",
     "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
   ]
 
@@ -62,23 +62,26 @@ enum CloudPreviews {
       // `duo-cloud-sponsored-small`: unanswered while the server's `smallNeedsCards` rule is on.
       // `duo-cloud-sponsored-notice`: as `small`, where cards start on (the US): the notice, not the question.
       // `duo-cloud-sponsored-again`: as `small`, asked again after a no: a yes is confirmed a second time.
+      // `duo-cloud-sponsored-settings-gpc`: Settings after a browser's Global Privacy Control turned a yes off.
       var account = list.account
+      let gpc = name == "duo-cloud-sponsored-settings-gpc"
       let notice = name == "duo-cloud-sponsored-notice"
       let again = name == "duo-cloud-sponsored-again"
       let unanswered = name == "duo-cloud-sponsored-consent" || name == "duo-cloud-sponsored-small" || notice || again
       let format = sponsoredFormatScreens[name]
       account?.sponsored = CloudSponsoredState(
         ads: true,
-        consent: unanswered ? nil : CloudSponsoredState.granted,
+        consent: unanswered ? nil : gpc ? CloudSponsoredState.declined : CloudSponsoredState.granted,
         test: true,
-        smallNeedsCards: name == "duo-cloud-sponsored-small" || notice || again ? true : nil,
+        smallNeedsCards: name == "duo-cloud-sponsored-small" || notice || again || gpc ? true : nil,
         format: format ?? .belowReply,
         startsOn: notice,
-        confirmYes: again
+        confirmYes: again || gpc,
+        gpcOff: gpc
       )
       AccountCloudStore.shared.seedPreview(access: nil, account: account)
       if format != nil { return AnyView(CloudSponsoredFormatChatFixture()) }
-      if name == "duo-cloud-sponsored-settings" {
+      if name == "duo-cloud-sponsored-settings" || gpc {
         return AnyView(NavigationStack {
           ScrollView { CloudSponsoredCard(pageAccount: account).padding(16) }
             .background(ADEColor.pageBackground.ignoresSafeArea())

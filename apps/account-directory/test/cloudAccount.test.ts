@@ -5288,8 +5288,8 @@ describe("sponsored cards", () => {
     expect(harness.row("select consent, email_hash from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "declined", email_hash: null });
     // A no keeps nothing of where the person watched from.
     expect(harness.rows("select * from cloud_sponsored_viewers")).toEqual([]);
-    // From now on a yes is confirmed a second time.
-    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true, smallNeedsCards: true, format: "below_reply", confirmYes: true });
+    // Every machine reads the no (from no known country, a yes after it is one click).
+    expect((await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState).sponsored).toEqual({ ads: true, consent: "declined", test: true, smallNeedsCards: true, format: "below_reply" });
   });
 
   const owner = (path: string, body: Row, bearer = "owner-token-test") => handleCloudRequest(new Request(`https://directory.test/cloud/owner/${path}`, {
@@ -5434,6 +5434,16 @@ describe("sponsored cards", () => {
     expect(await seen()).toEqual({ ok: true });
     expect(await seen({ "sec-gpc": "1" })).toEqual({ ok: false });
     expect(harness.rows("select instance_id from cloud_sponsored_viewers where user_id = ?", OWNER)).toEqual([]);
+    // From the US that signal opts the whole account out: the yes is a no on every device, Small uses credits, and Settings says why.
+    expect(saved()).toEqual({ consent: "declined", source: "gpc", country: "US" });
+    expect(computer(harness).multiplier_milli).toBe(500);
+    expect(await state(US)).toMatchObject({ consent: "declined", gpcOff: true, confirmYes: true });
+    // A yes given from that browser, past the second confirm, is the person's choice and holds there.
+    expect(await choose(US, "granted", { "sec-gpc": "1" })).toBe(409);
+    expect((await from(US, "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true }, { "sec-gpc": "1" })).status).toBe(200);
+    expect(await state(US, { "sec-gpc": "1" })).toMatchObject({ consent: "granted" });
+    expect(await seen({ "sec-gpc": "1" })).toEqual({ ok: true });
+    expect(harness.row("select consent, source, gpc from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "granted", source: "answer", gpc: 1 });
 
     // Turned off in the US: Small uses credits, a later notice never overwrites it, and it holds a year, whatever the switch does.
     expect(await choose(US, "declined")).toBe(200);
@@ -5460,10 +5470,16 @@ describe("sponsored cards", () => {
     harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + 1);
     clock += 2;
     expect((await state("GB"))?.consent).toBeNull();
-    // After a no, a yes takes a second confirm: an app too old to ask twice can't turn cards back on in one click.
-    expect(await choose("GB", "granted")).toBe(409);
-    expect((await from("GB", "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    // Outside the US a yes after a no is one click.
+    expect(await choose("GB", "granted")).toBe(200);
     expect(saved()).toEqual({ consent: "granted", source: "answer", country: "GB" });
+    // After a no in the US a yes takes a second confirm: an app too old to ask twice can't turn cards back on in one click.
+    expect(await choose(US, "declined")).toBe(200);
+    expect(await state(US)).toMatchObject({ consent: "declined", confirmYes: true });
+    expect((await state(US))?.gpcOff).toBeUndefined();
+    expect(await choose(US, "granted")).toBe(409);
+    expect((await from(US, "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    expect(saved()).toEqual({ consent: "granted", source: "answer", country: "US" });
   });
 
   it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {

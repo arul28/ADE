@@ -642,6 +642,10 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "again") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, confirmYes: true }, catalog: smallRate(null) };
   }
+  // `gpc`: a browser's Global Privacy Control turned an earlier yes off: Settings says why.
+  if (sponsoredParam === "gpc") {
+    state = { ...state, sponsored: { ads: true, consent: "declined", test: true, smallNeedsCards: true, confirmYes: true, gpcOff: true }, catalog: smallRate("declined") };
+  }
   // `&mockSponsoredFormat=below_reply|above_prompt|inline`: where the card shows (the server's `format`).
   const formatParam = param("mockSponsoredFormat");
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
@@ -706,11 +710,11 @@ export function applyBrowserMockCloud(ade: any): void {
       if (!state.sponsored) return null;
       // As the server: after a no, a yes needs the second confirm.
       if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
-        throw new Error("You turned sponsored cards off before, so turning them on takes a second confirm. Update ADE if it doesn't ask.");
+        throw new Error("Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.");
       }
       // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
       const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
-      const { startsOn: _startsOn, confirmYes: _confirmYes, ...sponsored } = state.sponsored;
+      const { startsOn: _startsOn, confirmYes: _confirmYes, gpcOff: _gpcOff, ...sponsored } = state.sponsored;
       // After a no, a yes is confirmed a second time, as the server has it.
       state = { ...state, sponsored: { ...sponsored, consent, ...(consent === "declined" ? { confirmYes: true } : {}) } };
       if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };

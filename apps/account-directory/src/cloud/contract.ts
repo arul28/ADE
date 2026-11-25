@@ -3245,12 +3245,20 @@ export type CloudSponsoredState = {
    */
   startsOn?: boolean;
   /**
-   * A yes now needs a second, separate confirm: the person said no before, or
-   * their browser sends Global Privacy Control (California's rule for opting
-   * back in to sharing). The question's yes and Settings' switch ask again,
-   * and `PUT /consent` then takes a yes only with `confirmed: true`.
+   * A yes now needs a second, separate confirm: the person opted out under US
+   * rules (a no given or read in the US, or their browser sends Global
+   * Privacy Control from the US): California's rule for opting back in to
+   * sharing. The question's yes and Settings' switch ask again, and
+   * `PUT /consent` then takes a yes only with `confirmed: true` (409
+   * `sponsored_confirm` otherwise).
    */
   confirmYes?: boolean;
+  /**
+   * The no came from a browser's Global Privacy Control, which opts the whole
+   * account out from the US: Settings says so. A yes given from that browser,
+   * after the second confirm, holds there.
+   */
+  gpcOff?: boolean;
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */
   test: boolean;
   /**
