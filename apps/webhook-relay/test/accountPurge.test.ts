@@ -109,16 +109,22 @@ describe("deleted account purge", () => {
     expect(data.rows(`select org_id from linear_agent_installs where org_id = 'inst-${GONE}'`)).toEqual([{ org_id: `inst-${GONE}` }]);
   });
 
-  it("purges an account only near the directory's repeats, and throws when the production directory refuses", async () => {
+  it("asks no directory without the shared secret, purges only near the directory's repeats, and throws when the production directory refuses", async () => {
     const data = sqliteD1();
     seed(data, GONE);
     let answer = () => Response.json({ accounts: [{ userId: GONE, deletedAt: NOW }] }) as Response;
+    const secrets: Array<string | null> = [];
     const env = {
       DB: data.DB,
-      CLOUD_EVENT_WAKE_SECRET: "wake-secret",
-      ACCOUNT_DIRECTORY_PRODUCTION: directory(() => answer(), []),
+      ACCOUNT_DIRECTORY_PRODUCTION: directory(() => answer(), secrets),
     } as unknown as RelayEnv;
     const before = mentions(data, GONE);
+
+    // No shared secret: no directory is asked, and nothing is purged.
+    expect(await purgeDeletedAccounts(env, NOW + MINUTE)).toBe(0);
+    expect(secrets).toEqual([]);
+    expect(mentions(data, GONE)).toEqual(before);
+    (env as RelayEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = "wake-secret";
 
     // Between the repeats at 15 minutes and 75 minutes: listed, but not due.
     expect(await purgeDeletedAccounts(env, NOW + 55 * MINUTE)).toBe(0);
@@ -128,20 +134,5 @@ describe("deleted account purge", () => {
 
     answer = () => new Response("{}", { status: 503 });
     await expect(purgeDeletedAccounts(env, NOW + 80 * MINUTE)).rejects.toThrow("deleted_accounts_list_failed");
-  });
-
-  it("asks no directory without the shared secret", async () => {
-    const data = sqliteD1();
-    seed(data, GONE);
-    const secrets: Array<string | null> = [];
-    const env = {
-      DB: data.DB,
-      ACCOUNT_DIRECTORY_PRODUCTION: directory(() => Response.json({ accounts: [{ userId: GONE }] }), secrets),
-    } as unknown as RelayEnv;
-    const before = mentions(data, GONE);
-
-    expect(await purgeDeletedAccounts(env)).toBe(0);
-    expect(secrets).toEqual([]);
-    expect(mentions(data, GONE)).toEqual(before);
   });
 });
