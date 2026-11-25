@@ -69,7 +69,7 @@ export function cloudPlanMomentWords(moment: CloudPlanMoment): { title: string; 
   const replaced = cloudPlanReplacedSentence(moment);
   return {
     title: `You're on ${moment.label}`,
-    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli)} ${moment.noun} a month for ${moment.noun === "credits" ? "bigger ones and the iPhone" : "bigger ones"}. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
+    detail: `${moment.computers} cloud computers, unlimited Small ones and ${formatCloudHours(moment.includedMilli)} ${moment.noun} a month for bigger ones. Renews ${formatCloudDate(moment.renewsAt)}.${replaced ? ` ${replaced}` : ""}`,
   };
 }
 
