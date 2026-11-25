@@ -44,15 +44,15 @@ ade chat create --machine cloud --prompt "Fix the flaky login test"
 Add `--size small|medium|large|xlarge` to pick a size; without it ADE uses the size you saved for new lanes. An agent asks you in its chat before it starts a cloud lane, unless you let agents do it alone in **Settings › ADE Cloud › What agents may do**.
 
 <Tip>
-`ade cloud status` shows your plan, the hours left, your cloud computers, every cloud lane, and whether a new lane can start right now.
+`ade cloud status` shows your plan, the credits left, your cloud computers, every cloud lane, and whether a new lane can start right now.
 </Tip>
 
-## Computers and hours
+## Computers and credits
 
-- **Small computers are unlimited.** They never use your hours, on every plan.
+- **Small computers are unlimited.** They use no credits, on every plan.
 - **Cloud computers.** Each plan has a number of cloud computers, asleep or not: one per cloud lane. When all of them are in use, ADE shows three ways to make room: free up a computer from another lane, delete a lane, or the next plan up.
-- **Hours.** Bigger computers use hours, counted as time on a Medium: a Large uses 2.5 hours an hour and an X-Large 4. A computer that sleeps uses none. When the hours run out, bigger computers stop and Small computers keep working.
-- **Extra hours.** On a paid plan you can turn them on in **Settings › ADE Cloud**. You pay for them only while they are on.
+- **Credits.** Each plan comes with credits each month: Free 50, Plus 100, Pro 600 and Max 1,500. A Medium computer uses 1 credit an hour, a Large 2.5 and an X-Large 4. A computer that sleeps uses none. When the credits run out, bigger computers stop and Small computers keep working.
+- **When credits run out.** On a paid plan, pick **Keep going** in **Settings › ADE Cloud** to keep using bigger computers at 2¢ a credit, or **Pause** to stop them. You pay only for the extra credits you use.
 - **Unused computers** are cleaned up after a while: 3 days idle on the Free plan, 10 days on a paid plan. ADE warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and **New computer** makes a new computer on the same branch that continues the same chat.
 
 ## Free a lane's computer
@@ -67,7 +67,7 @@ A lane with no computer shows in Work and in Lanes, with **New computer**. It ma
 
 **Delete the lane** is different: it removes the lane, its computer and its chats.
 
-The plans are Free ($0, 2 cloud computers), Plus ($5 a month, 3), Pro ($20, 10) and Max ($50, 20). A bigger plan has more computers and more hours for bigger computers. Free is ad-supported. See [the plans and what each includes](https://ade-app.dev/pricing).
+The plans are Free ($0, 2 cloud computers), Plus ($5 a month, 3), Pro ($20, 10) and Max ($50, 20). A bigger plan has more computers and more credits for bigger computers. Free is ad-supported. See [the plans and what each includes](https://ade-app.dev/pricing).
 
 ## Manage your plan and billing
 

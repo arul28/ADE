@@ -115,6 +115,10 @@ Runs that need a human land in a queue with statuses like **pending review**, **
 
 You can write a rule from a free-text brief — a planner turns the brief into a draft rule (triggers plus actions) that you review before saving — or build it directly in the rule editor by picking a trigger, an execution surface, and guardrails. Templates seed a new draft to start from.
 
+An unsaved rule is kept as one draft per repository on this computer, with its **Runs on** choice, through tab switches and restarts. When the rule runs on another computer, anything that computer's ADE can't run yet is greyed out with the version it needs.
+
+A **Send notification** step can open what the run made: its chat, its lane or the run's history. On the iPhone the link opens the run's chat.
+
 <Tip>
 Use the **simulate** path to dry-run a rule against a synthetic trigger before enabling it — it lists exactly which actions would fire, with nothing published.
 </Tip>

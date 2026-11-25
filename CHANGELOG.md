@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.135] - 2026-11-25
+
+### Desktop and web
+
+- ADE Cloud credits: one balance on every plan, the iPhone draws only from credits, old iPhone-minutes billing removed, "When credits run out" with Keep going / Pause in the top card, notices inside the hero (#2494, #2488, #2505, #2503, #2501).
+- Automations: one draft per repository, steps gated on the rule's computer, notifications that open the run (#2504).
+- CTO: react or no reply, background helpers, unfolded tail kept on a fresh thread and a model switch (#2492, #2493).
+- Privacy policy lists all collected data; sign-in agree line (#2498). Website: shorter cloud banner (#2497).
+- Sponsored cards (testers only): Gravity's renderer, three formats, US on by default with a notice (#2495, #2490, #2506).
+- Mac window buttons centred at every zoom (#2491). Windows and Linux: agents can't stop the brain they run in (#2502).
+
+### iOS
+
+- Credits balance and "When credits run out", automation run links, CTO reactions (#2503, #2488, #2504, #2492).
+
 ## [1.2.134] - 2026-11-24
 
 ### Desktop and web
@@ -2928,7 +2943,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.134...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.135...HEAD
+[1.2.135]: https://github.com/arul28/ADE/compare/v1.2.134...v1.2.135
 [1.2.134]: https://github.com/arul28/ADE/compare/v1.2.133...v1.2.134
 [1.2.133]: https://github.com/arul28/ADE/compare/v1.2.132...v1.2.133
 [1.2.132]: https://github.com/arul28/ADE/compare/v1.2.131...v1.2.132
