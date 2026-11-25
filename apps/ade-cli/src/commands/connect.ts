@@ -278,7 +278,7 @@ function formatStepLine(id: string, state: string, detail: string): string {
  */
 function renderConnectEpilogue(result: ConnectResult): string {
   const lines: string[] = [""];
-  if (result.connected) {
+  if (result.connected && result.ok) {
     lines.push(
       `This machine is now reachable from ADE desktop, web (${result.webClientUrl}), and iOS.`,
     );
@@ -305,7 +305,7 @@ function renderConnectEpilogue(result: ConnectResult): string {
  * are already on stderr, so this stays short enough to pipe somewhere useful.
  */
 export function renderConnectSummary(result: ConnectResult): string {
-  if (result.connected) {
+  if (result.connected && result.ok) {
     const identity = result.account.identity ?? "ADE account";
     const machine = result.machine.name ?? result.machine.machineKey ?? "this machine";
     return `Connected as ${identity} · machine "${machine}"`;
@@ -555,10 +555,12 @@ export async function runConnectCommand(
       online: Boolean(publishedMachine?.online),
     },
     webClientUrl,
-    message: connected
-      ? `This machine is now reachable from ADE desktop, web (${webClientUrl}), and iOS.`
-      : failedStep
-        ? failedStep.detail
+    // A failed step outranks the directory listing this machine: the command
+    // did not finish, whatever an earlier run left published.
+    message: failedStep
+      ? failedStep.detail
+      : connected
+        ? `This machine is now reachable from ADE desktop, web (${webClientUrl}), and iOS.`
         : "This machine is set up for local use; it is not linked to an ADE account.",
     ...(failedStep?.nextAction ? { nextAction: failedStep.nextAction } : {}),
   };

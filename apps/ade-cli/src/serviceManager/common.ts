@@ -978,7 +978,7 @@ export function serveSocketArgument(commandLine: string): string | null {
 // the same fix for its own predicate.
 export function isStaleChannelServeCommandLine(
   commandLine: string,
-  opts: { cliScriptPath: string; primarySocketPath: string },
+  opts: ChannelServeMatch,
 ): boolean {
   const line = commandLine.trim();
   if (!line || !opts.cliScriptPath) return false;
@@ -986,14 +986,20 @@ export function isStaleChannelServeCommandLine(
   const explicitPrimarySocket = socketArgument !== null
     ? isSameServeSocketPath(socketArgument, opts.primarySocketPath)
     : false;
-  const cliIndex = line.indexOf(opts.cliScriptPath);
-  const alternateCliMatch = line.match(
-    /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/,
+  // Windows paths ignore case, so `C:\ADE\CLI.CJS` is the same script as `c:\ade\cli.cjs`.
+  const fold = (value: string): string => (opts.ignoreCase ? value.toLowerCase() : value);
+  const searched = fold(line);
+  const cliScriptPath = fold(opts.cliScriptPath);
+  const cliIndex = searched.indexOf(cliScriptPath);
+  const alternateCliMatch = searched.match(
+    opts.ignoreCase
+      ? /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/i
+      : /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/,
   );
   const tail = cliIndex >= 0
-    ? line.slice(cliIndex + opts.cliScriptPath.length)
+    ? searched.slice(cliIndex + cliScriptPath.length)
     : alternateCliMatch?.index != null
-      ? line.slice(alternateCliMatch.index + alternateCliMatch[0].length)
+      ? searched.slice(alternateCliMatch.index + alternateCliMatch[0].length)
       : "";
   if (!/^"?\s+"?serve"?(?:\s|$)/.test(tail)) return false;
   if (/--(?:install-service|uninstall-service|service-status|no-sync)\b/.test(tail)) return false;
@@ -1041,7 +1047,7 @@ export function buildWindowsProcessCommandLineQueryArgs(): string[] {
 function parseStaleChannelServePids(
   output: string,
   separator: RegExp,
-  opts: { cliScriptPath: string; primarySocketPath: string; excludePids?: number[] },
+  opts: ChannelServeMatch & { excludePids?: number[] },
 ): number[] {
   const exclude = new Set([process.pid, ...(opts.excludePids ?? [])]);
   const pids: number[] = [];
@@ -1086,7 +1092,7 @@ export function listStaleChannelServePids(
     }
     return {
       ok: true,
-      pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\t(.+)$/, opts),
+      pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\t(.+)$/, { ...opts, ignoreCase: true }),
     };
   }
   const result = run("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
@@ -1104,7 +1110,12 @@ export function listStaleChannelServePids(
 }
 
 /** The channel brain a stop means to reach: this channel's CLI serving its primary socket. */
-export type ChannelServeMatch = { cliScriptPath: string; primarySocketPath: string };
+export type ChannelServeMatch = {
+  cliScriptPath: string;
+  primarySocketPath: string;
+  /** Compare the CLI path without case, as Windows paths are. */
+  ignoreCase?: boolean;
+};
 
 /**
  * The identity a force-kill of a channel brain needs, for `terminatePidGracefullyAsync`.

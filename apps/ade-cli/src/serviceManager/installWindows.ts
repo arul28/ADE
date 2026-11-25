@@ -36,7 +36,12 @@ import {
   type WindowsPowerShell,
   type WindowsProcessFacts,
 } from "./common";
-import { refuseSelfServiceMutation } from "./processAncestry";
+import {
+  allowsSelfServiceMutation,
+  refuseSelfServiceMutation,
+  selfServiceMutationRefusal,
+  withoutOwnAncestors,
+} from "./processAncestry";
 import { parseCommandLine } from "../../../desktop/src/shared/shell";
 import {
   resolveMachineAdeDir,
@@ -1001,6 +1006,7 @@ async function readRecordedBrain(
     isStaleChannelServeCommandLine(read.facts.commandLine, {
       cliScriptPath: resolveAdeServeCliScriptPath(command),
       primarySocketPath: args.socketPath,
+      ignoreCase: true,
     }));
   if (!isServeBrain) return unverified;
   if (read.facts.parentPid !== args.supervisorPid) return unverified;
@@ -1460,10 +1466,12 @@ function windowsSelfMutationRefusal(
     record: WindowsServicePidRecord | null;
     plan: Extract<WindowsStartupPlan, { ok: true }>;
     otherBrainPids?: readonly number[];
+    /** The scan for `otherBrainPids` failed while a brain only it can find may be stopped. */
+    otherBrainsUnknown?: boolean;
   },
 ): ServiceManagerResult | null {
   const { plan, record } = args;
-  return refuseSelfServiceMutation({
+  const refusal = refuseSelfServiceMutation({
     action: args.action,
     path: args.path,
     serviceName: args.serviceName,
@@ -1479,6 +1487,13 @@ function windowsSelfMutationRefusal(
       plan.supervisor?.pid,
       ...plan.predecessors.flatMap((group) => [group.supervisor.pid, ...group.children.map((child) => child.pid)]),
     ],
+  });
+  if (refusal || !args.otherBrainsUnknown || allowsSelfServiceMutation(args.env)) return refusal;
+  return selfServiceMutationRefusal({
+    action: args.action,
+    path: args.path,
+    serviceName: args.serviceName,
+    unconfirmed: true,
   });
 }
 
@@ -1625,25 +1640,27 @@ async function installWindowsServiceImpl(
     path: taskName,
     message,
   });
-  // An idle legacy task is removed now. A running one may run the very brain
-  // this command is in, so it is ended only where nothing is refused below:
-  // before keeping the current brain, or after the self-mutation check.
+  // The legacy task this channel owns is read now and removed late. A running
+  // one may run the very brain this command is in, so it is ended only after
+  // the self-mutation check. An idle one may be the only thing that starts ADE
+  // at sign-in, so it goes only once the replacement launcher is written, or
+  // when the current brain is kept.
   const legacyTaskDescription = "legacy ADE Runtime scheduled task";
   const legacyTask = inspectWindowsTask(run, TASK_NAME, legacyTaskDescription, serviceCommand);
   if (!legacyTask.ok) return failure(legacyTask.message);
-  let pendingLegacyTask = legacyTask.present ? legacyTask : null;
+  const pendingLegacyTask = legacyTask.present ? legacyTask : null;
   const removeLegacyTask = (): string | null => {
     if (!pendingLegacyTask) return null;
     const removal = endAndDeleteWindowsTask(run, TASK_NAME, legacyTaskDescription, pendingLegacyTask);
-    pendingLegacyTask = null;
     return removal.ok ? null : removal.message;
   };
-  if (pendingLegacyTask && !pendingLegacyTask.running) {
-    const legacyError = removeLegacyTask();
-    if (legacyError) return failure(legacyError);
-  }
-  /** A success that keeps the current brain, once the deferred legacy task is gone. */
+  /**
+   * A success that keeps the current brain. An idle legacy task goes; a running
+   * one stays, since nothing here checked that this command is outside it (the
+   * next install that replaces the brain ends it after that check).
+   */
   const keepingCurrentBrain = (result: ServiceManagerResult): ServiceManagerResult => {
+    if (!pendingLegacyTask || pendingLegacyTask.running) return result;
     const legacyError = removeLegacyTask();
     return legacyError ? failure(legacyError) : result;
   };
@@ -1773,6 +1790,7 @@ async function installWindowsServiceImpl(
   const staleMatch = {
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
     primarySocketPath: runningSocketPath,
+    ignoreCase: true,
   };
   const unsupervisedBrains = listStaleChannelServePids(run, staleMatch, "win32");
   const selfBlock = windowsSelfMutationRefusal(run, {
@@ -1783,6 +1801,9 @@ async function installWindowsServiceImpl(
     record: readPidRecord(pidPath),
     plan: startupPlan,
     otherBrainPids: unsupervisedBrains.ok ? unsupervisedBrains.pids : [],
+    // A running legacy task's brain has no supervisor or record: the scan is
+    // the only place it shows. A failed scan cannot clear ending it.
+    otherBrainsUnknown: !unsupervisedBrains.ok && pendingLegacyTask?.running === true,
   });
   if (selfBlock) return selfBlock;
   // Written only now, so a refusal or a failed check above leaves the old
@@ -1873,7 +1894,9 @@ async function installWindowsServiceImpl(
   // must name the channel socket itself, or answer on that endpoint. Any other
   // stale candidate is left running and reported, not claimed as taken over.
   const unverifiedStalePids: number[] = [];
-  for (const stalePid of staleScan.ok ? staleScan.pids : []) {
+  // Read after the refusal, so a brain it finds that the refusal did not see is checked here.
+  const reapable = withoutOwnAncestors(staleScan.ok ? staleScan.pids : [], { env, run, platform: "win32" });
+  for (const stalePid of reapable) {
     const outcome = await stopWindowsBrainGracefully(run, {
       socketPath: runningSocketPath,
       runtimePid: stalePid,
@@ -2074,6 +2097,7 @@ async function decideWindowsUninstall(
     record: targets.readPidRecord(pidPath),
     plan,
     otherBrainPids: legacyBrains?.ok ? legacyBrains.pids : [],
+    otherBrainsUnknown: legacyBrains !== null && !legacyBrains.ok,
   });
   return refusal ? { ok: false, result: refusal } : { ok: true, plan, legacyTask };
 }

@@ -29,7 +29,7 @@ import {
   terminatePidGracefullyAsync,
   type TerminatePidDeps,
 } from "./common";
-import { refuseSelfServiceMutation } from "./processAncestry";
+import { refuseSelfServiceMutation, withoutOwnAncestors } from "./processAncestry";
 import {
   installLaunchdWatchdogAgent,
   uninstallLaunchdWatchdogAgent,
@@ -581,8 +581,17 @@ export async function installLaunchdService(
   // by now. A failed scan is not "nothing to reap"; on macOS `ps` is part of
   // the base system, so a failure here means the host is broken in a way this
   // install cannot repair. Reaping nothing preserves the pre-existing behaviour.
+  // This scan ran after the refusal, so a brain it finds that the refusal did
+  // not see (the first scan failed, or the brain started since) is checked here.
   const staleScan = listStaleChannelServePids(run, staleMatch, "darwin");
-  for (const pid of staleScan.ok ? staleScan.pids : []) {
+  const reapable = withoutOwnAncestors(staleScan.ok ? staleScan.pids : [], {
+    env,
+    run,
+    platform: "darwin",
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  for (const pid of reapable) {
     await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps, socketPath));
   }
   let load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);

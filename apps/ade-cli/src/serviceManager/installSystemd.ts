@@ -223,8 +223,14 @@ function systemdSelfMutationRefusal(args: {
     run: args.run,
     platform: "linux",
   });
-  if (byTree || allowsSelfServiceMutation(args.env) || !isInsideUnitCgroup(args.state?.controlGroup)) return byTree;
-  return selfServiceMutationRefusal({ action: args.action, path: args.path, brainPid: args.state?.mainPid });
+  if (byTree || allowsSelfServiceMutation(args.env)) return byTree;
+  // A failed `systemctl show` named neither the brain nor its cgroup, so
+  // nothing cleared this command. An unknown unit still answers, as inactive.
+  if (args.state === null) {
+    return selfServiceMutationRefusal({ action: args.action, path: args.path, unconfirmed: true });
+  }
+  if (!isInsideUnitCgroup(args.state.controlGroup)) return null;
+  return selfServiceMutationRefusal({ action: args.action, path: args.path, brainPid: args.state.mainPid });
 }
 
 function handoverFailure(

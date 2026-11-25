@@ -238,8 +238,15 @@ function readWindowsAncestorPids(run: ServiceManagerSpawnSync, startPid: number)
 function readPosixParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
   // `ps` exits 1 both for "no such pid" and for a genuine failure, so a POSIX
   // host cannot distinguish the two. `ps` is part of every POSIX base system,
-  // so treat a failure as end-of-chain.
-  const result = run("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+  // so treat a non-zero exit as end-of-chain. A `ps` that never ran or was
+  // killed answered nothing at all.
+  let result: ServiceManagerProcessResult;
+  try {
+    result = run("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+  } catch {
+    return PARENT_PID_UNKNOWN;
+  }
+  if (result.error || result.status === null) return PARENT_PID_UNKNOWN;
   if (result.status !== 0) return null;
   const parentPid = Number.parseInt(processOutputText(result), 10);
   return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
@@ -294,6 +301,21 @@ export function isCurrentProcessDescendantOfPid(args: ProcessAncestryArgs & { ta
   if (!Number.isFinite(targetPid) || targetPid <= 0) return false;
   const ancestors = readCurrentProcessAncestorPids(args);
   return ancestors === PARENT_PID_UNKNOWN || ancestors.has(targetPid);
+}
+
+/**
+ * `pids` without the processes this command runs inside, for a reap whose list
+ * was read after the refusal ran (a later scan finds brains the refusal never
+ * saw). Reaps none when the ancestry cannot be read; the override keeps all.
+ */
+export function withoutOwnAncestors(
+  pids: readonly number[],
+  args: Omit<ProcessAncestryArgs, "platform"> & { platform: NodeJS.Platform; env: NodeJS.ProcessEnv },
+): number[] {
+  if (pids.length === 0 || allowsSelfServiceMutation(args.env)) return [...pids];
+  const ancestors = readCurrentProcessAncestorPids(args);
+  if (ancestors === PARENT_PID_UNKNOWN) return [];
+  return pids.filter((pid) => !ancestors.has(pid));
 }
 
 /** Whether `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` lets a command inside the brain tear it down. */
