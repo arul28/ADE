@@ -26,6 +26,7 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 ### Operator tools (`apps/desktop/src/main/services/ai/tools/`)
 
 - `ctoOperatorTools.ts` — the CTO's tool factory: the memory tools (`remember`, `forget`, `trackWork`, `finishWork`, `readHistory`, `readDiscoveries`), the pack loader `loadCtoTools`, scheduling, chat spawn and supervision, lanes/PRs/git/tests, Linear, proof and the cross-machine tools.
+- `ctoExecutionLane.ts` — `createCtoExecutionLaneResolver()`: where `spawnChat` work runs, shared by the in-process CTO and the MCP bridge (see [Where CTO-launched work runs](#where-cto-launched-work-runs)).
 - `ctoToolPacks.ts` — the closed list of packs and their one-line scopes. No imports, so the prompt builder can read it without the tool runtime.
 - `ctoCrossMachine.ts`, `ctoCrossMachineTools.ts` — the cross-machine tool contract and implementation (`listMachines`, `listMachineActions`, `runMachineAction`, the `machine` argument).
 - `universalTools.ts` — hosts `recordDiscovery`, the append-only tool every agent gets.

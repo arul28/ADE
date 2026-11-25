@@ -1213,12 +1213,12 @@ import {
 } from "./ctoTurnContext";
 import {
   applyCtoToolPackVisibility,
-  createCtoExecutionLaneResolver,
   createCtoOperatorTools,
   type CtoOperatorToolDeps,
   type CtoOperatorToolMap,
   type CtoToolPack,
 } from "../ai/tools/ctoOperatorTools";
+import { createCtoExecutionLaneResolver } from "../ai/tools/ctoExecutionLane";
 import {
   CTO_INTRO_ONBOARDING_STEP,
   CTO_INTRO_PROMPT,

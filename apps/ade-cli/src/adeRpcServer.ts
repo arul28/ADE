@@ -68,7 +68,8 @@ import {
   type SessionHomeLane,
 } from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
-import { createCtoExecutionLaneResolver, createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
+import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools/ctoOperatorTools";
+import { createCtoExecutionLaneResolver } from "../../desktop/src/main/services/ai/tools/ctoExecutionLane";
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
