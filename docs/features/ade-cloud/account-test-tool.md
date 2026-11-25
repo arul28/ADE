@@ -97,6 +97,27 @@ the testers see the rule. A no is asked again two weeks later
 changed; until the person answers, it still counts as a no. A yes from outside the card countries is refused (403): there are
 no cards to show there, so Small keeps using hours.
 
+### Where cards start on
+
+In `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`; set it empty to ask
+everywhere), Free accounts are not asked first. The first cloud chat (or
+Settings › ADE Cloud) tells the person sponsored cards are on, with **Turn
+off** beside it, and saves that as a yes of its own kind (`source = notice`),
+so Small is free from then on. This is the opt-out model US privacy laws
+allow; the UK's needs a yes first, so every other country is asked.
+
+- The notice's yes holds only while the person is in one of those countries.
+  From anywhere else (they travelled) the account reads as unanswered there:
+  no cards go to Gravity, and the person is asked.
+- A browser that sends Global Privacy Control (`Sec-GPC: 1`) is asked
+  instead, never told.
+- A no given there holds 12 months (`SPONSORED_OPT_OUT_HOLD_MS`, California's
+  rule), whatever the switch does. A no given anywhere else is asked again
+  after two weeks, as above.
+- A notice never overwrites an answer that still holds.
+
+Every answer records where it was given (`country`).
+
 ### Countries
 
 Cards go only to viewers in `GRAVITY_COUNTRIES` (default `US,CA,GB,AU`, where Gravity fills real ads), read from
@@ -119,7 +140,8 @@ Small keeps working to an account whose Small uses hours.
 1. `tester <you> on`, then `act-as <you> free` (a paid account sees no cards).
 2. `set gravity_ads testers`.
 3. Open a chat on one of your ADE Cloud computers, finish a reply, answer the
-   one-time question. Gravity's test ads say "Sponsored · test".
+   one-time question (from the US: read the notice that cards are on).
+   Gravity's test ads say "Sponsored · test".
 4. Optional: answer no to see Small use hours (the Free rule).
 5. When done: `reset <you>`, `tester <you> off`, and `set gravity_ads off`
    unless the owner wants it left on.

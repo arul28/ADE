@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudAccountState, CloudMachinesResult, CloudSponsoredConsent, CloudSponsoredState } from "../../shared/adeCloud";
+import type { CloudAccountState, CloudMachinesResult, CloudSponsoredChoice, CloudSponsoredState } from "../../shared/adeCloud";
 import { useAdeCloudEnabled } from "./cloudAccess";
 
 /**
@@ -74,7 +74,7 @@ export function noteCloudSponsoredState(next: CloudSponsoredState | null | undef
 }
 
 /** Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save. */
-export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): Promise<void> {
+export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
   const current = generation;
@@ -87,6 +87,25 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredConsent): 
   // account's catalog: read the account again so Small's hours show it. (Lazy:
   // the shared list's module imports this one.)
   if (next.smallNeedsCards) void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
+}
+
+let noticeSave: Promise<void> | null = null;
+
+/**
+ * The person was just shown that sponsored cards are on (`startsOn`): saves
+ * it once, so cards and free Small follow on every machine. A save that fails
+ * is an expected outcome (offline, or refused because the person's country no
+ * longer starts them on, or an answer saved on another screen meanwhile): the
+ * account is read again, which shows the question instead, and the next look
+ * at the notice tries once more.
+ */
+export function noteSponsoredNoticeShown(): void {
+  if (noticeSave) return;
+  noticeSave = setCloudSponsoredConsent("notice")
+    .catch(() => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines()))
+    .finally(() => {
+      noticeSave = null;
+    });
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

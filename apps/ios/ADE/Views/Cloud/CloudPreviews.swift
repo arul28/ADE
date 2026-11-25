@@ -17,7 +17,7 @@ import SwiftUI
 enum CloudPreviews {
   static let names: Set<String> = [
     "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
-    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
+    "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
     "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
   ]
 
@@ -60,15 +60,18 @@ enum CloudPreviews {
     if name.hasPrefix("duo-cloud-sponsored-") {
       // A Free account the switch reaches: the question unanswered, or answered yes.
       // `duo-cloud-sponsored-small`: unanswered while the server's `smallNeedsCards` rule is on.
+      // `duo-cloud-sponsored-notice`: as `small`, where cards start on (the US): the notice, not the question.
       var account = list.account
-      let unanswered = name == "duo-cloud-sponsored-consent" || name == "duo-cloud-sponsored-small"
+      let notice = name == "duo-cloud-sponsored-notice"
+      let unanswered = name == "duo-cloud-sponsored-consent" || name == "duo-cloud-sponsored-small" || notice
       let format = sponsoredFormatScreens[name]
       account?.sponsored = CloudSponsoredState(
         ads: true,
         consent: unanswered ? nil : CloudSponsoredState.granted,
         test: true,
-        smallNeedsCards: name == "duo-cloud-sponsored-small" ? true : nil,
-        format: format ?? .belowReply
+        smallNeedsCards: name == "duo-cloud-sponsored-small" || notice ? true : nil,
+        format: format ?? .belowReply,
+        startsOn: notice
       )
       AccountCloudStore.shared.seedPreview(access: nil, account: account)
       if format != nil { return AnyView(CloudSponsoredFormatChatFixture()) }

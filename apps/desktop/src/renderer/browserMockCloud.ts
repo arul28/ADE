@@ -40,6 +40,7 @@ import {
   type CloudMachine,
   type CloudMachinesResult,
   type CloudPlanCleanup,
+  type CloudSponsoredChoice,
   type CloudSponsoredConsent,
 } from "../shared/adeCloud";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
@@ -633,6 +634,10 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "small") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true }, catalog: smallRate(null) };
   }
+  // `starts-on`: as `small`, from a country where cards start on (the US): the notice, not the question.
+  if (sponsoredParam === "starts-on") {
+    state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, startsOn: true }, catalog: smallRate(null) };
+  }
   // `&mockSponsoredFormat=below_reply|above_prompt|inline`: where the card shows (the server's `format`).
   const formatParam = param("mockSponsoredFormat");
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
@@ -693,9 +698,12 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
-    setSponsoredConsent: async (consent: "granted" | "declined") => {
+    setSponsoredConsent: async (choice: CloudSponsoredChoice) => {
       if (!state.sponsored) return null;
-      state = { ...state, sponsored: { ...state.sponsored, consent } };
+      // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
+      const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
+      const { startsOn: _startsOn, ...sponsored } = state.sponsored;
+      state = { ...state, sponsored: { ...sponsored, consent } };
       if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };
       for (const listener of statusListeners) listener();
       return state.sponsored ?? null;

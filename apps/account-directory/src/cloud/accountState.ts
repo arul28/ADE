@@ -1,5 +1,5 @@
 import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
-import { requestCountry, smallUsesNoHours, sponsoredAccountState } from "./gravity";
+import { smallUsesNoHours, sponsoredAccountState, sponsoredRequester } from "./gravity";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";
 import { RECENT_USE_DAYS, recentUsedMilli } from "./diskUsage";
@@ -96,7 +96,7 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
   const due = idleCleanupEntries(account, computers, live, now);
   // Sponsored cards (`gravity.ts`): left out while the switch doesn't reach the account. A read that fails never costs the account read.
-  const sponsored = await sponsoredAccountState(env, account, request ? requestCountry(request) : null, now).catch((error: unknown) => {
+  const sponsored = await sponsoredAccountState(env, account, sponsoredRequester(request ?? null), now).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
