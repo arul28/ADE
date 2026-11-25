@@ -43,6 +43,30 @@ const INLINE_HOST_WAIT_MS = 1_500;
 
 const answers = new Map<string, Promise<CloudSponsoredAdAnswer>>();
 const viewedAds = new Set<string>();
+/** Gravity's viewability rule: half of the card on screen for a full second. */
+const SPONSORED_VIEWABLE_MS = 1_000;
+
+/** One of a card's Gravity links, once per key. Not delivered (offline): the next look at the card sends it again. */
+function sendSponsoredLink(key: string, url: string | null): void {
+  if (!url || viewedAds.has(key)) return;
+  viewedAds.add(key);
+  void window.ade?.cloud?.sponsoredViewed?.(url)?.then((delivered) => {
+    if (!delivered) viewedAds.delete(key);
+  }, () => viewedAds.delete(key));
+}
+
+/** The card's view link with Gravity's viewability event, named as ADE's own renderer (Gravity's renderers send `sdk`/`sv` too). */
+function sponsoredViewabilityUrl(impUrl: string, ev: "measured" | "viewable"): string | null {
+  try {
+    const url = new URL(impUrl);
+    url.searchParams.append("ev", ev);
+    url.searchParams.append("sdk", "ade-js");
+    url.searchParams.append("sv", "1");
+    return url.toString();
+  } catch {
+    return null; // Never: the server sends only Gravity's own https links.
+  }
+}
 const hiddenTurns = new Set<string>();
 /** Replies whose inline card went under the reply (no end to draw into): kept for the run, so a remount asks and draws the same. */
 const belowReplyTurns = new Set<string>();
@@ -313,18 +337,24 @@ function SponsoredConsentCard({ smallNeedsCards, format }: { smallNeedsCards: bo
 
 type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };
 
-/** Gravity's view link, once, when half of the card is on screen in a visible window. Returns the card's opener. */
+/**
+ * Gravity's view link and viewability links, as Gravity's own renderer sends
+ * them: once half of the card is on screen in a visible window, the view link
+ * and `ev=measured`; after a full second of that, `ev=viewable`. Each once per
+ * card. Returns the card's opener.
+ */
 function useSponsoredView(ref: React.RefObject<HTMLElement | null>, ad: CloudSponsoredAd): () => void {
   const visible = useDocumentVisible();
   const halfOnScreen = useOnScreen(ref, 0.5, true);
   useEffect(() => {
-    if (!halfOnScreen || !visible || !ad.impUrl || viewedAds.has(ad.id)) return;
-    viewedAds.add(ad.id);
-    const sent = window.ade?.cloud?.sponsoredViewed?.(ad.impUrl);
-    // Not delivered (offline): the next time half the card is on screen sends it again.
-    void sent?.then((delivered) => {
-      if (!delivered) viewedAds.delete(ad.id);
-    }, () => viewedAds.delete(ad.id));
+    const impUrl = ad.impUrl;
+    if (!halfOnScreen || !visible || !impUrl) return;
+    sendSponsoredLink(ad.id, impUrl);
+    sendSponsoredLink(`${ad.id} measured`, sponsoredViewabilityUrl(impUrl, "measured"));
+    if (viewedAds.has(`${ad.id} viewable`)) return;
+    // Scrolled away, or the window hidden, before the second is up: no viewable link yet.
+    const timer = window.setTimeout(() => sendSponsoredLink(`${ad.id} viewable`, sponsoredViewabilityUrl(impUrl, "viewable")), SPONSORED_VIEWABLE_MS);
+    return () => window.clearTimeout(timer);
   }, [halfOnScreen, visible, ad.id, ad.impUrl]);
   return () => {
     if (isGravityUrl(ad.clickUrl)) openExternalUrl(ad.clickUrl);

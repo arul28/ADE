@@ -589,16 +589,37 @@ final class CloudSponsoredStore: ObservableObject {
     return holder == sessionId || holder.hasPrefix("\(sessionId)#")
   }
 
-  /// Gravity's view link, once per card per run, only on Gravity's own host.
-  /// Not delivered (offline, Gravity down): the next time half the card is
-  /// on screen sends it again. Only for ADE's own card: Gravity's renderer
-  /// sends a Gravity-drawn card's view link itself (`WorkSponsoredGravityCard`).
+  /// Gravity's view link and its `ev=measured` link, once per card per run,
+  /// only on Gravity's own host, as Gravity's own renderer sends them once
+  /// half the card is on screen. Not delivered (offline, Gravity down): the
+  /// next time half the card is on screen sends it again. Only for ADE's own
+  /// card: Gravity's renderer sends a Gravity-drawn card's links itself
+  /// (`WorkSponsoredGravityCard`).
   func noteViewed(_ ad: CloudSponsoredAd) {
-    guard appActive, ad.gravity == nil, let url = cloudGravityURL(ad.impUrl), viewedAds.insert(ad.id).inserted else { return }
+    sendViewLink(for: ad, ev: nil)
+    sendViewLink(for: ad, ev: "measured")
+  }
+
+  /// Gravity's `ev=viewable` link: half of ADE's own card stayed on screen,
+  /// with the app active, for a full second (`viewableAfter`).
+  func noteViewable(_ ad: CloudSponsoredAd) {
+    sendViewLink(for: ad, ev: "viewable")
+  }
+
+  /// Gravity's viewability rule: half of the card on screen for a full second.
+  static let viewableAfter: Duration = .seconds(1)
+
+  private func sendViewLink(for ad: CloudSponsoredAd, ev: String?) {
+    guard appActive, ad.gravity == nil, var url = cloudGravityURL(ad.impUrl) else { return }
+    if let ev {
+      // Named as ADE's own renderer, as Gravity's renderers name theirs.
+      url.append(queryItems: [URLQueryItem(name: "ev", value: ev), URLQueryItem(name: "sdk", value: "ade-ios"), URLQueryItem(name: "sv", value: "1")])
+    }
+    let key = ev.map { "\(ad.id) \($0)" } ?? ad.id
+    guard viewedAds.insert(key).inserted else { return }
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     let session = viewSession
-    let adId = ad.id
     Task { @MainActor in
       do {
         let (_, response) = try await session.data(for: request)
@@ -609,7 +630,7 @@ final class CloudSponsoredStore: ObservableObject {
       } catch {
         cloudSponsoredLog.notice("sponsored view not delivered error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
       }
-      CloudSponsoredStore.shared.viewedAds.remove(adId)
+      CloudSponsoredStore.shared.viewedAds.remove(key)
     }
   }
 

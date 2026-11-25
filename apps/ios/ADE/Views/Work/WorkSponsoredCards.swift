@@ -720,7 +720,11 @@ struct WorkSponsoredAdCard: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored: \(ad.brand)")
     .task(id: "\(ad.id)|\(slot.halfOnScreen)|\(store.appActive)") {
-      if slot.halfOnScreen, store.appActive { store.noteViewed(ad) }
+      guard slot.halfOnScreen, store.appActive else { return }
+      store.noteViewed(ad)
+      // A changed id (scrolled away, app in the background) cancels this before the second is up.
+      try? await Task.sleep(for: CloudSponsoredStore.viewableAfter)
+      if !Task.isCancelled { store.noteViewable(ad) }
     }
   }
 }
@@ -758,7 +762,11 @@ struct WorkSponsoredDockCard: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored: \(ad.brand)")
     .task(id: "\(ad.id)|\(store.appActive)") {
-      if store.appActive { store.noteViewed(ad) }
+      guard store.appActive else { return }
+      store.noteViewed(ad)
+      // A changed id (scrolled away, app in the background) cancels this before the second is up.
+      try? await Task.sleep(for: CloudSponsoredStore.viewableAfter)
+      if !Task.isCancelled { store.noteViewable(ad) }
     }
   }
 }
@@ -816,7 +824,11 @@ struct WorkSponsoredInlineLine: View {
       .accessibilityAction { workSponsoredOpen(ad.clickUrl) }
       .accessibilityAction(named: "Hide this sponsored line", onHide)
       .task(id: "\(ad.id)|\(slot.inlineHalfOnScreen)|\(store.appActive)") {
-        if slot.inlineHalfOnScreen, store.appActive { store.noteViewed(ad) }
+        guard slot.inlineHalfOnScreen, store.appActive else { return }
+        store.noteViewed(ad)
+        // A changed id (scrolled away, app in the background) cancels this before the second is up.
+        try? await Task.sleep(for: CloudSponsoredStore.viewableAfter)
+        if !Task.isCancelled { store.noteViewable(ad) }
       }
   }
 }
