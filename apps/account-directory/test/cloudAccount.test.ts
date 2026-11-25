@@ -5400,24 +5400,25 @@ describe("sponsored cards", () => {
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(500);
     // A yes from where Gravity shows no cards would be unlimited Small for nothing: refused.
-    const fromBrazil = (method: string, path: string, body?: Row) => {
+    const fromWhere = (cf: Row) => (method: string, path: string, body?: Row) => {
       const request = new Request(`https://directory.test${path}`, {
         method,
-        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
-      Object.defineProperty(request, "cf", { value: { country: "BR" } });
+      Object.defineProperty(request, "cf", { value: cf });
       return handleCloudRequest(request, harness.env);
     };
+    const fromBrazil = fromWhere({ country: "BR" });
     expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(403);
     expect(computer(harness).multiplier_milli).toBe(500);
     // A tester sees Gravity's test ads from anywhere, so its cards show abroad; never with real ads.
     harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
     const abroad = async () => ((await (await fromBrazil("GET", "/cloud/account")).json()) as CloudAccountState).sponsored?.ads;
     expect(await abroad()).toBe(true);
-    // Its yes from abroad counts too, and frees Small; with real ads it is refused.
+    // Its yes from abroad counts too, but cards keep Small free only in the US; with real ads it is refused.
     expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
-    expect(computer(harness).multiplier_milli).toBe(0);
+    expect(computer(harness).multiplier_milli).toBe(500);
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     goLive();
     expect(await abroad()).toBe(false);
@@ -5433,25 +5434,22 @@ describe("sponsored cards", () => {
     // An hour on the yes adds nothing to the meter.
     clock += HOUR;
     expect((await accountState()).hours.usedMilli - used).toBe(500);
-    // The yes keeps Small free only while the person looks at a cloud chat from where cards can show: 14 days
-    // without such a look (away, or a yes given once through a VPN) and Small uses credits until the next one.
-    clock += 14 * DAY + HOUR;
+    // The yes keeps Small free only while the person opens a cloud chat from the US: 7 days without
+    // (away, or a yes given once through a VPN) and Small uses credits until the next one.
+    clock += 7 * DAY + HOUR;
     expect(await syncAllSmallRates(harness.env as never, clock)).toBe(1);
     expect(computer(harness).multiplier_milli).toBe(500);
     expect((await accountState()).sponsored).toMatchObject({ consent: "granted", smallNeedsLook: true });
-    const fromUS = (method: string, path: string, body?: Row) => {
-      const request = new Request(`https://directory.test${path}`, {
-        method,
-        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7" },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      Object.defineProperty(request, "cf", { value: { country: "US", regionCode: "TX" } });
-      return handleCloudRequest(request, harness.env);
-    };
+    const fromUS = fromWhere({ country: "US", regionCode: "TX" });
+    const fromCanada = fromWhere({ country: "CA" });
     const look = (from: typeof fromBrazil) => from("POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE }).then((response) => response.json());
-    // A look from where Gravity shows no cards doesn't count; one from where it does frees Small at once.
+    // No look from where Gravity shows no cards; Canada shows cards, but there Small uses credits.
     expect(await look(fromBrazil)).toEqual({ ok: false });
+    expect(await look(fromCanada)).toEqual({ ok: true });
     expect(computer(harness).multiplier_milli).toBe(500);
+    const inCanada = ((await (await fromCanada("GET", "/cloud/account")).json()) as CloudAccountState).sponsored;
+    expect([inCanada?.smallOutsideUS, inCanada?.smallNeedsCards]).toEqual([true, undefined]);
+    // A look from the US frees Small at once.
     expect(await look(fromUS)).toEqual({ ok: true });
     expect(computer(harness).multiplier_milli).toBe(0);
     expect((await accountState()).sponsored?.smallNeedsLook).toBeUndefined();

@@ -57,7 +57,7 @@ struct CloudPlansCard: View {
   }
 
   /// Where the ad switch reaches this account (`sponsored` is sent), Free's
-  /// Small is unlimited only with sponsored cards on (`CloudPlans.tsx`).
+  /// Small is unlimited only with sponsored cards on, in the US (`CloudPlans.tsx`).
   private var freeSmallNeedsCards: Bool {
     (accountStore.account.map { $0.sponsored } ?? account.sponsored) != nil
   }
@@ -67,7 +67,7 @@ struct CloudPlansCard: View {
   /// The one place for the explanations: what every plan includes.
   private var howItWorks: some View {
     VStack(alignment: .leading, spacing: 0) {
-      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
+      howRow("infinity", freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on." : words.smallUnlimitedSentence, "Each lane has its own Linux computer your agents work on. \(cloudSmallFairUseSentence)")
       Divider().overlay(ADEKit.edge)
       howRow("clock", "\(words.title) run the bigger sizes", "and renew every month. \(words.unitSentence)\(currentHoursLine.map { " Your plan: \($0)." } ?? "")")
       Divider().overlay(ADEKit.edge)
@@ -134,7 +134,7 @@ struct CloudPlansCard: View {
         }
       }
       VStack(alignment: .leading, spacing: 6) {
-        fact("infinity", column.id == "free" && freeSmallNeedsCards ? "Unlimited Small with cards" : "Unlimited Small", current: current)
+        fact("infinity", column.id == "free" && freeSmallNeedsCards ? "Unlimited Small with cards (US)" : "Unlimited Small", current: current)
         if current, let old = oldTermsHours(column), let end {
           fact("clock", "\(words.amount(old)) until \(cloudDate(end))\(staysOn ? ", then \(cloudHours(column.facts.includedMilli))" : "")", current: current)
         } else {
@@ -227,7 +227,7 @@ struct CloudPlansCard: View {
     var parts: [String] = []
     if let computers = computerLimit(column) {
       parts.append(cloudComputersPhrase(computers))
-      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards" : "unlimited Small computers")
+      parts.append(column.id == "free" && freeSmallNeedsCards ? "unlimited Small computers with sponsored cards, in the US" : "unlimited Small computers")
       parts.append(words.planSentence(column.facts.includedMilli))
       parts.append(cloudHoursOnSizes(column.facts.includedMilli, tiers: tiers) ?? "\(cloudHours(column.facts.includedMilli)) credits a month")
     } else {
@@ -292,22 +292,32 @@ struct CloudSponsoredCard: View {
           .tint(ADEColor.accent)
           .disabled(saving)
         }
-        // The state line in full, under the row (a row's hint is one short line).
-        Text(stateLine(sponsored))
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.horizontal, ADEKit.inset)
-          .padding(.top, -4)
-          .padding(.bottom, sponsored.smallUsesHoursWithoutCards ? 4 : 12)
-        if sponsored.smallUsesHoursWithoutCards {
-          Text(smallLine(sponsored, unit: CloudBalanceWords(accountStore.account ?? pageAccount).unit))
-            .font(.system(size: 12.5))
+        // Under the switch: what the cards are, what Small costs with this answer, then what Gravity gets.
+        VStack(alignment: .leading, spacing: 8) {
+          Text(stateLine(sponsored))
+            .font(.system(size: 13))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, ADEKit.inset)
-            .padding(.bottom, 12)
+          if let small = smallNote(sponsored, unit: CloudBalanceWords(accountStore.account ?? pageAccount).unit) {
+            Label {
+              Text(small.text).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+              Image(systemName: small.free ? "infinity" : "creditcard").font(.system(size: 11, weight: .semibold))
+            }
+            .font(.system(size: 12.5))
+            .foregroundStyle(small.free ? ADEColor.accent : ADEColor.textSecondary)
+          }
+          if sponsored.ads || !(sponsored.granted || sponsored.toldOn) {
+            Text(LocalizedStringKey("\(CloudSponsoredState.sends) [How it works](https://ade-app.dev/privacy#sponsored)"))
+              .font(.system(size: 11.5))
+              .foregroundStyle(ADEColor.textMuted)
+              .tint(ADEColor.accent)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
+        .padding(.horizontal, ADEKit.inset)
+        .padding(.top, -2)
+        .padding(.bottom, 12)
         if let error {
           Text(error)
             .font(.system(size: 12))
@@ -333,18 +343,25 @@ struct CloudSponsoredCard: View {
     }
   }
 
-  /// What Small costs with this answer: credits while cards are off, or for now after a yes whose looks lapsed.
-  private func smallLine(_ sponsored: CloudSponsoredState, unit: String) -> String {
-    (sponsored.granted || sponsored.toldOn) && sponsored.smallNeedsLook
-      ? "Small computers use your \(unit) for now: they're free again once you open an ADE Cloud chat from a country where sponsored cards show. Your last one was over 14 days ago."
-      : "Small computers use your \(unit) while sponsored cards are off."
+  /// What Free's Small costs with this answer, from the server's flags: free
+  /// with cards on in the US, credits with them off, outside the US, or a week
+  /// after the last chat opened there (`CloudPlans.tsx` `sponsoredSmallNote`).
+  private func smallNote(_ sponsored: CloudSponsoredState, unit: String) -> (free: Bool, text: String)? {
+    if sponsored.smallOutsideUS {
+      return (false, "Small computers use your \(unit) outside the US: sponsored cards keep them free only in the US.")
+    }
+    guard sponsored.smallUsesHoursWithoutCards else { return nil }
+    guard sponsored.granted || sponsored.toldOn else { return (false, "Small computers use your \(unit) while sponsored cards are off.") }
+    if sponsored.smallNeedsLook {
+      return (false, "Small computers use your \(unit) until you next open an ADE Cloud chat in the US. Your last one was over 7 days ago.")
+    }
+    return sponsored.ads ? (true, "Your Small computers are free while sponsored cards are on.") : nil
   }
 
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {
-    // On or off, the row says everything the one-time question (or the notice) does.
-    let what = "A Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. \(CloudSponsoredState.sends)"
+    let what = "Free ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool."
     guard sponsored.granted || sponsored.toldOn else {
-      return "Off.\(sponsored.gpcOff ? " \(CloudSponsoredState.gpcOffLine)" : "") If you turn it on: \(what)"
+      return "Off. When on, free ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool.\(sponsored.gpcOff ? " \(CloudSponsoredState.gpcOffLine)" : "")"
     }
     return sponsored.ads
       ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") \(what)"

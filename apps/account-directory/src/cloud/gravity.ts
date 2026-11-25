@@ -267,10 +267,7 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     ...(answer === "declined" && consent?.source === "gpc" ? { gpcOff: true } : {}),
     test: !switches.live,
     format,
-    // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
-    ...(shownPlanIdOf(account) === "free" ? { smallNeedsCards: true } : {}),
-    // A yes whose looks lapsed: Small uses credits until the next look where cards can show.
-    ...(shownPlanIdOf(account) === "free" && consent?.consent === "granted" && !lookKeepsSmallFree(consent, now) ? { smallNeedsLook: true } : {}),
+    ...smallStateOf(account, consent, who, now),
   };
 }
 
@@ -326,32 +323,56 @@ function surfaceOf(value: unknown, device: CloudSponsoredDevice): CloudSponsored
   return device.os === "ios" ? "ios" : "desktop";
 }
 
-/* ---- Free's Small computers: unlimited with sponsored cards ---- */
+/* ---- Free's Small computers: unlimited with sponsored cards, in the US ---- */
 
 /**
- * How long a yes keeps Free's Small free after the person last looked at an
- * ADE Cloud chat from where their cards can show (`looked_at`, refreshed by
- * `/cloud/sponsored/seen`). Covers a trip abroad or a few weeks away; after
- * it, Small uses credits until the next such look. So a yes given once (from
- * a VPN, say) can't keep Small free for someone who never sees a card.
+ * The one country where sponsored cards keep Free's Small computers free.
+ * Elsewhere (Gravity's other countries included) Small uses credits, cards or
+ * not. Settings and the question say "the US", so this is one code, not a list.
  */
-const SMALL_FREE_LOOK_MS = 14 * 24 * 60 * 60_000;
+const SMALL_FREE_COUNTRY = "US";
+/** A request from where cards keep Small free; one with no Cloudflare data (a test, a local run) counts, as the country checks do. */
+const smallFreeFrom = (country: string | null): boolean => country == null || country === SMALL_FREE_COUNTRY;
+/**
+ * How long a yes keeps Free's Small free after the person last opened an
+ * ADE Cloud chat from the US with cards on (`looked_at`, refreshed by
+ * `/cloud/sponsored/seen`). Covers a week's trip; after it, Small uses
+ * credits until the next such look. So a yes given once (from a VPN, say)
+ * can't keep Small free for someone who never sees a card in the US.
+ */
+const SMALL_FREE_LOOK_MS = 7 * 24 * 60 * 60_000;
 /** A look refreshes `looked_at` at most this often: one write an hour per account, not one every few minutes. */
 const LOOK_REFRESH_MS = 60 * 60_000;
 
-/** Whether the account's yes still keeps Small free: given, or seen holding, within `SMALL_FREE_LOOK_MS`. */
+/** Whether the account's yes still keeps Small free: given, or seen holding, from the US within `SMALL_FREE_LOOK_MS`. */
 const lookKeepsSmallFree = (consent: ConsentRow | null, now: number): boolean =>
   consent?.consent === "granted" && consent.looked_at != null && now - consent.looked_at <= SMALL_FREE_LOOK_MS;
 
 /**
+ * What Free's Small costs this person, for the question and Settings. Only
+ * Free (or acting as it) has the deal; a paid account's Small is unlimited
+ * either way. Read from where the request comes from: cards keep Small free
+ * only from the US, and a trip keeps it free for `SMALL_FREE_LOOK_MS`.
+ */
+function smallStateOf(account: AccountRow, consent: ConsentRow | null, who: SponsoredRequester, now: number): Pick<CloudSponsoredState, "smallNeedsCards" | "smallNeedsLook" | "smallOutsideUS"> {
+  if (shownPlanIdOf(account) !== "free") return {};
+  const free = lookKeepsSmallFree(consent, now);
+  if (!free && !smallFreeFrom(who.country)) return { smallOutsideUS: true };
+  return {
+    // Cards keep (or would keep) Small free: a no has it use credits.
+    smallNeedsCards: true,
+    // A yes whose looks lapsed: Small uses credits until the next ADE Cloud chat opened here.
+    ...(!free && consent?.consent === "granted" ? { smallNeedsLook: true } : {}),
+  };
+}
+
+/**
  * Whether the account's Small computers use no hours now. Always, unless the
  * account is on Free (or acts as it, `shownPlanIdOf`) and the ad switch
- * reaches it: then only while it said yes to sponsored cards. One switch is
- * the deal: where ads reach Free, Small is unlimited with cards and uses
- * hours without; ads off is Small unlimited for everyone. An account never
- * asked (outside Gravity's countries, or no cloud chat yet) uses hours too,
- * and so does a yes the person hasn't looked at a card under for
- * `SMALL_FREE_LOOK_MS`.
+ * reaches it: then only while it said yes to sponsored cards and opened one
+ * of its ADE Cloud chats from the US in the last `SMALL_FREE_LOOK_MS`. One
+ * switch is the deal: where ads reach Free, Small is unlimited with cards in
+ * the US and uses hours otherwise; ads off is Small unlimited for everyone.
  */
 export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings, now = Date.now()): Promise<boolean> {
   if (shownPlanIdOf(account) !== "free") return true;
@@ -805,8 +826,8 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
-    // A yes is given where cards can show (from elsewhere it is refused above): Small is free from now.
-    consent === "granted" ? now : null,
+    // A yes from the US makes Small free from now; one from elsewhere keeps the last US look (a trip's).
+    consent !== "granted" ? null : smallFreeFrom(who.country) ? now : before?.consent === "granted" ? before.looked_at : null,
     ...(guard && before ? [before.decided_at] : []),
   );
   // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
@@ -860,8 +881,8 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
       os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
       region = excluded.region, seen_at = excluded.seen_at
   `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
-  // A look where the cards can show keeps Free's Small free (`SMALL_FREE_LOOK_MS`), at most one write an hour.
-  if (consent.looked_at == null || now - consent.looked_at >= LOOK_REFRESH_MS) {
+  // A look from the US keeps Free's Small free (`SMALL_FREE_LOOK_MS`), at most one write an hour.
+  if (smallFreeFrom(country) && (consent.looked_at == null || now - consent.looked_at >= LOOK_REFRESH_MS)) {
     await env.DB.prepare("update cloud_sponsored_consent set looked_at = ? where user_id = ? and consent = 'granted' and decided_at = ?")
       .bind(now, userId, consent.decided_at).run();
     // Back from a lapse (away, or no look for a while): Small is free again from this look.

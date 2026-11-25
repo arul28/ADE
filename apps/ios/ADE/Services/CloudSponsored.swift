@@ -28,9 +28,10 @@ struct CloudSponsoredState: Decodable, Equatable {
   let consent: String?
   /// Gravity's test ads: nothing is paid or counted.
   let test: Bool
-  /// Free's Small computers are unlimited only while sponsored cards are on:
-  /// a no (or no answer) has them use hours, at half a Medium-hour an hour.
-  /// Nil while the server's rule is off. The question and Settings say so.
+  /// Free's Small computers are unlimited only while sponsored cards are on,
+  /// in the US: here a no (or no answer) has them use hours, at half a
+  /// Medium-hour an hour. Nil while the server's rule is off, on a paid plan,
+  /// and outside the US (`smallOutsideUS`). The question and Settings say so.
   let smallNeedsCards: Bool?
   /// Where this account's cards show, as the server assigns it. An older
   /// server sends nothing, and an unknown value reads the same: under the reply.
@@ -46,16 +47,19 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// The no came from a browser's Global Privacy Control (it opts the whole
   /// account out from the US): Settings says so (`gpcOffLine`).
   let gpcOff: Bool
-  /// A yes, but nobody has looked at a cloud chat from where cards show for
-  /// 14 days: Small uses credits until the next such look. Settings says so.
+  /// A yes, but nobody has opened a cloud chat from the US for 7 days: Small
+  /// uses credits until the next one. Settings says so.
   let smallNeedsLook: Bool
+  /// Free, read from outside the US: cards keep Small free only in the US, so
+  /// here it uses credits, cards or not. Settings says so.
+  let smallOutsideUS: Bool
 
   static let granted = "granted"
   static let declined = "declined"
   /// The notice that cards are on was shown: saved as a yes of its own kind (`CloudSponsoredChoice`).
   static let notice = "notice"
 
-  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false, smallNeedsLook: Bool = false) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false, smallNeedsLook: Bool = false, smallOutsideUS: Bool = false) {
     self.ads = ads
     self.consent = consent
     self.test = test
@@ -65,9 +69,10 @@ struct CloudSponsoredState: Decodable, Equatable {
     self.confirmYes = confirmYes
     self.gpcOff = gpcOff
     self.smallNeedsLook = smallNeedsLook
+    self.smallOutsideUS = smallOutsideUS
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff, smallNeedsLook }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff, smallNeedsLook, smallOutsideUS }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -81,6 +86,7 @@ struct CloudSponsoredState: Decodable, Equatable {
     confirmYes = c.lenient(Bool.self, forKey: .confirmYes) ?? false
     gpcOff = c.lenient(Bool.self, forKey: .gpcOff) ?? false
     smallNeedsLook = c.lenient(Bool.self, forKey: .smallNeedsLook) ?? false
+    smallOutsideUS = c.lenient(Bool.self, forKey: .smallOutsideUS) ?? false
   }
 
   /// What Gravity gets, as the question, the notice and Settings say it.

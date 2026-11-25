@@ -93,8 +93,8 @@ export const gpcOptsOut = (who: SponsoredRequester): boolean => who.gpc && optOu
  * with the notice that cards are on (`notice`), or the no a browser's Global
  * Privacy Control made (`gpc`). `gpc` 1: a yes given, past the second
  * confirm, from a US browser that sends the signal (it holds there).
- * `looked_at`: the last time the yes was given or a look found it holding
- * (Free's Small is free only while that is recent, `gravity.ts`
+ * `looked_at`: the last time the yes was given, or a look found it holding,
+ * from the US (Free's Small is free only while that is recent, `gravity.ts`
  * `SMALL_FREE_LOOK_MS`); null for a no.
  */
 export type ConsentRow = {

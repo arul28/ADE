@@ -803,13 +803,16 @@ card, whatever the plan.
   still asks for the card without it. Desktop and web always send it.
 - **Small needs cards on Free** (part of the ad switch, no switch of its
   own): a Free account the ad switch reaches runs Small without hours only
-  while it said yes and someone looked at one of its ADE Cloud chats from
-  where its cards can show in the last 14 days (`SMALL_FREE_LOOK_MS`;
-  `cloud_sponsored_consent.looked_at`, set by the yes and refreshed by
-  `/cloud/sponsored/seen` at most hourly, migration `0065`). Past that (away,
-  or a yes given once through a VPN) Small uses credits and the state says
-  `smallNeedsLook`, until the next such look; the minute tick re-rates the
-  lapse. A no or no answer runs Small at half a Medium-hour an hour
+  in the US (`SMALL_FREE_COUNTRY`): while it said yes and someone opened one
+  of its ADE Cloud chats from the US in the last 7 days (`SMALL_FREE_LOOK_MS`;
+  `cloud_sponsored_consent.looked_at`, set by a yes from the US and refreshed
+  by `/cloud/sponsored/seen` from the US at most hourly, migration `0065`).
+  Cards still show in Gravity's other countries, but Small uses credits
+  there. Past the week (away, or a yes given once through a VPN) Small uses
+  credits until the next such chat; the minute tick re-rates the lapse. The
+  account state, read from where the person is, says `smallNeedsLook` (in the
+  US) or `smallOutsideUS` (elsewhere, sent instead of `smallNeedsCards`, so
+  the question offers no free Small there). A no or no answer runs Small at half a Medium-hour an hour
   (`SMALL_NO_CARDS_RATE_MILLI`, set on the computer row by `syncSmallRates`; the
   account's catalog shows Small at that rate). A no is asked again two weeks
   later (`SPONSORED_REASK_MS`), and at once when it came before the ad switch

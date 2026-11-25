@@ -642,9 +642,13 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "again") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, confirmYes: true }, catalog: smallRate(null) };
   }
-  // `lapsed`: a yes, but no look at a cloud chat from where cards show in 14 days: Small uses credits until the next one.
+  // `lapsed`: a yes, but no cloud chat opened from the US in 7 days: Small uses credits until the next one.
   if (sponsoredParam === "lapsed") {
     state = { ...state, sponsored: { ads: true, consent: "granted", test: true, smallNeedsCards: true, smallNeedsLook: true }, catalog: smallRate("declined") };
+  }
+  // `abroad`: a yes, read from Canada (cards show, but free Small is for the US only): Small uses credits.
+  if (sponsoredParam === "abroad") {
+    state = { ...state, sponsored: { ads: true, consent: "granted", test: true, smallOutsideUS: true }, catalog: smallRate("declined") };
   }
   // `gpc`: a browser's Global Privacy Control turned an earlier yes off: Settings says why.
   if (sponsoredParam === "gpc") {
