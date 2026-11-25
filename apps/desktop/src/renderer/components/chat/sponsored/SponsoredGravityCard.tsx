@@ -1,7 +1,8 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Component, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
 import type { GravityAdData } from "@gravity-ai/ui";
 import { isGravityUrl, type CloudSponsoredGravityAd } from "../../../../shared/adeCloud";
+import { captureError } from "../../../../shared/sentry/capture";
 import { openExternalUrl } from "../../../lib/openExternal";
 
 /**
@@ -17,7 +18,7 @@ import { openExternalUrl } from "../../../lib/openExternal";
 const GravityAd = lazy(() => import("@gravity-ai/ui").then((module) => ({ default: module.GravityAd })));
 
 /** Gravity's placement type for each ADE format: the renderer only reads it for its own requests. */
-export type SponsoredGravityPlace = "below_response" | "bottom_page" | "inline_response";
+export type SponsoredGravityPlace = "below_response" | "bottom_page";
 
 type Props = {
   ad: CloudSponsoredGravityAd;
@@ -56,14 +57,36 @@ export function SponsoredGravityCard({ ad, place, brand, onHide }: Props) {
       onClickCapture={onClickCapture}
       onAuxClickCapture={onClickCapture}
     >
-      <Suspense fallback={null}>
-        <GravityAdOnce ad={data} place={place} impUrl={viewedBefore ? undefined : ad.impUrl} />
-      </Suspense>
+      <GravityAdBoundary>
+        <Suspense fallback={null}>
+          <GravityAdOnce ad={data} place={place} impUrl={viewedBefore ? undefined : ad.impUrl} />
+        </Suspense>
+      </GravityAdBoundary>
       <button type="button" className="ade-sponsored-gravity-hide" aria-label="Hide this sponsored card" title="Hide" onClick={onHide}>
         <X size={10} weight="bold" />
       </button>
     </section>
   );
+}
+
+/**
+ * A renderer that fails to load (a stale chunk on the web) or to draw leaves
+ * only an empty card's place, never a broken chat page.
+ */
+class GravityAdBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    captureError(error, { fingerprint: ["cloud", "sponsored_gravity_renderer"], handled: true });
+  }
+
+  render(): ReactNode {
+    return this.state.failed ? null : this.props.children;
+  }
 }
 
 /** View links Gravity's renderer already sent in this window (one per card). */

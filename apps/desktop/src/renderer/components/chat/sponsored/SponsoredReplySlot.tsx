@@ -234,14 +234,19 @@ function SponsoredReplySlotOn({
 
   let card: React.ReactNode = null;
   const gravityAd = ad?.ad.gravity;
-  if (holds && showing === "ad" && ad && gravityAd && isGravityUrl(gravityAd.clickUrl)) {
-    // Gravity's own renderer and design, in each format's place.
-    card = <SponsoredGravityCard ad={gravityAd} place={GRAVITY_PLACE[ad.format]} brand={ad.ad.brand} onHide={hide} />;
-  } else if (holds && showing === "ad" && ad) {
-    // An answer without Gravity's ad (an older account server): ADE's own card.
-    if (ad.format === "inline") card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
-    else if (ad.format === "above_prompt") card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
-    else card = <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} />;
+  if (holds && showing === "ad" && ad) {
+    if (ad.format === "inline") {
+      // The inline format is ADE's own linked sentence at the reply's end, never a card.
+      card = <SponsoredInlineLine ad={ad.ad} test={test} onHide={hide} />;
+    } else if (gravityAd && isGravityUrl(gravityAd.clickUrl)) {
+      // Gravity's own renderer and design, in the card's place.
+      card = <SponsoredGravityCard ad={gravityAd} place={GRAVITY_PLACE[ad.format]} brand={ad.ad.brand} onHide={hide} />;
+    } else if (ad.format === "above_prompt") {
+      // An answer without Gravity's ad (an older account server): ADE's own card.
+      card = <SponsoredDockCard ad={ad.ad} test={test} onHide={hide} />;
+    } else {
+      card = <SponsoredAdCard ad={ad.ad} test={test} onHide={hide} />;
+    }
   }
 
   return (
@@ -253,17 +258,16 @@ function SponsoredReplySlotOn({
   );
 }
 
-const GRAVITY_PLACE: Record<CloudSponsoredFormat, SponsoredGravityPlace> = {
+const GRAVITY_PLACE: Record<Exclude<CloudSponsoredFormat, "inline">, SponsoredGravityPlace> = {
   below_reply: "below_response",
   above_prompt: "bottom_page",
-  inline: "inline_response",
 };
 
 /** Where each format shows, as the one-time question says it. */
 const FORMAT_PLACE: Record<CloudSponsoredFormat, string> = {
   below_reply: "one sponsored card under a finished reply",
   above_prompt: "one sponsored card above the prompt box after a finished reply",
-  inline: "one sponsored card at the end of a finished reply",
+  inline: "one sponsored line at the end of a finished reply",
 };
 
 /**

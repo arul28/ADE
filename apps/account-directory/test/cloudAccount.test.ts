@@ -5363,6 +5363,7 @@ describe("sponsored cards", () => {
     ["an older client gets ADE's own card, and Gravity is told no design will be drawn", {}, { supportsSpec: false }, undefined],
     ["desktop and web get Gravity's web design, with the icon inlined", { renderer: "web1" }, { supportsSpec: true, specCapabilities: "web1" }, "data:image/png;base64,iVBORw=="],
     ["the iPhone app gets Gravity's native design, with the icon's own link", { renderer: "psp1", surface: "ios", device: IPHONE }, { supportsSpec: true, specCapabilities: "psp1" }, AD.favicon],
+    ["the inline format stays ADE's own linked line, whatever the client draws", { renderer: "web1", format: "inline" }, { supportsSpec: false }, undefined],
   ])("%s", async (_label, overrides, request, favicon) => {
     gravityAnswer = {
       ...AD,

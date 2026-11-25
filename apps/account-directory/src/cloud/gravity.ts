@@ -522,16 +522,11 @@ function gravityAdOf(ad: Record<string, unknown>, clickUrl: string, impUrl: stri
     try { return JSON.parse(ad.renderer_spec as string) as unknown; } catch { return null; }
   })() : ad.renderer_spec;
   if (!spec || typeof spec !== "object" || Array.isArray(spec) || JSON.stringify(spec).length > MAX_RENDERER_SPEC_CHARS) spec = null;
-  if (spec && renderer === "psp1") {
-    const design = spec as Record<string, unknown>;
-    spec = { ...design, root: withRowSpacers(design.root) };
-  }
   const out: CloudSponsoredGravityAd = {
     adText: plainText(ad.adText, 300),
     clickUrl,
     ...(impUrl ? { impUrl } : {}),
     ...(mode ? { render: { mode, ...(typeof render?.layout === "string" ? { layout: render.layout.slice(0, 40) } : {}) } } : {}),
-    ...(spec ? { renderer_spec: spec as Record<string, unknown> } : {}),
     ...(ad.hasDeeplink === true ? { hasDeeplink: true } : {}),
   };
   const texts: Array<[keyof CloudSponsoredGravityAd, number]> = [
@@ -546,44 +541,75 @@ function gravityAdOf(ad: Record<string, unknown>, clickUrl: string, impUrl: stri
     const value = httpsUrl(ad[field]);
     if (value) out[field] = value;
   }
+  if (spec && renderer === "psp1") {
+    const design = spec as Record<string, unknown>;
+    const fields = out as Record<string, unknown>;
+    spec = { ...design, root: withRowSpacers(design.root, (node) => psp1Draws(node, fields)) };
+  }
+  if (spec) out.renderer_spec = spec as Record<string, unknown>;
   return out;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
-/** An empty `box` whose only style is `grow: 1`: a flexible gap, nothing drawn. */
+/** An empty, ungated `box` whose only style is `grow: 1`: a flexible gap, nothing drawn. */
 function isGrowGap(node: unknown): boolean {
-  if (!isObject(node) || node.type !== "box" || (Array.isArray(node.children) && node.children.length > 0)) return false;
+  if (!isObject(node) || node.type !== "box" || node.showIf !== undefined || (Array.isArray(node.children) && node.children.length > 0)) return false;
   const style = isObject(node.style) ? node.style : {};
   const keys = Object.keys(style);
   return keys.length === 1 && Number(style.grow) === 1;
 }
 
+/** The ad fields a PSP-1 design can bind (`SpecConstants.bindableFields` in Gravity's Swift SDK). */
+const PSP1_FIELDS = new Set(["adText", "title", "cta", "brandName", "url", "favicon", "brandImage"]);
+
+/**
+ * Whether Gravity's Swift SDK draws a node for this ad (`SpecAdView`'s
+ * `willRender`): a `showIf` field must be filled, text must resolve to
+ * something (a `{field}` it can't fill becomes nothing), and an image needs
+ * its link. The SDK leaves out children that draw nothing before it places
+ * spacers, so a spacer on one of them would be lost.
+ */
+function psp1Draws(node: Record<string, unknown>, fields: Record<string, unknown>): boolean {
+  const value = (name: unknown) => (typeof name === "string" && PSP1_FIELDS.has(name) && typeof fields[name] === "string" ? fields[name] as string : "");
+  if (node.showIf !== undefined && !value(node.showIf)) return false;
+  if (node.type === "box" || node.type === "link") return true;
+  if (node.type === "image") return node.bind !== undefined ? Boolean(value(node.bind)) : typeof node.src === "string" && node.src.length > 0;
+  if (node.type !== "text") return false;
+  if (node.bind !== undefined) return Boolean(value(node.bind));
+  return typeof node.text === "string" && node.text.replace(/\{([A-Za-z0-9_]+)\}/g, (_all, name: string) => value(name)).length > 0;
+}
+
 /**
  * A PSP-1 design with each flexible gap in a row turned into `spacerBefore`
- * on the item after it: the same layout, PSP-1's own way to push an item to
- * the end. Gravity's Swift SDK (1.2.2) draws an empty `grow` box as a frame
- * that splits the row with the text beside it, so a brand name wraps on a
- * phone; it draws `spacerBefore` as a spacer. Remove once the SDK is fixed.
+ * on the next item the SDK draws for this ad: the same layout, PSP-1's own
+ * way to push an item to the end. Gravity's Swift SDK (1.2.2) draws an empty
+ * `grow` box as a frame that splits the row with the text beside it, so a
+ * brand name wraps on a phone; it draws `spacerBefore` as a spacer. A gap
+ * with nothing drawn after it, or a second gap before the same item, stays as
+ * it is. Remove once the SDK is fixed.
  */
-function withRowSpacers(node: unknown): unknown {
+function withRowSpacers(node: unknown, draws: (node: Record<string, unknown>) => boolean): unknown {
   if (!isObject(node) || !Array.isArray(node.children)) return node;
   const inRow = !isObject(node.style) || node.style.direction !== "column";
-  const children: unknown[] = [];
-  let gap: unknown = null;
-  for (const child of node.children) {
-    if (inRow && isGrowGap(child)) {
-      if (gap) children.push(gap);
-      gap = child;
-      continue;
-    }
-    const next = withRowSpacers(child);
-    if (gap && isObject(next)) children.push({ ...next, style: { ...(isObject(next.style) ? next.style : {}), spacerBefore: true } });
-    else children.push(...(gap ? [gap] : []), next);
-    gap = null;
-  }
-  if (gap) children.push(gap);
-  return { ...node, children };
+  const children = node.children.map((child) => (inRow && isGrowGap(child) ? child : withRowSpacers(child, draws)));
+  if (!inRow) return { ...node, children };
+  const spaced = new Set<number>();
+  const kept = new Set<number>();
+  children.forEach((child, index) => {
+    if (!isGrowGap(child)) return;
+    const next = children.findIndex((item, at) => at > index && isObject(item) && !isGrowGap(item) && draws(item));
+    if (next < 0 || spaced.has(next)) kept.add(index);
+    else spaced.add(next);
+  });
+  return {
+    ...node,
+    children: children.flatMap((child, index) => {
+      if (isGrowGap(child)) return kept.has(index) ? [child] : [];
+      if (!spaced.has(index) || !isObject(child)) return [child];
+      return [{ ...child, style: { ...(isObject(child.style) ? child.style : {}), spacerBefore: true } }];
+    }),
+  };
 }
 
 const FAVICON_MAX_BYTES = 24_000;
@@ -808,7 +834,9 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     .bind(userId, chatId, computer.instance_id).first<{ parent_chat_id: string | null }>();
   if (!copy || copy.parent_chat_id) return none("not_cloud");
   const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
-  const renderer = CLOUD_SPONSORED_RENDERERS.find((entry) => entry === body.renderer) ?? null;
+  // The inline format is ADE's own linked sentence at the reply's end, never a
+  // card, so it never asks for Gravity's design.
+  const renderer = format === "inline" ? null : CLOUD_SPONSORED_RENDERERS.find((entry) => entry === body.renderer) ?? null;
   const slot = PLACEMENTS[format];
   const placementId = `ade-${surfaceOf(body.surface, device)}-${slot.slug}`;
   // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.

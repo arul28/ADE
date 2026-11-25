@@ -1102,6 +1102,8 @@ struct WorkChatSessionView: View {
   @State var sponsoredPlacedKey: String?
   /// What the slot under the reply draws, as a key: its row is re-measured when it changes.
   @State var sponsoredShownKey: String?
+  /// What the inline line at the reply's end draws, as a key: that reply row is re-measured when it changes.
+  @State var sponsoredInlineShownKey: String?
   /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
@@ -2011,11 +2013,12 @@ struct WorkChatSessionView: View {
         let base = rowRevisions[entry.id] ?? workChatTranscriptRowRevision(entry)
         var revision = workChatTranscriptRowRevision(entry, base: base, inputs: inputs)
         if entry.id == sponsoredInlineHost?.rowId {
-          // The reply that ends the finished turn carries the inline sponsored card's place.
+          // The reply that ends the finished turn carries the inline sponsored line's place.
           var hasher = Hasher()
           hasher.combine(revision)
           hasher.combine("sponsored-inline")
           hasher.combine(sponsoredPlacedKey)
+          hasher.combine(sponsoredInlineShownKey)
           revision = hasher.finalize()
         }
         rows.append(
@@ -2162,7 +2165,7 @@ struct WorkChatSessionView: View {
       if index < entries.count {
         let entry = entries[index]
         if let host = sponsoredSlot.inlineHost, host.rowId == entry.id {
-          // The finished turn's last reply: an inline sponsored card may end it.
+          // The finished turn's last reply: an inline sponsored line may end it.
           VStack(alignment: .leading, spacing: 0) {
             timelineRenderEntryView(
               for: entry,
@@ -2217,7 +2220,7 @@ struct WorkChatSessionView: View {
   var sponsoredDockAvailable: Bool { shownProviderSignIn == nil }
 
   /// The transcript row whose reply ends the finished turn: the inline
-  /// sponsored card goes at its end. Scans back from the last row only to
+  /// sponsored line goes at its end. Scans back from the last row only to
   /// that turn's last reply; nil when the turn's last text isn't a reply row.
   func sponsoredInlineHost(for turn: CloudSponsoredTurn) -> (rowId: String, turnId: String)? {
     func own(_ turnId: String?) -> Bool {
@@ -3579,6 +3582,9 @@ struct WorkChatSessionView: View {
       }
       .onReceive(sponsoredSlot.$shownKey) { key in
         if sponsoredShownKey != key { sponsoredShownKey = key }
+      }
+      .onReceive(sponsoredSlot.$inlineShownKey) { key in
+        if sponsoredInlineShownKey != key { sponsoredInlineShownKey = key }
       }
     )
   }

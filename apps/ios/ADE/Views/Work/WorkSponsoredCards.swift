@@ -57,6 +57,11 @@ final class WorkSponsoredSlotModel: ObservableObject {
   /// again when a card appears or goes: a cached height kept from before the
   /// card drew the card over the turn's footer and under the prompt box.
   @Published private(set) var shownKey: String?
+  /// The ad the inline line at the reply's end draws now, as a key (nil while
+  /// none draws). The chat folds it into the reply row's revision: the line can
+  /// draw after the answer was placed (once the place is free), and a height
+  /// cached before it squeezed the reply's last lines into the line.
+  @Published private(set) var inlineShownKey: String?
   /// The slot's own height, as it last drew. Not published: geometry reads it.
   var height: CGFloat = 0
   /// The inline line's height, as it last drew (0 while it isn't drawn).
@@ -73,6 +78,10 @@ final class WorkSponsoredSlotModel: ObservableObject {
 
   func setShownKey(_ key: String?) {
     if shownKey != key { shownKey = key }
+  }
+
+  func setInlineShownKey(_ key: String?) {
+    if inlineShownKey != key { inlineShownKey = key }
   }
 
   func place(_ next: WorkSponsoredPlacedAd) {
@@ -394,25 +403,20 @@ struct WorkSponsoredInlineOutlet: View {
 
   var body: some View {
     let shown = shown
+    let draws = shown != nil && store.placeFree(forChat: sessionId)
     VStack(alignment: .leading, spacing: 0) {
       // Drawn at once, so the row measures with it (the hold below follows).
-      if let shown, store.placeFree(forChat: sessionId) {
-        Group {
-          if let gravity = shown.ad.gravity {
-            WorkSponsoredGravityCard(ad: shown.ad, gravity: gravity, sessionId: sessionId) {
-              store.hide(chatId: sessionId, turnId: shown.turnId)
-            }
-          } else {
-            WorkSponsoredInlineLine(ad: shown.ad, test: accountStore.account?.sponsored?.test == true, slot: slot) {
-              store.hide(chatId: sessionId, turnId: shown.turnId)
-            }
-          }
+      if let shown, draws {
+        // ADE's own linked sentence, never a card (Gravity's design is a card).
+        WorkSponsoredInlineLine(ad: shown.ad, test: accountStore.account?.sponsored?.test == true, slot: slot) {
+          store.hide(chatId: sessionId, turnId: shown.turnId)
         }
         .padding(.top, 8)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { slot.inlineHeight = $0 }
+    .task(id: draws ? shown?.key : nil) { slot.setInlineShownKey(draws ? shown?.key : nil) }
     .task(id: "\(shown?.turnKey ?? "")|\(store.holder ?? "")") {
       if shown != nil { store.hold(placeId) } else { store.release(placeId) }
     }
@@ -861,8 +865,9 @@ private enum WorkSponsoredGravityTheme {
 }
 
 /// A sponsored card in Gravity's own design (`CloudSponsoredAd.gravity`),
-/// drawn by Gravity's renderer (`SpecAdView`) in ADE's colors, for all three
-/// formats. The renderer sends the card's view link once half of it is on
+/// drawn by Gravity's renderer (`SpecAdView`) in ADE's colors, under the reply
+/// and docked above the prompt box (the inline format is ADE's own linked
+/// sentence, `WorkSponsoredInlineLine`). The renderer sends the card's view link once half of it is on
 /// screen, and its measured and viewable links, and opens Gravity's tracked
 /// link on a tap; so nothing here calls `noteViewed` (that would count the
 /// view twice). ADE keeps the rest: the place, the one card on screen, and
