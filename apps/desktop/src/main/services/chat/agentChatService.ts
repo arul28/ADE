@@ -84029,12 +84029,14 @@ export function createAgentChatService(args: {
             error: getErrorMessage(error),
           });
         });
-        // The wait can take seconds: a cancel or a pause made meanwhile wins.
+        // The wait can take seconds: a cancel made meanwhile wins, and so does a
+        // pause made meanwhile, except for Run now (it runs a paused routine once).
         const current = scheduledWorkScheduler?.list(schedule.sessionId).find((entry) => entry.id === schedule.id);
         if (!current || current.status === "cancelled" || current.status === "done") {
           return { complete: true, outcomeSummary: "Cancelled before it started." };
         }
-        if (current.status === "paused" || current.pausedFlag) return { retry: true };
+        const pausedNow = current.status === "paused" || current.pausedFlag;
+        if (!context.manual && pausedNow && !schedule.pausedFlag) return { retry: true };
       }
       // The send runs with `awaitDispatch: false`, so a throw here is a refusal
       // before any turn started (provider signed out, pending input, a full
