@@ -40,7 +40,7 @@ import { useStillWhenHidden } from "./CloudSky";
 import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "./cloudPlanMoveUp";
 import "./cloudPlans.css";
 
-/** The extra credits switch on this card: the hero's "Past your plan" links here. */
+/** The extra credits switch on this card: the hero's "When credits run out" links here. */
 export const CLOUD_EXTRA_ANCHOR = "cloud-extra";
 
 type Column = { id: CloudPlanId; facts: CloudPlanFacts };
@@ -378,7 +378,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                       <tr><th scope="row">ADE Cloud iPhone</th><td className="kit-num">{`${words.count(words.phoneMilliPerMinute / 1000)} a minute`}</td></tr>
                     ) : null}
                     {extraHours.available && currentExtraCents != null ? (
-                      <tr><th scope="row">Past your plan</th><td className="kit-num">{`${formatCloudCentsPerHour(currentExtraCents)} a credit`}</td></tr>
+                      <tr><th scope="row">Extra credits</th><td className="kit-num">{`${formatCloudCentsPerHour(currentExtraCents)} a credit`}</td></tr>
                     ) : null}
                   </tbody>
                 </table>
@@ -437,7 +437,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <div className="adecd-addon-price">
                   <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
-                  <span>{words.perUnit} past your plan, billed after use</span>
+                  <span>{words.perUnit} once your plan's run out, billed after use</span>
                 </div>
                 <small className="adecd-addon-state">
                   {extraHours.enabled

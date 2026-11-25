@@ -431,7 +431,11 @@ function CloudHero({
   const barAria = `${parts.map((part) => `${part.label} ${formatCloudHours(part.shownMilli)}`).join(", ")}, of ${formatCloudHours(hours.includedMilli)} ${words.noun}`;
   const extra = account.extraHours;
   const extraCents = cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) ?? catalog.extraHourCents;
-  const stopsWhen = "Stops when credits run out";
+  const keepsGoing = extra.available && extra.enabled;
+  // Small never uses credits (unless the catalog rates it), so only the bigger sizes pause.
+  const pauseLine = smallRateMilli > 0
+    ? `Cloud computers pause until ${formatCloudDate(account.billing.periodEnd)}.`
+    : `Bigger computers pause until ${formatCloudDate(account.billing.periodEnd)}. Small keeps working.`;
   return (
     <section ref={heroRef} className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
       <CloudSky />
@@ -486,12 +490,12 @@ function CloudHero({
             </div>
             <span className="adecd-part-line">{account.computers.awake} awake now</span>
           </div>
-          <div className="adecd-hero-stat" role="group" aria-label="Past your plan">
-            <span className="adecd-label">Past your plan</span>
+          <div className="adecd-hero-stat" role="group" aria-label={WHEN_CREDITS_RUN_OUT}>
+            <span className="adecd-label">{WHEN_CREDITS_RUN_OUT}</span>
             <div className="adecd-stat-row">
-              <div className="adecd-part-state" data-on={(extra.available && extra.enabled) || undefined}>
+              <div className="adecd-part-state" data-on={keepsGoing || undefined}>
                 <i aria-hidden="true" />
-                <b>{extra.available ? (extra.enabled ? "On" : "Off") : account.plan === "free" ? "Stops" : "Off"}</b>
+                <b>{keepsGoing ? "Keep going" : "Pause"}</b>
               </div>
               {extra.available ? (
                 <button type="button" className="adecd-linkish adecd-part-link" onClick={toExtra}>{extra.enabled ? "Change" : "Turn on"}</button>
@@ -500,11 +504,9 @@ function CloudHero({
               ) : null}
             </div>
             <span className="adecd-part-line">
-              {extra.available && extra.enabled
-                ? `${formatCloudCentsPerHour(extraCents)} ${words.perUnit}, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} used past your plan this month.` : ""}`
-                : account.plan === "free"
-                  ? `${stopsWhen}. Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.`
-                  : `${stopsWhen}.`}
+              {keepsGoing
+                ? `Extra credits at ${formatCloudCentsPerHour(extraCents)} each, billed after use.${extra.usedMilli > 0 ? ` ${words.milli(extra.usedMilli)} extra this month.` : ""}`
+                : `${pauseLine}${account.plan === "free" ? ` Paid plans can keep going for ${formatCloudCentsPerHour(catalog.extraHourCents)} ${words.perUnit}.` : ""}`}
             </span>
           </div>
         </div>
@@ -575,6 +577,8 @@ function HeroLine({
     </div>
   );
 }
+
+const WHEN_CREDITS_RUN_OUT = "When credits run out";
 
 /** Every lane and every computer the account pays for, one row each; the selected row opens its actions under it. */
 function LaneTable({
