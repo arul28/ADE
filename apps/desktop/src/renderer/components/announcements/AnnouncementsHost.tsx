@@ -116,6 +116,7 @@ export function AnnouncementsHost() {
     const openAll = () => {
       const version = bundledReleaseNotes.version;
       const digest = releaseNotesDigest(version);
+      // Asked for, so it opens at once: a page still loading shows its placeholder, and has no arrival to wait out.
       // The after-update showing stays: replacing it would drop its onClose, and the next launch would show it again.
       setShowing((current) => current?.onClose ? current : {
         pages: allAnnouncements(),
@@ -136,12 +137,18 @@ export function AnnouncementsHost() {
       // The account's copy is read while the splash plays, and the pages are
       // picked once it is in (or given up on), like the in-project showing.
       const accountRead = reconcileSeenAnnouncements();
+      // The page likely to show first loads while the splash plays too.
+      const loader = firstPageLoader();
+      void loader.prepare(dueAnnouncements());
+      const pick = () => (unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : []);
       let cancelled = false;
       let quietTimer: number | null = null;
-      const show = (from: ScreenBox | null) => {
+      const show = (pages: readonly AnnouncementPageDef[], fromSplash: boolean) => {
         inputWatch.stop();
+        // Read now, not when the splash went: after a long wait the box is stale, and the logo rises in the middle.
+        const from = fromSplash ? bootSplashLogoBox() : null;
         setShowing({
-          pages: unaskedAllowed(Date.now(), lastUnaskedBefore) ? dueAnnouncements() : [],
+          pages,
           notes: {
             digest: releaseNotesDigest(detail.version, detail.fromVersion),
             resumedChats: detail.resumedChats,
@@ -154,17 +161,27 @@ export function AnnouncementsHost() {
         });
       };
       const cancelSplash = afterBootSplash(() => {
-        const from = bootSplashLogoBox();
-        void accountRead.then(() => {
+        void accountRead.then(async () => {
+          if (cancelled) return;
+          const pages = pick();
+          // Only a page that will show is waited for; it usually loaded while the splash played.
+          // The quiet moment is judged after the wait, so a wait never opens over new typing.
+          await loader.prepare(pages);
           if (cancelled) return;
           // Straight from the splash only when nobody has touched ADE yet.
-          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return show(from);
-          // Otherwise wait for a quiet moment, then rise in the middle.
+          if (inputWatch.lastInputAt() === null && quietNow(inputWatch, null)) return show(pages, true);
+          // Otherwise wait for a quiet moment, then rise in the middle. The pages are picked again
+          // then (Help may have shown some meanwhile), and a new first page loads before it opens.
           quietTimer = window.setInterval(() => {
             if (cancelled || !quietNow(inputWatch, inputWatch.lastInputAt())) return;
+            const current = pick();
+            if (!loader.ready(current)) {
+              void loader.prepare(current);
+              return;
+            }
             if (quietTimer != null) window.clearInterval(quietTimer);
             quietTimer = null;
-            show(null);
+            show(current, false);
           }, CHECK_INTERVAL_MS);
         });
       });
@@ -199,6 +216,9 @@ export function AnnouncementsHost() {
     void reconcileSeenAnnouncements().then(() => {
       accountRead = true;
     });
+    // The first page loads while the project settles (`firstPageLoader`).
+    const loader = firstPageLoader();
+    void loader.prepare(dueAnnouncements());
     const check = () => {
       if (!accountRead || Date.now() - since < SETTLE_MS) return;
       if (!quietNow(input, input.lastInputAt() ?? since)) return;
@@ -209,9 +229,12 @@ export function AnnouncementsHost() {
         return;
       }
       if (launchGateOpen()) return;
+      const pages = inProjectShowingAllowed() ? dueAnnouncements() : [];
+      if (!loader.ready(pages)) {
+        void loader.prepare(pages);
+        return;
+      }
       setShownThisLaunch(true);
-      if (!inProjectShowingAllowed()) return;
-      const pages = dueAnnouncements();
       if (pages.length === 0) return;
       markShowing();
       setShowing({ pages, notes: null, unasked: true });
@@ -239,6 +262,34 @@ export function AnnouncementsHost() {
       onClose={close}
     />
   );
+}
+
+type FirstPageLoader = {
+  /** Loads a showing's first page; resolves once it is in, or failed (the page then tries once more when it renders). */
+  prepare: (pages: readonly AnnouncementPageDef[]) => Promise<void>;
+  /** Whether a showing of these pages can open now: its first page is in, or it has none. */
+  ready: (pages: readonly AnnouncementPageDef[]) => boolean;
+};
+
+/**
+ * A showing that opens by itself opens only once its first page's code is in.
+ * The page's entrance is timed from when it mounts, so a showing that opened
+ * before its page loaded sat empty while it loaded. A check that finds the
+ * page still loading waits for its next check, which asks every question
+ * again, so the wait never opens over new typing or repeats a page.
+ */
+function firstPageLoader(): FirstPageLoader {
+  let readyId: string | null = null;
+  return {
+    prepare: (pages) => {
+      const first = pages[0];
+      if (!first) return Promise.resolve();
+      return first.load().then(() => undefined, () => undefined).then(() => {
+        readyId = first.id;
+      });
+    },
+    ready: (pages) => !pages[0] || pages[0].id === readyId,
+  };
 }
 
 type InputWatch = {
@@ -357,6 +408,11 @@ function AnnouncementsModal({
   useEffect(() => {
     if (item.page) markAnnouncementSeen(item.page);
   }, [item.page]);
+  // The next page loads while this one is read, so Next never lands on an empty page.
+  const nextPage = items[index + 1]?.page ?? null;
+  useEffect(() => {
+    nextPage?.load().catch(() => undefined);
+  }, [nextPage]);
 
   const glowColors = useGlowColors();
   const Page = item.page?.Page ?? null;

@@ -1488,16 +1488,27 @@ Run `npm run dev:desktop -- --first-run` to walk it as a new user (see
 
 Free-form announcements (`renderer/components/announcements/`): any React
 component in `pages/` with one entry in `announcementPages.ts` (`{ id,
-revision, title, Page }`). `AnnouncementsHost` adds only a close button and a
-pager.
+added, title, ...lazyPage(() => import(...)) }`, which gives the lazy `Page`
+and a `load` that fetches its code ahead; both share one fetch).
+`AnnouncementsHost` adds only a close button and a pager.
 
-- **Once per page per account**, keyed by `id` + `revision`: a local copy
+- **Once per page per account**, keyed by `id`: a local copy
   (`ade.announcements.seen.v1`) and the account setting `announcements.seen`
   hold the union across devices and ADE Web (`announcementSeenSync.ts`; merge
   in `shared/announcementsSeen.ts`: never unseen, earliest time wins, at most
   500). ADE Web uses `announcements.getSeen` / `markSeen` through the computer
   (not for lane-share guests). Pages seen before another account signed in
-  stay local. Bump `revision` to reshow; remove the entry to retire.
+  stay local. Use a new `id` to reshow; remove the entry to retire.
+- **Never an empty window.** A page's entrance is timed from when it mounts,
+  and after an update it also waits for the logo to land, so a window that
+  opened before its page loaded sat empty. A showing that opens by itself
+  waits for its first page's `load`, and decides and opens in one step: inside
+  a project the page loads while the project settles, and a check that finds
+  it still loading waits for the next check; after an update it loads while
+  the splash plays, the quiet moment is judged after it is in, and a showing
+  that waited for a quiet moment picks its pages again then
+  (`firstPageLoader`). The next
+  page loads while one is read. Help › What's new opens at once.
 - **When:** inside a project (never Home), a few seconds after it opens, with
   no dialog, setup or tour, only once onboarding finished or was skipped
   before this launch; after 8 s with no key or click, and never while a
@@ -1506,7 +1517,7 @@ pager.
   21 days never shows by itself. At most two pages a showing, a week apart,
   and only when the unasked budget allows (below).
 - **After an update** this computer installed: on the new version's first
-  launch, after the splash, up to three unseen pages then the release notes
+  launch, after the splash, up to two unseen pages then the release notes
   since the old version. The logo flies from the splash's last box into the
   header as the window opens (`WhatsNewArrival.tsx`; `BootSplashReveal.tsx`
   records the box); the window mounts one frame after the logo. Reduced motion
@@ -1514,8 +1525,8 @@ pager.
   centred. A self-opened showing focuses its panel, not a button.
 - **Reopen:** Help › What's new and the palette show every page.
 - **To add one:** create `pages/<Name>.tsx` with a default component taking
-  `{ close }` (call it before navigating), and add its entry at the top of
-  `ANNOUNCEMENT_PAGES`. Most pages are a `WhatsNewFeature`: a place, a
+  `{ close }` (call it before navigating), and add its entry (through
+  `lazyPage`) at the top of `ANNOUNCEMENT_PAGES`. Most pages are a `WhatsNewFeature`: a place, a
   headline, one sentence on where to try it, an `action` running an ADE Tips
   entry, beside a looping muted recording, a screenshot crossfade (`holdMs`,
   optional `caption`) or phones.

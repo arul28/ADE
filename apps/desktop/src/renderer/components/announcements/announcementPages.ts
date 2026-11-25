@@ -14,7 +14,10 @@ import { lazy, type ComponentType, type LazyExoticComponent } from "react";
  *   project, within the shared unasked budget (`unaskedBudget.ts`). Pages
  *   left over show on a later week.
  *
- * Pages load lazily, so an entry costs nothing until it is shown.
+ * Pages load lazily, so an entry costs nothing until it is shown. A showing
+ * that opens by itself waits for its first page's code (`load`): the page's
+ * entrance is timed from when it mounts, and after an update it also waits
+ * for the logo to land, so a page still loading left the window empty.
  */
 
 export type AnnouncementPageProps = {
@@ -30,121 +33,139 @@ export type AnnouncementPageDef = {
   /** Names the page for assistive tech and the page dots. */
   title: string;
   Page: LazyExoticComponent<ComponentType<AnnouncementPageProps>>;
+  /** Fetches the page's code ahead of showing it; `Page` then renders without waiting. */
+  load: () => Promise<unknown>;
 };
+
+type PageModule = { default: ComponentType<AnnouncementPageProps> };
+
+/** One fetch shared by `load` and `Page`, so a page loaded ahead is not fetched again. */
+function lazyPage(importPage: () => Promise<PageModule>): Pick<AnnouncementPageDef, "Page" | "load"> {
+  let loading: Promise<PageModule> | null = null;
+  const load = () => {
+    // A failed fetch ahead of time is not kept, so `Page` tries once more when it renders.
+    loading ??= importPage().catch((error: unknown) => {
+      loading = null;
+      throw error;
+    });
+    return loading;
+  };
+  return { Page: lazy(load), load };
+}
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
     id: "ade-cloud",
     added: "2026-11-18",
     title: "ADE Cloud",
-    Page: lazy(() => import("./pages/AdeCloudAnnouncement")),
+    ...lazyPage(() => import("./pages/AdeCloudAnnouncement")),
   },
   {
     id: "passwords",
     added: "2026-11-18",
     title: "Passwords & Secrets",
-    Page: lazy(() => import("./pages/PasswordsAnnouncement")),
+    ...lazyPage(() => import("./pages/PasswordsAnnouncement")),
   },
   {
     id: "cto-v2",
     added: "2026-11-18",
     title: "A CTO that remembers",
-    Page: lazy(() => import("./pages/CtoAnnouncement")),
+    ...lazyPage(() => import("./pages/CtoAnnouncement")),
   },
   {
     id: "subagents-any-model",
     added: "2026-11-04",
     title: "Subagents on any model",
-    Page: lazy(() => import("./pages/SubagentsAnnouncement")),
+    ...lazyPage(() => import("./pages/SubagentsAnnouncement")),
   },
   {
     id: "integrations-page",
     added: "2026-11-04",
     title: "Every integration on one page",
-    Page: lazy(() => import("./pages/IntegrationsAnnouncement")),
+    ...lazyPage(() => import("./pages/IntegrationsAnnouncement")),
   },
   {
     id: "custom-harnesses",
     added: "2026-11-04",
     title: "Any harness on your plan",
-    Page: lazy(() => import("./pages/CustomHarnessAnnouncement")),
+    ...lazyPage(() => import("./pages/CustomHarnessAnnouncement")),
   },
   {
     id: "media-comments",
     added: "2026-11-04",
     title: "Comments on screenshots and videos",
-    Page: lazy(() => import("./pages/MediaCommentsAnnouncement")),
+    ...lazyPage(() => import("./pages/MediaCommentsAnnouncement")),
   },
   {
     id: "ade-beta",
     added: "2026-11-04",
     title: "ADE Beta",
-    Page: lazy(() => import("./pages/BetaAnnouncement")),
+    ...lazyPage(() => import("./pages/BetaAnnouncement")),
   },
   {
     id: "manage-provider-accounts",
     added: "2026-10-28",
     title: "Manage your accounts in detail",
-    Page: lazy(() => import("./pages/ProviderAccountsAnnouncement")),
+    ...lazyPage(() => import("./pages/ProviderAccountsAnnouncement")),
   },
   {
     id: "side-chats",
     added: "2026-10-27",
     title: "Side chats",
-    Page: lazy(() => import("./pages/SideChatsAnnouncement")),
+    ...lazyPage(() => import("./pages/SideChatsAnnouncement")),
   },
   {
     id: "issues",
     added: "2026-10-27",
     title: "Jira, Linear and GitHub issues",
-    Page: lazy(() => import("./pages/IssuesAnnouncement")),
+    ...lazyPage(() => import("./pages/IssuesAnnouncement")),
   },
   {
     id: "music",
     added: "2026-10-27",
     title: "Apple Music and Spotify",
-    Page: lazy(() => import("./pages/MusicAnnouncement")),
+    ...lazyPage(() => import("./pages/MusicAnnouncement")),
   },
   {
     id: "open-any-file",
     added: "2026-10-27",
     title: "Open any file",
-    Page: lazy(() => import("./pages/OpenAnyFileAnnouncement")),
+    ...lazyPage(() => import("./pages/OpenAnyFileAnnouncement")),
   },
   {
     id: "chats-every-machine",
     added: "2026-10-27",
     title: "Every machine's chats",
-    Page: lazy(() => import("./pages/ChatsEveryMachineAnnouncement")),
+    ...lazyPage(() => import("./pages/ChatsEveryMachineAnnouncement")),
   },
   {
     id: "phone-pull-requests",
     added: "2026-10-27",
     title: "Pull requests on your phone",
-    Page: lazy(() => import("./pages/PhonePullRequestsAnnouncement")),
+    ...lazyPage(() => import("./pages/PhonePullRequestsAnnouncement")),
   },
   {
     id: "wallpapers",
     added: "2026-10-27",
     title: "Wallpapers for your screen",
-    Page: lazy(() => import("./pages/WallpapersAnnouncement")),
+    ...lazyPage(() => import("./pages/WallpapersAnnouncement")),
   },
   {
     id: "iphone-duo",
     added: "2026-10-21",
     title: "iPhone Duo in the simulator",
-    Page: lazy(() => import("./pages/IphoneDuoAnnouncement")),
+    ...lazyPage(() => import("./pages/IphoneDuoAnnouncement")),
   },
   {
     id: "phone-simulator-stream",
     added: "2026-10-21",
     title: "The simulator on your iPhone",
-    Page: lazy(() => import("./pages/PhoneSimulatorAnnouncement")),
+    ...lazyPage(() => import("./pages/PhoneSimulatorAnnouncement")),
   },
   {
     id: "windows-desktop",
     added: "2026-10-21",
     title: "Windows and Linux for agents",
-    Page: lazy(() => import("./pages/WindowsDesktopAnnouncement")),
+    ...lazyPage(() => import("./pages/WindowsDesktopAnnouncement")),
   },
 ];
