@@ -8,11 +8,11 @@ import WebKit
 // every command (`cloudPhone.*`); the live picture is NoMac's own page in a
 // web view that can go nowhere else.
 
-/// The sheet: minutes (or credits) left, start, stop, a screenshot, and the
+/// The sheet: credits left, start, stop, a screenshot, and the
 /// phone itself once it is ready.
 struct CloudIphoneSheet: View {
   @StateObject private var model: CloudIphoneModel
-  /// The account as the account server last answered it: credits or hours,
+  /// The account as the account server last answered it: its credits rate
   /// and a tester's provider pick.
   @ObservedObject private var accountStore = AccountCloudStore.shared
   @Environment(\.dismiss) private var dismiss

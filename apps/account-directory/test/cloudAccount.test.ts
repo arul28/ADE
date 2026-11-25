@@ -1560,7 +1560,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
 
     expect(harness.rows("select user_id from cloud_free_plan_claims")).toEqual([{ user_id: OTHER }]);
     const refused = await stateOf(OWNER);
-    expect(refused.freePlan).toMatchObject({ state: "refused", sentence: "This computer already used another account's free hours. Plus gives you 100 hours a month." });
+    expect(refused.freePlan).toMatchObject({ state: "refused", sentence: "This computer already used another account's free credits. Plus gives you 100 credits a month." });
     expect([refused.hours.includedMilli, refused.hours.state]).toEqual([0, "zero"]);
     expect((await stateOf(OTHER)).freePlan?.state).toBe("claimed");
   });
@@ -1876,7 +1876,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect(providerCalls(harness, /POST .*\/payment_methods\/pm_2\/detach$/).length).toBeGreaterThan(0);
     expect(harness.rows("select card_fingerprint, user_id from cloud_free_card_claims")).toEqual([{ card_fingerprint: "fp_card_1", user_id: OWNER }]);
     expect(providerCalls(harness, /POST https:\/\/api\.resend\.com\/emails$/).map((call) => String(call.body?.subject)).filter((subject) => /used again/.test(subject)))
-      .toEqual(["ADE Cloud: a card was used again for free hours"]);
+      .toEqual(["ADE Cloud: a card was used again for free credits"]);
   });
 
   it("the owner's block: only the owner token reaches it; it cuts off, stops and cancels the account, and puts its GitHub account and saved card on the block list until unblocked", async () => {
@@ -4078,10 +4078,8 @@ describe("ADE Cloud iPhone minutes", () => {
     expect(account()).toEqual(after);
   });
 
-  it("under credits, a phone's billed minutes land in the account's hours once, and the account says credits", async () => {
+  it("a credits phone's billed minutes land in the account's balance once, and the account says credits", async () => {
     seedPhoneAccount();
-    harness.env.CLOUD_CREDITS = "all";
-    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock });
     seedPhone("ses_c", 0, clock - 10 * 60_000, "live", true);
     const usedBefore = Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli);
     const at = (ms: number) => new Date(ms).toISOString();
@@ -4130,8 +4128,6 @@ describe("ADE Cloud iPhone minutes", () => {
     { name: "a phone started under credits stops when the credits are spent", credits: true, outcome: "stopped" },
   ])("a running phone is held to what it started on: $name", async ({ credits, outcome }) => {
     seedPhoneAccount({ phone_extra_enabled: 0, extra_enabled: 0 });
-    harness.env.CLOUD_CREDITS = "all";
-    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock - HOUR });
     // Every credit is spent.
     harness.exec("update cloud_accounts set used_milli = included_milli + 1000 where user_id = ?", OWNER);
     seedPhone("ses_r", 0, clock - 5 * 60_000, "live", credits);
@@ -4150,43 +4146,34 @@ describe("ADE Cloud iPhone minutes", () => {
   }
 
   it.each([
-    // A start whose answer was lost, its phone found later by NoMac's webhook: billed as that start decided,
-    // whatever the switch or the beta list say by then.
-    { name: "a tester's start under testers, then taken off the list: credits", start: 1, listedLater: false, flips: [["testers", -2 * HOUR]], expected: 1 },
-    { name: "a start on iPhone minutes, then on the list under all: iPhone minutes", start: 0, listedLater: true, flips: [["testers", -2 * HOUR], ["all", -1 * 60_000]], expected: 0 },
-    // No record of its start (one from before it was kept): the switch in force when it started, from the change log.
-    { name: "no start record, all at its start and off since: credits", start: null, listedLater: false, flips: [["all", -2 * HOUR], ["off", -1 * 60_000]], expected: 1 },
-    { name: "no start record, off at its start and all since: iPhone minutes", start: null, listedLater: false, flips: [["off", -2 * HOUR], ["all", -1 * 60_000]], expected: 0 },
-  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, listedLater, flips, expected }) => {
+    // A start whose answer was lost, its phone found later by NoMac's webhook: billed as that start decided.
+    { name: "a start under credits: credits", start: 1, flips: [], expected: 1 },
+    { name: "a start on iPhone minutes (before credits reached everyone): iPhone minutes", start: 0, flips: [], expected: 0 },
+    // No record of its start (a later start replaced it): what the switch said when it started, from the change log.
+    { name: "no start record, after credits reached everyone: credits", start: null, flips: [["all", -2 * HOUR]], expected: 1 },
+    { name: "no start record, before credits reached everyone: iPhone minutes", start: null, flips: [["off", -3 * HOUR], ["all", -1 * 60_000]], expected: 0 },
+  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, flips, expected }) => {
     seedPhoneAccount(start == null ? {} : { phone_start_credits: start, phone_start_credits_at: clock - 10 * 60_000 });
-    harness.env.CLOUD_CREDITS = "all";
     flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
-    harness.insert("cloud_settings", { key: "cloud_credits", value: flips.at(-1)?.[0] ?? "off", updated_at: clock - 60_000 });
-    if (listedLater) harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock - 60_000 });
     expect((await nomacReady("ses_lost", clock - 9 * 60_000)).status).toBe(200);
     expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(expected);
   });
 
-  it("a retry after a lost start keeps the first attempt's billing and allowance, though the account joined credits between", async () => {
+  it("a retry after a lost start keeps the first attempt's billing and allowance, though it was on iPhone minutes", async () => {
     seedPhoneAccount();
-    harness.env.CLOUD_CREDITS = "all";
-    harness.insert("cloud_settings", { key: "cloud_credits", value: "testers", updated_at: clock - HOUR });
-    // Not on the list: the first attempt is on iPhone minutes, and NoMac's answer is lost.
+    // NoMac's answer to the first attempt is lost.
     phoneStartNetwork("down");
     expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(502);
-    // Now a tester (credits reach the account), every credit spent; the retry is held to that start's minutes
-    // (not refused for credits) and gets the phone that start made.
-    harness.insert("cloud_phone_beta", { user_id: OWNER, added_at: clock });
-    harness.exec("update cloud_accounts set used_milli = included_milli + 1000, extra_enabled = 0 where user_id = ?", OWNER);
+    // That attempt was on iPhone minutes (a start from before credits reached everyone), and every credit is
+    // spent since; the retry is held to that start's minutes (not refused for credits) and gets the phone it made.
+    harness.exec("update cloud_accounts set phone_start_credits = 0, used_milli = included_milli + 1000, extra_enabled = 0 where user_id = ?", OWNER);
     phoneStartNetwork("ok");
     expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(200);
     expect(harness.row("select credits from cloud_phones where phone_id = 'ses_new'").credits).toBe(0);
   });
 
-  it("a new phone after the last one ended is billed by what reaches the account now", async () => {
+  it("a new phone after the last one ended is billed in credits", async () => {
     seedPhoneAccount();
-    harness.env.CLOUD_CREDITS = "all";
-    harness.insert("cloud_settings", { key: "cloud_credits", value: "all", updated_at: clock - HOUR });
     // Started on iPhone minutes before the flip; NoMac now says it has ended.
     seedPhone("ses_prev", 0, clock - 30 * 60_000, "live", false);
     const at = (ms: number) => new Date(ms).toISOString();

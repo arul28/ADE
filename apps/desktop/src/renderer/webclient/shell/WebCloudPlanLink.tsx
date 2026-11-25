@@ -12,8 +12,8 @@ const RETURN_TOASTS: Record<CloudBillingReturnOutcome, ToastInput> = {
   done: { tone: "success", title: "You're all set", message: "Your plan shows here in a moment." },
   cancelled: { title: "Nothing changed", message: "You left checkout before paying." },
   portal: { title: "Back from billing", message: "Any changes you made show here in a moment." },
-  card: { tone: "success", title: "Card saved", message: "You weren't charged. Your free hours show here in a moment." },
-  card_cancelled: { title: "Nothing changed", message: `You left before saving a card. Your free hours start when your GitHub account is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old.` },
+  card: { tone: "success", title: "Card saved", message: "You weren't charged. Your free credits show here in a moment." },
+  card_cancelled: { title: "Nothing changed", message: `You left before saving a card. Your free credits start when your GitHub account is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old.` },
 };
 
 /**

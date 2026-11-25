@@ -193,9 +193,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// `on`, else nothing of it shows. Older servers sent `soon`.
   struct Phone: Decodable, Equatable {
     let access: String
-    /// Under credits (`CloudPhoneAccount.credits`): the credits the iPhone
-    /// used this period, in thousandths. The computers' share is the rest of
-    /// `hours.usedMilli`. Nil on hours, and from an older server.
+    /// The credits the iPhone used this period, in thousandths. The
+    /// computers' share is the rest of `hours.usedMilli`. Nil from an older
+    /// server.
     let creditsUsedMilli: Int?
     /// A tester's pick of who runs their phones (`auto`, `nomac`, `revyl`):
     /// sent only to accounts on the iPhone's beta list, which may change it
@@ -218,10 +218,9 @@ struct CloudPhoneAccount: Decodable, Equatable {
     }
   }
 
-  /// Credits (`CloudAccountState.credits`): `hours` is then one balance of
-  /// credits, the same thousandths (a Medium computer uses one an hour), and
-  /// the ADE Cloud iPhone draws from it at `phoneMilliPerMinute` a minute.
-  /// Absent while the server's switch doesn't reach the account: hours.
+  /// Credits (`CloudAccountState.credits`): `hours` is one balance of
+  /// credits, in thousandths (a Medium computer uses one an hour), and the
+  /// ADE Cloud iPhone draws from it at `phoneMilliPerMinute` a minute.
   struct Credits: Decodable, Equatable {
     let phoneMilliPerMinute: Int
   }
@@ -419,7 +418,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
   let referral: CloudPhoneReferral?
   /// `var` so a read that started before a provider pick keeps the pick (`AccountCloudStore.setPhoneProvider`).
   var phone: Phone?
-  /// Present: the account counts in credits (`CloudBalanceWords`). Absent: hours.
+  /// The iPhone's rate of the credits (`CloudBalanceWords`). Always credits:
+  /// absent (an older server) reads as one credit a minute.
   let credits: Credits?
   /// Sponsored cards in this account's ADE Cloud chats (`CloudSponsoredState`).
   /// Absent while the server's switch doesn't reach the account: nothing
@@ -450,7 +450,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
     dueForDeletion = c.lenient([IdleCleanup].self, forKey: .dueForDeletion) ?? []
     referral = c.lenient(CloudPhoneReferral.self, forKey: .referral)
     phone = c.lenient(Phone.self, forKey: .phone)
-    // A rate of 0 or less is no rate: read as hours rather than divide by it.
+    // A rate of 0 or less is no rate: read as absent (one credit a minute) rather than divide by it.
     credits = c.lenient(Credits.self, forKey: .credits).flatMap { $0.phoneMilliPerMinute > 0 ? $0 : nil }
     sponsored = c.lenient(CloudSponsoredState.self, forKey: .sponsored)
   }
@@ -471,7 +471,7 @@ struct CloudPhoneAccount: Decodable, Equatable {
   /// older server's `soon`, no answer) shows nothing of it.
   var phoneOn: Bool { phone?.access == "on" }
 
-  /// Out of hours (or credits) for this period, as the server counts it.
+  /// Out of credits for this period, as the server counts it.
   var outOfHours: Bool { hours.state == "zero" }
 
   /// The account counts in credits: one balance the ADE Cloud iPhone draws from too.

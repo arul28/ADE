@@ -522,10 +522,6 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return await request("POST", "/cloud/billing/extra-hours", { body: { enabled } }) as CloudAccountState;
     },
 
-    async setExtraPhoneMinutes(choice): Promise<CloudAccountState> {
-      return await request("POST", CLOUD_PATHS.billingExtraPhone, { body: choice }) as CloudAccountState;
-    },
-
     async sponsoredIndex(input: CloudSponsoredIndexRequest): Promise<CloudSponsoredIndexAnswer> {
       const body = record(await request("POST", CLOUD_PATHS.sponsoredIndex, { body: input, timeoutMs: 15_000 }));
       const pick = readCloudSponsoredPick(body?.pick);

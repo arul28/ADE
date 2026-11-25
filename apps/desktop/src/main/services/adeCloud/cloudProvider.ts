@@ -227,8 +227,6 @@ export type CloudProvider = {
   billingFreeUnlock?(): Promise<CloudFreeUnlockResult>;
   /** Paid accounts only; extra hours are off by default. */
   setExtraHours(enabled: boolean): Promise<CloudAccountState>;
-  /** Paid accounts only: extra ADE Cloud iPhone minutes on, with an optional monthly limit in whole dollars, or off. */
-  setExtraPhoneMinutes?(choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState>;
   /** The account's invite link and what it earned (`/cloud/referrals`). Account-level. */
   readReferral(): Promise<CloudReferralSummary>;
   /** An agent's Index search on its own ADE Cloud computer (`/cloud/sponsored/index`); the server decides. */

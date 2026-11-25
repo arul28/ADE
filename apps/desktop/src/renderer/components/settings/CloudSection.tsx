@@ -83,7 +83,7 @@ export function CloudSection() {
   const problem = error
     ?? (status?.error ?? null)
     ?? unreachable
-    ?? (live && machines.result?.state === "ok" && !account ? `${ADE_CLOUD_NAME} couldn't read your plan and hours.` : null)
+    ?? (live && machines.result?.state === "ok" && !account ? `${ADE_CLOUD_NAME} couldn't read your plan and credits.` : null)
     ?? machines.loadError;
   return (
     <div className="adecd-pagestate">

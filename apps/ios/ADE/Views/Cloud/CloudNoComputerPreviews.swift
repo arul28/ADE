@@ -39,7 +39,7 @@ enum CloudNoComputerPreviews {
         fate: cloudComputerFateSentence(.plan, deletedAt: 1_763_424_000_000),
         branch: "fix-flaky-upload-test",
         sizeLabel: cloudQueueSizeLabel(account: nil),
-        blocked: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."
+        blocked: "This account has no ADE Cloud credits left this period. Your lanes and chats stay readable."
       )))
     case "duo-cloud-chat-queued":
       // Right after a send to an asleep chat: the person's own bubble and
@@ -80,9 +80,7 @@ enum CloudNoComputerPreviews {
     case "duo-cloud-deleting-soon":
       return AnyView(CloudChatFixture(state: .asleep, deletingDays: 3))
     case "duo-cloud-refused-out_of_hours":
-      return AnyView(CloudChatFixture(state: .refused("This account has no ADE Cloud hours left this period. Your lanes and chats stay readable.")))
-    case "duo-cloud-refused-out_of_credits":
-      // The same refusal for an account under credits.
+      // The server's code is still `out_of_hours`; the balance is credits.
       return AnyView(CloudChatFixture(state: .refused("This account has no ADE Cloud credits left this period. Your lanes and chats stay readable.")))
     case "duo-cloud-refused-too_many_awake":
       return AnyView(CloudChatFixture(state: .refused("Too many of your computers are awake at once. Put one you aren't using to sleep, then try again.")))
@@ -99,7 +97,7 @@ enum CloudNoComputerPreviews {
     case "duo-cloud-lane-launch-card":
       return AnyView(CloudLaneLaunchCardFixture())
     case "duo-cloud-new-chat-refused":
-      return AnyView(CloudNewChatFixture(refusal: "This account has no ADE Cloud hours left this period. Your lanes and chats stay readable."))
+      return AnyView(CloudNewChatFixture(refusal: "This account has no ADE Cloud credits left this period. Your lanes and chats stay readable."))
     case "duo-cloud-models":
       return AnyView(CloudModelsFixture())
     case "duo-cloud-lanes":

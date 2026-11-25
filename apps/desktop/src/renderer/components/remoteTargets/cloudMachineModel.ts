@@ -11,7 +11,7 @@ import {
   type CloudMachineState,
 } from "../../../shared/adeCloud";
 import { buildAccountMachineSnapshot } from "../../../shared/accountMachineSnapshot";
-import { CLOUD_HOURS_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { AttentionItem } from "../../../shared/types/attention";
 
@@ -108,7 +108,7 @@ function cloudCurrentHoursRate(box: CloudMachine): number | null {
 }
 
 /** "Uses 2.5 hours an hour" while awake; "No hours" asleep or stopped (credits words for a credits account). */
-export function describeCloudRate(box: CloudMachine, words: CloudUnitWords = CLOUD_HOURS_WORDS): string | null {
+export function describeCloudRate(box: CloudMachine, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string | null {
   if (box.pastDue) return "Suspended";
   if (box.state === "asleep" || box.state === "stopped") return `No ${words.noun}`;
   const rate = cloudCurrentHoursRate(box);

@@ -128,7 +128,7 @@ function WhyComputerDeleted({ onOpenPlans }: { onOpenPlans?: (() => void) | null
       )}
     >
       <p className="m-0 text-[12px] leading-snug text-fg/85">
-        ADE Cloud deletes a computer that isn&apos;t used for a while, or to fit your plan, so it doesn&apos;t use your hours and disk.
+        ADE Cloud deletes a computer that isn&apos;t used for a while, or to fit your plan, so it doesn&apos;t use your credits and disk.
       </p>
       <p className="m-0 text-[12px] leading-snug text-fg/85">
         Your chats and the work that isn&apos;t on GitHub stay on your account. A new computer gets them back.

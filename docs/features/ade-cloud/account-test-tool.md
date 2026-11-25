@@ -78,7 +78,6 @@ minutes on is refused (409) while test iPhone minutes are set.
 | `gravity_live` | `off`, `on` | `GRAVITY_LIVE=1` | Real ads instead of Gravity's free test ads |
 | `gravity_format` | `below_reply`, `above_prompt`, `inline`, `split` | none | Where cards show for every account; `split` holds each account to one of the three by its id (the same on every machine). An account set with `ad-format` keeps its own |
 | `gravity_format_split` | `70-20-10`, `80-15-5`, `60-25-15`, `50-30-20`, `34-33-33` | none | Under `split`, the share of new accounts for under the reply, inline and above the prompt box, in that order. An account keeps the format it was first given (`cloud_sponsored_formats`), so a change moves only accounts ads reach for the first time |
-| `cloud_credits` | `off`, `testers`, `all` | `CLOUD_CREDITS` | Credits: hours become credits on every surface and the ADE Cloud iPhone draws from them at one a minute. `testers` is the iPhone beta list. See [Credits](README.md#credits) |
 
 ```bash
 node scripts/cloud-owner.mjs settings

@@ -18,7 +18,7 @@ import { cn } from "../ui/cn";
 import { USAGE_NUMERIC_CLASS, USAGE_TEXT, usageLeftLevel, usageLeftLevelColor } from "./usageDesign";
 
 /**
- * ADE Cloud's meter, the first one in the header's usage control: the hours
+ * ADE Cloud's meter, the first one in the header's usage control: the credits
  * work can still use (the plan's left plus earned ones) against this
  * period's. The account comes from `state/cloudAccountStore.ts`.
  *
@@ -51,14 +51,13 @@ function hoursLeftPct(state: CloudAccountState): number {
   return totalMilli > 0 ? (leftMilli / totalMilli) * 100 : 0;
 }
 
-/** "ADE Cloud 43.8 h of 100 h left" (credits: "ADE Cloud 43.8 of 100 credits left") for the control's title. */
+/** "ADE Cloud 43.8 of 100 credits left" for the control's title. */
 export function headerCloudTitle(state: CloudAccountState): string {
   const { leftMilli, totalMilli } = hoursOf(state);
-  if (cloudUnitWords(state).credits) return `ADE Cloud ${formatCloudHours(leftMilli)} of ${formatCloudHours(totalMilli)} credits left`;
-  return `ADE Cloud ${formatCloudHours(leftMilli)} h of ${formatCloudHours(totalMilli)} h left`;
+  return `ADE Cloud ${formatCloudHours(leftMilli)} of ${formatCloudHours(totalMilli)} credits left`;
 }
 
-/** The ring: hours left in ADE Cloud's violet, amber at 20% left, red at 5%; the pale arc is what's used. */
+/** The ring: credits left in ADE Cloud's violet, amber at 20% left, red at 5%; the pale arc is what's used. */
 export function HeaderCloudRing({ state }: { state: CloudAccountState }) {
   const left = Math.max(0, Math.min(100, Math.round(hoursLeftPct(state))));
   const color = usageLeftLevelColor(usageLeftLevel(left), BRAND);
@@ -99,13 +98,13 @@ export function HeaderCloudRing({ state }: { state: CloudAccountState }) {
   );
 }
 
-/** The popover's first panel: hours for bigger computers, when they reset, computers, extra and earned hours, and the way to the dashboard. */
+/** The popover's first panel: credits left, when they reset, computers, extra and earned credits, and the way to the dashboard. */
 export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountState; onNavigate: () => void }) {
   const pct = hoursLeftPct(state);
   const hours = hoursOf(state);
   const words = cloudUnitWords(state);
   const computers = cloudAccountComputers(state);
-  // Free with sponsored cards off (the server's rule on): Small uses hours too, so the hours are for every size.
+  // Free with sponsored cards off (the server's rule on): Small uses credits too.
   const smallUsesHours = cloudSmallUsesHours(cloudCatalogOf(state));
   // The invite card shows only with a referral; with no rewards left there is nothing to invite to.
   const canInvite = (cloudReferralOf(state)?.rewardsLeft ?? 0) > 0;
@@ -122,12 +121,8 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
         <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>{state.billing.cancelAtPeriodEnd ? "Plan ends" : "Resets"} {formatCloudDate(state.billing.periodEnd)}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
-        <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{words.credits ? formatCloudHours(hours.leftMilli) : `${formatCloudHours(hours.leftMilli)} h`}</span>
-        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>
-          {words.credits
-            ? `of ${formatCloudHours(hours.totalMilli)} credits left`
-            : `left of ${formatCloudHours(hours.totalMilli)} h${smallUsesHours ? "" : " for bigger computers"}`}
-        </span>
+        <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)}</span>
+        <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>{`of ${formatCloudHours(hours.totalMilli)} credits left`}</span>
       </div>
       <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>

@@ -39,7 +39,7 @@
  */
 
 import { isCloudBlocked, sendOwnerAlert } from "./blocks";
-import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, creditsAtStart, creditsOnFor, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
+import { PHONE_CREDIT_MILLI_PER_MINUTE, accountWithUnsettledPhones, creditsAtStart, phoneCreditMilliOf, unsettledPhoneMilli } from "./credits";
 import { captureCloudPhone, type CloudWaitUntil } from "./analytics";
 import { freeCapRefuses } from "./costReport";
 import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
@@ -219,7 +219,7 @@ function phoneCreditStatements(db: D1Database, phoneId: string, now: number): D1
  * Keeps what NoMac said about a phone this account started. A late or
  * repeated answer can't undo a newer one (`PHONE_MERGE_SQL`). `free` is
  * whether the account was on free rules when the phone started; `credits`,
- * whether credits reached it then (both only for a new row). A credits
+ * whether it counts in credits (both only for a new row). A credits
  * phone's new billed minutes go into the account's credits in the same write.
  */
 async function savePhone(
@@ -278,7 +278,8 @@ const START_CLOCK_SLACK_MS = 5 * 60_000;
 /**
  * Whether a phone found with no row counts in credits: what the start that
  * made it decided (saved with its claim), when it is from the account's
- * latest start; else (one from before that record) the switch at its start.
+ * latest start; else (an older start) what the switch said when it started,
+ * from the change log, so a phone from before credits keeps its minutes.
  */
 async function recoveredCredits(
   env: CloudEnv,
@@ -487,8 +488,8 @@ export type PhoneCredits = { liveUsedMilli: number };
 /**
  * The account's `PhoneCredits`, or null. `counts`: whether this phone counts
  * in credits, when it is known (a running phone keeps what it started on,
- * `cloud_phones.credits`); left out, whether credits reach the account now
- * (a new phone). `reload`: read the account again (a phone's save since
+ * `cloud_phones.credits`); left out, credits (a new phone: every account is
+ * on credits). `reload`: read the account again (a phone's save since
  * `account` was read may have added to `used_milli`), in one read with the
  * phones' settled marks.
  */
@@ -498,7 +499,7 @@ export async function phoneCreditsFor(
   now: number,
   { reload = false, counts }: { reload?: boolean; counts?: boolean } = {},
 ): Promise<PhoneCredits | null> {
-  if (counts === false || (counts === undefined && !(await creditsOnFor(env, account.user_id)))) return null;
+  if (counts === false) return null;
   if (reload) {
     const read = await accountWithUnsettledPhones(env, account.user_id, now);
     if (read.liveUsedMilli != null) return { liveUsedMilli: read.liveUsedMilli };

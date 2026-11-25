@@ -659,7 +659,7 @@ struct CloudLaneFilesSheet: View {
   let branch: String
   let summary: CloudGitSummary?
   let fleetKey: String
-  /// The account's unit (hours or credits), for what waking uses.
+  /// The account's unit, for what waking uses.
   let words: CloudBalanceWords
   let onAwake: @MainActor () async -> Void
   @Environment(\.dismiss) private var dismiss
@@ -711,7 +711,7 @@ struct CloudLaneFolderScreen: View {
   let folder: String
   let summary: CloudGitSummary?
   let fleetKey: String
-  /// The account's unit (hours or credits), for what waking uses.
+  /// The account's unit, for what waking uses.
   let words: CloudBalanceWords
   let onAwake: @MainActor () async -> Void
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared

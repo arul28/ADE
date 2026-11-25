@@ -41,7 +41,7 @@ export function CloudGroupHead({
 }: {
   boxes: readonly CloudMachine[];
   loading: boolean;
-  /** The account, for its words (hours or credits); null before it is read. */
+  /** The account, for its words; null before it is read. */
   account?: CloudAccountState | null;
 }) {
   const totals = cloudGroupTotals(boxes);
@@ -130,7 +130,7 @@ function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) 
   // At the computer limit: the card with its three ways out (free up, delete, move up).
   if (error.blocker === "computer_limit") return [{ label: "See your options", onClick: () => openCloudComputerLimitCard(error.computerLimit ?? null) }];
   const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_limits";
-  return needsPlan && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
+  return needsPlan && onOpenSettings ? [{ label: "Plans and credits", onClick: onOpenSettings }] : undefined;
 }
 
 /**
@@ -154,7 +154,7 @@ export function CloudBoxStrip({
   box: CloudMachine;
   /** The account's sizes, so the box's size reads as the pickers name it. */
   catalog: CloudCatalog;
-  /** The account's words (hours or credits) for the box's rate. */
+  /** The account's words for the box's rate. */
   words?: CloudUnitWords;
   work: CloudBoxWork;
   pending: CloudBoxPending | null;
@@ -245,7 +245,7 @@ export function CloudBoxStrip({
             tone: "warning",
             title: box.diskFull,
             // A bigger size and the plans live in Settings.
-            actions: onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined,
+            actions: onOpenSettings ? [{ label: "Plans and credits", onClick: onOpenSettings }] : undefined,
             report: false,
           }}
         />

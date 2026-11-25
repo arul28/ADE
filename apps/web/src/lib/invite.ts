@@ -31,7 +31,7 @@ export const inviteAppLink = (code: string): string => `ade://invite/${code}`;
 export const FREE_OFFER = CLOUD_SMALL_UNLIMITED_SHORT;
 /** What an invite adds for both people: hours (or credits) for the computers bigger than Small. */
 const INVITE_REWARD_HOURS = INVITE_RULES.rewardHours;
-/** "10 extra cloud hours for bigger computers", or "10 extra cloud credits …" under credits. */
+/** "10 extra cloud credits for bigger computers". */
 export const INVITE_REWARD_LINE = `${INVITE_REWARD_HOURS} extra cloud ${INVITE_REWARD_HOURS === 1 ? UNIT.one : UNIT.many} for ${UNIT.spenders}`;
 /** Days after signing up that a friend's code can still be entered. */
 export const INVITE_ENTER_DAYS = INVITE_RULES.enterDays;

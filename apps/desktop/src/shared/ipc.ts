@@ -1237,7 +1237,6 @@ export const IPC = {
   /** Reports a card's view to Gravity once half of it was on screen (the page itself may not reach outside hosts). */
   cloudSponsoredViewed: "ade.cloud.sponsoredViewed",
   cloudOpenCheckout: "ade.cloud.openCheckout",
-  cloudSetExtraPhoneMinutes: "ade.cloud.setExtraPhoneMinutes",
   cloudSetPhoneProvider: "ade.cloud.setPhoneProvider",
   cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */

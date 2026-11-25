@@ -470,11 +470,10 @@ At 0 hours the server refuses, and its sentence is what the person sees.
 
 ### Credits
 
-One balance for everything ADE Cloud runs (owner, 2026-11-24), behind the
-`cloud_credits` switch (`off`, `testers` = the iPhone beta list, `all`; deploy
-ceiling `CLOUD_CREDITS`; [account test tool](account-test-tool.md)). It
-starts off: until it reaches an account, that account sees hours and the
-iPhone's own minutes as above.
+One balance for everything ADE Cloud runs (owner, 2026-11-24). Every account
+is on credits: the `cloud_credits` switch that rolled them out was turned to
+`all` on 2026-11-25 and then removed (its stored row is ignored; the owner
+log keeps the flip). Where this page says hours, the person sees credits.
 
 A credit is the hour renamed, so no number changes: Free 50, Plus 100, Pro
 600, Max 1,500 a month; a Small computer uses none, Medium 1 an hour, Large
@@ -486,9 +485,9 @@ stops when the credits run out.
 
 How the server counts it (`credits.ts`, `phones.ts`, migration 0059):
 
-- A phone counts in credits when the switch reached its account at its start
-  (`cloud_phones.credits = 1`). One started before keeps the old iPhone
-  minutes and their billing, so a flip never counts a phone twice.
+- A phone counts in credits when its row says so (`cloud_phones.credits = 1`):
+  every phone started since the flip. One started before keeps the old iPhone
+  minutes and their billing until its period ends, so no phone counts twice.
 - Its billed minutes go into the account's `used_milli` as its provider
   settles them, in the same write as the phone's row
   (`phoneCreditStatements`); `credited_milli` holds what is already in, so a

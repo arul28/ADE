@@ -478,8 +478,8 @@ struct WorkSponsoredConsentCard: View {
   var smallNeedsCards = false
   /// Where the cards show, so the question names the place.
   var format: CloudSponsoredFormat = .belowReply
-  /// The account's unit (hours or credits).
-  var words: CloudBalanceWords = .hours
+  /// The account's unit.
+  var words: CloudBalanceWords = .credits
   @State private var busy = false
   @State private var error: String?
 

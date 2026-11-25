@@ -20,7 +20,7 @@ struct LaneMoveReviewView: View {
   var wake: (() -> Void)? = nil
   let backend: any LaneMoveBackend
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
-  /// The cloud account, for its unit (hours or credits).
+  /// The cloud account, for its unit.
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   @ObservedObject private var runs = LaneMoveRuns.shared
   private var syncService: SyncService { syncPublishes.service }

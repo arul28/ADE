@@ -539,7 +539,6 @@ export function createWebCloudNamespace(
       // An opaque answer is all a page gets; only a network failure is worth sending again.
       return fetch(impUrl, { mode: "no-cors", credentials: "omit", keepalive: true }).then(() => true, () => false);
     },
-    setExtraPhoneMinutes: (choice) => billing.setExtraPhoneMinutes(choice),
     setPhoneProvider: (provider) => billing.setPhoneProvider(provider),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };

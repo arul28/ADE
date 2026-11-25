@@ -108,12 +108,6 @@
   // phones from an ADE beta app. With neither provider able to start phones,
   // the phone reads `off`.
   //
-  // Var CLOUD_CREDITS (src/cloud/credits.ts, migration 0059): the ceiling of
-  // the instant `cloud_credits` setting (`off`, a hard off; `testers`, the
-  // iPhone beta list; `all`), which starts off and is flipped with
-  // scripts/cloud-owner.mjs. On, hours are credits and the iPhone draws from
-  // them at one a minute.
-  //
   // SECRET — GRAVITY_API_KEY (sponsored cards and the Index, src/cloud/gravity.ts)
   // Gravity's publisher key (trygravity.com): ads, Index searches and the
   // owner report's earnings. Only this Worker holds it; no app ever ships it.
@@ -345,10 +339,6 @@
         // Revyl may start phones (owner's yes, 2026-11-23): second, after NoMac,
         // and only on paid plans (or a tester's own pick).
         "CLOUD_PHONE_REVYL": "on",
-        // Credits (src/cloud/credits.ts): the ceiling of the instant
-        // `cloud_credits` setting, which starts off (no row reads off). The
-        // owner flips that setting.
-        "CLOUD_CREDITS": "all",
         // Sponsored cards and the Index (src/cloud/gravity.ts): the ceiling of
         // the instant `gravity_ads` setting, which starts off (no row reads
         // off). The owner flips that setting; `off` here is the hard off.

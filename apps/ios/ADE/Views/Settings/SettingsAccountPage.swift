@@ -19,7 +19,7 @@ struct SettingsAccountPage: View {
   @ObservedObject private var account = AccountService.shared
   @ObservedObject private var hidden = HiddenMachineStore.shared
   @ObservedObject private var github = GitHubAccountConnection.shared
-  /// The cloud account, for its unit (hours or credits).
+  /// The cloud account, for its unit.
   @ObservedObject private var cloudStore = AccountCloudStore.shared
   @Environment(\.openURL) private var openURL
   @State private var confirmGitHubDisconnect = false

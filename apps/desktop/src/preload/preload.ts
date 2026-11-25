@@ -14522,7 +14522,6 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
     pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
       ipcRenderer.invoke(IPC.cloudPickPlanCleanup, input),
-    setExtraPhoneMinutes: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraPhoneMinutes, choice),
     // Account-level: a tester's pick of who runs their phones, so no pin.
     setPhoneProvider: (provider: CloudPhoneProviderChoice): Promise<CloudPhoneProviderChoiceAnswer> => ipcRenderer.invoke(IPC.cloudSetPhoneProvider, { provider }),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),

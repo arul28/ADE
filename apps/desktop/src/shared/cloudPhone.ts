@@ -25,7 +25,7 @@ export function isCloudPhoneProviderChoice(value: unknown): value is CloudPhoneP
 }
 
 /**
- * The actions that run the phone, so spend the plan's minutes: each starts the
+ * The actions that run the phone, so spend the account's credits: each starts the
  * phone when it isn't running. The RPC server stamps who is asking on them and
  * the phone holds unattended agents to the agent limits (`cloudPhoneAgentGuard`).
  */

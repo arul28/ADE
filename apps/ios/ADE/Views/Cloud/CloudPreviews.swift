@@ -3,12 +3,10 @@ import SwiftUI
 #if DEBUG
 /// Fixture screens for screenshots on any device and fold, with no machine:
 ///
-/// - `-adePreviewScreen duo-cloud`: the ADE Cloud page (the dashboard), on hours;
-/// - `duo-cloud-credits`: the same page under credits (the server's credits
-///   switch on), for an iPhone tester: the bar split Computers / iPhone, and
-///   the tester provider pick (Debug and Beta builds only);
+/// - `-adePreviewScreen duo-cloud`: the ADE Cloud page (the dashboard), for
+///   an iPhone tester: the credits bar split Computers / iPhone, and the
+///   tester provider pick (Debug and Beta builds only);
 /// - `duo-cloud-plans`: the same page scrolled to the plans and sizes;
-/// - `duo-cloud-credits-plans`: the plans and sizes under credits;
 /// - `duo-cloud-upgraded`: the page a moment after a checkout from Free ("You're on Plus");
 /// - `duo-cloud-invite`: the invite card (link, Copy, Share, counts, the code box);
 /// - `duo-cloud-limits`: what agents may do alone;
@@ -17,7 +15,7 @@ import SwiftUI
 /// - `duo-provider-signin`: the sign-in sheet at its approve step.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-credits", "duo-cloud-plans", "duo-cloud-credits-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
     "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings",
     "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
   ]
@@ -48,8 +46,7 @@ enum CloudPreviews {
     default:
       break
     }
-    let credits = name.hasPrefix("duo-cloud-credits")
-    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON(credits: credits).utf8)) else { return nil }
+    guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON().utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced", extraDiskMonthCents: nil)
     // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
     // Only the fixture account's entry changes: every other account's record on this device stays.
@@ -114,7 +111,7 @@ enum CloudPreviews {
         .navigationTitle("ADE Cloud")
         .navigationBarTitleDisplayMode(.inline)
       })
-    case "duo-cloud-plans", "duo-cloud-credits-plans":
+    case "duo-cloud-plans":
       return AnyView(NavigationStack {
         ScrollView {
           VStack(spacing: 16) {
@@ -150,15 +147,13 @@ enum CloudPreviews {
 
   private static var nowMs: Double { fixtureNow.timeIntervalSince1970 * 1000 }
 
-  /// The fixture's computers and account. `credits`: the account under
-  /// credits, with the ADE Cloud iPhone on, 15 of its 117.5 used credits
-  /// spent on the iPhone, and the account on the iPhone's tester list.
-  private static func listJSON(credits: Bool) -> String {
+  /// The fixture's computers and account: the ADE Cloud iPhone on, 15 of
+  /// its 117.5 used credits spent on the iPhone, and the account on the
+  /// iPhone's tester list.
+  private static func listJSON() -> String {
     let hour = 3_600_000.0
     let day = 86_400_000.0
-    let phone = credits
-      ? #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto","minutes":{"included":497,"used":15,"left":482},"state":"none"},"credits":{"phoneMilliPerMinute":1000}"#
-      : #"{"access":"off","minutes":null,"state":"ok"}"#
+    let phone = #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto","minutes":{"included":497,"used":15,"left":482},"state":"none"},"credits":{"phoneMilliPerMinute":1000}"#
     return """
     {"state":"ok","runningCount":1,"machines":[
       {"instanceId":"zodqsue74s","name":"ADE Cloud computer","machineKey":"mk1","state":"running","type":"box",

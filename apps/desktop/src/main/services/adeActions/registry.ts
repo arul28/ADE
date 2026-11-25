@@ -4688,12 +4688,12 @@ function cloudPhoneCallsFor(runtime: AdeRuntime): CloudPhoneService {
 }
 
 /**
- * The phone spends the plan's iPhone minutes (and extra minutes, which cost
+ * The phone spends the account's credits (and extra credits, which cost
  * money), so an agent nobody watches (a full-auto chat, an automation run, an
  * app on ADE MCP) uses it only when the person lets such agents spend
  * (`unattendedSpend`, the same switch as hours); a chat in plan mode never.
- * A person, and an attended chat, go ahead: the phone stops at the plan's
- * minutes unless the person turned extra minutes on. Who is asking is the
+ * A person, and an attended chat, go ahead: the phone stops when the credits
+ * run out unless the person turned extra credits on. Who is asking is the
  * `approval` the RPC server stamped (`adeRpcServer.ts`), never the caller's word.
  */
 function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) => Promise<void> {
@@ -4723,7 +4723,7 @@ function cloudPhoneAgentGuard(runtime: AccountDomainRuntime): (args: unknown) =>
     });
     if (!allowed) {
       throw new CloudPhoneError(
-        "Agents nobody watches (full-auto chats, automations, ADE MCP apps) may not use the ADE Cloud iPhone: your settings say they ask before anything that uses hours or iPhone minutes. The person can change it in Settings › Integrations › ADE Cloud › What agents may do.",
+        "Agents nobody watches (full-auto chats, automations, ADE MCP apps) may not use the ADE Cloud iPhone: your settings say they ask before anything that uses credits. The person can change it in Settings › Integrations › ADE Cloud › What agents may do.",
         "declined",
       );
     }

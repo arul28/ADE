@@ -5205,8 +5205,6 @@ declare global {
         /** A card's view link, once half of the card was on screen. */
         /** True once Gravity has the view; false when it should be sent again. */
         sponsoredViewed?: (impUrl: string) => Promise<boolean>;
-        /** Extra iPhone minutes on, with a monthly limit in whole dollars or no limit, or off (paid plans). */
-        setExtraPhoneMinutes?: (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => Promise<CloudAccountState | null>;
         /**
          * A tester's pick of who runs their ADE Cloud iPhones (account level,
          * no pin). Refused for an account not on the iPhone's beta list.

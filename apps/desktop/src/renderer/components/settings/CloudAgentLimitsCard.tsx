@@ -185,7 +185,7 @@ export function CloudAgentLimitsCard() {
                 />
               </div>
               <div className="adecd-limit-row">
-                <div><b>Largest size</b><small>Bigger computers use hours faster</small></div>
+                <div><b>Largest size</b><small>Bigger computers use credits faster</small></div>
                 <IntegrationChoice
                   label="Largest size"
                   value={limits?.maxShape ?? null}

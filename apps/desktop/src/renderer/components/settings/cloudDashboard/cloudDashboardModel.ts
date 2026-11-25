@@ -1,7 +1,6 @@
 import {
   CLOUD_MACHINE_DEFAULT_NAME,
   CLOUD_PLAN_LABELS,
-  capitalizeCloudPhrase,
   cloudCatalogOf,
   cloudHoursLeftMilli,
   cloudPlanIdOf,
@@ -23,14 +22,10 @@ import { formatAgo } from "../../../lib/format";
  * computer: disk parts and work come from the computer's own last report.
  */
 
-/**
- * A size's rate as a label beside its name: "Uses 2.5 hours an hour", or in
- * credits the rate table's shorter words ("2.5 credits an hour", "No credits").
- */
+/** A size's rate as a label beside its name, in the rate table's short words: "2.5 credits an hour", "No credits". */
 function rateLabelOf(rate: number | null, words: CloudUnitWords): string | null {
   if (rate == null) return null;
-  if (words.credits) return rate > 0 ? `${words.count(rate)} an hour` : "No credits";
-  return capitalizeCloudPhrase(words.rate(rate));
+  return rate > 0 ? `${words.count(rate)} an hour` : "No credits";
 }
 
 /** A lane not used for this long gets the "not used for a long time" mark. */
@@ -167,8 +162,8 @@ export function planName(account: CloudAccountState): string {
 }
 
 /**
- * "At this pace your hours last until Nov 24.", from the hours (or credits)
- * the meter charged over the last days, counting earned ones (used after the
+ * "At this pace your credits last until Nov 24.", from the credits the
+ * meter charged over the last days, counting earned ones (used after the
  * plan's). Null when the server doesn't send them, or nothing was used (no
  * pace to read). Dates are UTC (`formatCloudDate`): the period ends at
  * midnight UTC.
@@ -196,15 +191,13 @@ export type HeroBarPart = { key: "computers" | "phone" | "used" | "left"; label:
 
 /**
  * The hero's balance, as the bar and its legend show it: the whole plan,
- * split by what used it (credits: computers and the iPhone; hours: one used
- * part) and what is left. Thousandths, clamped so the parts fill the plan.
+ * split by what used it (computers and the iPhone) and what is left. Thousandths, clamped so the parts fill the plan.
  */
-export function heroBalanceParts(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): HeroBarPart[] {
+export function heroBalanceParts(account: CloudAccountState): HeroBarPart[] {
   const { includedMilli, leftMilli } = account.hours;
   const plan = Math.max(0, includedMilli);
   const left = Math.min(plan, Math.max(0, leftMilli));
   const used = Math.max(0, plan - left);
-  if (!words.credits) return [{ key: "used", label: "Used", milli: used, shownMilli: used }, { key: "left", label: "Left", milli: left, shownMilli: left }];
   // `phone.creditsUsedMilli` and `hours.usedMilli` count the whole period, past
   // the plan too, while the bar is the plan only. Which credits fell inside
   // the plan isn't known, so the bar splits the plan's used part in proportion
@@ -224,18 +217,15 @@ export function heroBalanceParts(account: CloudAccountState, words: CloudUnitWor
 
 /**
  * "About 418 iPhone minutes, or 418 hours on a Medium computer.": what the
- * credits left buy, in credits mode only (null in hours mode). The iPhone
- * part only for an account that has it.
+ * credits left buy. The iPhone part only for an account that has it.
  */
 export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWords = cloudUnitWords(account)): string | null {
-  if (!words.credits) return null;
   // The plan's own credits left, the hero's big number (earned ones are shown apart).
   const left = Math.max(0, account.hours.leftMilli);
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
   const onMedium = mediumHours ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
-  const phoneOn = account.phone?.access === "on" && words.phoneMilliPerMinute != null;
-  const minutes = phoneOn ? Math.floor(left / words.phoneMilliPerMinute!) : null;
+  const minutes = account.phone?.access === "on" ? Math.floor(left / words.phoneMilliPerMinute) : null;
   const onPhone = minutes != null ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
   if (onPhone && onMedium) return `About ${onPhone}, or ${onMedium}.`;
   if (onMedium) return `About ${onMedium}.`;

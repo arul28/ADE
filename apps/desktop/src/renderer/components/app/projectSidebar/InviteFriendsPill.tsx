@@ -14,7 +14,7 @@ import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { useTourOpen } from "../../../onboarding/useTourOpen";
 
 /**
- * "Invite friends, get free cloud hours": the desktop pill in the star pill's
+ * "Invite friends, get free cloud credits": the desktop pill in the star pill's
  * place. It shows only to an account ADE Cloud lets in that has used it, and
  * never while the tour runs. When both are due it goes first (it pays the
  * person hours); the star pill waits until it is dismissed. The rules are in
@@ -56,10 +56,10 @@ export function InviteFriendsPill() {
           id: "invite-friends",
           tone: "accent",
           icon: <Gift size={14} weight="fill" />,
-          ariaLabel: "Invite friends, get free cloud hours",
+          ariaLabel: "Invite friends, get free cloud credits",
           title: (
             <button type="button" className="ade-star-pill-link" onClick={open}>
-              Invite friends, get free cloud hours
+              Invite friends, get free cloud credits
             </button>
           ),
           dismiss: {

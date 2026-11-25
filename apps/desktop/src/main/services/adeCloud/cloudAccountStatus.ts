@@ -1,6 +1,5 @@
 import {
   CLOUD_CREDIT_UNIT_SENTENCE,
-  CLOUD_HOUR_UNIT_SENTENCE,
   CLOUD_PLAN_LABELS,
   cloudSmallHoursSentence,
   cloudSmallUsesHours,
@@ -114,9 +113,9 @@ export type CloudAccountStatus = {
     includes: { computers: number; smallComputers: "unlimited"; hours: number; outsideAgents: boolean };
   } | null;
   /**
-   * Credits: `hours` is then one balance of credits (the same numbers), which
-   * the ADE Cloud iPhone draws from at `iphonePerMinute` a minute. Null:
-   * hours, and the iPhone's own minutes.
+   * Credits: `hours` is one balance of credits (a Medium computer uses one an
+   * hour), which the ADE Cloud iPhone draws from at `iphonePerMinute` a
+   * minute. Null when the account couldn't be read.
    */
   credits: { iphonePerMinute: number } | null;
   hours: {
@@ -127,22 +126,20 @@ export type CloudAccountStatus = {
     state: CloudAccountState["hours"]["state"];
     resetsAt: string;
     extraHours: { available: boolean; enabled: boolean };
-    /** What one hour is ("One hour is one hour on a Medium computer. …"), and that Small never uses them. */
+    /** What one credit is (`CLOUD_CREDIT_UNIT_SENTENCE`), and what Small uses. */
     unit: string;
   } | null;
   /**
    * The ADE Cloud iPhone (`ade devices use ios@cloud`), only for an account
-   * that has it (`access` on): this period's minutes, when they reset, and
-   * extra minutes past the plan (paid plans; the free plan stops). Null for
-   * every other account, and from a server before the iPhone.
+   * that has it (`access` on): the credits it used this period (it draws from
+   * the one balance, `credits.iphonePerMinute` a minute) and when they reset.
+   * Null for every other account, and from a server before the iPhone.
    */
   iphone: {
     access: "on";
-    minutes: { left: number; included: number; used: number } | null;
-    /** Under credits: the credits the iPhone used this period (it has no minutes of its own then). */
-    creditsUsed: number | null;
+    /** The credits the iPhone used this period. */
+    creditsUsed: number;
     resetsAt: string | null;
-    extraMinutes: { available: boolean; enabled: boolean; centsPerMinute: number | null; monthlyLimitCents: number | null; usedMinutes: number; usedCents: number };
   } | null;
   /** Every plan ADE Cloud sells, cheapest first, with what each includes and costs; `current` is the account's. */
   plans: Array<{
@@ -157,15 +154,11 @@ export type CloudAccountStatus = {
     hoursOnSizes: string;
     /** Whether outside agents (ADE MCP) may start ADE Cloud work on it. */
     outsideAgents: boolean;
-    /** Null unless the account has the ADE Cloud iPhone. */
-    iphoneMinutes: number | null;
     /** Cents an hour past the plan, null where the bigger sizes stop (Free). */
     extraHourCents: number | null;
-    /** Cents an iPhone minute past the plan, null where the phone stops (Free). */
-    extraIphoneMinuteCents: number | null;
     current: boolean;
   }>;
-  /** "Unlimited Small computers. They never use your hours.", or what Small uses when this account's catalog rates it. */
+  /** "Unlimited Small computers. They never use your credits.", or what Small uses when this account's catalog rates it. */
   smallComputers: string;
   /** How many computers the account has (asleep or not), how many are awake, and the plan's limit. */
   computers: { inUse: number; awake: number; limit: number } | null;
@@ -206,7 +199,7 @@ export type CloudAccountStatus = {
 const PLAN_ORDER: readonly CloudPlanId[] = ["free", "plus", "pro", "max"];
 
 /** The plans the server sells, from its catalog (`plus` is `paid` on a server before Pro). */
-function plansOf(catalog: CloudCatalog, current: CloudPlanId | null, iphone: boolean): CloudAccountStatus["plans"] {
+function plansOf(catalog: CloudCatalog, current: CloudPlanId | null): CloudAccountStatus["plans"] {
   const tiers = cloudTiers(catalog);
   return PLAN_ORDER.flatMap((id) => {
     const facts = id === "plus" ? catalog.plans.plus ?? catalog.plans.paid : catalog.plans[id];
@@ -219,9 +212,7 @@ function plansOf(catalog: CloudCatalog, current: CloudPlanId | null, iphone: boo
       hours: milliToHours(facts.includedMilli),
       hoursOnSizes: cloudHoursOnSizesLine(facts.includedMilli, tiers),
       outsideAgents: facts.outsideAgents !== false,
-      iphoneMinutes: iphone ? facts.phoneMinutes ?? null : null,
       extraHourCents: cloudExtraHourCentsOf(id, catalog),
-      extraIphoneMinuteCents: !iphone || id === "free" ? null : facts.extraPhoneMinuteCents ?? null,
       current: id === current,
     }];
   });
@@ -291,7 +282,7 @@ export function buildCloudAccountStatus(input: {
   const words = cloudUnitWords(account);
   return {
     canStartLane,
-    credits: words.phoneMilliPerMinute != null ? { iphonePerMinute: words.phoneMilliPerMinute / 1000 } : null,
+    credits: account ? { iphonePerMinute: words.phoneMilliPerMinute / 1000 } : null,
     plan: account && plan
       ? {
           id: account.plan,
@@ -315,24 +306,19 @@ export function buildCloudAccountStatus(input: {
           state: account.hours.state,
           resetsAt: new Date(account.billing.periodEnd).toISOString(),
           extraHours: { available: part.extraHours?.available === true, enabled: part.extraHours?.enabled === true },
-          unit: words.credits
-            // `CLOUD_CREDIT_UNIT_SENTENCE` ends "Small computers use none.": where Small is charged, the definition without it, then what Small uses.
-            ? cloudSmallUsesHours(catalog) ? `${CLOUD_CREDIT_DEFINITION} ${cloudSmallHoursSentence(catalog, words)}` : CLOUD_CREDIT_UNIT_SENTENCE
-            : cloudSmallUsesHours(catalog) ? `${CLOUD_HOUR_UNIT_SENTENCE} ${cloudSmallHoursSentence(catalog)}` : `${CLOUD_HOUR_UNIT_SENTENCE} Small computers never use hours.`,
+          // `CLOUD_CREDIT_UNIT_SENTENCE` ends "Small computers use none.": where Small is charged, the definition without it, then what Small uses.
+          unit: cloudSmallUsesHours(catalog) ? `${CLOUD_CREDIT_DEFINITION} ${cloudSmallHoursSentence(catalog, words)}` : CLOUD_CREDIT_UNIT_SENTENCE,
         }
       : null,
     iphone: phone
       ? {
           access: "on",
-          minutes: phone.minutes ? { left: phone.minutes.left, included: phone.minutes.included, used: phone.minutes.used } : null,
-          creditsUsed: words.credits ? milliToHours(phone.creditsUsedMilli ?? 0) : null,
+          creditsUsed: milliToHours(phone.creditsUsedMilli ?? 0),
           resetsAt: part.billing ? new Date(part.billing.periodEnd).toISOString() : null,
-          extraMinutes: { ...phone.extra },
         }
       : null,
-    // Under credits the iPhone has no minutes of its own on any plan.
-    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null, phone != null && !words.credits),
-    // Free with sponsored cards off (the server's `smallNeedsCards` rule): Small uses hours, as the catalog rates it.
+    plans: plansOf(catalog, account ? cloudPlanIdOf(account) : null),
+    // Free with sponsored cards off (the server's `smallNeedsCards` rule): Small uses credits, as the catalog rates it.
     smallComputers: cloudSmallHoursSentence(catalog, words),
     computers: part.computers && account ? { inUse: part.computers.total, awake: part.computers.awake, limit: cloudAccountComputers(account).limit } : null,
     lanes,

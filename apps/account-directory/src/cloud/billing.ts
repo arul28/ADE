@@ -321,8 +321,8 @@ async function detachRefusedCard(env: CloudEnv, userId: string, paymentMethodId:
   }
 }
 
-const CARD_USED_MESSAGE = "This card already unlocked free hours on another ADE account. Pick a plan, or wait until your GitHub account is 30 days old.";
-const CARD_REFUSED_MESSAGE = "This card can't unlock free hours. Pick a plan, or wait until your GitHub account is 30 days old.";
+const CARD_USED_MESSAGE = "This card already unlocked free credits on another ADE account. Pick a plan, or wait until your GitHub account is 30 days old.";
+const CARD_REFUSED_MESSAGE = "This card can't unlock free credits. Pick a plan, or wait until your GitHub account is 30 days old.";
 
 /**
  * `POST /cloud/billing/free-unlock`: a card saved with no charge starts the
@@ -336,7 +336,7 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: B
   const account = await loadAccount(env, userId, ctx.now);
   if (account.free_card_unlocked_at != null) return { url: null, unlocked: true };
   if (accountRules(account) !== "free" || account.free_github_hold !== "github_too_new") {
-    throw new CloudBillingError("nothing_to_unlock", "Your free hours don't need a card.", 409);
+    throw new CloudBillingError("nothing_to_unlock", "Your free credits don't need a card.", 409);
   }
   if (!env.STRIPE_SECRET_KEY?.trim()) {
     reportCloudFailure("cloud.billing_not_configured", { plan: FREE_UNLOCK_PURPOSE });
@@ -422,7 +422,7 @@ async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: 
     const paymentMethodId = textOf(paymentMethod?.id);
     if (paymentMethodId) await detachRefusedCard(env, userId, paymentMethodId);
     // Told why only when the card is another account's: a blocked card is never named as blocked.
-    await sendCloudEmail(env, { userId, subject: "Your card didn't unlock ADE Cloud free hours", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
+    await sendCloudEmail(env, { userId, subject: "Your card didn't unlock ADE Cloud free credits", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
     return;
   }
   const account = await loadAccount(env, userId, now);
@@ -753,7 +753,7 @@ async function holdsExtraHoursItem(env: CloudEnv, subscriptionId: string): Promi
 
 export async function setExtraHours(env: CloudEnv, userId: string, enabled: boolean, now: number): Promise<void> {
   const account = await loadAccount(env, userId, now);
-  if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
+  if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra credits need a paid plan.", 403);
   // Before the switch goes on: an extra hour with nothing on the subscription to bill it would be free.
   if (enabled) await ensureExtraHoursItem(env, account, now);
   // Turning them off stops new use; what was already used is still reported.
@@ -935,7 +935,7 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
     await sendCloudEmail(env, {
       userId: after.user_id,
       subject: "Your ADE Cloud payment didn't go through",
-      text: "We couldn't charge your card, so your account is on the free plan's hours and extra hours are off. Update your card in ADE to get your plan back.",
+      text: "We couldn't charge your card, so your account is on the free plan's credits and extra credits are off. Update your card in ADE to get your plan back.",
     });
     return;
   }
@@ -944,7 +944,7 @@ async function announceChange(env: CloudEnv, before: AccountRow, after: AccountR
     await sendCloudEmail(env, {
       userId: after.user_id,
       subject: "Your ADE Cloud plan is back",
-      text: "Your payment went through, so your plan and its hours are back.",
+      text: "Your payment went through, so your plan and its credits are back.",
     });
   }
 }

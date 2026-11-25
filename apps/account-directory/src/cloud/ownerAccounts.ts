@@ -1,4 +1,3 @@
-import { creditsMode } from "./credits";
 import { gravitySwitches, isSponsoredFormat, sponsoredAbReport, smallUsesNoHours, syncAllSmallRates, syncSmallRates, type GravityEnv } from "./gravity";
 import { fail, json } from "./http";
 import { CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
@@ -264,7 +263,7 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     // earned hours, or bill extra hours, for what the meter shows as included.
     const raises = includedMilliOf({ ...account, test_plan: next.plan, test_hours_milli: next.hoursMilli }) > account.included_milli;
     if (raises && (earnedBalanceMilli(account) > 0 || extraActive(account))) {
-      return fail("conflict", "This account has earned hours or extra hours on, so a test with more hours than its plan would use them for real. Test fewer hours, or use another account.", 409);
+      return fail("conflict", "This account has earned credits or extra credits on, so a test with more credits than its plan would use them for real. Test fewer credits, or use another account.", 409);
     }
     // Extra minutes bill past the real plan's minutes, never a test's: the two would disagree on what is extra.
     if (guarded && phoneExtraOn(env, account)) return extraOnRefusal();
@@ -332,8 +331,8 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
   return json({
     ok: true,
     settings,
-    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off", cloud_credits: env.CLOUD_CREDITS?.trim() || "off" },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", cloud_credits: await creditsMode(env, settings) },
+    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
   });
 }
 

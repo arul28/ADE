@@ -4,7 +4,7 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { cloudTierFacts, cloudTierHoursAt, cloudTierUsesHours, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
-import { CLOUD_HOURS_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { CLOUD_CREDIT_WORDS, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
@@ -41,7 +41,7 @@ export function CloudSizeButton({
   onSetDefault,
   disabled = false,
   hoursLeftMilli = null,
-  words = CLOUD_HOURS_WORDS,
+  words = CLOUD_CREDIT_WORDS,
 }: {
   tiers: readonly CloudTier[];
   tierId: CloudTierId;
@@ -51,7 +51,7 @@ export function CloudSizeButton({
   disabled?: boolean;
   /** The account's hours left (plan and earned), for "lasts N h here"; null before the account is read. */
   hoursLeftMilli?: number | null;
-  /** The account's words (hours or credits, `cloudUnitWords`); hours before the account is read. */
+  /** The account's words (`cloudUnitWords`). */
   words?: CloudUnitWords;
 }) {
   const [open, setOpen] = useState(false);

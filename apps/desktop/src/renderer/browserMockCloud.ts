@@ -22,8 +22,8 @@
  *  - `emptyplus`: Plus with nothing made yet and no use this period.
  * On `free`, Get Plus lands the plan a moment later, as a checkout coming back does.
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
- * `&mockCloudCredits=1` answers in credits mode (one balance the iPhone draws
- * from too); `&mockPhone=on` gives a Free account the ADE Cloud iPhone; and
+ * Every account answers in credits (one balance the iPhone draws from too);
+ * `&mockPhone=on` gives a Free account the ADE Cloud iPhone; and
  * `&mockPhoneProvider=auto|nomac|revyl` makes the account a tester with that pick.
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
@@ -478,7 +478,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       access: "on",
       minutes: { included: plan.phoneMinutes ?? 0, used: 42, left: Math.max(0, (plan.phoneMinutes ?? 0) - 42) },
       state: "none",
-      extra: { available: true, enabled: false, centsPerMinute: plan.extraPhoneMinuteCents ?? null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
+      extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
     },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
@@ -596,7 +596,6 @@ export function applyBrowserMockCloud(ade: any): void {
   }
   const requested = param("mockCloud") as Scenario | null;
   if (!requested) return;
-  const creditsParam = param("mockCloudCredits") === "1";
   const phoneParam = param("mockPhone") === "on";
   const providerParam = param("mockPhoneProvider");
   const scenario: Scenario = SCENARIOS.includes(requested) ? requested : "free";
@@ -607,7 +606,7 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
-  // Credits mode: the iPhone has used some of the balance; no separate extra iPhone minutes.
+  // Credits: the iPhone has used some of the balance; no separate extra iPhone minutes.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
     if (phoneParam && !out.phone) {
@@ -616,7 +615,6 @@ export function applyBrowserMockCloud(ade: any): void {
     if (out.phone && (providerParam === "auto" || providerParam === "nomac" || providerParam === "revyl")) {
       out = { ...out, phone: { ...out.phone, providerChoice: providerParam } };
     }
-    if (!creditsParam) return out;
     const phoneUsed = out.phone ? Math.min(out.hours.usedMilli, Math.round(out.hours.usedMilli * 0.4)) : 0;
     const leftMinutes = Math.floor(out.hours.leftMilli / 1000);
     return {
@@ -745,23 +743,6 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     setExtraHours: async (enabled: boolean) => {
       state.extraHours = { ...state.extraHours, enabled };
-      for (const listener of statusListeners) listener();
-      return state;
-    },
-    setExtraPhoneMinutes: async (choice: { enabled: true; monthlyLimitUsd: number | null } | { enabled: false }) => {
-      if (state.phone) {
-        state.phone = {
-          ...state.phone,
-          extra: {
-            ...state.phone.extra,
-            enabled: choice.enabled,
-            monthlyLimitCents: choice.enabled ? (choice.monthlyLimitUsd == null ? null : choice.monthlyLimitUsd * 100) : state.phone.extra.monthlyLimitCents,
-            // Turning it on shows what some extra use looks like ("$0.30" at 2.5¢ a minute).
-            usedMinutes: choice.enabled ? 12 : 0,
-            usedCents: choice.enabled ? 30 : 0,
-          },
-        };
-      }
       for (const listener of statusListeners) listener();
       return state;
     },

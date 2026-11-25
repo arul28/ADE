@@ -392,7 +392,7 @@ export function LaneCloudSizeChip({
   defaultTier: CloudTierId;
   onChoose: (tier: CloudTierId) => void;
   onSetDefault: (tier: CloudTierId) => void;
-  /** The account's words (hours or credits) for each size's rate. */
+  /** The account's words for each size's rate. */
   words: CloudUnitWords;
 }) {
   const close = () => popover.onOpenChange(false);

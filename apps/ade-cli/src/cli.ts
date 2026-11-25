@@ -24,7 +24,7 @@ import {
 } from "../../desktop/src/shared/laneShareRights";
 import { LANE_SHARE_GRANT_ID_PATTERN } from "../../desktop/src/shared/laneShareDirectory";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
-import { CLOUD_SMALL_UNLIMITED_SENTENCE, cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
+import { cloudAccountComputers, formatCloudHoursRate, CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_REWARD_MILLI, cloudCatalogOf, cloudEarnedHoursOf, cloudFreePlanOf, cloudPlanLabelOf, formatCloudHours, readCloudReferralSummary, type CloudAccountState, type CloudCatalog } from "../../desktop/src/shared/adeCloud";
 import { cloudUnitWords } from "../../desktop/src/shared/cloudUnitWords";
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
@@ -5184,15 +5184,15 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Each computer on your ADE Cloud account is one of your machines: reach it
   with --machine <its name>. They sleep on their own after a few idle minutes
-  and use no hours while asleep; a --machine call or a message wakes one in
+  and use no credits while asleep; a --machine call or a message wakes one in
   about 20 seconds. Reading a sleeping lane's saved chats does not wake it.
   <machine> is its name or id. Sizes: small, medium, large, xlarge
-  (ade cloud status lists each one's CPU, memory and hours). large and
+  (ade cloud status lists each one's CPU, memory and credits an hour). large and
   xlarge are full computers: Android and Docker need one.
 
     $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
                                                     plan, hours, computers (N of your plan's), each lane, sizes, agent limits
-    $ ade cloud list --text                       Computers, state, size, how many hours each uses an hour (Small: none)
+    $ ade cloud list --text                       Computers, state, size, how many credits each uses an hour (Small: none)
 
   Lanes, chats and saved work (reads wake nothing; each delete asks you first)
 
@@ -5206,7 +5206,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud lanes free <lane>                 Keep for later: push its work, remove its computer, keep the lane
     $ ade cloud lanes start <lane> [--size medium]
                                                     A new computer for a lane whose computer was deleted, on its branch
-    $ ade cloud lanes keep <lane>                 Stop the idle cleanup's delete (no wake, no hours)
+    $ ade cloud lanes keep <lane>                 Stop the idle cleanup's delete (no wake, no credits)
     $ ade cloud lanes git <lane> --text           Its Git summary as the computer saved it
     $ ade cloud chats [read|delete <chat id>]     The account's saved chats (readable with the computer asleep or deleted)
     $ ade cloud sessions [read|delete <id>]       Saved CLI and shell copies
@@ -5216,18 +5216,18 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Computers
 
-    $ ade cloud hours --text                      Plan, hours (or credits) left, reset date, earned ones
+    $ ade cloud hours --text                      Plan, credits left, reset date, earned ones
     $ ade cloud phone-provider <auto|nomac|revyl> Testers only: who runs your ADE Cloud iPhones (the next one
                                                     starts there). Anyone else is refused by ADE Cloud.
     $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
-    $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
+    $ ade cloud invite --text                     Your invite link: friends joined, rewards left, credits earned
                                                     (enter a friend's invite in Settings › Account)
     $ ade cloud create --kind vm --shape large --name "android vm"
                                                     A computer with no lane. An agent never makes one alone: it asks
                                                     you on a card in its chat, and with nobody to ask the answer is no.
                                                     Agents start a lane with the size it needs (--machine cloud --size).
-    $ ade cloud sleep <machine>                   Sleep now (uses no hours)
-    $ ade cloud wake <machine>                    Wake (at 0 hours the server refuses it, except a Small one)
+    $ ade cloud sleep <machine>                   Sleep now (uses no credits)
+    $ ade cloud wake <machine>                    Wake (at 0 credits the server refuses it, except a Small one)
     $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
     $ ade cloud resize --request --size large --reason "Android needs it"
                                                     An agent asks the person (a card in its chat); nothing changes until they confirm
@@ -5258,18 +5258,19 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   the rest run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
-  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud hours, and
+  Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud credits, and
   so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
-  Earned hours never expire; they are used after the plan's hours and before
-  extra hours. The free plan is given once per computer and once per GitHub
+  Earned credits never expire; they are used after the plan's credits and before
+  extra credits. The free plan is given once per computer and once per GitHub
   account, which must be at least 30 days old (or add a card, no charge).
 
   Plans: Free, Plus, Pro and Max. \`ade cloud status\` lists each with its price,
-  cloud computers and hours, from ADE Cloud itself. Change it in Settings › ADE Cloud › Plans.
-  Unlimited Small computers on every plan: they never use your hours. Bigger
-  computers use hours: one hour is one hour on a Medium computer, so the same
-  hours last less on a Large or an X-Large (status shows them as time on each).
+  cloud computers and credits, from ADE Cloud itself. Change it in Settings › ADE Cloud › Plans.
+  Unlimited Small computers on every plan: they never use your credits. Bigger
+  computers use credits: a credit is an hour on a Medium computer or a minute
+  on the ADE Cloud iPhone, so the same credits last less on a Large or an
+  X-Large (status shows them as time on each).
   Each plan has a number of cloud computers, asleep or not. At the limit a new
   lane is refused: free up a computer from another lane (ade cloud lanes free
   <lane>: the lane and its chats stay, and it gets a new computer at its next
@@ -16535,12 +16536,12 @@ async function runChatHereThenElsewhere(
     return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
   // Asleep on ADE Cloud: a send goes to the computer that saved the chat, and
-  // the `--machine` call wakes it (a wake uses hours, like a send from the app).
+  // the `--machine` call wakes it (a wake uses credits, like a send from the app).
   // A read is not worth a wake: it gets the "asleep" sentence instead.
   if (!match && report.restingCloud?.length && isChatSendCommand(parsed.command)) {
     const resting = await restingCloudChatLocation(parsed.options, report);
     if (resting) {
-      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses hours)\n`);
+      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses credits)\n`);
       return await runOnMachine(routedToLocation(parsed, resting));
     }
   }
@@ -22264,19 +22265,15 @@ function formatCloudAccount(value: unknown): string {
   const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const words = cloudUnitWords(account as Pick<CloudAccountState, "credits">);
-  const left = words.credits
-    ? `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} credits left, resets ${resets}`
-    : `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left for bigger computers, resets ${resets}`;
+  const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} credits left, resets ${resets}`;
   // Cloud computers asleep or not, of the plan's limit.
   const counted = isRecord(account.computers)
     ? cloudAccountComputers({ computers: account.computers as CloudAccountState["computers"], catalog, plan: account.plan === "paid" ? "paid" : "free", planId })
     : null;
   const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
-  // Credits: one balance, which the ADE Cloud iPhone draws from too.
-  const unitLine = words.credits && words.phoneMilliPerMinute != null
-    ? ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ADE Cloud iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`
-    : "";
-  const smallLine = `\n${words.credits ? "Unlimited Small computers. They never use your credits." : CLOUD_SMALL_UNLIMITED_SENTENCE}${unitLine}${computers}`;
+  // One balance, which the ADE Cloud iPhone draws from too.
+  const unitLine = ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ADE Cloud iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`;
+  const smallLine = `\nUnlimited Small computers. They never use your credits.${unitLine}${computers}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned ${words.noun} left (they never expire).` : "";
@@ -22287,7 +22284,7 @@ function formatCloudAccount(value: unknown): string {
   const githubLine = github && github.state !== "ok" && github.sentence
     ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
     : "";
-  const out = words.credits ? "out of credits (Small keeps working; bigger computers and the iPhone stop)" : "out of hours for bigger computers (Small keeps working)";
+  const out = "out of credits (Small keeps working; bigger computers and the iPhone stop)";
   return (hours.state === "zero" ? `${plan}: ${out}. ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
 }
 
@@ -22301,8 +22298,8 @@ function formatCloudInvite(value: unknown): string {
   if (!referral) return JSON.stringify(raw, null, 2);
   const lines = [
     `Your invite link: ${referral.link}`,
-    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud hours, and so do you once their first chat runs on ADE Cloud.`,
-    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} hours earned.`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ADE Cloud.`,
+    `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} credits earned.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
     lines.push(`You can still enter a friend's invite until ${new Date(referral.enterCodeUntil).toISOString().slice(0, 10)}. ${CLOUD_ENTER_INVITE_HINT}`);

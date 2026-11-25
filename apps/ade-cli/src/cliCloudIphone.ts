@@ -319,7 +319,7 @@ export function cloudPhoneAbilityLines(value: { abilities?: unknown; lacks?: unk
 /** How a phone of `recent` ended, as a person reads it. */
 const ENDED_WORDS: Readonly<Record<string, string>> = {
   stopped: "stopped",
-  stop_at: "stopped: the minutes ran out",
+  stop_at: "stopped: the credits ran out",
   idle: "stopped by itself: no input for 5 minutes",
   on_its_own: "stopped by itself (no input for 5 minutes, or its time limit)",
   time_limit: "stopped by itself: its time limit",
@@ -357,7 +357,7 @@ function textOf(call: Call, value: unknown): string {
   if (!isRecord(value)) return `${String(value ?? "")}\n`;
   if (call.format) return call.format(value);
   if (action === "getStatus") {
-    const minutes = isRecord(value.minutes) ? ` · ${value.minutes.left} of ${value.minutes.included} min left this period` : "";
+    const minutes = isRecord(value.minutes) ? ` · credits for about ${value.minutes.left} min left this period` : "";
     const idle = `${CLOUD_PHONE_IDLE_SECONDS / 60} minutes`;
     const phone = isRecord(value.phone)
       ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: ade apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`

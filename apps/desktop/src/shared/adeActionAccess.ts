@@ -615,7 +615,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   // The ADE Cloud iPhone (`cloudPhoneService`): every action but the status
-  // read can start a phone, which spends the plan's minutes, so all are writes.
+  // read can start a phone, which spends the account's credits, so all are writes.
   cloud_phone: {
     live: "all",
     read: ["getStatus"],

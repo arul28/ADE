@@ -207,14 +207,14 @@ function CloudComputerLimitCard({ given, onClose }: { given: CloudComputerLimitD
         <p className="adecl-limit-step-q">{label} · ${next.priceUsd} a month</p>
         <ul className="adecl-limit-facts">
           <li>{plural(next.computerLimit, "cloud computer")}{detail ? `, ${next.computerLimit - detail.limit} more than now` : ""}</li>
-          {nextHours != null ? <li>{formatCloudHours(nextHours)} hours a month for bigger computers</li> : null}
-          {/* A paid plan's Small never uses hours; a Free account's may now (sponsored cards off). */}
+          {nextHours != null ? <li>{formatCloudHours(nextHours)} credits a month</li> : null}
+          {/* A paid plan's Small never uses credits; a Free account's may now (sponsored cards off). */}
           <li>{account && cloudSmallUsesHours(cloudCatalogOf(account)) ? "Unlimited Small computers" : "Small computers stay unlimited"}</li>
         </ul>
         <p className="adecl-limit-what">
           <b>What happens:</b>{" "}
           {onPaidPlan
-            ? `your plan changes to ${label} now, and you pay the difference for the rest of this month. Hours you used stay used.`
+            ? `your plan changes to ${label} now, and you pay the difference for the rest of this month. Credits you used stay used.`
             : `ADE opens the checkout. Once it's paid you can have ${plural(next.computerLimit, "cloud computer")}, and your new lane can start.`}
         </p>
       </>

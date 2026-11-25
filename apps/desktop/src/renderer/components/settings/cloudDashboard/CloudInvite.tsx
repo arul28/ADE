@@ -22,13 +22,13 @@ import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
 export function InviteCodeBox({
   initialCode = "",
   onDone,
-  noun = "hours",
+  noun = "credits",
 }: {
   /** Read once: give the box a `key` of the code so a new link fills it again. */
   initialCode?: string;
   onDone?: (referral: CloudReferralSummary | null) => void;
-  /** What the reward is called: hours, or credits (`cloudUnitWords`). */
-  noun?: "hours" | "credits";
+  /** What the reward is called (`cloudUnitWords`). */
+  noun?: "credits";
 }) {
   const [code, setCode] = useState(initialCode);
   const [busy, setBusy] = useState(false);
@@ -91,7 +91,7 @@ export function InviteCodeBox({
 
 /**
  * The dashboard's invite card: the person's own link to share, how many
- * friends joined and the hours earned, and (while they may) a box to enter
+ * friends joined and the credits earned, and (while they may) a box to enter
  * someone else's invite.
  */
 export function CloudInviteCard({ account, onChanged }: { account: CloudAccountState; onChanged: () => void }) {

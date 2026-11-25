@@ -636,10 +636,11 @@ async function useDevice(options: GlobalOptions, typed: string): Promise<{ value
     if (!status.ok) throw new CliToolError(`The ADE Cloud iPhone couldn't be read (${firstSentence(status.error)}).`, { id });
     if (status.access !== "on") throw new CliToolError(status.reason ?? ADE_CLOUD_IPHONE_UNAVAILABLE, { id });
     const sources = await chatDeviceAction(single, "setDeviceSource", { kind, source: { kind: "cloud" } });
-    const minutes = status.minutes ? ` ${status.minutes.left} of your plan's ${status.minutes.included} minutes are left this period.` : "";
+    // It draws from the account's credits: its minutes left are the credits left at its rate.
+    const minutes = status.minutes ? ` Your credits left this period run it about ${status.minutes.left} more ${status.minutes.left === 1 ? "minute" : "minutes"}.` : "";
     // What this cloud iPhone does beyond the basics: an agent learns it here, where it picked the phone.
     const able = cloudPhoneAbilityLines(status, Boolean(status.phoneState && status.phoneState !== "ended")).trim().replace(/\n/g, " ");
-    const text = `This chat's iPhone is the ADE Cloud iPhone from now on: every later ade apple command drives it with no other flag, and spends iPhone minutes while it runs.${minutes}${able ? ` ${able}` : ""} ade devices use ios@here brings it back.`;
+    const text = `This chat's iPhone is the ADE Cloud iPhone from now on: every later ade apple command drives it with no other flag, and spends your ADE Cloud credits while it runs.${minutes}${able ? ` ${able}` : ""} ade devices use ios@here brings it back.`;
     // The JSON answer says it too: an agent reading JSON switched every later command without a word.
     return { value: { ok: true, id, sources, note: text }, text };
   }
@@ -765,7 +766,8 @@ async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null):
     return { rows: [], note };
   }
   if (status.access !== "on") return { rows: [], note: null };
-  const minutes = status.minutes ? ` · ${status.minutes.left} of ${status.minutes.included} min left` : "";
+  // It draws from the account's credits: its minutes left are the credits left at its rate.
+  const minutes = status.minutes ? ` · credits for about ${status.minutes.left} min left` : "";
   return {
     rows: [{
       id: formatDeviceId({ kind: "ios", source: { kind: "cloud" } }),
@@ -775,8 +777,8 @@ async function cloudIphoneRows(options: GlobalOptions, only: DeviceKind | null):
       machine: "ADE Cloud",
       machineKey: null,
       state: status.phoneState === "ready" ? "on" : status.phoneState === "starting" ? "starting" : "off",
-      // The status has the plan's minutes only; extra minutes (paid plans) may still start it.
-      needs: status.minutes && status.minutes.left <= 0 ? "plan minutes used up (extra minutes may apply)" : null,
+      // The status has the credits left only; extra credits (paid plans) may still start it.
+      needs: status.minutes && status.minutes.left <= 0 ? "credits used up (extra credits may apply)" : null,
     }],
     note: null,
   };
