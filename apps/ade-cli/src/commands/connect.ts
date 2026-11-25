@@ -68,6 +68,8 @@ export type ConnectServiceInstallResult = {
   message?: string | null;
   /** Set when the caller is running inside the very brain it tried to mutate. */
   selfMutationBlocked?: boolean;
+  /** With `selfMutationBlocked`: refused because the caller could not tell, not because it is inside. */
+  selfMutationUnconfirmed?: boolean;
   /**
    * The service is registered and its brain is alive, but it had not answered
    * on the socket yet. Installed, not running — reporting it as "running" is a
@@ -439,9 +441,10 @@ export async function runConnectCommand(
           ? `${mechanism} installed — the background service is still starting`
           : `${mechanism} installed and running`,
       });
-    } else if (install.selfMutationBlocked) {
+    } else if (install.selfMutationBlocked && !install.selfMutationUnconfirmed) {
       // Running inside the brain it would replace. Not a failure: the service
-      // is already doing its job.
+      // is already doing its job. A refusal that could not tell is a failure:
+      // nothing says this process is that brain.
       pushStep({
         id: "service",
         state: "ok",

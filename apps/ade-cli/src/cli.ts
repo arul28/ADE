@@ -680,12 +680,12 @@ import {
 } from "../../desktop/src/shared/types/sync";
 import {
   defaultRuntimeCompileCacheDir,
-  isCurrentProcessDescendantOfPid,
   isSameElectronRuntime,
   resolveAdeServeCommand,
   RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
+import { isCurrentProcessDescendantOfPid } from "./serviceManager/processAncestry";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
 import { activeCompileCacheDir, flushActiveCompileCache, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
@@ -29696,6 +29696,7 @@ async function runConnectCli(
           ok: install.ok,
           message: install.message,
           selfMutationBlocked: install.selfMutationBlocked,
+          selfMutationUnconfirmed: install.selfMutationUnconfirmed,
           starting: install.starting,
         };
       },

@@ -172,8 +172,10 @@ export async function uninstallRuntimeService(): Promise<ServiceManagerResult> {
 
 /**
  * Whether `uninstallRuntimeService` would go ahead, changing nothing. Only the
- * Windows uninstall can refuse after identifying what it would stop; the
- * launchd and systemd uninstalls have no such step.
+ * Windows uninstall identifies what it would stop before it refuses (the
+ * process checks, then the self-mutation guard). The launchd and systemd
+ * uninstalls refuse only a command running inside the brain, which the
+ * desktop app that asks this never is, so they answer yes.
  */
 export async function checkRuntimeServiceRemovable(): Promise<{ ok: true } | { ok: false; message: string }> {
   return process.platform === "win32" ? checkWindowsServiceRemovable() : { ok: true };

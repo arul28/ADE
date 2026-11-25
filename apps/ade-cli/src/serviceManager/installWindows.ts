@@ -21,7 +21,6 @@ import {
   powerShellSingleQuotedLiteral,
   type PidStopOutcome,
   readWindowsProcessFacts,
-  refuseSelfServiceMutation,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -37,6 +36,7 @@ import {
   type WindowsPowerShell,
   type WindowsProcessFacts,
 } from "./common";
+import { refuseSelfServiceMutation } from "./processAncestry";
 import { parseCommandLine } from "../../../desktop/src/shared/shell";
 import {
   resolveMachineAdeDir,
@@ -808,18 +808,6 @@ function endAndDeleteWindowsTask(
   return { ok: true, removed: true };
 }
 
-function removeWindowsTaskIfPresent(
-  run: ServiceManagerSpawnSync,
-  taskName: string,
-  description: string,
-  ownedBy?: AdeServiceCommand,
-): WindowsTaskRemovalResult {
-  const state = inspectWindowsTask(run, taskName, description, ownedBy);
-  if (!state.ok) return state;
-  if (!state.present) return { ok: true, removed: false };
-  return endAndDeleteWindowsTask(run, taskName, description, state);
-}
-
 /** The supervisor process itself: Windows PowerShell running the launcher script. */
 function windowsLauncherPowerShellCommand(launcherPath: string): AdeServiceCommand {
   return {
@@ -1447,13 +1435,20 @@ async function stopWindowsPredecessors(
   return { ok: true, removed };
 }
 
+/** Reads the supervisor's advisory pid record: the injected reader in tests, the file otherwise. */
+function windowsPidRecordReader(
+  deps: Pick<WindowsServiceManagerDeps, "readPidRecord">,
+): (pidPath: string) => WindowsServicePidRecord | null {
+  return deps.readPidRecord ?? ((pidPath) => readWindowsServicePidRecord({ pidPath }));
+}
+
 /**
  * The refusal when this command runs inside a process the install or uninstall
- * would stop: the recorded supervisor and brain, and every supervisor of this
- * launcher the plan found (another session's included) with its children. An
- * agent's shell is a child of the brain, so without this an agent's `ade brain
- * stop` or `restart` ended its own chats and left nothing to start the brain
- * again until the next sign-in.
+ * would stop: the recorded supervisor and brain, every supervisor of this
+ * launcher the plan found (another session's included) with its children, and
+ * any other channel brain the caller will stop. An agent's shell is a child of
+ * the brain, so without this an agent's `ade brain stop` or `restart` ended its
+ * own chats and left nothing to start the brain again until the next sign-in.
  */
 function windowsSelfMutationRefusal(
   run: ServiceManagerSpawnSync,
@@ -1464,6 +1459,7 @@ function windowsSelfMutationRefusal(
     env: NodeJS.ProcessEnv;
     record: WindowsServicePidRecord | null;
     plan: Extract<WindowsStartupPlan, { ok: true }>;
+    otherBrainPids?: readonly number[];
   },
 ): ServiceManagerResult | null {
   const { plan, record } = args;
@@ -1478,6 +1474,7 @@ function windowsSelfMutationRefusal(
     pids: [
       record?.runtimePid,
       plan.brain?.runtimePid,
+      ...(args.otherBrainPids ?? []),
       record?.supervisorPid,
       plan.supervisor?.pid,
       ...plan.predecessors.flatMap((group) => [group.supervisor.pid, ...group.children.map((child) => child.pid)]),
@@ -1621,40 +1618,36 @@ async function installWindowsServiceImpl(
         : "Unable to resolve the Windows brain launcher command.",
     };
   }
-  try {
-    fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, renderedLauncher, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-  } catch (error) {
-    return {
-      ok: false,
-      serviceName,
-      action: "install",
-      path: taskName,
-      message: error instanceof Error
-        ? `Unable to write the Windows brain launcher: ${error.message}`
-        : "Unable to write the Windows brain launcher.",
-    };
+  const failure = (message: string): ServiceManagerResult => ({
+    ok: false,
+    serviceName,
+    action: "install",
+    path: taskName,
+    message,
+  });
+  // An idle legacy task is removed now. A running one may run the very brain
+  // this command is in, so it is ended only where nothing is refused below:
+  // before keeping the current brain, or after the self-mutation check.
+  const legacyTaskDescription = "legacy ADE Runtime scheduled task";
+  const legacyTask = inspectWindowsTask(run, TASK_NAME, legacyTaskDescription, serviceCommand);
+  if (!legacyTask.ok) return failure(legacyTask.message);
+  let pendingLegacyTask = legacyTask.present ? legacyTask : null;
+  const removeLegacyTask = (): string | null => {
+    if (!pendingLegacyTask) return null;
+    const removal = endAndDeleteWindowsTask(run, TASK_NAME, legacyTaskDescription, pendingLegacyTask);
+    pendingLegacyTask = null;
+    return removal.ok ? null : removal.message;
+  };
+  if (pendingLegacyTask && !pendingLegacyTask.running) {
+    const legacyError = removeLegacyTask();
+    if (legacyError) return failure(legacyError);
   }
-  const legacyRemoval = removeWindowsTaskIfPresent(
-    run,
-    TASK_NAME,
-    "legacy ADE Runtime scheduled task",
-    serviceCommand,
-  );
-  if (!legacyRemoval.ok) {
-    return {
-      ok: false,
-      serviceName,
-      action: "install",
-      path: taskName,
-      message: legacyRemoval.message,
-    };
-  }
-  const readPidRecord = deps.readPidRecord
-    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+  /** A success that keeps the current brain, once the deferred legacy task is gone. */
+  const keepingCurrentBrain = (result: ServiceManagerResult): ServiceManagerResult => {
+    const legacyError = removeLegacyTask();
+    return legacyError ? failure(legacyError) : result;
+  };
+  const readPidRecord = windowsPidRecordReader(deps);
   // launchd/systemd parity: an unchanged launcher whose supervisor and brain
   // are verifiably ours and already answer on the channel pipe is installed.
   // The desktop runs this install on every launch, and replacing that brain
@@ -1687,13 +1680,13 @@ async function installWindowsServiceImpl(
         ? pruneWindowsRunValues(run, { serviceName, launcherPath, keepValueName: taskName })
         : null;
       if (prune?.ok) {
-        return {
+        return keepingCurrentBrain({
           ok: true,
           serviceName,
           action: "install",
           path: taskName,
           message: "ADE per-user startup entry is already installed and the channel brain is running.",
-        };
+        });
       }
       // A registry failure falls through to the full install, which reports it.
     }
@@ -1726,23 +1719,23 @@ async function installWindowsServiceImpl(
       sleep: deps.sleep,
     });
     if (youngReadiness.ready) {
-      return {
+      return keepingCurrentBrain({
         ok: true,
         serviceName,
         action: "install",
         path: taskName,
         message: "ADE per-user startup entry is already installed; the channel brain finished starting.",
-      };
+      });
     }
     if (youngReadiness.supervised) {
-      return {
+      return keepingCurrentBrain({
         ok: true,
         starting: true,
         serviceName,
         action: "install",
         path: taskName,
         message: `ADE per-user startup entry is installed; the channel brain is still starting on ${runningSocketPath}: ${youngReadiness.diagnostic}`,
-      };
+      });
     }
     // The young brain died while we waited: fall through and replace it.
   }
@@ -1775,6 +1768,12 @@ async function installWindowsServiceImpl(
       message: startupPlan.message,
     };
   }
+  // A channel brain no supervisor runs (the CLI's fallback start) is reaped
+  // below as stale, so it counts too: a command inside it must not end it.
+  const unsupervisedBrains = listStaleChannelServePids(run, {
+    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
+    primarySocketPath: runningSocketPath,
+  }, "win32");
   const selfBlock = windowsSelfMutationRefusal(run, {
     action: "install",
     serviceName,
@@ -1782,16 +1781,25 @@ async function installWindowsServiceImpl(
     env,
     record: readPidRecord(pidPath),
     plan: startupPlan,
+    otherBrainPids: unsupervisedBrains.ok ? unsupervisedBrains.pids : [],
   });
-  if (selfBlock) {
-    // The launcher was rewritten above. Put the old one back, or the next
-    // install from outside would find it unchanged and keep the old brain.
-    try {
-      if (existingLauncher === null) fs.rmSync(launcherPath, { force: true });
-      else fs.writeFileSync(launcherPath, existingLauncher, { encoding: "utf8", mode: 0o600 });
-    } catch { /* the refusal stands either way */ }
-    return selfBlock;
+  if (selfBlock) return selfBlock;
+  // Written only now, so a refusal or a failed check above leaves the old
+  // launcher: one rewritten early would make the next install find it
+  // unchanged and keep the old brain.
+  try {
+    fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
+    fs.writeFileSync(launcherPath, renderedLauncher, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+  } catch (error) {
+    return failure(error instanceof Error
+      ? `Unable to write the Windows brain launcher: ${error.message}`
+      : "Unable to write the Windows brain launcher.");
   }
+  const legacyError = removeLegacyTask();
+  if (legacyError) return failure(legacyError);
   if (currentTask.present) {
     const currentRemoval = endAndDeleteWindowsTask(
       run,
@@ -1855,11 +1863,13 @@ async function installWindowsServiceImpl(
   // before loading the replacement, because a brain that outlived its
   // registration keeps the channel socket and the sync-host lock hostage. On
   // Windows this scan used to shell out to `ps -axo`, which does not exist
-  // there, so it silently found nothing and the reap never happened.
-  const staleScan = listStaleChannelServePids(run, {
-    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: runningSocketPath,
-  }, "win32");
+  // there, so it silently found nothing and the reap never happened. The scan
+  // ran before anything was stopped (the self-mutation check needs it), so the
+  // brains the startup removal and the predecessor stop already ended are skipped.
+  const alreadyStopped = new Set([
+    startupPlan.brain?.runtimePid,
+    ...startupPlan.predecessors.flatMap((group) => group.children.map((child) => child.pid)),
+  ]);
   // A stale brain is force-killed only once it is proven to be this channel's: it
   // must name the channel socket itself, or answer on that endpoint. Any other
   // stale candidate is left running and reported, not claimed as taken over.
@@ -1868,7 +1878,8 @@ async function installWindowsServiceImpl(
     primarySocketPath: runningSocketPath,
   };
   const unverifiedStalePids: number[] = [];
-  for (const stalePid of staleScan.ok ? staleScan.pids : []) {
+  const stalePids = unsupervisedBrains.ok ? unsupervisedBrains.pids : [];
+  for (const stalePid of stalePids.filter((pid) => !alreadyStopped.has(pid))) {
     const outcome = await stopWindowsBrainGracefully(run, {
       socketPath: runningSocketPath,
       runtimePid: stalePid,
@@ -2005,6 +2016,7 @@ function resolveWindowsUninstallTargets(deps: WindowsServiceManagerDeps):
     taskName: string;
     launcherPath: string;
     pidPath: string;
+    readPidRecord: (pidPath: string) => WindowsServicePidRecord | null;
   } {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
@@ -2023,22 +2035,53 @@ function resolveWindowsUninstallTargets(deps: WindowsServiceManagerDeps):
   const taskName = resolveWindowsTaskName({ serviceName, userName });
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
-  return { ok: true, run, env, serviceCommand, serviceName, taskName, launcherPath, pidPath };
+  const readPidRecord = windowsPidRecordReader(deps);
+  return { ok: true, run, env, serviceCommand, serviceName, taskName, launcherPath, pidPath, readPidRecord };
 }
 
-function planWindowsUninstallStartupRemoval(
+/**
+ * Identifies what an uninstall would stop and decides whether it may: the
+ * startup plan's own refusals, then the self-mutation refusal. Reads only.
+ */
+async function decideWindowsUninstall(
   targets: Extract<ReturnType<typeof resolveWindowsUninstallTargets>, { ok: true }>,
-): Promise<WindowsStartupPlan> {
-  const { run, env, serviceCommand, taskName, launcherPath, pidPath } = targets;
-  return planWindowsStartupRemoval(run, {
+): Promise<
+  | { ok: false; result: ServiceManagerResult }
+  | { ok: true; plan: Extract<WindowsStartupPlan, { ok: true }>; legacyTask: WindowsTaskState }
+> {
+  const { run, env, serviceCommand, serviceName, taskName, launcherPath, pidPath } = targets;
+  // The legacy global task, when this channel owns it, is ended below. A running
+  // one runs `ade serve` itself, with no supervisor or record: its brain is found
+  // among the channel's serve processes, so a command inside it is refused too.
+  const legacyTask: WindowsTaskState = taskName === TASK_NAME
+    ? { ok: true, present: false }
+    : inspectWindowsTask(run, TASK_NAME, "legacy ADE Runtime scheduled task", serviceCommand);
+  const socketPath = resolveReachableMachineRuntimeSocketPath({ ...env, ...(serviceCommand.env ?? {}) }, "win32");
+  const legacyBrains = legacyTask.ok && legacyTask.present && legacyTask.running
+    ? listStaleChannelServePids(run, {
+      cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
+      primarySocketPath: socketPath,
+    }, "win32")
+    : null;
+  const plan = await planWindowsStartupRemoval(run, {
     valueName: taskName,
     launcherPath,
     pidPath,
-    brain: {
-      socketPath: resolveReachableMachineRuntimeSocketPath({ ...env, ...(serviceCommand.env ?? {}) }, "win32"),
-      command: serviceCommand,
-    },
+    brain: { socketPath, command: serviceCommand },
   });
+  if (!plan.ok) {
+    return { ok: false, result: { ok: false, serviceName, action: "uninstall", path: taskName, message: plan.message } };
+  }
+  const refusal = windowsSelfMutationRefusal(run, {
+    action: "uninstall",
+    serviceName,
+    path: taskName,
+    env,
+    record: targets.readPidRecord(pidPath),
+    plan,
+    otherBrainPids: legacyBrains?.ok ? legacyBrains.pids : [],
+  });
+  return refusal ? { ok: false, result: refusal } : { ok: true, plan, legacyTask };
 }
 
 /**
@@ -2052,8 +2095,8 @@ export async function checkWindowsServiceRemovable(
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const targets = resolveWindowsUninstallTargets(deps);
   if (!targets.ok) return { ok: false, message: targets.message };
-  const plan = await planWindowsUninstallStartupRemoval(targets);
-  return plan.ok ? { ok: true } : { ok: false, message: plan.message };
+  const decision = await decideWindowsUninstall(targets);
+  return decision.ok ? { ok: true } : { ok: false, message: decision.result.message };
 }
 
 async function uninstallWindowsServiceImpl(
@@ -2069,45 +2112,27 @@ async function uninstallWindowsServiceImpl(
       message: targets.message,
     };
   }
-  const { run, serviceCommand, serviceName, taskName, launcherPath, pidPath } = targets;
+  const { run, serviceName, taskName, launcherPath, pidPath } = targets;
   // The scheduled tasks are read now and removed only after everything below has been
   // identified, so a refusal leaves them in place.
   const currentTask = inspectWindowsTask(run, taskName, "ADE service scheduled task");
   // Identify everything this uninstall would stop before any registration is removed
   // or changed. A refusal returns here, with the existing service untouched.
-  const startupPlan = await planWindowsUninstallStartupRemoval(targets);
-  if (!startupPlan.ok) {
-    return {
-      ok: false,
-      serviceName,
-      action: "uninstall",
-      path: taskName,
-      message: startupPlan.message,
-    };
-  }
-  const selfBlock = windowsSelfMutationRefusal(run, {
-    action: "uninstall",
-    serviceName,
-    path: taskName,
-    env: targets.env,
-    record: (deps.readPidRecord ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target })))(pidPath),
-    plan: startupPlan,
-  });
-  if (selfBlock) return selfBlock;
+  const decision = await decideWindowsUninstall(targets);
+  if (!decision.ok) return decision.result;
+  const startupPlan = decision.plan;
   let currentRemoval: WindowsTaskRemovalResult = { ok: true, removed: false };
   if (!currentTask.ok) {
     currentRemoval = currentTask;
   } else if (currentTask.present) {
     currentRemoval = endAndDeleteWindowsTask(run, taskName, "ADE service scheduled task", currentTask);
   }
-  const legacyRemoval = taskName === TASK_NAME
-    ? { ok: true as const, removed: false }
-    : removeWindowsTaskIfPresent(
-      run,
-      TASK_NAME,
-      "legacy ADE Runtime scheduled task",
-      serviceCommand,
-    );
+  const { legacyTask } = decision;
+  const legacyRemoval: WindowsTaskRemovalResult = !legacyTask.ok
+    ? legacyTask
+    : legacyTask.present
+      ? endAndDeleteWindowsTask(run, TASK_NAME, "legacy ADE Runtime scheduled task", legacyTask)
+      : { ok: true, removed: false };
   const startupRemoval = await removeWindowsStartupEntry(
     run,
     { valueName: taskName, pidPath },
@@ -2280,8 +2305,7 @@ function getWindowsServiceStatusImpl(
     windowsHide: true,
   });
   if (startupResult.status === 0) {
-    const readPidRecord = deps.readPidRecord
-      ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+    const readPidRecord = windowsPidRecordReader(deps);
     const supervisor = queryWindowsSupervisor({
       spawnSync: run,
       launcherPath,
