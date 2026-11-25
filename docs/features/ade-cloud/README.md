@@ -721,7 +721,7 @@ move keeps the old disk.
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`;
 who is told, asked and how a no holds in `sponsoredConsent.ts`;
-migrations `0054`, `0055`, `0056`, `0062`, `0063`). The account server decides everything and holds the partner
+migrations `0054`, `0055`, `0056`, `0062`, `0064`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
 under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
@@ -830,12 +830,12 @@ card, whatever the plan.
   rows and moves Small's rate, so no notice starts cards on another
   device. The state then says `gpcOff`, and Settings says why. A yes
   given from that browser, past the second confirm, is saved with
-  `gpc = 1` (migration `0063`) and holds there. The US rules (the
+  `gpc = 1` (migration `0064`) and holds there. The US rules (the
   12-month hold, the second confirm, GPC) follow the law, not
   `GRAVITY_DEFAULT_ON_COUNTRIES` (`OPT_OUT_LAW_COUNTRIES` in
   `sponsoredConsent.ts`).
   A look at a chat keeps its state beside its country (`region`, migration
-  `0063`), so the Index checks a notice's yes where the person last looked.
+  `0064`), so the Index checks a notice's yes where the person last looked.
   Details:
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
 - **Testers abroad:** while ads are test ads (`gravity_live` off), an account

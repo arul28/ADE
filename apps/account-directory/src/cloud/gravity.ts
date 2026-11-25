@@ -200,31 +200,40 @@ async function blockedReason(env: GravityEnv, account: AccountRow, country: stri
   return null;
 }
 
+/** Deletes where the person watched from (address, device), in the same transaction as the no it follows. */
+const clearViewers = (env: GravityEnv, userId: string) => env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId);
+
 /**
  * Turns the account's answer into a no when this request's Global Privacy
  * Control overrides it (`gpcOverrides`: from the US, over no answer or a yes
  * not given from such a browser): cards stop on every device, the Index
  * stops, Small uses credits, and no notice starts cards on another device.
- * Saved only over the answer it read; one saved meanwhile is checked once
- * more. Returns the account's answer as it now is.
+ * Saved only over the answer it read, with the viewer rows cleared in the
+ * same transaction; one saved meanwhile is checked once more. Returns the
+ * account's answer as it now is.
  */
 async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow | null, who: SponsoredRequester, now: number): Promise<ConsentRow | null> {
   let consent = read;
   for (let tries = 0; tries < 2 && gpcOverrides(consent, who); tries += 1) {
-    const saved = consent
-      ? await env.DB.prepare(`
+    const flip = consent
+      ? env.DB.prepare(`
         update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0
         where user_id = ? and consent = 'granted' and decided_at = ?
-      `).bind(now, who.country, account.user_id, consent.decided_at).run()
-      : await env.DB.prepare(`
+      `).bind(now, who.country, account.user_id, consent.decided_at)
+      : env.DB.prepare(`
         insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc) values (?, 'declined', null, ?, 'gpc', ?, 0)
         on conflict (user_id) do nothing
-      `).bind(account.user_id, now, who.country).run();
-    if (!saved.meta?.changes) {
+      `).bind(account.user_id, now, who.country);
+    // Only after this flip: an answer saved meanwhile keeps its viewers.
+    const clear = env.DB.prepare(`
+      delete from cloud_sponsored_viewers where user_id = ?
+        and exists (select 1 from cloud_sponsored_consent where user_id = ? and consent = 'declined' and source = 'gpc' and decided_at = ?)
+    `).bind(account.user_id, account.user_id, now);
+    const [saved] = await env.DB.batch([flip, clear]);
+    if (!saved?.meta?.changes) {
       consent = await readConsent(env, account.user_id);
       continue;
     }
-    await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(account.user_id).run();
     logCloud("cloud.sponsored.consent", { consent: "declined", source: "gpc" });
     await syncSmallRates(env, account, now);
     return { consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0 };
@@ -765,9 +774,11 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     });
     emailHash = email ? await sha256Hex(email.trim().toLowerCase()) : null;
   }
-  // A notice saves only over the row it read (none, or one no longer shown): a yes or no saved meanwhile holds.
-  const guard = choice !== "notice" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
-  await env.DB.prepare(`
+  // A yes (a notice's, or the person's own) saves only over the row it read: a no saved meanwhile,
+  // say on another screen while the email was read, holds. With no row read, any answer saved
+  // meanwhile holds. A no always saves.
+  const guard = consent === "declined" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
+  const write = env.DB.prepare(`
     insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc) values (?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
       source = excluded.source, country = excluded.country, gpc = excluded.gpc${guard}
@@ -776,9 +787,11 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
     ...(guard && before ? [before.decided_at] : []),
-  ).run();
-  // A no keeps nothing of where the person watched from: their address and device go too.
-  if (consent === "declined") await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId).run();
+  );
+  // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
+  const [saved] = consent === "declined" ? await env.DB.batch([write, clearViewers(env, userId)]) : [await write.run()];
+  // Lost to an answer saved meanwhile: that one holds, and the state says so.
+  if (!saved?.meta?.changes) return answered();
   logCloud("cloud.sponsored.consent", { consent: choice });
   // Small's rate follows the answer at once (`smallUsesNoHours`).
   await syncSmallRates(env, account, now);
@@ -812,7 +825,7 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
     // The latest look doesn't allow cards (the person travelled, or their browser now sends Global
     // Privacy Control): no earlier look, on any of their computers, lets the Index answer its agents.
     // (Without a yes there are no rows to clear.)
-    if (consent?.consent === "granted") await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId).run();
+    if (consent?.consent === "granted") await clearViewers(env, userId).run();
     return json({ ok: false });
   }
   const computer = await ownCloudComputer(env, userId, body.instanceId);

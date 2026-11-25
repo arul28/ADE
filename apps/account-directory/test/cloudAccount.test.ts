@@ -5564,6 +5564,17 @@ describe("sponsored cards", () => {
     clock += 30 * DAY;
     expect(await state(US)).toMatchObject({ consent: "declined", confirmYes: true });
     expect(await choose(US, "granted")).toBe(409);
+    // A no saved on another screen while a yes reads the account's email holds: a yes saves only over the answer it read.
+    Object.assign(harness.env, { CLERK_SECRET_KEY: "sk_test" });
+    const network = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input instanceof Request ? input.url : input).startsWith("https://api.clerk.com/v1/users/")) {
+        harness.exec("update cloud_sponsored_consent set decided_at = ? where user_id = ?", clock + 1, OWNER);
+      }
+      return network(input as RequestInfo, init);
+    });
+    expect(await (await from(US, "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).json()).toMatchObject({ consent: "declined" });
+    expect(saved()).toEqual({ consent: "declined", source: "answer", country: "US" });
   });
 
   it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {
