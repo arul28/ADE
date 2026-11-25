@@ -27,31 +27,16 @@ import {
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { getErrorMessage } from "../shared/utils";
-import type { CloudApproval, CloudChatApprovals } from "./cloudAgentActions";
+import { clipReason, readApproval, record, text } from "./cloudActionArgs";
+import type { CloudChatApprovals } from "./cloudAgentActions";
 import type { CloudLogger } from "./cloudProvider";
 
 export type CloudTierRequestActionDeps = {
   approvals: CloudChatApprovals | null;
-  readApproval: (args: Record<string, unknown>) => CloudApproval;
   /** A computer of the account by its ADE Cloud id, machine key or name, with the list it was found in. */
   resolveMachine: (selector: string | null) => Promise<{ box: CloudMachine; all: CloudMachinesResult }>;
   logger: CloudLogger;
 };
-
-/** An agent's reason on a card (a size request, a pick, a disk grow): one short paragraph. */
-export function clipReason(reason: string): string {
-  const flat = reason.replace(/\s+/g, " ").trim();
-  return flat.length > 300 ? `${flat.slice(0, 299)}…` : flat;
-}
-
-function record(args: unknown): Record<string, unknown> {
-  return args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
-}
-
-function text(args: Record<string, unknown>, key: string): string | null {
-  const value = args[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 /**
  * The answers to one request card, one at a time (the actions are rebuilt
@@ -73,7 +58,7 @@ function oneAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
 }
 
 export function buildCloudTierRequestActions(deps: CloudTierRequestActionDeps) {
-  const { readApproval, resolveMachine, logger } = deps;
+  const { resolveMachine, logger } = deps;
 
   const actions = {
     /**

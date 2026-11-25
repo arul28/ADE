@@ -89,7 +89,8 @@ import type { CloudLogger, CloudProvider } from "./cloudProvider";
 import type { CloudApiClient } from "../../../shared/cloudApiClient";
 import type { CloudLaneAccount } from "./cloudLaneAccount";
 import { buildCloudLaneVerbs } from "./cloudLaneVerbs";
-import { buildCloudTierRequestActions, clipReason } from "./cloudTierRequestActions";
+import { clipReason, readApproval, record, text } from "./cloudActionArgs";
+import { buildCloudTierRequestActions } from "./cloudTierRequestActions";
 import type { CloudMoveResult } from "./cloudMachineCopy";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
@@ -249,26 +250,6 @@ export const CLOUD_AGENT_NO_COMPUTER_MESSAGE =
   "Agents don't make ADE Cloud computers. Start a lane on ADE Cloud with the size the work needs "
   + "(ade chat create --machine cloud --size <size>, or ade lanes create --machine cloud --size <size>), "
   + "or ask the person to make the computer in ADE (Settings › ADE Cloud).";
-
-function record(args: unknown): Record<string, unknown> {
-  return args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
-}
-
-function text(args: Record<string, unknown>, key: string): string | null {
-  const value = args[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function readApproval(args: Record<string, unknown>): CloudApproval {
-  const raw = record(args.approval);
-  if (raw.by === "person") return { by: "person" };
-  return {
-    by: "agent",
-    chatSessionId: typeof raw.chatSessionId === "string" && raw.chatSessionId.trim() ? raw.chatSessionId.trim() : null,
-    ...(raw.viaAdeMcp === true ? { viaAdeMcp: true } : {}),
-    ...(raw.automation === true ? { automation: true } : {}),
-  };
-}
 
 const NO_DESKTOP = "This ADE can't make ADE Cloud machines: it isn't signed in to your ADE account.";
 
@@ -694,7 +675,6 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     readMachines,
     recentInstances: () => deps.machines.recentInstances(60_000),
     approve,
-    readApproval,
     // The delete or free the person said yes to, as one card in the agent's chat.
     chatCard: deps.approvals?.postCard ?? null,
     laneLaunch: (args: Record<string, unknown>) => actions.lane_launch(args),
@@ -704,7 +684,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   });
 
   // An agent's size request and the person's answer to it (`cloudTierRequestActions.ts`).
-  const tierRequests = buildCloudTierRequestActions({ approvals: deps.approvals, readApproval, resolveMachine, logger });
+  const tierRequests = buildCloudTierRequestActions({ approvals: deps.approvals, resolveMachine, logger });
 
   const actions = {
     ...laneVerbs.actions,

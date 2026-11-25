@@ -14,7 +14,7 @@ import { cloudTierOfMachine, cloudTierRateLabel, cloudTiers } from "../../../sha
 import { formatAgo } from "../../lib/format";
 import { usageLeftLevel } from "../usage/usageDesign";
 import { heroPeriodChip } from "../settings/cloudDashboard/cloudDashboardModel";
-import { cloudLaneJobPresentation } from "./CloudLaneJobCard";
+import { cloudLaneJobPresentation } from "./cloudLaneJobPresentation";
 
 /**
  * What a cloud lane's chat header says about its computer: the state mark on
@@ -100,6 +100,8 @@ export type CloudLaneStatusModel = {
   stateText: string;
   /** The lane's size change or move while it runs or after it failed, right under the title; null otherwise. */
   job: CloudLaneStatusLine | null;
+  /** The lane's size change or move runs now (`cloudLaneJobIsLive`): no other change or sleep starts meanwhile. */
+  changing: boolean;
   /** "Medium · 4 CPU · 8 GB · Uses 1 hour an hour" ("Now Medium …" while a change runs), or null before the list read names its size. */
   sizeText: string | null;
   /** "Disk 7.2 / 12 GB" with its headroom tone, or null when it was never measured. */
@@ -205,5 +207,5 @@ export function cloudLaneStatusModel(input: {
       lines.push({ key: "memory", text: "Memory is running low", tone: "warn", hint: "A bigger size has more memory." });
     }
   }
-  return { stateText, job: jobLine, sizeText, disk, hours, lines };
+  return { stateText, job: jobLine, changing, sizeText, disk, hours, lines };
 }

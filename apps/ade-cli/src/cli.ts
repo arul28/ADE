@@ -761,7 +761,8 @@ import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/s
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { cloudDiskGrowStatePath, cloudDiskGuardOptions, readCloudDiskGrowState } from "./services/power/cloudDiskGuard";
 import { cloudDeleteFreezeRefusal, liftCloudDeleteFreeze, liftCloudSleepFreeze } from "./services/power/cloudDeleteFreeze";
-import { cloudMoveSendRefusal, isRemoteChatTurnStart } from "./services/power/cloudMoveMark";
+import { cloudMoveSendRefusal, isCloudMoveRefusal, isRemoteTurnStart } from "./services/power/cloudMoveMark";
+import { CLOUD_COMPUTER_MOVING_CODE, CLOUD_COMPUTER_MOVING_SENTENCE } from "../../account-directory/src/cloud/contract";
 import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
@@ -9662,6 +9663,9 @@ function laneIdFromCreateLaneValue(value: unknown): string | null {
   const lane = isRecord(result.lane) ? result.lane : result;
   return asString(lane.id) ?? asString(lane.laneId);
 }
+
+/** The plans that make a chat (`session`), then send its first message (`result`). */
+const CHAT_CREATE_PLAN_LABELS: ReadonlySet<string> = new Set(["new chat", "chat create", "chat create from Linear issue"]);
 
 /** Extract a session id from an unwrapped `chat.createSession` result. */
 function sessionIdFromCreateChatValue(value: unknown): string | null {
@@ -33180,7 +33184,7 @@ async function runServe(
         // message to a chat it has to the account's queue, which the move holds
         // and hands to the new computer. A new chat has no queue: the sender
         // shows the sentence and keeps the text.
-        const moving = isRemoteChatTurnStart(request.params) ? cloudMoveSendRefusal(layout.adeDir) : null;
+        const moving = isRemoteTurnStart(request.params) ? cloudMoveSendRefusal(layout.adeDir) : null;
         if (moving) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, encodeCodedErrorMessage(moving.code, moving.message), { code: moving.code });
         void keepAwake.noteUse();
         // The server's idle cleanup may be saving this computer for its delete
@@ -43241,6 +43245,22 @@ async function executePlan(
           : await answer;
       } catch (error) {
         if (!step.optional) {
+          // A move holds the chat's ADE Cloud computer (`cloudMoveMark.ts`):
+          // it made the chat but refused its first turn. The empty chat is
+          // deleted and the computer's sentence is the answer.
+          const madeChatId = step.key === "result" && CHAT_CREATE_PLAN_LABELS.has(plan.label)
+            ? sessionIdFromCreateChatValue(values.session)
+            : null;
+          if (madeChatId && isCloudMoveRefusal(error)) {
+            const deleted = await connection.request("ade/actions/call", {
+              name: "run_ade_action",
+              arguments: { domain: "chat", action: "deleteSession", args: { sessionId: madeChatId } },
+            }).then(() => true, () => false);
+            throw new CliToolError(CLOUD_COMPUTER_MOVING_SENTENCE, {
+              code: CLOUD_COMPUTER_MOVING_CODE,
+              ...(deleted ? {} : { sessionId: madeChatId, nextAction: `Delete the empty chat: \`ade chat delete ${madeChatId}\`.` }),
+            });
+          }
           const createdSessionId = (
             plan.label === "new chat" || plan.label === "chat create"
           )

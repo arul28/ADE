@@ -128,8 +128,8 @@ export function laneJobOfMove(record: CloudMoveRecord): CloudLaneJobSnapshot {
 
 export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
   resizeInPlace: WebCloudResizeInPlace;
-  /** A size change (this tab's) or a move of this computer runs: one change of a computer at a time. */
-  changing: (instanceId: string) => boolean;
+  /** A size change in place of this computer runs (this tab's): with the moves, one change of a computer at a time. */
+  resizing: (instanceId: string) => boolean;
   /** A move that answers an agent's size request tells that chat how it ended, from this tab. */
   teller: WebTierRequestTeller;
 }) {
@@ -172,6 +172,8 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
 
   const moving = (instanceId: string): boolean =>
     [...followed.values()].some((record) => isLive(record) && record.sourceInstanceId === instanceId);
+  /** One change of a computer at a time: a move, or this tab's size change. */
+  const changing = (instanceId: string): boolean => moving(instanceId) || options.resizing(instanceId);
 
   const need = () => {
     const client = api();
@@ -188,7 +190,7 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
       if (!instanceId) throw new Error("Name the computer.");
       if (!isCloudTierId(args.sizeId)) throw new Error("Pick a size.");
       const client = need();
-      if (options.changing(instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
+      if (changing(instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       const [computer, account] = await Promise.all([client.computer(instanceId), client.account()]);
       const catalog = cloudCatalogOf(account);
       const tier = cloudTier(catalog, args.sizeId);
@@ -238,7 +240,7 @@ export function createWebCloudMoves(api: () => CloudApiClient | null, options: {
       const old = typeof jobId === "string" ? followed.get(jobId) : null;
       if (!old || isLive(old) || old.state === "done") return old ? laneJobOfMove(old) : null;
       // A Retry from a card that still shows an older failure: one change of a computer at a time.
-      if (options.changing(old.sourceInstanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
+      if (changing(old.sourceInstanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       // A move that ended without moving: the same move again, with a new id (the same timing and request).
       const record = await need().startMove(old.sourceInstanceId, {
         moveId: crypto.randomUUID(),

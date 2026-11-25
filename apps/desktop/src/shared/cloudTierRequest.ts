@@ -165,16 +165,17 @@ export function cloudTierRequestOutcomeOfJob(job: Pick<CloudLaneJobSnapshot, "ph
 }
 
 /**
- * What tells the asking chat how its job ended (`cloud.tier_request_answer`),
- * or null while the job waits or runs: the one call this app's main process
- * and ADE Web's tab make.
+ * What tells the asking chat how its job ended (`cloud.tier_request_answer`):
+ * the one call this app's main process and ADE Web's tab make, once the job
+ * ended. Throws while it waits or runs, so a try then fails and nothing is
+ * marked told.
  */
 export function cloudTierRequestEndArgs(
   job: Pick<CloudLaneJobSnapshot, "phase" | "timing" | "error">,
   request: { requestId: string; chatSessionId: string },
-): CloudTierRequestAnswerArgs | null {
+): CloudTierRequestAnswerArgs {
   const outcome = cloudTierRequestOutcomeOfJob(job);
-  if (!outcome) return null;
+  if (!outcome) throw new Error("This change hasn't ended, so there is nothing to tell the chat yet.");
   return {
     chatSessionId: request.chatSessionId,
     requestId: request.requestId,

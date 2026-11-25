@@ -194,7 +194,8 @@ export function createWebCloudNamespace(
   const billing = createWebCloudBilling(accountClient);
   const cloudApi = () => accountClient.cloudApi();
   // One change at a time per computer: a size change in place (this tab's) or a move (ADE's server's).
-  // A delete or free waits for it, and a second change or a Retry is refused.
+  // A delete or free waits for it; the resizes and the moves each refuse a
+  // second change or a Retry, by their own state and the other's.
   const changing = (instanceId: string): boolean => resizes.isLive(instanceId) || moves.moving(instanceId);
   const life = createWebCloudLaneLife({ api: cloudApi, changing });
   // How a change this tab ran ended, to the asking chat's machine: through
@@ -219,11 +220,11 @@ export function createWebCloudNamespace(
   const resizes = createWebCloudResizes({
     api: cloudApi,
     agentWork: (instanceId) => life.agentWork(instanceId),
-    changing,
+    moving: (instanceId) => moves.moving(instanceId),
     teller,
   });
   const copies = createWebCloudCopies(cloudApi);
-  const moves = createWebCloudMoves(cloudApi, { resizeInPlace: (args) => resizes.start(args), changing, teller });
+  const moves = createWebCloudMoves(cloudApi, { resizeInPlace: (args) => resizes.start(args), resizing: (instanceId) => resizes.isLive(instanceId), teller });
   /** A computer of the account answers on this connection. */
   const computerOnline = () => client.getStatus().readiness === "ready";
 

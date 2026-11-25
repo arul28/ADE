@@ -22,7 +22,8 @@ import type { AiProviderConnectionStatus, OpenProjectBinding } from "../../../sh
  *   status (a wake, a new computer after a move), so it is read past this
  *   window's cache.
  *
- * The refresh is read through a ref, so a model change does not resubscribe.
+ * The refresh and the pin are read through refs, so a model change or a pin
+ * rebuilt with the same key does not resubscribe.
  */
 export function useProviderStatusRefresh(input: {
   /** The pane shows. */
@@ -32,9 +33,8 @@ export function useProviderStatusRefresh(input: {
   /** The chat's provider, and its status as this window last read it. */
   provider: string | null | undefined;
   providerStatus: AiProviderConnectionStatus | null | undefined;
-  /** The chat's machine: its pin's key, and the pin its sign-in events come from. */
-  chatRuntimePinKey: string | null;
-  chatRuntimePinRef: { readonly current: OpenProjectBinding | null };
+  /** The chat's machine: its sign-in events come from it, and a new one (by key) reads again. */
+  chatRuntimePin: OpenProjectBinding | null;
   /** The chat's connection to its machine (`useRemoteConnectionMark`); a new mark is a new connection. */
   connectionMark: string;
   refreshAvailableModels: (options?: { revalidate?: boolean }) => Promise<unknown>;
@@ -45,11 +45,13 @@ export function useProviderStatusRefresh(input: {
     selectedSessionId,
     provider,
     providerStatus,
-    chatRuntimePinKey,
-    chatRuntimePinRef,
+    chatRuntimePin,
     connectionMark,
     refreshAvailableModels,
   } = input;
+  const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  const chatRuntimePinRef = useRef(chatRuntimePin);
+  chatRuntimePinRef.current = chatRuntimePin;
 
   const blockedRef = useRef(false);
   blockedRef.current = providerStatus != null
@@ -80,7 +82,7 @@ export function useProviderStatusRefresh(input: {
       return undefined;
     }
     return () => off?.();
-  }, [chatRuntimePinKey, chatRuntimePinRef, isTileActive, selectedSessionId]);
+  }, [chatRuntimePinKey, isTileActive, selectedSessionId]);
 
   const lastMarkRef = useRef(connectionMark);
   useEffect(() => {

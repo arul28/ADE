@@ -72,7 +72,8 @@ import {
 import { clearCloudLaneCaches, cloudLaneChangesAvailable, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
 import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
-import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
+import { CloudLaneJobCard } from "../../cloudLane/CloudLaneJobCard";
+import { cloudLaneJobPresentation } from "../../cloudLane/cloudLaneJobPresentation";
 import { cloudLaneJobIsLive, type CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
 import { CloudLaneWithoutComputerNotice } from "../../cloudLane/CloudLaneWithoutComputer";
 import { CloudSavedLaneWorkCard } from "../../cloudLane/CloudLaneSavedWork";

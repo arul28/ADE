@@ -23,6 +23,7 @@ import { describeCloudMachineSize, cloudCatalogOf } from "../../../shared/adeClo
 import { getErrorMessage } from "../shared/utils";
 import type { CloudLaneBackup } from "../../../../../account-directory/src/cloud/contract";
 import type { CloudStatusDeletedLane } from "./cloudAccountStatus";
+import { readApproval, record, text } from "./cloudActionArgs";
 import type { CloudApproval } from "./cloudAgentActions";
 import type { CloudLaneAccount } from "./cloudLaneAccount";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
@@ -71,7 +72,6 @@ export type CloudLaneVerbDeps = {
   /** The full computers the last list read (their metadata), or null. */
   recentInstances: () => CloudInstance[] | null;
   approve: CloudLaneApprove;
-  readApproval: (args: Record<string, unknown>) => CloudApproval;
   /**
    * Posts a card in the asking agent's chat: a write the person said yes to
    * shows there while it runs and how it ended. Null where the chat service
@@ -101,15 +101,6 @@ const MOVE_ENDED: ReadonlySet<string> = new Set(["done", "failed", "cancelled"])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Where the person does it in ADE, when the caller has no chat to ask in. */
 const PERSON_PLACE = "Do it in ADE: the lane's row in Work or Lanes, or Settings › ADE Cloud. Or ask for it in an ADE chat, where ADE can ask you.";
-
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function text(args: Record<string, unknown>, key: string): string | null {
-  const value = args[key];
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 const iso = (ms: number | null | undefined): string | null => (typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : null);
 const dayOf = (ms: number | null | undefined): string =>
@@ -517,7 +508,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
      */
     async lane_delete(rawArgs?: unknown) {
       const args = record(rawArgs);
-      const approval = deps.readApproval(args);
+      const approval = readApproval(args);
       const keepChats = args.keepChats === true;
       const { lane, keptIds } = await resolveLane(text(args, "lane"), { write: true });
       const account = deps.account();
@@ -628,7 +619,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     /** Keeps the lane and its chats, pushes its work and removes its computer (`ade cloud lanes free`). */
     async lane_free(rawArgs?: unknown) {
       const args = record(rawArgs);
-      const approval = deps.readApproval(args);
+      const approval = readApproval(args);
       const { lane } = await resolveLane(text(args, "lane"), { write: true });
       if (!lane.computer) throw new Error(`${lane.name} has no computer to free. Its next message makes a new one.`);
       const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
@@ -709,7 +700,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       if (!chatId) throw new Error("Pass the chat id (ade cloud chats).");
       const chat = await findChat(chatId, text(args, "machineKey"));
       if (chat.computer?.state === "exists") throw new Error("This chat's computer still runs it. Delete the chat there, or delete the lane (ade cloud lanes delete).");
-      const approval = deps.readApproval(args);
+      const approval = readApproval(args);
       const what = `the saved chat "${chat.title ?? chat.chatId}"`;
       await deps.approve(approval, {
         action: "delete",
@@ -751,7 +742,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       const api = requireApi();
       const machineKey = text(args, "machineKey") ?? await sessionMachineKey(api, sessionId);
       if (!machineKey) throw new Error(`ADE Cloud has no saved copy of session ${sessionId} among your newest copies. Pass --machine-key, or see ade cloud sessions.`);
-      const approval = deps.readApproval(args);
+      const approval = readApproval(args);
       await deps.approve(approval, {
         action: "delete",
         title: "Delete a saved terminal copy",
@@ -784,7 +775,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
       if (!backups.length) throw new Error("ADE Cloud has no saved work for that lane.");
       const commits = Math.max(...backups.map((backup) => backup.commits));
       const files = Math.max(...backups.map((backup) => backup.files));
-      const approval = deps.readApproval(args);
+      const approval = readApproval(args);
       const what = `the saved work of "${(backups[0]!.laneName ?? "").trim().toLowerCase() === "primary" ? PRIMARY_LANE_DISPLAY_NAME : backups[0]!.laneName ?? laneId}"`;
       await deps.approve(approval, {
         action: "delete",
@@ -827,7 +818,7 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         throw new Error(`ADE Cloud runs no job ${jobId} now. ade cloud jobs lists them.`);
       }
       const what = launch ? `the launch of "${launch.laneName ?? "a lane"}"` : move ? `the move of "${move.sourceName}"` : `the copy of "${copy!.sourceName}"`;
-      const approval = deps.readApproval(args);
+      const approval = readApproval(args);
       await deps.approve(approval, {
         action: "delete",
         title: `Cancel ${what}`,

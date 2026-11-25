@@ -302,13 +302,20 @@ holds the lane's messages and answers `wake.state: "moving"`:
   old computer with its hold (`moveOutMarkCommand`,
   `$ADE_HOME/cloud/moving.json`), and its ADE refuses, with
   `computer_moving`, exactly what starts a turn from another device: the
-  chat actions in `CHAT_TURN_STARTS` (`cloudMoveMark.ts`), one list for the
+  actions in `REMOTE_TURN_STARTS` (`cloudMoveMark.ts`), one list for the
   desktop's `ade/actions/call` and the sync commands of ADE Web and the
-  phone. A chat made with no turn (`chat.create`) is not refused. The
-  desktop and ADE Web then send a message to a chat that exists to the
-  account's queue (`withSavedChatReads`), which holds it; the phone shows the
-  sentence. A new chat with its first message has no queue: the desktop
-  shows the sentence and keeps the text, and a launch fails with the
+  phone. That is a chat's sends and launches, and a CLI's input: text typed
+  into it (`chat.typeIntoCli`, `pty.sendToSession` / `work.sendToSession`)
+  and a terminal started with its first input (`pty.create` /
+  `work.startCliSession`), since a CLI's process does not survive the move.
+  A chat made with no turn (`chat.create`) and a terminal started with no
+  first input are not refused. The desktop and ADE Web then send a message
+  to a chat that exists to the account's queue (`withSavedChatReads`), which
+  holds it; the phone shows the sentence. A new chat with its first message
+  has no queue: the desktop shows the sentence and keeps the text, and a
+  launch fails with the sentence. `ade chat create --prompt` and
+  `ade new chat --prompt` with `--machine` make the chat, then send to it:
+  when the send is refused they delete the chat they made and print the
   sentence. The queue's own drain is never refused. The undo clears the
   mark; one it misses (the computer was asleep) expires with the hold.
 - At the end of `register` the new computer has the lane: the queued

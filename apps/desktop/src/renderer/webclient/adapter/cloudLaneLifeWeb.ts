@@ -462,9 +462,7 @@ export function createWebTierRequestTeller(reach: WebTierRequestReach) {
         read: () => endOf(entry),
         tell: async () => {
           // `read` just gave an end, so the job has ended; if not, the try fails and nothing is marked told.
-          const args = cloudTierRequestEndArgs(entry.job, entry.request);
-          if (!args) throw new Error("This change hasn't ended, so there is nothing to tell the chat yet.");
-          await reach.answer(await pinNow(entry), args);
+          await reach.answer(await pinNow(entry), cloudTierRequestEndArgs(entry.job, entry.request));
         },
         isTold: (end) => entry.told === end,
         markTold: (end) => {
@@ -501,8 +499,8 @@ function diskGrowOf(raw: unknown, currentGb: number | null, tier: CloudTier): nu
 export function createWebCloudResizes(deps: {
   api: () => CloudApiClient | null;
   agentWork: (instanceId: string) => Promise<"idle" | "busy" | "unknown">;
-  /** A size change (this tab's) or a move (on ADE's server) of this computer runs: one change of a computer at a time. */
-  changing: (instanceId: string) => boolean;
+  /** A move of this computer runs (on ADE's server): with this tab's own size changes, one change of a computer at a time. */
+  moving: (instanceId: string) => boolean;
   /** This tab ran the change, so it tells the chat whose size request started it how it ended. */
   teller: WebTierRequestTeller;
 }) {
@@ -660,6 +658,8 @@ export function createWebCloudResizes(deps: {
 
   const liveOn = (instanceId: string): boolean =>
     [...jobs.values()].some((record) => cloudLaneJobIsLive(record.job) && record.job.instanceId === instanceId);
+  /** One change of a computer at a time: this tab's size change, or a move. */
+  const changing = (instanceId: string): boolean => liveOn(instanceId) || deps.moving(instanceId);
 
   return {
     /** A size change of the same kind, from the computer and the size the person picked. */
@@ -673,7 +673,7 @@ export function createWebCloudResizes(deps: {
     }): CloudLaneJobSnapshot {
       const { computer, tier } = args;
       const request = webTierRequestOf(args.request);
-      if (deps.changing(computer.id)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
+      if (changing(computer.id)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       const from = cloudTierOfShape({ type: computer.type, cpu: computer.resources?.cpu, memoryGb: computer.resources?.memory }, cloudTiers(args.catalog));
       const diskGb = diskGrowOf(args.diskGb, computer.resources?.disk ?? null, tier);
       if (from?.id === tier.id && diskGb == null) throw new Error(`It's already ${tier.label}.`);
@@ -721,7 +721,7 @@ export function createWebCloudResizes(deps: {
       if (cloudLaneJobIsLive(record.job) || record.job.phase === "online") return structuredClone(record.job);
       const { job } = record;
       // A Retry from a card that still shows an older failure: one change of a computer at a time.
-      if (deps.changing(job.instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
+      if (changing(job.instanceId)) throw new Error(CLOUD_LANE_CHANGE_RUNNING_MESSAGE);
       record.job.dismissedAt = nowIso();
       publish(record);
       return begin({

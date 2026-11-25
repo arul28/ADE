@@ -81,7 +81,7 @@ import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/c
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type { SyncPairingRecord } from "./syncPairingStore";
 import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
-import { CLOUD_MOVE_SYNC_TURN_STARTS, cloudMoveSendRefusal } from "../power/cloudMoveMark";
+import { cloudMoveSendRefusal, isSyncTurnStart } from "../power/cloudMoveMark";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
 import {
   decodeCrossMachineDestinationPreflightArgs,
@@ -9073,10 +9073,11 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         throw new Error(`Unsupported remote command: ${payload.action}`);
       }
       // A move of this ADE Cloud computer holds it (`cloudMoveMark.ts`): a
-      // command that starts a turn (a send, a launch) would have it cut.
-      // `computer_moving` tells ADE Web to queue a message to a chat it has on
-      // the account; a new chat has no queue, so its launch fails with the sentence.
-      if (CLOUD_MOVE_SYNC_TURN_STARTS.has(payload.action)) {
+      // command that starts a turn (a send, a launch, text for a CLI) would
+      // have it cut. `computer_moving` tells ADE Web to queue a message to a
+      // chat it has on the account; a new chat has no queue, so its launch
+      // fails with the sentence.
+      if (isSyncTurnStart(payload.action, payload.args)) {
         const moving = cloudMoveSendRefusal(resolveMachineAdeDir());
         if (moving) throw moving;
       }

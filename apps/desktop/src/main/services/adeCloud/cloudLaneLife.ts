@@ -262,7 +262,6 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
       tell: async (outcome) => {
         // `read` just gave this end, so the job has ended; if not, the try fails and nothing is marked told.
         const args = cloudTierRequestEndArgs(job, request);
-        if (!args) throw new Error("This change hasn't ended, so there is nothing to tell the chat yet.");
         await calls.callAction(await chatPinNow(record, request.pin, calls), { domain: "cloud", action: "tier_request_answer", args });
         logger.info?.("cloud.lane_job_chat_told", { jobId: job.jobId, outcome });
       },

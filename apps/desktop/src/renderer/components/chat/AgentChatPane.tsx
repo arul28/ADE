@@ -11091,8 +11091,7 @@ export function AgentChatPane({
     selectedSessionId,
     provider: selectedSession?.provider,
     providerStatus: selectedSession?.provider ? connectionsByProvider?.[selectedSession.provider] : undefined,
-    chatRuntimePinKey,
-    chatRuntimePinRef,
+    chatRuntimePin,
     connectionMark: chatConnectionMark,
     refreshAvailableModels,
   });
