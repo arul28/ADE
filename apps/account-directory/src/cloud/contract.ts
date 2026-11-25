@@ -3304,7 +3304,17 @@ export type CloudSponsoredAdRequest = {
   format?: CloudSponsoredFormat;
   /** The app asking. Absent (an older client): `ios` for an iPhone or iPad, else `desktop`. */
   surface?: CloudSponsoredSurface;
+  /**
+   * The client draws the card with Gravity's own renderer, and which one:
+   * `web1` for `@gravity-ai/ui` (desktop and web), `psp1` for Gravity's
+   * native SDK (the iPhone and iPad app). The answer then carries `gravity`.
+   * Absent (an older client): ADE's own card from the plain fields, and
+   * Gravity is told no design will be drawn.
+   */
+  renderer?: CloudSponsoredRenderer;
 };
+export const CLOUD_SPONSORED_RENDERERS = ["web1", "psp1"] as const;
+export type CloudSponsoredRenderer = (typeof CLOUD_SPONSORED_RENDERERS)[number];
 /**
  * Gravity's own hosts: a card's view and click links must be on one of them,
  * so a card can't send anyone (or a client's fetch) anywhere else.
@@ -3332,6 +3342,40 @@ export type CloudSponsoredAd = {
   /** The brand's icon (https), or null. */
   favicon: string | null;
   test: boolean;
+  /**
+   * Gravity's ad as its renderer takes it (only when the request named a
+   * `renderer`): the design (`renderer_spec`), the copy and the same tracked
+   * links. The client hands it to `GravityAd` or `SpecAdView` as is; that
+   * renderer fires the view link and its measured/viewable beacons itself.
+   */
+  gravity?: CloudSponsoredGravityAd | null;
+};
+/**
+ * The fields of Gravity's ad its renderers read, in Gravity's own names, so
+ * the object decodes unchanged in `@gravity-ai/ui` and the Swift SDK. Frames,
+ * prompt actions, MCP connects and data units are left out: ADE draws none.
+ */
+export type CloudSponsoredGravityAd = {
+  adText: string;
+  title?: string;
+  cta?: string;
+  brandName?: string;
+  url?: string;
+  /** For `web1`, a `data:` image: the desktop app's page can't load images from an advertiser's host. */
+  favicon?: string;
+  brandImage?: string;
+  impUrl?: string;
+  clickUrl: string;
+  render?: { mode: "spec" | "native"; layout?: string };
+  renderer_spec?: Record<string, unknown>;
+  placement?: string;
+  placement_id?: string;
+  campaignId?: string;
+  variant?: string;
+  experiment_id?: string;
+  composition_id?: string;
+  renderer_key?: string;
+  hasDeeplink?: boolean;
 };
 /** `POST /cloud/sponsored/hide`: the person hid this reply's card (counted once per reply, per format, for the A/B test). */
 export type CloudSponsoredHideRequest = { chatId: string; turnId: string };

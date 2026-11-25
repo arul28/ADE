@@ -564,6 +564,7 @@
 		5E0000000000000000000B01 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000A02 /* Sentry */; };
 		5E0000000000000000000B02 /* CrashReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000C01 /* CrashReporting.swift */; };
 		5F0000000000000000000B01 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000A02 /* PostHog */; };
+		6A0000000000000000000B01 /* GravitySDK in Frameworks */ = {isa = PBXBuildFile; productRef = 6A0000000000000000000A02 /* GravitySDK */; };
 		5F0000000000000000000B02 /* SessionReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0000000000000000000C01 /* SessionReplay.swift */; };
 		5F0000000000000000000B03 /* ProductAnalyticsException.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0000000000000000000C03 /* ProductAnalyticsException.swift */; };
 /* End PBXBuildFile section */
@@ -1171,6 +1172,7 @@
 				DD20000000000000000000B1 /* SwiftTerm in Frameworks */,
 				5E0000000000000000000B01 /* Sentry in Frameworks */,
 				5F0000000000000000000B01 /* PostHog in Frameworks */,
+				6A0000000000000000000B01 /* GravitySDK in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -2076,6 +2078,7 @@
 				C5C000000000000000000002 /* Citadel */,
 				5E0000000000000000000A02 /* Sentry */,
 				5F0000000000000000000A02 /* PostHog */,
+				6A0000000000000000000A02 /* GravitySDK */,
 			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
@@ -2210,6 +2213,7 @@
 				C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */,
 				5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				5F0000000000000000000A01 /* XCRemoteSwiftPackageReference "posthog-ios" */,
+				6A0000000000000000000A01 /* XCRemoteSwiftPackageReference "gravity-swift-sdk" */,
 			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
@@ -3564,6 +3568,14 @@
 				version = 3.93.3;
 			};
 		};
+		6A0000000000000000000A01 /* XCRemoteSwiftPackageReference "gravity-swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Try-Gravity/gravity-swift-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 1.2.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -3591,6 +3603,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5F0000000000000000000A01 /* XCRemoteSwiftPackageReference "posthog-ios" */;
 			productName = PostHog;
+		};
+		6A0000000000000000000A02 /* GravitySDK */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6A0000000000000000000A01 /* XCRemoteSwiftPackageReference "gravity-swift-sdk" */;
+			productName = GravitySDK;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

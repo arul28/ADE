@@ -733,8 +733,8 @@ card, whatever the plan.
   `above_prompt`, `inline`, or `split` for an A/B test; migration `0061`
   keeps an owner's choice per account) names where
   an account's card shows: under the finished reply, docked above the prompt
-  box (the latest reply's card, kept while the next reply runs), or one linked
-  "Sponsored" sentence at the end of the reply. The state carries `format`;
+  box (the latest reply's card, kept while the next reply runs), or at the
+  end of the reply, inside it. The state carries `format`;
   the ad request says the format it draws in and its surface (`desktop`,
   `web`, `ios`), and the server sends Gravity the registered placement
   `ade-<surface>-<below|above-prompt|inline>` (`below_response`,
@@ -754,21 +754,40 @@ card, whatever the plan.
   (`cloud-owner.mjs ab`) joins those counts with Gravity's per-placement
   views, clicks and revenue, and the daily report has a formats line.
 - **Reply card** (`renderer/components/chat/sponsored/`, iOS
-  `WorkSponsoredCards.swift`): at most one, under a finished reply, asked for
+  `WorkSponsoredCards.swift`): at most one per finished reply, asked for
   only while the pane and that spot are on screen. The server claims the reply
   before it asks Gravity, so two screens make one request, and keeps the card's
-  fields (never chat text) for a day. The view link goes once half the card is
-  on screen; nothing rewards a view or a click. One sponsored unit per window
-  (`sponsoredOnScreen.ts`), and the tray hides its upgrade button beside it.
+  fields (never chat text) for a day. Nothing rewards a view or a click. One
+  sponsored unit per window (`sponsoredOnScreen.ts`), and the tray hides its
+  upgrade button beside it.
+- **Gravity's renderer** (Gravity's recommendation, 2026-11-25): the ad
+  request names the client's renderer (`renderer`: `web1` for
+  `@gravity-ai/ui` on desktop and web, `psp1` for Gravity's Swift SDK on the
+  iPhone and iPad), and only then does the server ask Gravity for its design
+  (`supportsSpec`; never a frame). The answer's `gravity` is Gravity's ad in
+  its own field names, design (`renderer_spec`) included; the client hands it
+  to `GravityAd` (`SponsoredGravityCard.tsx`, loaded only when a card shows)
+  or `SpecAdView`, which draws Gravity's design in ADE's colors and sends the
+  view link and the `measured`/`viewable` beacons itself. ADE keeps the place,
+  the hide button and its link rule (every click opens one of Gravity's own
+  links in the browser). For `web1` the server inlines the advertiser's icon
+  as a `data:` image (the desktop page loads images only from listed hosts;
+  `rendererCsp.ts` and the web client's `_headers` list Gravity's hosts for
+  the beacons). An older client sends no `renderer`, gets no design, and
+  draws ADE's own card from the plain fields, sending the view link itself
+  once half the card is on screen.
 - **Index pick** (`ade cloud recommend --need "…"`, `cloudAgentActions.ts`): an
   agent on an ADE Cloud computer asks for a service the person needs. Refused
   for a person, ADE MCP, automation and subagent chats, and while nobody has a
   chat or agent CLI of that computer open (`cloud_sponsored_viewers`, from
   `seen` every 4 minutes). The Index has no test mode, so before go-live only
-  testers reach it. A chat gets a `sponsored_pick` card that installs nothing;
+  testers reach it, and only from a listed country (`GRAVITY_COUNTRIES`, read
+  from the viewer's last `seen`; a tester abroad gets `reason: "country"`,
+  where test ads still show). A chat gets a `sponsored_pick` card that installs nothing;
   a CLI session gets text the agent repeats once, starting with "Sponsored:".
 - **Limits and report:** per account per day (120 ads, 20 Index searches) and
-  Gravity's live allowance (`GRAVITY_DAILY_LIMIT`), each taken in one
+  an optional ceiling on Gravity's live requests (`GRAVITY_DAILY_LIMIT`, unset
+  since the contract dropped the daily limit), each taken in one
   conditional write before the request (`cloud_sponsored_days`). The daily cost
   report prints the counts and Gravity's revenue against the day's free-plan
   cost. Minutes 23 and 53 of every hour prune answers and viewer rows (IP,

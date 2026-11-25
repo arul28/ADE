@@ -1,5 +1,6 @@
 import AppTrackingTransparency
 import Foundation
+import GravitySDK
 import OSLog
 import UIKit
 
@@ -86,6 +87,11 @@ enum CloudSponsoredFormat: String, Equatable {
 /// The app a card shows in (`CloudSponsoredSurface`): each surface and format is its own Gravity placement.
 let cloudSponsoredSurface = "ios"
 
+/// The renderer this app draws cards with (`CloudSponsoredRenderer`): `psp1`,
+/// Gravity's native profile, drawn by its Swift SDK (`SpecAdView`). The
+/// answer then carries Gravity's own ad (`CloudSponsoredAd.gravity`).
+let cloudSponsoredRenderer = "psp1"
+
 /// One card (`CloudSponsoredAd`). A card whose click link isn't Gravity's
 /// never shows (`CloudSponsoredAdAnswer.shownAd`).
 struct CloudSponsoredAd: Decodable, Equatable {
@@ -99,8 +105,14 @@ struct CloudSponsoredAd: Decodable, Equatable {
   /// Requested once, when at least half of the card is on screen.
   let impUrl: String?
   let test: Bool
+  /// Gravity's own ad, for its renderer (`SpecAdView`): the design and the
+  /// same tracked links. The card is then Gravity's design, and the renderer
+  /// sends its view links itself. Nil from an older server, or when it is
+  /// malformed or links anywhere but Gravity's own hosts: the card is then
+  /// ADE's own, from the plain fields above.
+  let gravity: AdResponse?
 
-  init(id: String, brand: String, title: String, text: String, cta: String?, clickUrl: String, impUrl: String?, test: Bool) {
+  init(id: String, brand: String, title: String, text: String, cta: String?, clickUrl: String, impUrl: String?, test: Bool, gravity: AdResponse? = nil) {
     self.id = id
     self.brand = brand
     self.title = title
@@ -109,9 +121,10 @@ struct CloudSponsoredAd: Decodable, Equatable {
     self.clickUrl = clickUrl
     self.impUrl = impUrl
     self.test = test
+    self.gravity = gravity.flatMap(Self.checked)
   }
 
-  private enum CodingKeys: String, CodingKey { case id, brand, title, text, cta, clickUrl, impUrl, test }
+  private enum CodingKeys: String, CodingKey { case id, brand, title, text, cta, clickUrl, impUrl, test, gravity }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -123,6 +136,23 @@ struct CloudSponsoredAd: Decodable, Equatable {
     clickUrl = try c.decode(String.self, forKey: .clickUrl)
     impUrl = c.lenient(String.self, forKey: .impUrl)
     test = c.lenient(Bool.self, forKey: .test) ?? false
+    gravity = c.lenient(AdResponse.self, forKey: .gravity).flatMap(Self.checked)
+  }
+
+  /// Gravity's ad only when the links its renderer follows are Gravity's own
+  /// (`isGravityUrl`): the click link, and the view link when there is one.
+  private static func checked(_ ad: AdResponse) -> AdResponse? {
+    guard cloudGravityURL(ad.clickUrl) != nil else { return nil }
+    if let impUrl = ad.impUrl, cloudGravityURL(impUrl) == nil { return nil }
+    return ad
+  }
+
+  /// Gravity's `AdResponse` isn't Equatable: two of its ads are the same by their links.
+  static func == (lhs: CloudSponsoredAd, rhs: CloudSponsoredAd) -> Bool {
+    lhs.id == rhs.id && lhs.brand == rhs.brand && lhs.title == rhs.title && lhs.text == rhs.text
+      && lhs.cta == rhs.cta && lhs.clickUrl == rhs.clickUrl && lhs.impUrl == rhs.impUrl && lhs.test == rhs.test
+      && (lhs.gravity == nil) == (rhs.gravity == nil)
+      && lhs.gravity?.clickUrl == rhs.gravity?.clickUrl && lhs.gravity?.impUrl == rhs.gravity?.impUrl
   }
 }
 
@@ -238,6 +268,8 @@ extension CloudServerClient {
     /// The format the card is drawn in (the fallback when the account's place isn't on screen).
     let format: String
     let surface: String
+    /// Gravity's renderer the card is drawn with: the answer carries Gravity's own ad.
+    let renderer: String
   }
 
   /// `PUT /cloud/sponsored/consent`: the account's answer, on every device at
@@ -265,7 +297,7 @@ extension CloudServerClient {
   func sponsoredAd(instanceId: String, chatId: String, turn: CloudSponsoredTurn, device: CloudSponsoredDevice, format: CloudSponsoredFormat) async throws -> CloudSponsoredAdAnswer {
     let body = try JSONEncoder().encode(AdBody(
       instanceId: instanceId, chatId: chatId, turnId: turn.turnId, messages: turn.messages, device: device,
-      format: format.rawValue, surface: cloudSponsoredSurface
+      format: format.rawValue, surface: cloudSponsoredSurface, renderer: cloudSponsoredRenderer
     ))
     return try decode(CloudSponsoredAdAnswer.self, from: try await send("POST", "cloud/sponsored/ad", body: body))
   }
@@ -559,9 +591,10 @@ final class CloudSponsoredStore: ObservableObject {
 
   /// Gravity's view link, once per card per run, only on Gravity's own host.
   /// Not delivered (offline, Gravity down): the next time half the card is
-  /// on screen sends it again.
+  /// on screen sends it again. Only for ADE's own card: Gravity's renderer
+  /// sends a Gravity-drawn card's view link itself (`WorkSponsoredGravityCard`).
   func noteViewed(_ ad: CloudSponsoredAd) {
-    guard appActive, let url = cloudGravityURL(ad.impUrl), viewedAds.insert(ad.id).inserted else { return }
+    guard appActive, ad.gravity == nil, let url = cloudGravityURL(ad.impUrl), viewedAds.insert(ad.id).inserted else { return }
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
     let session = viewSession
