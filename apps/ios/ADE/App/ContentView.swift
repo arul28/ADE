@@ -67,6 +67,9 @@ struct ContentView: View {
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
   }()
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
+  /// The privacy policy version this phone last told the person about. A
+  /// sign-in that showed the agree line writes it too (`PrivacyPolicyNotice`).
+  @AppStorage(PrivacyPolicyNotice.seenVersionKey) private var privacySeenVersion = ""
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -85,14 +88,21 @@ struct ContentView: View {
     let connectLabel: String?
     let updateVersion: String?
     let updateDismissed: Bool
+    let privacyNotice: Bool
   }
 
   private var topBannerKey: TopBannerKey {
     TopBannerKey(
       connectLabel: syncService.accountConnectSuccessLabel,
       updateVersion: appUpdateAdvisor.availableVersion,
-      updateDismissed: appUpdateAdvisor.isAvailableUpdateDismissed
+      updateDismissed: appUpdateAdvisor.isAvailableUpdateDismissed,
+      privacyNotice: showsPrivacyNotice
     )
+  }
+
+  /// Past the access gate only.
+  private var showsPrivacyNotice: Bool {
+    hasMobileAccess && privacySeenVersion != PrivacyPolicyNotice.version
   }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -245,12 +255,23 @@ struct ContentView: View {
             )
             .transition(.move(edge: .top).combined(with: .opacity))
           }
+
+          if showsPrivacyNotice {
+            PrivacyPolicyNoticeBanner(
+              onRead: {
+                UIApplication.shared.open(PrivacyPolicyNotice.changesURL)
+                closePrivacyNotice()
+              },
+              onClose: closePrivacyNotice
+            )
+            .transition(.move(edge: .top).combined(with: .opacity))
+          }
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
         // One key, on the banner container rather than the root: every value
-        // that mounts either banner is folded into `topBannerKey`, so both
-        // transitions still run, and a banner appearing no longer drags an
+        // that mounts any banner is folded into `topBannerKey`, so every
+        // transition still runs, and a banner appearing no longer drags an
         // unrelated root change (a tab switch, a sheet) into the same spring.
         .animation(topBannerAnimation, value: topBannerKey)
       }
@@ -308,6 +329,10 @@ struct ContentView: View {
     ProductAnalytics.shared.captureScreen(
       syncService.shouldShowProjectHub ? .hub : selectedTab.analyticsScreen
     )
+  }
+
+  private func closePrivacyNotice() {
+    PrivacyPolicyNotice.markSeen()
   }
 
   private func openAppUpdate() {
@@ -478,6 +503,37 @@ struct AccountConnectStatusToast: View {
   }
 }
 
+/// The privacy policy version this phone last told the person about, and the
+/// link to the policy's list of changes. `version` is the policy's "Last updated" date; change it with
+/// `PRIVACY_POLICY_VERSION` (`apps/desktop/src/shared/legalLinks.ts`) so the
+/// notice shows once again. Per device: a notice, not a consent.
+enum PrivacyPolicyNotice {
+  static let version = "2026-11-25"
+  static let changesURL = URL(string: "https://ade-app.dev/privacy#changes")!
+  static let seenVersionKey = "ade.privacyPolicyNotice.seenVersion"
+
+  static func markSeen() {
+    UserDefaults.standard.set(version, forKey: seenVersionKey)
+  }
+}
+
+/// "We updated our Privacy Policy", once per policy version. Any answer counts
+/// as seen. It sends no analytics event.
+private struct PrivacyPolicyNoticeBanner: View {
+  let onRead: () -> Void
+  let onClose: () -> Void
+
+  var body: some View {
+    TopPromptBanner(
+      systemImage: "checkmark.shield.fill",
+      title: "We updated our Privacy Policy",
+      detail: "It now lists everything ADE collects and where it goes, and adds sponsored cards on the ADE Cloud Free plan.",
+      secondary: .init(title: "OK", accessibilityLabel: "Close the privacy policy notice", identifier: "privacy-notice-ok", action: onClose),
+      primary: .init(title: "Read", accessibilityLabel: "Read what changed in the Privacy Policy", identifier: "privacy-notice-read", action: onRead)
+    )
+  }
+}
+
 private struct AppUpdateBanner: View {
   let version: String
   let canUpdate: Bool
@@ -485,30 +541,67 @@ private struct AppUpdateBanner: View {
   let onLater: () -> Void
 
   var body: some View {
+    TopPromptBanner(
+      systemImage: "arrow.down.circle.fill",
+      title: "ADE \(version) is available",
+      secondary: .init(title: "Later", action: onLater),
+      primary: .init(title: "Update", isEnabled: canUpdate, action: onUpdate)
+    )
+  }
+}
+
+/// The look of a prompt in the top banner stack: an icon, a title with an
+/// optional detail line, a text button and a capsule button.
+private struct TopPromptBanner: View {
+  struct Action {
+    let title: String
+    var accessibilityLabel: String? = nil
+    var identifier: String? = nil
+    var isEnabled = true
+    let action: () -> Void
+  }
+
+  let systemImage: String
+  let title: String
+  var detail: String? = nil
+  let secondary: Action
+  let primary: Action
+
+  var body: some View {
     HStack(spacing: 8) {
-      Image(systemName: "arrow.down.circle.fill")
+      Image(systemName: systemImage)
         .foregroundStyle(ADEColor.purpleAccent)
 
-      Text("ADE \(version) is available")
-        .font(.system(.footnote, design: .rounded).weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        // Two lines rather than one: at accessibility text sizes a single
-        // scaled line drops the version number the banner exists to state.
-        .lineLimit(2)
-        .minimumScaleFactor(0.8)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.system(.footnote, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          // Two lines rather than one: at accessibility text sizes a single
+          // scaled line drops the part the banner exists to state.
+          .lineLimit(2)
+        if let detail {
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(3)
+        }
+      }
+      .minimumScaleFactor(0.8)
 
       Spacer(minLength: 0)
 
-      // Both actions carry a 44pt hit area. "Later" draws nothing but text, so
-      // without an explicit frame its target was the glyph box alone.
-      Button("Later", action: onLater)
+      // Both actions carry a 44pt hit area. The text button draws nothing but
+      // text, so without an explicit frame its target was the glyph box alone.
+      Button(secondary.title, action: secondary.action)
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textSecondary)
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
+        .accessibilityLabel(secondary.accessibilityLabel ?? secondary.title)
+        .accessibilityIdentifier(secondary.identifier ?? "")
 
-      Button("Update", action: onUpdate)
+      Button(primary.title, action: primary.action)
         .font(.caption.weight(.semibold))
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
@@ -517,8 +610,10 @@ private struct AppUpdateBanner: View {
         .buttonStyle(.plain)
         .frame(minHeight: 44)
         .contentShape(Rectangle())
-        .disabled(!canUpdate)
-        .opacity(canUpdate ? 1 : 0.45)
+        .disabled(!primary.isEnabled)
+        .opacity(primary.isEnabled ? 1 : 0.45)
+        .accessibilityLabel(primary.accessibilityLabel ?? primary.title)
+        .accessibilityIdentifier(primary.identifier ?? "")
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 9)
@@ -530,7 +625,7 @@ private struct AppUpdateBanner: View {
     )
     .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("ADE \(version) is available")
+    .accessibilityLabel(title)
   }
 }
 

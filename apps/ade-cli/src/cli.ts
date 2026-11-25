@@ -731,6 +731,7 @@ import { createRemoteProviderSignIn, type ClaudePassRunner } from "./services/ac
 import { startCloudBootLaunch, takeCloudLaunch } from "./services/account/cloudBootLaunch";
 import { createProviderReady } from "./services/account/cloudLaunchSignInWait";
 import {
+  SIGN_IN_LEGAL_LINE,
   deviceSignInInstructions,
   readDeviceSignInPoll,
   readDeviceSignInStart,
@@ -42307,6 +42308,14 @@ async function runAccountLogin(
       };
     };
 
+    // The agree line goes out once, before a browser opens or a device code shows.
+    let legalLineShown = false;
+    const legalLineOnce = (): string => {
+      if (legalLineShown) return "";
+      legalLineShown = true;
+      return `${SIGN_IN_LEGAL_LINE}\n`;
+    };
+
     const runDeviceFlow = async (
       onStarted?: () => Promise<void>,
     ): Promise<{ output: string; exitCode: number }> => {
@@ -42327,7 +42336,7 @@ async function runAccountLogin(
       let intervalSec = device.intervalSec;
       const deadlineMs = deadlineFor(device.expiresAt);
       process.stderr.write(
-        `\n${deviceSignInInstructions("To finish signing in", device)}\nWaiting for sign-in…\n`,
+        `\n${deviceSignInInstructions("To finish signing in", device)}${legalLineOnce()}\nWaiting for sign-in…\n`,
       );
       while (true) {
         const sleepMs = Math.max(1, intervalSec) * 1000;
@@ -42360,6 +42369,7 @@ async function runAccountLogin(
       throw new CliExecutionError("ADE account login did not start.", { start });
     }
     pendingSessionId = sessionId;
+    process.stderr.write(legalLineOnce());
     const openResult = openUrlViaOs(authorizeUrl);
     // Set when a device sign-in already failed to start, so it is tried once.
     let deviceSignInUnavailable = false;

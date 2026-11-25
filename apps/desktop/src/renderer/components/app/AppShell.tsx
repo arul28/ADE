@@ -62,6 +62,7 @@ import { ChatLaunchesSlideOut, useChatLaunchSlideOutVisible } from "./ChatLaunch
 import { CloudLaneJobsSlideOut, useCloudLaneJobsSlideOutVisible } from "../cloudLane/CloudLaneJobsSlideOut";
 import { useChatLaunchSync } from "../../state/useChatLaunchSync";
 import { AutoUpdateBanner } from "./AutoUpdateBanner";
+import { PrivacyPolicyUpdateNotice } from "./PrivacyPolicyUpdateNotice";
 import { AppBundleOwnershipBanner } from "./AppBundleOwnershipBanner";
 import { CloudSignInEndNotice } from "../settings/providers/cloud/CloudSignInEndNotice";
 import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
@@ -1209,6 +1210,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <ProjectTransitionErrorAlert />
       <AccountSignedOutBanner navigate={navigate} />
       <AutoUpdateBanner />
+      <PrivacyPolicyUpdateNotice />
       <AppBundleOwnershipBanner />
       <CloudSignInEndNotice navigate={navigate} />
       <BrainRecoveryNotice />

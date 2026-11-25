@@ -2,11 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Default-on product analytics, masked session replay (PostHog) and error mirroring; signed-in activity is linked only through a pseudonymous account hash. -->
-	<!-- Sponsored cards (Gravity, ADE Cloud Free chats, after the person agrees): ADE's server sends Gravity the chat's last messages,
-	     IP and device, scrambled account and chat ids and, only when Apple's tracking prompt was allowed, a SHA-256 email hash.
-	     That is tracking, so it is declared. The two domains below are the ones that receive the email hash; only ADE's server
-	     calls them (the app itself loads just the shown card's view and click links from trygravity.ai). -->
+	<!-- Kept in step with https://ade-app.dev/privacy (apps/web/src/app/pages/PrivacyPage.tsx) and the App Store Connect
+	     privacy label. Default-on product analytics, masked session replay (PostHog), Sentry error reports with a masked
+	     screen recording, and a device ID hashed from identifierForVendor, all linked to the account hash once signed in.
+	     Account sign-in (Clerk: email, name), the push token, and chats, prompts and images sent to ADE Cloud computers,
+	     whose saved chats ADE's server keeps, are collected for app functionality. The day-2 getting-started email, which
+	     greets the person by first name, is the developer's own marketing. Dictation, camera pairing and Face ID stay on the device and are not collected.
+	     Sponsored cards (Gravity, ADE Cloud Free chats, after the person agrees): ADE's server sends Gravity the chat's last
+	     messages, IP and device, scrambled account and chat ids and, only when Apple's tracking prompt was allowed, a SHA-256
+	     email hash. That is tracking, so it is declared. The two domains below are the ones that receive the email hash; only
+	     ADE's server calls them (the app itself loads just the shown card's view and click links from trygravity.ai). -->
 	<key>NSPrivacyTracking</key>
 	<true/>
 	<key>NSPrivacyTrackingDomains</key>
@@ -26,6 +31,7 @@
 			<key>NSPrivacyCollectedDataTypePurposes</key>
 			<array>
 				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 			</array>
 		</dict>
 		<dict>
@@ -74,6 +80,7 @@
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
 					<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
 				</array>
 			</dict>
@@ -111,7 +118,22 @@
 				<true/>
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
+					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+					<string>NSPrivacyCollectedDataTypePurposeDeveloperAdvertising</string>
 					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+				</array>
+			</dict>
+			<dict>
+				<key>NSPrivacyCollectedDataType</key>
+				<string>NSPrivacyCollectedDataTypeName</string>
+				<key>NSPrivacyCollectedDataTypeLinked</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypeTracking</key>
+				<false/>
+				<key>NSPrivacyCollectedDataTypePurposes</key>
+				<array>
+					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+					<string>NSPrivacyCollectedDataTypePurposeDeveloperAdvertising</string>
 				</array>
 			</dict>
 			<dict>
@@ -123,7 +145,20 @@
 				<true/>
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
+					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+				</array>
+			</dict>
+			<dict>
+				<key>NSPrivacyCollectedDataType</key>
+				<string>NSPrivacyCollectedDataTypePhotosorVideos</string>
+				<key>NSPrivacyCollectedDataTypeLinked</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypeTracking</key>
+				<false/>
+				<key>NSPrivacyCollectedDataTypePurposes</key>
+				<array>
+					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 				</array>
 			</dict>
 			<dict>
