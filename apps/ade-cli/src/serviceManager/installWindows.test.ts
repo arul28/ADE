@@ -1407,7 +1407,34 @@ describe("Windows background service helpers", () => {
       parentPid: supervisorPid,
       ok: true,
     },
-  ])("$name", async ({ operation, commandLine, parentPid, ok }) => {
+    // An agent's shell is a child of the brain. Its `ade brain stop` / `restart`
+    // must not end the brain and every chat on it, and must leave the service as it was.
+    {
+      operation: "uninstall",
+      name: "refuses to stop the brain this command runs inside, and stops nothing",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: false,
+      insideBrain: true,
+    },
+    {
+      operation: "install",
+      name: "install refuses to replace the brain this command runs inside, and writes no launcher",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: false,
+      insideBrain: true,
+    },
+    {
+      operation: "uninstall",
+      name: "stops the brain this command runs inside when the self-mutation override is set",
+      commandLine: serveCommandLine,
+      parentPid: supervisorPid,
+      ok: true,
+      insideBrain: true,
+      env: { ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1" },
+    },
+  ])("$name", async ({ operation, commandLine, parentPid, ok, insideBrain, env }) => {
     // A real live process stands in for the recorded brain, so the liveness check is real.
     const brain = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
@@ -1432,19 +1459,31 @@ describe("Windows background service helpers", () => {
       // identity check shows up in `calls`, and a refusal must leave both alone.
       const startupValue = `powershell.exe -File "${launcherPath}"`;
       const startup = new Map([[taskName, startupValue]]);
-      const spawnSync = processTableSpawn(calls, processes, startupRegistrySpawn(
+      const host = processTableSpawn(calls, processes, startupRegistrySpawn(
         calls,
         startup,
         taskName,
         buildWindowsSupervisorQueryArgs(supervisorPid, launcherPath),
       ));
-      const deps = { command: serviceCommand, launcherPath, serviceName, spawnSync, userName: taskUser };
+      // Inside the brain, Windows reports this process under the brain and its supervisor.
+      const spawnSync: ServiceManagerSpawnSync = (command, args, options) =>
+        insideBrain && JSON.stringify(args) === JSON.stringify(buildWindowsAncestryQueryArgs(process.pid))
+          ? { status: 0, stdout: `P\t${process.pid}\t${brainPid}\t\nP\t${brainPid}\t${supervisorPid}\t\nP\t${supervisorPid}\t0\t\nE\troot`, stderr: "" }
+          : host(command, args, options);
+      const deps = { command: serviceCommand, launcherPath, serviceName, spawnSync, userName: taskUser, env: env ?? {} };
       const result = operation === "install"
         ? await installWindowsService(deps)
         : await uninstallWindowsService(deps);
 
       expect(result.ok).toBe(ok);
-      if (!ok) expect(result.message).toContain(`the brain process ${brainPid}; it was left running`);
+      const refusedFromInside = insideBrain && !ok;
+      if (refusedFromInside) {
+        expect(result.selfMutationBlocked).toBe(true);
+        expect(result.message).toContain(`pid ${brainPid}`);
+        expect(fs.existsSync(launcherPath)).toBe(false);
+      } else if (!ok) {
+        expect(result.message).toContain(`the brain process ${brainPid}; it was left running`);
+      }
       expect(killedPids(calls)).toEqual(ok ? [supervisorPid, brainPid] : []);
       if (!ok) {
         expect(calls.filter(isRegistrationChange)).toEqual([]);

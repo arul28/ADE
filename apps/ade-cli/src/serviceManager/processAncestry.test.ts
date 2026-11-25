@@ -127,28 +127,25 @@ describe("process ancestry on win32", () => {
       stdout: ["      PID    PPID    PGID     WINPID   TTY         UID    STIME COMMAND", ...rows].join("\n"),
     });
 
-    it("follows MSYS's own parent across the exec and finds the brain", () => {
-      const { run } = windowsHost(brokenByExec(), psListing([
+    it.each<[string, ServiceManagerProcessResult, boolean | typeof PARENT_PID_UNKNOWN]>([
+      ["follows MSYS's own parent across the exec to the brain", psListing([
         "       11       1      11        300  ?         197609 00:25:19 /usr/bin/bash",
         "       12      11      11        400  ?         197609 00:25:19 /c/Program Files/ADE/ADE",
         "    65540       0       0          4  ?              0   Oct 20 System",
-      ]));
-      expect(isCurrentProcessDescendantOfPid({ targetPid: 100, currentPid: 400, platform: "win32", run })).toBe(true);
-    });
-
-    it.each<[string, ServiceManagerProcessResult]>([
-      ["MSYS cannot list its processes", { status: 1, stdout: "", stderr: "ps failed" }],
-      ["MSYS does not know the process", psListing(["       11       1      11        300  ?    197609 00:25:19 /usr/bin/bash"])],
-    ])("fails closed when %s", (_name, ps) => {
-      const { run } = windowsHost(brokenByExec(), ps);
-      expect(readCurrentProcessAncestorPids({ run, currentPid: 400, platform: "win32" })).toBe(PARENT_PID_UNKNOWN);
-    });
-
-    it("ends the chain at an MSYS process that has no MSYS parent", () => {
-      const { run } = windowsHost(brokenByExec(), psListing([
+      ]), true],
+      // Started by a Windows process, or its MSYS parent exited: the chain ends.
+      ["ends at an MSYS process that has no MSYS parent", psListing([
         "       12       1      12        400  ?         197609 00:25:19 /c/Program Files/ADE/ADE",
-      ]));
-      expect(isCurrentProcessDescendantOfPid({ targetPid: 100, currentPid: 400, platform: "win32", run })).toBe(false);
+      ]), false],
+      ["fails closed when MSYS cannot list its processes", { status: 1, stdout: "", stderr: "ps failed" }, PARENT_PID_UNKNOWN],
+      ["fails closed when MSYS does not know the process", psListing([
+        "       11       1      11        300  ?    197609 00:25:19 /usr/bin/bash",
+      ]), PARENT_PID_UNKNOWN],
+    ])("%s", (_name, ps, expected) => {
+      const { run } = windowsHost(brokenByExec(), ps);
+      const ancestors = readCurrentProcessAncestorPids({ run, currentPid: 400, platform: "win32" });
+      if (expected === PARENT_PID_UNKNOWN) expect(ancestors).toBe(PARENT_PID_UNKNOWN);
+      else expect((ancestors as ReadonlySet<number>).has(100)).toBe(expected);
     });
   });
 
@@ -208,30 +205,23 @@ describe("process ancestry on win32", () => {
 });
 
 describe("refuseSelfServiceMutation", () => {
-  // This process (400) runs inside brain 100.
-  const insideBrain = (pid: number) => ({ 400: 300, 300: 100, 100: 1 } as Record<number, number>)[pid] ?? null;
-  const base = {
-    action: "uninstall" as const,
-    path: "/svc",
-    platform: "darwin" as const,
-    currentPid: 400,
-    parentPid: insideBrain,
-  };
-
+  // `ade connect` reports an unconfirmed refusal as a failure and a confirmed one
+  // as "already running this process", so the two must be told apart.
   it.each([
-    ["a pid it would stop is an ancestor", { pids: [999, 100], env: {} }, { selfMutationBlocked: true }],
-    ["no pid it would stop is an ancestor", { pids: [999], env: {} }, null],
-    ["the override is set", { pids: [100], env: { ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1" } }, null],
-    ["it would stop nothing", { pids: [null, undefined], env: {} }, null],
-  ])("answers when %s", (_name, args, expected) => {
-    const result = refuseSelfServiceMutation({ ...base, ...args });
-    if (expected === null) expect(result).toBeNull();
-    else expect(result).toMatchObject({ ok: false, ...expected });
-  });
-
-  it("refuses, marked unconfirmed, when the ancestry cannot be read", () => {
-    const result = refuseSelfServiceMutation({ ...base, pids: [100], env: {}, parentPid: () => PARENT_PID_UNKNOWN });
-    expect(result).toMatchObject({ ok: false, selfMutationBlocked: true, selfMutationUnconfirmed: true });
+    ["the ancestry cannot be read", () => PARENT_PID_UNKNOWN, true],
+    ["this process is inside the brain", (pid: number) => ({ 400: 100 } as Record<number, number>)[pid] ?? null, undefined],
+  ] as const)("marks the refusal unconfirmed only when %s", (_name, parentPid, unconfirmed) => {
+    const result = refuseSelfServiceMutation({
+      action: "uninstall",
+      path: "/svc",
+      platform: "darwin",
+      currentPid: 400,
+      parentPid,
+      pids: [100],
+      env: {},
+    });
+    expect(result).toMatchObject({ ok: false, selfMutationBlocked: true });
+    expect(result?.selfMutationUnconfirmed).toBe(unconfirmed);
   });
 });
 
