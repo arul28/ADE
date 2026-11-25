@@ -23617,6 +23617,9 @@ export function createAgentChatService(args: {
     // mid-turn when the idle mark lands.
     if (managed.restartAfterTurn) runRestartAfterTurn(managed);
     if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
+    // Likewise a reaction target: a later wake turn must not react to a
+    // message an earlier turn read.
+    if (managed.ctoTurn) managed.ctoTurn.reactTarget = null;
   };
 
   const regenStaleStatusLine = createStatusLineStaleRegen({
