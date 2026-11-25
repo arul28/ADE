@@ -84,6 +84,14 @@ export const NOTICE_FLOAT_SURFACE = {
  * The in-flow variant (docked / inline banners): same card, no lift. A host
  * that floats banners over content sets `--notice-docked-bg` to an opaque mix.
  */
+/** A banner on a panel that is dark in every theme (the ADE Cloud hero's sky): frosted glass. */
+export const NOTICE_NIGHT_SURFACE = {
+  background: "rgba(14, 10, 40, 0.42)",
+  border: "1px solid rgba(255, 255, 255, 0.11)",
+  borderRadius: 14,
+  backdropFilter: "blur(10px)",
+} as const;
+
 export const NOTICE_DOCKED_SURFACE = {
   background: "var(--notice-docked-bg, color-mix(in srgb, var(--color-card) 72%, transparent))",
 } as const;

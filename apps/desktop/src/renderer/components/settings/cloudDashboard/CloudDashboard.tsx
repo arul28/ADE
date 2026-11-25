@@ -519,7 +519,8 @@ function CloudHero({
       {moment ? (
         <Banner
           layout="inline"
-          style={HERO_NOTICE_STYLE}
+          surface="night"
+          style={{ position: "relative", marginTop: 12 }}
           model={{
             id: `cloud-plan-moment-${moment.key}`,
             tone: "success",
@@ -535,7 +536,8 @@ function CloudHero({
       {status ? (
         <Banner
           layout="inline"
-          style={HERO_NOTICE_STYLE}
+          surface="night"
+          style={{ position: "relative", marginTop: 12 }}
           model={{ ...status, actions: statusActions(status, account, { onExtra: toExtra, onPlans: toPlans, onUpdateCard }), report: false }}
         />
       ) : null}
@@ -559,20 +561,6 @@ function ComputerWindows({ total, limit, awake }: { total: number; limit: number
     </span>
   );
 }
-
-/**
- * The hero's notices sit in its night sky: the shared `Banner`, on the hero's
- * glass instead of the page card, so they read as part of the plan.
- */
-const HERO_NOTICE_STYLE: CSSProperties = {
-  position: "relative",
-  marginTop: 12,
-  borderRadius: 14,
-  border: "1px solid var(--adecd-glass-edge)",
-  background: "rgba(14, 10, 40, 0.42)",
-  backdropFilter: "blur(10px)",
-  boxShadow: "none",
-};
 
 /** The one thing to do about the account's urgent line; none when there is nothing to do. */
 function statusActions(

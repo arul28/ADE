@@ -1,7 +1,7 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { NoticeActions, NoticeCloseButton, NoticeIcon, type NoticeAction } from "./NoticeParts";
 import { useNoticeFailure, type NoticeReport } from "./NoticeReport";
-import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTone } from "./noticeTones";
+import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, NOTICE_NIGHT_SURFACE, noticeTone, type NoticeTone } from "./noticeTones";
 
 /**
  * ADE's one banner. Every banner in the app — the app-wide ones the
@@ -32,6 +32,7 @@ import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTon
  */
 
 export type BannerLayout = "docked" | "floating" | "inline" | "suggestion";
+export type BannerSurface = "card" | "night";
 
 export type BannerDismiss =
   | false
@@ -106,6 +107,7 @@ export function Banner({
   style,
   testId,
   announce = true,
+  surface = "card",
 }: {
   model: BannerModel;
   layout?: BannerLayout;
@@ -120,9 +122,16 @@ export function Banner({
    * caller that has its own live region). The suggestion layout ignores it.
    */
   announce?: boolean;
+  /**
+   * What the banner sits on. `card` (the default): the app's card, in the
+   * app's theme. `night`: a panel that is dark in every theme (the ADE Cloud
+   * hero's sky), so the banner is frosted glass with dark-theme colours.
+   * Inline layout only.
+   */
+  surface?: BannerSurface;
 }): JSX.Element {
   if (layout === "suggestion") return <SuggestionCard model={model} style={style} testId={testId} />;
-  return <NoticeBanner model={model} layout={layout} onDurableDismiss={onDurableDismiss} style={style} testId={testId} announce={announce} />;
+  return <NoticeBanner model={model} layout={layout} onDurableDismiss={onDurableDismiss} style={style} testId={testId} announce={announce} surface={surface} />;
 }
 
 function NoticeBanner({
@@ -132,6 +141,7 @@ function NoticeBanner({
   style,
   testId,
   announce,
+  surface: surfaceKind,
 }: {
   model: BannerModel;
   layout: Exclude<BannerLayout, "suggestion">;
@@ -139,6 +149,7 @@ function NoticeBanner({
   style?: CSSProperties;
   testId?: string;
   announce: boolean;
+  surface: BannerSurface;
 }): JSX.Element | null {
   const failure = useNoticeFailure({
     report: model.report,
@@ -183,12 +194,17 @@ function NoticeBanner({
         padding: compactPill ? "5px 6px 5px 14px" : "10px 10px 10px 12px",
         border: `1px solid ${tokens.edge}`,
       }
-    : {
-        ...NOTICE_DOCKED_SURFACE,
-        borderRadius: 10,
-        padding: hasBody ? "8px 8px 8px 9px" : "6px 8px 6px 9px",
-        border: `1px solid ${tokens.edge}`,
-      };
+    : surfaceKind === "night"
+      ? {
+          ...NOTICE_NIGHT_SURFACE,
+          padding: hasBody ? "9px 10px 9px 11px" : "7px 10px 7px 11px",
+        }
+      : {
+          ...NOTICE_DOCKED_SURFACE,
+          borderRadius: 10,
+          padding: hasBody ? "8px 8px 8px 9px" : "6px 8px 6px 9px",
+          border: `1px solid ${tokens.edge}`,
+        };
 
   const text = (
     <div
@@ -230,6 +246,8 @@ function NoticeBanner({
       data-notice-tone={model.tone}
       data-banner-id={model.id}
       data-banner-layout={layout}
+      // A night surface is dark in every theme: its subtree reads the dark theme's tokens.
+      data-theme={surfaceKind === "night" ? "dark" : undefined}
       data-ph-unmask=""
       className={floating ? "ade-notice-float-enter" : layout === "docked" ? "ade-notice-dock-enter" : undefined}
       style={{
