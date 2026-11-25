@@ -474,12 +474,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    phone: fix.planId === "free" ? undefined : {
-      access: "on",
-      minutes: { included: plan.phoneMinutes ?? 0, used: 42, left: Math.max(0, (plan.phoneMinutes ?? 0) - 42) },
-      state: "none",
-      extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
-    },
+    phone: fix.planId === "free" ? undefined : { access: "on" },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
@@ -606,26 +601,18 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
-  // Credits: the iPhone has used some of the balance; no separate extra iPhone minutes.
+  // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
-    if (phoneParam && !out.phone) {
-      out = { ...out, phone: { access: "on", minutes: { included: 60, used: 12, left: 48 }, state: "none", extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 } } };
-    }
+    if (phoneParam && !out.phone) out = { ...out, phone: { access: "on" } };
     if (out.phone && (providerParam === "auto" || providerParam === "nomac" || providerParam === "revyl")) {
       out = { ...out, phone: { ...out.phone, providerChoice: providerParam } };
     }
     const phoneUsed = out.phone ? Math.min(out.hours.usedMilli, Math.round(out.hours.usedMilli * 0.4)) : 0;
-    const leftMinutes = Math.floor(out.hours.leftMilli / 1000);
     return {
       ...out,
       credits: { phoneMilliPerMinute: 1000 },
-      phone: out.phone ? {
-        ...out.phone,
-        creditsUsedMilli: phoneUsed,
-        minutes: { included: Math.floor(phoneUsed / 1000) + leftMinutes, used: Math.floor(phoneUsed / 1000), left: leftMinutes },
-        extra: { ...out.phone.extra, available: false, enabled: false },
-      } : undefined,
+      phone: out.phone ? { ...out.phone, creditsUsedMilli: phoneUsed } : undefined,
     };
   };
   state = withCredits(state);

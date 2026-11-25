@@ -1,9 +1,15 @@
 # ADE Cloud iPhone: from beta to everyone
 
-The beta (this branch) works end to end: an owner-run beta list, plan minutes
-read from NoMac, the phone in the tools pane in 3D and flat, and every agent
+The beta (this branch) works end to end: an owner-run beta list, usage read
+from NoMac, the phone in the tools pane in 3D and flat, and every agent
 driving it through `ade apple`. This plan is everything left so the launch is
 one server setting, with no app release on the day.
+
+**Superseded on billing (2026-11-25):** the plan's own iPhone minutes, extra
+iPhone minutes on their own Stripe meter, the minutes warnings and test
+iPhone minutes are gone. The phone draws from the account's credits at one
+credit a minute, and an extra minute is an extra credit on the extra-hours
+switch. The rows and sections below about minutes are kept as history only.
 
 Feature doc: `docs/features/apple-device/ade-cloud-iphone.md`.
 
@@ -11,16 +17,16 @@ Feature doc: `docs/features/apple-device/ade-cloud-iphone.md`.
 
 | Question | Decision |
 |---|---|
-| Past the plan's minutes | Free stops. Paid plans keep going and pay per extra minute, on the same Stripe bill as extra hours, with an optional monthly limit. |
-| Extra minute price | $0.025 a minute ($1.50 an hour). NoMac charges us $0.015. |
-| Minutes a month | Free 60, Plus 80, Pro 300, Max 800. |
-| Free plan | Gets minutes only when it passes the free-hours checks (one free plan per computer; a GitHub account under 30 days old saves a card first). |
+| Past the plan's minutes | Superseded by credits (2026-11-25): out of credits, Free stops and paid plans keep going on extra credits. |
+| Extra minute price | Superseded: one credit a minute. NoMac charges us $0.01 a minute. |
+| Minutes a month | Superseded: no minutes of its own, the plan's credits. |
+| Free plan | Its credits follow the free-hours checks (one free plan per computer; a GitHub account under 30 days old saves a card first). |
 | Where the phone shows | Desktop (3D and flat), ADE Web and the ADE iPhone app (flat, NoMac's player). |
 | Expo, React Native, Flutter | `ade apple install --app <App.app>` installs a Simulator build made elsewhere. Xcode projects still build on the phone. |
-| Running low | Same as cloud hours: an email and an in-app notice at 80% and at 0, and the minutes on the ADE Cloud page. |
+| Running low | The credit balance's emails and notices, and the credits on the ADE Cloud page. |
 | Turning it on | One Worker variable. No app release. |
-| Extra-use switch | Its own switch, separate from extra hours, with its own monthly limit (like extra disk). |
-| Beta testers | Nothing special: at launch they are on their plan's minutes like everyone else. |
+| Extra-use switch | Superseded: extra credits (the extra-hours switch). |
+| Beta testers | Nothing special: they draw their plan's credits like everyone else. |
 
 Revyl, for reference: Free gives up to 1,200 minutes with no card, 2 devices
 at once, then stops; Pro is $0.075 a minute with a card and $20 auto-recharge.
@@ -30,10 +36,10 @@ at once, then stops; Pro is $0.075 a minute with a card and $20 auto-recharge.
 | Item | State |
 |---|---|
 | 1. Launch switch and pause | Built; checked against real NoMac. |
-| 2. Plan minutes and the Free rule | Built (60 / 80 / 300 / 800; held free plans get 0). |
+| 2. Plan minutes and the Free rule | Removed 2026-11-25 (credits). |
 | 3. Usage in D1 and NoMac's webhook | Built (`cloud_phones`, signed webhook, ten-minute check). Hourly `usage/labels` reconcile not built: the ten-minute check reads every live phone instead. |
-| 4. Extra minutes on paid plans | Built (switch, limit, Stripe meter and price in `stripe-setup.mjs`, reporting, owed-on-off). |
-| 5. Warnings and visibility | Emails built; Settings card and dashboard line by a subagent (see report). |
+| 4. Extra minutes on paid plans | Removed 2026-11-25 (extra credits). |
+| 5. Warnings and visibility | The phone's own emails removed 2026-11-25; the credit balance's warnings cover it. |
 | 6. ADE Web and the iPhone app | Subagents (see report). |
 | 7. Non-Xcode apps | Built (`ade apple install --app`); not run against a real Simulator .app yet. |
 | 8. Pane extras | Not started (not blocking). |
@@ -56,11 +62,7 @@ at once, then stops; Pro is $0.075 a minute with a card and $20 auto-recharge.
 
 ### 2. Plan minutes and the Free rule
 
-- `plans.ts`: `phoneMinutes` 60 / 80 / 300 / 800. The plan table and the
-  pricing page read it already.
-- `phones.ts`: a Free account gets 0 minutes while `free_refused_at` or
-  `free_github_hold` is set, exactly like free hours (`freePlan.ts`,
-  `freePlanGithub.ts`). The refusal sentence names the fix (save a card).
+Removed 2026-11-25: the phone draws from the account's credits.
 
 ### 3. Usage in D1, from NoMac's webhooks
 
@@ -82,31 +84,13 @@ phones. At launch scale that is a NoMac call per open pane per 20 s.
 
 ### 4. Extra minutes on paid plans
 
-- Stripe: one metered price on a new meter `ade_cloud_phone_minutes` at
-  $0.025, added to every paid subscription (`scripts/stripe-setup.mjs`,
-  `phoneBilling.ts`, like the extra-hours prices).
-- A start with no included minutes left: Free is refused (as today). Paid
-  starts with a spend cap and time limit set to what the monthly limit has
-  left (or 2 hours with no limit), so NoMac still stops it at the limit.
-- Cron reports the minutes past the plan to the meter, like
-  `reportExtraHours`, from the D1 usage.
-- Settings › ADE Cloud: a third card in the add-ons row (`CloudPlans.tsx`),
-  beside the other two, renamed "Extra Linux hours" and "Extra Linux disk"
-  so each card names what it is for, and in the same style: the iPhone icon,
-  "Extra iPhone minutes", a monthly-limit picker and a switch; the price line
-  "$0.025 a minute past your plan's 300, billed after use"; the state line
-  "On. 42 extra minutes ($1.05) this month." or "Off. The iPhone stops when
-  your minutes run out." Paid plans only, like the other two.
-- The extra-minute tab is charged with the extra-hours tab, when it reaches
-  $5 or at the period's end, on the same invoice.
+Removed 2026-11-25: an extra minute is an extra credit (the extra-hours
+switch). The old Stripe product, price and meter stay in Stripe unused.
 
 ### 5. Warnings and visibility
 
-- Columns `phone_warned_80_at`, `phone_warned_zero_at`, cleared each period.
-  The hours warning in `cron.ts` gets a phone twin: same email look, same
-  in-app notice.
-- ADE Cloud page (`CloudDashboard`): an iPhone minutes meter beside hours.
-- The pane already shows minutes left in its More menu and its off card.
+The credit balance's warnings (`hoursWarnings.ts`) cover the phone; the
+pane and the top bar show the credits left.
 
 ### 6. ADE Web and the ADE iPhone app
 
@@ -119,7 +103,7 @@ phones. At launch scale that is a NoMac call per open pane per 20 s.
   `https://nomac.app` to `frame-src`. The link is signed for the account
   (`NOMAC_EMBED_SECRET`), so a copied link opens nothing.
 - ADE iPhone app: the device screen shows the same link in a `WKWebView`,
-  with Start, Stop, Screenshot and minutes left.
+  with Start, Stop, Screenshot and the credits left.
 
 ### 7. Non-Xcode apps
 
@@ -151,8 +135,7 @@ simulator. The rail hides what a cloud phone cannot do yet:
 - `credit.low` webhook: an owner alert email. NoMac never auto-charges, so
   the prepaid credit is topped up by hand; the alert says how many hours of
   current use are left.
-- Owner cost report (`costReport.ts`): phone minutes and NoMac cost per day,
-  and the extra minutes billed.
+- Owner cost report (`costReport.ts`): phone minutes and NoMac cost per day.
 
 ### 10. Analytics and logs
 

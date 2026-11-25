@@ -31,7 +31,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 |---|---|
 | `show <account>` | The real plan, the test, what is in force now, and the last changes |
 | `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, hours, outside agents, sponsored cards, Small's hours |
-| `limits <account> --computers N --hours N --phone-minutes N` | Its own computer limit, monthly hours and ADE Cloud iPhone minutes this period, on top of the plan (`limits <account>` with no options clears all three) |
+| `limits <account> --computers N --hours N` | Its own computer limit and monthly credits this period, on top of the plan (`limits <account>` with no options clears both). The ADE Cloud iPhone draws from those credits, one a minute: there is no separate iPhone limit |
 | `phone <account> on\|off` | On the ADE Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in an ADE beta build or with `ade cloud phone-provider`; the owner no longer sets it |
 | `tester <account> on\|off` | On or off the sponsored testers list |
 | `ad-format <account> below_reply\|above_prompt\|inline\|switch` | Where this account's sponsored cards show: under the reply, docked above the prompt box, or one linked sentence at the end of the reply (`switch`: whatever `gravity_format` says). Not a test: it stays until changed |
@@ -56,19 +56,15 @@ subscription, its charges, extra hours, the period and its renewal. So the
 owner's Pro account can act as Free for a week and keep paying for Pro, and a
 Free account acting as Max is never charged for Max.
 
-Things that still follow the real plan: idle cleanup's timing, plan cleanup
-after a real downgrade (it waits while a test of the plan, computers or hours
-runs), and the iPhone's minutes unless `--phone-minutes` sets them (`act-as`
-alone leaves them the real plan's). Test iPhone minutes are the whole limit:
-no extra minutes run past them, and a running phone is held to new minutes at
-once (set, cleared, reset, or the test's end).
+Things that still follow the real plan: idle cleanup's timing and plan
+cleanup after a real downgrade (it waits while a test of the plan, computers
+or hours runs). The iPhone draws from the credits in force, so a test's hours
+reach it too: a running phone is held to the new credits at once (set,
+cleared, reset, or the test's end).
 
 Billing counts the real plan's hours, so a test may not give more hours than
 that to an account with earned hours or extra hours on: those would be used
 for real. The tool refuses it (409); test fewer hours, or use another account.
-For the same reason it refuses test iPhone minutes on an account with extra
-iPhone minutes on: those bill past the real plan's minutes. Turning extra
-minutes on is refused (409) while test iPhone minutes are set.
 
 ## Switches
 

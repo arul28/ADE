@@ -4,18 +4,15 @@
  * A credit is the old hour renamed: the plan's hours (`includedMilli`), the
  * earned ones and the extra ones keep every number, and a Medium computer
  * still uses one an hour. The ADE Cloud iPhone draws from the same balance
- * at one credit a minute, so there is no separate iPhone balance and no
- * separate switch for extra iPhone minutes: an extra iPhone minute is one
- * extra credit, on the extra-hours switch.
+ * at one credit a minute: there is no separate iPhone balance, and an extra
+ * iPhone minute is one extra credit, on the extra-hours switch.
  *
- * Every account is on credits (the `cloud_credits` switch that rolled them
- * out is gone). A phone counts in credits when its row says so
- * (`cloud_phones.credits`, migration 0059): every phone started since does;
- * one started before keeps the old iPhone minutes until its period ends, so
- * no phone is counted twice. Its credits go into `used_milli` as its provider
- * settles its billed minutes (`phoneCreditStatements` in `phones.ts`), so
- * every rule that reads hours (the limits, extra hours, earned hours, the
- * period's end) counts them.
+ * A phone counts in credits when its row says so (`cloud_phones.credits`,
+ * migration 0059): every phone saved since does. Rows from before credits
+ * (`credits = 0`) are history only and charge nothing. A phone's credits go
+ * into `used_milli` as its provider settles its billed minutes
+ * (`phoneCreditStatements` in `phones.ts`), so every rule that reads hours
+ * (the limits, extra hours, earned hours, the period's end) counts them.
  */
 
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
@@ -24,23 +21,6 @@ import { liveUsedMilli, type AccountRow, type CloudEnv, type ComputerRow } from 
 
 /** What a running iPhone uses: one credit (a thousand thousandths) a minute. */
 export const PHONE_CREDIT_MILLI_PER_MINUTE = 1000;
-
-/**
- * Whether a phone that started at `startedAt` counts in credits, for a phone
- * found with no row (its start's answer was lost) whose start decision is no
- * longer saved: what the `cloud_credits` switch said then, from the owner's
- * change log (every flip wrote one; the switch itself is gone since credits
- * reached everyone). `testers` was the iPhone's beta list. No entry: before
- * credits, so iPhone minutes.
- */
-export async function creditsAtStart(env: Pick<CloudEnv, "DB">, userId: string, startedAt: number): Promise<boolean> {
-  const row = await env.DB.prepare(`select json_extract(detail, '$.value') as value from cloud_owner_log
-    where action = 'setting' and json_extract(detail, '$.key') = 'cloud_credits' and at <= ? order by at desc, id desc limit 1`)
-    .bind(startedAt).first<{ value: string | null }>();
-  if (row?.value === "all") return true;
-  if (row?.value !== "testers") return false;
-  return Boolean(await env.DB.prepare("select 1 as listed from cloud_phone_beta where user_id = ?").bind(userId).first<{ listed: number }>());
-}
 
 /** A credits phone's row, as the balance reads it. */
 type CreditPhone = Pick<PhoneRow, "user_id" | "billed_seconds" | "ready_at" | "credited_milli" | "created_at" | "state">;

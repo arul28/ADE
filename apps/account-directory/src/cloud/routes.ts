@@ -4,7 +4,6 @@ import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { readBoundedJson } from "../sinkUtils";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
 import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
-import { setExtraPhoneMinutes } from "./phoneBilling";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { deleteSavedChatsForLaneEverywhere, routeSavedChats } from "./chats";
@@ -76,7 +75,7 @@ import { deleteBackupsForLane, deleteBackupsWithComputer, markRestedWithBackups,
 import { prepareStopBackupReportId } from "./cron";
 import { freeCapRefuses } from "./costReport";
 import { ACCOUNT_BLOCKED_MESSAGE, accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
-import { enforcePhoneAllowance, extraPhoneOffered, handleNomacWebhook, handlePhoneViewer, isNomacWebhookRequest, isPhoneViewerRequest, routePhone } from "./phones";
+import { enforcePhoneAllowance, handleNomacWebhook, handlePhoneViewer, isNomacWebhookRequest, isPhoneViewerRequest, routePhone } from "./phones";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
 import { boundedDisplayText } from "../displayText";
@@ -1740,15 +1739,7 @@ async function refuseForeignWake(body: Record<string, unknown> | null, env: Clou
   return wakeUrl && normalized(wakeUrl) === normalized(body.url) ? null : badRequest("That isn't this computer's wake address.");
 }
 
-const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingExtraPhone, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
-/** The most a person may set as a monthly limit (extra iPhone minutes), in dollars. */
-const MONTHLY_LIMIT_MAX_USD = 1000;
-
-/** A monthly limit in whole dollars from $1 to `MONTHLY_LIMIT_MAX_USD`, or null when it isn't one. */
-function readMonthlyLimitUsd(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MONTHLY_LIMIT_MAX_USD ? value : null;
-}
-const LIMIT_SENTENCE = `Pick a monthly limit from $1 to $${MONTHLY_LIMIT_MAX_USD}`;
+const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.billingPortal, CLOUD_PATHS.billingExtraHours, CLOUD_PATHS.billingPlanCleanup, CLOUD_PATHS.billingFreeUnlock]);
 
 /**
  * Where Stripe sends the person back: this server's own page, or the hosted
@@ -1797,8 +1788,6 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   if (!BILLING_PATHS.has(path)) return null;
   if (request.method !== "POST") return notFound();
   const offers = cloudOffers(env);
-  // An extra that isn't set up: as if it didn't exist. (Extra disk isn't sold since Pricing v2: its path is no route.)
-  if (path === CLOUD_PATHS.billingExtraPhone && !extraPhoneOffered(env)) return notFound();
   try {
     // The desktop sends the portal no body, which reads as `{}`.
     const body = await readJson(request);
@@ -1818,22 +1807,8 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       return json(await buildAccountState(env, userId, now, request));
     }
     if (typeof body.enabled !== "boolean") return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    if (path === CLOUD_PATHS.billingExtraPhone) {
-      if (!body.enabled) {
-        await setExtraPhoneMinutes(env, userId, { enabled: false }, now);
-      } else if (body.monthlyLimitUsd == null) {
-        // No limit is only ever chosen (null or left out).
-        await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: null }, now);
-      } else {
-        // A limit is whole dollars.
-        const limit = readMonthlyLimitUsd(body.monthlyLimitUsd);
-        if (limit == null) return badRequest(`${LIMIT_SENTENCE}, or none.`);
-        await setExtraPhoneMinutes(env, userId, { enabled: true, monthlyLimitCents: limit * 100 }, now);
-      }
-      return json(await buildAccountState(env, userId, now, request));
-    }
     await setExtraHours(env, userId, body.enabled, now);
-    // Under credits a running phone may use extra credits: off, it is held to the balance at once.
+    // A running phone may use extra credits: off, it is held to the balance at once.
     if (!body.enabled) await enforcePhoneAllowance(env, userId, now);
     return json(await buildAccountState(env, userId, now, request));
   } catch (error) {

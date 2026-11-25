@@ -174,7 +174,7 @@
   .adecd-howto-rates { grid-row: auto; }
 }
 
-/* Extra Linux hours, extra Linux disk and extra iPhone minutes: tiles in the cards' language. */
+/* Extra credits: tiles in the cards' language. */
 .adecd-addons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
 @container adecd (max-width: 700px) { .adecd-addons { grid-template-columns: 1fr; } }
 .adecd-addon {

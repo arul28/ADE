@@ -368,9 +368,6 @@ struct CloudPhoneAccount: Decodable, Equatable {
     /// A month's hours for the sizes bigger than Small, in thousandths of a
     /// Medium-hour. Small computers never use them.
     let includedMilli: Int
-    /// Phone minutes a month (shown on the plan table only, while the ADE
-    /// Cloud iPhone is on for the account); nil from an older server.
-    let phoneMinutes: Int?
     /// How many cloud computers the plan allows, asleep or not.
     let computerLimit: Int?
     /// Extra hours past the plan are sold on it (never shown as a price).

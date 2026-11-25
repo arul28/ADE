@@ -338,12 +338,15 @@ them in `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 
 Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plans/pricing-v2-and-gravity.md)):
 
-| Plan | Price | Hours a month | Cloud computers | ADE Cloud iPhone minutes | Extra hours | Outside agents (ADE MCP) |
-|---|---|---|---|---|---|---|
-| Free | $0 | 50 | 2 | 60 | none: work stops | no |
-| Plus | $5 | 100 | 3 | 80 | 2¢ an hour | yes |
-| Pro | $20 | 600 | 10 | 300 | 2¢ an hour | yes |
-| Max | $50 | 1,500 | 20 | 800 | 2¢ an hour | yes |
+| Plan | Price | Hours a month | Cloud computers | Extra hours | Outside agents (ADE MCP) |
+|---|---|---|---|---|---|
+| Free | $0 | 50 | 2 | none: work stops | no |
+| Plus | $5 | 100 | 3 | 2¢ an hour | yes |
+| Pro | $20 | 600 | 10 | 2¢ an hour | yes |
+| Max | $50 | 1,500 | 20 | 2¢ an hour | yes |
+
+The ADE Cloud iPhone has no minutes of its own: it draws from these credits,
+one a minute (below).
 
 - **Hours are Medium-hours** (`catalog.hourUnit: "medium"`; integer
   thousandths in the API). Small computers never use hours, on every plan:
@@ -480,14 +483,14 @@ A credit is the hour renamed, so no number changes: Free 50, Plus 100, Pro
 2.5, X-Large 4. The ADE Cloud iPhone draws from the same balance at one credit
 a minute (a Mac VM, later, the same). Past the plan, a paid plan's extra
 credits are the extra-hours switch at 2¢ each, so an extra iPhone minute is
-an extra credit and there is no separate extra-iPhone-minutes switch. Free
-stops when the credits run out.
+an extra credit. Free stops when the credits run out.
 
 How the server counts it (`credits.ts`, `phones.ts`, migration 0059):
 
 - A phone counts in credits when its row says so (`cloud_phones.credits = 1`):
-  every phone started since the flip. One started before keeps the old iPhone
-  minutes and their billing until its period ends, so no phone counts twice.
+  every phone saved since the flip. Rows from before it (`credits = 0`, the
+  old iPhone minutes, gone since 2026-11-25) are history only: they charge
+  nothing and count nothing.
 - Its billed minutes go into the account's `used_milli` as its provider
   settles them, in the same write as the phone's row
   (`phoneCreditStatements`); `credited_milli` holds what is already in, so a

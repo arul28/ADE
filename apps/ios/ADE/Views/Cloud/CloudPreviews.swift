@@ -154,7 +154,7 @@ enum CloudPreviews {
   private static func listJSON() -> String {
     let hour = 3_600_000.0
     let day = 86_400_000.0
-    let phone = #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto","minutes":{"included":497,"used":15,"left":482},"state":"none"},"credits":{"phoneMilliPerMinute":1000}"#
+    let phone = #"{"access":"on","creditsUsedMilli":15000,"providerChoice":"auto"},"credits":{"phoneMilliPerMinute":1000}"#
     return """
     {"state":"ok","runningCount":1,"machines":[
       {"instanceId":"zodqsue74s","name":"ADE Cloud computer","machineKey":"mk1","state":"running","type":"box",
@@ -196,11 +196,11 @@ enum CloudPreviews {
       "dueForDeletion":[],"deletedInstanceIds":[],
       "catalog":{
         "plans":{
-          "free":{"includedMilli":50000,"diskGb":24,"priceUsd":0,"phoneMinutes":60,"extraHourCents":null,"computerLimit":2,"outsideAgents":false},
-          "paid":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"phoneMinutes":80,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
-          "plus":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"phoneMinutes":80,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
-          "pro":{"includedMilli":600000,"diskGb":120,"priceUsd":20,"phoneMinutes":300,"extraHourCents":2,"computerLimit":10,"outsideAgents":true},
-          "max":{"includedMilli":1500000,"diskGb":240,"priceUsd":50,"phoneMinutes":800,"extraHourCents":2,"computerLimit":20,"outsideAgents":true}},
+          "free":{"includedMilli":50000,"diskGb":24,"priceUsd":0,"extraHourCents":null,"computerLimit":2,"outsideAgents":false},
+          "paid":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
+          "plus":{"includedMilli":100000,"diskGb":36,"priceUsd":5,"extraHourCents":2,"computerLimit":3,"outsideAgents":true},
+          "pro":{"includedMilli":600000,"diskGb":120,"priceUsd":20,"extraHourCents":2,"computerLimit":10,"outsideAgents":true},
+          "max":{"includedMilli":1500000,"diskGb":240,"priceUsd":50,"extraHourCents":2,"computerLimit":20,"outsideAgents":true}},
         "sizes":[
           {"type":"default","cpu":2,"memoryGb":4,"multiplierMilli":0,"tier":"small","label":"Small","diskMaxGb":12},
           {"type":"default","cpu":4,"memoryGb":8,"multiplierMilli":1000,"tier":"medium","label":"Medium","diskMaxGb":20},
