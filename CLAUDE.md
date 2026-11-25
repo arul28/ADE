@@ -59,8 +59,8 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Account-wide
 features live on the account server** section. Keep the two the same.
 
-Some things belong to the person, not to a machine: the plan, ADE Cloud hours
-and iPhone minutes, billing, usage counted against a plan, consents and
+Some things belong to the person, not to a machine: the plan, ADE Cloud credits
+(computers and the iPhone), billing, usage counted against a plan, consents and
 opt-ins, and services ADE pays for or a partner sponsors (hosted models, ads,
 sponsored recommendations). They live on the account server
 (`apps/account-directory`, or the Worker that owns that data) and work the

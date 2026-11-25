@@ -3,10 +3,17 @@
 <plist version="1.0">
 <dict>
 	<!-- Default-on product analytics, masked session replay (PostHog) and error mirroring; signed-in activity is linked only through a pseudonymous account hash. -->
+	<!-- Sponsored cards (Gravity, ADE Cloud Free chats, after the person agrees): ADE's server sends Gravity the chat's last messages,
+	     IP and device, scrambled account and chat ids and, only when Apple's tracking prompt was allowed, a SHA-256 email hash.
+	     That is tracking, so it is declared. The two domains below are the ones that receive the email hash; only ADE's server
+	     calls them (the app itself loads just the shown card's view and click links from trygravity.ai). -->
 	<key>NSPrivacyTracking</key>
-	<false/>
+	<true/>
 	<key>NSPrivacyTrackingDomains</key>
-	<array/>
+	<array>
+		<string>server.trygravity.ai</string>
+		<string>index.trygravity.com</string>
+	</array>
 	<key>NSPrivacyCollectedDataTypes</key>
 	<array>
 		<dict>
@@ -63,10 +70,11 @@
 				<key>NSPrivacyCollectedDataTypeLinked</key>
 				<true/>
 				<key>NSPrivacyCollectedDataTypeTracking</key>
-				<false/>
+				<true/>
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
 					<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
 				</array>
 			</dict>
 			<dict>
@@ -92,6 +100,54 @@
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
 					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				</array>
+			</dict>
+			<dict>
+				<key>NSPrivacyCollectedDataType</key>
+				<string>NSPrivacyCollectedDataTypeEmailAddress</string>
+				<key>NSPrivacyCollectedDataTypeLinked</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypeTracking</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypePurposes</key>
+				<array>
+					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+				</array>
+			</dict>
+			<dict>
+				<key>NSPrivacyCollectedDataType</key>
+				<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+				<key>NSPrivacyCollectedDataTypeLinked</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypeTracking</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypePurposes</key>
+				<array>
+					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+				</array>
+			</dict>
+			<dict>
+				<key>NSPrivacyCollectedDataType</key>
+				<string>NSPrivacyCollectedDataTypeCoarseLocation</string>
+				<key>NSPrivacyCollectedDataTypeLinked</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypeTracking</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypePurposes</key>
+				<array>
+					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+				</array>
+			</dict>
+			<dict>
+				<key>NSPrivacyCollectedDataType</key>
+				<string>NSPrivacyCollectedDataTypeAdvertisingData</string>
+				<key>NSPrivacyCollectedDataTypeLinked</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypeTracking</key>
+				<true/>
+				<key>NSPrivacyCollectedDataTypePurposes</key>
+				<array>
+					<string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
 				</array>
 			</dict>
 		</array>

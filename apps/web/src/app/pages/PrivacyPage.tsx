@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Container } from "../../components/Container";
 import { Page } from "../../components/Page";
 import { Reveal } from "../../components/Reveal";
-import { GRAVITY_ADS_ON_WEBSITE } from "../../lib/cloudPricing";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import {
   isMarketingAnalyticsEnabled,
@@ -10,7 +9,9 @@ import {
   setMarketingAnalyticsEnabled,
 } from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "November 11, 2026";
+const EFFECTIVE_DATE = "November 25, 2026";
+/** What the latest update changed, shown under the date. */
+const LATEST_CHANGE = "“Sponsored cards on the ADE Cloud Free plan”: in the United States the cards start on and you can turn them off; it also covers Global Privacy Control and the free Small computers they pay for.";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -19,6 +20,34 @@ type Section = {
   id?: string;
   body: Array<string | { list: string[] }>;
   analyticsControl?: boolean;
+};
+
+/** Sponsored cards (Gravity). The apps link to `/privacy#sponsored` from every card and the consent prompt. */
+const sponsoredSection: Section = {
+  id: "sponsored",
+  title: "Sponsored cards on the ADE Cloud Free plan",
+  body: [
+    "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com), its ad partner, to show sponsored cards in the ADE apps (desktop, the web app, and iPhone and iPad). A card is labeled “Sponsored” and shows under a finished reply, above the prompt box, or at the end of the reply, at most one per reply. An agent may also suggest a sponsored tool for something you need. Paid plans, chats on your own computer, and this website have no ads.",
+    "In the United States, sponsored cards start on: your first ADE Cloud chat (or Settings › ADE Cloud) tells you they are on, with a button to turn them off. Everywhere else, and whenever your browser sends a Global Privacy Control (GPC) signal, ADE asks first and cards show only after you agree.",
+    "While they are on, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
+    {
+      list: [
+        "the last messages of that chat (your latest request and the reply),",
+        "your IP address, and your device type, operating system and version, and the app's user agent,",
+        "an ID for your account and a session ID for the chat, both scrambled one way so they do not reveal your ADE account or chat, and",
+        "a SHA-256 hash of your account email (never the email itself).",
+      ],
+    },
+    "In the ADE app for iPhone and iPad, ADE first asks with Apple's App Tracking Transparency prompt. The email hash is sent only if you allow tracking there; if you don't, sponsored cards still show and ADE sends everything above except the email hash.",
+    "When an agent asks for a tool recommendation, ADE sends Gravity the need the agent described, the session ID and email hash above (the hash under the same rule), and the IP address, country and device of your latest visit to that computer's chats. In a CLI session on ADE Cloud, that request is all that is sent; never the terminal's output.",
+    "When a card shows, your app loads it from Gravity's design and tells Gravity directly that the card was seen and how much of it was on screen; when you open a card, the link goes through Gravity first, so Gravity can count the click. Gravity receives your IP address and your app or browser's details with those requests.",
+    "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
+    "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",
+    "You can turn this off at any time in Settings › ADE Cloud. After that, nothing is sent and no cards show.",
+    "Under California and other US state privacy laws, sending this to Gravity for ads can be a “sale” or “sharing” of personal information. Turning sponsored cards off is how you opt out; if you do that in the United States, ADE won't ask you to turn them back on for 12 months. A browser that sends a Global Privacy Control signal never gets cards that started on by themselves: ADE asks there instead.",
+    "Notice of financial incentive: on the Free plan, Small ADE Cloud computers are free while sponsored cards are on. With them off, Small computers use credits, half a credit for each hour awake. The cards pay for that computer time, so ADE values the data above at about what that time costs. You can turn the cards off, or back on, at any time in Settings › ADE Cloud.",
+    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you turn sponsored cards off), the sponsored card shown for a reply for about a day, and daily counts of requests, cards shown and cards hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
+  ],
 };
 
 const sections: Section[] = [
@@ -33,7 +62,7 @@ const sections: Section[] = [
     body: [
       "ADE desktop, runtime, hosted web, and native iOS surfaces use default-on, allowlisted product analytics. They honor the DO_NOT_TRACK=1 environment setting and any analytics opt-out you recorded in an earlier version. The public website has its own analytics switch on this page. These events help understand activation, retention, feature adoption, reliability, and quota health.",
       "Desktop and runtime events start with a random installation identity. If you sign in to an ADE account, ADE sends one PostHog identify request that links that anonymous history to a one-way hash of your account ID, and records on that analytics profile your ADE account ID, plan, platform, app version, and whether the install belongs to the ADE team. When you create an ADE account, ADE's account service records one sign-up event on the same profile with how you signed up (for example GitHub, Google, or email). ADE does not send your email, name, or access token to analytics. Signing out rotates the anonymous analytics identity.",
-      "App analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, or session titles. ADE does not use automatic click or page capture or advertising profiles. The apps and this website ask PostHog for one setting, whether this session may be recorded, so that ADE's own team is never recorded; no other PostHog feature flags are used.",
+      "App analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, or session titles. App analytics does not use automatic click or page capture and is not used for advertising (sponsored cards, a separate feature, are described below). The apps and this website ask PostHog for one setting, whether this session may be recorded, so that ADE's own team is never recorded; no other PostHog feature flags are used.",
       "AI usage: for each agent turn, ADE records the AI provider, the model (only for models in ADE's built-in catalog; local and custom models are reported as \"other\"), token counts, estimated cost, how long the turn took, and whether it failed. It never records prompts, responses, tool calls, or system prompts.",
       "Errors: when the desktop app, runtime, or iPhone app reports an error to Sentry (described below), the same error also goes to PostHog's error tracking with less detail: the error type, its message with credentials, email addresses, and file paths removed, and the in-app file names, function names, and line numbers of its stack trace. No source code, variables, or diagnostic logs are included.",
       "Session replay: with analytics on, ADE records anonymous session replays of the desktop app and the iPhone app: the layout and your taps and clicks. In the desktop app, ADE's own interface text and error messages (menus, tabs, settings labels, notices) are visible, with file paths, email addresses, and secrets removed; your content stays masked: code, chats, terminals, files, the names of your projects, lanes, and branches, and anything you type are replaced by asterisks. In the iPhone app every piece of text, typed value, and label is masked. Images, terminals, code editors, and embedded pages are not recorded, and no console output, network traffic, or file paths are sent. Replays are kept for one month. Turning analytics off stops recording.",
@@ -98,11 +127,13 @@ const sections: Section[] = [
           "Sentry — receives error and crash reports as described under Error and crash reporting, in Sentry's United States region. On iOS, a short, fully masked screen recording may accompany an error.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
+          "Gravity (IRIS Inc.) — ADE’s ad partner for sponsored cards on the ADE Cloud Free plan, only while they are on; see Sponsored cards below.",
         ],
       },
-      "ADE does not sell personal data and does not share analytics with advertisers.",
+      "ADE does not share analytics with advertisers. The only personal data ADE gives an ad partner is what “Sponsored cards on the ADE Cloud Free plan” below describes, and only while those cards are on.",
     ],
   },
+  sponsoredSection,
   {
     title: "Retention",
     body: [
@@ -119,6 +150,7 @@ const sections: Section[] = [
           "Revoke camera or local network access in iOS Settings → ADE.",
           "Unpair the iOS app from the machine to clear the stored pairing.",
           "Disable cloud and BYOK features in the desktop app at any time.",
+          "Turn off sponsored cards on the ADE Cloud Free plan in Settings › ADE Cloud (in the United States, this opts you out of the “sale” or “sharing” of the data they use).",
           "Set DO_NOT_TRACK=1 in the environment ADE runs in to stop product analytics and error reporting from the desktop app and runtime.",
           "Unpair first to clear pairing credentials, then uninstall or clear app/site data to remove the corresponding app-container or browser data.",
         ],
@@ -173,33 +205,8 @@ function AnalyticsPreferenceControl() {
   );
 }
 
-/** Shown only once ads are live (`GRAVITY_ADS_ON_WEBSITE`). */
-const gravitySection: Section = {
-  id: "sponsored",
-  title: "Sponsored cards on the ADE Cloud Free plan",
-  body: [
-    "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com) to show sponsored cards: at most one under a finished reply, and sometimes a sponsored tool an agent recommends for something you need. Paid plans have no ads.",
-    "Only after you agree in ADE, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
-    {
-      list: [
-        "the last messages of that chat (your latest request and the reply),",
-        "your IP address, and your device type, operating system and the app's user agent,",
-        "an ID for your account and a session ID for the chat, both scrambled one way so they do not reveal your ADE account or chat, and",
-        "a SHA-256 hash of your account email (never the email itself).",
-      ],
-    },
-    "In the ADE app for iPhone and iPad, ADE first asks with Apple's App Tracking Transparency prompt. The email hash is sent only if you allow tracking there; if you don't, sponsored cards still show and ADE sends everything above except the email hash.",
-    "When an agent asks for a tool recommendation, ADE sends the need the agent described, with the IP address and device of your latest visit to that computer's chats. In a CLI session on ADE Cloud, that request is all that is sent; never the terminal's output.",
-    "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
-    "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",
-    "You can turn this off in Settings › ADE Cloud by withdrawing your consent. After that, nothing is sent.",
-    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you withdraw consent), the sponsored card shown under a reply for about a day, and daily counts of requests for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
-  ],
-};
-
 export function PrivacyPage() {
   useDocumentTitle("ADE Privacy");
-  const shownSections = GRAVITY_ADS_ON_WEBSITE ? [...sections, gravitySection] : sections;
 
   return (
     <Page>
@@ -208,6 +215,7 @@ export function PrivacyPage() {
           <Reveal>
             <h1 className="text-4xl font-semibold tracking-tight text-fg sm:text-5xl">Privacy</h1>
             <p className="mt-3 text-sm text-muted-fg">Effective {EFFECTIVE_DATE}</p>
+            <p className="mt-1 text-sm text-muted-fg">Latest change: {LATEST_CHANGE}</p>
             <p className="mt-6 max-w-2xl text-sm leading-relaxed text-muted-fg">
               ADE is a developer tool built around a simple promise: by default, your code and prompts stay on the
               machine you control. This page explains what data ADE handles, where it goes, and the choices you have.
@@ -215,7 +223,7 @@ export function PrivacyPage() {
           </Reveal>
 
           <div className="mt-10 grid gap-6">
-            {shownSections.map((section, index) => (
+            {sections.map((section, index) => (
               <Reveal key={section.title} delay={Math.min(index * 0.04, 0.2)}>
                 <div id={section.id} className="scroll-mt-24 rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                   <h2 className="text-sm font-semibold text-fg">{section.title}</h2>

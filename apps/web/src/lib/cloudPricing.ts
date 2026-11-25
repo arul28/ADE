@@ -42,10 +42,11 @@ export { CLOUD_SMALL_FAIR_USE_SENTENCE, cloudComputersPhrase };
 export const CLOUD_PHONE_ON_WEBSITE = false;
 
 /**
- * Ads are on for everyone. The website's privacy policy and Terms sections
- * about Gravity's sponsored suggestions (`PrivacyPage`, `TermsPage`) show, and
- * the pricing page's Free card says Small is unlimited only with sponsored
- * cards on (the server ties that rule to the ad switch).
+ * Ads are on for everyone: the pricing page's Free card says Small is
+ * unlimited only with sponsored cards on (the server ties that rule to the ad
+ * switch). The privacy policy and Terms sections about Gravity's sponsored
+ * cards (`PrivacyPage`, `TermsPage`) always show, whatever this says: the
+ * disclosure comes before anyone sees a card.
  */
 // Flip to true in the same release that sets the server's `gravity_ads` switch to `all`.
 export const GRAVITY_ADS_ON_WEBSITE = false;

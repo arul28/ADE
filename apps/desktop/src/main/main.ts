@@ -6738,6 +6738,13 @@ app.whenReady().then(async () => {
         try {
           // Route to this sync host's project window, not whichever window is focused.
           handleDeeplinkUrl(rawUrl, "sync:ios", (request) => {
+            // A link that names its owner (a chat, a PR, a run) goes to that
+            // computer and project, as a click on it would; the phone forwards
+            // through whichever computer it is paired with.
+            if (appNavigationOwnership(request.target)) {
+              dispatchOrQueueAppNavigationRequest(request);
+              return;
+            }
             if (dispatchAppNavigationForProjectRoot) {
               dispatchAppNavigationForProjectRoot(projectRoot, request);
               return;

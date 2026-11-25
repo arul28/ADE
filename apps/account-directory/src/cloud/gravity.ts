@@ -3,12 +3,13 @@ import { sha256Hex } from "../sinkUtils";
 import {
   CLOUD_PATHS,
   isGravityUrl,
-  CLOUD_SPONSORED_CONSENTS,
+  CLOUD_SPONSORED_CHOICES,
   CLOUD_SPONSORED_DEVICE_TYPES,
   CLOUD_SPONSORED_FORMATS,
   CLOUD_SPONSORED_MESSAGE_MAX_CHARS,
   CLOUD_SPONSORED_NEED_MAX_CHARS,
   CLOUD_SPONSORED_OSES,
+  CLOUD_SPONSORED_RENDERERS,
   CLOUD_SPONSORED_SURFACES,
   CLOUD_SPONSORED_TRACKING,
   type CloudSponsoredAd,
@@ -16,6 +17,8 @@ import {
   type CloudSponsoredConsent,
   type CloudSponsoredDevice,
   type CloudSponsoredFormat,
+  type CloudSponsoredGravityAd,
+  type CloudSponsoredRenderer,
   type CloudSponsoredSurface,
   type CloudSponsoredIndexAnswer,
   type CloudSponsoredMessage,
@@ -55,7 +58,10 @@ import {
  * - the Free plan (a paid plan, a `past_due` one too, never sees one), or
  *   the account test tool's plan (`shownPlanIdOf`);
  * - the person's country (`GRAVITY_COUNTRIES`, by default US, CA, GB and AU);
- * - the account's yes to the one-time question (`cloud_sponsored_consent`);
+ * - the account's yes to the one-time question (`cloud_sponsored_consent`),
+ *   or, where cards start on (`GRAVITY_DEFAULT_ON_COUNTRIES`, the US by
+ *   default), the yes saved once the person was told they are on
+ *   (`startsOnFor`);
  * - a chat on one of the account's own ADE Cloud computers: never a chat on
  *   the person's own machine, whatever the plan.
  *
@@ -67,8 +73,9 @@ import {
  * reply asks once; asking again reads the stored answer), the end user's IP
  * and user agent forwarded with `device_type` and `os`, the request made
  * through Gravity's own SDK (`gravityAds`), nothing rewarded for a view or a
- * click, and the daily request limit of a self-serve account
- * (`GRAVITY_DAILY_LIMIT`, shared by ads and the Index). No chat text is kept:
+ * click, and an optional ceiling on live requests a day
+ * (`GRAVITY_DAILY_LIMIT`, shared by ads and the Index; ADE's Gravity contract
+ * has no daily limit, so unset means none). No chat text is kept:
  * a card's own fields only.
  */
 
@@ -81,13 +88,26 @@ export type GravityEnv = CloudEnv & {
   GRAVITY_LIVE?: string;
   /** Countries (ISO alpha-2, comma-separated) where cards show. Default `US,CA,GB,AU`. */
   GRAVITY_COUNTRIES?: string;
-  /** Live requests a UTC day, ads and Index together, before ADE stops asking. Default 900 (self-serve allows 1,000). */
+  /**
+   * Countries where cards start on: the person is told they are on and can
+   * turn them off, instead of being asked first. Default `US`; an empty value
+   * turns this off, so every country is asked.
+   */
+  GRAVITY_DEFAULT_ON_COUNTRIES?: string;
+  /** Optional: live requests a UTC day, ads and Index together, before ADE stops asking. Unset: no ceiling (the contract has no daily limit). */
   GRAVITY_DAILY_LIMIT?: string;
 };
 
 const INDEX_URL = "https://index.trygravity.com/search";
 /** How long a no to sponsored cards holds before the question comes back. */
 const SPONSORED_REASK_MS = 14 * 24 * 60 * 60_000;
+/**
+ * How long a no given where cards start on holds: California lets a business
+ * ask a person who opted out of sharing to opt back in only after 12 months.
+ */
+const SPONSORED_OPT_OUT_HOLD_MS = 365 * 24 * 60 * 60_000;
+/** Where cards start on unless `GRAVITY_DEFAULT_ON_COUNTRIES` says otherwise. */
+const DEFAULT_ON_COUNTRIES = ["US"];
 const PLATFORM_URL = "https://platform.trygravity.com";
 const INDEX_REPORT_URL = "https://api-interface.trygravity.com/index/attributions";
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -97,7 +117,6 @@ const SPONSORED_VIEWER_FRESH_MS = 10 * 60_000;
 const ACCOUNT_DAILY_ADS = 120;
 /** Index searches one account may make a UTC day. */
 const ACCOUNT_DAILY_INDEX = 20;
-const DEFAULT_DAILY_LIMIT = 900;
 /** A turn's stored answer lives this long. */
 const TURN_TTL_MS = 24 * 60 * 60_000;
 const ALL = "*";
@@ -158,10 +177,39 @@ async function outsideCountries(env: GravityEnv, account: AccountRow, country: s
   return switches.live || !(await isTester(env, account.user_id));
 }
 
+const countryCodesOf = (value: string | undefined): string[] =>
+  (value ?? "").split(",").map((code) => code.trim().toUpperCase()).filter((code) => /^[A-Z]{2}$/.test(code));
+
 function countriesOf(env: GravityEnv): string[] {
-  const list = (env.GRAVITY_COUNTRIES ?? "").split(",").map((code) => code.trim().toUpperCase()).filter((code) => /^[A-Z]{2}$/.test(code));
+  const list = countryCodesOf(env.GRAVITY_COUNTRIES);
   return list.length ? list : DEFAULT_COUNTRIES;
 }
+
+/** Where cards start on: the US unless the variable says otherwise; set and empty, nowhere. */
+function startsOnCountriesOf(env: GravityEnv): string[] {
+  return env.GRAVITY_DEFAULT_ON_COUNTRIES === undefined ? DEFAULT_ON_COUNTRIES : countryCodesOf(env.GRAVITY_DEFAULT_ON_COUNTRIES);
+}
+
+/** Where a request comes from, as the consent rules read it: its country, and the browser's Global Privacy Control. */
+export type SponsoredRequester = { country: string | null; gpc: boolean };
+
+export function sponsoredRequester(request: Request | null): SponsoredRequester {
+  return { country: request ? requestCountry(request) : null, gpc: request?.headers.get("sec-gpc")?.trim() === "1" };
+}
+
+/**
+ * Whether cards start on for this person: told they are on and free to turn
+ * them off, instead of asked first. Only in a country where that is the law's
+ * way (opt-out), never from an unknown country, and never when the browser
+ * sends Global Privacy Control: that is an opt-out already, so the person is
+ * asked instead.
+ */
+function startsOnFor(env: GravityEnv, who: SponsoredRequester): boolean {
+  return who.country != null && !who.gpc && startsOnCountriesOf(env).includes(who.country);
+}
+
+/** Whether an answer given in this country falls under the opt-out rules (a no holds 12 months). */
+const optOutCountry = (env: GravityEnv, country: string | null): boolean => country != null && startsOnCountriesOf(env).includes(country);
 
 /**
  * The caller's country as Cloudflare sees it, or null when there is no
@@ -186,9 +234,44 @@ async function blockedReason(env: GravityEnv, account: AccountRow, country: stri
   return null;
 }
 
-async function readConsent(env: GravityEnv, userId: string): Promise<{ consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number } | null> {
-  return env.DB.prepare("select consent, email_hash, decided_at from cloud_sponsored_consent where user_id = ?")
-    .bind(userId).first<{ consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number }>();
+type ConsentRow = { consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number; source: "answer" | "notice"; country: string | null };
+
+async function readConsent(env: GravityEnv, userId: string): Promise<ConsentRow | null> {
+  return env.DB.prepare("select consent, email_hash, decided_at, source, country from cloud_sponsored_consent where user_id = ?")
+    .bind(userId).first<ConsentRow>();
+}
+
+/**
+ * Whether this person is told cards are on (not asked): nothing to show yet,
+ * they are where cards start on, and they never said no. Someone who said no
+ * is asked when the no runs out, never turned back on by a notice.
+ */
+const startsOnNow = (env: GravityEnv, consent: ConsentRow | null, shown: CloudSponsoredConsent | null, who: SponsoredRequester): boolean =>
+  shown === null && consent?.consent !== "declined" && startsOnFor(env, who);
+
+/**
+ * Whether the account's yes lets cards go to Gravity for this person now. An
+ * answer always does; the yes saved with the notice only where cards start
+ * on (the person travelled, or turned on Global Privacy Control: they are
+ * asked first).
+ */
+const yesHolds = (env: GravityEnv, consent: ConsentRow | null, who: SponsoredRequester): consent is ConsentRow =>
+  consent?.consent === "granted" && (consent.source !== "notice" || startsOnFor(env, who));
+
+/**
+ * The answer clients see: null when the person is to be asked (or told)
+ * again. A no is asked again once it is SPONSORED_REASK_MS old, or when it
+ * came before the ad switch last changed (when Small began to need cards);
+ * a no given where cards start on only after 12 months
+ * (SPONSORED_OPT_OUT_HOLD_MS), whatever the switch did. Until the person
+ * answers, it still counts as a no: no cards, Small uses credits.
+ */
+async function shownAnswer(env: GravityEnv, consent: ConsentRow | null, who: SponsoredRequester, now: number): Promise<CloudSponsoredConsent | null> {
+  if (!consent) return null;
+  if (consent.consent === "granted") return yesHolds(env, consent, who) ? "granted" : null;
+  if (optOutCountry(env, consent.country)) return now - consent.decided_at >= SPONSORED_OPT_OUT_HOLD_MS ? null : "declined";
+  const asked = now - consent.decided_at >= SPONSORED_REASK_MS || consent.decided_at < (await settingChangedAt(env, "gravity_ads") ?? 0);
+  return asked ? null : "declined";
 }
 
 /**
@@ -196,23 +279,19 @@ async function readConsent(env: GravityEnv, userId: string): Promise<{ consent: 
  * this account, so a client shows nothing at all. A paid account the switch
  * reaches still gets it (`ads` false), so its Settings can say there are none.
  */
-export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, country: string | null, now: number): Promise<CloudSponsoredState | undefined> {
+export async function sponsoredAccountState(env: GravityEnv, account: AccountRow, who: SponsoredRequester, now: number): Promise<CloudSponsoredState | undefined> {
   const settings = await readCloudSettings(env);
   const switches = await gravitySwitches(env, settings);
-  const reason = await blockedReason(env, account, country, switches);
+  const reason = await blockedReason(env, account, who.country, switches);
   if (reason === "off") return undefined;
   // An account joins the A/B test's arm only once ads reach it.
   const [consent, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings, now, reason == null)]);
-  // A no is asked again once it is SPONSORED_REASK_MS old, or when it came
-  // before the ad switch last changed (when Small began to need cards). Until
-  // the person answers, it still counts as a no: no cards, Small uses hours.
-  const answer = consent && consent.consent === "declined"
-    && (now - consent.decided_at >= SPONSORED_REASK_MS || consent.decided_at < (await settingChangedAt(env, "gravity_ads") ?? 0))
-    ? null
-    : consent?.consent ?? null;
+  const answer = await shownAnswer(env, consent, who, now);
   return {
     ads: reason == null,
     consent: answer,
+    // Not asked where cards start on: the client tells the person they are on, and saves that (`PUT /consent` `notice`).
+    ...(startsOnNow(env, consent, answer, who) && reason == null ? { startsOn: true } : {}),
     test: !switches.live,
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
@@ -381,9 +460,10 @@ async function count(env: GravityEnv, now: number, userId: string, kinds: string
   await env.DB.batch(kinds.flatMap((kind) => [countStatement(env, day, userId, kind), countStatement(env, day, ALL, kind)]));
 }
 
-const liveDailyLimit = (env: GravityEnv): number => {
-  const limit = Number(env.GRAVITY_DAILY_LIMIT ?? DEFAULT_DAILY_LIMIT);
-  return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_DAILY_LIMIT;
+/** The optional ceiling on live requests a day, or null for none (unset or not a positive number). */
+const liveDailyLimit = (env: GravityEnv): number | null => {
+  const limit = Number(env.GRAVITY_DAILY_LIMIT);
+  return env.GRAVITY_DAILY_LIMIT && Number.isFinite(limit) && limit > 0 ? limit : null;
 };
 
 /** Adds one to a day's count only while it is under `limit`, in one write: true when it did. */
@@ -406,7 +486,8 @@ async function reserveRequest(env: GravityEnv, now: number, userId: string, kind
   if (!(await countUnder(env, day, userId, request, kind === "ad" ? ACCOUNT_DAILY_ADS : ACCOUNT_DAILY_INDEX))) return false;
   // The Index has no test mode: every search is a live one.
   const live = switches.live || kind === "index";
-  if (live && !(await countUnder(env, day, ALL, "live_request", liveDailyLimit(env)))) {
+  const ceiling = live ? liveDailyLimit(env) : null;
+  if (ceiling !== null && !(await countUnder(env, day, ALL, "live_request", ceiling))) {
     await env.DB.prepare("update cloud_sponsored_days set count = count - 1 where day = ? and user_id = ? and kind = ? and count > 0")
       .bind(day, userId, request).run();
     return false;
@@ -478,13 +559,14 @@ const gravityLink = (value: unknown): string | null => (isGravityUrl(value) ? ht
 const plainText = (value: unknown, max: number): string => (typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, max) : "");
 
 /** One of Gravity's ads as a card, or null when it lacks what a card needs. */
-function adOfGravity(raw: unknown, test: boolean): CloudSponsoredAd | null {
+function adOfGravity(raw: unknown, test: boolean, renderer: CloudSponsoredRenderer | null): CloudSponsoredAd | null {
   if (!raw || typeof raw !== "object") return null;
   const ad = raw as Record<string, unknown>;
   const clickUrl = gravityLink(ad.clickUrl);
   const brand = plainText(ad.brandName, 80);
   const text = plainText(ad.adText, 300);
   if (!clickUrl || !brand || !text) return null;
+  const impUrl = gravityLink(ad.impUrl);
   return {
     id: crypto.randomUUID(),
     brand,
@@ -492,10 +574,170 @@ function adOfGravity(raw: unknown, test: boolean): CloudSponsoredAd | null {
     text,
     cta: plainText(ad.cta, 40) || null,
     clickUrl,
-    impUrl: gravityLink(ad.impUrl),
+    impUrl,
     favicon: httpsUrl(ad.favicon),
     test,
+    ...(renderer ? { gravity: gravityAdOf(ad, clickUrl, impUrl, renderer) } : {}),
   };
+}
+
+/** Gravity's designs are a few kilobytes; anything far past that is not one. */
+const MAX_RENDERER_SPEC_CHARS = 32_000;
+const optionalText = (value: unknown, max: number): string | undefined => plainText(value, max) || undefined;
+
+/**
+ * Gravity's ad for its own renderer: its design and copy, in its own field
+ * names, with the links already checked. Only what ADE draws goes through: a
+ * frame, a prompt action, an MCP connect or a data unit is left out (the
+ * request asks for none), so the renderer falls back to the design.
+ */
+function gravityAdOf(ad: Record<string, unknown>, clickUrl: string, impUrl: string | null, renderer: CloudSponsoredRenderer): CloudSponsoredGravityAd {
+  const render = ad.render && typeof ad.render === "object" ? ad.render as Record<string, unknown> : null;
+  const mode = render?.mode === "spec" || render?.mode === "native" ? render.mode : null;
+  let spec = typeof ad.renderer_spec === "string" ? (() => {
+    try { return JSON.parse(ad.renderer_spec as string) as unknown; } catch { return null; }
+  })() : ad.renderer_spec;
+  if (!spec || typeof spec !== "object" || Array.isArray(spec) || JSON.stringify(spec).length > MAX_RENDERER_SPEC_CHARS) spec = null;
+  const out: CloudSponsoredGravityAd = {
+    adText: plainText(ad.adText, 300),
+    clickUrl,
+    ...(impUrl ? { impUrl } : {}),
+    ...(mode ? { render: { mode, ...(typeof render?.layout === "string" ? { layout: render.layout.slice(0, 40) } : {}) } } : {}),
+    ...(ad.hasDeeplink === true ? { hasDeeplink: true } : {}),
+  };
+  const texts: Array<[keyof CloudSponsoredGravityAd, number]> = [
+    ["title", 120], ["cta", 40], ["brandName", 80], ["placement", 40], ["placement_id", 120], ["campaignId", 120],
+    ["variant", 80], ["experiment_id", 120], ["composition_id", 120], ["renderer_key", 120],
+  ];
+  for (const [field, max] of texts) {
+    const value = optionalText(ad[field], max);
+    if (value) (out as Record<string, unknown>)[field] = value;
+  }
+  for (const field of ["url", "favicon", "brandImage"] as const) {
+    const value = httpsUrl(ad[field]);
+    if (value) out[field] = value;
+  }
+  if (spec && renderer === "psp1") {
+    const design = spec as Record<string, unknown>;
+    const fields = out as Record<string, unknown>;
+    spec = { ...design, root: withRowSpacers(design.root, (node) => psp1Draws(node, fields)) };
+  }
+  if (spec) out.renderer_spec = spec as Record<string, unknown>;
+  return out;
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+/** An empty, ungated `box` whose only style is `grow: 1`: a flexible gap, nothing drawn. */
+function isGrowGap(node: unknown): boolean {
+  if (!isObject(node) || node.type !== "box" || node.showIf !== undefined || (Array.isArray(node.children) && node.children.length > 0)) return false;
+  const style = isObject(node.style) ? node.style : {};
+  const keys = Object.keys(style);
+  return keys.length === 1 && Number(style.grow) === 1;
+}
+
+/** The ad fields a PSP-1 design can bind (`SpecConstants.bindableFields` in Gravity's Swift SDK). */
+const PSP1_FIELDS = new Set(["adText", "title", "cta", "brandName", "url", "favicon", "brandImage"]);
+
+/**
+ * Whether Gravity's Swift SDK draws a node for this ad (`SpecAdView`'s
+ * `willRender`): a `showIf` field must be filled, text must resolve to
+ * something (a `{field}` it can't fill becomes nothing), and an image needs
+ * its link. The SDK leaves out children that draw nothing before it places
+ * spacers, so a spacer on one of them would be lost.
+ */
+function psp1Draws(node: Record<string, unknown>, fields: Record<string, unknown>): boolean {
+  const value = (name: unknown) => (typeof name === "string" && PSP1_FIELDS.has(name) && typeof fields[name] === "string" ? fields[name] as string : "");
+  if (node.showIf !== undefined && !value(node.showIf)) return false;
+  if (node.type === "box" || node.type === "link") return true;
+  if (node.type === "image") return node.bind !== undefined ? Boolean(value(node.bind)) : typeof node.src === "string" && node.src.length > 0;
+  if (node.type !== "text") return false;
+  if (node.bind !== undefined) return Boolean(value(node.bind));
+  return typeof node.text === "string" && node.text.replace(/\{([A-Za-z0-9_]+)\}/g, (_all, name: string) => value(name)).length > 0;
+}
+
+/**
+ * A PSP-1 design with each flexible gap in a row turned into `spacerBefore`
+ * on the next item the SDK draws for this ad: the same layout, PSP-1's own
+ * way to push an item to the end. Gravity's Swift SDK (1.2.2) draws an empty
+ * `grow` box as a frame that splits the row with the text beside it, so a
+ * brand name wraps on a phone; it draws `spacerBefore` as a spacer. A gap
+ * with nothing drawn after it, or a second gap before the same item, stays as
+ * it is. Remove once the SDK is fixed.
+ */
+function withRowSpacers(node: unknown, draws: (node: Record<string, unknown>) => boolean): unknown {
+  if (!isObject(node) || !Array.isArray(node.children)) return node;
+  const inRow = !isObject(node.style) || node.style.direction !== "column";
+  const children = node.children.map((child) => (inRow && isGrowGap(child) ? child : withRowSpacers(child, draws)));
+  if (!inRow) return { ...node, children };
+  const spaced = new Set<number>();
+  const kept = new Set<number>();
+  children.forEach((child, index) => {
+    if (!isGrowGap(child)) return;
+    const next = children.findIndex((item, at) => at > index && isObject(item) && !isGrowGap(item) && draws(item));
+    if (next < 0 || spaced.has(next)) kept.add(index);
+    else spaced.add(next);
+  });
+  return {
+    ...node,
+    children: children.flatMap((child, index) => {
+      if (isGrowGap(child)) return kept.has(index) ? [child] : [];
+      if (!spaced.has(index) || !isObject(child)) return [child];
+      return [{ ...child, style: { ...(isObject(child.style) ? child.style : {}), spacerBefore: true } }];
+    }),
+  };
+}
+
+const FAVICON_MAX_BYTES = 24_000;
+const FAVICON_TIMEOUT_MS = 1_500;
+const FAVICON_TYPES = /^image\/(png|jpeg|gif|webp|x-icon|vnd\.microsoft\.icon)$/;
+
+/**
+ * The ad's icon as a `data:` image, for Gravity's web renderer: the desktop
+ * app's page loads images only from hosts it lists (`rendererCsp.ts`), and an
+ * advertiser's icon can be on any host. Null when it can't be read quickly
+ * or isn't a small raster image; the design then draws without it.
+ */
+async function inlineFavicon(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(FAVICON_TIMEOUT_MS),
+      cf: { cacheTtl: 86_400, cacheEverything: true },
+    } as RequestInit);
+    const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
+    if (!response.ok || !FAVICON_TYPES.test(type) || !response.body) return null;
+    if (Number(response.headers.get("content-length") ?? 0) > FAVICON_MAX_BYTES) {
+      await response.body.cancel();
+      return null;
+    }
+    // Read only up to the cap: the advertiser's host decides how much it sends.
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > FAVICON_MAX_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      chunks.push(value);
+    }
+    if (!size) return null;
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return `data:${type};base64,${btoa(binary)}`;
+  } catch {
+    return null;
+  }
 }
 
 /* ---- Routes ---- */
@@ -516,21 +758,33 @@ const notFound = () => fail("not_found", "That ADE Cloud route doesn't exist.", 
  * The account's answer, on every machine. A yes keeps the SHA-256 of the
  * account's email now (Gravity's `hashed_email`); a no, or a later no, keeps
  * nothing of it. Allowed while the switch reaches the account, so the answer
- * can be changed back in Settings on any plan.
+ * can be changed back in Settings on any plan. `notice` is the yes saved when
+ * the person was told cards are on, only where they start on
+ * (`startsOnFor`), and never over an answer that still holds: of two screens,
+ * the person's own yes or no wins.
  */
 async function handleConsent(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  const consent = CLOUD_SPONSORED_CONSENTS.find((entry) => entry === body.consent);
-  if (!consent) return badRequest("Say granted or declined.");
+  const choice = CLOUD_SPONSORED_CHOICES.find((entry) => entry === body.consent);
+  if (!choice) return badRequest("Say granted, declined or notice.");
   const account = await loadAccount(env, userId, now);
   const switches = await gravitySwitches(env);
   if ((await blockedReason(env, account, null, switches)) === "off") return notFound();
+  const who = sponsoredRequester(request);
+  const consent: CloudSponsoredConsent = choice === "declined" ? "declined" : "granted";
   // A yes keeps Free's Small unlimited, for cards Gravity shows only in its
   // countries: from anywhere else it is refused (a tester's test ads aside).
-  const country = requestCountry(request);
-  if (consent === "granted" && (await outsideCountries(env, account, country, switches))) {
+  if (consent === "granted" && (await outsideCountries(env, account, who.country, switches))) {
     return fail("unavailable", "Sponsored cards aren't shown in your country yet, so they can't be turned on.", 403);
+  }
+  const answered = async () => json((await sponsoredAccountState(env, account, who, now)) ?? { ads: false, consent: null, test: !switches.live });
+  let before: ConsentRow | null = null;
+  if (choice === "notice") {
+    if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so ADE asks first.", 409);
+    before = await readConsent(env, userId);
+    // An answer that holds, or any no (even one run out), stands: the person is asked, never told.
+    if (!startsOnNow(env, before, await shownAnswer(env, before, who, now), who)) return answered();
   }
   let emailHash: string | null = null;
   if (consent === "granted") {
@@ -541,17 +795,19 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     });
     emailHash = email ? await sha256Hex(email.trim().toLowerCase()) : null;
   }
+  // A notice saves only over the row it read (none, or one no longer shown): a yes or no saved meanwhile holds.
+  const guard = choice !== "notice" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
   await env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at) values (?, ?, ?, ?)
-    on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at
-  `).bind(userId, consent, emailHash, now).run();
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country) values (?, ?, ?, ?, ?, ?)
+    on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
+      source = excluded.source, country = excluded.country${guard}
+  `).bind(userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country, ...(guard && before ? [before.decided_at] : [])).run();
   // A no keeps nothing of where the person watched from: their address and device go too.
   if (consent === "declined") await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId).run();
-  logCloud("cloud.sponsored.consent", { consent });
-  // Small's hours follow the answer at once (`smallUsesNoHours`).
+  logCloud("cloud.sponsored.consent", { consent: choice });
+  // Small's rate follows the answer at once (`smallUsesNoHours`).
   await syncSmallRates(env, account, now);
-  const state = await sponsoredAccountState(env, account, country, now);
-  return json(state ?? { ads: false, consent, test: !(await gravitySwitches(env)).live });
+  return answered();
 }
 
 /** The computer, when it is the account's own live ADE Cloud computer. */
@@ -571,8 +827,16 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   const device = readDevice(body.device);
   if (!device) return badRequest("Say which device this is.");
   const account = await loadAccount(env, userId, now);
-  const country = requestCountry(request);
-  if ((await blockedReason(env, account, country)) || (await readConsent(env, userId))?.consent !== "granted") return json({ ok: false });
+  const who = sponsoredRequester(request);
+  const country = who.country;
+  if ((await blockedReason(env, account, country)) || !yesHolds(env, await readConsent(env, userId), who)) {
+    // The latest look at this computer doesn't allow cards (the person travelled, or their browser
+    // now sends Global Privacy Control): an earlier look no longer lets the Index answer its agents.
+    if (typeof body.instanceId === "string") {
+      await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ? and instance_id = ?").bind(userId, body.instanceId).run();
+    }
+    return json({ ok: false });
+  }
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return json({ ok: false });
   // Written only while the answer is still yes, in the same statement: a "no" that lands meanwhile wins.
@@ -654,10 +918,11 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
 
   const account = await loadAccount(env, userId, now);
   const switches = await gravitySwitches(env);
-  const blocked = await blockedReason(env, account, requestCountry(request), switches);
+  const who = sponsoredRequester(request);
+  const blocked = await blockedReason(env, account, who.country, switches);
   if (blocked) return none(blocked);
   const consent = await readConsent(env, userId);
-  if (consent?.consent !== "granted") return none("consent");
+  if (!yesHolds(env, consent, who)) return none("consent");
   // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return none("not_cloud");
@@ -668,12 +933,15 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     .bind(userId, chatId, computer.instance_id).first<{ parent_chat_id: string | null }>();
   if (!copy || copy.parent_chat_id) return none("not_cloud");
   const format = isSponsoredFormat(body.format) ? body.format : "below_reply";
+  // The inline format is ADE's own linked sentence at the reply's end, never a
+  // card, so it never asks for Gravity's design.
+  const renderer = format === "inline" ? null : CLOUD_SPONSORED_RENDERERS.find((entry) => entry === body.renderer) ?? null;
   const slot = PLACEMENTS[format];
   const placementId = `ade-${surfaceOf(body.surface, device)}-${slot.slug}`;
   // One request per finished reply: a second ask (a reload, a second screen) reads the first answer.
   const stored = await readTurn(env, userId, chatId, turnId, placementId, now);
   // A real ad saved before ads went back to test ads still keeps to the countries, tester or not.
-  if (stored?.ad && !stored.ad.test && outsideCountryList(env, requestCountry(request))) return none("country");
+  if (stored?.ad && !stored.ad.test && outsideCountryList(env, who.country)) return none("country");
   if (stored) return json(stored);
   const messages = readMessages(body.messages, 2);
   if (!messages.length) return none("no_fill");
@@ -710,8 +978,22 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
       placement: slot.placement,
       placement_id: placementId,
       ...(slot.maxChars ? { max_ad_text_chars: slot.maxChars } : {}),
+      // No data units or image layouts: their pictures come from the
+      // advertiser's own hosts, which ADE's pages don't load, and the Swift
+      // SDK draws neither. Left out as Gravity's Swift SDK leaves it out (the
+      // web SDK would otherwise declare them), so the engine sends its design.
+      capabilities: undefined,
     }],
-    { apiKey: env.GRAVITY_API_KEY, production: live, supportsSpec: false, timeoutMs: REQUEST_TIMEOUT_MS },
+    // Gravity's design only for a client that draws it with Gravity's renderer
+    // (`renderer`); never a frame, which no ADE client hosts.
+    {
+      apiKey: env.GRAVITY_API_KEY,
+      production: live,
+      supportsSpec: renderer !== null,
+      ...(renderer ? { specCapabilities: renderer } : {}),
+      enableFrames: false,
+      timeoutMs: REQUEST_TIMEOUT_MS,
+    },
   ).catch(() => null);
   if (!result || (result.status !== 200 && result.status !== 204 && result.status !== 202)) {
     // Gravity's answer is never an error for the person: no card, and the owner hears of it.
@@ -719,7 +1001,12 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
     await releaseTurn(env, userId, chatId, turnId);
     return none("unavailable");
   }
-  const ad = adOfGravity(result.ads[0], !live);
+  const ad = adOfGravity(result.ads[0], !live, renderer);
+  if (ad?.gravity?.favicon && renderer === "web1") {
+    const inlined = await inlineFavicon(ad.gravity.favicon);
+    if (inlined) ad.gravity.favicon = inlined;
+    else delete ad.gravity.favicon;
+  }
   const answer: CloudSponsoredAdAnswer = ad ? { ad } : { ad: null, reason: "no_fill" };
   if (ad) await count(env, now, userId, ["ad_fill", `ad_fill:${format}`]);
   await saveTurn(env, userId, chatId, turnId, answer);
@@ -829,7 +1116,8 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   if (!switches.live && switches.mode !== "testers") return none("off");
   if (outsideCountryList(env, viewer?.country ?? null)) return none("country");
   const consent = await readConsent(env, userId);
-  if (consent?.consent !== "granted") return none("consent");
+  // The person's country and browser are those of their last look at the chat (a viewer row exists only after a yes that held there).
+  if (!yesHolds(env, consent, { country: viewer?.country ?? null, gpc: false })) return none("consent");
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");
   const chatId = shortString(body.chatId, 160);
   if (chatId && ROW_ID.test(chatId)) {

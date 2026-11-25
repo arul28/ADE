@@ -28,7 +28,7 @@ export type OwnerAwareNavigationDependencies = {
 export function appNavigationOwnership(
   target: AppNavigationTarget,
 ): DeeplinkOwnership | null {
-  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane") {
+  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane" && target.kind !== "automation-run") {
     return null;
   }
   const accountMachineKey =
@@ -124,7 +124,7 @@ export async function resolveAccountProjectNavigation(
   deps: AccountProjectNavigationDependencies,
 ): Promise<AppNavigationRequest> {
   const target = request.target;
-  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane") return request;
+  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane" && target.kind !== "automation-run") return request;
   const id = target.accountProjectId ?? target.ownership?.accountProjectId ?? null;
   if (!isAccountProjectId(id)) return request;
   const list = await deps.readAccountList().catch(() => null);

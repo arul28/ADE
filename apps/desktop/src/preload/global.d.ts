@@ -13,7 +13,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
@@ -278,6 +278,7 @@ import type {
   ArchiveLaneArgs,
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
+  AutomationCapabilities,
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
@@ -2198,6 +2199,8 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<AutomationRunDetail | null>;
         getIngressStatus: (pin: OpenProjectBinding) => Promise<AutomationIngressStatus>;
+        /** What a rule on the pinned machine can use; refused by an ADE older than this call. */
+        getCapabilities: (pin: OpenProjectBinding) => Promise<AutomationCapabilities>;
         refreshWebhookGatewayStatus: (pin: OpenProjectBinding) => Promise<AutomationWebhookGatewayStatus>;
         setWebhookGatewayPublicUrl: (args: {
           publicUrl?: string | null;
@@ -5197,7 +5200,7 @@ declare global {
          * Sponsored cards on Free-plan ADE Cloud chats (account level, no pin).
          * The server decides every card; a missing method means no cards.
          */
-        setSponsoredConsent?: (consent: CloudSponsoredConsent) => Promise<CloudSponsoredState | null>;
+        setSponsoredConsent?: (consent: CloudSponsoredChoice) => Promise<CloudSponsoredState | null>;
         sponsoredSeen?: (input: CloudSponsoredSeenRequest) => Promise<void>;
         /** The person hid a reply's card: counted for the formats' A/B test. */
         sponsoredHide?: (input: CloudSponsoredHideRequest) => Promise<void>;

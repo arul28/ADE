@@ -207,6 +207,32 @@ starting the replacement. And when the brain exits having failed with
 `socket_owned_by_other` (another brain already owns the pipe), the supervisor
 logs that and exits instead of restarting on a backoff forever.
 
+An install that would replace the brain, and every uninstall, first refuses
+when the command runs inside a process it would stop: the recorded brain or
+supervisor, any supervisor of this launcher and its children, or a stale
+channel brain the install would reap. An agent's shell is a child of the
+brain, so without this an agent's `ade brain stop` or `restart` ended every
+chat on the machine, and nothing started the brain again until the next
+sign-in. Everything before the refusal only reads: the launcher is rewritten,
+and a running legacy `ADE Runtime` task ended, only after it. The refusal
+carries `selfMutationBlocked` and names the
+`ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` override that ADE's own update
+helpers set; when the command could not tell whether it is inside, it is
+refused all the same and also carries `selfMutationUnconfirmed`. The update's
+removal preflight (`checkWindowsServiceRemovable`) makes the same decision. An
+install that keeps a healthy brain stops nothing and still succeeds from
+inside. macOS (launchd) and Linux (systemd, by process tree and by the unit's
+cgroup, and the detached supervisor) refuse the same way.
+
+"Inside" is read from the Windows parent chain, in one PowerShell call. Git
+Bash breaks that chain: MSYS runs a script's `exec` as a new Windows process
+and ends the old one, so a program started through a `#!/bin/sh … exec` shim
+(ADE's own `ade` shim for Git Bash) has a parent whose parent no longer
+exists. When the chain ends at a process in an MSYS or Cygwin `bin` folder,
+the check asks that install's own `ps.exe -W`, which still maps each MSYS
+process to its MSYS parent, and carries on from the parent's Windows pid. When
+neither can answer, the check refuses rather than guess.
+
 Release proof records these as separate bounded signals, not one inferred
 "service is running" claim:
 

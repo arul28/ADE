@@ -284,7 +284,7 @@ export function registerCloudIpc(args: {
   // shows what the server returns.
   ipcMain.handle(IPC.cloudSponsoredConsent, async (event, arg: { consent?: unknown }): Promise<CloudSponsoredState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredConsent)) return null;
-    if (arg?.consent !== "granted" && arg?.consent !== "declined") throw new AdeExpectedError("Pick yes or no.", "user");
+    if (arg?.consent !== "granted" && arg?.consent !== "declined" && arg?.consent !== "notice") throw new AdeExpectedError("Pick yes or no.", "user");
     const state = await accountApi().setSponsoredConsent(arg.consent);
     logger.info("cloud.sponsored_consent", { consent: arg.consent });
     sendToAllWindows(IPC.cloudStatusChanged);

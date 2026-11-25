@@ -253,16 +253,15 @@ export const CLOUD_PATHS = {
   phoneProvider: "/cloud/phone/provider",
   /** `GET`: ADE's own page that shows a phone streamed over WebRTC (WHEP), for a view link's `#` part. Not an account route. */
   phoneViewer: "/cloud/phone/viewer",
-  /** `POST { enabled, monthlyLimitUsd? }`: extra iPhone minutes on a paid plan (`CloudAccountState.phone.extra`). */
-  billingExtraPhone: "/cloud/billing/extra-phone",
   /** NoMac's signed webhook (`phones.ts`): phone ready and ended, credit low. Not an account route. */
   nomacWebhook: "/cloud/nomac/webhook",
   /** The provider's signed status-change webhook (`computerStatus.ts`). Not an account route. */
   agent37Webhook: "/cloud/agent37/webhook",
   /**
    * Sponsored cards and the Index on the Free plan's ADE Cloud chats
-   * (`gravity.ts`). `PUT /consent` `{ consent }` records the account's answer
-   * (`CloudSponsoredState`); `POST /seen` `CloudSponsoredSeenRequest` says a
+   * (`gravity.ts`). `PUT /consent` `{ consent: CloudSponsoredChoice }` records
+   * the account's answer, or the notice that cards are on, and answers
+   * `CloudSponsoredState` (409 for a notice where cards don't start on); `POST /seen` `CloudSponsoredSeenRequest` says a
    * person has one of the account's cloud chats open; `POST /ad`
    * `CloudSponsoredAdRequest` answers `CloudSponsoredAdAnswer`; `POST /index`
    * `CloudSponsoredIndexRequest` answers `CloudSponsoredIndexAnswer`.
@@ -644,10 +643,6 @@ export type CloudPlanFacts = {
    */
   diskGb: number;
   priceUsd: number;
-  /** ADE Cloud iPhone minutes a month (`phones.ts`). Older servers leave it out. */
-  phoneMinutes?: number;
-  /** What one iPhone minute past the plan costs, in cents; null on the free plan, where the phone stops. Older servers leave it out. */
-  extraPhoneMinuteCents?: number | null;
   /** What one hour past the plan costs, in cents; null on the free plan, where work stops. Older servers leave it out (`CloudCatalog.extraHourCents`). */
   extraHourCents?: number | null;
   /** How many cloud computers the account may have, asleep or not. Servers before Pricing v2 sent the hidden awake cap here. */
@@ -737,8 +732,7 @@ export type CloudAccountState = {
    * Credits: `hours` is one balance of credits (the same numbers: a Medium
    * computer uses one an hour), and the ADE Cloud iPhone draws from it at
    * `phoneMilliPerMinute` thousandths a minute (one credit). Surfaces say
-   * "credits" and show no separate iPhone minutes. Absent: hours, and the
-   * iPhone's own minutes (`phone.minutes`).
+   * "credits". Absent: an older server's hours.
    */
   credits?: { phoneMilliPerMinute: number };
   /** What the person pays for. A `past_due` paid account still says `paid` here. */
@@ -756,7 +750,7 @@ export type CloudAccountState = {
     state: CloudHoursState;
   };
   extraHours: { available: boolean; enabled: boolean; usedMilli: number };
-  /** The ADE Cloud iPhone: access, this period's minutes and extra minutes. Older servers leave it out. */
+  /** The ADE Cloud iPhone: access and the credits it used this period. Older servers leave it out. */
   phone?: CloudAccountPhone;
   /**
    * Disk all computers hold. `limitGb` is null: there is no account-wide disk,
@@ -3092,7 +3086,12 @@ export const isCloudPhoneDevice = (value: unknown): value is CloudPhoneDevice =>
  */
 export type CloudPhoneAccess = "on" | "soon" | "off";
 
-/** The plan's phone minutes this period. `left` never goes below 0. */
+/**
+ * What the account's credits run the phone for this period, one credit a
+ * minute: `left` the minutes the credits left allow (extra credits not
+ * counted; never below 0), `used` the minutes the period's phones used, and
+ * `included` used plus left (older clients show "left of included").
+ */
 export type CloudPhoneMinutes = { included: number; used: number; left: number };
 
 /** A cloud iPhone as ADE shows it: never a NoMac credential. */
@@ -3122,7 +3121,7 @@ export type CloudPhoneState = {
   phone: CloudPhoneSummary | null;
   /**
    * This period's phones, newest first (at most `CLOUD_PHONE_RECENT_SHOWN`),
-   * so a person can see where the minutes went. Absent from an older server.
+   * so a person can see where the credits went. Absent from an older server.
    */
   recent?: CloudPhoneUse[];
   /**
@@ -3135,7 +3134,7 @@ export type CloudPhoneState = {
 /** How many of the period's phones `CloudPhoneState.recent` lists. */
 export const CLOUD_PHONE_RECENT_SHOWN = 10;
 
-/** One phone of this period, as the minutes count it. */
+/** One phone of this period, as its credits count it. */
 export type CloudPhoneUse = {
   /** When it was asked for (ms). */
   startedAt: number;
@@ -3145,7 +3144,7 @@ export type CloudPhoneUse = {
   minutes: number;
   device: string | null;
   /**
-   * How it ended: `stopped` (a stop), `stop_at` (the minutes ran out), a
+   * How it ended: `stopped` (a stop), `stop_at` (the credits ran out), a
    * provider's reason (`idle`, `time_limit`, …), or `on_its_own` when it ended
    * with no reason given (NoMac's idle stop or time limit). Null while it runs.
    */
@@ -3191,25 +3190,25 @@ export type CloudPhoneCallRequest = {
  */
 export type CloudPhoneView = { url: string; expiresAt: number; control: boolean; provider?: CloudPhoneProvider };
 
-/** Where an account's iPhone minutes stand this period, for the warnings and the meter. */
-export type CloudPhoneMinutesState = "none" | "warn80" | "zero";
-
 /** `CloudAccountState.phone`. */
 export type CloudAccountPhone = {
   access: CloudPhoneAccess;
   /** A tester's pick (`CloudPhoneProviderChoice`): sent only to accounts on the beta list, which may change it. */
   providerChoice?: CloudPhoneProviderChoice;
-  /** Under credits (`CloudAccountState.credits`): the credits the iPhone used this period, in thousandths. */
+  /** The credits the iPhone used this period, in thousandths (0 when access is not `on`). Older servers may leave it out. */
   creditsUsedMilli?: number;
-  /** The plan's minutes this period; null when access is not `on`. */
-  minutes: CloudPhoneMinutes | null;
-  state: CloudPhoneMinutesState;
   /**
-   * Extra minutes past the plan (paid plans only): `available` false on the
-   * free plan or while the server doesn't sell them. `monthlyLimitCents` null
-   * is no limit. `usedMinutes` and `usedCents` are this period's so far.
+   * Kept for CLI and desktop builds before 1.2.135, whose `ade cloud status`
+   * reads it from the account: the minutes the credits run the phone for (as
+   * on `/cloud/phone`). Sent only while access is `on`. New code never reads it.
    */
-  extra: {
+  minutes?: CloudPhoneMinutes;
+  /**
+   * Kept for desktop builds before 1.2.135, which read `phone.extra.available`
+   * unguarded; the server always sends it off and zero. Remove after. New
+   * code never reads it.
+   */
+  extra?: {
     available: boolean;
     enabled: boolean;
     centsPerMinute: number | null;
@@ -3229,8 +3228,21 @@ export type CloudAccountPhone = {
 export type CloudSponsoredState = {
   /** Sponsored cards may show in this account's ADE Cloud chats now, once `consent` is `granted`. */
   ads: boolean;
-  /** The account's answer to the one-time question, on every machine; null when it was never asked. */
+  /**
+   * The account's answer to the one-time question, on every machine; null when
+   * the person is to be asked (never asked, or a no old enough to ask again).
+   * The yes saved with the on-by-default notice reads `granted` only where
+   * cards start on; anywhere else it reads null, so the person is asked.
+   */
   consent: CloudSponsoredConsent | null;
+  /**
+   * Cards start on for this person (their country's law lets ADE tell them
+   * instead of asking, and their browser sent no Global Privacy Control).
+   * With `consent` null, the client shows the notice that they are on, with
+   * a way to turn them off, instead of the question, and saves it
+   * (`PUT /consent` `notice`). Absent: ask.
+   */
+  startsOn?: boolean;
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */
   test: boolean;
   /**
@@ -3259,6 +3271,9 @@ export type CloudSponsoredSurface = "desktop" | "web" | "ios";
 export const CLOUD_SPONSORED_SURFACES = ["desktop", "web", "ios"] as const satisfies readonly CloudSponsoredSurface[];
 export type CloudSponsoredConsent = "granted" | "declined";
 export const CLOUD_SPONSORED_CONSENTS: readonly CloudSponsoredConsent[] = ["granted", "declined"];
+/** What `PUT /cloud/sponsored/consent` saves: the person's answer, or `notice` (they were told cards are on, `startsOn`). */
+export type CloudSponsoredChoice = CloudSponsoredConsent | "notice";
+export const CLOUD_SPONSORED_CHOICES: readonly CloudSponsoredChoice[] = ["granted", "declined", "notice"];
 
 /** The device a person reads the chat on, as Gravity wants it (`device_type`, `os`). */
 export type CloudSponsoredDevice = {
@@ -3301,7 +3316,17 @@ export type CloudSponsoredAdRequest = {
   format?: CloudSponsoredFormat;
   /** The app asking. Absent (an older client): `ios` for an iPhone or iPad, else `desktop`. */
   surface?: CloudSponsoredSurface;
+  /**
+   * The client draws the card with Gravity's own renderer, and which one:
+   * `web1` for `@gravity-ai/ui` (desktop and web), `psp1` for Gravity's
+   * native SDK (the iPhone and iPad app). The answer then carries `gravity`.
+   * Absent (an older client): ADE's own card from the plain fields, and
+   * Gravity is told no design will be drawn.
+   */
+  renderer?: CloudSponsoredRenderer;
 };
+export const CLOUD_SPONSORED_RENDERERS = ["web1", "psp1"] as const;
+export type CloudSponsoredRenderer = (typeof CLOUD_SPONSORED_RENDERERS)[number];
 /**
  * Gravity's own hosts: a card's view and click links must be on one of them,
  * so a card can't send anyone (or a client's fetch) anywhere else.
@@ -3329,6 +3354,40 @@ export type CloudSponsoredAd = {
   /** The brand's icon (https), or null. */
   favicon: string | null;
   test: boolean;
+  /**
+   * Gravity's ad as its renderer takes it (only when the request named a
+   * `renderer`): the design (`renderer_spec`), the copy and the same tracked
+   * links. The client hands it to `GravityAd` or `SpecAdView` as is; that
+   * renderer fires the view link and its measured/viewable beacons itself.
+   */
+  gravity?: CloudSponsoredGravityAd | null;
+};
+/**
+ * The fields of Gravity's ad its renderers read, in Gravity's own names, so
+ * the object decodes unchanged in `@gravity-ai/ui` and the Swift SDK. Frames,
+ * prompt actions, MCP connects and data units are left out: ADE draws none.
+ */
+export type CloudSponsoredGravityAd = {
+  adText: string;
+  title?: string;
+  cta?: string;
+  brandName?: string;
+  url?: string;
+  /** For `web1`, a `data:` image: the desktop app's page can't load images from an advertiser's host. */
+  favicon?: string;
+  brandImage?: string;
+  impUrl?: string;
+  clickUrl: string;
+  render?: { mode: "spec" | "native"; layout?: string };
+  renderer_spec?: Record<string, unknown>;
+  placement?: string;
+  placement_id?: string;
+  campaignId?: string;
+  variant?: string;
+  experiment_id?: string;
+  composition_id?: string;
+  renderer_key?: string;
+  hasDeeplink?: boolean;
 };
 /** `POST /cloud/sponsored/hide`: the person hid this reply's card (counted once per reply, per format, for the A/B test). */
 export type CloudSponsoredHideRequest = { chatId: string; turnId: string };

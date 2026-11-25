@@ -330,9 +330,9 @@ export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil,
 /* ---- The ADE Cloud iPhone (`phones.ts`) ---- */
 
 /**
- * - `started`: a new phone started (`extra`: on extra minutes, the plan's were used up).
+ * - `started`: a new phone started (`extra`: on extra credits, the plan's were used up).
  * - `ended`: NoMac said a phone ended (`reason`: `stopped`, `idle`, `time_limit`, `spend_cap`, ...; `billedMinutes`).
- * - `refused`: a start was refused (`reason`: `phone_minutes_out`, `phone_extra_limit`, `phone_free_held`, `paused`).
+ * - `refused`: a start was refused (`reason`: `phone_credits_out`, `paused`, `free_cap`).
  * - `provider` and `route` (on `started`): who runs it, and why it went there
  *   (`lock`: the owner set this account to one; `default`; `need`: only it can
  *   do what the start asked; `failover`: the first refused). Internal only.

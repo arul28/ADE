@@ -692,6 +692,8 @@ function normalizeDraft(args: {
   suites: TestSuiteDefinition[];
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
+  /** Why this machine cannot run an `ade-action` step, or null. */
+  adeActionStepProblem?: ((domain: string, action: string) => string | null) | null;
 }): {
   normalized: AutomationRuleDraftNormalized | null;
   issues: AutomationDraftIssue[];
@@ -890,6 +892,8 @@ function normalizeDraft(args: {
         issues.push({ level: "error", path: `actions[${idx}].adeAction`, message: "ade-action requires domain and action." });
         continue;
       }
+      const missing = args.adeActionStepProblem?.(domain, actionName) ?? null;
+      if (missing) issues.push({ level: "error", path: `actions[${idx}].adeAction`, message: missing });
       if (domain === "attention" && actionName === "sendNotification") {
         const problem = sendNotificationStepProblem(adeAction?.args);
         if (problem) issues.push({ level: "error", path: `actions[${idx}].adeAction.args`, message: problem });
@@ -1280,6 +1284,7 @@ export function createAutomationPlannerService({
     syncFromConfig: () => void;
     assertWebhookGatewayReadyForRule?: (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">) => void;
     noteRunOnChanged?: () => void;
+    adeActionStepProblem?: (domain: string, action: string) => string | null;
   };
 }) {
   const readSuites = (): TestSuiteDefinition[] => {
@@ -1451,7 +1456,7 @@ export function createAutomationPlannerService({
         ? { kind: "built-in", builtIn: { actions: [] } }
         : { kind: "agent-session", session: {} };
 
-      const normalizedRes = normalizeDraft({ draft, suites, projectRoot, laneService });
+      const normalizedRes = normalizeDraft({ draft, suites, projectRoot, laneService, adeActionStepProblem: automationService.adeActionStepProblem ?? null });
       const confidence = clampNumber(1 - normalizedRes.ambiguities.length * 0.18 - normalizedRes.issues.filter((i) => i.level === "warning").length * 0.08, 0, 1);
 
       return {
@@ -1467,7 +1472,13 @@ export function createAutomationPlannerService({
 
     validateDraft(req: AutomationValidateDraftRequest): AutomationValidateDraftResult {
       const suites = readSuites();
-      const { normalized, issues } = normalizeDraft({ draft: req.draft, suites, projectRoot, laneService });
+      const { normalized, issues } = normalizeDraft({
+        draft: req.draft,
+        suites,
+        projectRoot,
+        laneService,
+        adeActionStepProblem: automationService.adeActionStepProblem ?? null,
+      });
       const required = normalized ? requiredConfirmationsForDraft(normalized) : [];
       const missing = normalized ? missingConfirmations(required, req.confirmations) : [];
 

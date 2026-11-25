@@ -1616,6 +1616,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRuns",
     "getRunDetail",
     "getIngressStatus",
+    "getCapabilities",
     "startIngress",
     "refreshWebhookGatewayStatus",
     "setWebhookGatewayPublicUrl",

@@ -91,31 +91,23 @@ export function setupStartDiskGb(size: Pick<CloudSize, "diskMaxGb">, rememberedG
 }
 
 /**
- * What one ADE Cloud iPhone minute past a paid plan costs, in cents (owner,
- * 2026-11-17), while the phone counts its own minutes. NoMac charges ADE 1
- * cent a minute (since 2026-11-23), Revyl 6. Under credits (`credits.ts`) an
- * extra iPhone minute is an extra hour instead. The free plan has no extra
- * minutes and stops.
- */
-export const EXTRA_PHONE_MINUTE_CENTS = 2.5;
-
-/**
- * The plans (Pricing v2, the owner's table of 2026-11-21; iPhone minutes of
- * 2026-11-17). `computerLimit` is how many cloud computers the account may
- * have, asleep or not; hours (Medium-hours) and phone minutes are a month's.
+ * The plans (Pricing v2, the owner's table of 2026-11-21). `computerLimit` is
+ * how many cloud computers the account may have, asleep or not; hours
+ * (credits: Medium-hours) are a month's, and the ADE Cloud iPhone draws from
+ * them at one credit a minute (`credits.ts`).
  * Small computers never use hours. There is no account-wide disk: each size
  * has its own maximum, and the idle cleanup deletes unused computers. A
  * hidden safety cap still holds how many are awake at once
- * (`AWAKE_COMPUTER_CAP`). `extraHourCents` and `extraPhoneMinuteCents` are
- * what an hour or a minute past the plan costs; null on the free plan, where
+ * (`AWAKE_COMPUTER_CAP`). `extraHourCents` is what a credit past the plan
+ * costs; null on the free plan, where
  * work on the bigger sizes stops instead. Outside agents (ADE MCP) may start
  * ADE Cloud work on paid plans only.
  */
 export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanTerms>> = {
-  free: { label: "Free", includedMilli: 50_000, computerLimit: 2, priceUsd: 0, phoneMinutes: 60, extraHourCents: null, extraPhoneMinuteCents: null, outsideAgents: false },
-  plus: { label: "Plus", includedMilli: 100_000, computerLimit: 3, priceUsd: 5, phoneMinutes: 80, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS, outsideAgents: true },
-  pro: { label: "Pro", includedMilli: 600_000, computerLimit: 10, priceUsd: 20, phoneMinutes: 300, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS, outsideAgents: true },
-  max: { label: "Max", includedMilli: 1_500_000, computerLimit: 20, priceUsd: 50, phoneMinutes: 800, extraHourCents: 2, extraPhoneMinuteCents: EXTRA_PHONE_MINUTE_CENTS, outsideAgents: true },
+  free: { label: "Free", includedMilli: 50_000, computerLimit: 2, priceUsd: 0, extraHourCents: null, outsideAgents: false },
+  plus: { label: "Plus", includedMilli: 100_000, computerLimit: 3, priceUsd: 5, extraHourCents: 2, outsideAgents: true },
+  pro: { label: "Pro", includedMilli: 600_000, computerLimit: 10, priceUsd: 20, extraHourCents: 2, outsideAgents: true },
+  max: { label: "Max", includedMilli: 1_500_000, computerLimit: 20, priceUsd: 50, extraHourCents: 2, outsideAgents: true },
 };
 
 /** A plan as `CLOUD_PLANS` holds it, with its name on this server's own pages; the catalog adds what older builds read (`diskGb`). */

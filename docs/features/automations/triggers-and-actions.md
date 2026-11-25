@@ -243,9 +243,15 @@ forms included. Each choice has a **Choose** list of this project's chats,
 pull requests, lanes or branches and one-click **From the trigger** values
 (the PR, chat, lane or branch that started the run). Two more one-click values
 point at what the run itself makes, which does not exist when the rule is
-written: **The chat this run started** (`{{run.chatSessionId}}`, set when an
-`agent-session` step creates its chat) and **The lane this run used**
-(`{{run.laneId}}`, which falls back to the run's trigger lane). `notifyLink.ts` builds the
+written. They sit first, under **From this run**: **The chat this run started**
+(`{{run.chatSessionId}}`, set when an `agent-session` step creates its chat),
+**The lane this run used** (`{{run.laneId}}`, which falls back to the run's
+trigger lane, except on an ADE Cloud run, whose lane is on its own computer)
+and **This run's history** (`ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}`:
+the computer opens the run in Automations, the phone opens its chat or offers
+the run to the computer). A new step starts on the first of these that fits:
+the run's chat when an agent step comes before it, else the trigger's PR or
+chat, else Activity. `notifyLink.ts` builds the
 link from those fields, reads a saved link back into them, and checks it with
 the trigger values swapped for samples. A preview shows the banner and what a
 tap does, and **Send a test to my phone** sends it now: trigger values show as
@@ -324,7 +330,7 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 - **Built-in shell actions validate cwd.** Don't pass absolute paths that escape the allowed roots — `validateAutomationCwd` rejects them.
 - **ADE actions are allowlisted at compile time.** A `(domain, action)` pair must appear in `ADE_ACTION_ALLOWLIST`. Adding an internal service method doesn't expose it to automations until the allowlist is updated; this is intentional — the allowlist is the audit surface.
 - **`{{trigger.*}}` placeholders only interpolate from the current trigger context.** There is no cross-run state. A string that is one whole placeholder keeps the raw value (a number stays a number) and stays as written when the value is missing; a placeholder inside longer text becomes an empty string when missing. `{{trigger.lane.id}}` and `{{trigger.lane.name}}` read the run's lane (the context keeps it as `laneId` / `laneName`), and `{{date}}` / `{{time}}` resolve in step arguments and prompts as they do in lane names. Prefer explicit `resolvers` when a placeholder is load-bearing.
-- **`{{run.*}}` values fill in as the run goes.** `run.id` exists from the first step, `run.laneId` / `run.laneName` read the run's lane, and `run.chatSessionId` exists only after an `agent-session` step made its chat. Use them in steps after the step that makes the thing.
+- **`{{run.*}}` values fill in as the run goes.** `run.id` and `run.automationId` exist from the first step, `run.laneId` / `run.laneName` read the run's lane, and `run.chatSessionId` exists only after an `agent-session` step made its chat. On an ADE Cloud run the lane and chat live on the lane's own computer: `run.laneName` is filled, `run.laneId` and `run.chatSessionId` stay empty (the run's history link still opens the run). Use them in steps after the step that makes the thing.
 - **Planner JSON extraction is lossy on malformed output.** Budget extra validation on fields the planner set; rely on `validateDraft` rather than trusting raw output.
 
 ## Cross-links

@@ -338,12 +338,15 @@ them in `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 
 Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plans/pricing-v2-and-gravity.md)):
 
-| Plan | Price | Hours a month | Cloud computers | ADE Cloud iPhone minutes | Extra hours | Outside agents (ADE MCP) |
-|---|---|---|---|---|---|---|
-| Free | $0 | 50 | 2 | 60 | none: work stops | no |
-| Plus | $5 | 100 | 3 | 80 | 2¢ an hour | yes |
-| Pro | $20 | 600 | 10 | 300 | 2¢ an hour | yes |
-| Max | $50 | 1,500 | 20 | 800 | 2¢ an hour | yes |
+| Plan | Price | Hours a month | Cloud computers | Extra hours | Outside agents (ADE MCP) |
+|---|---|---|---|---|---|
+| Free | $0 | 50 | 2 | none: work stops | no |
+| Plus | $5 | 100 | 3 | 2¢ an hour | yes |
+| Pro | $20 | 600 | 10 | 2¢ an hour | yes |
+| Max | $50 | 1,500 | 20 | 2¢ an hour | yes |
+
+The ADE Cloud iPhone has no minutes of its own: it draws from these credits,
+one a minute (below).
 
 - **Hours are Medium-hours** (`catalog.hourUnit: "medium"`; integer
   thousandths in the API). Small computers never use hours, on every plan:
@@ -480,14 +483,14 @@ A credit is the hour renamed, so no number changes: Free 50, Plus 100, Pro
 2.5, X-Large 4. The ADE Cloud iPhone draws from the same balance at one credit
 a minute (a Mac VM, later, the same). Past the plan, a paid plan's extra
 credits are the extra-hours switch at 2¢ each, so an extra iPhone minute is
-an extra credit and there is no separate extra-iPhone-minutes switch. Free
-stops when the credits run out.
+an extra credit. Free stops when the credits run out.
 
 How the server counts it (`credits.ts`, `phones.ts`, migration 0059):
 
 - A phone counts in credits when its row says so (`cloud_phones.credits = 1`):
-  every phone started since the flip. One started before keeps the old iPhone
-  minutes and their billing until its period ends, so no phone counts twice.
+  every phone saved since the flip. Rows from before it (`credits = 0`, the
+  old iPhone minutes, gone since 2026-11-25) are history only: they charge
+  nothing and count nothing.
 - Its billed minutes go into the account's `used_milli` as its provider
   settles them, in the same write as the phone's row
   (`phoneCreditStatements`); `credited_milli` holds what is already in, so a
@@ -717,7 +720,7 @@ move keeps the old disk.
 ### Sponsored cards and the Index (Free, behind a switch)
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`,
-migrations `0054`, `0055`, `0056`). The account server decides everything and holds the partner
+migrations `0054`, `0055`, `0056`, `0062`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
 under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
@@ -732,8 +735,8 @@ card, whatever the plan.
   `above_prompt`, `inline`, or `split` for an A/B test; migration `0061`
   keeps an owner's choice per account) names where
   an account's card shows: under the finished reply, docked above the prompt
-  box (the latest reply's card, kept while the next reply runs), or one linked
-  "Sponsored" sentence at the end of the reply. The state carries `format`;
+  box (the latest reply's card, kept while the next reply runs), or at the
+  end of the reply, inside it. The state carries `format`;
   the ad request says the format it draws in and its surface (`desktop`,
   `web`, `ios`), and the server sends Gravity the registered placement
   `ade-<surface>-<below|above-prompt|inline>` (`below_response`,
@@ -753,21 +756,40 @@ card, whatever the plan.
   (`cloud-owner.mjs ab`) joins those counts with Gravity's per-placement
   views, clicks and revenue, and the daily report has a formats line.
 - **Reply card** (`renderer/components/chat/sponsored/`, iOS
-  `WorkSponsoredCards.swift`): at most one, under a finished reply, asked for
+  `WorkSponsoredCards.swift`): at most one per finished reply, asked for
   only while the pane and that spot are on screen. The server claims the reply
   before it asks Gravity, so two screens make one request, and keeps the card's
-  fields (never chat text) for a day. The view link goes once half the card is
-  on screen; nothing rewards a view or a click. One sponsored unit per window
-  (`sponsoredOnScreen.ts`), and the tray hides its upgrade button beside it.
+  fields (never chat text) for a day. Nothing rewards a view or a click. One
+  sponsored unit per window (`sponsoredOnScreen.ts`), and the tray hides its
+  upgrade button beside it.
+- **Gravity's renderer** (Gravity's recommendation, 2026-11-25): the ad
+  request names the client's renderer (`renderer`: `web1` for
+  `@gravity-ai/ui` on desktop and web, `psp1` for Gravity's Swift SDK on the
+  iPhone and iPad), and only then does the server ask Gravity for its design
+  (`supportsSpec`; never a frame). The answer's `gravity` is Gravity's ad in
+  its own field names, design (`renderer_spec`) included; the client hands it
+  to `GravityAd` (`SponsoredGravityCard.tsx`, loaded only when a card shows)
+  or `SpecAdView`, which draws Gravity's design in ADE's colors and sends the
+  view link and the `measured`/`viewable` beacons itself. ADE keeps the place,
+  the hide button and its link rule (every click opens one of Gravity's own
+  links in the browser). For `web1` the server inlines the advertiser's icon
+  as a `data:` image (the desktop page loads images only from listed hosts;
+  `rendererCsp.ts` and the web client's `_headers` list Gravity's hosts for
+  the beacons). An older client sends no `renderer`, gets no design, and
+  draws ADE's own card from the plain fields, sending the view link itself
+  once half the card is on screen.
 - **Index pick** (`ade cloud recommend --need "…"`, `cloudAgentActions.ts`): an
   agent on an ADE Cloud computer asks for a service the person needs. Refused
   for a person, ADE MCP, automation and subagent chats, and while nobody has a
   chat or agent CLI of that computer open (`cloud_sponsored_viewers`, from
   `seen` every 4 minutes). The Index has no test mode, so before go-live only
-  testers reach it. A chat gets a `sponsored_pick` card that installs nothing;
+  testers reach it, and only from a listed country (`GRAVITY_COUNTRIES`, read
+  from the viewer's last `seen`; a tester abroad gets `reason: "country"`,
+  where test ads still show). A chat gets a `sponsored_pick` card that installs nothing;
   a CLI session gets text the agent repeats once, starting with "Sponsored:".
 - **Limits and report:** per account per day (120 ads, 20 Index searches) and
-  Gravity's live allowance (`GRAVITY_DAILY_LIMIT`), each taken in one
+  an optional ceiling on Gravity's live requests (`GRAVITY_DAILY_LIMIT`, unset
+  since the contract dropped the daily limit), each taken in one
   conditional write before the request (`cloud_sponsored_days`). The daily cost
   report prints the counts and Gravity's revenue against the day's free-plan
   cost. Minutes 23 and 53 of every hour prune answers and viewer rows (IP,
@@ -785,6 +807,16 @@ card, whatever the plan.
   account's catalog shows Small at that rate). A no is asked again two weeks
   later (`SPONSORED_REASK_MS`), and at once when it came before the ad switch
   last changed; until answered it still counts as a no.
+- **Start on in the US:** in `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`,
+  empty asks everywhere) the state carries `startsOn` instead of asking: the
+  chat's card (and Settings › ADE Cloud) is the notice that cards are on, with
+  Got it and Turn off. Shown, it is saved as `PUT /cloud/sponsored/consent
+  {consent: "notice"}`, a yes with `source = notice` (migration `0062`) that
+  holds only from those countries and never from a request with
+  `Sec-GPC: 1`. The notice's reply asks for no card. A no given there holds
+  12 months (`SPONSORED_OPT_OUT_HOLD_MS`); elsewhere the two-week re-ask
+  applies. A notice never overwrites an answer that holds. Details:
+  [account-test-tool.md](account-test-tool.md#where-cards-start-on).
 - **Testers abroad:** while ads are test ads (`gravity_live` off), an account
   on the testers list gets cards from any country; everyone else still needs
   `GRAVITY_COUNTRIES`. Real ads keep the country check for everyone, and so
