@@ -2299,6 +2299,8 @@ describe("CTO quiet turns (noReply and react)", () => {
     await service.sendMessage({ sessionId: session.id, text: "ok" }, { awaitDispatch: true });
     const person = events.find((envelope) => envelope.event.type === "user_message")?.event;
     expect(person?.type).toBe("user_message");
+    // The MCP bridge hands over the model's raw arguments: an emoji outside the set is refused, not stored.
+    expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "🔥" as never }).reacted).toBe(false);
     expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "👍" })).toEqual({ reacted: true });
     // A second reaction on the same message is a new event with the same key: clients keep the newest.
     expect(service.reactToCtoMessage({ sessionId: session.id, emoji: "✅" })).toEqual({ reacted: true });

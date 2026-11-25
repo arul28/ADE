@@ -342,17 +342,6 @@ describe("createCtoOperatorTools", () => {
     expect((tools.gitStatus as any).inputSchema.safeParse({}).success).toBe(true);
   });
 
-  it("refuses a reaction outside the fixed set, and both quiet endings refuse without a CTO chat", async () => {
-    const schema = (createCtoOperatorTools(buildDeps()).react as any).inputSchema;
-    for (const emoji of ["🔥", "thumbs up", ""]) {
-      expect(schema.safeParse({ emoji }).success, emoji).toBe(false);
-    }
-
-    const bare = createCtoOperatorTools(buildDeps());
-    await expect((bare.react as any).execute({ emoji: "👍" })).resolves.toMatchObject({ success: false });
-    await expect((bare.noReply as any).execute({})).resolves.toMatchObject({ success: false });
-  });
-
   // ── Chat tools ──────────────────────────────────────────────────
 
   describe("chat tools", () => {
@@ -401,6 +390,36 @@ describe("createCtoOperatorTools", () => {
         orchestrationParentSessionId: "cto-current",
         spawnKind: "subagent",
       }));
+    });
+
+    it("lets only a read-only helper run on the main checkout", async () => {
+      const deps = buildDeps({
+        resolveExecutionLane: vi.fn(async ({ requestedLaneId }) => requestedLaneId ?? "lane-fresh"),
+        laneService: {
+          list: vi.fn().mockResolvedValue([
+            { id: "lane-main", laneType: "primary" },
+            { id: "lane-work", laneType: "worktree" },
+          ]),
+          create: vi.fn(),
+        } as any,
+      });
+      const tools = createCtoOperatorTools(deps);
+      const modelId = "openai/gpt-5.6-sol";
+
+      for (const permissionMode of [undefined, "edit", "full-auto"] as const) {
+        const refused = await (tools.spawnChat as any).execute({ modelId, laneId: "lane-main", permissionMode });
+        expect(refused.success, String(permissionMode)).toBe(false);
+      }
+      expect(deps.createChat).not.toHaveBeenCalled();
+
+      await (tools.spawnChat as any).execute({ modelId, laneId: "lane-main", permissionMode: "plan" });
+      await (tools.spawnChat as any).execute({ modelId, laneId: "lane-work", permissionMode: "full-auto" });
+      await (tools.spawnChat as any).execute({ modelId });
+      expect((deps.createChat as any).mock.calls.map(([args]: any[]) => [args.laneId, args.permissionMode ?? null])).toEqual([
+        ["lane-main", "plan"],
+        ["lane-work", "full-auto"],
+        ["lane-fresh", null],
+      ]);
     });
 
     it("accepts only the two spawn kinds at the schema layer, defaulting to subagent", () => {
