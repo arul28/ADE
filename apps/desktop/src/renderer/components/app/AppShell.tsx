@@ -51,7 +51,7 @@ import {
   displayZoomToLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
-import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { syncNativeTitleBar } from "../../lib/windowControlsOverlay";
 import { captureError } from "../../../shared/sentry/capture";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
@@ -1086,7 +1086,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const zoomLevel = displayZoomToLevel(clamped);
       window.ade.zoom.setLevel(zoomLevel);
       applyShellHeaderInset(clamped);
-      syncWindowsTitleBarOverlay({ displayZoom: clamped });
+      syncNativeTitleBar({ displayZoom: clamped });
     } catch {
       // ignore
     }

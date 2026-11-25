@@ -146,6 +146,7 @@ import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import {
   ADE_WINDOWS_APP_USER_MODEL_ID,
+  macTrafficLightPosition,
   windowChromeOptions,
   windowsTitleBarOverlay,
   type WindowsTitleBarOverlayTheme,
@@ -2377,19 +2378,26 @@ app.whenReady().then(async () => {
     }
   };
 
-  // Window chrome: only Windows has a caption strip ADE owns. macOS traffic
-  // lights are laid out and recoloured by the OS, so the renderer's calls are
-  // a no-op there rather than a second, competing source of truth.
+  // Window chrome follows renderer zoom. Windows: the caption strip's height
+  // and colour. macOS: only the traffic lights' position, since the OS draws
+  // and recolours them itself and they cannot be resized.
   ipcMain.handle(
     IPC.appSetTitleBarOverlay,
     (
       event,
       arg: { theme?: WindowsTitleBarOverlayTheme; zoomFactor?: number } = {},
     ): { applied: boolean } => {
-      if (process.platform !== "win32") return { applied: false };
+      if (process.platform !== "win32" && process.platform !== "darwin") {
+        return { applied: false };
+      }
       if (!isTrustedAdeRendererSender(event)) return { applied: false };
       const win = BrowserWindow.fromWebContents(event.sender);
       if (!win || win.isDestroyed()) return { applied: false };
+      if (process.platform === "darwin") {
+        if (typeof arg.zoomFactor !== "number") return { applied: false };
+        win.setWindowButtonPosition(macTrafficLightPosition(arg.zoomFactor));
+        return { applied: true };
+      }
       try {
         win.setTitleBarOverlay(windowsTitleBarOverlay(arg));
         return { applied: true };

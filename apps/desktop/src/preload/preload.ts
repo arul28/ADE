@@ -15574,9 +15574,9 @@ const adeBridge = {
     setLevel: (level: number): void => webFrame.setZoomLevel(level),
     getFactor: (): number => webFrame.getZoomFactor(),
     /**
-     * Resize/recolour the Windows caption strip so it tracks the renderer's own
-     * header. Windows-only in the main process; on macOS the OS owns traffic
-     * light layout and colour, so this resolves `{ applied: false }`.
+     * Keep the native window controls in step with the renderer's own header:
+     * on Windows, resize/recolour the caption strip; on macOS, re-centre the
+     * traffic lights for the zoom factor (the OS owns their size and colour).
      */
     setTitleBarOverlay: async (arg: {
       theme?: "dark" | "light";

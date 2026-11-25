@@ -123,8 +123,9 @@ export function windowsCaptionInsetPx(args: CaptionInsetArgs): number | null {
  *
  * Zoom and theme change independently and neither call site knows the other's
  * value, so the last of each is held here and both are pushed every time.
- * macOS is excluded outright: the OS lays out and recolours the traffic lights
- * itself, and a second source of truth would only fight it.
+ * macOS gets the same push for a different reason: the OS recolours the
+ * traffic lights itself, but their position is fixed in DIP, so the main
+ * process moves them to stay centred in the zoomed header.
  */
 export type TitleBarOverlayTheme = "dark" | "light";
 
@@ -149,7 +150,8 @@ export function createTitleBarOverlaySync(): TitleBarOverlaySync {
     if (typeof next.displayZoom === "number" && Number.isFinite(next.displayZoom)) {
       overlayDisplayZoom = next.displayZoom;
     }
-    if (rendererPlatformAttribute() !== "win32") return;
+    const platform = rendererPlatformAttribute();
+    if (platform !== "win32" && platform !== "darwin") return;
     if (typeof window === "undefined") return;
     const setOverlay = window.ade?.zoom?.setTitleBarOverlay;
     if (!isAdeAvailable(setOverlay)) return;
@@ -168,7 +170,7 @@ export function createTitleBarOverlaySync(): TitleBarOverlaySync {
  * they have to accumulate into the same pair of values or each push would reset
  * the other's input to a default it never had.
  */
-export const syncWindowsTitleBarOverlay: TitleBarOverlaySync = createTitleBarOverlaySync();
+export const syncNativeTitleBar: TitleBarOverlaySync = createTitleBarOverlaySync();
 
 function readOverlay(): WindowControlsOverlayLike | null {
   if (typeof navigator === "undefined") return null;
