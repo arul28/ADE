@@ -42308,6 +42308,14 @@ async function runAccountLogin(
       };
     };
 
+    // The agree line goes out once, before a browser opens or a device code shows.
+    let legalLineShown = false;
+    const legalLineOnce = (): string => {
+      if (legalLineShown) return "";
+      legalLineShown = true;
+      return `${SIGN_IN_LEGAL_LINE}\n`;
+    };
+
     const runDeviceFlow = async (
       onStarted?: () => Promise<void>,
     ): Promise<{ output: string; exitCode: number }> => {
@@ -42328,7 +42336,7 @@ async function runAccountLogin(
       let intervalSec = device.intervalSec;
       const deadlineMs = deadlineFor(device.expiresAt);
       process.stderr.write(
-        `\n${deviceSignInInstructions("To finish signing in", device)}${SIGN_IN_LEGAL_LINE}\n\nWaiting for sign-in…\n`,
+        `\n${deviceSignInInstructions("To finish signing in", device)}${legalLineOnce()}\nWaiting for sign-in…\n`,
       );
       while (true) {
         const sleepMs = Math.max(1, intervalSec) * 1000;
@@ -42361,6 +42369,7 @@ async function runAccountLogin(
       throw new CliExecutionError("ADE account login did not start.", { start });
     }
     pendingSessionId = sessionId;
+    process.stderr.write(legalLineOnce());
     const openResult = openUrlViaOs(authorizeUrl);
     // Set when a device sign-in already failed to start, so it is tried once.
     let deviceSignInUnavailable = false;
@@ -42407,7 +42416,6 @@ async function runAccountLogin(
     }
     process.stderr.write(
       `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
-      `${SIGN_IN_LEGAL_LINE}\n` +
       (otherDevice ? `\n${deviceSignInInstructions("Or, to sign in on another device", otherDevice)}` : "") +
       "\nWaiting for sign-in…\n",
     );

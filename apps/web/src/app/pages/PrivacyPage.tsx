@@ -415,9 +415,10 @@ export function PrivacyPage() {
             </p>
           </Reveal>
 
+          {/* Some sections are taller than four phone screens, so any visible part reveals one. */}
           <div className="mt-10 grid gap-6">
             {sections.map((section, index) => (
-              <Reveal key={section.id} delay={Math.min(index * 0.04, 0.2)}>
+              <Reveal key={section.id} delay={Math.min(index * 0.04, 0.2)} amount="some">
                 <div id={section.id} className="scroll-mt-24 rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                   <h2 className="text-sm font-semibold text-fg">{section.title}</h2>
                   <div className="mt-3 space-y-3 text-sm leading-relaxed text-muted-fg">
