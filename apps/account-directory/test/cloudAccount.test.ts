@@ -22,10 +22,13 @@ import { runLinearRenewalCron } from "../src/cloud/linearRenewal";
 import { nextFireAt } from "../src/cloud/automationSchedule";
 import { createComputer, forkComputer, handleCloudRequest } from "../src/cloud/routes";
 import { handleSignupAnalyticsRequest } from "../src/signupAnalytics";
+import { runAccountErasureRepeats } from "../src/accountErasure";
+import { handleRequest as handleDirectoryRequest, type Env as DirectoryEnv } from "../src/directory";
 import { applyCloudPlanChange, type CloudEnv, type ComputerRow } from "../src/cloud/store";
 import { runDailyCostReport } from "../src/cloud/costReport";
 import { grantAad, seal, tokenKey } from "../src/githubApp/seal";
 import { ISSUER, jwksEndpoint, mintToken, OAUTH_CLIENT_ID } from "./jwks";
+import { registerBody, request as directoryRequest } from "./helpers";
 
 /**
  * ADE Cloud's money and ownership contracts, through the real routes, cron and
@@ -731,9 +734,15 @@ describe("ADE Cloud account", () => {
       expect(providerCalls(harness, /POST .*\/sleep$/)).toEqual([]);
       expect(computer(harness).awake_since).toBe(NOW);
     }],
-    ["a deleted account loses its plan, computers and saved chats even with analytics off", async () => {
+    ["a deleted account loses its plan, computers, machine list and saved chats even with analytics off", async () => {
       harness.exec("update cloud_accounts set plan = 'paid', stripe_subscription_id = 'sub_1', stripe_status = 'active' where user_id = ?", OWNER);
       seedComputer(harness);
+      // The account's own desktop, a removed one, and the computer's logs and daily usage.
+      harness.insert("machines", { user_id: OWNER, machine_key: "key-desk", name: "Studio", reachable_endpoints: "[\"10.0.0.2\"]", last_seen_at: NOW - DAY });
+      harness.insert("revoked_machines", { user_id: OWNER, machine_key: "key-old", device_id: "dev-old", revoked_at: NOW - DAY });
+      harness.insert("cloud_power_log", { instance_id: INSTANCE, user_id: OWNER, action: "wake", reason: "user", created_at: NOW - HOUR });
+      harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: "2026-01-01", user_id: OWNER, multiplier_milli: 1000, metered_ms: HOUR });
+      harness.insert("cloud_disk_days", { user_id: OWNER, day: "2026-01-01", peak_gb: 20, plan_gb: 20 });
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
       // Its status menu's facts carry no user id: they go with the computer.
@@ -749,10 +758,59 @@ describe("ADE Cloud account", () => {
       expect(computer(harness).deleted_at).toBe(NOW);
       expect(harness.rows("select user_id from cloud_user_keys where user_id = ?", OWNER)).toEqual([]);
       expect([...harness.rows("select instance_id from cloud_instance_events"), ...harness.rows("select instance_id from cloud_computer_activity")]).toEqual([]);
+      // No table names the account any more, except its row marked deleted (a create
+      // still running must find it). The usage and cost stay, under the hash, unnamed.
+      const tables = harness.rows("select name from sqlite_master where type = 'table' and name not like 'sqlite_%'") as Array<{ name: string }>;
+      // The list of deletions to run again keeps the ID too, for a day (`accountErasure.ts`).
+      expect(tables.filter(({ name }) => harness.rows(`select * from "${name}"`).some((row) => Object.values(row).includes(OWNER))).map(({ name }) => name).sort())
+        .toEqual(["account_erasures", "cloud_accounts"]);
+      const hashed = expect.stringMatching(/^deleted:[0-9a-f]{64}$/);
+      expect(harness.rows("select user_id, name, machine_key from cloud_computers")).toEqual([{ user_id: hashed, name: null, machine_key: null }]);
+      expect(harness.rows("select user_id, metered_ms from cloud_computer_days")).toEqual([{ user_id: hashed, metered_ms: HOUR }]);
+      expect(harness.rows("select user_id, peak_gb from cloud_disk_days")).toEqual([{ user_id: hashed, peak_gb: 20 }]);
       // Its vault and settings live in the push relay's D1, so the relay is asked to remove them.
       expect(harness.relayCalls).toEqual([
         { method: "DELETE", url: `https://relay.test/directory/accounts/${OWNER}`, directoryAuth: "directory-secret" },
       ]);
+    }],
+    ["what a computer still signed in writes after the deletion goes on the next run, and the account leaves the list after the last", async () => {
+      expect((await deleteAccountOverClerk()).status).toBe(200);
+      const relayPurges = () => harness.relayCalls.filter((call) => call.method === "DELETE").length;
+      expect(relayPurges()).toBe(1);
+      // Its token is still valid, but its heartbeat cannot register the machine again,
+      // even as a re-pair: the deletion also took the machine's revocation.
+      for (const body of [registerBody("key-desk"), { ...registerBody("key-desk"), pairing: true }]) {
+        const heartbeat = await handleDirectoryRequest(directoryRequest("POST", "/account/machines/register", tokens[OWNER], body), harness.env as unknown as DirectoryEnv);
+        expect(heartbeat.status).toBe(403);
+        expect(await heartbeat.json()).toMatchObject({ code: "machine_revoked", revokedAt: NOW });
+      }
+      expect(harness.rows("select machine_key from machines")).toEqual([]);
+      // A write that started before the deletion still lands.
+      harness.insert("machines", { user_id: OWNER, machine_key: "key-desk", name: "Studio", last_seen_at: NOW + 60_000 });
+      const run = async (at: number) => { clock = NOW + at; await runAccountErasureRepeats(clerkDeletionEnv(), clock); };
+
+      await run(14 * 60_000);
+      expect(harness.rows("select machine_key from machines")).toEqual([{ machine_key: "key-desk" }]);
+      await run(15 * 60_000);
+      expect(harness.rows("select machine_key from machines")).toEqual([]);
+      // The push relay is purged again too, for what the same token wrote there.
+      expect(relayPurges()).toBe(2);
+      for (const at of [75 * 60_000, 3 * HOUR]) await run(at);
+      expect(harness.rows("select runs from account_erasures where user_id = ?", OWNER)).toEqual([{ runs: 3 }]);
+      await run(DAY);
+      expect(harness.rows("select user_id from account_erasures")).toEqual([]);
+      expect(relayPurges()).toBe(5);
+    }],
+    ["the webhook relay reads the deleted accounts with the shared secret and nothing else", async () => {
+      expect((await deleteAccountOverClerk()).status).toBe(200);
+      const list = (headers: Record<string, string>) => harness.send(OTHER, "GET", "/cloud/internal/deleted-accounts", undefined, headers);
+      expect((await list({ "x-ade-event-wake-secret": "wake-secret" })).status).toBe(503);
+      (harness.env as CloudEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = "wake-secret";
+      expect((await list({})).status).toBe(404);
+      expect((await list({ "x-ade-event-wake-secret": "wrong-secret" })).status).toBe(404);
+      const listed = await list({ "x-ade-event-wake-secret": "wake-secret" });
+      expect(listed.status).toBe(200);
+      expect(await listed.json()).toEqual({ accounts: [{ userId: OWNER, deletedAt: NOW }] });
     }],
     ["an account deleted while its create runs still loses the computer it was making", async () => {
       harness.net.after.push({ match: /POST .*\/instances$/, run: async () => { expect((await deleteAccountOverClerk()).status).toBe(200); } });
@@ -761,7 +819,10 @@ describe("ADE Cloud account", () => {
       await harness.tick();
 
       expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
-      expect(harness.row("select reason from cloud_delete_log where instance_id = 'madenew12345'").reason).toBe("account_deleted");
+      // The cron's delete clears it as the webhook's would: no log, and the row under the hash.
+      expect(harness.rows("select instance_id from cloud_delete_log")).toEqual([]);
+      expect(harness.rows("select user_id, deleted_at is not null as deleted from cloud_computers where instance_id = 'madenew12345'"))
+        .toEqual([{ user_id: expect.stringMatching(/^deleted:[0-9a-f]{64}$/), deleted: 1 }]);
     }],
     ["a grow whose answer was lost goes to the provider again on retry", async () => {
       harness.exec("update cloud_accounts set plan = 'paid', included_milli = 500000 where user_id = ?", OWNER);
@@ -1367,9 +1428,13 @@ describe("ADE Cloud account", () => {
       method: "POST",
       headers: { "svix-id": "msg_del", "svix-timestamp": timestamp, "svix-signature": `v1,${signature}` },
       body,
-    }), {
+    }), { ...clerkDeletionEnv(), CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}` });
+  }
+
+  /** What the webhook and the minute cron's repeats of a deletion run with. */
+  function clerkDeletionEnv() {
+    return {
       DB: harness.DB,
-      CLERK_WEBHOOK_SIGNING_SECRET: `whsec_${secret.toString("base64")}`,
       AGENT37_API_KEY: "provider-key",
       STRIPE_SECRET_KEY: "stripe-key",
       PUSH_RELAY_URL: "https://relay.test",
@@ -1381,7 +1446,7 @@ describe("ADE Cloud account", () => {
           return new Response(JSON.stringify({ ok: true }), { status: 200 });
         },
       },
-    });
+    };
   }
 });
 

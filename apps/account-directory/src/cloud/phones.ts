@@ -1008,7 +1008,11 @@ export async function deleteAccountPhone(env: Pick<CloudEnv, "DB" | "NOMAC_API_K
     if (env.NOMAC_API_KEY?.trim()) await forgetNomacLabel(env, label);
     else if (hadPhone) throw new Error("phone_cleanup_no_key");
   }
-  // The beta row is what sends a retry to NoMac: it goes only once NoMac's cleanup is done.
-  await env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId).run();
+  // The beta row is what sends a retry to NoMac: it goes only once NoMac's cleanup is done. An owner's
+  // invite still waiting for the same address (the person's email) goes with it.
+  await env.DB.batch([
+    env.DB.prepare("delete from cloud_phone_beta_pending where email in (select lower(trim(email)) from cloud_phone_beta where user_id = ? and email is not null)").bind(userId),
+    env.DB.prepare("delete from cloud_phone_beta where user_id = ?").bind(userId),
+  ]);
   if (revylFailure) throw revylFailure;
 }

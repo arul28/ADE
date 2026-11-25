@@ -2894,6 +2894,8 @@ export const CLOUD_EDGE_PATHS = {
   jiraSearch: "/cloud/integrations/jira/search",
   jiraIssue: "/cloud/integrations/jira/issue",
   internalEventWake: "/cloud/internal/event-wake",
+  /** The webhook relay's read of the accounts deleted in the last day (`accountErasure.ts`). */
+  internalDeletedAccounts: "/cloud/internal/deleted-accounts",
 } as const;
 /** `/cloud/instances/:id/event-wakes`: the topics that wake this computer at rest. */
 export const cloudInstanceEventWakesPath = (instanceId: string): string =>

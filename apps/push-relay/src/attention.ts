@@ -3988,7 +3988,12 @@ async function handleAccountMachinePairingRestore(
 
 /**
  * `DELETE /directory/accounts/<userId>`: the account was deleted (Clerk
- * `user.deleted`, handled by the directory), so its vault and its settings go.
+ * `user.deleted`, handled by the directory), so everything this relay keeps
+ * for it goes: its vault, settings and passwords; its alerts, their history
+ * and its tombstones; its machine links (machine names) and revocations; its
+ * phones, their push tokens, Live Activity state and preferences; and the
+ * legacy push rows of the machines it claimed. The directory calls this again
+ * on each repeat of the deletion, so rows a still-valid token wrote go too.
  *
  * Directory provenance is the only credential. There is no account token to
  * check: the account no longer exists, and the directory names the account in
@@ -4028,6 +4033,24 @@ export async function handleDirectoryAccountPurge(
     ["passwordItems", "delete from password_items where user_id = ?"],
     ["passwordKeys", "delete from password_keys where user_id = ?"],
     ["passwordKeyReleases", "delete from password_key_releases where user_id = ?"],
+    // Legacy push rows of the machines this account claimed, before the claim is cleared below.
+    ["legacyDevices", "delete from device_registrations where machine_key in (select machine_key from machines where account_user_id = ?)"],
+    ["legacyActivityTokens", "delete from live_activity_tokens where machine_key in (select machine_key from machines where account_user_id = ?)"],
+    ["legacySuppressions", "delete from publish_suppression where machine_key in (select machine_key from machines where account_user_id = ?)"],
+    ["machineClaims", "update machines set account_user_id = null where account_user_id = ?"],
+    ["attentionItems", "delete from attention_items where user_id = ?"],
+    ["attentionTombstones", "delete from attention_tombstones where user_id = ?"],
+    ["attentionRevisions", "delete from attention_revisions where user_id = ?"],
+    ["machineLinks", "delete from attention_machine_links where user_id = ?"],
+    ["revokedMachines", "delete from attention_revoked_machines where user_id = ?"],
+    ["devices", "delete from attention_devices where user_id = ?"],
+    ["deviceOwnership", "delete from attention_device_ownership where user_id = ?"],
+    ["activityTokens", "delete from attention_activity_tokens where user_id = ?"],
+    ["activityState", "delete from attention_activity_state where user_id = ?"],
+    ["presence", "delete from attention_presence where user_id = ?"],
+    ["preferences", "delete from attention_preferences where user_id = ?"],
+    ["deliveryReceipts", "delete from attention_delivery_receipts where user_id = ?"],
+    ["alertLog", "delete from attention_alert_log where user_id = ?"],
   ] as const;
   const results = await env.DB.batch(accountKeys.flatMap((accountKey) =>
     deletes.map(([, sql]) => env.DB.prepare(sql).bind(accountKey)),
