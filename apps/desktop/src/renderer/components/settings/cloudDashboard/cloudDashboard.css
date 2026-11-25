@@ -630,8 +630,9 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-hero-status {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 10px 12px;
   margin-top: 12px;
   padding: 11px 12px 11px 14px;
   border: 1px solid rgba(255, 210, 122, 0.28);
@@ -656,7 +657,7 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-hero-status[data-tone="info"] .adecd-status-lamp { background: #a78bfa; box-shadow: 0 0 10px rgba(167, 139, 250, 0.7); }
 .adecd-hero-status[data-id="cloud-hours-zero"] .adecd-status-lamp,
 .adecd-hero-status[data-id="cloud-hours-past-due"] .adecd-status-lamp { background: #fca5a5; box-shadow: 0 0 10px rgba(248, 113, 113, 0.8); }
-.adecd-status-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; font-size: 12px; line-height: 1.45; color: var(--adecd-fg-2); }
+.adecd-status-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 180px; overflow-wrap: anywhere; font-size: 12px; line-height: 1.45; color: var(--adecd-fg-2); }
 .adecd-status-words b { font-size: 13px; font-weight: 600; color: var(--adecd-fg); }
 .adecd-status-action { flex: none; }
 .adecd-hero-status[data-tone="success"] { border-color: rgba(255, 210, 122, 0.3); background: linear-gradient(90deg, rgba(167, 139, 250, 0.18), rgba(14, 10, 40, 0.42) 55%); }
@@ -684,7 +685,6 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 }
 @container adecdhero (max-width: 480px) {
   .adecd-hero-rail { flex-direction: column; }
-  .adecd-hero-status { flex-wrap: wrap; }
 }
 @container adecdhero (max-width: 460px) {
   .adecd-hero { padding: 16px 14px 18px; }
