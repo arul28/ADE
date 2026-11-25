@@ -638,6 +638,14 @@ export function applyBrowserMockCloud(ade: any): void {
   if (sponsoredParam === "starts-on") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, startsOn: true }, catalog: smallRate(null) };
   }
+  // `again`: as `small`, asked again after a no: a yes is confirmed a second time.
+  if (sponsoredParam === "again") {
+    state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, confirmYes: true }, catalog: smallRate(null) };
+  }
+  // `gpc`: a browser's Global Privacy Control turned an earlier yes off: Settings says why.
+  if (sponsoredParam === "gpc") {
+    state = { ...state, sponsored: { ads: true, consent: "declined", test: true, smallNeedsCards: true, confirmYes: true, gpcOff: true }, catalog: smallRate("declined") };
+  }
   // `&mockSponsoredFormat=below_reply|above_prompt|inline`: where the card shows (the server's `format`).
   const formatParam = param("mockSponsoredFormat");
   if (state.sponsored && (formatParam === "below_reply" || formatParam === "above_prompt" || formatParam === "inline")) {
@@ -698,12 +706,17 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
-    setSponsoredConsent: async (choice: CloudSponsoredChoice) => {
+    setSponsoredConsent: async (choice: CloudSponsoredChoice, confirmed?: boolean) => {
       if (!state.sponsored) return null;
+      // As the server: after a no, a yes needs the second confirm.
+      if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
+        throw new Error("Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.");
+      }
       // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
       const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
-      const { startsOn: _startsOn, ...sponsored } = state.sponsored;
-      state = { ...state, sponsored: { ...sponsored, consent } };
+      const { startsOn: _startsOn, confirmYes: _confirmYes, gpcOff: _gpcOff, ...sponsored } = state.sponsored;
+      // After a no, a yes is confirmed a second time, as the server has it.
+      state = { ...state, sponsored: { ...sponsored, consent, ...(consent === "declined" ? { confirmYes: true } : {}) } };
       if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };
       for (const listener of statusListeners) listener();
       return state.sponsored ?? null;

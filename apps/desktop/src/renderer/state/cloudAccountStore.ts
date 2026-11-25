@@ -73,12 +73,26 @@ export function noteCloudSponsoredState(next: CloudSponsoredState | null | undef
   publish({ ...account, sponsored: next });
 }
 
-/** Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save. */
-export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice): Promise<void> {
+/**
+ * Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save.
+ * `confirmed`: a yes the person confirmed a second time (`turnOnSponsoredCards`).
+ */
+export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false, since = generation): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
+  // Asked of an account signed out since (a confirm stayed open meanwhile): not this account's answer.
+  if (since !== generation) return;
   const current = generation;
-  const next = await set(consent);
+  const refresh = () => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
+  let next: Awaited<ReturnType<typeof set>>;
+  try {
+    next = await set(consent, confirmed);
+  } catch (error) {
+    // A refusal often means this copy is stale (the answer changed on another device, or a yes
+    // now needs the second confirm): read the account again so the next try asks right.
+    if (current === generation) refresh();
+    throw error;
+  }
   if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
   // Another account signed in meanwhile: this answer was the old account's.
   if (current !== generation) return;
@@ -86,7 +100,7 @@ export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice): P
   // While Free's Small needs cards, the answer also moved Small's rate in the
   // account's catalog: read the account again so Small's hours show it. (Lazy:
   // the shared list's module imports this one.)
-  if (next.smallNeedsCards) void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
+  if (next.smallNeedsCards) refresh();
 }
 
 let noticeSave: Promise<void> | null = null;
@@ -95,17 +109,22 @@ let noticeSave: Promise<void> | null = null;
  * The person was just shown that sponsored cards are on (`startsOn`): saves
  * it once, so cards and free Small follow on every machine. A save that fails
  * is an expected outcome (offline, or refused because the person's country no
- * longer starts them on, or an answer saved on another screen meanwhile): the
- * account is read again, which shows the question instead, and the next look
- * at the notice tries once more.
+ * longer starts them on, or an answer saved on another screen meanwhile):
+ * `setCloudSponsoredConsent` reads the account again, which shows the
+ * question instead, and the next look at the notice tries once more.
  */
 export function noteSponsoredNoticeShown(): void {
   if (noticeSave) return;
   noticeSave = setCloudSponsoredConsent("notice")
-    .catch(() => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines()))
+    .catch(() => undefined)
     .finally(() => {
       noticeSave = null;
     });
+}
+
+/** Which signed-in account answers belong to: an answer asked under another one is dropped (`setCloudSponsoredConsent`). */
+export function cloudAccountGeneration(): number {
+  return generation;
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

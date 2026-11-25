@@ -209,8 +209,8 @@ struct WorkSponsoredReplySlot: View {
         switch showing {
         case .consent(let notice):
           WorkSponsoredConsentCard(
-            smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, format: format, words: CloudBalanceWords(accountStore.account),
-            notice: notice, onDismiss: { store.dismissNotice(turnKey: turnKey) }
+            smallNeedsCards: sponsored?.smallUsesHoursWithoutCards == true, confirmYes: sponsored?.confirmYes == true, format: format,
+            words: CloudBalanceWords(accountStore.account), notice: notice, onDismiss: { store.dismissNotice(turnKey: turnKey) }
           )
         case .ad(let ad):
           if let gravity = ad.gravity {
@@ -445,14 +445,16 @@ struct WorkSponsoredInlineOutlet: View {
 
 /// The shared frame: quiet, native, never louder than the reply above it.
 /// No accent fill, no motion, no images from outside.
-private struct WorkSponsoredFrame<Content: View>: View {
+struct WorkSponsoredFrame<Content: View>: View {
+  /// More room inside, for the question and the notice.
+  var roomy = false
   @ViewBuilder var content: () -> Content
 
   var body: some View {
     let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
     VStack(alignment: .leading, spacing: 5, content: content)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 10)
+      .padding(.horizontal, roomy ? 14 : 12)
+      .padding(.vertical, roomy ? 13 : 10)
       // As wide as the chat column, so it lines up with the composer below.
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.textPrimary.opacity(0.02), in: shape)
@@ -462,7 +464,7 @@ private struct WorkSponsoredFrame<Content: View>: View {
 }
 
 /// The brand's first letter on a small tile: no outside images.
-private struct WorkSponsoredMonogram: View {
+struct WorkSponsoredMonogram: View {
   let name: String
   var size: CGFloat = 16
 
@@ -482,13 +484,15 @@ private func workSponsoredLabel(test: Bool, ad: CloudSponsoredAd) -> String {
 }
 
 /// A small outline button ("Learn more", "Open site", "Use it").
-private struct WorkSponsoredCTA: View {
+struct WorkSponsoredCTA: View {
   let title: String
   var external = false
   /// The smaller size for the cards' head row.
   var compact = false
   /// The card's main answer: filled with the accent.
   var primary = false
+  /// As wide as its column (answers stacked on a narrow phone).
+  var fill = false
   let action: () -> Void
 
   var body: some View {
@@ -504,7 +508,7 @@ private struct WorkSponsoredCTA: View {
       .font(.system(size: compact ? 11.5 : 12.5, weight: primary ? .semibold : .medium))
       .foregroundStyle(primary ? Color.white : ADEColor.textSecondary)
       .padding(.horizontal, compact ? 8 : 10)
-      .frame(minHeight: compact ? 24 : 28)
+      .frame(maxWidth: fill ? .infinity : nil, minHeight: compact ? 24 : 28)
       .background(primary ? AnyShapeStyle(ADEColor.accentDeep) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ADEColor.textPrimary.opacity(primary ? 0 : 0.14), lineWidth: 0.75))
       .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -515,18 +519,22 @@ private struct WorkSponsoredCTA: View {
 
 /// Opens a link outside the app, only when it is Gravity's own.
 @MainActor
-private func workSponsoredOpen(_ value: String?) {
+func workSponsoredOpen(_ value: String?) {
   guard let url = cloudGravityURL(value) else { return }
   UIApplication.shared.open(url)
 }
 
 /// The one-time question, under the first finished reply of a Free cloud chat,
 /// or, where cards start on (`CloudSponsoredState.startsOn`), the notice that
-/// they are on with Turn off beside it. While the server's `smallNeedsCards`
-/// rule is on, a no has Free's Small computers use credits, so both say that
-/// on a line of its own.
+/// they are on with Turn off beside it: the glyph and title, one line on what
+/// the cards pay for, then what shows, what a no costs (while the server's
+/// `smallNeedsCards` rule is on, Free's Small computers then use credits) and
+/// what Gravity gets. The question's two answers look the same: a yes there
+/// is consent, so it is never the louder button.
 struct WorkSponsoredConsentCard: View {
   var smallNeedsCards = false
+  /// A yes is confirmed a second time (`CloudSponsoredState.confirmYes`).
+  var confirmYes = false
   /// Where the cards show, so the question names the place.
   var format: CloudSponsoredFormat = .belowReply
   /// The account's unit.
@@ -537,44 +545,51 @@ struct WorkSponsoredConsentCard: View {
   var onDismiss: () -> Void = {}
   @State private var busy = false
   @State private var error: String?
+  @State private var confirming = false
+  /// The account the second confirm was opened for (`AccountCloudStore.generation`).
+  @State private var confirmGeneration = 0
 
   var body: some View {
-    WorkSponsoredFrame {
-      Text("ADE Cloud Free")
-        .font(.system(size: 11.5))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers unlimited" : "Free cloud chats are ad-supported")
-        .font(.system(size: 13.5, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
+    WorkSponsoredFrame(roomy: true) {
+      HStack(alignment: .center, spacing: 10) {
+        Image(systemName: "megaphone.fill")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+          .frame(width: 30, height: 30)
+          .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(title)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(lead)
+            .font(.system(size: 12.5))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
         .fixedSize(horizontal: false, vertical: true)
-      Text("Free ADE Cloud chats show \(format.placeSentence), and an agent may recommend a sponsored tool."
-        + (notice && smallNeedsCards ? " They keep Small computers free." : "")
-        + " To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.")
-        .font(.system(size: 12.5))
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineSpacing(1.5)
-        .fixedSize(horizontal: false, vertical: true)
-      Text(costLine)
-        .font(.system(size: 12.5, weight: .medium))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineSpacing(1.5)
-        .fixedSize(horizontal: false, vertical: true)
+      }
+      VStack(alignment: .leading, spacing: 8) {
+        fact("eye", "You'll see \(format.placeSentence), and an agent may suggest a sponsored tool.")
+        fact("creditcard", costLine)
+        fact("point.3.connected.trianglepath.dotted", CloudSponsoredState.sends, fine: true)
+      }
+      .padding(.top, 9)
       ViewThatFits(in: .horizontal) {
         HStack(spacing: 8) {
-          answers
+          answers()
           Spacer(minLength: 8)
           howItWorks
         }
-        VStack(alignment: .leading, spacing: 8) {
-          HStack(spacing: 8) { answers }
+        VStack(alignment: .leading, spacing: 6) {
+          HStack(spacing: 8) { answers() }
           howItWorks
         }
-        VStack(alignment: .leading, spacing: 8) {
-          answers
+        VStack(alignment: .leading, spacing: 6) {
+          answers(fill: true)
           howItWorks
         }
       }
-      .padding(.top, 4)
+      .padding(.top, 10)
       if let error {
         Text(error)
           .font(.system(size: 11.5))
@@ -583,33 +598,75 @@ struct WorkSponsoredConsentCard: View {
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored cards on ADE Cloud Free")
+    .alert("Turn on sponsored cards?", isPresented: $confirming) {
+      Button("Turn on") { answer(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
+      Button("Keep them off", role: .cancel) {}
+    } message: {
+      Text(CloudSponsoredState.turnOnConfirm)
+    }
   }
 
-  /// What a no costs, on a line of its own, and where to change it.
+  private var title: String {
+    notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers free" : "Free cloud chats are ad-supported"
+  }
+
+  private var lead: String {
+    guard smallNeedsCards else { return "Sponsored cards help keep ADE Cloud free." }
+    return notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on ADE Cloud Free."
+  }
+
+  /// What a no costs, and where to change it.
   private var costLine: String {
-    let change = "You can change this in Settings › ADE Cloud."
+    let change = "You can change this any time in Settings\u{00A0}›\u{00A0}ADE\u{00A0}Cloud."
     guard smallNeedsCards else { return change }
     return "\(notice ? "Turn them off" : "Say no") and \(words.smallWithoutCards). \(change)"
   }
 
-  @ViewBuilder
-  private var answers: some View {
-    if notice {
-      WorkSponsoredCTA(title: "Got it", primary: true) { onDismiss() }
-        .disabled(busy)
-      WorkSponsoredCTA(title: smallNeedsCards ? "Turn off, use my \(words.unit)" : "Turn off") { answer(CloudSponsoredState.declined) }
-        .disabled(busy)
-    } else {
-      WorkSponsoredCTA(title: "Show sponsored cards", primary: true) { answer(CloudSponsoredState.granted) }
-        .disabled(busy)
-      WorkSponsoredCTA(title: smallNeedsCards ? "No thanks, use my \(words.unit)" : "No thanks") { answer(CloudSponsoredState.declined) }
-        .disabled(busy)
+  /// One short fact with its glyph; `fine` for the small print.
+  private func fact(_ symbol: String, _ text: String, fine: Bool = false) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: symbol)
+        .font(.system(size: fine ? 10.5 : 11.5, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .frame(width: 15)
+        .accessibilityHidden(true)
+      Text(text)
+        .font(.system(size: fine ? 11.5 : 12.5))
+        .foregroundStyle(fine ? ADEColor.textMuted : ADEColor.textSecondary)
+        .lineSpacing(1.5)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
+  @ViewBuilder
+  private func answers(fill: Bool = false) -> some View {
+    if notice {
+      WorkSponsoredCTA(title: "Got it", primary: true, fill: fill) { onDismiss() }
+        .disabled(busy)
+    } else {
+      WorkSponsoredCTA(title: "Show sponsored cards", fill: fill) {
+        if confirmYes {
+          confirmGeneration = AccountCloudStore.shared.generation
+          confirming = true
+        } else {
+          answer(CloudSponsoredState.granted)
+        }
+      }
+      .disabled(busy)
+    }
+    let no = notice ? "Turn off" : "No thanks"
+    WorkSponsoredCTA(title: smallNeedsCards ? "\(no), use my \(words.unit)" : no, fill: fill) { answer(CloudSponsoredState.declined) }
+      .disabled(busy)
+  }
+
   private var howItWorks: some View {
-    Button("How it works") {
+    Button {
       if let url = URL(string: "https://ade-app.dev/privacy#sponsored") { UIApplication.shared.open(url) }
+    } label: {
+      HStack(spacing: 3) {
+        Text("How it works")
+        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .bold))
+      }
     }
     .buttonStyle(.plain)
     .font(.system(size: 12))
@@ -617,12 +674,12 @@ struct WorkSponsoredConsentCard: View {
     .frame(minHeight: 28)
   }
 
-  private func answer(_ consent: String) {
+  private func answer(_ consent: String, confirmed: Bool = false, since: Int? = nil) {
     guard !busy else { return }
     busy = true
     error = nil
     Task {
-      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent) { error = failure.message }
+      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since) { error = failure.message }
       busy = false
     }
   }
@@ -994,9 +1051,12 @@ struct WorkSponsoredGravityCard: View {
 // MARK: - Someone is watching (`useSponsoredViewer`)
 
 /// Draws nothing. While a chat or terminal of an ADE Cloud computer is on
-/// screen and the account said yes, tells the account server so at most
-/// every few minutes (`POST /cloud/sponsored/seen`): the Index answers an
-/// agent there only while someone watches. Its own view, so the screen that
+/// screen and the account hasn't said no, tells the account server so at
+/// most every few minutes, and at once when the answer changes (`POST
+/// /cloud/sponsored/seen`): the Index answers an agent there only while
+/// someone watches, and only while their yes holds where they are. A yes
+/// that doesn't hold here reads as unanswered, and this look clears the
+/// earlier one on the server (`useSponsoredViewer`). Its own view, so the screen that
 /// carries it doesn't redraw for the account or the app's state.
 struct WorkSponsoredViewerBeacon: View {
   /// The ADE Cloud lane computer on screen; nil on the person's own machine.
@@ -1010,7 +1070,7 @@ struct WorkSponsoredViewerBeacon: View {
 
   private var enabled: Bool {
     guard let sponsored = accountStore.account?.sponsored else { return false }
-    return sponsored.ads && sponsored.granted
+    return sponsored.ads && sponsored.consent != CloudSponsoredState.declined
   }
 
   var body: some View {
@@ -1025,150 +1085,14 @@ struct WorkSponsoredViewerBeacon: View {
         visible = false
         slot?.setChatVisible(false)
       }
-      .task(id: "\(instanceId ?? "")|\(enabled)|\(store.appActive)|\(visible)") {
+      // A changed answer reports at once (California, Global Privacy Control).
+      .onChange(of: accountStore.account?.sponsored?.consent) { store.forgetSeen() }
+      .task(id: "\(instanceId ?? "")|\(enabled)|\(store.appActive)|\(visible)|\(accountStore.account?.sponsored?.consent ?? "none")") {
         guard let instanceId, enabled, store.appActive, visible else { return }
         while !Task.isCancelled {
           await store.noteSeen(instanceId: instanceId)
           try? await Task.sleep(for: .seconds(CloudSponsoredStore.seenInterval))
         }
       }
-  }
-}
-
-// MARK: - The Index's pick (`sponsored_pick`)
-
-/// The facts a `sponsored_pick` card carries (`sponsoredPickOfCard`), or nil
-/// for any other card, or one whose link isn't Gravity's.
-struct WorkSponsoredPickFacts: Equatable {
-  let name: String
-  let category: String?
-  let description: String
-  let need: String
-  /// Gravity's tracked link: the only link the card opens.
-  let url: String
-  let steps: [String]
-
-  init?(_ card: WorkAdeCardModel) {
-    guard card.variant == cloudSponsoredPickVariant, card.id.hasPrefix("sponsored-pick:") else { return nil }
-    func row(_ key: String) -> WorkAdeCardRow? { card.rows.first { $0.key == key } }
-    guard let url = row("sponsored_url")?.detail, cloudGravityURL(url) != nil else { return nil }
-    name = card.title
-    category = card.subtitle.flatMap { nonEmptyTrimmed($0) }
-    description = row("sponsored_description")?.text ?? ""
-    need = row("sponsored_need")?.text ?? ""
-    self.url = url
-    steps = card.rows.filter { $0.key == "sponsored_step" }.map(\.text)
-  }
-
-  /// What Use it puts in the prompt box (`sponsoredPickUseText`): the person sends it, or edits it first.
-  var useText: String {
-    let lines = steps.map { "- \($0)" }.joined(separator: "\n")
-    return lines.isEmpty ? "Set up \(name) for this." : "Set up \(name) for this.\n\(lines)"
-  }
-}
-
-/// An agent's Sponsored recommendation (`cloud.recommend`, Gravity's Index):
-/// calm, labeled, and inert. Open site follows Gravity's tracked link; Use it
-/// puts the steps in the prompt box, so nothing is set up until the person
-/// sends it. Not now folds it to one line. Where the chat has no prompt box
-/// (a subagent's view, a read-only look) there is no Use it.
-struct WorkSponsoredPickCard: View {
-  let card: WorkAdeCardModel
-  @Environment(\.workSceneBridge) private var bridge
-  @ObservedObject private var store = CloudSponsoredStore.shared
-  @ObservedObject private var accountCloud = AccountCloudStore.shared
-
-  /// The account may see sponsored cards now; one that said no or moved to a paid plan sees old picks folded, with nothing to open.
-  private var allowed: Bool {
-    guard let sponsored = accountCloud.account?.sponsored else { return false }
-    return sponsored.ads && sponsored.consent == CloudSponsoredState.granted
-  }
-
-  /// The pick counts as the one sponsored unit on screen while it shows open.
-  private var placeId: String { "pick:\(card.id)" }
-
-  var body: some View {
-    if let facts = WorkSponsoredPickFacts(card) {
-      let foldedByPerson = store.foldedPicks.contains(card.id)
-      // Another sponsored unit holds the place: one line, nothing to open.
-      let placeTaken = store.holder != nil && store.holder != placeId
-      Group {
-        if foldedByPerson || placeTaken || !allowed {
-          HStack(spacing: 6) {
-            Text("Sponsored · \(facts.name)")
-              .font(.system(size: 11.5))
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-            if foldedByPerson && !placeTaken && allowed {
-              Button("Show") { store.setPickFolded(card.id, false) }
-                .buttonStyle(.plain)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(ADEColor.textSecondary)
-                .frame(minHeight: 28)
-            }
-          }
-          .frame(minHeight: 28)
-        } else {
-          full(facts)
-        }
-      }
-      .task(id: "\(foldedByPerson)|\(allowed)|\(store.holder ?? "")") {
-        if foldedByPerson || !allowed { store.release(placeId) } else { store.hold(placeId) }
-      }
-      .onDisappear { store.release(placeId) }
-    } else {
-      Text(card.fallbackText)
-        .font(.system(size: 12.5))
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-  }
-
-  private func full(_ facts: WorkSponsoredPickFacts) -> some View {
-    WorkSponsoredFrame {
-      HStack(spacing: 6) {
-        WorkSponsoredMonogram(name: facts.name)
-        Text(facts.name)
-          .font(.system(size: 11.5, weight: .medium))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-        Text(facts.category.map { "· Sponsored · \($0)" } ?? "· Sponsored")
-          .font(.system(size: 11.5))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .layoutPriority(1)
-        Spacer(minLength: 0)
-      }
-      if !facts.description.isEmpty {
-        Text(facts.description)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineSpacing(1.5)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      if !facts.need.isEmpty {
-        Text("For: \(facts.need)")
-          .font(.system(size: 11.5))
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      HStack(spacing: 8) {
-        WorkSponsoredCTA(title: "Open site", external: true) { workSponsoredOpen(facts.url) }
-        if let bridge, bridge.canReply {
-          WorkSponsoredCTA(title: "Use it") { bridge.reply(facts.useText) }
-        }
-        Button("Not now") { store.setPickFolded(card.id, true) }
-          .buttonStyle(.plain)
-          .font(.system(size: 12))
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(minHeight: 28)
-      }
-      .padding(.top, 4)
-      Text("The agent installs nothing unless you ask.")
-        .font(.system(size: 11))
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("Sponsored recommendation: \(facts.name)")
   }
 }

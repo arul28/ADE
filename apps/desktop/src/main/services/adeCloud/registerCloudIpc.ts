@@ -282,10 +282,10 @@ export function registerCloudIpc(args: {
   // so no pin: the server checks the plan, the answer, and that the chat's
   // computer is one of this account's ADE Cloud computers. The renderer only
   // shows what the server returns.
-  ipcMain.handle(IPC.cloudSponsoredConsent, async (event, arg: { consent?: unknown }): Promise<CloudSponsoredState | null> => {
+  ipcMain.handle(IPC.cloudSponsoredConsent, async (event, arg: { consent?: unknown; confirmed?: unknown }): Promise<CloudSponsoredState | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSponsoredConsent)) return null;
     if (arg?.consent !== "granted" && arg?.consent !== "declined" && arg?.consent !== "notice") throw new AdeExpectedError("Pick yes or no.", "user");
-    const state = await accountApi().setSponsoredConsent(arg.consent);
+    const state = await accountApi().setSponsoredConsent(arg.consent, arg.confirmed === true);
     logger.info("cloud.sponsored_consent", { consent: arg.consent });
     sendToAllWindows(IPC.cloudStatusChanged);
     return state;

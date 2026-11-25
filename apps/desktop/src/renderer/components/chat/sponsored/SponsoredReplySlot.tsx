@@ -1,11 +1,12 @@
 import { useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUpRight, X } from "@phosphor-icons/react";
+import { ArrowUpRight, Coins, Eye, Megaphone, ShareNetwork, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent, type CloudSponsoredFormat } from "../../../../shared/adeCloud";
-import { noteSponsoredNoticeShown, setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
+import { cloudAccountGeneration, noteSponsoredNoticeShown, setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
+import { confirmDialog } from "../../ui/dialog";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Button } from "../../ui/Button";
 import { holdSponsoredPlace, releaseSponsoredPlace, useOnScreen, useSponsoredPlaceHolder } from "./sponsoredOnScreen";
@@ -130,6 +131,7 @@ export function SponsoredReplySlot({ instanceId, sessionId, events, turnActive, 
       startsOn={sponsored.startsOn === true}
       test={sponsored.test}
       smallNeedsCards={sponsored.smallNeedsCards === true}
+      confirmYes={sponsored.confirmYes === true}
       format={sponsored.format ?? "below_reply"}
     />
   );
@@ -145,6 +147,7 @@ function SponsoredReplySlotOn({
   startsOn,
   test,
   smallNeedsCards,
+  confirmYes,
   format,
 }: Omit<SponsoredReplySlotProps, "instanceId" | "sessionId"> & {
   instanceId: string;
@@ -154,6 +157,8 @@ function SponsoredReplySlotOn({
   startsOn: boolean;
   test: boolean;
   smallNeedsCards: boolean;
+  /** A yes is confirmed a second time (`CloudSponsoredState.confirmYes`). */
+  confirmYes: boolean;
   format: CloudSponsoredFormat;
 }) {
   const visible = useDocumentVisible() && paneVisible;
@@ -206,7 +211,8 @@ function SponsoredReplySlotOn({
   const seen = place === "dock" ? wanted : place === "inline" ? targetOnScreen : onScreen;
 
   // Someone is watching this computer's chat: the Index may answer its agents.
-  useSponsoredViewer(instanceId, consent === "granted" && visible);
+  // Shown only until a no (see `SponsoredReplySlot`), so it reports while unanswered too (`useSponsoredViewer`).
+  useSponsoredViewer(instanceId, visible);
 
   // One sponsored card on screen in the whole window. A pane whose place
   // another card holds doesn't even ask: its card could never show.
@@ -310,7 +316,7 @@ function SponsoredReplySlotOn({
     <div ref={regionRef} className="w-full max-w-[var(--chat-content-width,52rem)]">
       <div aria-hidden className="h-px w-full" />
       {holds && showing === "consent" ? (
-        <SponsoredConsentCard smallNeedsCards={smallNeedsCards} format={shownFormat} notice={noticeShowing} onDismiss={dismissNotice} />
+        <SponsoredConsentCard smallNeedsCards={smallNeedsCards} confirmYes={confirmYes} format={shownFormat} notice={noticeShowing} onDismiss={dismissNotice} />
       ) : null}
       {card && place && target ? createPortal(card, target) : card}
     </div>
@@ -331,12 +337,15 @@ const FORMAT_PLACE: Record<CloudSponsoredFormat, string> = {
 
 /**
  * The one-time question, or, where cards start on (`startsOn`), the notice
- * that they are on with Turn off beside it. While the server's
- * `smallNeedsCards` rule is on, a no has Free's Small computers use credits,
- * so both say that on a line of its own.
+ * that they are on with Turn off beside it: a title and one line on what the
+ * cards pay for, then what shows, what a no costs (while the server's
+ * `smallNeedsCards` rule is on, Free's Small computers then use credits) and
+ * what Gravity gets. The question's two answers look the same: a yes there is
+ * consent, so it is never the louder button.
  */
-function SponsoredConsentCard({ smallNeedsCards, format, notice, onDismiss }: {
+function SponsoredConsentCard({ smallNeedsCards, confirmYes, format, notice, onDismiss }: {
   smallNeedsCards: boolean;
+  confirmYes: boolean;
   format: CloudSponsoredFormat;
   notice: boolean;
   onDismiss: () => void;
@@ -344,49 +353,50 @@ function SponsoredConsentCard({ smallNeedsCards, format, notice, onDismiss }: {
   const [busy, setBusy] = useState(false);
   const answer = (consent: CloudSponsoredConsent) => {
     setBusy(true);
-    void setCloudSponsoredConsent(consent)
+    void (consent === "granted" ? turnOnSponsoredCards(confirmYes) : setCloudSponsoredConsent(consent))
       .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save your answer", message: ipcErrorMessage(error) || "Try again in a moment." }))
       .finally(() => setBusy(false));
   };
-  const what = `Free ADE Cloud chats show ${FORMAT_PLACE[format]}, and an agent may recommend a sponsored tool.`;
+  const title = notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers free" : "Free cloud chats are ad-supported";
+  const lead = smallNeedsCards
+    ? notice ? "They keep your Small cloud computers free." : "Sponsored cards pay for Small computers on ADE Cloud Free."
+    : "Sponsored cards help keep ADE Cloud free.";
+  const no = notice ? "Turn off" : "No thanks";
   return (
-    <section className="ade-sponsored" aria-label="Sponsored cards on ADE Cloud Free">
-      <div className="ade-sponsored-head">
-        <span className="ade-sponsored-label">ADE Cloud Free</span>
-      </div>
-      <p className="ade-sponsored-title">
-        {notice ? "Sponsored cards are on" : smallNeedsCards ? "Keep Small computers free" : "Free cloud chats are ad-supported"}
-      </p>
-      <p className="ade-sponsored-text">
-        {what}{notice && smallNeedsCards ? " They keep Small computers free." : ""} {SPONSORED_SENDS}
-      </p>
-      <p className="ade-sponsored-cost">
-        {smallNeedsCards ? `${notice ? "Turn them off" : "Say no"} and Small computers use your credits, half a credit for each hour awake. ` : null}
-        You can change this in Settings › ADE Cloud.
-      </p>
-      <div className="ade-sponsored-actions">
-        {notice ? (
-          <>
+    <section className="ade-sponsored ade-sponsored--consent" aria-label="Sponsored cards on ADE Cloud Free">
+      <span className="ade-sponsored-consent-icon" aria-hidden><Megaphone size={16} weight="duotone" /></span>
+      <div className="ade-sponsored-consent-body">
+        <p className="ade-sponsored-title">{title}</p>
+        <p className="ade-sponsored-lead">{lead}</p>
+        <ul className="ade-sponsored-facts">
+          <li><Eye size={14} aria-hidden /><span>You'll see {FORMAT_PLACE[format]}, and an agent may suggest a sponsored tool.</span></li>
+          <li>
+            <Coins size={14} aria-hidden />
+            <span>
+              {smallNeedsCards ? `${notice ? "Turn them off" : "Say no"} and Small computers use your credits, half a credit for each hour awake. ` : null}
+              You can change this any time in {"Settings\u00a0›\u00a0ADE\u00a0Cloud"}.
+            </span>
+          </li>
+          <li data-fine=""><ShareNetwork size={14} aria-hidden /><span>{SPONSORED_SENDS}</span></li>
+        </ul>
+        <div className="ade-sponsored-actions">
+          {notice ? (
             <Button size="sm" casing="sentence" variant="primary" disabled={busy} onClick={onDismiss}>
               Got it
             </Button>
-            <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
-              {smallNeedsCards ? "Turn off, use my credits" : "Turn off"}
-            </Button>
-          </>
-        ) : (
-          <>
-            <Button size="sm" casing="sentence" variant="primary" disabled={busy} onClick={() => answer("granted")}>
+          ) : (
+            <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("granted")}>
               Show sponsored cards
             </Button>
-            <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
-              {smallNeedsCards ? "No thanks, use my credits" : "No thanks"}
-            </Button>
-          </>
-        )}
-        <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
-          How it works
-        </button>
+          )}
+          <Button size="sm" casing="sentence" variant="outline" disabled={busy} onClick={() => answer("declined")}>
+            {smallNeedsCards ? `${no}, use my credits` : no}
+          </Button>
+          <button type="button" className="ade-sponsored-link" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>
+            How it works
+            <ArrowUpRight size={11} weight="bold" aria-hidden />
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -395,6 +405,27 @@ function SponsoredConsentCard({ smallNeedsCards, format, notice, onDismiss }: {
 /** What Gravity gets, as the question, the notice and Settings say it. */
 const SPONSORED_SENDS =
   "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older.";
+
+/**
+ * Turns sponsored cards on, from the question or Settings. When the server
+ * says a yes needs a second confirm (`confirmYes`: the person opted out in the
+ * US, or their browser's Global Privacy Control did), it asks once more first.
+ */
+export async function turnOnSponsoredCards(confirmYes: boolean): Promise<void> {
+  // The yes belongs to the account signed in when it was asked, not one signed in while the confirm was open.
+  const since = cloudAccountGeneration();
+  if (confirmYes) {
+    const ok = await confirmDialog({
+      title: "Turn on sponsored cards?",
+      message: `${SPONSORED_SENDS} You can turn them off any time in Settings\u00a0›\u00a0ADE\u00a0Cloud.`,
+      confirmLabel: "Turn on",
+      cancelLabel: "Keep them off",
+      icon: <Megaphone size={18} weight="duotone" />,
+    });
+    if (!ok) return;
+  }
+  await setCloudSponsoredConsent("granted", confirmYes, since);
+}
 
 type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };
 

@@ -14520,7 +14520,8 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
-    setSponsoredConsent: (consent: CloudSponsoredChoice): Promise<CloudSponsoredState | null> => ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent }),
+    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed?: boolean): Promise<CloudSponsoredState | null> =>
+      ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent, confirmed: confirmed === true }),
     sponsoredSeen: (input: CloudSponsoredSeenRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredSeen, input),
     sponsoredHide: (input: CloudSponsoredHideRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredHide, input),
     sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),

@@ -39,22 +39,31 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// the first cloud chat (or Settings) tells them cards are on, with Turn
   /// off beside it. Sent only while there is no answer.
   let startsOn: Bool
+  /// A yes needs a second, separate confirm: the person opted out under US
+  /// rules (a no in the US, or a browser's Global Privacy Control from the
+  /// US). The question's yes and Settings' switch ask again (`turnOnConfirm`).
+  let confirmYes: Bool
+  /// The no came from a browser's Global Privacy Control (it opts the whole
+  /// account out from the US): Settings says so (`gpcOffLine`).
+  let gpcOff: Bool
 
   static let granted = "granted"
   static let declined = "declined"
   /// The notice that cards are on was shown: saved as a yes of its own kind (`CloudSponsoredChoice`).
   static let notice = "notice"
 
-  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false) {
+  init(ads: Bool, consent: String?, test: Bool, smallNeedsCards: Bool? = nil, format: CloudSponsoredFormat = .belowReply, startsOn: Bool = false, confirmYes: Bool = false, gpcOff: Bool = false) {
     self.ads = ads
     self.consent = consent
     self.test = test
     self.smallNeedsCards = smallNeedsCards
     self.format = format
     self.startsOn = startsOn
+    self.confirmYes = confirmYes
+    self.gpcOff = gpcOff
   }
 
-  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn }
+  private enum CodingKeys: String, CodingKey { case ads, consent, test, smallNeedsCards, format, startsOn, confirmYes, gpcOff }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -65,7 +74,16 @@ struct CloudSponsoredState: Decodable, Equatable {
     smallNeedsCards = c.lenient(Bool.self, forKey: .smallNeedsCards)
     format = c.lenient(String.self, forKey: .format).flatMap(CloudSponsoredFormat.init(rawValue:)) ?? .belowReply
     startsOn = c.lenient(Bool.self, forKey: .startsOn) ?? false
+    confirmYes = c.lenient(Bool.self, forKey: .confirmYes) ?? false
+    gpcOff = c.lenient(Bool.self, forKey: .gpcOff) ?? false
   }
+
+  /// What Gravity gets, as the question, the notice and Settings say it.
+  static let sends = "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
+  /// The second confirm before a yes (`confirmYes`).
+  static let turnOnConfirm = "\(sends) You can turn them off any time in Settings › ADE Cloud."
+  /// Why cards are off when a browser's Global Privacy Control turned them off (`gpcOff`).
+  static let gpcOffLine = "A browser you use sends Global Privacy Control, which turned sponsored cards off for your account. To keep them on there, turn them on from that browser."
 
   var granted: Bool { consent == Self.granted }
   /// No answer yet, and cards start on here: the person is told, not asked.
@@ -266,7 +284,8 @@ func cloudGravityURL(_ value: String?) -> URL? {
 // MARK: - The account server's routes (account token, no pin)
 
 extension CloudServerClient {
-  private struct ConsentBody: Encodable { let consent: String }
+  /// `confirmed`: a yes confirmed a second time (`CloudSponsoredState.confirmYes`); left out otherwise.
+  private struct ConsentBody: Encodable { let consent: String; let confirmed: Bool? }
   private struct SeenBody: Encodable { let instanceId: String; let device: CloudSponsoredDevice }
   private struct HideBody: Encodable { let chatId: String; let turnId: String }
   private struct AdBody: Encodable {
@@ -284,8 +303,8 @@ extension CloudServerClient {
 
   /// `PUT /cloud/sponsored/consent`: the account's answer, on every device at
   /// once. Answers the account's sponsored state as it is now.
-  func setSponsoredConsent(_ consent: String) async throws -> CloudSponsoredState {
-    let body = try JSONEncoder().encode(ConsentBody(consent: consent))
+  func setSponsoredConsent(_ consent: String, confirmed: Bool = false) async throws -> CloudSponsoredState {
+    let body = try JSONEncoder().encode(ConsentBody(consent: consent, confirmed: confirmed ? true : nil))
     return try decode(CloudSponsoredState.self, from: try await send("PUT", "cloud/sponsored/consent", body: body))
   }
 
@@ -316,14 +335,18 @@ extension CloudServerClient {
 /// Saves the account's answer and shows it everywhere at once: the state
 /// the server answered, or the sentence to show when it didn't save.
 @MainActor
-func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
+func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since: Int? = nil) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
+  // The answer belongs to the account that gave it (`since`: the one signed in when a confirm
+  // opened): one signed in since doesn't take it.
+  let generation = since ?? AccountCloudStore.shared.generation
+  guard generation == AccountCloudStore.shared.generation else {
+    return .failure(CloudSponsoredSaveFailure(message: "You signed in to another account. Try again."))
+  }
   guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
     return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
   }
-  // The answer belongs to the account that gave it: one signed in since doesn't take it.
-  let generation = AccountCloudStore.shared.generation
   do {
-    let state = try await client.setSponsoredConsent(consent)
+    let state = try await client.setSponsoredConsent(consent, confirmed: confirmed)
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
@@ -335,7 +358,17 @@ func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsored
     return .success(state)
   } catch {
     cloudSponsoredLog.notice("sponsored consent save failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-    return .failure(CloudSponsoredSaveFailure(message: "ADE couldn't save that. Try again."))
+    // A refusal often means this app's copy is stale (the answer changed on another device, or a
+    // yes now needs the second confirm): read the account again so the next try asks right.
+    if generation == AccountCloudStore.shared.generation {
+      SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+    }
+    switch error as? CloudServerClient.Failure {
+    case .refused(_, let message), .server(_, .some(let message)):
+      return .failure(CloudSponsoredSaveFailure(message: message))
+    default:
+      return .failure(CloudSponsoredSaveFailure(message: "ADE couldn't save that. Try again."))
+    }
   }
 }
 

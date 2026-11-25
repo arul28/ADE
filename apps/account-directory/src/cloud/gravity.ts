@@ -29,7 +29,21 @@ import {
 import { readClerkUser } from "./email";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson, shortString } from "./http";
 import { SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE, cloudSizeFor, utcDay, type CloudSize } from "./plans";
-import { heldUnder, isCloudSettingValue, readCloudSettings, settingChangedAt, type CloudSettingValue, type CloudSettings } from "./settings";
+import { heldUnder, isCloudSettingValue, readCloudSettings, type CloudSettingValue, type CloudSettings } from "./settings";
+import {
+  countryCodesOf,
+  gpcOptsOut,
+  gpcOverrides,
+  readConsent,
+  shownAnswer,
+  sponsoredRequester,
+  startsOnFor,
+  startsOnNow,
+  yesHolds,
+  yesNeedsConfirm,
+  type ConsentRow,
+  type SponsoredRequester,
+} from "./sponsoredConsent";
 import {
   loadAccount,
   logCloud,
@@ -99,15 +113,6 @@ export type GravityEnv = CloudEnv & {
 };
 
 const INDEX_URL = "https://index.trygravity.com/search";
-/** How long a no to sponsored cards holds before the question comes back. */
-const SPONSORED_REASK_MS = 14 * 24 * 60 * 60_000;
-/**
- * How long a no given where cards start on holds: California lets a business
- * ask a person who opted out of sharing to opt back in only after 12 months.
- */
-const SPONSORED_OPT_OUT_HOLD_MS = 365 * 24 * 60 * 60_000;
-/** Where cards start on unless `GRAVITY_DEFAULT_ON_COUNTRIES` says otherwise. */
-const DEFAULT_ON_COUNTRIES = ["US"];
 const PLATFORM_URL = "https://platform.trygravity.com";
 const INDEX_REPORT_URL = "https://api-interface.trygravity.com/index/attributions";
 const REQUEST_TIMEOUT_MS = 4_000;
@@ -177,48 +182,9 @@ async function outsideCountries(env: GravityEnv, account: AccountRow, country: s
   return switches.live || !(await isTester(env, account.user_id));
 }
 
-const countryCodesOf = (value: string | undefined): string[] =>
-  (value ?? "").split(",").map((code) => code.trim().toUpperCase()).filter((code) => /^[A-Z]{2}$/.test(code));
-
 function countriesOf(env: GravityEnv): string[] {
   const list = countryCodesOf(env.GRAVITY_COUNTRIES);
   return list.length ? list : DEFAULT_COUNTRIES;
-}
-
-/** Where cards start on: the US unless the variable says otherwise; set and empty, nowhere. */
-function startsOnCountriesOf(env: GravityEnv): string[] {
-  return env.GRAVITY_DEFAULT_ON_COUNTRIES === undefined ? DEFAULT_ON_COUNTRIES : countryCodesOf(env.GRAVITY_DEFAULT_ON_COUNTRIES);
-}
-
-/** Where a request comes from, as the consent rules read it: its country, and the browser's Global Privacy Control. */
-export type SponsoredRequester = { country: string | null; gpc: boolean };
-
-export function sponsoredRequester(request: Request | null): SponsoredRequester {
-  return { country: request ? requestCountry(request) : null, gpc: request?.headers.get("sec-gpc")?.trim() === "1" };
-}
-
-/**
- * Whether cards start on for this person: told they are on and free to turn
- * them off, instead of asked first. Only in a country where that is the law's
- * way (opt-out), never from an unknown country, and never when the browser
- * sends Global Privacy Control: that is an opt-out already, so the person is
- * asked instead.
- */
-function startsOnFor(env: GravityEnv, who: SponsoredRequester): boolean {
-  return who.country != null && !who.gpc && startsOnCountriesOf(env).includes(who.country);
-}
-
-/** Whether an answer given in this country falls under the opt-out rules (a no holds 12 months). */
-const optOutCountry = (env: GravityEnv, country: string | null): boolean => country != null && startsOnCountriesOf(env).includes(country);
-
-/**
- * The caller's country as Cloudflare sees it, or null when there is no
- * Cloudflare data (a test, a local run). A code that names no country (Tor's
- * "T1", "XX") is kept as it is, so the country check refuses it.
- */
-export function requestCountry(request: Request): string | null {
-  const country = (request as Request & { cf?: { country?: unknown } }).cf?.country;
-  return typeof country === "string" && country.trim() ? country.trim().toUpperCase() : null;
 }
 
 /**
@@ -234,44 +200,45 @@ async function blockedReason(env: GravityEnv, account: AccountRow, country: stri
   return null;
 }
 
-type ConsentRow = { consent: CloudSponsoredConsent; email_hash: string | null; decided_at: number; source: "answer" | "notice"; country: string | null };
-
-async function readConsent(env: GravityEnv, userId: string): Promise<ConsentRow | null> {
-  return env.DB.prepare("select consent, email_hash, decided_at, source, country from cloud_sponsored_consent where user_id = ?")
-    .bind(userId).first<ConsentRow>();
-}
+/** Deletes where the person watched from (address, device), in the same transaction as the no it follows. */
+const clearViewers = (env: GravityEnv, userId: string) => env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId);
 
 /**
- * Whether this person is told cards are on (not asked): nothing to show yet,
- * they are where cards start on, and they never said no. Someone who said no
- * is asked when the no runs out, never turned back on by a notice.
+ * Turns the account's answer into a no when this request's Global Privacy
+ * Control overrides it (`gpcOverrides`: from the US, over no answer or a yes
+ * not given from such a browser): cards stop on every device, the Index
+ * stops, Small uses credits, and no notice starts cards on another device.
+ * Saved only over the answer it read, with the viewer rows cleared in the
+ * same transaction; one saved meanwhile is checked once more. Returns the
+ * account's answer as it now is.
  */
-const startsOnNow = (env: GravityEnv, consent: ConsentRow | null, shown: CloudSponsoredConsent | null, who: SponsoredRequester): boolean =>
-  shown === null && consent?.consent !== "declined" && startsOnFor(env, who);
-
-/**
- * Whether the account's yes lets cards go to Gravity for this person now. An
- * answer always does; the yes saved with the notice only where cards start
- * on (the person travelled, or turned on Global Privacy Control: they are
- * asked first).
- */
-const yesHolds = (env: GravityEnv, consent: ConsentRow | null, who: SponsoredRequester): consent is ConsentRow =>
-  consent?.consent === "granted" && (consent.source !== "notice" || startsOnFor(env, who));
-
-/**
- * The answer clients see: null when the person is to be asked (or told)
- * again. A no is asked again once it is SPONSORED_REASK_MS old, or when it
- * came before the ad switch last changed (when Small began to need cards);
- * a no given where cards start on only after 12 months
- * (SPONSORED_OPT_OUT_HOLD_MS), whatever the switch did. Until the person
- * answers, it still counts as a no: no cards, Small uses credits.
- */
-async function shownAnswer(env: GravityEnv, consent: ConsentRow | null, who: SponsoredRequester, now: number): Promise<CloudSponsoredConsent | null> {
-  if (!consent) return null;
-  if (consent.consent === "granted") return yesHolds(env, consent, who) ? "granted" : null;
-  if (optOutCountry(env, consent.country)) return now - consent.decided_at >= SPONSORED_OPT_OUT_HOLD_MS ? null : "declined";
-  const asked = now - consent.decided_at >= SPONSORED_REASK_MS || consent.decided_at < (await settingChangedAt(env, "gravity_ads") ?? 0);
-  return asked ? null : "declined";
+async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow | null, who: SponsoredRequester, now: number): Promise<ConsentRow | null> {
+  let consent = read;
+  for (let tries = 0; tries < 2 && gpcOverrides(consent, who); tries += 1) {
+    const flip = consent
+      ? env.DB.prepare(`
+        update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0
+        where user_id = ? and consent = 'granted' and decided_at = ?
+      `).bind(now, who.country, account.user_id, consent.decided_at)
+      : env.DB.prepare(`
+        insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc) values (?, 'declined', null, ?, 'gpc', ?, 0)
+        on conflict (user_id) do nothing
+      `).bind(account.user_id, now, who.country);
+    // Only after this flip: an answer saved meanwhile keeps its viewers.
+    const clear = env.DB.prepare(`
+      delete from cloud_sponsored_viewers where user_id = ?
+        and exists (select 1 from cloud_sponsored_consent where user_id = ? and consent = 'declined' and source = 'gpc' and decided_at = ?)
+    `).bind(account.user_id, account.user_id, now);
+    const [saved] = await env.DB.batch([flip, clear]);
+    if (!saved?.meta?.changes) {
+      consent = await readConsent(env, account.user_id);
+      continue;
+    }
+    logCloud("cloud.sponsored.consent", { consent: "declined", source: "gpc" });
+    await syncSmallRates(env, account, now);
+    return { consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0 };
+  }
+  return consent;
 }
 
 /**
@@ -285,13 +252,19 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
   const reason = await blockedReason(env, account, who.country, switches);
   if (reason === "off") return undefined;
   // An account joins the A/B test's arm only once ads reach it.
-  const [consent, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings, now, reason == null)]);
+  const [read, format] = await Promise.all([readConsent(env, account.user_id), sponsoredFormatOf(env, account.user_id, settings, now, reason == null)]);
+  // A browser's Global Privacy Control from the US opts the whole account out.
+  const consent = await honorGpc(env, account, read, who, now);
   const answer = await shownAnswer(env, consent, who, now);
   return {
     ads: reason == null,
     consent: answer,
     // Not asked where cards start on: the client tells the person they are on, and saves that (`PUT /consent` `notice`).
     ...(startsOnNow(env, consent, answer, who) && reason == null ? { startsOn: true } : {}),
+    // A yes after a no (theirs, or their browser's Global Privacy Control) is asked twice, as California has it.
+    ...(yesNeedsConfirm(consent, answer, who) ? { confirmYes: true } : {}),
+    // The no came from a browser's Global Privacy Control: Settings says so.
+    ...(answer === "declined" && consent?.source === "gpc" ? { gpcOff: true } : {}),
     test: !switches.live,
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
@@ -780,6 +753,12 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   }
   const answered = async () => json((await sponsoredAccountState(env, account, who, now)) ?? { ads: false, consent: null, test: !switches.live });
   let before: ConsentRow | null = null;
+  if (choice === "granted") {
+    before = await honorGpc(env, account, await readConsent(env, userId), who, now);
+    if (body.confirmed !== true && yesNeedsConfirm(before, await shownAnswer(env, before, who, now), who)) {
+      return fail("sponsored_confirm", "Turning sponsored cards back on takes a second confirm. Try again, or update ADE if it doesn't ask.", 409);
+    }
+  }
   if (choice === "notice") {
     if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so ADE asks first.", 409);
     before = await readConsent(env, userId);
@@ -795,15 +774,24 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
     });
     emailHash = email ? await sha256Hex(email.trim().toLowerCase()) : null;
   }
-  // A notice saves only over the row it read (none, or one no longer shown): a yes or no saved meanwhile holds.
-  const guard = choice !== "notice" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
-  await env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country) values (?, ?, ?, ?, ?, ?)
+  // A yes (a notice's, or the person's own) saves only over the row it read: a no saved meanwhile,
+  // say on another screen while the email was read, holds. With no row read, any answer saved
+  // meanwhile holds. A no always saves.
+  const guard = consent === "declined" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
+  const write = env.DB.prepare(`
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc) values (?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
-      source = excluded.source, country = excluded.country${guard}
-  `).bind(userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country, ...(guard && before ? [before.decided_at] : [])).run();
-  // A no keeps nothing of where the person watched from: their address and device go too.
-  if (consent === "declined") await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ?").bind(userId).run();
+      source = excluded.source, country = excluded.country, gpc = excluded.gpc${guard}
+  `).bind(
+    userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
+    // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
+    choice === "granted" && gpcOptsOut(who) ? 1 : 0,
+    ...(guard && before ? [before.decided_at] : []),
+  );
+  // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
+  const [saved] = consent === "declined" ? await env.DB.batch([write, clearViewers(env, userId)]) : [await write.run()];
+  // Lost to an answer saved meanwhile: that one holds, and the state says so.
+  if (!saved?.meta?.changes) return answered();
   logCloud("cloud.sponsored.consent", { consent: choice });
   // Small's rate follows the answer at once (`smallUsesNoHours`).
   await syncSmallRates(env, account, now);
@@ -829,24 +817,28 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
   const account = await loadAccount(env, userId, now);
   const who = sponsoredRequester(request);
   const country = who.country;
-  if ((await blockedReason(env, account, country)) || !yesHolds(env, await readConsent(env, userId), who)) {
-    // The latest look at this computer doesn't allow cards (the person travelled, or their browser
-    // now sends Global Privacy Control): an earlier look no longer lets the Index answer its agents.
-    if (typeof body.instanceId === "string") {
-      await env.DB.prepare("delete from cloud_sponsored_viewers where user_id = ? and instance_id = ?").bind(userId, body.instanceId).run();
-    }
+  const blocked = await blockedReason(env, account, country);
+  const read = await readConsent(env, userId);
+  // A browser's Global Privacy Control from the US opts the whole account out (cards stop on every device).
+  const consent = blocked === "off" ? read : await honorGpc(env, account, read, who, now);
+  if (blocked || !yesHolds(env, consent, who)) {
+    // The latest look doesn't allow cards (the person travelled, or their browser now sends Global
+    // Privacy Control): no earlier look, on any of their computers, lets the Index answer its agents.
+    // (Without a yes there are no rows to clear.)
+    if (consent?.consent === "granted") await clearViewers(env, userId).run();
     return json({ ok: false });
   }
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return json({ ok: false });
   // Written only while the answer is still yes, in the same statement: a "no" that lands meanwhile wins.
   await env.DB.prepare(`
-    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, tracking, country, seen_at)
-    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+    insert into cloud_sponsored_viewers (user_id, instance_id, ip, ua, device_type, os, os_version, tracking, country, region, seen_at)
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     where exists (select 1 from cloud_sponsored_consent where user_id = ? and consent = 'granted')
     on conflict (user_id, instance_id) do update set ip = excluded.ip, ua = excluded.ua, device_type = excluded.device_type,
-      os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country, seen_at = excluded.seen_at
-  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, now, userId).run();
+      os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
+      region = excluded.region, seen_at = excluded.seen_at
+  `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
   return json({ ok: true });
 }
 
@@ -921,7 +913,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const who = sponsoredRequester(request);
   const blocked = await blockedReason(env, account, who.country, switches);
   if (blocked) return none(blocked);
-  const consent = await readConsent(env, userId);
+  // A browser's Global Privacy Control from the US opts the whole account out, not just this card.
+  const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
   if (!yesHolds(env, consent, who)) return none("consent");
   // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
   const computer = await ownCloudComputer(env, userId, body.instanceId);
@@ -1106,7 +1099,7 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   const computer = await ownCloudComputer(env, userId, body.instanceId);
   if (!computer) return none("not_cloud");
   const viewer = await env.DB.prepare("select * from cloud_sponsored_viewers where user_id = ? and instance_id = ?")
-    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; seen_at: number }>();
+    .bind(userId, computer.instance_id).first<{ ip: string | null; ua: string | null; os: string; tracking: string | null; country: string | null; region: string | null; seen_at: number }>();
   // The country is the person's, from their last look at the chat: the agent's computer is not where they are.
   const switches = await gravitySwitches(env);
   const blocked = await blockedReason(env, account, viewer?.country ?? null, switches);
@@ -1116,8 +1109,8 @@ async function handleIndex(request: Request, env: GravityEnv, userId: string, no
   if (!switches.live && switches.mode !== "testers") return none("off");
   if (outsideCountryList(env, viewer?.country ?? null)) return none("country");
   const consent = await readConsent(env, userId);
-  // The person's country and browser are those of their last look at the chat (a viewer row exists only after a yes that held there).
-  if (!yesHolds(env, consent, { country: viewer?.country ?? null, gpc: false })) return none("consent");
+  // The person's country, state and browser are those of their last look at the chat (a viewer row exists only after a yes that held there).
+  if (!yesHolds(env, consent, { country: viewer?.country ?? null, region: viewer?.region ?? null, gpc: false })) return none("consent");
   if (!viewer?.ip || now - viewer.seen_at > SPONSORED_VIEWER_FRESH_MS) return none("nobody_watching");
   const chatId = shortString(body.chatId, 160);
   if (chatId && ROW_ID.test(chatId)) {
@@ -1215,7 +1208,9 @@ export async function sponsoredAbReport(env: GravityEnv, now: number, days: numb
       .bind(ALL, since).all<{ kind: string; total: number }>(),
     env.DB.prepare(`
       select f.format, f.source, count(*) as accounts,
-        coalesce(sum(c.consent = 'granted'), 0) as granted, coalesce(sum(c.consent = 'declined'), 0) as declined
+        coalesce(sum(c.consent = 'granted'), 0) as granted,
+        -- A no a browser's Global Privacy Control made is no answer to the card's format.
+        coalesce(sum(c.consent = 'declined' and c.source != 'gpc'), 0) as declined
       from cloud_sponsored_formats f left join cloud_sponsored_consent c on c.user_id = f.user_id
       group by f.format, f.source
     `).all<{ format: string; source: string; accounts: number; granted: number; declined: number }>(),

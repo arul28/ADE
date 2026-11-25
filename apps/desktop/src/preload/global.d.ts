@@ -5200,7 +5200,8 @@ declare global {
          * Sponsored cards on Free-plan ADE Cloud chats (account level, no pin).
          * The server decides every card; a missing method means no cards.
          */
-        setSponsoredConsent?: (consent: CloudSponsoredChoice) => Promise<CloudSponsoredState | null>;
+        /** `confirmed`: a yes the person confirmed a second time (`CloudSponsoredState.confirmYes`). */
+        setSponsoredConsent?: (consent: CloudSponsoredChoice, confirmed?: boolean) => Promise<CloudSponsoredState | null>;
         sponsoredSeen?: (input: CloudSponsoredSeenRequest) => Promise<void>;
         /** The person hid a reply's card: counted for the formats' A/B test. */
         sponsoredHide?: (input: CloudSponsoredHideRequest) => Promise<void>;
