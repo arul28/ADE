@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   AgentChatSessionSummary,
   ComputerUseArtifactView,
+  CtoNeed,
   OpenProjectBinding,
   PrSummary,
 } from "../../../shared/types";
@@ -15,6 +16,8 @@ export type CtoChildChat = {
 
 export type CtoActivityData = {
   children: CtoChildChat[];
+  /** The CTO's "Waiting on you" lines, oldest first; the host drops one once its chat moves. */
+  needs: CtoNeed[];
   /** Library only; empty until the Library has been opened. */
   prs: PrSummary[];
   proof: ComputerUseArtifactView[];
@@ -38,6 +41,17 @@ const SAFETY_REFRESH_MS = 60_000;
 /** Proof is read per chat; the newest children are the ones worth a read. */
 const PROOF_CHILD_CAP = 12;
 const PROOF_PER_CHAT = 12;
+
+function sameNeeds(left: readonly CtoNeed[], right: readonly CtoNeed[]): boolean {
+  return left.length === right.length && left.every((need, index) => {
+    const other = right[index];
+    return other != null
+      && need.childSessionId === other.childSessionId
+      && need.line === other.line
+      && need.setAt === other.setAt
+      && need.childTitle === other.childTitle;
+  });
+}
 
 function childIsRunning(summary: AgentChatSessionSummary): boolean {
   if (summary.endedAt || summary.status === "ended") return false;
@@ -70,6 +84,7 @@ export function useCtoActivityData({
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const [children, setChildren] = useState<CtoChildChat[]>([]);
+  const [needs, setNeeds] = useState<CtoNeed[]>([]);
   const [prs, setPrs] = useState<PrSummary[]>([]);
   const [proof, setProof] = useState<ComputerUseArtifactView[]>([]);
   const [libraryLoaded, setLibraryLoaded] = useState(false);
@@ -83,6 +98,7 @@ export function useCtoActivityData({
     generationRef.current += 1;
     childIdsRef.current = new Set();
     setChildren([]);
+    setNeeds([]);
     setPrs([]);
     setProof([]);
     setLibraryLoaded(false);
@@ -94,12 +110,19 @@ export function useCtoActivityData({
     if (!target || !ctoSessionId || !agentChat?.list) return;
     const generation = generationRef.current;
     let summaries: AgentChatSessionSummary[] = [];
+    // Needs ride the same reads: they change when the CTO's turn ends (it set
+    // one) or a child moves (the host dropped one), the events below.
+    const needsRead = window.ade?.cto?.getNeeds
+      ? window.ade.cto.getNeeds(target).catch(() => null)
+      : Promise.resolve(null);
     try {
       summaries = await agentChat.list({ includeArchived: false }, target);
     } catch {
       return;
     }
+    const nextNeeds = await needsRead;
     if (generation !== generationRef.current) return;
+    if (nextNeeds) setNeeds((current) => (sameNeeds(current, nextNeeds.needs) ? current : nextNeeds.needs));
     const mine = summaries
       .filter((summary) => summary.sessionId !== ctoSessionId
         && summary.orchestrationParentSessionId?.trim() === ctoSessionId
@@ -179,7 +202,7 @@ export function useCtoActivityData({
 
   const refresh = useCallback(() => { void loadRef.current(); }, []);
   return useMemo(
-    () => ({ children, prs, proof, libraryLoaded, refresh }),
-    [children, libraryLoaded, proof, prs, refresh],
+    () => ({ children, needs, prs, proof, libraryLoaded, refresh }),
+    [children, libraryLoaded, needs, proof, prs, refresh],
   );
 }

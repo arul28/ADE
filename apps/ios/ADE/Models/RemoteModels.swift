@@ -2185,6 +2185,53 @@ struct CtoAttention: Codable, Hashable {
   static let idle = CtoAttention(status: .idle, awaitingInput: false, since: nil)
 }
 
+/// One chat the CTO started that needs the person, with the CTO's one line
+/// saying what to do ("Approve the merge of PR #12"). From `cto.getNeeds`.
+struct CtoNeed: Decodable, Hashable, Identifiable {
+  var childSessionId: String
+  var childTitle: String
+  var laneId: String?
+  var line: String
+  var setAt: String
+
+  var id: String { childSessionId }
+
+  init(childSessionId: String, childTitle: String, laneId: String?, line: String, setAt: String) {
+    self.childSessionId = childSessionId
+    self.childTitle = childTitle
+    self.laneId = laneId
+    self.line = line
+    self.setAt = setAt
+  }
+
+  private enum CodingKeys: String, CodingKey { case childSessionId, childTitle, laneId, line, setAt }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    childSessionId = try container.decode(String.self, forKey: .childSessionId)
+    childTitle = (try? container.decodeIfPresent(String.self, forKey: .childTitle)) ?? ""
+    laneId = (try? container.decodeIfPresent(String.self, forKey: .laneId)) ?? nil
+    line = (try? container.decodeIfPresent(String.self, forKey: .line)) ?? ""
+    setAt = (try? container.decodeIfPresent(String.self, forKey: .setAt)) ?? ""
+  }
+}
+
+/// Returned by `cto.getNeeds`: the CTO's children waiting on the person,
+/// oldest first. The host drops an entry once that child moves.
+struct CtoNeedsSnapshot: Decodable, Hashable {
+  var needs: [CtoNeed]
+
+  private enum CodingKeys: String, CodingKey { case needs }
+
+  init(needs: [CtoNeed]) { self.needs = needs }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let raw = (try? container.decodeIfPresent([CtoNeed].self, forKey: .needs)) ?? nil
+    needs = (raw ?? []).filter { !$0.childSessionId.isEmpty && !$0.line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+  }
+}
+
 /// One item of the CTO's open work (desktop `CtoOpenWorkItem`).
 struct CtoOpenWorkItem: Codable, Hashable, Identifiable {
   var id: String

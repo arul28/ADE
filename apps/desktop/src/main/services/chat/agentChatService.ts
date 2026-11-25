@@ -863,6 +863,7 @@ import type {
   TerminalResumeMetadata,
   LaneSummary,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoCapabilityMode,
   CtoRefreshContextResult,
   LaneLinearIssue,
@@ -1414,6 +1415,7 @@ import {
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
 import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
+import { createCtoStallJudge, type CtoChildFacts, type CtoNeedChild, type CtoStallJudge } from "../cto/ctoStallJudge";
 import { createChatWebhookRegistry, type ChatWebhookRegistry } from "./chatWebhookRegistry";
 import { createAgentCliTyping } from "./agentCliTyping";
 import { createAgentCliWakes } from "./agentCliWakes";
@@ -14361,6 +14363,7 @@ export function createAgentChatService(args: {
   // `emitChatEvent` signals it; events emitted before it exists need no
   // signal, since `start()` checks every persisted waiter once ready.
   let chatWaits: ChatWaitRegistry | null = null;
+  let ctoStallJudge: CtoStallJudge | null = null;
   let chatWebhooks: ChatWebhookRegistry | null = null;
   const claudeRecurringCronTtlMs = 7 * 24 * 60 * 60 * 1_000;
   let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
@@ -16195,6 +16198,7 @@ export function createAgentChatService(args: {
         postInterimReply: ({ text }) => postCtoInterimReply({ sessionId, text }),
         endTurnQuietly: async () => endCtoTurnQuietly({ sessionId }),
         reactToMessage: async ({ emoji }) => reactToCtoMessage({ sessionId, emoji }),
+        setNeed: ({ childSessionId, line }) => setCtoNeed({ ctoSessionId: sessionId, childSessionId, line }),
         listChats: listSessions,
         getChatStatus: getSessionSummary,
         armChatWait: (args) => chatWaitRegistry.arm(args),
@@ -26579,6 +26583,7 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     chatWebhooks?.signal(managed.session.id, event);
+    ctoStallJudge?.observe(managed.session.id);
     if (event.type === "tool_call" || event.type === "command" || event.type === "file_change" || event.type === "subagent_started") {
       managed.autoTitleRunUsedTools = true;
     }
@@ -73351,6 +73356,160 @@ export function createAgentChatService(args: {
   chatWebhooks = chatWebhookRegistry;
   chatWebhookRegistry.start();
 
+  // --- CTO stall judge ------------------------------------------------------
+  // Chats the CTO started that stopped moving wake the CTO once ("Stall
+  // nudge:"); the CTO's "Waiting on you" lines live here too. Children on this
+  // machine only: a chat the CTO started on another machine has no parent
+  // link here and keeps its check-back schedule.
+  /**
+   * The CTO thread this chat reports to, when both are loaded here. Runs on
+   * every chat event, so it reads memory only, never a saved state file: a
+   * CTO that is not loaded is still judged by the timer.
+   */
+  const ctoParentOfNow = (sessionId: string): string | null => {
+    const parentId = managedSessions.get(sessionId)?.session.orchestrationParentSessionId?.trim();
+    if (!parentId || parentId === sessionId) return null;
+    return managedSessions.get(parentId)?.session.identityKey === "cto" ? parentId : null;
+  };
+  /**
+   * The CTO's children: the ones a full listing found once (after a restart a
+   * child is not loaded until it moves), plus every loaded one each pass.
+   */
+  let ctoChildLinksSeeded: Promise<Array<{ parentId: string; childId: string }>> | null = null;
+  const ctoChildIds = async (ctoSessionId: string): Promise<string[]> => {
+    ctoChildLinksSeeded ??= listSessions(undefined, { includeIdentity: false, includeArchived: false })
+      .then((rows) => rows.flatMap((row) => {
+        const parentId = row.orchestrationParentSessionId?.trim();
+        return parentId ? [{ parentId, childId: row.sessionId }] : [];
+      }))
+      .catch(() => []);
+    const ids = new Set<string>();
+    for (const link of await ctoChildLinksSeeded) {
+      if (link.parentId === ctoSessionId) ids.add(link.childId);
+    }
+    for (const managed of managedSessions.values()) {
+      if (!managed.deleted && managed.session.orchestrationParentSessionId?.trim() === ctoSessionId) ids.add(managed.session.id);
+    }
+    ids.delete(ctoSessionId);
+    return [...ids];
+  };
+  const pendingCardFor = (sessionId: string): { kind: "question" | "permission"; text: string | null } | null => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return null;
+    const request = collectPendingInputRequests(managed)[0];
+    if (!request) return null;
+    const kind = request.kind === "approval" || request.kind === "permissions" ? "permission" : "question";
+    const text = request.title?.trim() || request.questions[0]?.question?.trim() || request.description?.trim() || null;
+    return { kind, text };
+  };
+  const readCtoChildFacts = async (childSessionId: string, nowMs: number): Promise<CtoChildFacts | null> => {
+    const row = sessionService.get(childSessionId);
+    if (!row || row.archivedAt) return null;
+    // Cheap skip before a summary: a chat that has not moved in a day is history.
+    const rowSeenMs = Date.parse(row.lastActivityAt ?? row.startedAt ?? "");
+    if (Number.isFinite(rowSeenMs) && nowMs - rowSeenMs > 25 * 60 * 60_000 && !managedSessions.has(childSessionId)) return null;
+    const summary = await getSessionSummary(childSessionId).catch(() => null);
+    if (!summary) return null;
+    const snoozedUntilMs = row.snoozedUntil ? Date.parse(row.snoozedUntil) : Number.NaN;
+    const pr = prService?.getForLane(summary.laneId) ?? null;
+    const prIsThisChats = Boolean(pr && (!pr.chatSessionIds?.length || pr.chatSessionIds.includes(childSessionId)));
+    const card = summary.awaitingInput || summary.pendingInputItemId ? pendingCardFor(childSessionId) : null;
+    return {
+      sessionId: childSessionId,
+      title: summary.title?.trim() || row.title?.trim() || defaultChatSessionTitle(summary.provider),
+      // The child's last output. The summary's time also moves when its saved state is rewritten, which is not a move.
+      lastActivityAt: row.lastActivityAt || summary.lastActivityAt,
+      ended: Boolean(summary.archivedAt),
+      turnActive: summary.status === "active" || Boolean(summary.currentTurnStartedAt) || Boolean(summary.turnAcceptedAt),
+      awaitingInput: Boolean(summary.awaitingInput || summary.pendingInputItemId),
+      pendingKind: card?.kind ?? null,
+      pendingText: card?.text ?? null,
+      quietOnPurpose: Boolean(row.settledAt)
+        || (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > nowMs)
+        || Boolean(summary.usageLimitParkedUntil)
+        || Boolean(summary.awaitingOwnWorkAt)
+        || Boolean(summary.nextWakeAt)
+        || Boolean(summary.activePrWatch)
+        || (summary.activeBackgroundTaskCount ?? 0) > 0,
+      pr: pr && prIsThisChats && (pr.state === "open" || pr.state === "draft")
+        ? {
+            number: pr.githubPrNumber,
+            state: pr.state,
+            mergeConflicts: pr.mergeConflicts === true,
+            checks: pr.checksStatus,
+            behindBaseBy: pr.behindBaseBy ?? null,
+            review: pr.reviewStatus,
+          }
+        : null,
+      lastWords: summary.lastOutputPreview?.trim() || summary.summary?.trim() || null,
+    };
+  };
+  const ctoStallJudgeInstance = createCtoStallJudge({
+    logger,
+    db: db ?? null,
+    // A CTO another live brain runs is that brain's to nudge, or both would.
+    listCtoSessionIds: async () => (await listIdentitySessions("cto"))
+      .map((cto) => cto.sessionId)
+      .filter((sessionId) => !chatOwnedByAnotherBrain(sessionId)),
+    readChildren: async (ctoSessionId) => {
+      const nowMs = Date.now();
+      const facts: CtoChildFacts[] = [];
+      for (const childSessionId of await ctoChildIds(ctoSessionId)) {
+        const child = await readCtoChildFacts(childSessionId, nowMs);
+        if (child) facts.push(child);
+      }
+      return facts;
+    },
+    ctoBusy: (ctoSessionId) => {
+      const cto = managedSessions.get(ctoSessionId);
+      if (!cto) return false;
+      return cto.session.status === "active" || runtimeMidTurn(cto) || collectPendingInputRequests(cto).length > 0;
+    },
+    wakeCto: async (ctoSessionId, text) => {
+      await messageSession({
+        sessionId: ctoSessionId,
+        kind: "wake",
+        text,
+        // ADE wrote this, not the person: it must not clear the CTO's "Needs you".
+        metadata: { hostContinuation: { reason: "cto_stall_nudge" } },
+      }, { trustedSpawnCompletion: true });
+    },
+    ctoParentOf: ctoParentOfNow,
+    isCtoSession: (sessionId) => managedSessions.get(sessionId)?.session.identityKey === "cto",
+  });
+  ctoStallJudge = ctoStallJudgeInstance;
+  ctoStallJudgeInstance.start();
+  const readCtoNeedChild = async (childSessionId: string): Promise<CtoNeedChild | null> => {
+    const summary = await getSessionSummary(childSessionId).catch(() => null);
+    if (!summary) return null;
+    return {
+      title: summary.title?.trim() || defaultChatSessionTitle(summary.provider),
+      laneId: summary.laneId ?? null,
+      lastActivityAt: sessionService.get(childSessionId)?.lastActivityAt || summary.lastActivityAt || null,
+      ended: Boolean(summary.archivedAt),
+    };
+  };
+  /** The CTO's "Waiting on you" lines: one per child that needs the person. Read-only. */
+  const getCtoNeeds = async (): Promise<CtoNeedsSnapshot> => {
+    const cto = (await listIdentitySessions("cto"))[0];
+    if (!cto) return { needs: [] };
+    return { needs: await ctoStallJudgeInstance.listNeeds(cto.sessionId, readCtoNeedChild) };
+  };
+  /**
+   * The CTO's `setNeed`: one line for a chat it started that needs the person,
+   * or null to clear it. Refused for a chat that does not report to this CTO.
+   */
+  const setCtoNeed = async (args: { ctoSessionId: string; childSessionId: string; line: string | null }): Promise<{ set: boolean; line: string | null }> => {
+    const childSessionId = args.childSessionId.trim();
+    const parentId = managedSessions.get(childSessionId)?.session.orchestrationParentSessionId?.trim()
+      || (await getSessionSummary(childSessionId).catch(() => null))?.orchestrationParentSessionId?.trim()
+      || null;
+    if (parentId !== args.ctoSessionId) {
+      throw new Error(`Chat '${childSessionId}' was not started by this CTO, so it cannot have a "Waiting on you" line.`);
+    }
+    return ctoStallJudgeInstance.setNeed({ ctoSessionId: args.ctoSessionId, childSessionId, line: args.line });
+  };
+
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
     await scheduledWorkReady;
     const trimmed = sessionId.trim();
@@ -78699,6 +78858,7 @@ export function createAgentChatService(args: {
     restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
+    ctoStallJudge?.dispose();
     chatWebhooks?.dispose();
     if (heldCodexTerminalTimer) clearInterval(heldCodexTerminalTimer);
     staleRunSweep.dispose();
@@ -85547,6 +85707,8 @@ ${schedule.prompt}`
     endCtoTurnQuietly,
     reactToCtoMessage,
     getCtoAttention,
+    getCtoNeeds,
+    setCtoNeed,
     setCtoAccountCopyHooks,
     startFreshCtoThread,
     isCtoThreadBusy,

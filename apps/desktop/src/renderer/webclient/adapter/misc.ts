@@ -12,6 +12,7 @@ import {
   type CloudAgentOpenResult,
   type CloudAgentRef,
   type CtoAttentionState,
+  type CtoNeedsSnapshot,
   type CtoSnapshot,
   type CtoMemorySnapshot,
   type CtoPreviewSystemPromptArgs,
@@ -1258,6 +1259,7 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getLinearOAuthSession: 1,
   runProjectScan: 0,
   getAttention: 0,
+  getNeeds: 0,
   adoptAccountCopy: 1,
   getAccountCopyStatus: 0,
 };
@@ -1288,6 +1290,8 @@ function createCtoNamespace(
       {},
       { status: "unknown", awaitingInput: false, since: null },
     ),
+    // An older host has no needs: no card, never an error.
+    getNeeds: () => call<CtoNeedsSnapshot>("cto.getNeeds", {}, { needs: [] }),
     getMemory: () => call<CtoMemorySnapshot>(
       "cto.getMemory",
       {},

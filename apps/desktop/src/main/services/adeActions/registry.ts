@@ -191,6 +191,7 @@ import type {
   AiFeatureKey,
   AiSettingsStatus,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
   CtoRefreshContextResult,
@@ -1773,6 +1774,9 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     getAttention: async (): Promise<CtoAttentionState> =>
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
+    /** The CTO's "Waiting on you" lines. Read-only, like `getAttention`. */
+    getNeeds: async (): Promise<CtoNeedsSnapshot> =>
+      (await runtime.agentChatService?.getCtoNeeds?.()) ?? { needs: [] },
     /**
      * Give the CTO a fresh provider thread; the ADE session and everything
      * the CTO remembers stay. CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`).

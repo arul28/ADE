@@ -516,6 +516,7 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearOAuthClientArgs,
@@ -15911,6 +15912,10 @@ const adeBridge = {
     getAttention: async (pin?: OpenProjectBinding | null): Promise<CtoAttentionState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getAttention", {}, () =>
         ipcRenderer.invoke(IPC.ctoGetAttention),
+      ),
+    getNeeds: async (pin?: OpenProjectBinding | null): Promise<CtoNeedsSnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getNeeds", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetNeeds),
       ),
   },
   // Keep-awake is a "This computer" section: with no pin it means this

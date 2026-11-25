@@ -126,8 +126,18 @@ enum CtoPreviewData {
     ]
   }
 
+  /// Chats waiting on the person, for the "Waiting on you" card.
+  static var needs: [CtoNeed] {
+    [
+      CtoNeed(childSessionId: "c-2", childTitle: "Fix login redirect", laneId: "lane-auth", line: "Approve the merge of PR #12", setAt: iso(minutesFromNow: -18)),
+      CtoNeed(childSessionId: "c-4", childTitle: "Billing copy pass", laneId: "lane-billing", line: "Pick the plan name: Pro or Team", setAt: iso(minutesFromNow: -6)),
+      CtoNeed(childSessionId: "c-5", childTitle: "Stripe webhook retries", laneId: "lane-billing", line: "Sign in to Stripe in that chat so it can read the webhook logs for the failed retries from last night", setAt: iso(minutesFromNow: -4)),
+      CtoNeed(childSessionId: "c-6", childTitle: "Docs refresh", laneId: "lane-docs", line: "Test the new onboarding page on your phone", setAt: iso(minutesFromNow: -2)),
+    ]
+  }
+
   static func store() -> CtoStore {
-    CtoStore(fixtureSnapshot: snapshot, fixtureMemory: memory, routines: routines, children: children, library: library)
+    CtoStore(fixtureSnapshot: snapshot, fixtureMemory: memory, routines: routines, children: children, library: library, needs: needs)
   }
 
   static func live(turnActive: Bool = false, step: String? = nil) -> CtoLiveModel {
@@ -356,6 +366,7 @@ private struct CtoThreadFixture: View {
         }
     }
     .tint(live.look.ctoAccent)
+    .environment(\.ctoStore, store)
     .onAppear {
       live.onOpenProfile = { profile = .activity }
       if let presentsProfile { profile = presentsProfile }

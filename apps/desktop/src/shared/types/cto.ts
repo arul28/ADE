@@ -684,3 +684,30 @@ export type CtoAttentionState =
       awaitingInput: false;
       since: null;
     };
+
+/* ── Waiting on you ── */
+
+/**
+ * One line the CTO set for a chat it started that needs the person: a merge
+ * to approve, a product call, a sign-in. Set with the CTO's `setNeed` tool.
+ * A need holds only while the chat stays where it was when the line was set:
+ * once the chat moves (a turn, a message, an answer), the host drops it.
+ */
+export type CtoNeed = {
+  childSessionId: string;
+  /** The chat's title when read, for the row. */
+  childTitle: string;
+  /** The chat's lane, so a client can open it in place. Null when unknown. */
+  laneId: string | null;
+  /** What the person must do, in one line. */
+  line: string;
+  setAt: string;
+};
+
+/** The CTO's open needs, oldest first. Read with `cto.getNeeds` on the CTO's home machine. */
+export type CtoNeedsSnapshot = {
+  needs: CtoNeed[];
+};
+
+/** The longest need line the host keeps; a longer line is cut at a word. */
+export const CTO_NEED_LINE_MAX = 160;

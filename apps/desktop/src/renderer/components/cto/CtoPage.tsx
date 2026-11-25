@@ -30,6 +30,9 @@ import { CtoSidePanel, type CtoPanelTab } from "./CtoSidePanel";
 import { CtoWelcome } from "./CtoWelcome";
 import { useCtoLiveState } from "./useCtoLiveState";
 import { useCtoActivityData } from "./useCtoActivityData";
+import { CtoWaitingOnYou } from "./CtoWaitingOnYou";
+import { openCtoChat } from "./ctoNavigation";
+import { useNavigate } from "react-router-dom";
 import {
   CTO_PANEL_DOCK_MIN_WIDTH,
   ctoStatusPhrase,
@@ -572,6 +575,18 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     libraryOpen: panelShown && panelTab === "library",
   });
   const runningChildren = useMemo(() => activity.children.filter((child) => child.running).length, [activity.children]);
+  const navigate = useNavigate();
+  const waitingOnYou = useMemo(
+    () => (activity.needs.length
+      ? (
+        <CtoWaitingOnYou
+          needs={activity.needs}
+          onOpen={(need) => openCtoChat(navigate, need.childSessionId, need.laneId, ctoPin, pinTargetsTab)}
+        />
+      )
+      : null),
+    [activity.needs, ctoPin, navigate, pinTargetsTab],
+  );
 
   const baseAvatarState = welcomeWaking
     ? "happy"
@@ -803,6 +818,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             // machine is changed; the header does not repeat it.
             machineChipAction={machineChipAction}
             emptyTranscript={greeting}
+            aboveComposer={waitingOnYou}
           />
         );
       case "error":

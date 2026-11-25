@@ -1482,6 +1482,7 @@ export const IPC = {
   usageEvent: "ade.usage.event",
   ctoGetState: "ade.cto.getState",
   ctoGetAttention: "ade.cto.getAttention",
+  ctoGetNeeds: "ade.cto.getNeeds",
   ctoEnsureSession: "ade.cto.ensureSession",
   ctoRefreshContext: "ade.cto.refreshContext",
   ctoUpdateIdentity: "ade.cto.updateIdentity",

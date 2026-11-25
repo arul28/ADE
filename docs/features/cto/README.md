@@ -295,6 +295,26 @@ A new home takes the copy when it moves in (`adopt`): the notes, open work and i
 
 The CTO session is pinned to the project's primary lane (the main checkout), and its own work never runs there. `spawnChat` without a `laneId` creates a fresh lane for the work, in-process and over the MCP bridge alike (`createCtoExecutionLaneResolver`); an explicit `laneId` is honoured when the person named an existing lane. A local spawn onto the main checkout is refused unless `permissionMode` is `plan`, so only a read-only helper runs there. On another machine, `machine` names where the lane and its chat live, and a one-time check-in wakes the CTO when that child should report. A finished child comes back as one line — its title, provider, outcome and PR if there is one — never a pasted transcript.
 
+### Stuck children and "Waiting on you"
+
+The CTO wakes on its own for a person's message, a child's finished turn and a schedule. A child that then sits still reaches nobody, so the brain runs a stall judge over the CTO's children (`services/cto/ctoStallJudge.ts`, wired in `agentChatService`). It reads each child's summary, its pending card and its lane's PR row (`prService.getForLane`, the cached row, never a GitHub call), and calls a child stuck when it has been:
+
+| Stuck on | After |
+| --- | --- |
+| a question or a permission prompt | 2 min |
+| idle after its turn, with a PR that has conflicts, failing checks, requested changes or is behind its base | 3 min |
+| idle with a PR ready to merge or test | 3 min |
+| idle with no PR | 3 min |
+| mid-turn with no event (a hung turn) | 20 min |
+
+A child that is quiet on purpose is left alone: settled, snoozed, archived, parked at a usage limit, waiting on its own background work, a schedule or a PR watch. So is a stall that began more than a day ago.
+
+The CTO then gets one wake that opens with `Stall nudge:`, names each stuck chat, what it waits on and for how long, and quotes its last message. It carries `hostContinuation.reason: "cto_stall_nudge"`, so it does not clear the CTO's own "Needs you". Each stall is told once: its key is the child, what it waits on and when it last moved, kept in `cto:stall-nudges:v1` across restarts. A child that moves and stalls again is a new stall. Nudges to one CTO are at least 5 minutes apart, at most 5 stalls each; the rest ride the next one. A nudge waits while the CTO is mid-turn or waiting on the person. On the first run after an upgrade the judge records what is already stuck and tells no one. A CTO that another live brain runs is that brain's to judge.
+
+The doctrine says what to do with a nudge: fix what is not the person's call by steering the chat, answer from what the person already said, or else `setNeed(sessionId, line)`. That line is a row on the **Waiting on you** card at the foot of the CTO chat, above the composer, on desktop, the hosted web client and iOS. A row opens its chat on the CTO's machine. A need holds while it is newer than the child's last move, so it clears itself when the child moves; `line: null` clears it at once. A child with a live need is not nudged again for that stall. Clients read the card with `cto.getNeeds`, which needs no slot of its own: desktop and web read it with the side panel's child roster (chat events for the CTO and its children, plus the 60 s safety read), and iOS on appear, foreground, CTO events and every 60 s while the CTO chat is on screen.
+
+Scope: children on the CTO's own machine. A chat the CTO starts on another machine has no parent link there and keeps its one-time check-in.
+
 ## The page
 
 `/cto` is one thread, not a tab bar.
@@ -347,7 +367,7 @@ A project with no model picked shows `CtoWelcome` instead of the thread: the big
 
 Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached as `window.ade.cto.*`. Every call that acts on the CTO takes a `pin` and routes to the CTO's home machine.
 
-- Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
+- Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoGetNeeds`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
 - Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`.
 - Onboarding markers: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`.
 - Linear reads, credentials and OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoGetLinearIssue`, `ctoCreateLinearIssue`, `ctoCreateLinearIssueComment`, `ctoCountLinearIssues`, `ctoGetLinearCustomViews`, `ctoGetLinearIssueCreateOptions`, `ctoListLinearProjectMilestones`, `ctoUploadLinearFile`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
@@ -363,6 +383,7 @@ Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syn
 - `cto.ensureSession`, `cto.getState`, `cto.updateIdentity`.
 - `cto.getHomeMachine`, `cto.setHomeMachine` — which machine owns this project's CTO.
 - `cto.getAttention` — the mobile attention probe. Read-only: it delegates to `getCtoAttention()` and never materializes a session.
+- `cto.getNeeds` — the "Waiting on you" lines (`CtoNeedsSnapshot`). Read-only and optional: an older brain has none, and clients show no card.
 - `cto.getMemory` — the `CtoMemorySnapshot`.
 - `cto.updateNotes` — the notes write, with optional `baseHash`; not queueable. `cto.updateOpenWork` — the queueable open-work write. Both are used by the hosted web client.
 - `cto.refreshContext` — the hosted web client's "Refresh context".

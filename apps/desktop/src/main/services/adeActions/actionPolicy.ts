@@ -1183,6 +1183,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getAccountCopyStatus",
     "getAttention",
     "getIdentity",
+    "getNeeds",
     "getOnboardingState",
     "getSnapshot",
     "previewSystemPrompt",

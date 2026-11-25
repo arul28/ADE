@@ -635,3 +635,201 @@ func ctoThreadHidesCard(_ card: WorkEventCardModel) -> Bool {
   if card.kind == "ctoFresh" { return true }
   return card.noticeKind == "rate_limit" && (card.body ?? "").hasPrefix("Approaching")
 }
+
+// MARK: - Waiting on you
+
+private struct CtoStoreKey: EnvironmentKey {
+  static let defaultValue: CtoStore? = nil
+}
+
+extension EnvironmentValues {
+  /// Set on the CTO thread only: the "Waiting on you" card reads its needs.
+  var ctoStore: CtoStore? {
+    get { self[CtoStoreKey.self] }
+    set { self[CtoStoreKey.self] = newValue }
+  }
+}
+
+extension View {
+  /// Keeps the CTO store's needs fresh while the CTO thread is on screen, and
+  /// reports whether the "Waiting on you" card shows. A no-op off the CTO
+  /// thread (no `ctoStore` in the environment).
+  ///
+  /// Reads on appear and on app foreground, when a CTO turn ends, shortly
+  /// after chat events settle, and every 60 s while on screen with the app
+  /// active (children move without CTO events). Nothing runs while hidden.
+  func ctoNeedsFeed(sessionId: String, turnActive: Bool, eventToken: Int, shown: Binding<Bool>) -> some View {
+    modifier(CtoNeedsFeed(sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: shown))
+  }
+}
+
+private struct CtoNeedsFeed: ViewModifier {
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  @Environment(\.ctoStore) private var store
+
+  func body(content: Content) -> some View {
+    if let store {
+      content.modifier(CtoNeedsFeedActive(store: store, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    } else {
+      content
+    }
+  }
+}
+
+private struct CtoNeedsFeedActive: ViewModifier {
+  @ObservedObject var store: CtoStore
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  @Environment(\.scenePhase) private var scenePhase
+  @State private var visible = false
+
+  private var active: Bool { visible && scenePhase == .active }
+
+  func body(content: Content) -> some View {
+    content
+      .onAppear { visible = true }
+      .onDisappear { visible = false }
+      .onChange(of: store.needs.isEmpty, initial: true) { _, empty in
+        if shown == empty { shown = !empty }
+      }
+      // Appear, foreground, then every 60 s while on screen and active.
+      .task(id: "\(sessionId)|\(active)") {
+        guard active else { return }
+        await store.loadNeeds(force: true)
+        while !Task.isCancelled {
+          try? await Task.sleep(nanoseconds: 60_000_000_000)
+          guard !Task.isCancelled else { return }
+          await store.loadNeeds(force: true)
+        }
+      }
+      // Chat events for the CTO: one read once they settle (throttled).
+      .task(id: eventToken) {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard !Task.isCancelled, active else { return }
+        await store.loadNeeds()
+      }
+      .onChange(of: turnActive) { wasActive, isActive in
+        guard wasActive, !isActive, active else { return }
+        Task { await store.loadNeeds(force: true) }
+      }
+  }
+}
+
+/// The foot of the CTO thread, above the composer: one row per chat the CTO
+/// started that needs the person, with the CTO's line saying what to do. A
+/// row opens that chat. Draws nothing off the CTO thread or with nothing
+/// waiting; `ctoNeedsFeed` keeps it fresh.
+struct CtoWaitingOnYouSlot: View {
+  @Environment(\.ctoStore) private var store
+
+  var body: some View {
+    if let store {
+      CtoWaitingOnYouCard(store: store)
+    }
+  }
+}
+
+private struct CtoWaitingOnYouCard: View {
+  @ObservedObject var store: CtoStore
+
+  @Environment(\.ctoLiveModel) private var live
+
+  private static let maxRows = 3
+
+  private var accent: Color { live?.look.ctoAccent ?? ADEColor.ctoAccent }
+
+  var body: some View {
+    if !store.needs.isEmpty {
+      card
+    }
+  }
+
+  private var card: some View {
+    let rows = Array(store.needs.prefix(Self.maxRows))
+    let more = store.needs.count - rows.count
+    return VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 6) {
+        Circle()
+          .fill(accent)
+          .frame(width: 6, height: 6)
+        Text("Waiting on you")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 14)
+      .padding(.top, 10)
+      .padding(.bottom, 2)
+      .accessibilityElement(children: .combine)
+      .accessibilityAddTraits(.isHeader)
+
+      ForEach(Array(rows.enumerated()), id: \.element.id) { index, need in
+        if index > 0 {
+          Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5).padding(.horizontal, 14)
+        }
+        row(need)
+      }
+
+      if more > 0 {
+        Button {
+          ADEHaptics.light()
+          live?.onOpenProfile?()
+        } label: {
+          Text("+\(more) more")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .padding(.horizontal, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(live?.onOpenProfile == nil)
+        .accessibilityHint("Shows every chat it started")
+      }
+    }
+    .padding(.bottom, 4)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cto.WaitingOnYou")
+  }
+
+  private func row(_ need: CtoNeed) -> some View {
+    Button {
+      ADEHaptics.light()
+      store.openNeed(need)
+    } label: {
+      HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 1) {
+          Text(need.childTitle.isEmpty ? "Untitled chat" : need.childTitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+          Text(need.line)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+        }
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(need.childTitle.isEmpty ? "Untitled chat" : need.childTitle): \(need.line)")
+    .accessibilityHint("Opens that chat")
+  }
+}
