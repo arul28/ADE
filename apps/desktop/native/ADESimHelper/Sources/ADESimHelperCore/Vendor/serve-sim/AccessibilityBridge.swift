@@ -474,16 +474,22 @@ final class AccessibilityBridge: NSObject {
         // ADE patch: a row shorter than the grid's step (a 28 pt button, a
         // one-line title) can sit between two rows of points. Inside a bar,
         // where only hit-tests find the items, each point that fell in a gap
-        // is asked again half a step right, down, and both; points elsewhere
-        // are not, so the cost follows the bars on the screen. The coarse
-        // pass runs first, so the whole screen is asked before any of this.
+        // is asked again half a step away on every side and corner, since
+        // the missed row can lie above, below or beside it; a point two gaps
+        // share is asked once. Points elsewhere are not, so the cost follows
+        // the bars on the screen. The coarse pass runs first, so the whole
+        // screen is asked before any of this.
         let half = step / 2
+        var asked = Set<String>()
         for gap in gaps {
-            for offset in [CGPoint(x: 0, y: half), CGPoint(x: half, y: 0), CGPoint(x: half, y: half)] {
-                guard pointBudget > 0, remainingElements > 0 else { break }
-                let point = CGPoint(x: gap.x + offset.x, y: gap.y + offset.y)
-                guard point.x < bounds.maxX, point.y < bounds.maxY else { continue }
-                _ = probe(point)
+            for dy in [-half, 0, half] {
+                for dx in [-half, 0, half] where dx != 0 || dy != 0 {
+                    guard pointBudget > 0, remainingElements > 0 else { break }
+                    let point = CGPoint(x: gap.x + dx, y: gap.y + dy)
+                    guard bounds.contains(point),
+                          asked.insert("\(Int(point.x)),\(Int(point.y))").inserted else { continue }
+                    _ = probe(point)
+                }
             }
         }
         // A cap reached: the rest of the screen was never asked about (ADE
