@@ -5576,6 +5576,17 @@ const CTO_INTERIM_REPLY_MAX_CHARS = 600;
 
 type ManagedChatSession = {
   /**
+   * The turn a restart cut off and recovery is about to continue. Closing it
+   * (`done` interrupted) is no report: the parent hears from the continued
+   * turn instead of a "stopped" after every restart.
+   */
+  restartContinuingTurnId?: string | null;
+  /**
+   * Set when the child was relinked to a live ancestor: the line its next
+   * report opens with, so the ancestor knows why it hears from this chat.
+   */
+  pendingRelinkNote?: string | null;
+  /**
    * The provider turn id of the chat's latest `done`, whatever its status.
    * Codex `thread/sample` must name it (`codexThreadSample.ts`).
    */
@@ -24033,6 +24044,7 @@ export function createAgentChatService(args: {
         message: restartInterruptedNotice({ announceThisTurn, hold, cancelledLine }),
         turnId: unsettled.turnId,
       });
+      if (willContinue) managed.restartContinuingTurnId = unsettled.turnId;
       const status = emitMissingTurnTerminalPair(managed, unsettled, {
         model: managed.session.model,
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
@@ -51790,11 +51802,40 @@ export function createAgentChatService(args: {
       const next = links[cursor]?.parentSessionId?.trim()
         || (managedSessions.get(cursor)?.session ?? readPersistedState(cursor))?.orchestrationParentSessionId?.trim()
         || "";
-      if (!next || seen.has(next)) return null;
+      if (!next || seen.has(next)) break;
       seen.add(next);
       if (ancestorTakesReports(next)) return { sessionId: next, goneTitle };
       goneTitle ||= links[next]?.title || "";
       cursor = next;
+    }
+    // Nothing above it is live. A parent that is gone for good (not merely
+    // put away, which still takes the report) hands its children to the
+    // project's CTO, so a report is never left with nobody to read it.
+    const parentGone = !parentSessionReachableHere(goneParentSessionId) && !externalParentReachable(goneParentSessionId);
+    if (!parentGone) return null;
+    const cto = projectCtoSessionId(seen);
+    return cto ? { sessionId: cto, goneTitle } : null;
+  };
+
+  /**
+   * The project's CTO thread here, if it takes reports. Rare path (a child
+   * with no live chat above it), so the session list is read only when no
+   * loaded chat is the CTO.
+   */
+  const projectCtoSessionId = (exclude: ReadonlySet<string>): string | null => {
+    for (const managed of managedSessions.values()) {
+      if (managed.deleted || managed.session.identityKey !== "cto") continue;
+      if (!exclude.has(managed.session.id) && ancestorTakesReports(managed.session.id)) return managed.session.id;
+    }
+    try {
+      for (const row of sessionService.list({ limit: 500, toolTypes: CHAT_SESSION_TOOL_TYPES })) {
+        if (exclude.has(row.id) || !isChatToolType(row.toolType)) continue;
+        if (sessionIdentityKeyNow(row.id) === "cto" && ancestorTakesReports(row.id)) return row.id;
+      }
+    } catch (error) {
+      logger.warn("agent_chat.cto_fallback_lookup_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     return null;
   };
@@ -51812,6 +51853,7 @@ export function createAgentChatService(args: {
     const ancestor = nearestLiveAncestor(goneParentSessionId, child.session.id);
     if (!ancestor) return null;
     child.session.orchestrationParentSessionId = ancestor.sessionId;
+    child.pendingRelinkNote = relinkedReportNote(ancestor.goneTitle);
     persistChatState(child);
     emitTransientChatEnvelope(child.session.id, {
       type: "session_meta_updated",
@@ -51819,7 +51861,10 @@ export function createAgentChatService(args: {
       ...(child.session.spawnKind ? { spawnKind: child.session.spawnKind } : {}),
       subagentTakeoverPromptShownAt: child.session.subagentTakeoverPromptShownAt ?? null,
     });
-    const ancestorTitle = sessionService.get(ancestor.sessionId)?.title?.trim() || "the chat above it";
+    // The CTO thread's own title is an internal one; people know it as "CTO".
+    const ancestorTitle = sessionIdentityKeyNow(ancestor.sessionId) === "cto"
+      ? "CTO"
+      : sessionService.get(ancestor.sessionId)?.title?.trim() || "the chat above it";
     emitChatEvent(child, {
       type: "system_notice",
       noticeKind: "info",
@@ -51923,6 +51968,10 @@ export function createAgentChatService(args: {
     // A parent in another project or on another machine is not an orphan's
     // parent: the brain's router still reaches it (`externalChats`).
     if (externalParentReachable(parentSessionId)) return;
+    // The nearest live chat above the gone parent (or the project's CTO)
+    // takes its reports; only a child with nobody left above it stops
+    // reporting.
+    if (relinkToLiveAncestor(managed, parentSessionId)) return;
     applySpawnKindChange({
       sessionId: managed.session.id,
       spawnKind: "peer",
@@ -52246,20 +52295,35 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
-      mergeEnvelopeStreams(
+    // What the parent already holds for this child turn: the completion row
+    // (a notice or a wake carrying `spawnCompletion`), and for a CTO the wake
+    // that carries the report, which is sent before its one-line notice.
+    const parentDeliveryState = (parent: ManagedChatSession): { completion: boolean; ctoWake: boolean } => {
+      let completion = false;
+      let ctoWake = false;
+      for (const envelope of mergeEnvelopeStreams(
         readTranscriptEnvelopes(parent),
         eventHistoryBySession.get(parent.session.id) ?? [],
-      ).some((envelope) => {
+      )) {
         const event = envelope.event;
-        const completion = event.type === "user_message"
+        const found = event.type === "user_message"
           ? event.metadata?.spawnCompletion
           : event.type === "system_notice"
             ? (event.detail as { spawnCompletion?: AgentChatSpawnCompletion } | undefined)?.spawnCompletion
             : undefined;
-        return completion?.childSessionId === childSessionId
-          && completion.childTurnId === childTurnId;
-      });
+        if (found?.childSessionId === childSessionId && found.childTurnId === childTurnId) completion = true;
+        const continuation = event.type === "user_message" ? event.metadata?.hostContinuation : undefined;
+        if (
+          continuation?.reason === "cto_child_report"
+          && continuation.childSessionId === childSessionId
+          && continuation.childTurnId === childTurnId
+        ) ctoWake = true;
+        if (completion) break;
+      }
+      return { completion, ctoWake };
+    };
+    const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
+      parentDeliveryState(parent).completion;
 
     // The parent continues on another machine: its transcript here gets the
     // completion as a notice, and nothing wakes it.
@@ -52320,14 +52384,12 @@ export function createAgentChatService(args: {
             inlineEventEmitted = true;
           }
           if (ctoReportLine) {
-            emitChatEvent(parent, {
-              type: "system_notice",
-              noticeKind: resultStatus === "failed" ? "warning" : "info",
-              status: "spawn_completed",
-              message: ctoReportLine,
-              detail: { spawnCompletion: { ...spawnCompletion, summary: ctoReportLine } },
-            });
-            if (parentShouldWake) {
+            // The wake goes first and the notice (the completion row every
+            // retry dedupes on) only after it: a notice written before a wake
+            // that then failed made the retry read the report as delivered,
+            // and the CTO never heard it. A wake that landed but whose notice
+            // did not is found by its own ids, and only the notice is added.
+            if (parentShouldWake && !parentDeliveryState(parent).ctoWake) {
               // The notice is the one line the person sees; the CTO itself
               // reads the child's report (its final message, kept to a
               // bounded tail with its lines, and the notes about human
@@ -52353,9 +52415,16 @@ export function createAgentChatService(args: {
                 sessionId: parentSessionId,
                 kind: "wake",
                 text: wakeText,
-                metadata: { hostContinuation: { reason: "cto_child_report" } },
+                metadata: { hostContinuation: { reason: "cto_child_report", childSessionId, childTurnId } },
               }, { trustedSpawnCompletion: true });
             }
+            emitChatEvent(parent, {
+              type: "system_notice",
+              noticeKind: resultStatus === "failed" ? "warning" : "info",
+              status: "spawn_completed",
+              message: ctoReportLine,
+              detail: { spawnCompletion: { ...spawnCompletion, summary: ctoReportLine } },
+            });
           } else if (parentShouldWake) {
             await parentWakes.wake(parent.session.id, childSessionId, delivery.wakeText, spawnCompletion);
           } else if (spawnKind !== "peer") {
@@ -52593,6 +52662,16 @@ export function createAgentChatService(args: {
     // The shutdown's own stop is no report: restart recovery picks the turn
     // up, and a queued "stopped" would wake every parent after each restart.
     if (serviceDisposed && status === "interrupted") return;
+    // Restart recovery closing a turn it is about to continue: the parent
+    // hears from the continued turn, not a "stopped" for each restart.
+    const continuingTurnId = child.restartContinuingTurnId;
+    if (continuingTurnId && source === "done") {
+      child.restartContinuingTurnId = null;
+      if (status === "interrupted" && (!turnId || turnId === continuingTurnId)) {
+        logger.info("agent_chat.spawn_completion_skipped_restart_continue", { childSessionId, turnId: continuingTurnId });
+        return;
+      }
+    }
     let parentSessionId = child.session.orchestrationParentSessionId?.trim();
     if (!parentSessionId || parentSessionId === childSessionId) return;
     const spawnKind = child.session.spawnKind;
@@ -52604,14 +52683,14 @@ export function createAgentChatService(args: {
     // live chat above it instead (up to the CTO), and keeps reporting there.
     // With nothing live above it, a deleted parent is gone as before, and a
     // put-away one still gets the report.
-    let relinkNote: string | null = null;
     if (spawnKind === "subagent" && !ancestorTakesReports(parentSessionId)) {
       const ancestor = relinkToLiveAncestor(child, parentSessionId);
-      if (ancestor) {
-        parentSessionId = ancestor.sessionId;
-        relinkNote = relinkedReportNote(ancestor.goneTitle);
-      }
+      if (ancestor) parentSessionId = ancestor.sessionId;
     }
+    // Relinked now or earlier (an orphan repair when the chat list loaded):
+    // the first report to the new parent says why it hears from this chat.
+    const relinkNote = child.pendingRelinkNote ?? null;
+    child.pendingRelinkNote = null;
 
     // A parent outside this chat service (another project, the personal
     // scope, another machine) is the brain's router's to reach, when one is
@@ -52677,7 +52756,9 @@ export function createAgentChatService(args: {
     const raisedHandAnnotation = childRow
       ? formatChildRaisedHandAnnotation({ ...childRow, sessionId: childSessionId })
       : null;
-    const summary = [baseSummary, humanAnnotation, raisedHandAnnotation].filter(Boolean).join("\n");
+    // The notes stand apart from the child's own words, which may end in a list or code.
+    const notes = [humanAnnotation, raisedHandAnnotation].filter(Boolean).join("\n");
+    const summary = notes ? `${baseSummary}\n\n${notes}` : baseSummary;
     const childTitle = childRow?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
@@ -78616,9 +78697,11 @@ export function createAgentChatService(args: {
     const tombstoned = managedSessions.get(trimmedSessionId);
     // Its state file goes below, and with it the only record of its own
     // parent. Its children use this link to report past it.
+    // A top-level chat leaves its title only, so the chat its children now
+    // report to can still be told which chat was deleted.
     const deletedOwnParent = (tombstoned?.session ?? readPersistedState(trimmedSessionId))
-      ?.orchestrationParentSessionId?.trim();
-    if (deletedOwnParent && deletedOwnParent !== trimmedSessionId) {
+      ?.orchestrationParentSessionId?.trim() || "";
+    if (deletedOwnParent !== trimmedSessionId) {
       try {
         rememberDeletedParentLink(trimmedSessionId, deletedOwnParent, existing.title?.trim() || "");
       } catch (error) {
@@ -85853,6 +85936,8 @@ ${schedule.prompt}`
           : null;
         const router = getExternalParentRouter();
         if (ancestor && router) {
+          // This report carries the note itself; the next one needs none.
+          child.pendingRelinkNote = null;
           const [headline, ...rest] = input.wake.wakeText.split("\n");
           const wake: ExternalParentWake = {
             ...input.wake,

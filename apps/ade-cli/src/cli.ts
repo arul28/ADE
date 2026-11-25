@@ -32601,6 +32601,9 @@ async function runServe(
       personalChatScope,
       deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
       stateDir: crossMachineStateDir,
+      // Brains sharing this home share the outbox; each delivers only the
+      // reports it queued for its own chats.
+      ownerId: socketPath,
       logger: headlessProjectLogger,
     });
     externalChats.setExternalParentRouter(crossScopeChats.router);

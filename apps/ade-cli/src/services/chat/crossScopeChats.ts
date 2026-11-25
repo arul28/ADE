@@ -75,6 +75,12 @@ export type CrossScopeChatsDeps = {
   /** Deliver to another machine; absent on a brain with no machine bridge. */
   deliverRemote?: ((machineKey: string, payload: RemoteWakePayload) => Promise<ExternalWakeDeliveryResult>) | null;
   stateDir: string;
+  /**
+   * This brain's own endpoint. Brains that share one home share the outbox
+   * file: a report this brain queued for a chat it runs is tagged with it, and
+   * only the brain with the same endpoint delivers it.
+   */
+  ownerId?: string | null;
   logger?: {
     info(event: string, meta?: Record<string, unknown>): void;
     warn(event: string, meta?: Record<string, unknown>): void;
@@ -88,7 +94,7 @@ type OutboxTarget =
    * child's own scope, queued so its report survives a restart; that scope is
    * opened to deliver it, and a chat missing from it is gone.
    */
-  | { kind: "local"; scope?: ExternalChatScope }
+  | { kind: "local"; scope?: ExternalChatScope; owner?: string }
   | { kind: "remote"; machineKey: string; parentChatSessionId: string };
 
 type OutboxEntry = {
@@ -150,7 +156,8 @@ function readOutboxEntry(value: unknown): OutboxEntry | null {
   let outboxTarget: OutboxTarget;
   if (target.kind === "local") {
     const scope = readExternalChatScope(target.scope);
-    outboxTarget = scope ? { kind: "local", scope } : { kind: "local" };
+    const owner = typeof target.owner === "string" && target.owner ? target.owner : null;
+    outboxTarget = scope ? { kind: "local", scope, ...(owner ? { owner } : {}) } : { kind: "local" };
   } else if (target.kind === "remote" && typeof target.machineKey === "string" && typeof target.parentChatSessionId === "string") {
     outboxTarget = { kind: "remote", machineKey: target.machineKey, parentChatSessionId: target.parentChatSessionId };
   } else {
@@ -201,7 +208,17 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
   const logger = deps.logger ?? null;
   const outboxPath = path.join(deps.stateDir, "external-parent-wakes.json");
   const childrenPath = path.join(deps.stateDir, "remote-children.json");
-  let outbox: OutboxEntry[] = readJsonArray(outboxPath).flatMap((entry) => readOutboxEntry(entry) ?? []);
+  const ownerId = deps.ownerId?.trim() || null;
+  const readOutboxFile = (): OutboxEntry[] => readJsonArray(outboxPath).flatMap((entry) => readOutboxEntry(entry) ?? []);
+  /** Another brain on this home queued it for a chat that brain runs. */
+  const ownedElsewhere = (entry: OutboxEntry): boolean =>
+    entry.target.kind === "local" && Boolean(entry.target.owner) && entry.target.owner !== ownerId;
+  let outbox: OutboxEntry[] = readOutboxFile().filter((entry) => !ownedElsewhere(entry));
+  /**
+   * Keys this brain delivered or dropped, so a save does not bring them back
+   * from the file. Bounded: an old key the file no longer holds is harmless.
+   */
+  const settledKeys = new Set<string>();
   let remoteChildren: RemoteChildRecord[] = readJsonArray(childrenPath)
     .flatMap((entry) => readRemoteChild(entry) ?? [])
     .filter((record) => now() - record.usedAt < REMOTE_CHILD_UNUSED_MS);
@@ -213,7 +230,27 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
       logger?.warn(`cross_scope_chats.${label}_save_failed`, { error: errorMessage(error) });
     }
   };
-  const saveOutbox = (): void => persist(outboxPath, outbox, "outbox");
+  /**
+   * Write this brain's entries, keeping every entry another brain on the same
+   * home wrote since: the file is shared, and a plain overwrite dropped their
+   * reports. Entries this brain settled stay gone.
+   */
+  const saveOutbox = (): void => {
+    const mine = new Set(outbox.map((entry) => entry.key));
+    const theirs = readOutboxFile().filter((entry) => !mine.has(entry.key) && !settledKeys.has(entry.key));
+    persist(outboxPath, [...theirs, ...outbox].slice(-MAX_OUTBOX), "outbox");
+  };
+  const forgetEntry = (key: string): void => {
+    outbox = outbox.filter((candidate) => candidate.key !== key);
+    settledKeys.add(key);
+    if (settledKeys.size > MAX_OUTBOX * 2) {
+      const [oldest] = settledKeys;
+      if (oldest) settledKeys.delete(oldest);
+    }
+  };
+  const trimOutbox = (): void => {
+    while (outbox.length > MAX_OUTBOX) forgetEntry(outbox[0]!.key);
+  };
   const saveChildren = (): void => persist(childrenPath, remoteChildren, "children");
 
   const hasChat = (runtime: AdeRuntime, sessionId: string): boolean =>
@@ -439,13 +476,13 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
 
   const settle = async (entry: OutboxEntry, result: ExternalWakeDeliveryResult): Promise<void> => {
     if (result === "delivered") {
-      outbox = outbox.filter((candidate) => candidate.key !== entry.key);
+      forgetEntry(entry.key);
       logger?.info("cross_scope_chats.delivered", { key: entry.key, target: entry.target.kind, attempts: entry.attempts + 1 });
     } else if ((result === "failed" || result === "pending") && now() - entry.firstQueuedAt < GIVE_UP_AFTER_MS) {
       entry.attempts += 1;
       entry.nextAttemptAt = now() + Math.min(MAX_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.max(0, entry.attempts - 1));
     } else {
-      outbox = outbox.filter((candidate) => candidate.key !== entry.key);
+      forgetEntry(entry.key);
       await noteOnChild(entry, result === "parent_gone" || result === "refused" ? result : "gave_up");
       logger?.info("cross_scope_chats.dropped", { key: entry.key, reason: result });
     }
@@ -511,7 +548,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
         target = { kind: "local" };
       }
       outbox.push({ key, wake, target, attempts: 0, firstQueuedAt: now(), nextAttemptAt: now() });
-      if (outbox.length > MAX_OUTBOX) outbox = outbox.slice(-MAX_OUTBOX);
+      trimOutbox();
       saveOutbox();
       void pump();
       return true;
@@ -522,13 +559,17 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
       const entry: OutboxEntry = {
         key,
         wake,
-        target: { kind: "local", scope: scopeOfProjectRoot(wake.childProjectRoot) },
+        target: {
+          kind: "local",
+          scope: scopeOfProjectRoot(wake.childProjectRoot),
+          ...(ownerId ? { owner: ownerId } : {}),
+        },
         attempts: 0,
         firstQueuedAt: now(),
         nextAttemptAt: now(),
       };
       outbox.push(entry);
-      if (outbox.length > MAX_OUTBOX) outbox = outbox.slice(-MAX_OUTBOX);
+      trimOutbox();
       saveOutbox();
       // Saved first, then tried at once on its own: a report to a chat here
       // must not wait in the pump behind another machine's slow delivery.
