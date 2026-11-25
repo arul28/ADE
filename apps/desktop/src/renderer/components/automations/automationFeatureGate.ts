@@ -46,34 +46,43 @@ export function automationFeatureLabel(kind: AutomationFeatureKind, id: string):
   }
 }
 
-/** Answers by `pin.key|brainVersion`; an update changes the key, so it is asked again. */
-const capabilitiesCache = new Map<string, Promise<AutomationCapabilities | null>>();
+/**
+ * A brain's answer, and whether it is final. A missing answer that is not
+ * final (offline, a timeout, a brain still starting) is asked again.
+ */
+type CapabilitiesRead = { capabilities: AutomationCapabilities | null; final: boolean };
 
-function readCapabilities(key: string, pin: NonNullable<LaneMachine["pin"]>): Promise<AutomationCapabilities | null> {
+/** How long the builder waits before asking a machine that did not answer again, and how often. */
+const CAPABILITIES_RETRY_DELAY_MS = 15_000;
+const CAPABILITIES_MAX_RETRIES = 4;
+
+/** Answers by `pin.key|brainVersion`; an update changes the key, so it is asked again. */
+const capabilitiesCache = new Map<string, Promise<CapabilitiesRead>>();
+
+function readCapabilities(key: string, pin: NonNullable<LaneMachine["pin"]>): Promise<CapabilitiesRead> {
   const cached = capabilitiesCache.get(key);
   if (cached) return cached;
   const getCapabilities = window.ade?.automations?.getCapabilities;
-  const read = isAdeAvailable(getCapabilities)
+  const read: Promise<CapabilitiesRead> = isAdeAvailable(getCapabilities)
     ? getCapabilities(pin).then((answer) => {
         // A brain still starting has not bound its actions (`adeActions` is
         // null, ADE Cloud lanes read as absent): not an answer to keep. The
-        // version table decides until the builder asks again.
+        // version table decides until it is asked again.
         if (answer.adeActions == null) {
           capabilitiesCache.delete(key);
-          return null;
+          return { capabilities: null, final: false };
         }
-        return answer;
+        return { capabilities: answer, final: true };
       }, (error: unknown) => {
         // An older brain refuses the call for good; anything else (offline,
-        // a timeout) is asked again next time. Either way the version table
-        // decides meanwhile.
-        if (!isUnsupportedAdeActionError(error)) {
-          capabilitiesCache.delete(key);
-          console.warn("[automations] could not read the rule machine's capabilities; using the version table", error);
-        }
-        return null;
+        // a timeout) is asked again. Either way the version table decides
+        // meanwhile.
+        if (isUnsupportedAdeActionError(error)) return { capabilities: null, final: true };
+        capabilitiesCache.delete(key);
+        console.warn("[automations] could not read the rule machine's capabilities; using the version table", error);
+        return { capabilities: null, final: false };
       })
-    : Promise.resolve(null);
+    : Promise.resolve({ capabilities: null, final: true });
   capabilitiesCache.set(key, read);
   return read;
 }
@@ -85,18 +94,27 @@ export function useAutomationMachineSupport(machine: LaneMachine | null): Automa
   const version = foreign?.brainVersion ?? null;
   const key = pin ? `${pin.key}|${version ?? ""}` : null;
   const [answer, setAnswer] = useState<{ key: string; capabilities: AutomationCapabilities | null } | null>(null);
+  // Retries of a missing answer while the same machine stays selected.
+  const [retry, setRetry] = useState<{ key: string; count: number } | null>(null);
+  const retries = retry && retry.key === key ? retry.count : 0;
   useEffect(() => {
     if (!key || !pin) return;
     let cancelled = false;
-    void readCapabilities(key, pin).then((capabilities) => {
-      if (!cancelled) setAnswer({ key, capabilities });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    void readCapabilities(key, pin).then(({ capabilities, final }) => {
+      if (cancelled) return;
+      setAnswer({ key, capabilities });
+      if (!final && retries < CAPABILITIES_MAX_RETRIES) {
+        timer = setTimeout(() => setRetry({ key, count: retries + 1 }), CAPABILITIES_RETRY_DELAY_MS);
+      }
     });
     return () => {
       cancelled = true;
+      if (timer) clearTimeout(timer);
     };
     // The pin is read through its key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, retries]);
   const capabilities = answer && answer.key === key ? answer.capabilities : null;
   const isForeign = foreign != null;
   return useMemo(

@@ -208,7 +208,9 @@ feature shows the warning banner, and Save asks "<machine> can't run this rule y
 anyway**; for an ADE action step on a machine that answered `getCapabilities`, Save names the step
 instead, since that machine would refuse it. **This run's history** needs a sender that answers
 `getCapabilities` (an older one drops a link it cannot parse), so it is greyed out on an older
-machine. An answer from a brain still starting (`adeActions: null`) is not kept. The stored draft
+machine. An answer from a brain still starting (`adeActions: null`) is not kept; it, or a failed
+read (offline, a timeout), is asked again every 15 s, up to 4 times, while that machine stays
+selected. The stored draft
 names its rule by id and machine, and its target machine by id even when it is the tab's own,
 so a draft restored on another checkout keeps its rule and its computer. The stored draft is shared by every window on the
 repository, and a window removes it only when it wrote or restored it. A run link
