@@ -180,12 +180,18 @@ final class CtoStore: ObservableObject {
   /// Chats the CTO started that need the person, oldest first
   /// (`cto.getNeeds`). Empty on an older brain.
   @Published var needs: [CtoNeed] = []
+  /// The needs read failed and none has succeeded for this CTO yet: the card
+  /// says it couldn't load, rather than showing nothing waiting.
+  @Published var needsFailed = false
 
   let isFixture: Bool
   private(set) var sessionId: String?
   private var homeMachineKey: String?
   private var needsTask: Task<Void, Never>?
   private var lastNeedsFetchAt: Date?
+  private var needsLoaded = false
+  /// Bumps when the CTO or its home changes: a read started before is dropped.
+  private var needsGeneration = 0
 
   private var sync: SyncService? { isFixture ? nil : SyncService.shared }
 
@@ -215,8 +221,18 @@ final class CtoStore: ObservableObject {
   }
 
   func bind(sessionId: String?, homeMachineKey: String?) {
+    let changed = sessionId != self.sessionId || homeMachineKey != self.homeMachineKey
     self.sessionId = sessionId
     self.homeMachineKey = homeMachineKey
+    // Another CTO or home: the old home's lines are not this one's.
+    if changed, !isFixture {
+      needsGeneration += 1
+      needsTask = nil
+      lastNeedsFetchAt = nil
+      needsLoaded = false
+      if !needs.isEmpty { needs = [] }
+      if needsFailed { needsFailed = false }
+    }
   }
 
   // MARK: Capabilities (an older host hides the control)
@@ -396,6 +412,7 @@ final class CtoStore: ObservableObject {
     case .none: return
     case .some(false):
       if !needs.isEmpty { needs = [] }
+      if needsFailed { needsFailed = false }
       return
     case .some(true): break
     }
@@ -412,12 +429,21 @@ final class CtoStore: ObservableObject {
     }
     if !force, let last = lastNeedsFetchAt, Date().timeIntervalSince(last) < 5 { return }
     lastNeedsFetchAt = Date()
+    let generation = needsGeneration
     let task = Task { @MainActor [weak self] in
       guard let self else { return }
-      // Published only when the answer changed.
-      if let next = try? await sync.fetchCtoNeeds(), next.needs != self.needs {
-        self.needs = next.needs
+      let next = try? await sync.fetchCtoNeeds()
+      // Started for another CTO or home: drop it.
+      guard generation == self.needsGeneration else { return }
+      guard let next else {
+        // Known lines stay on a failed read; only a card that never loaded says so.
+        if !self.needsLoaded, !self.needsFailed { self.needsFailed = true }
+        return
       }
+      self.needsLoaded = true
+      if self.needsFailed { self.needsFailed = false }
+      // Published only when the answer changed.
+      if next.needs != self.needs { self.needs = next.needs }
     }
     needsTask = task
     await task.value

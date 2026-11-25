@@ -188,6 +188,20 @@ describe("createCtoStallJudge", () => {
     expect(h.wakes[1].text).toContain("2 chats you started are stuck");
   });
 
+  it("keeps the gap between nudges across a restart", async () => {
+    const store = new Map<string, unknown>();
+    const first = harness(store);
+    first.put(child());
+    await pass(first, T0 + 4 * MIN);
+    expect(first.wakes).toHaveLength(1);
+    const second = harness(store);
+    second.put(child({ sessionId: "child-2", lastActivityAt: at(1 * MIN) }));
+    await pass(second, T0 + 5 * MIN);
+    expect(second.wakes).toHaveLength(0);
+    await pass(second, T0 + 4 * MIN + CTO_STALL_NUDGE_GAP_MS);
+    expect(second.wakes).toHaveLength(1);
+  });
+
   it("holds a nudge while the CTO is mid-turn and sends it after", async () => {
     const h = harness();
     h.put(child());

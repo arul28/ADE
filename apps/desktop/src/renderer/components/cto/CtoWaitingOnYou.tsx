@@ -12,12 +12,35 @@ const COLLAPSED_ROWS = 3;
  */
 export function CtoWaitingOnYou({
   needs,
+  failed = false,
+  onRetry,
   onOpen,
 }: {
   needs: readonly CtoNeed[];
+  /** The lines could not be read and none are known: say so, with a retry. */
+  failed?: boolean;
+  onRetry?: () => void;
   onOpen: (need: CtoNeed) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  if (!needs.length && failed) {
+    return (
+      <section className="ade-cto-needs" aria-label="Waiting on you" data-testid="cto-waiting-on-you">
+        <header className="ade-cto-needs-head">
+          <HandPalm size={13} weight="fill" aria-hidden />
+          <span>Waiting on you</span>
+        </header>
+        <div className="ade-cto-needs-failed" role="status">
+          <span>Couldn't load what's waiting on you.</span>
+          {onRetry ? (
+            <button type="button" className="ade-cto-needs-more" onClick={onRetry}>
+              Retry
+            </button>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
   if (!needs.length) return null;
   const shown = expanded ? needs : needs.slice(0, COLLAPSED_ROWS);
   const hidden = needs.length - shown.length;

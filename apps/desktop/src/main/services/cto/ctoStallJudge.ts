@@ -44,6 +44,8 @@ const IDLE_BACKSTOP_MS = 15 * 60_000;
 const OBSERVE_DEBOUNCE_MS = 30_000;
 const NUDGED_KEYS_STATE_KEY = "cto:stall-nudges:v1";
 const NEEDS_STATE_KEY = "cto:needs:v1";
+/** When each CTO was last nudged, so the gap holds across a restart. */
+const LAST_NUDGE_STATE_KEY = "cto:stall-last-nudge:v1";
 const NUDGED_KEYS_CAP = 400;
 const NEEDS_CAP = 50;
 const LAST_WORDS_MAX = 280;
@@ -375,6 +377,20 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
     needs.find((need) => need.childSessionId === childSessionId);
 
   const lastNudgeAt = new Map<string, number>();
+  const storedLastNudge = deps.db?.getJson(LAST_NUDGE_STATE_KEY);
+  if (storedLastNudge && typeof storedLastNudge === "object" && !Array.isArray(storedLastNudge)) {
+    for (const [ctoSessionId, at] of Object.entries(storedLastNudge as Record<string, unknown>)) {
+      if (typeof at === "number" && Number.isFinite(at)) lastNudgeAt.set(ctoSessionId, at);
+    }
+  }
+  const noteNudged = (ctoSessionId: string, at: number) => {
+    lastNudgeAt.set(ctoSessionId, at);
+    try {
+      deps.db?.setJson(LAST_NUDGE_STATE_KEY, Object.fromEntries(lastNudgeAt));
+    } catch (error) {
+      deps.logger?.warn("cto.stall_judge.save_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
   let timer: unknown = null;
   let dueAt = 0;
   let running = false;
@@ -455,7 +471,7 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
     // second copy of the same nudge. The child's next move makes a new key.
     for (const item of told) nudged.add(item.stateKey);
     saveNudged();
-    lastNudgeAt.set(ctoSessionId, nowMs);
+    noteNudged(ctoSessionId, nowMs);
     try {
       await deps.wakeCto(ctoSessionId, formatCtoStallNudge(told, nowMs));
       deps.logger?.info("cto.stall_judge.nudged", {

@@ -696,8 +696,9 @@ private struct CtoNeedsFeedActive: ViewModifier {
     content
       .onAppear { visible = true }
       .onDisappear { visible = false }
-      .onChange(of: store.needs.isEmpty, initial: true) { _, empty in
-        if shown == empty { shown = !empty }
+      .onChange(of: store.needs.isEmpty || store.needsFailed, initial: true) { _, _ in
+        let show = !store.needs.isEmpty || store.needsFailed
+        if shown != show { shown = show }
       }
       // Appear, foreground, then every 60 s while on screen and active.
       .task(id: "\(sessionId)|\(active)") {
@@ -750,7 +751,43 @@ private struct CtoWaitingOnYouCard: View {
   var body: some View {
     if !store.needs.isEmpty {
       card
+    } else if store.needsFailed {
+      failedCard
     }
+  }
+
+  /// The lines could not be read and none are known: say so, with a retry.
+  private var failedCard: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: 6) {
+        Circle()
+          .fill(accent)
+          .frame(width: 6, height: 6)
+        Text("Waiting on you")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+      }
+      HStack(spacing: 10) {
+        Text("Couldn't load what's waiting on you.")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+        Button("Retry") {
+          ADEHaptics.light()
+          Task { await store.loadNeeds(force: true) }
+        }
+        .font(.caption.weight(.semibold))
+        .buttonStyle(.plain)
+        .foregroundStyle(accent)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cto.WaitingOnYou")
   }
 
   private var card: some View {

@@ -18,6 +18,8 @@ export type CtoActivityData = {
   children: CtoChildChat[];
   /** The CTO's "Waiting on you" lines, oldest first; the host drops one once its chat moves. */
   needs: CtoNeed[];
+  /** The needs read failed and none has succeeded for this CTO yet: the card says so, not "nothing waiting". */
+  needsFailed: boolean;
   /** Library only; empty until the Library has been opened. */
   prs: PrSummary[];
   proof: ComputerUseArtifactView[];
@@ -85,6 +87,8 @@ export function useCtoActivityData({
   pinRef.current = pin;
   const [children, setChildren] = useState<CtoChildChat[]>([]);
   const [needs, setNeeds] = useState<CtoNeed[]>([]);
+  const [needsFailed, setNeedsFailed] = useState(false);
+  const needsLoadedRef = useRef(false);
   const [prs, setPrs] = useState<PrSummary[]>([]);
   const [proof, setProof] = useState<ComputerUseArtifactView[]>([]);
   const [libraryLoaded, setLibraryLoaded] = useState(false);
@@ -99,6 +103,8 @@ export function useCtoActivityData({
     childIdsRef.current = new Set();
     setChildren([]);
     setNeeds([]);
+    setNeedsFailed(false);
+    needsLoadedRef.current = false;
     setPrs([]);
     setProof([]);
     setLibraryLoaded(false);
@@ -112,8 +118,9 @@ export function useCtoActivityData({
     let summaries: AgentChatSessionSummary[] = [];
     // Needs ride the same reads: they change when the CTO's turn ends (it set
     // one) or a child moves (the host dropped one), the events below.
+    // An older host has no `getNeeds`: no card, not an error.
     const needsRead = window.ade?.cto?.getNeeds
-      ? window.ade.cto.getNeeds(target).catch(() => null)
+      ? window.ade.cto.getNeeds(target).catch(() => "failed" as const)
       : Promise.resolve(null);
     try {
       summaries = await agentChat.list({ includeArchived: false }, target);
@@ -122,7 +129,14 @@ export function useCtoActivityData({
     }
     const nextNeeds = await needsRead;
     if (generation !== generationRef.current) return;
-    if (nextNeeds) setNeeds((current) => (sameNeeds(current, nextNeeds.needs) ? current : nextNeeds.needs));
+    if (nextNeeds === "failed") {
+      // Known lines stay on a failed read; only a card that never loaded says so.
+      if (!needsLoadedRef.current) setNeedsFailed(true);
+    } else if (nextNeeds) {
+      needsLoadedRef.current = true;
+      setNeedsFailed(false);
+      setNeeds((current) => (sameNeeds(current, nextNeeds.needs) ? current : nextNeeds.needs));
+    }
     const mine = summaries
       .filter((summary) => summary.sessionId !== ctoSessionId
         && summary.orchestrationParentSessionId?.trim() === ctoSessionId
@@ -202,7 +216,7 @@ export function useCtoActivityData({
 
   const refresh = useCallback(() => { void loadRef.current(); }, []);
   return useMemo(
-    () => ({ children, needs, prs, proof, libraryLoaded, refresh }),
-    [children, libraryLoaded, needs, proof, prs, refresh],
+    () => ({ children, needs, needsFailed, prs, proof, libraryLoaded, refresh }),
+    [children, libraryLoaded, needs, needsFailed, proof, prs, refresh],
   );
 }
