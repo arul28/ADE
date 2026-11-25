@@ -119,6 +119,21 @@ export type ChatScheduledWorkCheckDecision = {
  * again. The stored hash survives the failure, so a pass that brings back the
  * output from before it is not news either.
  */
+type ChatScheduledWorkCheckState = Pick<ChatScheduledWorkRecord, "checkHash" | "checkFailing" | "lastCheckedAt">;
+
+function snapshotCheckState(record: ChatScheduledWorkRecord): ChatScheduledWorkCheckState {
+  return { checkHash: record.checkHash, checkFailing: record.checkFailing, lastCheckedAt: record.lastCheckedAt };
+}
+
+function restoreCheckState(record: ChatScheduledWorkRecord, state: ChatScheduledWorkCheckState): void {
+  if (state.checkHash) record.checkHash = state.checkHash;
+  else delete record.checkHash;
+  if (state.checkFailing) record.checkFailing = true;
+  else delete record.checkFailing;
+  if (state.lastCheckedAt != null) record.lastCheckedAt = state.lastCheckedAt;
+  else delete record.lastCheckedAt;
+}
+
 export function decideScheduledWorkCheck(
   previous: Pick<ChatScheduledWorkRecord, "checkHash" | "checkFailing">,
   run: Pick<ChatScheduledWorkCheckRun, "ok" | "outputHash">,
@@ -536,6 +551,8 @@ export function createChatScheduledWorkScheduler(
 
     inFlight.add(scheduleId);
     let checkWake: ChatScheduledWorkCheckWake | undefined;
+    // An undelivered wake must stay news for the next attempt, so its check state is put back.
+    const previousCheck = snapshotCheckState(schedule);
     if (schedule.kind === "cron" && schedule.check && options.runCheck) {
       let run: ChatScheduledWorkCheckRun;
       try {
@@ -589,6 +606,7 @@ export function createChatScheduledWorkScheduler(
       if (previousLastFiredAt == null) delete schedule.lastFiredAt;
       else schedule.lastFiredAt = previousLastFiredAt;
       schedule.lateFlag = previousLateFlag;
+      restoreCheckState(schedule, previousCheck);
       inFlight.delete(scheduleId);
       options.releaseFire?.(cloneSchedule(schedule));
       armBusyDeferRetry(schedule);
@@ -632,6 +650,7 @@ export function createChatScheduledWorkScheduler(
       if (previousLastFiredAt == null) delete current.lastFiredAt;
       else current.lastFiredAt = previousLastFiredAt;
       current.lateFlag = previousLateFlag;
+      if (current === schedule) restoreCheckState(current, previousCheck);
       delete current.activeTurnId;
       await persist();
       await emitTransition(current, current.status);
@@ -687,6 +706,8 @@ export function createChatScheduledWorkScheduler(
     schedule.lastFiredAt = persisted.lastFiredAt;
     schedule.lateFlag = persisted.lateFlag;
     schedule.terminalAt = persisted.terminalAt;
+    // The owner ran the check too; keep its verdict so this brain doesn't report the same news again.
+    restoreCheckState(schedule, snapshotCheckState(persisted));
     if (isTerminal(schedule)) pruneTerminalHistory();
     else if (schedule.status === "scheduled") arm(schedule);
     await emitTransition(schedule, schedule.status);

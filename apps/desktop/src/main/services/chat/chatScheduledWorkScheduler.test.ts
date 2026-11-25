@@ -1384,6 +1384,72 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
+  it("keeps a wake that was never delivered as news for the retry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const fire = vi.fn(async (
+      _schedule: ChatScheduledWorkRecord,
+      _context: { late: boolean; check?: { because: string } },
+    ): Promise<void | { retry: true }> => undefined);
+    fire.mockResolvedValueOnce({ retry: true });
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async () => ({ ok: true, outputHash: "hash-b", detail: "pass" }),
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({ status: "scheduled", checkHash: "hash-a" }));
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(fire.mock.calls.map(([, context]) => context.check?.because)).toEqual(["changed", "changed"]);
+    expect(requireState(state).schedules[0]?.checkHash).toBe("hash-b");
+    scheduler.dispose();
+  });
+
+  it("adopts the check verdict of the brain that owned the occurrence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const claims = sharedClaims();
+    const options = {
+      loadState: () => cloneState(state),
+      saveState: (next: ChatScheduledWorkState) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active" as const,
+      claimFire: claims.claimFire,
+      releaseFire: claims.releaseFire,
+    };
+    const ownerFire = createFireMock();
+    const owner = createChatScheduledWorkScheduler({
+      ...options,
+      runCheck: async () => ({ ok: true, outputHash: "hash-b", detail: "pass" }),
+      fire: ownerFire,
+    });
+    const followerFire = createFireMock();
+    const followerCheck = vi.fn(async (): Promise<ChatScheduledWorkCheckRun> => ({ ok: true, outputHash: "hash-b", detail: "pass" }));
+    const follower = createChatScheduledWorkScheduler({ ...options, runCheck: followerCheck, fire: followerFire });
+    await owner.start();
+    await follower.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(ownerFire).toHaveBeenCalledTimes(1);
+    owner.dispose();
+    // The follower now owns later occurrences; the same output is old news.
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(followerCheck).toHaveBeenCalled();
+    expect(followerFire).not.toHaveBeenCalled();
+    follower.dispose();
+  });
+
   it("lets a cancel that lands during the check win", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
