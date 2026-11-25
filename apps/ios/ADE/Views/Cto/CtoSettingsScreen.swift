@@ -480,6 +480,7 @@ struct CtoMemoryPage: View {
             text: memory.memory,
             hash: memory.memoryHash,
             limit: memory.memoryLimitBytes ?? 4096,
+            overflowMovesOut: memory.notesOverflowArchives == true,
             placeholder: "- Deploys go through the release lane",
             accent: live.look.ctoAccent
           )
@@ -490,6 +491,7 @@ struct CtoMemoryPage: View {
             text: memory.userNotes ?? "",
             hash: memory.userNotesHash,
             limit: memory.userNotesLimitBytes ?? 2048,
+            overflowMovesOut: memory.notesOverflowArchives == true,
             placeholder: "- Prefers short answers",
             accent: live.look.ctoAccent
           )
@@ -699,12 +701,15 @@ private extension ISO8601DateFormatter {
 
 /// A notes file: saves a beat after the last keystroke, with a byte meter.
 /// A write the host refuses because the file changed meanwhile asks to reload.
+/// Over the cap it still saves when the host makes room (`overflowMovesOut`):
+/// the oldest notes move to the archive and the field shows what was kept.
 struct CtoNotesEditor: View {
   @ObservedObject var store: CtoStore
   let scope: CtoStore.NotesScope
   let text: String
   let hash: String?
   let limit: Int
+  var overflowMovesOut = false
   let placeholder: String
   let accent: Color
 
@@ -718,6 +723,8 @@ struct CtoNotesEditor: View {
 
   private var bytes: Int { draft.utf8.count }
   private var over: Bool { bytes > limit }
+  /// Over the cap with no host to make room: kept here, not sent.
+  private var blocked: Bool { over && !overflowMovesOut }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -740,10 +747,13 @@ struct CtoNotesEditor: View {
       }
       .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
       HStack(spacing: 8) {
-        Text("\(bytes.formatted()) of \(limit.formatted())")
+        Text(over && overflowMovesOut
+          ? "\(bytes.formatted()) of \(limit.formatted()) · oldest notes move to the archive"
+          : "\(bytes.formatted()) of \(limit.formatted())")
           .font(.footnote.monospacedDigit())
-          .foregroundStyle(over ? ADEColor.warning : ADEColor.textMuted)
+          .foregroundStyle(blocked ? ADEColor.warning : ADEColor.textMuted)
           .lineLimit(1)
+          .minimumScaleFactor(0.8)
         Spacer(minLength: 8)
         statusView
       }
@@ -768,13 +778,13 @@ struct CtoNotesEditor: View {
     .onDisappear {
       // Leaving inside the save delay cancels it: save what is left now. The
       // store outlives this page.
-      guard dirty, !over, store.canEditNotes else { return }
+      guard dirty, !blocked, store.canEditNotes else { return }
       if case .saving = state { return }
       let store = store, scope = scope, text = draft, base = baseHash
       Task { _ = await store.saveNotes(scope, text: text, baseHash: base) }
     }
     .task(id: draft) {
-      guard dirty, !over, store.canEditNotes else { return }
+      guard dirty, !blocked, store.canEditNotes else { return }
       try? await Task.sleep(nanoseconds: 1_200_000_000)
       guard !Task.isCancelled else { return }
       await save()
@@ -812,6 +822,9 @@ struct CtoNotesEditor: View {
       dirty = draft != sent
       if let memory = store.memory {
         baseHash = scope == .project ? memory.memoryHash : memory.userNotesHash
+        // The host's answer is what it kept (notes moved out, lines trimmed):
+        // a clean field shows that, not what was typed.
+        if !dirty { draft = scope == .project ? memory.memory : (memory.userNotes ?? "") }
       }
       state = .saved
       store.savedTick += 1

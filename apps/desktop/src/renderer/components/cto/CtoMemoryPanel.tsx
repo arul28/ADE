@@ -93,6 +93,7 @@ export function CtoMemoryPanel({
           value={memory.memory}
           hash={memory.memoryHash}
           limit={memory.memoryLimitBytes ?? CTO_PROJECT_NOTES_MAX_BYTES}
+          overflowMovesOut={memory.notesOverflowArchives === true}
           rows={10}
           placeholder={"- Deploys go through the release lane\n- Tests run with npm run test:unit"}
           onSave={saveProject}
@@ -110,6 +111,7 @@ export function CtoMemoryPanel({
           value={memory.userNotes ?? ""}
           hash={memory.userNotesHash}
           limit={memory.userNotesLimitBytes ?? CTO_USER_NOTES_MAX_BYTES}
+          overflowMovesOut={memory.notesOverflowArchives === true}
           rows={6}
           placeholder={"- Prefers short answers\n- Reviews PRs in the morning"}
           onSave={saveUser}

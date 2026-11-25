@@ -2258,6 +2258,9 @@ struct CtoMemory: Codable, Hashable {
   var memoryHash: String?
   var userNotesHash: String?
   var openWork: [CtoOpenWorkItem]?
+  /// True when a notes write over the cap moves the coldest notes to the
+  /// archive instead of being refused. Nil from an older host: keep the block.
+  var notesOverflowArchives: Bool?
   var updatedAt: String?
 
   init(
@@ -2270,6 +2273,7 @@ struct CtoMemory: Codable, Hashable {
     memoryHash: String? = nil,
     userNotesHash: String? = nil,
     openWork: [CtoOpenWorkItem]? = nil,
+    notesOverflowArchives: Bool? = nil,
     updatedAt: String? = nil
   ) {
     self.memory = memory
@@ -2281,6 +2285,7 @@ struct CtoMemory: Codable, Hashable {
     self.memoryHash = memoryHash
     self.userNotesHash = userNotesHash
     self.openWork = openWork
+    self.notesOverflowArchives = notesOverflowArchives
     self.updatedAt = updatedAt
   }
 
@@ -2301,6 +2306,7 @@ struct CtoMemory: Codable, Hashable {
     memoryHash = str(.memoryHash)
     userNotesHash = str(.userNotesHash)
     openWork = (try? c.decodeIfPresent([CtoOpenWorkItem].self, forKey: .openWork)).flatMap { $0 }
+    notesOverflowArchives = (try? c.decodeIfPresent(Bool.self, forKey: .notesOverflowArchives)).flatMap { $0 }
     updatedAt = str(.updatedAt)
   }
 

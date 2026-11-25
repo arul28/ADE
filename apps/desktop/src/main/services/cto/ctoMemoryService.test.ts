@@ -217,6 +217,25 @@ describe("ctoMemoryService archive", () => {
     expect(service.readNotes("project")).toContain(notes[1]);
     expect(service.searchArchive({ query: "n1w3" }).entries).toEqual([]);
     expect(service.searchArchive({ kinds: ["note"] }).entries.map((entry) => entry.text)).toEqual([notes[2]]);
+
+    // The person's editor, full: the coldest lines already there move out, and
+    // the lines just typed stay wherever they sit, even at the top.
+    vi.setSystemTime(new Date(start.getTime() + 800_000));
+    const typed = [uniqueNote("t1"), uniqueNote("t2")];
+    const current = service.readNotes("project");
+    const saved = service.writeNotes("project", `- ${typed[0]}\n${current}- ${typed[1]}\n`);
+    expect(saved.archived).toEqual([notes[3], notes[4]]);
+    const edited = service.readNotes("project");
+    expect(Buffer.byteLength(edited, "utf8")).toBeLessThanOrEqual(4096);
+    expect(edited.startsWith(`- ${typed[0]}`)).toBe(true);
+    expect(edited).toContain(typed[1]);
+    expect(edited).not.toContain(notes[3]);
+    expect(service.searchArchive({ query: "n3w5" }).entries[0]).toMatchObject({ kind: "note", reason: "cold" });
+
+    // New lines that alone pass the cap can't be made to fit: refused, nothing moves.
+    const tooMuch = Array.from({ length: 40 }, (_, k) => `- ${uniqueNote(`big${k}`)}`).join("\n");
+    expect(() => service.writeNotes("project", `${edited}${tooMuch}\n`)).toThrow(/Notes are full/);
+    expect(service.readNotes("project")).toBe(edited);
   });
 
   it("refuses a full write, as before, when there is no archive to move notes into", () => {
@@ -229,6 +248,7 @@ describe("ctoMemoryService archive", () => {
     const result = service.remember({ note: uniqueNote("overflow") });
     expect(result.ok).toBe(false);
     expect(!result.ok && result.error).toContain("Notes are full");
+    expect(() => service.writeNotes("project", `${before}- ${uniqueNote("typed")}\n`)).toThrow(/Notes are full/);
     expect(service.readNotes("project")).toBe(before);
     expect(notes.every((note) => before.includes(note))).toBe(true);
     expect(service.searchArchive().available).toBe(false);

@@ -93,7 +93,8 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
  * unsaved edits (the CTO wrote a note, the phone edited it) nothing is saved
  * over it: one quiet line says "Changed elsewhere" with a Reload that takes
  * the host's text. A text over `limit` bytes is not sent: the meter turns red
- * and says by how much.
+ * and says by how much. With `overflowMovesOut`, it is sent anyway: the host
+ * moves its oldest lines out to make room, and the field shows what it kept.
  *
  * Each save carries the host's hash of the text the draft started from
  * (`hash`), so a change that lands between the last read and the save is
@@ -104,6 +105,7 @@ export function AutosaveTextArea({
   hash,
   onSave,
   limit,
+  overflowMovesOut = false,
   rows = 8,
   placeholder,
   ariaLabel,
@@ -115,6 +117,8 @@ export function AutosaveTextArea({
   onSave: (text: string, baseHash?: string) => Promise<void>;
   /** Byte cap; shows a meter when set. */
   limit?: number;
+  /** Over `limit` still saves: the host makes room (the CTO's notes move their coldest lines to the archive). */
+  overflowMovesOut?: boolean;
   rows?: number;
   placeholder?: string;
   ariaLabel: string;
@@ -175,7 +179,7 @@ export function AutosaveTextArea({
     }
     const text = draftRef.current;
     if (text === savedRef.current || savingRef.current || conflictRef.current) return;
-    if (limit != null && utf8Bytes(text) > limit) return;
+    if (!overflowMovesOut && limit != null && utf8Bytes(text) > limit) return;
     savingRef.current = true;
     try {
       await onSave(text, savedHashRef.current);
@@ -194,7 +198,7 @@ export function AutosaveTextArea({
     if (draftRef.current !== savedRef.current) {
       timerRef.current = window.setTimeout(() => void save(), 900);
     }
-  }, [adoptHost, fail, flash, limit, onSave]);
+  }, [adoptHost, fail, flash, limit, onSave, overflowMovesOut]);
 
   useEffect(() => () => {
     if (timerRef.current != null) window.clearTimeout(timerRef.current);
@@ -239,7 +243,11 @@ export function AutosaveTextArea({
               Reload
             </button>
           </span>
-        ) : over ? (
+        ) : over && overflowMovesOut && state.kind !== "error" ? (
+          <span className="text-[12px] text-[var(--kit-text-3)]" title="Lines you just wrote stay">
+            {(bytes - limit!).toLocaleString()} bytes over · the oldest notes move to the archive
+          </span>
+        ) : over && !overflowMovesOut ? (
           <span className="text-[12px] text-[var(--kit-crit)]" title="Shorten it to save">
             {(bytes - limit!).toLocaleString()} bytes over
           </span>

@@ -742,6 +742,12 @@ export type CtoMemorySnapshot = {
   userNotesHash?: string;
   /** Open and recently finished work items, open first. */
   openWork?: CtoOpenWorkItem[];
+  /**
+   * True when a notes write over the cap moves the coldest notes to the
+   * archive instead of being refused. Missing from an older host (or with no
+   * archive here): an editor keeps an over-cap text to itself then.
+   */
+  notesOverflowArchives?: boolean;
   updatedAt: string | null;
 };
 

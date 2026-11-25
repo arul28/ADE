@@ -19,9 +19,10 @@ const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 /*
  * The CTO's archive: everything that left the per-turn notes, every version
  * of the story so far, the facts each story fold pulls out, and the worker
- * discoveries once drained. Machine-local and project-scoped, in its own
- * SQLite file next to the notes (`.ade/cto/archive.db`, never inside ade.db:
- * FTS5 tables cannot be cr-sqlite CRRs and none of this syncs).
+ * discoveries once drained. Project-scoped, in its own SQLite file next to
+ * the notes (`.ade/cto/archive.db`, never inside ade.db: FTS5 tables cannot be
+ * cr-sqlite CRRs and the database never syncs). Its rows move with the CTO to
+ * a new home through the account copy (`ctoArchiveCopy.ts`).
  *
  * Unlike the search index this is not a cache. Rows are the only copy of an
  * archived note or an old story, so a file that won't open is moved aside,
@@ -87,7 +88,24 @@ export type CtoArchiveRecord = {
   sourceSessionId?: string | null;
   sourceAt?: string | null;
   sourceLabel?: string | null;
+  /** When it was archived; now when not given. An import keeps the original time. */
+  archivedAt?: string | null;
 };
+
+/** One entry as the account copy carries it (`ctoArchiveCopy.ts`). */
+export type CtoArchiveCarriedRow = {
+  id: number;
+  kind: CtoArchiveKind;
+  scope: CtoNotesScope | null;
+  text: string;
+  reason: string | null;
+  sourceAt: string | null;
+  sourceLabel: string | null;
+  archivedAt: string;
+};
+
+/** The last use of one pinned note, by `ctoNoteKey`. */
+export type CtoNoteHeatRow = { scope: CtoNotesScope; key: string; at: string };
 
 type Row = {
   id: number;
@@ -224,12 +242,13 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     const scope = record.kind === "note" ? record.scope ?? "project" : null;
     const key = textKey(record.kind, scope, text);
     const now = nowIso();
+    const archivedAt = record.archivedAt?.trim() || now;
     try {
       const existing = handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined;
       if (existing) {
         if (record.kind === "note") {
           handle.prepare("UPDATE entries SET reason = ?, archived_at = ?, pinned_at = NULL WHERE id = ?")
-            .run(record.reason ?? null, now, existing.id);
+            .run(record.reason ?? null, archivedAt, existing.id);
         }
         return existing.id;
       }
@@ -244,7 +263,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
         record.sourceSessionId ?? null,
         record.sourceAt ?? null,
         record.sourceLabel ?? null,
-        now,
+        archivedAt,
         key,
       );
       return Number(result.lastInsertRowid);
@@ -254,10 +273,14 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     }
   };
 
-  /** Many entries in one transaction (a fold's facts, an import). */
-  const addMany = (records: readonly CtoArchiveRecord[]): number => {
+  /**
+   * Many entries in one transaction (a fold's facts, an import). Returns how
+   * many were new, or null when there is no archive or the write failed.
+   */
+  const addMany = (records: readonly CtoArchiveRecord[]): number | null => {
     const handle = open();
-    if (!handle || !records.length) return 0;
+    if (!handle) return null;
+    if (!records.length) return 0;
     let added = 0;
     try {
       handle.exec("BEGIN");
@@ -272,7 +295,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
         // Nothing was open.
       }
       warn("cto_archive.add_many_failed", error, { count: records.length });
-      return 0;
+      return null;
     }
     return added;
   };
@@ -371,6 +394,79 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     }
   };
 
+  /* ── The account copy: what a new home machine takes over ── */
+
+  /**
+   * Changes whenever what `exportRows` returns could: an entry added, archived
+   * again or pinned. Cheap, so the copy can skip a pack when nothing moved.
+   */
+  const changeStamp = (): string | null => {
+    const handle = open();
+    if (!handle) return null;
+    try {
+      const row = handle.prepare(`
+        SELECT COUNT(*) AS n, MAX(id) AS top, MAX(archived_at) AS at FROM entries WHERE pinned_at IS NULL
+      `).get() as { n: number; top: number | null; at: string | null };
+      return `${row.n}|${row.top ?? 0}|${row.at ?? ""}`;
+    } catch (error) {
+      warn("cto_archive.stamp_failed", error);
+      return null;
+    }
+  };
+
+  /** Every entry not pinned back into the notes, oldest first. Null when there is no archive. */
+  const exportRows = (): CtoArchiveCarriedRow[] | null => {
+    const handle = open();
+    if (!handle) return null;
+    const rows = handle.prepare("SELECT * FROM entries WHERE pinned_at IS NULL ORDER BY id ASC").all() as Row[];
+    return rows.map((row) => {
+      const entry = toEntry(row, true);
+      return {
+        id: entry.id,
+        kind: entry.kind,
+        scope: entry.scope,
+        text: entry.text,
+        reason: entry.reason,
+        sourceAt: entry.sourceAt,
+        sourceLabel: entry.sourceLabel,
+        archivedAt: entry.archivedAt,
+      };
+    });
+  };
+
+  /** The heat of the given note keys (the lines in the notes now). */
+  const exportHeat = (scope: CtoNotesScope, keys: ReadonlySet<string>): CtoNoteHeatRow[] => {
+    const heat = noteHeat(scope);
+    return Array.from(heat.entries())
+      .filter(([key]) => keys.has(key))
+      .map(([key, at]) => ({ scope, key, at }));
+  };
+
+  /**
+   * Heat from the machine the CTO moved from. It replaces this machine's: the
+   * notes came from there too, so that is when each note was last used.
+   */
+  const importHeat = (rows: readonly CtoNoteHeatRow[]): void => {
+    const handle = open();
+    if (!handle || !rows.length) return;
+    try {
+      const upsert = handle.prepare(`
+        INSERT INTO note_heat(scope, note_key, last_used_at) VALUES (?, ?, ?)
+        ON CONFLICT(scope, note_key) DO UPDATE SET last_used_at = excluded.last_used_at
+      `);
+      handle.exec("BEGIN");
+      for (const row of rows) upsert.run(row.scope, row.key, row.at);
+      handle.exec("COMMIT");
+    } catch (error) {
+      try {
+        handle.exec("ROLLBACK");
+      } catch {
+        // Nothing was open.
+      }
+      warn("cto_archive.heat_import_failed", error, { count: rows.length });
+    }
+  };
+
   const readMeta = (key: string): string | null => {
     const row = open()?.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
     return row?.value ?? null;
@@ -389,7 +485,24 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     db = null;
   };
 
-  return { available, add, addMany, get, markPinned, search, touchNote, noteHeat, readMeta, writeMeta, close, path: dbPath };
+  return {
+    available,
+    add,
+    addMany,
+    get,
+    markPinned,
+    search,
+    touchNote,
+    noteHeat,
+    changeStamp,
+    exportRows,
+    exportHeat,
+    importHeat,
+    readMeta,
+    writeMeta,
+    close,
+    path: dbPath,
+  };
 }
 
 export type CtoMemoryArchive = ReturnType<typeof createCtoMemoryArchive>;
