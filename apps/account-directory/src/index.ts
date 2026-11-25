@@ -4,7 +4,8 @@ import { noteAutomationLaunchProgress, runCloudAutomations } from "./cloud/autom
 import { handleInviteLookup, isInviteLookupRequest } from "./cloud/referrals";
 import { runCloudMinuteCron } from "./cloud/cron";
 import { runAccountErasureRepeats } from "./accountErasure";
-import { pruneSponsored, syncAllSmallRates } from "./cloud/gravity";
+import { pruneSponsored } from "./cloud/gravity";
+import { syncAllSmallRates } from "./cloud/sponsoredSmall";
 import { expireAccountTests } from "./cloud/ownerAccounts";
 import { expireCloudLaunches, failUnjoinedLaunches } from "./cloud/launches";
 import { runProjectComputerDeletes } from "./cloud/projectComputers";

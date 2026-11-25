@@ -30,8 +30,10 @@ struct CloudSponsoredState: Decodable, Equatable {
   let test: Bool
   /// Free's Small computers are unlimited only while sponsored cards are on,
   /// in the US: here a no (or no answer) has them use hours, at half a
-  /// Medium-hour an hour. Nil while the server's rule is off, on a paid plan,
-  /// and outside the US (`smallOutsideUS`). The question and Settings say so.
+  /// Medium-hour an hour. Also sent abroad while a US look in the last week
+  /// keeps Small free. Nil while the server's rule is off, on a paid plan,
+  /// and otherwise outside the US (`smallOutsideUS`). The question and
+  /// Settings say so.
   let smallNeedsCards: Bool?
   /// Where this account's cards show, as the server assigns it. An older
   /// server sends nothing, and an unknown value reads the same: under the reply.
@@ -47,8 +49,8 @@ struct CloudSponsoredState: Decodable, Equatable {
   /// The no came from a browser's Global Privacy Control (it opts the whole
   /// account out from the US): Settings says so (`gpcOffLine`).
   let gpcOff: Bool
-  /// A yes, but nobody has opened a cloud chat from the US for 7 days: Small
-  /// uses credits until the next one. Settings says so.
+  /// A yes, but nobody has opened a cloud chat from the US for 7 days (or
+  /// ever): Small uses credits until the next one. Settings says so.
   let smallNeedsLook: Bool
   /// Free, read from outside the US: cards keep Small free only in the US, so
   /// here it uses credits, cards or not. Settings says so.
@@ -361,9 +363,10 @@ func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)
-    // While Free's Small needs cards, the answer also moved Small's rate in the
-    // account's catalog: read the account again so Small's hours show it.
-    if state.smallNeedsCards == true, generation == AccountCloudStore.shared.generation {
+    // Where Free's Small rule reaches the account, the answer may also have moved
+    // Small's rate in the account's catalog (here, or abroad within a week of a
+    // US look): read the account again so Small's hours show it.
+    if state.smallNeedsCards == true || state.smallOutsideUS, generation == AccountCloudStore.shared.generation {
       SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
     }
     return .success(state)
@@ -517,6 +520,8 @@ final class CloudSponsoredStore: ObservableObject {
   /// The seen request in flight per computer: the next one waits for it, so
   /// an older answer can never land after a newer one.
   private var seenInFlight: [String: Task<Void, Never>] = [:]
+  /// The account was read again after a look that may have ended a lapse (`smallNeedsLook`): once per lapse.
+  private var lookRefreshed = false
   /// Account changes this run: an ask that spans one publishes nothing.
   private var resetCount = 0
   private var observers: [NSObjectProtocol] = []
@@ -752,6 +757,15 @@ final class CloudSponsoredStore: ObservableObject {
     lastSeenTracking[instanceId] = device.tracking
     do {
       try await client.sponsoredSeen(instanceId: instanceId, device: device)
+      // A yes whose US looks lapsed: this look may make Small free again, so the account is read once after it.
+      if AccountCloudStore.shared.account?.sponsored?.smallNeedsLook == true {
+        if !lookRefreshed {
+          lookRefreshed = true
+          SyncMenuSafePublisher.shared.service.refreshCloudServerIfStale(force: true)
+        }
+      } else {
+        lookRefreshed = false
+      }
     } catch {
       // Not said: the next look tries again instead of waiting out the interval.
       if lastSeenAt[instanceId] == now {
@@ -769,6 +783,7 @@ final class CloudSponsoredStore: ObservableObject {
   func forgetSeen() {
     lastSeenAt = [:]
     lastSeenTracking = [:]
+    lookRefreshed = false
   }
 
   func reset() {

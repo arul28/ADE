@@ -7,7 +7,8 @@ import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
-import { pruneSponsored, syncAllSmallRates } from "../src/cloud/gravity";
+import { pruneSponsored } from "../src/cloud/gravity";
+import { syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";

@@ -44,8 +44,8 @@ import { useStillWhenHidden } from "./CloudSky";
 import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "./cloudPlanMoveUp";
 import "./cloudPlans.css";
 
-/** What sponsored cards are, as the chat's question and notice say it. */
-const SPONSORED_SETTINGS_WHAT = "Free ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool.";
+/** What sponsored cards do, as the chat's question and notice say it: "Free ADE Cloud chats …" when on, "When on, free …" when off. */
+const SPONSORED_SETTINGS_DO = "ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool.";
 /** What Gravity gets, in the row's small print. */
 const SPONSORED_SETTINGS_SENDS =
   "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. For people 18 or older.";
@@ -59,7 +59,7 @@ function sponsoredSmallNote(sponsored: NonNullable<CloudAccountState["sponsored"
   if (sponsored.smallOutsideUS) return { free: false, text: `Small computers use your ${noun} outside the US: sponsored cards keep them free only in the US.` };
   if (!sponsored.smallNeedsCards) return null;
   if (!on) return { free: false, text: `Small computers use your ${noun} while sponsored cards are off.` };
-  if (sponsored.smallNeedsLook) return { free: false, text: `Small computers use your ${noun} until you next open an ADE Cloud chat in the US. Your last one was over 7 days ago.` };
+  if (sponsored.smallNeedsLook) return { free: false, text: `Small computers use your ${noun} until you open an ADE Cloud chat in the US: none was opened there in the last 7 days.` };
   return sponsored.ads ? { free: true, text: "Your Small computers are free while sponsored cards are on." } : null;
 }
 
@@ -456,9 +456,9 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <small className="adecd-addon-state">
                   {!sponsoredOn
-                    ? `Off. When on, ${SPONSORED_SETTINGS_WHAT.charAt(0).toLowerCase()}${SPONSORED_SETTINGS_WHAT.slice(1)}`
+                    ? `Off. When on, free ${SPONSORED_SETTINGS_DO}`
                     : sponsoredToggle.ads
-                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} ${SPONSORED_SETTINGS_WHAT}`
+                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} Free ${SPONSORED_SETTINGS_DO}`
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
                 </small>
                 {!sponsoredOn && sponsoredToggle.gpcOff ? (

@@ -353,18 +353,19 @@ struct CloudSponsoredCard: View {
     guard sponsored.smallUsesHoursWithoutCards else { return nil }
     guard sponsored.granted || sponsored.toldOn else { return (false, "Small computers use your \(unit) while sponsored cards are off.") }
     if sponsored.smallNeedsLook {
-      return (false, "Small computers use your \(unit) until you next open an ADE Cloud chat in the US. Your last one was over 7 days ago.")
+      return (false, "Small computers use your \(unit) until you open an ADE Cloud chat in the US: none was opened there in the last 7 days.")
     }
     return sponsored.ads ? (true, "Your Small computers are free while sponsored cards are on.") : nil
   }
 
   private func stateLine(_ sponsored: CloudSponsoredState) -> String {
-    let what = "Free ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool."
+    // What the cards do, as the chat's question and notice say it (`CloudPlans.tsx` `SPONSORED_SETTINGS_DO`).
+    let does = "ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool."
     guard sponsored.granted || sponsored.toldOn else {
-      return "Off. When on, free ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool.\(sponsored.gpcOff ? " \(CloudSponsoredState.gpcOffLine)" : "")"
+      return "Off. When on, free \(does)\(sponsored.gpcOff ? " \(CloudSponsoredState.gpcOffLine)" : "")"
     }
     return sponsored.ads
-      ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") \(what)"
+      ? "On.\(sponsored.toldOn || toldHere ? " They start on where you are; you can turn them off here." : "") Free \(does)"
       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
   }
 

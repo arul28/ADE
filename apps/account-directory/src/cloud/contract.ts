@@ -3266,14 +3266,17 @@ export type CloudSponsoredState = {
   /**
    * Free's Small computers are unlimited only while sponsored cards are on,
    * in the US: here a no (or no answer) has them use hours, at half a
-   * Medium-hour an hour. Absent while that rule is off, on a paid plan, and
-   * outside the US (`smallOutsideUS`). The question and Settings say so.
+   * Medium-hour an hour. Also sent abroad while a US look in the last week
+   * still keeps Small free. Absent while that rule is off, on a paid plan,
+   * and otherwise outside the US (`smallOutsideUS`). The question and
+   * Settings say so.
    */
   smallNeedsCards?: boolean;
   /**
    * The account said yes, but nobody has opened one of its ADE Cloud chats
-   * from the US for 7 days (away, or a yes given once from a VPN): Small
-   * uses credits until the next such chat. Settings says so. Absent otherwise.
+   * (or terminals) from the US for 7 days, or ever (away, or a yes given from
+   * elsewhere): Small uses credits until the next such chat. Read in the US
+   * only. Settings says so. Absent otherwise.
    */
   smallNeedsLook?: boolean;
   /**
