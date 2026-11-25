@@ -784,7 +784,7 @@ export async function cancelAccountSubscription(
   } catch (error) {
     if (!(error instanceof StripeRequestError && error.status === 404)) throw error;
   }
-  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, phone_extra_enabled = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
+  await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
   logCloud(reason === "blocked_account" ? "cloud.subscription_cancelled_for_blocked_account" : "cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }

@@ -17,6 +17,7 @@ import {
   renderSystemdEnvironment,
   renderSystemdUnit,
   servicePath as systemdServicePath,
+  uninstallSystemdService,
 } from "./installSystemd";
 import { renderDetachedSupervisorScript } from "./detachedSupervisor";
 
@@ -301,6 +302,40 @@ describe("systemd service install", () => {
     expect(result).toMatchObject({ ok: true });
     expect(result.restarted).toBeUndefined();
     expect(systemdCallArgs(calls)).toEqual([]);
+  });
+
+  // An agent's shell is a child of the unit's brain. `systemctl restart` and
+  // `disable --now` stop the unit's whole cgroup, the asking command with it.
+  it.each([
+    { operation: "install", env: {}, refused: true },
+    { operation: "uninstall", env: {}, refused: true },
+    { operation: "uninstall", env: { ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1" }, refused: false },
+  ] as const)("$operation from inside the unit's brain with env $env refuses: $refused", async ({ operation, env, refused }) => {
+    const homeDir = makeTempHome("ade-systemd-self-");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const brainPid = 4242;
+    const unit = systemdSpawn({ calls, states: [{ activeState: "active", mainPid: brainPid }] });
+    // `ps` reports this process as the brain's child.
+    const spawnSync: ServiceManagerSpawnSync = (command, args, options) => {
+      if (command !== "ps") return unit(command, args, options);
+      const parent = ({ [process.pid]: brainPid, [brainPid]: 1 } as Record<number, number>)[Number(args.at(-1))];
+      return parent ? { status: 0, stdout: `${parent}\n`, stderr: "" } : { status: 1, stdout: "", stderr: "" };
+    };
+
+    const result = operation === "install"
+      ? await installSystemdService(installDeps(homeDir, spawnSync, { env }))
+      : await uninstallSystemdService({ spawnSync, env, homeDir });
+
+    const stops = systemdCallArgs(calls).filter((args) => ["restart", "disable", "enable"].includes(args[1] ?? ""));
+    if (refused) {
+      expect(result).toMatchObject({ ok: false, selfMutationBlocked: true });
+      expect(result.message).toContain(`pid ${brainPid}`);
+      expect(stops).toEqual([]);
+      expect(fs.existsSync(systemdServicePath(homeDir))).toBe(false);
+    } else {
+      expect(result.selfMutationBlocked).toBeUndefined();
+      expect(stops).toEqual([["--user", "disable", "--now", unitName]]);
+    }
   });
 
   it("treats a unit systemd reports as activating as a live brain, not a dead one", () => {

@@ -716,6 +716,16 @@ export type AppNavigationTarget =
       accountProjectId?: string | null;
     }
   | {
+      /** One automation run: the Automations page opens the rule's History on it. */
+      kind: "automation-run";
+      ruleId: string;
+      runId: string;
+      /** From a link: the account machine and project that own the rule. */
+      ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
+    }
+  | {
       kind: "pr";
       prId?: string | null;
       prNumber?: number | null;

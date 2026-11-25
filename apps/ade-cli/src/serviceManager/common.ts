@@ -42,6 +42,9 @@ export type ServiceManagerResult = {
   // very brain it tried to mutate. Consumers must branch on this typed flag,
   // never on the human-readable `message` text.
   selfMutationBlocked?: boolean;
+  // Set with `selfMutationBlocked` when the caller could not tell whether it
+  // runs inside that brain (refused all the same): not proof that it does.
+  selfMutationUnconfirmed?: boolean;
   /**
    * Typed install verification stage for callers that need repair diagnostics.
    * `background_item_blocked` is macOS refusing to start the agent because
@@ -206,7 +209,7 @@ export type ServiceManagerSpawnSync = (
   options?: SpawnSyncOptions,
 ) => ServiceManagerProcessResult;
 
-function processOutputText(result: ServiceManagerProcessResult): string {
+export function processOutputText(result: ServiceManagerProcessResult): string {
   if (typeof result.stdout === "string") return result.stdout.trim();
   if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8").trim();
   return "";
@@ -217,159 +220,6 @@ export function processOutputRaw(result: ServiceManagerProcessResult): string {
   if (typeof result.stdout === "string") return result.stdout;
   if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8");
   return "";
-}
-
-/**
- * The ancestry query could not be answered at all — the mechanism itself is
- * broken/absent, so we know NOTHING about the process tree. Distinct from
- * `null`, which is the definitive answer "this process has no further parent".
- */
-export const PARENT_PID_UNKNOWN = "unknown" as const;
-
-export type ParentPidLookup = number | null | typeof PARENT_PID_UNKNOWN;
-
-/** Exit code the win32 parent-pid query uses for "no such process". */
-const WINDOWS_PARENT_PID_NOT_FOUND_EXIT = 3;
-
-/**
- * PowerShell to print a pid's ParentProcessId, or exit 3 when the pid is gone.
- *
- * `Get-CimInstance Win32_Process` rather than `wmic`: wmic is deprecated and is
- * being removed from Windows, and this matches the CIM queries already used by
- * `serviceManager/windowsSupervisor.ts`.
- */
-export function buildWindowsParentPidQueryArgs(pid: number): string[] {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    throw new Error(`Invalid pid for the Windows parent-process query: ${String(pid)}`);
-  }
-  const query = [
-    "$ErrorActionPreference = 'Stop'",
-    `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue`,
-    `if ($null -eq $process) { exit ${WINDOWS_PARENT_PID_NOT_FOUND_EXIT} }`,
-    "[Console]::Out.Write([string]$process.ParentProcessId)",
-  ].join("; ");
-  return ["-NoProfile", "-NonInteractive", "-Command", query];
-}
-
-/**
- * Per-attempt budgets for the win32 parent-pid query, in order.
- *
- * 5s was not enough: powershell.exe cold start plus the first CIM call in a
- * session routinely exceeds it on a contended Windows host, and a timeout is
- * indistinguishable from a real failure, so the guard falls back to
- * PARENT_PID_UNKNOWN and refuses a teardown the user is entitled to. 15s was
- * still not enough on a CPU-saturated host (a 2-core CI runner running other
- * suites in parallel), so a timeout gets ONE retry on a longer budget: by then
- * powershell.exe and the CIM infrastructure are warm, so the retry is the
- * steady-state cost, not another cold start. Only a timeout is retried — a real
- * answer (including "no such process") and a real failure are both final.
- *
- * The walk in isCurrentProcessDescendantOfPid stops at the first
- * PARENT_PID_UNKNOWN, so this budget is spent at most once per lookup chain.
- */
-const WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS = [15_000, 25_000] as const;
-
-/**
- * Whether `spawnSync` killed the child because it blew its `timeout` budget, as
- * opposed to the child answering. Node reports this as `error.code === 'ETIMEDOUT'`
- * with a null status; the signal check covers runtimes that only surface the kill.
- */
-function isSpawnTimeout(result: ServiceManagerProcessResult): boolean {
-  if (result.status !== null) return false;
-  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  return code === "ETIMEDOUT" || result.signal === "SIGTERM";
-}
-
-function readWindowsParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
-  let result: ServiceManagerProcessResult | undefined;
-  for (const [attempt, timeout] of WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS.entries()) {
-    try {
-      // Resolve through the hardened GLOBALROOT lookup: a bare `powershell` is
-      // redirectable via PATH/SystemRoot, and this guard protects a teardown.
-      result = run(
-        resolveTrustedWindowsTool("powershell"),
-        buildWindowsParentPidQueryArgs(pid),
-        { encoding: "utf8", timeout, windowsHide: true },
-      );
-    } catch {
-      return PARENT_PID_UNKNOWN;
-    }
-    const isLastAttempt = attempt === WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS.length - 1;
-    if (isLastAttempt || !isSpawnTimeout(result)) break;
-  }
-  if (!result) return PARENT_PID_UNKNOWN;
-  // Only "the process does not exist" is a definitive end of the chain. Any
-  // other non-zero status (spawn failure, CIM unavailable, timeout) means the
-  // ancestry is undetermined, NOT that we reached the root.
-  if (result.status === WINDOWS_PARENT_PID_NOT_FOUND_EXIT) return null;
-  if (result.status !== 0) return PARENT_PID_UNKNOWN;
-  const text = processOutputText(result);
-  if (!/^\d+$/.test(text)) return PARENT_PID_UNKNOWN;
-  const parentPid = Number.parseInt(text, 10);
-  if (!Number.isFinite(parentPid)) return PARENT_PID_UNKNOWN;
-  // ParentProcessId 0 is the Idle pseudo-process: the top of the tree.
-  return parentPid > 0 ? parentPid : null;
-}
-
-function readPosixParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
-  // `ps` exits 1 both for "no such pid" and for a genuine failure, so a POSIX
-  // host cannot distinguish the two the way the win32 branch above can. `ps` is
-  // part of every POSIX base system, so treat a failure as end-of-chain.
-  const result = run("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
-  if (result.status !== 0) return null;
-  const parentPid = Number.parseInt(processOutputText(result), 10);
-  return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
-}
-
-/**
- * Parent pid of `pid`, dispatched per platform the same way
- * `serviceManager/index.ts` dispatches `getRuntimeServiceMainPid`.
- */
-export function readParentPid(
-  run: ServiceManagerSpawnSync,
-  pid: number,
-  platform: NodeJS.Platform = process.platform,
-): ParentPidLookup {
-  if (!Number.isInteger(pid) || pid <= 0) return null;
-  return platform === "win32"
-    ? readWindowsParentPid(run, pid)
-    : readPosixParentPid(run, pid);
-}
-
-/**
- * Whether this process is running inside the process tree rooted at `targetPid`.
- *
- * This is a SAFETY guard: its callers use it to refuse tearing down the very
- * runtime the command was issued from. When ancestry cannot be determined
- * (`PARENT_PID_UNKNOWN`) it therefore answers `true` — fail CLOSED. A false
- * "yes" costs the user one refusal that names the
- * `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` override; a false "no" silently
- * destroys a live runtime and every active session on it. Only the first is
- * recoverable.
- */
-export function isCurrentProcessDescendantOfPid(args: {
-  targetPid: number;
-  run?: ServiceManagerSpawnSync;
-  currentPid?: number;
-  platform?: NodeJS.Platform;
-  parentPid?: (pid: number) => ParentPidLookup;
-}): boolean {
-  const targetPid = Math.floor(args.targetPid);
-  if (!Number.isFinite(targetPid) || targetPid <= 0) return false;
-  const run = args.run ?? spawnSync;
-  const platform = args.platform ?? process.platform;
-  const readPid = args.parentPid ?? ((pid: number) => readParentPid(run, pid, platform));
-  const seen = new Set<number>();
-  let cursor = Math.floor(args.currentPid ?? process.pid);
-  while (Number.isFinite(cursor) && cursor > 0 && !seen.has(cursor)) {
-    if (cursor === targetPid) return true;
-    seen.add(cursor);
-    const next = readPid(cursor);
-    if (next === PARENT_PID_UNKNOWN) return true;
-    if (!next || next === cursor) return false;
-    cursor = next;
-  }
-  return false;
 }
 
 const RUNTIME_ENV_PASSTHROUGH = [
@@ -1128,7 +978,7 @@ export function serveSocketArgument(commandLine: string): string | null {
 // the same fix for its own predicate.
 export function isStaleChannelServeCommandLine(
   commandLine: string,
-  opts: { cliScriptPath: string; primarySocketPath: string },
+  opts: ChannelServeMatch,
 ): boolean {
   const line = commandLine.trim();
   if (!line || !opts.cliScriptPath) return false;
@@ -1136,14 +986,20 @@ export function isStaleChannelServeCommandLine(
   const explicitPrimarySocket = socketArgument !== null
     ? isSameServeSocketPath(socketArgument, opts.primarySocketPath)
     : false;
-  const cliIndex = line.indexOf(opts.cliScriptPath);
-  const alternateCliMatch = line.match(
-    /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/,
+  // Windows paths ignore case, so `C:\ADE\CLI.CJS` is the same script as `c:\ade\cli.cjs`.
+  const fold = (value: string): string => (opts.ignoreCase ? value.toLowerCase() : value);
+  const searched = fold(line);
+  const cliScriptPath = fold(opts.cliScriptPath);
+  const cliIndex = searched.indexOf(cliScriptPath);
+  const alternateCliMatch = searched.match(
+    opts.ignoreCase
+      ? /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/i
+      : /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/,
   );
   const tail = cliIndex >= 0
-    ? line.slice(cliIndex + opts.cliScriptPath.length)
+    ? searched.slice(cliIndex + cliScriptPath.length)
     : alternateCliMatch?.index != null
-      ? line.slice(alternateCliMatch.index + alternateCliMatch[0].length)
+      ? searched.slice(alternateCliMatch.index + alternateCliMatch[0].length)
       : "";
   if (!/^"?\s+"?serve"?(?:\s|$)/.test(tail)) return false;
   if (/--(?:install-service|uninstall-service|service-status|no-sync)\b/.test(tail)) return false;
@@ -1191,7 +1047,7 @@ export function buildWindowsProcessCommandLineQueryArgs(): string[] {
 function parseStaleChannelServePids(
   output: string,
   separator: RegExp,
-  opts: { cliScriptPath: string; primarySocketPath: string; excludePids?: number[] },
+  opts: ChannelServeMatch & { excludePids?: number[] },
 ): number[] {
   const exclude = new Set([process.pid, ...(opts.excludePids ?? [])]);
   const pids: number[] = [];
@@ -1236,7 +1092,7 @@ export function listStaleChannelServePids(
     }
     return {
       ok: true,
-      pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\t(.+)$/, opts),
+      pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\t(.+)$/, { ...opts, ignoreCase: true }),
     };
   }
   const result = run("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
@@ -1254,7 +1110,12 @@ export function listStaleChannelServePids(
 }
 
 /** The channel brain a stop means to reach: this channel's CLI serving its primary socket. */
-export type ChannelServeMatch = { cliScriptPath: string; primarySocketPath: string };
+export type ChannelServeMatch = {
+  cliScriptPath: string;
+  primarySocketPath: string;
+  /** Compare the CLI path without case, as Windows paths are. */
+  ignoreCase?: boolean;
+};
 
 /**
  * The identity a force-kill of a channel brain needs, for `terminatePidGracefullyAsync`.

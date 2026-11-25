@@ -4,7 +4,6 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
-import { reportExtraPhoneMinutes, setExtraPhoneMinutes } from "../src/cloud/phoneBilling";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
@@ -3965,19 +3964,13 @@ describe("ADE Cloud lane backups", () => {
   });
 });
 
-describe("ADE Cloud iPhone minutes", () => {
-  const PHONE_PRICE = "price_phone";
-  const PHONE_METER = "ade_cloud_phone_minutes";
+describe("ADE Cloud iPhone", () => {
   const PERIOD = NOW - 8 * DAY;
-  const OLD_PERIOD = PERIOD - 30 * DAY;
 
-  /** A paid Pro account on sub_1 that holds the iPhone-minute price, with extra minutes set as given. */
+  /** A paid Pro account on sub_1 with the ADE Cloud iPhone on. */
   function seedPhoneAccount(overrides: Row = {}): void {
-    harness.env.STRIPE_PHONE_MINUTE_PRICE_ID = PHONE_PRICE;
-    harness.env.STRIPE_PHONE_METER_EVENT = PHONE_METER;
     harness.env.NOMAC_API_KEY = "nmk_test";
     harness.env.CLOUD_PHONE_ACCESS = "all";
-    harness.net.subscriptions.set("sub_1", { status: "active", items: { data: [{ id: "si_phone", price: { id: PHONE_PRICE } }] } });
     seedAccount(harness, OWNER, {
       plan: "paid",
       paid_plan: "pro",
@@ -3985,14 +3978,15 @@ describe("ADE Cloud iPhone minutes", () => {
       stripe_customer_id: "cus_1",
       stripe_subscription_id: "sub_1",
       period_start: PERIOD,
-      phone_extra_enabled: 1,
-      phone_extra_period_start: PERIOD,
       ...overrides,
     });
   }
 
-  /** A phone NoMac settled: `minutes` billed, started at `startedAt` (`credits`: started under credits, its minutes in the hours). */
-  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended", credits = false): void {
+  /**
+   * A phone NoMac settled: `minutes` billed, started at `startedAt`. `credits`: it counts in credits, its
+   * minutes already in the account's balance; false is a row from before credits (history only).
+   */
+  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended", credits = true): void {
     harness.insert("cloud_phones", {
       phone_id: id,
       user_id: OWNER,
@@ -4010,77 +4004,11 @@ describe("ADE Cloud iPhone minutes", () => {
     });
   }
 
-  const meterReports = () => providerCalls(harness, /POST .*\/billing\/meter_events$/)
-    .map((call) => [String(call.body?.identifier), Number(call.body?.["payload[value]"])]);
-  const account = () => harness.row("select phone_extra_enabled, phone_extra_period_start, phone_extra_reported_minutes from cloud_accounts where user_id = ?", OWNER);
-
-  it.each([
-    {
-      name: "minutes past the plan this period, sent once however often the meter runs",
-      seed: () => { seedPhoneAccount(); seedPhone("ses_a", 312); },
-      act: async () => {},
-      reports: [[`ade-phone:cus_1:${PERIOD}:from-0`, 12]],
-      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 12 },
-    },
-    {
-      // The apps show the test's 1000 as included; billing past the plan's 300 would charge for those.
-      name: "under a test's iPhone minutes (the account test tool) extra minutes can't be turned on, so nothing past the plan is billed",
-      seed: () => { seedPhoneAccount({ test_phone_minutes: 1000, phone_extra_enabled: 0 }); seedPhone("ses_a", 312); },
-      act: () => expect(setExtraPhoneMinutes(harness.env, OWNER, { enabled: true, monthlyLimitCents: null }, clock)).rejects.toMatchObject({ code: "plan_test", status: 409 }),
-      reports: [],
-      after: { phone_extra_enabled: 0, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
-    },
-    {
-      name: "a lower limit stops further use but keeps the minutes already used owed",
-      seed: () => { seedPhoneAccount({ phone_extra_limit_cents: null }); seedPhone("ses_a", 340); },
-      // $0.50 allows 20 extra minutes; 40 were used under no limit.
-      act: () => setExtraPhoneMinutes(harness.env, OWNER, { enabled: true, monthlyLimitCents: 50 }, clock),
-      reports: [[`ade-phone:cus_1:${PERIOD}:from-0`, 40]],
-      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 40 },
-    },
-    {
-      name: "an ended period is billed after it ends at its own plan's minutes, after a downgrade at the renewal",
-      // Pro's 300 minutes in the old period, Plus (80) now: 400 used bills 100, never 320.
-      seed: () => { seedPhoneAccount({ paid_plan: "plus", phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 400, OLD_PERIOD + HOUR); },
-      act: async () => {},
-      reports: [[`ade-phone:cus_1:${OLD_PERIOD}:from-0`, 100]],
-      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
-    },
-    {
-      // Its minutes are in the hours (extra hours bill what goes past them): never billed a second time as iPhone minutes.
-      name: "a phone started under credits bills no iPhone minutes",
-      seed: () => { seedPhoneAccount(); seedPhone("ses_a", 312, PERIOD + HOUR, "ended", true); },
-      act: async () => {},
-      reports: [],
-      after: { phone_extra_enabled: 1, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
-    },
-    {
-      name: "a failed payment is left alone until it is paid (its period may come back)",
-      seed: () => { seedPhoneAccount({ stripe_status: "past_due", phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 400, OLD_PERIOD + HOUR); },
-      act: async () => {},
-      reports: [],
-      after: { phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_reported_minutes: 0 },
-    },
-    {
-      name: "a cancelled plan's last period is billed for the minutes used while on, then extra minutes turn off",
-      // The ended subscription's id is cleared; the customer is enough to bill it.
-      seed: () => { seedPhoneAccount({ plan: "free", stripe_status: null, stripe_subscription_id: null, phone_extra_enabled: 2, phone_extra_period_start: OLD_PERIOD, phone_extra_included: 300 }); seedPhone("ses_old", 330, OLD_PERIOD + HOUR); },
-      act: async () => {},
-      reports: [[`ade-phone:cus_1:${OLD_PERIOD}:from-0`, 30]],
-      after: { phone_extra_enabled: 0, phone_extra_period_start: PERIOD, phone_extra_reported_minutes: 0 },
-    },
-  ])("extra iPhone minutes: $name", async ({ seed, act, reports, after }) => {
-    seed();
-    await act();
-    await reportExtraPhoneMinutes(harness.env, clock);
-    await reportExtraPhoneMinutes(harness.env, clock);
-    expect(meterReports()).toEqual(reports);
-    expect(account()).toEqual(after);
-  });
-
-  it("a credits phone's billed minutes land in the account's balance once, and the account says credits", async () => {
+  it("a credits phone's billed minutes land in the account's balance once, a phone from before credits never, and the account says credits", async () => {
     seedPhoneAccount();
-    seedPhone("ses_c", 0, clock - 10 * 60_000, "live", true);
+    seedPhone("ses_c", 0, clock - 10 * 60_000, "live");
+    // A phone from before credits, this period: history only, whatever NoMac says of it later.
+    seedPhone("ses_old", 0, PERIOD + HOUR, "ended", false);
     const usedBefore = Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli);
     const at = (ms: number) => new Date(ms).toISOString();
     // NoMac has billed 2 minutes 5 seconds so far: 3 whole minutes, 3 credits.
@@ -4096,11 +4024,13 @@ describe("ADE Cloud iPhone minutes", () => {
     expect((await harness.send(OWNER, "GET", "/cloud/phone")).status).toBe(200);
     expect(Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli)).toBe(usedBefore + 3000);
     expect(harness.row("select credited_milli from cloud_phones where phone_id = 'ses_c'").credited_milli).toBe(3000);
-    await reportExtraPhoneMinutes(harness.env, clock);
-    expect(meterReports()).toEqual([]);
+    // Its end with 50 billed minutes charges nothing.
+    expect((await nomacDelivery("ses_old", PERIOD + HOUR, "phone.ended", { state: "ended", ended_at: new Date(PERIOD + 2 * HOUR).toISOString(), cost: { billed_seconds: 3000, accrued_microunits: "0" } })).status).toBe(200);
+    expect(harness.row("select state, credits, credited_milli from cloud_phones where phone_id = 'ses_old'")).toEqual({ state: "ended", credits: 0, credited_milli: 0 });
+    expect(Number(harness.row("select used_milli from cloud_accounts where user_id = ?", OWNER).used_milli)).toBe(usedBefore + 3000);
     const state = await (await harness.send(OWNER, "GET", "/cloud/account")).json() as CloudAccountState;
     expect(state.credits).toEqual({ phoneMilliPerMinute: 1000 });
-    // Its time so far counts (10 minutes running), past what NoMac has billed.
+    // Its time so far counts (10 minutes running), past what NoMac has billed; the old phone's 50 minutes never.
     expect(state.phone?.creditsUsedMilli).toBe(10_000);
     // The balance counts the 7 minutes NoMac hasn't billed yet too, so a computer can't spend them.
     const included = Number(harness.row("select included_milli from cloud_accounts where user_id = ?", OWNER).included_milli);
@@ -4122,59 +4052,25 @@ describe("ADE Cloud iPhone minutes", () => {
     });
   }
 
-  it.each([
-    // Started on iPhone minutes before the flip: the account's spent credits don't stop it.
-    { name: "a phone started before credits keeps its own minutes", credits: false, outcome: "running" },
-    { name: "a phone started under credits stops when the credits are spent", credits: true, outcome: "stopped" },
-  ])("a running phone is held to what it started on: $name", async ({ credits, outcome }) => {
-    seedPhoneAccount({ phone_extra_enabled: 0, extra_enabled: 0 });
-    // Every credit is spent.
-    harness.exec("update cloud_accounts set used_milli = included_milli + 1000 where user_id = ?", OWNER);
-    seedPhone("ses_r", 0, clock - 5 * 60_000, "live", credits);
-    liveNomacPhone("ses_r", clock - 5 * 60_000, 0);
-    expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe(outcome);
-  });
-
-  /** A signed NoMac delivery saying phone `id` (labelled for OWNER) is ready, started at `startedAt`. */
-  async function nomacReady(id: string, startedAt: number): Promise<Response> {
+  /** A signed NoMac delivery about phone `id` (labelled for OWNER), started at `startedAt`: ready, unless `type` and `session` say more. */
+  async function nomacDelivery(id: string, startedAt: number, type = "phone.ready", session: Row = {}): Promise<Response> {
     harness.env.NOMAC_WEBHOOK_SECRET = "whsec_test";
     const at = (ms: number) => new Date(ms).toISOString();
-    const raw = JSON.stringify({ id: `evt_${id}`, type: "phone.ready", data: { session: { id, state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(startedAt), ready_at: at(startedAt) } } });
+    const raw = JSON.stringify({ id: `evt_${id}_${type}`, type, data: { session: { id, state: "ready", label: `ade:${OWNER}`, device: "iphone", created_at: at(startedAt), ready_at: at(startedAt), ...session } } });
     const t = Math.floor(clock / 1000);
     const v1 = createHmac("sha256", "whsec_test").update(`${t}.${raw}`).digest("hex");
     return handleNomacWebhook(new Request("https://directory.test/cloud/nomac/webhook", { method: "POST", headers: { "nomac-signature": `t=${t},v1=${v1}` }, body: raw }), harness.env, clock);
   }
 
-  it.each([
-    // A start whose answer was lost, its phone found later by NoMac's webhook: billed as that start decided.
-    { name: "a start under credits: credits", start: 1, flips: [], expected: 1 },
-    { name: "a start on iPhone minutes (before credits reached everyone): iPhone minutes", start: 0, flips: [], expected: 0 },
-    // No record of its start (a later start replaced it): what the switch said when it started, from the change log.
-    { name: "no start record, after credits reached everyone: credits", start: null, flips: [["all", -2 * HOUR]], expected: 1 },
-    { name: "no start record, before credits reached everyone: iPhone minutes", start: null, flips: [["off", -3 * HOUR], ["all", -1 * 60_000]], expected: 0 },
-  ] as const)("a recovered phone is billed as its start decided: $name", async ({ start, flips, expected }) => {
-    seedPhoneAccount(start == null ? {} : { phone_start_credits: start, phone_start_credits_at: clock - 10 * 60_000 });
-    flips.forEach(([value, offset], index) => harness.insert("cloud_owner_log", { id: index + 1, at: clock + offset, action: "setting", user_id: null, detail: JSON.stringify({ key: "cloud_credits", value, note: null }) }));
-    expect((await nomacReady("ses_lost", clock - 9 * 60_000)).status).toBe(200);
-    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(expected);
-  });
-
-  it("a retry after a lost start keeps the first attempt's billing and allowance, though it was on iPhone minutes", async () => {
+  it("a phone found with no row (its start's answer was lost) is billed in credits", async () => {
     seedPhoneAccount();
-    // NoMac's answer to the first attempt is lost.
-    phoneStartNetwork("down");
-    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(502);
-    // That attempt was on iPhone minutes (a start from before credits reached everyone), and every credit is
-    // spent since; the retry is held to that start's minutes (not refused for credits) and gets the phone it made.
-    harness.exec("update cloud_accounts set phone_start_credits = 0, used_milli = included_milli + 1000, extra_enabled = 0 where user_id = ?", OWNER);
-    phoneStartNetwork("ok");
-    expect((await harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac"] })).status).toBe(200);
-    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_new'").credits).toBe(0);
+    expect((await nomacDelivery("ses_lost", clock - 9 * 60_000)).status).toBe(200);
+    expect(harness.row("select credits from cloud_phones where phone_id = 'ses_lost'").credits).toBe(1);
   });
 
   it("a new phone after the last one ended is billed in credits", async () => {
     seedPhoneAccount();
-    // Started on iPhone minutes before the flip; NoMac now says it has ended.
+    // A phone from before credits; NoMac now says it has ended.
     seedPhone("ses_prev", 0, clock - 30 * 60_000, "live", false);
     const at = (ms: number) => new Date(ms).toISOString();
     const reply = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -4200,7 +4096,7 @@ describe("ADE Cloud iPhone minutes", () => {
     clock = Date.UTC(2026, 11, 1, 0, 10);
     seedAccount(harness, OWNER, { plan: "free", period_start: Date.UTC(2026, 10, 1), period_end: Date.UTC(2026, 11, 1), used_milli: 50_000, earned_granted_milli: 40_000, earned_used_milli: 0 });
     harness.exec("update cloud_accounts set included_milli = 50000 where user_id = ?", OWNER);
-    seedPhone("ses_t", 0, clock - 20 * 60_000, "live", true);
+    seedPhone("ses_t", 0, clock - 20 * 60_000, "live");
     expect((await harness.send(OWNER, "GET", "/cloud/account")).status).toBe(200);
     const after = () => harness.row("select a.earned_used_milli, a.used_milli, p.credited_milli from cloud_accounts a join cloud_phones p on p.user_id = a.user_id where a.user_id = ?", OWNER);
     expect(after()).toEqual({ earned_used_milli: 20_000, used_milli: 0, credited_milli: 20_000 });
@@ -4247,7 +4143,7 @@ describe("ADE Cloud iPhone minutes", () => {
    * `none`: not on it), paid unless `free`, both providers set up.
    */
   function seedPhoneTester(pick: "nomac" | "revyl" | "auto" | "none", revylSwitch: "on" | "off", { free = false }: { free?: boolean } = {}): void {
-    seedPhoneAccount(free ? { plan: "free", stripe_status: null, stripe_subscription_id: null, phone_extra_enabled: 0 } : {});
+    seedPhoneAccount(free ? { plan: "free", stripe_status: null, stripe_subscription_id: null } : {});
     harness.env.CLOUD_PHONE_ACCESS = "beta";
     harness.env.REVYL_PARTNER_API_KEY = "rvl_test";
     harness.env.CLOUD_PHONE_REVYL = revylSwitch;
@@ -4329,9 +4225,9 @@ describe("ADE Cloud iPhone minutes", () => {
   });
 
   it("holds a running phone to what the account may still use, and the minute tick stops it then", async () => {
-    seedPhoneAccount({ phone_extra_limit_cents: null });
-    seedPhone("ses_used", 290);
-    // A phone started 5 minutes ago: Pro's 300 leave it 5 more once extra minutes go off.
+    // Extra credits off, and credits left for 5 more minutes past the 5 the running phone has used.
+    seedPhoneAccount({ extra_enabled: 0 });
+    harness.exec("update cloud_accounts set used_milli = included_milli - 5000 where user_id = ?", OWNER);
     seedPhone("ses_live", 5, clock - 5 * 60_000, "live");
     const nomacCalls: string[] = [];
     let state = "ready";
@@ -4347,7 +4243,7 @@ describe("ADE Cloud iPhone minutes", () => {
       }), { status: 200 });
     });
 
-    await setExtraPhoneMinutes(harness.env, OWNER, { enabled: false }, clock);
+    expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe("running");
     const stopAt = Number(harness.row("select stop_at from cloud_phones where phone_id = 'ses_live'").stop_at);
     expect(nomacCalls).not.toContain("DELETE");
     expect(stopAt).toBe(clock + 5 * 60_000);
@@ -5486,6 +5382,70 @@ describe("sponsored cards", () => {
     harness.exec("update cloud_computers set multiplier_milli = 500 where instance_id = ?", INSTANCE);
     expect((await owner("settings", { key: "gravity_ads", value: "off" })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(0);
+  });
+
+  it("where cards start on (the US), the person is told and can turn them off: the notice's yes holds only there, a no holds a year there and two weeks elsewhere, and a no is never turned back on by a notice", async () => {
+    const from = (country: string, method: string, path: string, body?: Row, headers: Record<string, string> = {}) => {
+      const request = new Request(`https://directory.test${path}`, {
+        method,
+        headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": "203.0.113.7", ...headers },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+      });
+      Object.defineProperty(request, "cf", { value: { country } });
+      return handleCloudRequest(request, harness.env);
+    };
+    const state = async (country: string, headers?: Record<string, string>) => ((await (await from(country, "GET", "/cloud/account", undefined, headers)).json()) as CloudAccountState).sponsored;
+    const choose = async (country: string, consent: string, headers?: Record<string, string>) => (await from(country, "PUT", "/cloud/sponsored/consent", { consent }, headers)).status;
+    const saved = () => harness.row("select consent, source, country from cloud_sponsored_consent where user_id = ?", OWNER);
+    harness.exec("delete from cloud_sponsored_consent");
+    harness.exec("update cloud_computers set multiplier_milli = 500 where instance_id = ?", INSTANCE);
+
+    // Never answered: told in the US; asked in the UK, and in the US when the browser sends Global Privacy Control.
+    expect(await state("US")).toMatchObject({ ads: true, consent: null, startsOn: true });
+    expect((await state("GB"))?.startsOn).toBeUndefined();
+    expect((await state("US", { "sec-gpc": "1" }))?.startsOn).toBeUndefined();
+    expect([await choose("GB", "notice"), await choose("US", "notice", { "sec-gpc": "1" })]).toEqual([409, 409]);
+    expect(saved()).toBeUndefined();
+    // Told in the US: the yes is saved as the notice's, Small runs free, and cards go to Gravity from there.
+    expect(await choose("US", "notice")).toBe(200);
+    expect(saved()).toEqual({ consent: "granted", source: "notice", country: "US" });
+    expect(computer(harness).multiplier_milli).toBe(0);
+    expect(((await (await from("US", "POST", "/cloud/sponsored/ad", adBody())).json()) as { ad: Row | null }).ad).toMatchObject({ brand: "Neon" });
+    // From the UK that yes doesn't hold: the person is asked, and no card goes to Gravity.
+    expect((await state("GB"))?.consent).toBeNull();
+    expect(await (await from("GB", "POST", "/cloud/sponsored/ad", adBody({ turnId: "turn-2" }))).json()).toEqual({ ad: null, reason: "consent" });
+    expect(gravityCalls).toHaveLength(1);
+    // A look from a browser that now sends Global Privacy Control: the earlier look no longer lets the Index answer its agents.
+    const seen = (headers?: Record<string, string>) => from("US", "POST", "/cloud/sponsored/seen", { instanceId: INSTANCE, device: DEVICE }, headers).then((response) => response.json());
+    expect(await seen()).toEqual({ ok: true });
+    expect(await seen({ "sec-gpc": "1" })).toEqual({ ok: false });
+    expect(harness.rows("select instance_id from cloud_sponsored_viewers where user_id = ?", OWNER)).toEqual([]);
+
+    // Turned off in the US: Small uses credits, a later notice never overwrites it, and it holds a year, whatever the switch does.
+    expect(await choose("US", "declined")).toBe(200);
+    expect(computer(harness).multiplier_milli).toBe(500);
+    expect(await choose("US", "notice")).toBe(200);
+    expect(saved()).toEqual({ consent: "declined", source: "answer", country: "US" });
+    harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + DAY);
+    clock += 364 * DAY;
+    expect((await state("US"))?.consent).toBe("declined");
+    // A year on the person is asked again, never told: a notice doesn't turn a no back on.
+    clock += DAY;
+    expect(await state("US")).toMatchObject({ consent: null });
+    expect((await state("US"))?.startsOn).toBeUndefined();
+    expect(await choose("US", "notice")).toBe(200);
+    expect(saved()).toEqual({ consent: "declined", source: "answer", country: "US" });
+    // So is a no saved before answers kept their country (asked again after two weeks).
+    harness.exec("update cloud_sponsored_consent set country = null, decided_at = ? where user_id = ?", clock - 15 * DAY, OWNER);
+    expect((await state("US"))?.startsOn).toBeUndefined();
+    // A no given in the UK is asked again after two weeks, or at once after the switch changes.
+    expect(await choose("GB", "declined")).toBe(200);
+    clock += 14 * DAY;
+    expect((await state("GB"))?.consent).toBeNull();
+    expect(await choose("GB", "declined")).toBe(200);
+    harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + 1);
+    clock += 2;
+    expect((await state("GB"))?.consent).toBeNull();
   });
 
   it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {

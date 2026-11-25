@@ -5,7 +5,6 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
-  isCurrentProcessDescendantOfPid,
   isPidAlive,
   isStaleChannelServeCommandLine,
   readPidElapsedMs,
@@ -18,6 +17,7 @@ import {
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
 } from "./common";
+import { refuseSelfServiceMutation } from "./processAncestry";
 import {
   awaitServiceHandover,
   awaitYoungBrainStart,
@@ -278,30 +278,6 @@ function listUnsupervisedServePids(command: AdeServiceCommand, socketPath: strin
   return pids;
 }
 
-function selfMutationBlocked(
-  action: "install" | "uninstall",
-  targetPath: string,
-  pids: Array<number | null>,
-  env: NodeJS.ProcessEnv,
-  run: ServiceManagerSpawnSync,
-): ServiceManagerResult | null {
-  if (env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1") return null;
-  const owner = pids.find((pid): pid is number => pid != null && isCurrentProcessDescendantOfPid({ targetPid: pid, run }));
-  if (owner == null) return null;
-  const verb = action === "install" ? "restart" : "stop";
-  return {
-    ok: false,
-    selfMutationBlocked: true,
-    serviceName: ADE_RUNTIME_SERVICE_NAME,
-    action,
-    path: targetPath,
-    message:
-      `Refusing to ${verb} ADE brain from a command running inside that brain `
-      + `(pid ${owner}). Run this from an external terminal, or set `
-      + "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
-  };
-}
-
 async function stopPids(supervisorPid: number | null, brainPid: number | null): Promise<void> {
   // The supervisor first: its trap passes the SIGTERM on to the brain and
   // waits for it, and a supervisor still running would start a new one.
@@ -428,7 +404,14 @@ export async function installDetachedRuntimeService(
   }
 
   const strays = listUnsupervisedServePids(command, paths.socketPath, [existingSupervisor, existingBrain].filter((pid): pid is number => pid != null));
-  const blocked = selfMutationBlocked("install", paths.scriptPath, [existingSupervisor, existingBrain, ...strays], env, run);
+  const blocked = refuseSelfServiceMutation({
+    action: "install",
+    path: paths.scriptPath,
+    pids: [existingBrain, existingSupervisor, ...strays],
+    env,
+    run,
+    platform: "linux",
+  });
   if (blocked) return blocked;
 
   await stopPids(existingSupervisor, existingBrain);
@@ -529,7 +512,14 @@ export async function uninstallDetachedRuntimeService(
       return listUnsupervisedServePids(command, socketPath, [supervisorPid, brainPid].filter((pid): pid is number => pid != null));
     })()
     : [];
-  const blocked = selfMutationBlocked("uninstall", paths.scriptPath, [supervisorPid, brainPid, ...strays], env, deps.spawnSync ?? spawnSync);
+  const blocked = refuseSelfServiceMutation({
+    action: "uninstall",
+    path: paths.scriptPath,
+    pids: [brainPid, supervisorPid, ...strays],
+    env,
+    run: deps.spawnSync ?? spawnSync,
+    platform: "linux",
+  });
   if (blocked) return blocked;
   await stopPids(supervisorPid, brainPid);
   for (const pid of strays) {

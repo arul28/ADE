@@ -508,7 +508,7 @@ struct AccountConnectStatusToast: View {
 /// `PRIVACY_POLICY_VERSION` (`apps/desktop/src/shared/legalLinks.ts`) so the
 /// notice shows once again. Per device: a notice, not a consent.
 enum PrivacyPolicyNotice {
-  static let version = "2026-11-24"
+  static let version = "2026-11-25"
   static let changesURL = URL(string: "https://ade-app.dev/privacy#changes")!
   static let seenVersionKey = "ade.privacyPolicyNotice.seenVersion"
 

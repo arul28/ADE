@@ -12,4 +12,4 @@ export const TERMS_URL = "https://ade-app.dev/terms";
 export const PRIVACY_URL = "https://ade-app.dev/privacy";
 /** The policy's dated list of changes. */
 export const PRIVACY_CHANGES_URL = `${PRIVACY_URL}#changes`;
-export const PRIVACY_POLICY_VERSION = "2026-11-24";
+export const PRIVACY_POLICY_VERSION = "2026-11-25";

@@ -16,7 +16,7 @@ import {
  * apps show their one-time "We updated our Privacy Policy" notice again, and add
  * a dated entry to `changelog` below.
  */
-const LAST_UPDATED = "November 24, 2026";
+const LAST_UPDATED = "November 25, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -33,7 +33,8 @@ const sponsoredSection: Section = {
   title: "Sponsored cards on the ADE Cloud Free plan",
   body: [
     "On the ADE Cloud Free plan, ADE works with Gravity (IRIS Inc., trygravity.com), its ad partner, to show sponsored cards in the ADE apps (desktop, the web app, and iPhone and iPad). A card is labeled “Sponsored” and shows under a finished reply, above the prompt box, or at the end of the reply, at most one per reply. An agent may also suggest a sponsored tool for something you need. Paid plans, chats on your own computer, and this website have no ads.",
-    "Only after you agree in ADE, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
+    "In the United States, sponsored cards start on: your first ADE Cloud chat (or Settings › ADE Cloud) tells you they are on, with a button to turn them off. Everywhere else, and whenever your browser sends a Global Privacy Control (GPC) signal, ADE asks first and cards show only after you agree.",
+    "While they are on, and only for chats running on ADE Cloud computers, ADE's server sends Gravity:",
     {
       list: [
         "the last messages of that chat (your latest request and the reply),",
@@ -47,8 +48,10 @@ const sponsoredSection: Section = {
     "When a card shows, your app loads it from Gravity's design and tells Gravity directly that the card was seen and how much of it was on screen; when you open a card, the link goes through Gravity first, so Gravity can count the click. Gravity receives your IP address and your app or browser's details with those requests.",
     "Gravity receives this as an independent controller. Under section 7 of Gravity's Terms it keeps a perpetual license to use what ADE sends, and it may not delete it when you ask. Gravity's own privacy policy is at https://trygravity.com/privacy.",
     "ADE never sends anything from chats on your own computer or from paid plans. ADE sends no file contents beyond what is in those messages.",
-    "You can turn this off in Settings › ADE Cloud by withdrawing your consent. After that, nothing is sent and no cards show.",
-    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you withdraw consent), the sponsored card shown for a reply for about a day, and daily counts of requests, cards shown and cards hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
+    "You can turn this off at any time in Settings › ADE Cloud. After that, nothing is sent and no cards show.",
+    "Under California and other US state privacy laws, sending this to Gravity for ads can be a “sale” or “sharing” of personal information. Turning sponsored cards off is how you opt out; if you do that in the United States, ADE won't ask you to turn them back on for 12 months. A browser that sends a Global Privacy Control signal never gets cards that started on by themselves: ADE asks there instead.",
+    "Notice of financial incentive: on the Free plan, Small ADE Cloud computers are free while sponsored cards are on. With them off, Small computers use credits, half a credit for each hour awake. The cards pay for that computer time, so ADE values the data above at about what that time costs. You can turn the cards off, or back on, at any time in Settings › ADE Cloud.",
+    "ADE keeps the IP address and device of your latest visit to an ADE Cloud chat (replaced on each visit, and deleted about a day after your last visit, at most 25 hours, or at once when you turn sponsored cards off), the sponsored card shown for a reply for about a day, and daily counts of requests, cards shown and cards hidden for reporting. It keeps none of your messages for this. All of it is deleted with your account.",
   ],
 };
 
@@ -66,7 +69,7 @@ const sections: Section[] = [
           "Smart decisions sends parts of your chats, the prompt you are typing, and the last lines of idle ADE terminals to a small AI model run by OpenCode or TypeSafe.",
           "Error reports can include the last lines of ADE's logs, which can hold file paths and parts of chat text.",
           "Your account server keeps the names of your computers, projects, lanes and branches, and the folder paths of your projects, so that every device you sign in on can show them.",
-          "On the ADE Cloud Free plan, after you agree, ADE sends the last messages of ADE Cloud chats, your IP address and device, and scrambled IDs to Gravity, its ad partner, to show sponsored cards. See Sponsored cards.",
+          "On the ADE Cloud Free plan, while sponsored cards are on (in the United States they start on), ADE sends the last messages of ADE Cloud chats, your IP address and device, and scrambled IDs to Gravity, its ad partner, to show sponsored cards. See Sponsored cards.",
         ],
       },
       "Product analytics never includes prompts, code, file contents or terminal output. The sections below say exactly what goes where, how long it is kept, and what you can turn off.",
@@ -266,10 +269,10 @@ const sections: Section[] = [
           "ipinfo.io and Open-Meteo — the weather widget.",
           "Vercel — hosts this website.",
           "Mintlify — serves the documentation at /docs.",
-          "Gravity (IRIS Inc.) — ADE’s ad partner for sponsored cards on the ADE Cloud Free plan, only after you agree in ADE; see Sponsored cards below.",
+          "Gravity (IRIS Inc.) — ADE’s ad partner for sponsored cards on the ADE Cloud Free plan, only while they are on; see Sponsored cards below.",
         ],
       },
-      "ADE requires PostHog and any other analytics processor to act only for ADE's analytics and not to use ADE analytics for advertising or their own profiling. ADE does not share analytics with advertisers. The only personal data ADE gives an ad partner is what “Sponsored cards on the ADE Cloud Free plan” below describes, and only after you agree in ADE.",
+      "ADE requires PostHog and any other analytics processor to act only for ADE's analytics and not to use ADE analytics for advertising or their own profiling. ADE does not share analytics with advertisers. The only personal data ADE gives an ad partner is what “Sponsored cards on the ADE Cloud Free plan” below describes, and only while those cards are on.",
     ],
   },
   sponsoredSection,
@@ -313,7 +316,7 @@ const sections: Section[] = [
           "Turn off Smart decisions, or single Smart decisions features, in Settings › Chat › Smart decisions.",
           "Stop sharing AI tool logins with ADE Cloud with “Share my sign-ins with ADE Cloud” in Settings › ADE Cloud, and remove saved logins there.",
           "Take your GitHub CLI login off your account in Settings › GitHub.",
-          "Turn off sponsored cards on the ADE Cloud Free plan by withdrawing your consent in Settings › ADE Cloud.",
+          "Turn off sponsored cards on the ADE Cloud Free plan in Settings › ADE Cloud (in the United States, this opts you out of the “sale” or “sharing” of the data they use).",
           "Remove the weather widget from the Home page, or pick a place yourself.",
           "Set DO_NOT_TRACK=1 in the environment ADE runs in to stop product analytics, error reports, automatic diagnostic reports and the daily usage report from the desktop app and its background service. The background service takes DO_NOT_TRACK from the app that installed it, so a service installed before you set it can keep sending until ADE installs the service again. ADE_SENTRY_DISABLED=1 (error reports only) and ADE_USAGE_RESEARCH=0 (the daily usage report only) work for the app you start with them, and do not reach the background service. The iPhone app and the web app have no equivalent setting today.",
           "Revoke camera, microphone or local network access in iOS Settings › ADE.",
@@ -339,6 +342,7 @@ const sections: Section[] = [
       "When ADE makes a material change, it updates this page and the date at the top, adds an entry below, and shows a one-time notice in the desktop app, ADE on the web and the iPhone app. If you keep using ADE after a change, you accept the changed policy.",
       {
         list: [
+          "November 25, 2026 — Sponsored cards on the ADE Cloud Free plan: in the United States the cards start on and you can turn them off; the section also covers Global Privacy Control and the free Small computers the cards pay for.",
           "November 24, 2026 — Added “Sponsored cards on the ADE Cloud Free plan”: Gravity is ADE’s ad partner, and that section lists what it receives.",
           "November 24, 2026 — Rewrote this policy to list everything ADE collects, without changing what ADE collects. Added: copying of GitHub CLI and AI tool logins to your account, the vaults and how they are encrypted, the sync data the account server keeps, Smart decisions and the text it sends to OpenCode and TypeSafe, the log lines attached to error reports, automatic diagnostic reports, the daily usage report, the device ID, the relay not being end-to-end encrypted, ADE Cloud data, the weather widget, and the full list of companies. Corrected earlier statements that were wrong: that prompts stay on your computer by default, that error reports do not include chat text, that diagnostic logs are shared only when you choose, that analytics starts with only a random installation ID, that the iPhone app honors an earlier opt-out, and that turning analytics off is possible in the apps.",
           "November 17, 2026 — Removed the Freebuff advertising pixel from this website, and its entry in this policy.",

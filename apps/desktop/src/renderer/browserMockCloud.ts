@@ -40,6 +40,7 @@ import {
   type CloudMachine,
   type CloudMachinesResult,
   type CloudPlanCleanup,
+  type CloudSponsoredChoice,
   type CloudSponsoredConsent,
 } from "../shared/adeCloud";
 import { githubRepoOf, type CloudLaneMachine, type CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
@@ -474,12 +475,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: left <= 0 && !fix.extraHours && (fix.earnedMilli ?? 0) <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    phone: fix.planId === "free" ? undefined : {
-      access: "on",
-      minutes: { included: plan.phoneMinutes ?? 0, used: 42, left: Math.max(0, (plan.phoneMinutes ?? 0) - 42) },
-      state: "none",
-      extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 },
-    },
+    phone: fix.planId === "free" ? undefined : { access: "on" },
     // No account disk; the plan limits computers, asleep or not, and the server names the next plan up.
     disk: { usedGb: diskUsed, limitGb: null },
     computers: {
@@ -606,26 +602,18 @@ export function applyBrowserMockCloud(ade: any): void {
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
   let state = account(fix, machines, now);
-  // Credits: the iPhone has used some of the balance; no separate extra iPhone minutes.
+  // Credits: the iPhone has used some of the balance.
   const withCredits = (next: CloudAccountState): CloudAccountState => {
     let out = next;
-    if (phoneParam && !out.phone) {
-      out = { ...out, phone: { access: "on", minutes: { included: 60, used: 12, left: 48 }, state: "none", extra: { available: false, enabled: false, centsPerMinute: null, monthlyLimitCents: null, usedMinutes: 0, usedCents: 0 } } };
-    }
+    if (phoneParam && !out.phone) out = { ...out, phone: { access: "on" } };
     if (out.phone && (providerParam === "auto" || providerParam === "nomac" || providerParam === "revyl")) {
       out = { ...out, phone: { ...out.phone, providerChoice: providerParam } };
     }
     const phoneUsed = out.phone ? Math.min(out.hours.usedMilli, Math.round(out.hours.usedMilli * 0.4)) : 0;
-    const leftMinutes = Math.floor(out.hours.leftMilli / 1000);
     return {
       ...out,
       credits: { phoneMilliPerMinute: 1000 },
-      phone: out.phone ? {
-        ...out.phone,
-        creditsUsedMilli: phoneUsed,
-        minutes: { included: Math.floor(phoneUsed / 1000) + leftMinutes, used: Math.floor(phoneUsed / 1000), left: leftMinutes },
-        extra: { ...out.phone.extra, available: false, enabled: false },
-      } : undefined,
+      phone: out.phone ? { ...out.phone, creditsUsedMilli: phoneUsed } : undefined,
     };
   };
   state = withCredits(state);
@@ -645,6 +633,10 @@ export function applyBrowserMockCloud(ade: any): void {
   });
   if (sponsoredParam === "small") {
     state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true }, catalog: smallRate(null) };
+  }
+  // `starts-on`: as `small`, from a country where cards start on (the US): the notice, not the question.
+  if (sponsoredParam === "starts-on") {
+    state = { ...state, sponsored: { ads: true, consent: null, test: true, smallNeedsCards: true, startsOn: true }, catalog: smallRate(null) };
   }
   // `&mockSponsoredFormat=below_reply|above_prompt|inline`: where the card shows (the server's `format`).
   const formatParam = param("mockSponsoredFormat");
@@ -706,9 +698,12 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
-    setSponsoredConsent: async (consent: "granted" | "declined") => {
+    setSponsoredConsent: async (choice: CloudSponsoredChoice) => {
       if (!state.sponsored) return null;
-      state = { ...state, sponsored: { ...state.sponsored, consent } };
+      // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
+      const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
+      const { startsOn: _startsOn, ...sponsored } = state.sponsored;
+      state = { ...state, sponsored: { ...sponsored, consent } };
       if (state.sponsored?.smallNeedsCards) state = { ...state, catalog: smallRate(consent) };
       for (const listener of statusListeners) listener();
       return state.sponsored ?? null;

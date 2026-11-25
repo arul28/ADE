@@ -81,9 +81,9 @@ from any machine. `ade devices` lists it only when the account has it.
 
 ```bash
 ade devices use ios@cloud       # this chat's iPhone, then the usual ade apple …
-ade apple status --text         # access, minutes left, capabilities
+ade apple status --text         # access, the minutes the credits have left, capabilities
 ```
 
 `launch` and `test` build Xcode projects from your checkout there; for Expo,
 React Native or Flutter, `ade apple install --app <Simulator .app>`. It spends
-the plan's iPhone minutes (`ade cloud status`). ade-apple has the rest.
+the account's credits, one a minute (`ade cloud status`). ade-apple has the rest.

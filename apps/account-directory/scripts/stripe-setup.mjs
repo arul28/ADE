@@ -9,19 +9,20 @@
  * What it sells (Pricing v2, 2026-11-21): Plus at $5, Pro at $20 and Max at
  * $50 a month; extra hours on their own meter, 2 cents an hour on every paid
  * plan (an hour is a Medium-hour; Small uses none), one price per plan on the
- * one meter; extra ADE Cloud iPhone minutes on a second meter, 2.5 cents a
- * minute on every paid plan (2026-11-17); and a billing portal setup (card,
- * cancel at the period end, invoices; plans change in ADE, never in the
- * portal). Extra disk is no longer sold: this script neither makes nor
- * changes its product, price or meter, which stay in Stripe as they are.
+ * one meter; and a billing portal setup (card, cancel at the period end,
+ * invoices; plans change in ADE, never in the portal). The ADE Cloud iPhone
+ * draws from the same credits, so it has no product of its own. Extra disk
+ * and the old extra iPhone minutes are no longer sold: this script neither
+ * makes nor changes their products, prices or meters, which stay in Stripe as
+ * they are.
  *
  * Each of these is its own product, because Checkout, the portal and invoices
  * name a line by its product: "ADE Cloud Plus", "ADE Cloud Pro", "ADE Cloud
- * Max", "Extra hours" and "Extra iPhone minutes", each with a short description Stripe
+ * Max" and "Extra hours", each with a short description Stripe
  * shows in full (a long one is cut off on Checkout). Managed Payments refuses
  * Checkout's `custom_text`, so the products carry every word Checkout shows.
- * Checkout sells only the plan; the extra items join a subscription when the
- * person turns them on in ADE (`billing.ts`). A rerun brings names and descriptions up to
+ * Checkout sells only the plan; the extra-hours item joins a subscription when
+ * the person turns it on in ADE (`billing.ts`). A rerun brings names and descriptions up to
  * date. A price can't change product: one found on the wrong product (or
  * shaped differently) gives its lookup key to a new one and is archived, and
  * subscriptions that already hold it keep billing on it.
@@ -42,12 +43,10 @@
  * `extraHourCents` is each plan's extra-hours price.
  */
 const PLAN_NUMBERS = {
-  plus: { hours: 100, computerLimit: 3, phoneMinutes: 80, extraHourCents: 2, cents: 500 },
-  pro: { hours: 600, computerLimit: 10, phoneMinutes: 300, extraHourCents: 2, cents: 2000 },
-  max: { hours: 1500, computerLimit: 20, phoneMinutes: 800, extraHourCents: 2, cents: 5000 },
+  plus: { hours: 100, computerLimit: 3, extraHourCents: 2, cents: 500 },
+  pro: { hours: 600, computerLimit: 10, extraHourCents: 2, cents: 2000 },
+  max: { hours: 1500, computerLimit: 20, extraHourCents: 2, cents: 5000 },
 };
-/** An extra iPhone minute's price on every paid plan: `EXTRA_PHONE_MINUTE_CENTS` in plans.ts, checked the same way. */
-const PHONE_MINUTE_CENTS = 2.5;
 /** "100 hours a month · 3 cloud computers · unlimited Small computers": short enough that Checkout shows it whole. */
 const planDescription = ({ hours, computerLimit }) =>
   `${hours.toLocaleString("en-US")} hours a month · ${computerLimit} cloud computers · unlimited Small computers`;
@@ -59,20 +58,16 @@ const planDescription = ({ hours, computerLimit }) =>
  */
 async function checkPlanNumbers() {
   let plans;
-  let phoneCents;
   try {
-    ({ CLOUD_PLANS: plans, EXTRA_PHONE_MINUTE_CENTS: phoneCents } = await import(new URL("../src/cloud/plans.ts", import.meta.url).href));
+    ({ CLOUD_PLANS: plans } = await import(new URL("../src/cloud/plans.ts", import.meta.url).href));
   } catch (error) {
     console.error(`Couldn't read src/cloud/plans.ts to check the plan numbers (needs Node 22.18 or newer): ${error instanceof Error ? error.message : error}`);
     process.exit(1);
   }
   const differences = [];
-  if (PHONE_MINUTE_CENTS !== phoneCents) {
-    differences.push(`extra iPhone minutes: this script says ${PHONE_MINUTE_CENTS} cents a minute, plans.ts says ${phoneCents}`);
-  }
   for (const [id, numbers] of Object.entries(PLAN_NUMBERS)) {
     const plan = plans[id];
-    const expected = { hours: plan.includedMilli / 1000, computerLimit: plan.computerLimit, phoneMinutes: plan.phoneMinutes, extraHourCents: plan.extraHourCents, cents: plan.priceUsd * 100 };
+    const expected = { hours: plan.includedMilli / 1000, computerLimit: plan.computerLimit, extraHourCents: plan.extraHourCents, cents: plan.priceUsd * 100 };
     for (const [field, value] of Object.entries(expected)) {
       if (numbers[field] !== value) differences.push(`${id}.${field}: this script says ${numbers[field]}, plans.ts says ${value}`);
     }
@@ -116,12 +111,6 @@ const PRODUCTS = {
     description: extraHoursDescription(),
     unitLabel: "hour",
   },
-  extraPhone: {
-    id: "ade_cloud_extra_phone",
-    name: "Extra iPhone minutes",
-    description: `Only if you turn them on · ${PHONE_MINUTE_CENTS}¢ a minute of the ADE Cloud iPhone past your plan`,
-    unitLabel: "minute",
-  },
 };
 const PLAN_LOOKUP_KEY = "ade_cloud_plan_monthly";
 const PRO_LOOKUP_KEY = "ade_cloud_pro_monthly";
@@ -134,8 +123,6 @@ const EXTRA_LOOKUP_KEYS = {
 };
 /** The hours meter's event, named before Pricing v2: it now counts Medium-hours (a meter's event can't be renamed). */
 const METER_EVENT = "ade_cloud_small_hours";
-const PHONE_LOOKUP_KEY = "ade_cloud_extra_phone_minutes_monthly";
-const PHONE_METER_EVENT = "ade_cloud_phone_minutes";
 /** Finds this script's portal setup again on a rerun. */
 const PORTAL_METADATA = "plans-v1";
 
@@ -252,15 +239,6 @@ const ensureExtraPrice = (product, meter, plan) => {
   }, (price) => price.billing_scheme === "per_unit" && Number(price.unit_amount_decimal) === Number(cents) && price.recurring?.meter === meter.id);
 };
 
-/** Extra iPhone minutes: one flat price a minute, on every paid plan. */
-const ensurePhonePrice = (product, meter) => ensurePrice(product, PHONE_LOOKUP_KEY, {
-  unit_amount_decimal: String(PHONE_MINUTE_CENTS),
-  "recurring[interval]": "month",
-  "recurring[usage_type]": "metered",
-  "recurring[meter]": meter.id,
-  nickname: "ADE Cloud extra iPhone minutes",
-}, (price) => price.billing_scheme === "per_unit" && price.currency === "usd" && price.recurring?.interval === "month" && Number(price.unit_amount_decimal) === PHONE_MINUTE_CENTS && price.recurring?.meter === meter.id);
-
 /**
  * The portal: change the card, cancel at the period end, see invoices. Plans
  * change in ADE (`billing.ts` `changePaidPlan`), never here: ADE's switch is
@@ -291,9 +269,7 @@ const product = await ensureProduct(PRODUCTS.plus);
 const proProduct = await ensureProduct(PRODUCTS.pro);
 const maxProduct = await ensureProduct(PRODUCTS.max);
 const extraProduct = await ensureProduct(PRODUCTS.extraHours);
-const phoneProduct = await ensureProduct(PRODUCTS.extraPhone);
 const meter = await ensureMeter(METER_EVENT, "ADE Cloud extra hours");
-const phoneMeter = await ensureMeter(PHONE_METER_EVENT, "ADE Cloud extra iPhone minutes");
 const planPrice = await ensurePlanPrice(product, PLAN_LOOKUP_KEY, PLAN_NUMBERS.plus.cents, "ADE Cloud Plus");
 const proPrice = await ensurePlanPrice(proProduct, PRO_LOOKUP_KEY, PLAN_NUMBERS.pro.cents, "ADE Cloud Pro");
 const maxPrice = await ensurePlanPrice(maxProduct, MAX_LOOKUP_KEY, PLAN_NUMBERS.max.cents, "ADE Cloud Max");
@@ -302,7 +278,6 @@ const extraPrices = {
   pro: await ensureExtraPrice(extraProduct, meter, "pro"),
   max: await ensureExtraPrice(extraProduct, meter, "max"),
 };
-const phonePrice = await ensurePhonePrice(phoneProduct, phoneMeter);
 const portal = await ensurePortalConfiguration();
 
 console.log(JSON.stringify({
@@ -321,7 +296,5 @@ console.log(JSON.stringify({
   STRIPE_EXTRA_HOURS_PRO_PRICE_ID: extraPrices.pro.id,
   STRIPE_EXTRA_HOURS_MAX_PRICE_ID: extraPrices.max.id,
   STRIPE_METER_EVENT: meter.event_name,
-  STRIPE_PHONE_MINUTE_PRICE_ID: phonePrice.id,
-  STRIPE_PHONE_METER_EVENT: phoneMeter.event_name,
   STRIPE_PORTAL_CONFIG_ID: portal.id,
 }, null, 2));

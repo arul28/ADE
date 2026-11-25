@@ -9,7 +9,6 @@ import {
   BACKGROUND_ITEM_BLOCKED_MESSAGE,
   currentUid,
   type BackgroundItemStatus,
-  isCurrentProcessDescendantOfPid,
   launchAgentDisabledListArgs,
   loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
@@ -30,6 +29,7 @@ import {
   terminatePidGracefullyAsync,
   type TerminatePidDeps,
 } from "./common";
+import { refuseSelfServiceMutation, withoutOwnAncestors } from "./processAncestry";
 import {
   installLaunchdWatchdogAgent,
   uninstallLaunchdWatchdogAgent,
@@ -204,55 +204,6 @@ export function parseLaunchdPrintPid(output: string): number | null {
   if (!match) return null;
   const pid = Number(match[1]);
   return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
-}
-
-function shouldAllowSelfServiceMutation(env: NodeJS.ProcessEnv): boolean {
-  return env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1";
-}
-
-function selfServiceMutationBlockedResult(args: {
-  action: "install" | "uninstall";
-  servicePath: string;
-  servicePid: number;
-}): ServiceManagerResult {
-  const verb = args.action === "install" ? "restart" : "stop";
-  return {
-    ok: false,
-    selfMutationBlocked: true,
-    serviceName: ADE_RUNTIME_SERVICE_NAME,
-    action: args.action,
-    path: args.servicePath,
-    message:
-      `Refusing to ${verb} ADE brain from a command running inside that brain ` +
-      `(pid ${args.servicePid}). Run this from an external terminal, or set ` +
-      "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
-  };
-}
-
-function selfServiceMutationBlock(args: {
-  action: "install" | "uninstall";
-  loadedPid: number | null | undefined;
-  servicePath: string;
-  run: ServiceManagerSpawnSync;
-  env: NodeJS.ProcessEnv;
-  currentPid?: number;
-  parentPid?: (pid: number) => number | null;
-}): ServiceManagerResult | null {
-  const servicePid = args.loadedPid ?? null;
-  if (!servicePid || shouldAllowSelfServiceMutation(args.env)) return null;
-  if (!isCurrentProcessDescendantOfPid({
-    targetPid: servicePid,
-    run: args.run,
-    currentPid: args.currentPid,
-    parentPid: args.parentPid,
-  })) {
-    return null;
-  }
-  return selfServiceMutationBlockedResult({
-    action: args.action,
-    servicePath: args.servicePath,
-    servicePid,
-  });
 }
 
 /**
@@ -559,26 +510,40 @@ export async function installLaunchdService(
     // The young child died while we waited: fall through and (re)start it.
     loaded = getLoadedLaunchdState(run);
   }
-  const selfBlock = selfServiceMutationBlock({
-    action: "install",
-    loadedPid: loaded?.pid,
-    servicePath,
-    run,
-    env,
-    currentPid: deps.currentPid,
-    parentPid: deps.parentPid,
-  });
-  if (selfBlock) return selfBlock;
-
+  // Every brain this install may stop, read before anything is stopped: the
+  // loaded child, stale same-channel serve processes (reaped below), and a
+  // same-channel brain holding the mobile-sync singleton.
+  const staleMatch = {
+    cliScriptPath: resolveAdeServeCliScriptPath(command),
+    primarySocketPath: socketPath,
+    excludePids: loaded?.pid ? [loaded.pid] : [],
+  };
+  const staleBeforeStop = listStaleChannelServePids(run, staleMatch, "darwin");
   // From here on the service is being (re)started, so this install is the
   // channel's lifecycle authority. Same-channel brains holding the mobile
   // sync singleton are stale siblings of the service being installed and are
   // reaped; a brain from another channel keeps sync ownership and fails the
   // install so a beta update can never tear down the stable host.
   const conflict = detectSyncHostSingletonConflict(deps.syncHostSingletonDeps);
+  const ownEnv = command.env ? { ...env, ...command.env } : env;
+  const conflictIsOwnChannel = conflict ? isSameChannelSyncHostOwner(conflict.owner, ownEnv) : false;
+  const selfBlock = refuseSelfServiceMutation({
+    action: "install",
+    path: servicePath,
+    pids: [
+      loaded?.pid,
+      ...(staleBeforeStop.ok ? staleBeforeStop.pids : []),
+      conflictIsOwnChannel ? conflict?.owner.pid : null,
+    ],
+    env,
+    run,
+    platform: "darwin",
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  if (selfBlock) return selfBlock;
   if (conflict) {
-    const ownEnv = command.env ? { ...env, ...command.env } : env;
-    if (!isSameChannelSyncHostOwner(conflict.owner, ownEnv)) {
+    if (!conflictIsOwnChannel) {
       // Keep the channel-owned launch-agent definition current even while a
       // different channel owns the machine-wide mobile-sync singleton. Older
       // Beta builds could leave com.ade.runtime.beta pointing into ADE.app;
@@ -611,15 +576,22 @@ export async function installLaunchdService(
   // previous service child plus any stale same-channel serve processes
   // before loading the replacement.
   await terminatePidGracefullyAsync(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps, socketPath));
-  // A failed scan is not "nothing to reap"; on macOS `ps` is part of the base
-  // system, so a failure here means the host is broken in a way this install
-  // cannot repair. Reaping nothing preserves the pre-existing behaviour.
-  const staleScan = listStaleChannelServePids(run, {
-    cliScriptPath: resolveAdeServeCliScriptPath(command),
-    primarySocketPath: socketPath,
-    excludePids: loaded?.pid ? [loaded.pid] : [],
-  }, "darwin");
-  for (const pid of staleScan.ok ? staleScan.pids : []) {
+  // Scanned again rather than reusing the list above: a POSIX kill has no
+  // identity check, and a pid from before the stops may name another process
+  // by now. A failed scan is not "nothing to reap"; on macOS `ps` is part of
+  // the base system, so a failure here means the host is broken in a way this
+  // install cannot repair. Reaping nothing preserves the pre-existing behaviour.
+  // This scan ran after the refusal, so a brain it finds that the refusal did
+  // not see (the first scan failed, or the brain started since) is checked here.
+  const staleScan = listStaleChannelServePids(run, staleMatch, "darwin");
+  const reapable = withoutOwnAncestors(staleScan.ok ? staleScan.pids : [], {
+    env,
+    run,
+    platform: "darwin",
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  for (const pid of reapable) {
     await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps, socketPath));
   }
   let load = loadLaunchAgent(servicePath, ADE_RUNTIME_SERVICE_NAME, run);
@@ -742,12 +714,13 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
   const env = deps.env ?? process.env;
   const servicePath = launchAgentPath(deps.homeDir);
   const loaded = getLoadedLaunchdState(run);
-  const selfBlock = selfServiceMutationBlock({
+  const selfBlock = refuseSelfServiceMutation({
     action: "uninstall",
-    loadedPid: loaded?.pid,
-    servicePath,
-    run,
+    path: servicePath,
+    pids: [loaded?.pid],
     env,
+    run,
+    platform: "darwin",
     currentPid: deps.currentPid,
     parentPid: deps.parentPid,
   });

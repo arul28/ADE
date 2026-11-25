@@ -893,10 +893,10 @@ client version and for work nobody watches
   with `platform` (`darwin`, `win32`, `linux`) when known. One per account,
   step and day.
 - **`ade_cloud_phone`** (`phones.ts`): the ADE Cloud iPhone. `step` is
-  `started` (with `plan`, `device`, `minutesLeft` and whether it runs on extra
-  minutes), `ended` (with `reason`, NoMac's end reason, and `billedMinutes`)
-  or `refused` (with `reason`: `paused`, `free_cap`, `phone_free_held`,
-  `phone_minutes_out`, `phone_extra_limit`). One per account, step and phone
+  `started` (with `plan`, `device`, `minutesLeft`, the minutes the credits
+  left allow, and whether it runs on extra credits), `ended` (with `reason`,
+  NoMac's end reason, and `billedMinutes`) or `refused` (with `reason`:
+  `paused`, `free_cap`, `phone_credits_out`). One per account, step and phone
   (hashed into the uuid, never sent); a refusal once per reason and hour. No
   phone id, label, link or token is sent. Server log lines:
   `cloud.phone_started`, `cloud.phone_stopped` (with `why`),

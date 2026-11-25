@@ -160,7 +160,7 @@ import type {
   CtoCloudHomeEvent,
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
-import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredConsent, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
@@ -385,6 +385,7 @@ import type {
   ArchiveLaneArgs,
   AutomationDeleteRuleRequest,
   AutomationIngressEventRecord,
+  AutomationCapabilities,
   AutomationIngressStatus,
   AutomationLinearIngressStatus,
   AutomationScheduledCleanup,
@@ -7395,6 +7396,12 @@ const adeBridge = {
     getIngressStatus: async (pin?: OpenProjectBinding | null): Promise<AutomationIngressStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "automations", "getIngressStatus", {}, () =>
         ipcRenderer.invoke(IPC.automationsGetIngressStatus),
+      ),
+    // An older brain has no such action and refuses it (`action_not_callable`);
+    // the builder then falls back to the version table.
+    getCapabilities: async (pin?: OpenProjectBinding | null): Promise<AutomationCapabilities> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "automations", "getCapabilities", {}, () =>
+        ipcRenderer.invoke(IPC.automationsGetCapabilities),
       ),
     refreshWebhookGatewayStatus: async (pin?: OpenProjectBinding | null): Promise<AutomationWebhookGatewayStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "automations", "refreshWebhookGatewayStatus", {}, () =>
@@ -14513,7 +14520,7 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
-    setSponsoredConsent: (consent: CloudSponsoredConsent): Promise<CloudSponsoredState | null> => ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent }),
+    setSponsoredConsent: (consent: CloudSponsoredChoice): Promise<CloudSponsoredState | null> => ipcRenderer.invoke(IPC.cloudSponsoredConsent, { consent }),
     sponsoredSeen: (input: CloudSponsoredSeenRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredSeen, input),
     sponsoredHide: (input: CloudSponsoredHideRequest): Promise<void> => ipcRenderer.invoke(IPC.cloudSponsoredHide, input),
     sponsoredAd: (input: CloudSponsoredAdRequest): Promise<CloudSponsoredAdAnswer> => ipcRenderer.invoke(IPC.cloudSponsoredAd, input),

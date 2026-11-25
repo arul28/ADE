@@ -1,6 +1,8 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowSquareOut, Clock, CreditCard, Desktop, Info, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
-import { setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
+import { noteSponsoredNoticeShown, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
+import { useOnScreen } from "../../chat/sponsored/sponsoredOnScreen";
+import { useDocumentVisible } from "../../chat/sponsored/useSponsoredViewer";
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   CLOUD_SMALL_FAIR_USE_SENTENCE,
@@ -39,6 +41,10 @@ import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
 import { useStillWhenHidden } from "./CloudSky";
 import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "./cloudPlanMoveUp";
 import "./cloudPlans.css";
+
+/** What sponsored cards are and what Gravity gets, as the chat's question and notice say it. */
+const SPONSORED_SETTINGS_WHAT =
+  "Free ADE Cloud chats can show one sponsored card with a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email.";
 
 /** The extra credits switch on this card: the hero's "Past your plan" links here. */
 export const CLOUD_EXTRA_ANCHOR = "cloud-extra";
@@ -95,6 +101,21 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // Shown where cards can show, and to an account that said yes, so a paid
   // plan can still take that yes back before a move to Free.
   const sponsoredToggle = sponsored && (sponsored.ads || sponsored.consent === "granted") ? sponsored : null;
+  // Where cards start on, this row is the notice that they are on (with the switch to turn them off): seen, it is saved.
+  const sponsoredStartsOn = sponsoredToggle?.startsOn === true && sponsoredToggle.consent === null;
+  const sponsoredOn = sponsoredToggle?.consent === "granted" || sponsoredStartsOn;
+  // Seen (the row on screen, the window in front), the row is the notice: saved once. Its words
+  // stay while this page is open, after the save turned the answer into a yes.
+  const sponsoredRowRef = useRef<HTMLDivElement | null>(null);
+  const sponsoredRowOnScreen = useOnScreen(sponsoredRowRef, 0.5, sponsoredStartsOn);
+  const windowVisible = useDocumentVisible();
+  const sponsoredRowSeen = sponsoredRowOnScreen && windowVisible;
+  const [toldHere, setToldHere] = useState(false);
+  useEffect(() => {
+    if (!sponsoredStartsOn || !sponsoredRowSeen) return;
+    setToldHere(true);
+    noteSponsoredNoticeShown();
+  }, [sponsoredStartsOn, sponsoredRowSeen]);
   // Where the ad switch reaches this account (`sponsored` is sent), Free's Small is unlimited only with sponsored cards on.
   const freeSmallNeedsCards = sponsored != null;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
@@ -400,22 +421,22 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
         {extraHours.available || sponsoredToggle || providerPick ? (
           <div className="adecd-addons">
             {sponsoredToggle ? (
-              <div className="kit-panel adecd-addon" data-on={sponsoredToggle.consent === "granted" || undefined}>
+              <div ref={sponsoredRowRef} className="kit-panel adecd-addon" data-on={sponsoredOn || undefined}>
                 <div className="adecd-addon-top">
                   <span className="adecd-addon-icon"><Megaphone size={15} weight="duotone" /></span>
                   <b>Sponsored cards</b>
                   <SettingsToggle
-                    checked={sponsoredToggle.consent === "granted"}
+                    checked={sponsoredOn}
                     disabled={busy}
                     label="Sponsored cards"
                     onChange={(enabled) => void run(() => setCloudSponsoredConsent(enabled ? "granted" : "declined"))}
                   />
                 </div>
                 <small className="adecd-addon-state">
-                  {sponsoredToggle.consent !== "granted"
-                    ? "Off. If you turn it on, a Free ADE Cloud chat can show one sponsored card under a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. Sponsored cards are for people 18 or older."
+                  {!sponsoredOn
+                    ? `Off. If you turn it on, ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
                     : sponsoredToggle.ads
-                      ? "On. A Free chat on ADE Cloud can show one sponsored card under a finished reply. Gravity, our ad partner, picks it from your last message and the reply."
+                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
                 </small>
                 {sponsoredToggle.smallNeedsCards ? (

@@ -19,7 +19,7 @@ const sections: Array<{ title: string; body: string[] }> = [
     title: "Your account and your data",
     body: [
       "ADE needs an account. You are responsible for what happens under your account and for keeping your sign-in methods safe.",
-      "You let ADE handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your ADE account so your other computers and ADE Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and ADE Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, on the ADE Cloud Free plan after you agree, sending parts of ADE Cloud chats to Gravity for sponsored cards.",
+      "You let ADE handle your data as the Privacy Policy describes. That includes: saving your GitHub CLI login and the logins of AI coding tools on your computers to your ADE account so your other computers and ADE Cloud can use them; sending short parts of your chats and terminals to the Smart decisions model; keeping the sync data and ADE Cloud data the policy lists; sending product analytics, error reports and diagnostic reports; and, on the ADE Cloud Free plan while sponsored cards are on, sending parts of ADE Cloud chats to Gravity for those cards.",
       "You can turn off the features that have a switch, as the Privacy Policy's “Your choices” section says, and you can delete your account at any time.",
     ],
   },
@@ -89,9 +89,11 @@ export function TermsPage() {
                 <div className="text-sm font-semibold text-fg">ADE Cloud: ads, age and fair use</div>
                 <div className="mt-2 space-y-3 text-sm leading-relaxed text-muted-fg">
                   <p>
-                    The ADE Cloud Free plan is ad-supported. After you agree in ADE, chats on ADE Cloud computers may
-                    show a sponsored card from Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent
-                    may suggest a sponsored tool. Chats on your own computer and paid plans have no ads.{" "}
+                    The ADE Cloud Free plan is ad-supported. Chats on ADE Cloud computers may show a sponsored card from
+                    Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
+                    tool. In the United States the cards start on and ADE tells you so; elsewhere they show only after
+                    you agree. You can turn them off at any time in Settings › ADE Cloud; Small computers on Free then
+                    use credits. Chats on your own computer and paid plans have no ads.{" "}
                     <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
                       The Privacy page
                     </a>{" "}

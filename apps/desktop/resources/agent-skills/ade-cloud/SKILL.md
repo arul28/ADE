@@ -1,6 +1,6 @@
 ---
 name: ade-cloud
-description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, computers and the plan's computer limit, credits, ADE Cloud iPhone (iOS Simulator) minutes, every plan's price and what it includes, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane at the size the work needs (Android, Docker), explain a refusal, propose a cleanup (`ade cloud lanes --stale`, then free or delete a lane), manage the lanes, saved chats, CLI copies, backups and server jobs of the account, manage the computers (list, sleep, wake, a resize request, work-state, clear caches, delete). Agents start lanes; they never make a computer. Also on an ADE Cloud computer, before you suggest a hosted service or tool the person needs and has not set up yet (a database, an email API, auth): `ade cloud recommend`."
+description: "Before any ADE Cloud work via `ade cloud`, and when this computer needs more free disk (grow it with `ade cloud resize --free`): the account (plan, computers and the plan's computer limit, credits and what the ADE Cloud iPhone (iOS Simulator) used of them, every plan's price and what it includes, lanes, sizes, agent limits, whether a new lane can start), start, follow, retry or cancel a cloud lane at the size the work needs (Android, Docker), explain a refusal, propose a cleanup (`ade cloud lanes --stale`, then free or delete a lane), manage the lanes, saved chats, CLI copies, backups and server jobs of the account, manage the computers (list, sleep, wake, a resize request, work-state, clear caches, delete). Agents start lanes; they never make a computer. Also on an ADE Cloud computer, before you suggest a hosted service or tool the person needs and has not set up yet (a database, an email API, auth): `ade cloud recommend`."
 ---
 
 # ADE Cloud
@@ -82,8 +82,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 | agents may pick up to a size | Pick an allowed size, or ask the person. |
 | ADE has no chat to ask you in | See the terminal rule in section 2. |
 | the person said no, or nobody answered | Stop. Don't ask again in a loop. |
-| iPhone minutes are used up | Tell the person, with the reset day. A paid plan can turn on extra credits in Settings › ADE Cloud; the free plan picks a plan. |
-| iPhone minutes need the same check as its free hours | As the GitHub rows above. |
+| credits are used up, and the iPhone uses one a minute | Tell the person, with the reset day. A paid plan can turn on extra credits in Settings › ADE Cloud; the free plan picks a plan. |
 | already holds a lane, or belongs to the archived lane | Start a new lane on ADE Cloud, or the person restores that lane. |
 | a launch step failed | Run it again with the same `--launch-id`. |
 | Agents don't make ADE Cloud computers | Start a lane on ADE Cloud with the size the work needs (section 2). A computer with no lane is the person's to make, in Settings › ADE Cloud. |

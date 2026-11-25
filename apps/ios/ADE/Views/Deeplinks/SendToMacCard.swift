@@ -15,6 +15,7 @@ struct SendToMacTarget: Equatable, Identifiable {
     case repoBranch(owner: String, repo: String, branch: String)
     case pr(owner: String, repo: String, number: Int)
     case linearIssue(identifier: String, branch: String?)
+    case automationRun(ruleId: String, runId: String)
     case other
   }
 
@@ -100,6 +101,14 @@ struct SendToMacTarget: Equatable, Identifiable {
       } else {
         self.kind = .other
       }
+    case "automation-run":
+      if parts.count == 2,
+         ADEDeepLinkURLParsing.isValidOpaqueId(parts[0]),
+         ADEDeepLinkURLParsing.isValidOpaqueId(parts[1]) {
+        self.kind = .automationRun(ruleId: parts[0], runId: parts[1])
+      } else {
+        self.kind = .other
+      }
     case "linear-issue":
       // `ade://linear-issue/<ADE-123>[?branch=<branch>]` — Linear hand-off.
       // The branch hint is optional; the desktop resolves the actual lane
@@ -157,6 +166,10 @@ struct SendToMacTarget: Equatable, Identifiable {
         return .other
       }
       return .pr(owner: repo.owner, repo: repo.repo, number: number)
+    case "automation-run":
+      guard let rule = query["rule"], ADEDeepLinkURLParsing.isValidOpaqueId(rule),
+            let run = query["id"], ADEDeepLinkURLParsing.isValidOpaqueId(run) else { return .other }
+      return .automationRun(ruleId: rule, runId: run)
     case "linear-issue":
       guard let identifier = query["issue"], !identifier.isEmpty else { return .other }
       let branch = query["branch"]?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -181,6 +194,7 @@ struct SendToMacTarget: Equatable, Identifiable {
     case .repoBranch(_, _, _): return "Branch shared with you"
     case .pr: return "Pull request shared with you"
     case .linearIssue: return "Linear issue shared with you"
+    case .automationRun: return "Automation run"
     case .other: return "Shared from your computer"
     }
   }
@@ -218,6 +232,8 @@ struct SendToMacTarget: Equatable, Identifiable {
         return "\(identifier) on \(branch)"
       }
       return identifier
+    case .automationRun:
+      return "Open its history in Automations on your computer."
     case .other:
       return url.absoluteString
     }
@@ -241,6 +257,8 @@ struct SendToMacTarget: Equatable, Identifiable {
       return envelope?.repoSlug == nil
     case .file, .repoBranch, .pr, .linearIssue, .other:
       return true
+    case .automationRun:
+      return false
     }
   }
 
@@ -342,6 +360,7 @@ struct SendToMacCard: View {
     case .repoBranch: return "arrow.triangle.branch"
     case .pr: return "arrow.triangle.merge"
     case .linearIssue: return "smallcircle.filled.circle"
+    case .automationRun: return "bolt.circle"
     case .other: return "link"
     }
   }

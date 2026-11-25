@@ -88,13 +88,13 @@ export function nextAbilities(env: CloudEnv, picked: CloudPhoneProvider | null):
  * nobody drove has ended on its idle limit (a start's few minutes plus
  * `CLOUD_PHONE_IDLE_SECONDS`).
  */
-export const UNSURE_START_MS = 15 * 60_000;
+const UNSURE_START_MS = 15 * 60_000;
 
 /** The account's lost start (migration 0057): the provider and when. */
 type UnsureStart = { phone_start_unsure?: string | null; phone_start_unsure_at?: number | null };
 
 /** A start whose answer was lost may still have a phone coming up: the next start is its retry. */
-export const unsureStartHeld = (account: UnsureStart, now: number): boolean =>
+const unsureStartHeld = (account: UnsureStart, now: number): boolean =>
   isCloudPhoneProvider(account.phone_start_unsure) && (account.phone_start_unsure_at ?? 0) > now - UNSURE_START_MS;
 
 /** The route held to the provider a lost start may have made a phone at, or refused when it can't go there. */

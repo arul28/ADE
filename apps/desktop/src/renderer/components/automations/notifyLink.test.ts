@@ -21,6 +21,7 @@ describe("notification step link picker", () => {
     ["a file line in a lane", { kind: "file", fields: { path: "apps/desktop/src/main.ts", line: "40", laneId: "ce3acd58-0736-4316-af65-1dd2dcaf2bba" } }, "ade://file/apps/desktop/src/main.ts?line=40&lane=ce3acd58-0736-4316-af65-1dd2dcaf2bba"],
     ["a commit", { kind: "commit", fields: { sha: "708b303ee" } }, "ade://commit/708b303ee"],
     ["a branch with a slash and a space", { kind: "branch", fields: { repo: "arul28/ADE", branch: "ade/feature x" } }, "ade://repo/arul28/ADE/branch/ade/feature%20x"],
+    ["this run's history", { kind: "run", fields: {} }, "ade://automation-run/{{run.automationId}}/{{run.id}}?session={{run.chatSessionId}}"],
     ["proof", { kind: "proof", fields: { artifactId: "34b93299-f559-4318-8142-6c31e2b847b3" } }, "ade://artifact/34b93299-f559-4318-8142-6c31e2b847b3"],
   ])("builds %s, which opens and reads back unchanged", (_name, link, built) => {
     expect(buildNotifyLink(link)).toBe(built);
