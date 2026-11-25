@@ -4,7 +4,7 @@ import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 import { themeTintedByScene } from "../../scene/sceneTheme";
 import { useSceneDocumentSync } from "../../scene/useScene";
 import { applyAdeTheme } from "../../theme/applyTheme";
-import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { syncNativeTitleBar } from "../../lib/windowControlsOverlay";
 
 /**
  * Paints the theme and the scene onto <html> together, so neither can
@@ -28,7 +28,7 @@ export function ThemeDocumentSync() {
     applyAdeTheme(resolved);
     // The Windows caption strip is painted by the OS from a colour ADE hands
     // it, so it does not inherit `data-theme` the way the header does.
-    syncWindowsTitleBarOverlay({ theme: resolved.theme.baseMode });
+    syncNativeTitleBar({ theme: resolved.theme.baseMode });
   }, [themeId, customThemes, tint]);
   return null;
 }

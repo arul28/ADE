@@ -9,7 +9,7 @@ import {
   displayZoomToLevel,
   getStoredZoomLevel,
 } from "./zoom";
-import { syncWindowsTitleBarOverlay } from "./windowControlsOverlay";
+import { syncNativeTitleBar } from "./windowControlsOverlay";
 
 /**
  * The window zoom, shared by every control that changes it: the View menu and
@@ -36,9 +36,9 @@ export function setAppZoom(displayZoom: number): void {
     // localStorage can be unavailable in hardened contexts.
   }
   applyShellHeaderInset(clamped);
-  // Windows twin of the traffic-light inset: the native caption strip is
-  // sized in DIP and does not follow renderer zoom on its own.
-  syncWindowsTitleBarOverlay({ displayZoom: clamped });
+  // Native window controls are placed in DIP and do not follow renderer
+  // zoom: resize the Windows caption strip, re-centre the macOS lights.
+  syncNativeTitleBar({ displayZoom: clamped });
   currentZoom = clamped;
   for (const listener of listeners) listener();
 }
