@@ -24,6 +24,8 @@ function sqliteD1() {
   const statement = (sql: string, params: unknown[] = []) => ({
     bind: (...next: unknown[]) => statement(sql, next),
     apply: () => ({ success: true, meta: { changes: Number(db.prepare(sql).run(...params).changes) } }),
+    run: async () => statement(sql, params).apply(),
+    all: async () => ({ success: true, results: db.prepare(sql).all(...params) }),
   });
   const DB = {
     prepare: (sql: string) => statement(sql),
@@ -99,7 +101,8 @@ describe("deleted account purge", () => {
     expect(await purgeDeletedAccounts(env, NOW + 20 * MINUTE)).toBe(1);
 
     expect(secrets).toEqual(["wake-secret", "wake-secret", "wake-secret", "wake-secret"]);
-    expect(mentions(data, GONE)).toEqual([]);
+    // Only the purge record names the account, until it goes 25 hours after the last purge.
+    expect(mentions(data, GONE)).toEqual(["deleted_account_purges.account_id"]);
     expect(mentions(data, KEPT)).toEqual(keptBefore);
     // Shared rows stay without the account: another account can link the repository or workspace again.
     expect(data.rows(`select repository_key from github_app_repositories where repository_key like '%${GONE}' order by repository_key`))
@@ -126,10 +129,25 @@ describe("deleted account purge", () => {
     expect(mentions(data, GONE)).toEqual(before);
     (env as RelayEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = "wake-secret";
 
-    // Between the repeats at 15 minutes and 75 minutes: listed, but not due.
+    expect(await purgeDeletedAccounts(env, NOW + MINUTE)).toBe(1);
+    expect(mentions(data, GONE)).toEqual(["deleted_account_purges.account_id"]);
+    // Purged since the last repeat: not due again until the next one.
+    expect(await purgeDeletedAccounts(env, NOW + 10 * MINUTE)).toBe(0);
+    expect(await purgeDeletedAccounts(env, NOW + 20 * MINUTE)).toBe(1);
     expect(await purgeDeletedAccounts(env, NOW + 55 * MINUTE)).toBe(0);
-    expect(mentions(data, GONE)).toEqual(before);
-    expect(await purgeDeletedAccounts(env, NOW + 80 * MINUTE)).toBe(1);
+    // An outage missed the repeat at 75 minutes: the next run after it still purges.
+    expect(await purgeDeletedAccounts(env, NOW + 4 * 60 * MINUTE)).toBe(1);
+
+    // More due accounts than one run takes: the ones skipped go first on the next run.
+    const many = Array.from({ length: 41 }, (_, n) => ({ userId: `user_many_${n}`, deletedAt: NOW }));
+    answer = () => Response.json({ accounts: many });
+    expect(await purgeDeletedAccounts(env, NOW + 2 * MINUTE)).toBe(40);
+    expect(await purgeDeletedAccounts(env, NOW + 3 * MINUTE)).toBe(1);
+    expect(await purgeDeletedAccounts(env, NOW + 4 * MINUTE)).toBe(0);
+
+    // The account has left the list: its purge record goes 25 hours after its last purge.
+    answer = () => Response.json({ accounts: [] });
+    expect(await purgeDeletedAccounts(env, NOW + 30 * 60 * MINUTE)).toBe(0);
     expect(mentions(data, GONE)).toEqual([]);
 
     answer = () => new Response("{}", { status: 503 });

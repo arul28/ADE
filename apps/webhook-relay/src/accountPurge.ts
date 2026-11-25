@@ -8,8 +8,9 @@ import type { RelayEnv } from "./shared";
  * and purges each one. An account stays on that list for a day. It is
  * purged on the first run after its deletion and again on the first run after
  * each time the directory runs the deletion again (`PURGE_AT_MS`), so rows a
- * sign-in token still valid wrote after the deletion go too. Every statement
- * is safe to repeat.
+ * sign-in token still valid wrote after the deletion go too. The relay keeps
+ * when it last purged each account (`deleted_account_purges`), so an account
+ * a run skipped is still due on the next. Every statement is safe to repeat.
  *
  * Shared rows stay without the account: a repository or Linear workspace
  * another account can link again keeps its row with the link cleared; a
@@ -24,24 +25,27 @@ const DIRECTORY_TIMEOUT_MS = 10_000;
 const DIRECTORIES = ["ACCOUNT_DIRECTORY_PRODUCTION", "ACCOUNT_DIRECTORY"] as const;
 const ACCOUNT_ID_MAX = 256;
 /**
- * When an account is purged, from its deletion: right away and after each of
- * the directory's repeats (`ACCOUNT_ERASURE_REPEATS_MS`, but before the last at
- * 24 h, when the account leaves the list). A purge runs on a cron run whose
- * time falls in `PURGE_WINDOW_MS` after one of these. The cron runs every 30
- * minutes, so the 35-minute window catches each point once or, rarely, twice.
+ * When an account is due, from its deletion: right away and after each of the
+ * directory's repeats (`ACCOUNT_ERASURE_REPEATS_MS`, but before the last at
+ * 24 h, when the account leaves the list). It stays due until a run purges it.
  */
 const PURGE_AT_MS = [0, 15 * 60_000, 75 * 60_000, 3 * 3_600_000, 23 * 3_600_000] as const;
-const PURGE_WINDOW_MS = 35 * 60_000;
-/** Accounts purged in one run: 14 statements each, far below the run's query limit. A busy day's rest waits a run. */
+/** Accounts purged in one run: 15 statements each, far below the run's query limit. The rest stay due. */
 const PURGES_PER_RUN = 40;
+/** A purge record goes this long after its purge: the account has left the list by then. */
+const PURGE_RECORD_KEEP_MS = 25 * 3_600_000;
+/** The most purge records one run reads; two days of deletions are far below it. */
+const PURGE_RECORDS_MAX = 5_000;
 
-function purgeIsDue(deletedAt: number, now: number): boolean {
-  const age = now - deletedAt;
-  return PURGE_AT_MS.some((at) => age >= at && age < at + PURGE_WINDOW_MS);
+/** The time of the latest purge point the account has reached, or null before any. */
+function latestPurgePoint(deletedAt: number, now: number): number | null {
+  let point: number | null = null;
+  for (const at of PURGE_AT_MS) if (now >= deletedAt + at) point = deletedAt + at;
+  return point;
 }
 
-/** The account's rows, in one batch per account: they all go, or none do and the next run tries again. */
-function accountPurgeStatements(db: D1Database, accountId: string): D1PreparedStatement[] {
+/** The account's rows and its purge record, in one batch: they all go, or none do and the next run tries again. */
+function accountPurgeStatements(db: D1Database, accountId: string, now: number): D1PreparedStatement[] {
   const one = (sql: string) => db.prepare(sql).bind(accountId);
   const two = (sql: string) => db.prepare(sql).bind(accountId, accountId);
   return [
@@ -59,6 +63,10 @@ function accountPurgeStatements(db: D1Database, accountId: string): D1PreparedSt
     one("update linear_agent_installs set runner_account_id = null where runner_account_id = ?"),
     one("delete from cursor_events where account_id = ?"),
     two("delete from cursor_webhook_secrets where account_id = ? or unlinked_account_id = ?"),
+    db.prepare(`
+      insert into deleted_account_purges (account_id, purged_at) values (?, ?)
+      on conflict (account_id) do update set purged_at = excluded.purged_at
+    `).bind(accountId, now),
   ];
 }
 
@@ -93,7 +101,11 @@ async function deletedAccountsOf(binding: { fetch: typeof fetch }, secret: strin
 export async function purgeDeletedAccounts(env: RelayEnv, now = Date.now()): Promise<number> {
   const secret = env.CLOUD_EVENT_WAKE_SECRET?.trim();
   if (!secret) return 0;
-  const due = new Set<string>();
+  await env.DB.prepare("delete from deleted_account_purges where purged_at < ?").bind(now - PURGE_RECORD_KEEP_MS).run();
+  const purgedAt = new Map(((await env.DB.prepare("select account_id, purged_at from deleted_account_purges limit ?")
+    .bind(PURGE_RECORDS_MAX).all<{ account_id: string; purged_at: number }>()).results ?? []).map((row) => [row.account_id, row.purged_at]));
+  /** Due accounts, each with the time it was last purged (0 for never): the longest waiting go first. */
+  const due = new Map<string, number>();
   let failure: unknown = null;
   for (const name of DIRECTORIES) {
     const binding = env[name];
@@ -110,12 +122,16 @@ export async function purgeDeletedAccounts(env: RelayEnv, now = Date.now()): Pro
       if (name === "ACCOUNT_DIRECTORY_PRODUCTION") failure ??= new Error("deleted_accounts_list_failed");
       continue;
     }
-    for (const account of listed) if (purgeIsDue(account.deletedAt, now)) due.add(account.userId);
+    for (const account of listed) {
+      const point = latestPurgePoint(account.deletedAt, now);
+      const last = purgedAt.get(account.userId) ?? 0;
+      if (point !== null && last < point) due.set(account.userId, last);
+    }
   }
-  const accounts = [...due].slice(0, PURGES_PER_RUN);
+  const accounts = [...due].sort((a, b) => a[1] - b[1]).slice(0, PURGES_PER_RUN).map(([accountId]) => accountId);
   for (const accountId of accounts) {
     try {
-      await env.DB.batch(accountPurgeStatements(env.DB, accountId));
+      await env.DB.batch(accountPurgeStatements(env.DB, accountId, now));
     } catch (error) {
       failure ??= error;
     }

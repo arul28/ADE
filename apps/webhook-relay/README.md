@@ -304,8 +304,11 @@ GET /cloud/internal/deleted-accounts   header x-ade-event-wake-secret
   after its deletion, and again on the first run after each time the
   directory runs the deletion again (15 min, 75 min, 3 h, and 23 h, before
   the account leaves the list). So rows that a sign-in token still valid
-  wrote after the deletion go too. One run purges at most 40 accounts; the
-  rest wait for the next run.
+  wrote after the deletion go too. One run purges at most 40 accounts.
+- `deleted_account_purges` keeps when the relay last purged each account. An
+  account is due until a run purges it after its latest repeat, so an
+  account that the cap or an outage skipped goes first on the next run. A
+  record goes 25 hours after its last purge.
 - A directory that does not answer is skipped with a warning and asked next
   run. A refusal from the production directory, and a failed purge, are
   reported after the other accounts ran.
