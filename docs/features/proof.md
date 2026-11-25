@@ -675,7 +675,9 @@ Renderers:
 - **Hosted web client, large files:** a picture or video over the host's 8 MiB
   whole-file read is pulled in `readArtifactRange` slices into a blob URL
   (`webclient/adapter/computerUse.ts`), up to 256 MiB; the last four stay
-  cached. Larger proof says to open it in the ADE app.
+  cached. Larger proof says to open it in the ADE app. The page's policy
+  (`webclient/public/_headers`) allows `media-src 'self' data: blob:`; with no
+  `media-src` the browser blocked every proof video on the web.
 
 ### Proof in the CTO's answer
 
@@ -687,7 +689,9 @@ the CTO chat (`cto/ctoProofShare.ts`):
   back, ADE links the proof it filed in that turn to the CTO chat
   (`broker.linkArtifactsToChat`: one more owner link, no copy) and the wake
   carries the cite lines. A tracked CLI has no turn stamps, so its newest
-  proof is shared. The record keeps its lane, so deleting the child's lane
+  proof is shared. When the report's turn id matches no proof (a fallback id
+  the broker never stamped), the newest proof the CTO chat does not hold yet
+  is shared instead. A record whose file is gone is skipped with that reason. The record keeps its lane, so deleting the child's lane
   deletes the proof here too, and the citation then says the file is gone.
 - **A child on another machine or an ADE Cloud lane.** The wake (or the
   check-in) tells the CTO to call `getChatProof({ sessionId, machine })`.
@@ -695,7 +699,7 @@ the CTO chat (`cto/ctoProofShare.ts`):
   `computer_use_artifacts.readArtifactRange` slices, then files it as the
   CTO's with `metadata.importedFrom` (machine, artifact, chat). It pulls a
   record once; a repeat call reuses the copy, which stays viewable after that
-  machine sleeps. The limit is 512 MiB per file. A machine on an older ADE
+  machine sleeps or after the file there is deleted. The limit is 512 MiB per file. A machine on an older ADE
   refuses slices to another brain, so the pull falls back to its 10 MiB
   whole-file preview and says to update it for larger files.
 - **A file the CTO or a helper made.** `showMedia({ path, caption })` files it

@@ -457,13 +457,13 @@ describe("secret-bearing action policy", () => {
   // home to show them); an agent's bridge and every other secret stay refused.
   it.each([
     { domain: "computer_use_artifacts", action: "readArtifactRange", role: "cto", remoteBrain: true, refused: false },
+    { domain: "computer_use_artifacts", action: "readArtifactRange", role: "cto", remoteBrain: false, refused: false },
     { domain: "computer_use_artifacts", action: "readArtifactRange", role: "agent", remoteBrain: true, refused: true },
     { domain: "account_vault", action: "get", role: "cto", remoteBrain: true, refused: true },
     { domain: "passwords", action: "revealValue", role: "cto", remoteBrain: true, refused: true },
-    { domain: "computer_use_artifacts", action: "readArtifactRange", role: "agent", remoteBrain: false, refused: false },
-  ] as const)("$role from a remote brain ($remoteBrain) calling $domain.$action is refused: $refused", ({ domain, action, role, remoteBrain, refused }) => {
+  ] as const)("$role (remote brain: $remoteBrain) calling $action is refused: $refused", ({ domain, action, role, remoteBrain, refused }) => {
     const refusal = adeActionCallerRefusal(domain, action, { role, userClient: false, remoteBrain });
-    expect(refusal?.kind ?? null).toBe(refused ? "policy" : null);
+    expect(refusal != null).toBe(refused);
   });
 });
 

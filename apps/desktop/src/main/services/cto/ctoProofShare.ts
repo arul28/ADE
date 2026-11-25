@@ -243,14 +243,26 @@ export async function shareChatProofWithCto(args: {
   selection: CtoProofSelection;
   scratchDir: string;
   limit?: number;
+  /** Leave out proof the CTO chat already holds (linked, or an MP4 copy of it). */
+  onlyUnshared?: boolean;
   logger?: Logger | null;
 }): Promise<CtoProofShareResult> {
-  const listed = args.broker.listArtifacts({
+  let listed = args.broker.listArtifacts({
     ownerKind: "chat_session",
     ownerId: args.chatSessionId,
     limit: 200,
     ...PROOF_LISTING_ARTIFACT_FILTER,
   });
+  if (args.onlyUnshared) {
+    const copiedFrom = new Set(
+      args.broker.listArtifacts({ ownerKind: "chat_session", ownerId: args.ctoSessionId, limit: 500, ...PROOF_LISTING_ARTIFACT_FILTER })
+        .map((row) => row.metadata?.convertedFrom)
+        .filter((id): id is string => typeof id === "string"),
+    );
+    listed = listed.filter((artifact) =>
+      !copiedFrom.has(artifact.id)
+      && !(artifact.links ?? []).some((link) => link.ownerKind === "chat_session" && link.ownerId === args.ctoSessionId));
+  }
   const { picked, more } = selectChatProof(listed, args.selection, args.limit);
   const result: CtoProofShareResult = { shown: [], skipped: [], more };
   const available = picked.filter((artifact) => {
@@ -394,16 +406,18 @@ export async function importRemoteChatProof(args: {
   const result: CtoProofShareResult = { shown: [], skipped: [], more };
   await fs.promises.mkdir(args.scratchDir, { recursive: true });
   for (const artifact of picked) {
-    if (artifact.availability && artifact.availability !== "available") {
-      result.skipped.push({ artifactId: artifact.id, title: artifact.title, reason: `its file is gone on ${args.machine.name}` });
-      continue;
-    }
+    // A copy pulled before outlives the original: it shows even after the
+    // file there is deleted or that machine goes to sleep.
     const existing = ownedCopyOf(args.broker, args.ctoSessionId, (metadata) => {
       const from = isRecord(metadata.importedFrom) ? metadata.importedFrom : null;
       return from?.artifactId === artifact.id && from?.machineId === args.machine.machineId;
     });
     if (existing) {
       result.shown.push(shown(existing, { sourceArtifactId: artifact.id }));
+      continue;
+    }
+    if (artifact.availability && artifact.availability !== "available") {
+      result.skipped.push({ artifactId: artifact.id, title: artifact.title, reason: `its file is gone on ${args.machine.name}` });
       continue;
     }
     const pulled = path.join(args.scratchDir, `${randomUUID()}${extensionFor(artifact)}`);
@@ -459,7 +473,7 @@ export function formatProofForWake(result: CtoProofShareResult): string | null {
   if (!result.shown.length && !result.skipped.length) return null;
   const lines: string[] = [];
   if (result.shown.length) {
-    lines.push("Proof it filed. Put these lines in your reply where they back what you say, so the person sees them:");
+    lines.push("Proof it filed. Reply (not noReply) with these lines where they back what you say; the person sees them only in your reply:");
     for (const item of result.shown) lines.push(item.note ? `${item.cite} (${item.note})` : item.cite);
   }
   if (result.more > 0) lines.push(`…and ${result.more} more: getChatProof with all: true lists them.`);

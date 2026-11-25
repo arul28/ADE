@@ -233,7 +233,7 @@ Every CTO turn ends one of three ways: a written reply, a reaction, or nothing. 
 Both reach Claude in-process and every other CTO provider through the ADE MCP bridge (`ade-cto_noReply`, `ade-cto_react`). Either way they land in `endCtoTurnQuietly()` and `reactToCtoMessage()` in `agentChatService`:
 
 - After either call, the rest of the turn's text is dropped at `commitChatEvent`: same turn, or untagged. What the turn had already written before the call stays.
-- Quiet ends at that turn's `done`, at the next turn's start, or when the person writes a message the turn reads.
+- Quiet ends at that turn's `done`, at the next turn's start, or when the turn reads a new message: the person's, or a wake such as a child's report that arrives while the turn still runs (Claude keeps a turn open while it waits on background work). A queued, failed or unprocessed message, a board move and an ADE resend do not end it.
 - A reaction lands on the person's newest message that the running turn has read (`ctoTurnReadsPersonMessage`): not a queued, failed or unprocessed steer, and not a message ADE wrote. An `accepted` steer counts only on Codex; on other providers the later `delivered` row counts.
 - The brain stamps a `messageId` on CTO user messages that carry no id (Codex sends none), so the message has a key to react to.
 - The target lives in memory. After a brain restart `react` refuses, and the CTO replies instead.
@@ -257,7 +257,7 @@ The doctrine keeps the CTO chat free for the person:
 - **Background helper:** research, log checks and other multi-step work that changes no repository. The CTO tells the helper not to edit files.
 - **A lane:** anything that changes a repository or needs a branch or PR, through `spawnChat`.
 
-When a helper or child reports back, the CTO passes on only what matters, in a line, or ends with `noReply`.
+When a helper or child reports back, the CTO passes on only what matters, in a line, or ends with `noReply`. A report that finishes the work and carries proof lines always gets a reply, because the person sees proof only there.
 
 **Showing proof.** The CTO puts pictures and videos in its reply as `![…](ade-proof://<id>)` lines, which play inline on desktop, web and iOS. A same-machine child's report wake carries the cite lines for the proof it filed in that turn, already linked to the CTO chat. For a child on another machine or an ADE Cloud lane, the CTO calls `getChatProof` with `machine`, which copies the files to the home. `showMedia` files a picture or video from a path. When a child's UI or remote work reports done with no proof, the CTO says what was not shown or tested. See [Proof › Proof in the CTO's answer](../proof.md#proof-in-the-ctos-answer).
 

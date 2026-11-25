@@ -52233,14 +52233,21 @@ export function createAgentChatService(args: {
     const turnId = args.spawnCompletion.childTurnId?.trim();
     const selection = turnId && managedSessions.has(args.childSessionId) ? { turnId } : "latest" as const;
     try {
-      const shared = await shareChatProofWithCto({
+      const share = (picked: typeof selection, onlyUnshared: boolean) => shareChatProofWithCto({
         broker,
         chatSessionId: args.childSessionId,
         ctoSessionId: args.parentSessionId,
-        selection,
+        selection: picked,
         scratchDir: path.join(resolveAdeLayout(projectRoot).tmpDir, "cto-proof"),
+        onlyUnshared,
         logger,
       });
+      let shared = await share(selection, selection === "latest");
+      // The report's turn id can be a fallback the broker never stamped
+      // (`event-N`); then the newest proof the CTO has not been shown yet.
+      if (selection !== "latest" && !shared.shown.length && !shared.skipped.length) {
+        shared = await share("latest", true);
+      }
       logger.info("cto.child_proof_shared", {
         parentSessionId: args.parentSessionId,
         childSessionId: args.childSessionId,
