@@ -36,6 +36,8 @@ const PENDING = new Set<AgentChatScheduledWorkItem["status"]>(["scheduled", "pau
 const FINISHED_LIMIT = 8;
 /** How long a Run now shows "Running now" before the chat takes over. */
 const RUNNING_HOLD_MS = 1_800;
+/** A title made from the whole prompt clips past about this; the details then show the prompt in full. */
+const TITLE_FITS_CHARS = 48;
 
 function clock(at: number): string {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -264,7 +266,8 @@ function RoutineRow({
           aria-controls={settings ? detailsId : undefined}
           disabled={!settings}
           onClick={() => setOpen((value) => !value)}
-          title={settings ? undefined : [title, check ? `Wakes only when \`${check}\` changes` : null].filter(Boolean).join("\n")}
+          // The lines clip, so the full text is a hover away.
+          title={[title, note?.text, !settings && check ? `Wakes only when \`${check}\` changes` : null].filter(Boolean).join("\n")}
         >
           <span className="ade-cto-routine-title">{title}</span>
           <span className="ade-cto-routine-when">
@@ -337,7 +340,7 @@ function RoutineRow({
       {settings ? (
         <div className="ade-cto-routine-details" id={detailsId} aria-hidden={!open}>
           <div className="ade-cto-routine-details-inner">
-            {prompt && prompt !== title ? <p className="ade-cto-routine-prompt">{prompt}</p> : null}
+            {prompt && (prompt !== title || prompt.length > TITLE_FITS_CHARS) ? <p className="ade-cto-routine-prompt">{prompt}</p> : null}
             {check ? (
               <div className="ade-cto-routine-check">
                 <span className="kit-eyebrow">Wakes when this changes</span>

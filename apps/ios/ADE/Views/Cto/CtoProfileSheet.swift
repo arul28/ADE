@@ -222,7 +222,8 @@ struct CtoRoutineRow: View {
     TimelineView(.everyMinute) { context in
       VStack(alignment: .leading, spacing: 10) {
         let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !prompt.isEmpty, prompt != title {
+        // A title made from a long prompt clips, so the details show the prompt in full.
+        if !prompt.isEmpty, prompt != title || prompt.count > 32 {
           Text(prompt)
             .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
