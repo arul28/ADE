@@ -5404,13 +5404,19 @@ describe("sponsored cards", () => {
     harness.exec("delete from cloud_sponsored_consent");
     harness.exec("update cloud_computers set multiplier_milli = 500 where instance_id = ?", INSTANCE);
 
-    // Never answered: told in the US; asked in the UK, in California (or a US state Cloudflare doesn't know), and in the US when the browser sends Global Privacy Control.
+    // Never answered: told in the US; asked in the UK and in California (or a US state Cloudflare doesn't know).
     expect(await state(US)).toMatchObject({ ads: true, consent: null, startsOn: true });
     for (const where of ["GB", "US-CA", "US"]) expect((await state(where))?.startsOn).toBeUndefined();
-    expect(await state(US, { "sec-gpc": "1" })).toMatchObject({ consent: null, confirmYes: true });
-    expect((await state(US, { "sec-gpc": "1" }))?.startsOn).toBeUndefined();
+    expect((await state("GB", { "sec-gpc": "1" }))?.consent).toBeNull();
     expect([await choose("GB", "notice"), await choose("US-CA", "notice"), await choose(US, "notice", { "sec-gpc": "1" })]).toEqual([409, 409, 409]);
     expect(saved()).toBeUndefined();
+    // A browser that sends Global Privacy Control from the US is a no before any answer: no notice
+    // starts cards on another device, it holds a year, and Settings says why.
+    expect(await state(US, { "sec-gpc": "1" })).toMatchObject({ consent: "declined", gpcOff: true, confirmYes: true });
+    expect(saved()).toEqual({ consent: "declined", source: "gpc", country: "US" });
+    expect(await state(US)).toMatchObject({ consent: "declined", gpcOff: true });
+    expect((await state(US))?.startsOn).toBeUndefined();
+    harness.exec("delete from cloud_sponsored_consent");
     // Told in the US: the yes is saved as the notice's, Small runs free, and cards go to Gravity from there.
     expect(await choose(US, "notice")).toBe(200);
     expect(saved()).toEqual({ consent: "granted", source: "notice", country: "US" });
@@ -5470,9 +5476,9 @@ describe("sponsored cards", () => {
     harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + 1);
     clock += 2;
     expect((await state("GB"))?.consent).toBeNull();
-    // Outside the US a yes after a no is one click.
-    expect(await choose("GB", "granted")).toBe(200);
-    expect(saved()).toEqual({ consent: "granted", source: "answer", country: "GB" });
+    // Outside the US a yes after a no is one click, and Global Privacy Control there doesn't make it one that holds over it in the US.
+    expect(await choose("GB", "granted", { "sec-gpc": "1" })).toBe(200);
+    expect(harness.row("select consent, source, country, gpc from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ consent: "granted", source: "answer", country: "GB", gpc: 0 });
     // After a no in the US a yes takes a second confirm: an app too old to ask twice can't turn cards back on in one click.
     expect(await choose(US, "declined")).toBe(200);
     expect(await state(US)).toMatchObject({ consent: "declined", confirmYes: true });
@@ -5480,6 +5486,12 @@ describe("sponsored cards", () => {
     expect(await choose(US, "granted")).toBe(409);
     expect((await from(US, "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
     expect(saved()).toEqual({ consent: "granted", source: "answer", country: "US" });
+    // The US rules are the law's: asking everyone first (the variable set empty) keeps them.
+    Object.assign(harness.env, { GRAVITY_DEFAULT_ON_COUNTRIES: "" });
+    expect(await choose(US, "declined")).toBe(200);
+    clock += 30 * DAY;
+    expect(await state(US)).toMatchObject({ consent: "declined", confirmYes: true });
+    expect(await choose(US, "granted")).toBe(409);
   });
 
   it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {

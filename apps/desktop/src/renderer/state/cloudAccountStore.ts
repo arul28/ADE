@@ -107,14 +107,14 @@ let noticeSave: Promise<void> | null = null;
  * The person was just shown that sponsored cards are on (`startsOn`): saves
  * it once, so cards and free Small follow on every machine. A save that fails
  * is an expected outcome (offline, or refused because the person's country no
- * longer starts them on, or an answer saved on another screen meanwhile): the
- * account is read again, which shows the question instead, and the next look
- * at the notice tries once more.
+ * longer starts them on, or an answer saved on another screen meanwhile):
+ * `setCloudSponsoredConsent` reads the account again, which shows the
+ * question instead, and the next look at the notice tries once more.
  */
 export function noteSponsoredNoticeShown(): void {
   if (noticeSave) return;
   noticeSave = setCloudSponsoredConsent("notice")
-    .catch(() => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines()))
+    .catch(() => undefined)
     .finally(() => {
       noticeSave = null;
     });

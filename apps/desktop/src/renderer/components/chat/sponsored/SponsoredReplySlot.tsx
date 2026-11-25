@@ -408,8 +408,8 @@ const SPONSORED_SENDS =
 
 /**
  * Turns sponsored cards on, from the question or Settings. When the server
- * says a yes needs a second confirm (`confirmYes`: the person said no before,
- * or their browser sends Global Privacy Control), it asks once more first.
+ * says a yes needs a second confirm (`confirmYes`: the person opted out in the
+ * US, or their browser's Global Privacy Control did), it asks once more first.
  */
 export async function turnOnSponsoredCards(confirmYes: boolean): Promise<void> {
   if (confirmYes) {

@@ -719,7 +719,8 @@ move keeps the old disk.
 
 ### Sponsored cards and the Index (Free, behind a switch)
 
-Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`,
+Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`;
+who is told, asked and how a no holds in `sponsoredConsent.ts`;
 migrations `0054`, `0055`, `0056`, `0062`, `0063`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
@@ -824,11 +825,15 @@ card, whatever the plan.
   (409 `sponsored_confirm`). Elsewhere a yes after a no is one click.
 - **Global Privacy Control:** `Sec-GPC: 1` from the US opts the whole
   account out (CCPA §7025): any request that reads or reports sponsored
-  state turns a yes not given from such a browser into a no
-  (`source = gpc`), deletes the viewer rows and moves Small's rate. The
-  state then says `gpcOff`, and Settings says why. A yes given from that
-  browser, past the second confirm, is saved with `gpc = 1` (migration
-  `0063`) and holds there.
+  state turns no answer, or a yes not given from such a browser, into a
+  no (`source = gpc`, held 12 months like any US no), deletes the viewer
+  rows and moves Small's rate, so no notice starts cards on another
+  device. The state then says `gpcOff`, and Settings says why. A yes
+  given from that browser, past the second confirm, is saved with
+  `gpc = 1` (migration `0063`) and holds there. The US rules (the
+  12-month hold, the second confirm, GPC) follow the law, not
+  `GRAVITY_DEFAULT_ON_COUNTRIES` (`OPT_OUT_LAW_COUNTRIES` in
+  `sponsoredConsent.ts`).
   A look at a chat keeps its state beside its country (`region`, migration
   `0063`), so the Index checks a notice's yes where the person last looked.
   Details:

@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
+import type { CloudSponsoredConsent } from "../../../../shared/adeCloud";
 import { useCloudAccount } from "../../../state/cloudAccountStore";
 import { sponsoredDevice } from "./sponsoredTurn";
 
@@ -15,6 +16,8 @@ import { sponsoredDevice } from "./sponsoredTurn";
  */
 const SEEN_EVERY_MS = 4 * 60_000;
 const lastSeenAt = new Map<string, number>();
+/** The answer the last report was throttled under: a change reports at once, a new pane doesn't. */
+let lastConsent: CloudSponsoredConsent | null | undefined;
 
 function subscribeVisibility(listener: () => void): () => void {
   document.addEventListener("visibilitychange", listener);
@@ -27,10 +30,12 @@ export function useDocumentVisible(): boolean {
 
 export function useSponsoredViewer(instanceId: string | null, enabled: boolean): void {
   const visible = useDocumentVisible();
-  // A no deletes the account's viewer rows on the server: the next yes reports at once.
+  // A new answer reports at once: a no deleted the account's viewer rows on the server, and a
+  // yes makes the look count for the Index (the one sent while unanswered was dropped).
   const consent = useCloudAccount(Boolean(instanceId))?.sponsored?.consent ?? null;
   useEffect(() => {
-    if (consent !== "granted") lastSeenAt.clear();
+    if (lastConsent !== undefined && lastConsent !== consent) lastSeenAt.clear();
+    lastConsent = consent;
   }, [consent]);
   useEffect(() => {
     if (!instanceId || !enabled || !visible) return;

@@ -114,9 +114,9 @@ the cards is a financial incentive, which needs a yes before it starts.
   no cards go to Gravity, and the person is asked.
 - A browser that sends Global Privacy Control (`Sec-GPC: 1`) is asked
   instead, never told. From the US it also opts the whole account out: the
-  first look turns a yes into a no (`source = gpc`) on every device, and
-  Settings says why. A yes then given from that browser holds there
-  (`gpc = 1`).
+  first look turns no answer or a yes into a no (`source = gpc`) on every
+  device, and Settings says why. A yes then given from that browser holds
+  there (`gpc = 1`).
 - A no given there holds 12 months (`SPONSORED_OPT_OUT_HOLD_MS`, California's
   rule), whatever the switch does. A no given anywhere else is asked again
   after two weeks, as above.
