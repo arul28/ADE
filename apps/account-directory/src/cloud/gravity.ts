@@ -273,6 +273,16 @@ const yesHolds = (env: GravityEnv, consent: ConsentRow | null, who: SponsoredReq
   consent?.consent === "granted" && (consent.source !== "notice" || startsOnFor(env, who));
 
 /**
+ * Whether a yes now needs a second, separate confirm (`confirmYes`): no yes
+ * holds, and the person said no before or their browser sends Global Privacy
+ * Control (California's two-step opt-in after an opt-out). `PUT /consent`
+ * refuses a yes without `confirmed` then, so an app too old to ask twice
+ * can't turn cards back on in one click.
+ */
+const yesNeedsConfirm = (consent: ConsentRow | null, shown: CloudSponsoredConsent | null, who: SponsoredRequester): boolean =>
+  shown !== "granted" && (consent?.consent === "declined" || who.gpc);
+
+/**
  * The answer clients see: null when the person is to be asked (or told)
  * again. A no is asked again once it is SPONSORED_REASK_MS old, or when it
  * came before the ad switch last changed (when Small began to need cards);
@@ -307,7 +317,7 @@ export async function sponsoredAccountState(env: GravityEnv, account: AccountRow
     // Not asked where cards start on: the client tells the person they are on, and saves that (`PUT /consent` `notice`).
     ...(startsOnNow(env, consent, answer, who) && reason == null ? { startsOn: true } : {}),
     // A yes after a no (theirs, or their browser's Global Privacy Control) is asked twice, as California has it.
-    ...(answer !== "granted" && (consent?.consent === "declined" || who.gpc) ? { confirmYes: true } : {}),
+    ...(yesNeedsConfirm(consent, answer, who) ? { confirmYes: true } : {}),
     test: !switches.live,
     format,
     // Only Free (or acting as it) has the deal; a paid account's Small is unlimited either way.
@@ -796,6 +806,12 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   }
   const answered = async () => json((await sponsoredAccountState(env, account, who, now)) ?? { ads: false, consent: null, test: !switches.live });
   let before: ConsentRow | null = null;
+  if (choice === "granted") {
+    before = await readConsent(env, userId);
+    if (body.confirmed !== true && yesNeedsConfirm(before, await shownAnswer(env, before, who, now), who)) {
+      return fail("confirm", "You turned sponsored cards off before, so turning them on takes a second confirm. Update ADE if it doesn't ask.", 409);
+    }
+  }
   if (choice === "notice") {
     if (!startsOnFor(env, who)) return fail("unavailable", "Sponsored cards don't start on where you are, so ADE asks first.", 409);
     before = await readConsent(env, userId);

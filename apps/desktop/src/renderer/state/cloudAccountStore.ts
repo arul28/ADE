@@ -73,12 +73,15 @@ export function noteCloudSponsoredState(next: CloudSponsoredState | null | undef
   publish({ ...account, sponsored: next });
 }
 
-/** Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save. */
-export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice): Promise<void> {
+/**
+ * Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save.
+ * `confirmed`: a yes the person confirmed a second time (`turnOnSponsoredCards`).
+ */
+export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
   const current = generation;
-  const next = await set(consent);
+  const next = await set(consent, confirmed);
   if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
   // Another account signed in meanwhile: this answer was the old account's.
   if (current !== generation) return;

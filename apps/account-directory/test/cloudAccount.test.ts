@@ -5351,7 +5351,7 @@ describe("sponsored cards", () => {
     const abroad = async () => ((await (await fromBrazil("GET", "/cloud/account")).json()) as CloudAccountState).sponsored?.ads;
     expect(await abroad()).toBe(true);
     // Its yes from abroad counts too, and frees Small; with real ads it is refused.
-    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(200);
+    expect((await fromBrazil("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
     expect(computer(harness).multiplier_milli).toBe(0);
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     goLive();
@@ -5363,7 +5363,7 @@ describe("sponsored cards", () => {
     const declined = await accountState();
     expect([declined.sponsored?.smallNeedsCards, declined.catalog.sizes.find((size) => size.tier === "small")?.multiplierMilli]).toEqual([true, 500]);
     clock += HOUR;
-    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "granted" })).status).toBe(200);
+    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
     expect([computer(harness).multiplier_milli, usedMilli(harness) - used]).toEqual([0, 500]);
     // An hour on the yes adds nothing to the meter.
     clock += HOUR;
@@ -5460,6 +5460,10 @@ describe("sponsored cards", () => {
     harness.exec("update cloud_settings set updated_at = ? where key = 'gravity_ads'", clock + 1);
     clock += 2;
     expect((await state("GB"))?.consent).toBeNull();
+    // After a no, a yes takes a second confirm: an app too old to ask twice can't turn cards back on in one click.
+    expect(await choose("GB", "granted")).toBe(409);
+    expect((await from("GB", "PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    expect(saved()).toEqual({ consent: "granted", source: "answer", country: "GB" });
   });
 
   it("forgets where people watched from a day after their last look, twice an hour, for every account", async () => {

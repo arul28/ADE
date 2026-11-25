@@ -273,7 +273,8 @@ struct CloudSponsoredCard: View {
         ADESettingsRow(title: "Sponsored cards", symbol: "megaphone") {
           Toggle("Sponsored cards", isOn: Binding(
             // Where cards start on, they read on before any answer (this card is then the notice).
-            get: { sponsored.granted || sponsored.toldOn },
+            // On while the second confirm is up, so the switch doesn't snap back under it.
+            get: { sponsored.granted || sponsored.toldOn || confirming },
             set: { on in
               if on, sponsored.confirmYes { confirming = true } else { save(on ? CloudSponsoredState.granted : CloudSponsoredState.declined) }
             }
@@ -308,7 +309,7 @@ struct CloudSponsoredCard: View {
       }
       .adeKitCard(padding: nil)
       .alert("Turn on sponsored cards?", isPresented: $confirming) {
-        Button("Turn on") { save(CloudSponsoredState.granted) }
+        Button("Turn on") { save(CloudSponsoredState.granted, confirmed: true) }
         Button("Keep them off", role: .cancel) {}
       } message: {
         Text(CloudSponsoredState.turnOnConfirm)
@@ -332,12 +333,12 @@ struct CloudSponsoredCard: View {
       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
   }
 
-  private func save(_ consent: String) {
+  private func save(_ consent: String, confirmed: Bool = false) {
     guard !saving else { return }
     saving = true
     error = nil
     Task {
-      switch await cloudSaveSponsoredConsent(consent) {
+      switch await cloudSaveSponsoredConsent(consent, confirmed: confirmed) {
       case .success(let state): saved = state
       case .failure(let failure): error = failure.message
       }

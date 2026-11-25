@@ -211,7 +211,8 @@ function SponsoredReplySlotOn({
   const seen = place === "dock" ? wanted : place === "inline" ? targetOnScreen : onScreen;
 
   // Someone is watching this computer's chat: the Index may answer its agents.
-  useSponsoredViewer(instanceId, consent === "granted" && visible);
+  // Shown only until a no (see `SponsoredReplySlot`), so it reports while unanswered too (`useSponsoredViewer`).
+  useSponsoredViewer(instanceId, visible);
 
   // One sponsored card on screen in the whole window. A pane whose place
   // another card holds doesn't even ask: its card could never show.
@@ -421,7 +422,7 @@ export async function turnOnSponsoredCards(confirmYes: boolean): Promise<void> {
     });
     if (!ok) return;
   }
-  await setCloudSponsoredConsent("granted");
+  await setCloudSponsoredConsent("granted", confirmYes);
 }
 
 type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };

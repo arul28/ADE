@@ -597,7 +597,7 @@ struct WorkSponsoredConsentCard: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored cards on ADE Cloud Free")
     .alert("Turn on sponsored cards?", isPresented: $confirming) {
-      Button("Turn on") { answer(CloudSponsoredState.granted) }
+      Button("Turn on") { answer(CloudSponsoredState.granted, confirmed: true) }
       Button("Keep them off", role: .cancel) {}
     } message: {
       Text(CloudSponsoredState.turnOnConfirm)
@@ -667,12 +667,12 @@ struct WorkSponsoredConsentCard: View {
     .frame(minHeight: 28)
   }
 
-  private func answer(_ consent: String) {
+  private func answer(_ consent: String, confirmed: Bool = false) {
     guard !busy else { return }
     busy = true
     error = nil
     Task {
-      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent) { error = failure.message }
+      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent, confirmed: confirmed) { error = failure.message }
       busy = false
     }
   }
@@ -1044,9 +1044,12 @@ struct WorkSponsoredGravityCard: View {
 // MARK: - Someone is watching (`useSponsoredViewer`)
 
 /// Draws nothing. While a chat or terminal of an ADE Cloud computer is on
-/// screen and the account said yes, tells the account server so at most
-/// every few minutes (`POST /cloud/sponsored/seen`): the Index answers an
-/// agent there only while someone watches. Its own view, so the screen that
+/// screen and the account hasn't said no, tells the account server so at
+/// most every few minutes, and at once when the answer changes (`POST
+/// /cloud/sponsored/seen`): the Index answers an agent there only while
+/// someone watches, and only while their yes holds where they are. A yes
+/// that doesn't hold here reads as unanswered, and this look clears the
+/// earlier one on the server (`useSponsoredViewer`). Its own view, so the screen that
 /// carries it doesn't redraw for the account or the app's state.
 struct WorkSponsoredViewerBeacon: View {
   /// The ADE Cloud lane computer on screen; nil on the person's own machine.
@@ -1060,7 +1063,7 @@ struct WorkSponsoredViewerBeacon: View {
 
   private var enabled: Bool {
     guard let sponsored = accountStore.account?.sponsored else { return false }
-    return sponsored.ads && sponsored.granted
+    return sponsored.ads && sponsored.consent != CloudSponsoredState.declined
   }
 
   var body: some View {
@@ -1075,7 +1078,9 @@ struct WorkSponsoredViewerBeacon: View {
         visible = false
         slot?.setChatVisible(false)
       }
-      .task(id: "\(instanceId ?? "")|\(enabled)|\(store.appActive)|\(visible)") {
+      // A changed answer reports at once (California, Global Privacy Control).
+      .onChange(of: accountStore.account?.sponsored?.consent) { store.forgetSeen() }
+      .task(id: "\(instanceId ?? "")|\(enabled)|\(store.appActive)|\(visible)|\(accountStore.account?.sponsored?.consent ?? "none")") {
         guard let instanceId, enabled, store.appActive, visible else { return }
         while !Task.isCancelled {
           await store.noteSeen(instanceId: instanceId)

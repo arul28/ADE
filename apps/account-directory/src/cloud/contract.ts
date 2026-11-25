@@ -3247,7 +3247,8 @@ export type CloudSponsoredState = {
   /**
    * A yes now needs a second, separate confirm: the person said no before, or
    * their browser sends Global Privacy Control (California's rule for opting
-   * back in to sharing). The question's yes and Settings' switch ask again.
+   * back in to sharing). The question's yes and Settings' switch ask again,
+   * and `PUT /consent` then takes a yes only with `confirmed: true`.
    */
   confirmYes?: boolean;
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */

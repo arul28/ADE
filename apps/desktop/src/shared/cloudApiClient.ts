@@ -248,8 +248,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     access: () => request<CloudAccess>("GET", CLOUD_PATHS.access),
     account: () => request<CloudAccountState>("GET", CLOUD_PATHS.account),
     /* ---- Sponsored cards and the Index (account level, `gravity.ts`) ---- */
-    /** The account's answer to the sponsored question, on every machine, or `notice`: the person was told cards are on (`startsOn`). */
-    setSponsoredConsent: (consent: CloudSponsoredChoice) => request<CloudSponsoredState>("PUT", CLOUD_PATHS.sponsoredConsent, { body: { consent } }),
+    /**
+     * The account's answer to the sponsored question, on every machine, or `notice`: the person was told cards are on (`startsOn`).
+     * `confirmed`: the person confirmed a yes a second time, which the server needs when the state says `confirmYes`.
+     */
+    setSponsoredConsent: (consent: CloudSponsoredChoice, confirmed = false) =>
+      request<CloudSponsoredState>("PUT", CLOUD_PATHS.sponsoredConsent, { body: confirmed ? { consent, confirmed } : { consent } }),
     /** A person has a chat or terminal of this ADE Cloud computer open. */
     sponsoredSeen: (input: CloudSponsoredSeenRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredSeen, { body: input }),
     sponsoredHide: (input: CloudSponsoredHideRequest) => request<{ ok: boolean }>("POST", CLOUD_PATHS.sponsoredHide, { body: input }),

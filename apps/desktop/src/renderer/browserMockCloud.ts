@@ -702,8 +702,12 @@ export function applyBrowserMockCloud(ade: any): void {
     },
     getAgentLimits: base.getAgentLimits ?? (async () => ({ maxShape: "4x8", machinesPerDay: 3, unattendedHours: true, askBeforeVm: true })),
     setAgentLimits: base.setAgentLimits ?? (async (limits: unknown) => limits),
-    setSponsoredConsent: async (choice: CloudSponsoredChoice) => {
+    setSponsoredConsent: async (choice: CloudSponsoredChoice, confirmed?: boolean) => {
       if (!state.sponsored) return null;
+      // As the server: after a no, a yes needs the second confirm.
+      if (choice === "granted" && state.sponsored.confirmYes && !confirmed) {
+        throw new Error("You turned sponsored cards off before, so turning them on takes a second confirm. Update ADE if it doesn't ask.");
+      }
       // A notice is a yes where cards start on; the account state stops saying `startsOn` once answered.
       const consent: CloudSponsoredConsent = choice === "notice" ? "granted" : choice;
       const { startsOn: _startsOn, confirmYes: _confirmYes, ...sponsored } = state.sponsored;

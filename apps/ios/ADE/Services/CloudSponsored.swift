@@ -277,7 +277,8 @@ func cloudGravityURL(_ value: String?) -> URL? {
 // MARK: - The account server's routes (account token, no pin)
 
 extension CloudServerClient {
-  private struct ConsentBody: Encodable { let consent: String }
+  /// `confirmed`: a yes confirmed a second time (`CloudSponsoredState.confirmYes`); left out otherwise.
+  private struct ConsentBody: Encodable { let consent: String; let confirmed: Bool? }
   private struct SeenBody: Encodable { let instanceId: String; let device: CloudSponsoredDevice }
   private struct HideBody: Encodable { let chatId: String; let turnId: String }
   private struct AdBody: Encodable {
@@ -295,8 +296,8 @@ extension CloudServerClient {
 
   /// `PUT /cloud/sponsored/consent`: the account's answer, on every device at
   /// once. Answers the account's sponsored state as it is now.
-  func setSponsoredConsent(_ consent: String) async throws -> CloudSponsoredState {
-    let body = try JSONEncoder().encode(ConsentBody(consent: consent))
+  func setSponsoredConsent(_ consent: String, confirmed: Bool = false) async throws -> CloudSponsoredState {
+    let body = try JSONEncoder().encode(ConsentBody(consent: consent, confirmed: confirmed ? true : nil))
     return try decode(CloudSponsoredState.self, from: try await send("PUT", "cloud/sponsored/consent", body: body))
   }
 
@@ -327,14 +328,14 @@ extension CloudServerClient {
 /// Saves the account's answer and shows it everywhere at once: the state
 /// the server answered, or the sentence to show when it didn't save.
 @MainActor
-func cloudSaveSponsoredConsent(_ consent: String) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
+func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
   guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
     return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
   }
   // The answer belongs to the account that gave it: one signed in since doesn't take it.
   let generation = AccountCloudStore.shared.generation
   do {
-    let state = try await client.setSponsoredConsent(consent)
+    let state = try await client.setSponsoredConsent(consent, confirmed: confirmed)
     // A no deletes the account's viewer rows on the server.
     if !state.granted { CloudSponsoredStore.shared.forgetSeen() }
     AccountCloudStore.shared.noteSponsored(state, generation: generation)

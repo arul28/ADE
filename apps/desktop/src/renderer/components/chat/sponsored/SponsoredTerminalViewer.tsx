@@ -11,6 +11,6 @@ import { useSponsoredViewer } from "./useSponsoredViewer";
 export function SponsoredTerminalViewer({ pin, visible }: { pin: OpenProjectBinding | null; visible: boolean }) {
   const instanceId = useAdeCloudLaneForBinding(visible ? pin : null)?.instanceId ?? null;
   const sponsored = useCloudAccount(Boolean(instanceId))?.sponsored;
-  useSponsoredViewer(instanceId, Boolean(sponsored?.ads && sponsored.consent === "granted"));
+  useSponsoredViewer(instanceId, Boolean(sponsored?.ads && sponsored.consent !== "declined"));
   return null;
 }
