@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowSquareOut, Clock, CreditCard, Desktop, Info, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
 import { noteSponsoredNoticeShown, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
+import { useOnScreen } from "../../chat/sponsored/sponsoredOnScreen";
+import { useDocumentVisible } from "../../chat/sponsored/useSponsoredViewer";
 import {
   CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   CLOUD_SMALL_FAIR_USE_SENTENCE,
@@ -102,13 +104,18 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // Where cards start on, this row is the notice that they are on (with the switch to turn them off): seen, it is saved.
   const sponsoredStartsOn = sponsoredToggle?.startsOn === true && sponsoredToggle.consent === null;
   const sponsoredOn = sponsoredToggle?.consent === "granted" || sponsoredStartsOn;
-  // The notice's words stay while this page is open, after its save turned the answer into a yes.
+  // Seen (the row on screen, the window in front), the row is the notice: saved once. Its words
+  // stay while this page is open, after the save turned the answer into a yes.
+  const sponsoredRowRef = useRef<HTMLDivElement | null>(null);
+  const sponsoredRowOnScreen = useOnScreen(sponsoredRowRef, 0.5, sponsoredStartsOn);
+  const windowVisible = useDocumentVisible();
+  const sponsoredRowSeen = sponsoredRowOnScreen && windowVisible;
   const [toldHere, setToldHere] = useState(false);
   useEffect(() => {
-    if (!sponsoredStartsOn) return;
+    if (!sponsoredStartsOn || !sponsoredRowSeen) return;
     setToldHere(true);
     noteSponsoredNoticeShown();
-  }, [sponsoredStartsOn]);
+  }, [sponsoredStartsOn, sponsoredRowSeen]);
   // Where the ad switch reaches this account (`sponsored` is sent), Free's Small is unlimited only with sponsored cards on.
   const freeSmallNeedsCards = sponsored != null;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
@@ -414,7 +421,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
         {extraHours.available || sponsoredToggle || providerPick ? (
           <div className="adecd-addons">
             {sponsoredToggle ? (
-              <div className="kit-panel adecd-addon" data-on={sponsoredOn || undefined}>
+              <div ref={sponsoredRowRef} className="kit-panel adecd-addon" data-on={sponsoredOn || undefined}>
                 <div className="adecd-addon-top">
                   <span className="adecd-addon-icon"><Megaphone size={15} weight="duotone" /></span>
                   <b>Sponsored cards</b>

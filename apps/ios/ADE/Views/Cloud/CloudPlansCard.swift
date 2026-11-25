@@ -254,6 +254,9 @@ struct CloudSponsoredCard: View {
   @State private var saved: CloudSponsoredState?
   /// This card showed the notice that cards are on: its words stay while the page is open, after the save made it a yes.
   @State private var toldHere = false
+  /// Half of this card is on screen: only then is it the notice that cards are on.
+  @State private var onScreen = false
+  @ObservedObject private var sponsoredStore = CloudSponsoredStore.shared
 
   /// The shared account's answer wins even when it is none (the switch went off).
   private var sponsored: CloudSponsoredState? {
@@ -300,11 +303,12 @@ struct CloudSponsoredCard: View {
         }
       }
       .adeKitCard(padding: nil)
-      // Shown here, the notice that cards are on is saved as the account's yes, as in a chat.
-      .task(id: sponsored.toldOn) {
-        guard sponsored.toldOn else { return }
+      // Seen here, the notice that cards are on is saved as the account's yes, as in a chat.
+      .onScrollVisibilityChange(threshold: 0.5) { onScreen = $0 }
+      .task(id: "\(sponsored.toldOn)|\(onScreen)|\(sponsoredStore.appActive)") {
+        guard sponsored.toldOn, onScreen, sponsoredStore.appActive else { return }
         toldHere = true
-        CloudSponsoredStore.shared.noteNoticeShown()
+        sponsoredStore.noteNoticeShown()
       }
     }
   }

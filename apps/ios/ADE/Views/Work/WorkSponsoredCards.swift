@@ -233,9 +233,9 @@ struct WorkSponsoredReplySlot: View {
     .task(id: "\(showing != nil)|\(store.holder ?? "")") {
       if showing != nil { store.hold(sessionId) } else { store.release(sessionId) }
     }
-    // The notice, shown: kept on this reply and saved once as the account's yes.
-    .task(id: "\(turnKey)|\(store.holder == sessionId && showing == .consent(notice: true))|\(sponsored?.toldOn == true)") {
-      guard store.holder == sessionId, showing == .consent(notice: true), sponsored?.toldOn == true else { return }
+    // The notice, seen (on screen): kept on this reply and saved once as the account's yes.
+    .task(id: "\(turnKey)|\(store.holder == sessionId && showing == .consent(notice: true))|\(sponsored?.toldOn == true)|\(slot.onScreen)") {
+      guard store.holder == sessionId, showing == .consent(notice: true), sponsored?.toldOn == true, slot.onScreen else { return }
       store.showNotice(turnKey: turnKey)
       store.noteNoticeShown()
     }
@@ -588,7 +588,7 @@ struct WorkSponsoredConsentCard: View {
   /// What a no costs, on a line of its own, and where to change it.
   private var costLine: String {
     let change = "You can change this in Settings › ADE Cloud."
-    guard smallNeedsCards else { return notice ? "You can turn them off at any time. \(change)" : change }
+    guard smallNeedsCards else { return change }
     return "\(notice ? "Turn them off" : "Say no") and \(words.smallWithoutCards). \(change)"
   }
 

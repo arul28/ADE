@@ -361,9 +361,7 @@ function SponsoredConsentCard({ smallNeedsCards, format, notice, onDismiss }: {
         {what}{notice && smallNeedsCards ? " They keep Small computers free." : ""} {SPONSORED_SENDS}
       </p>
       <p className="ade-sponsored-cost">
-        {smallNeedsCards
-          ? `${notice ? "Turn them off" : "Say no"} and Small computers use your credits, half a credit for each hour awake.`
-          : notice ? "You can turn them off at any time." : null}{" "}
+        {smallNeedsCards ? `${notice ? "Turn them off" : "Say no"} and Small computers use your credits, half a credit for each hour awake. ` : null}
         You can change this in Settings › ADE Cloud.
       </p>
       <div className="ade-sponsored-actions">
