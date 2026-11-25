@@ -8,8 +8,8 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
 const UPDATED_DATE = "November 24, 2026";
 
-/** Plain sections at the top of the page: what you agree to when you use ADE. */
-const agreementSections: Array<{ title: string; body: string[] }> = [
+/** The plain sections of the page, in order. The ads and project-docs cards follow them. */
+const sections: Array<{ title: string; body: string[] }> = [
   {
     title: "Accepting these terms",
     body: [
@@ -42,6 +42,18 @@ const agreementSections: Array<{ title: string; body: string[] }> = [
       "ADE may change these Terms. When it does, it updates the date on this page. If you keep using ADE after a change, you accept the changed Terms.",
     ],
   },
+  {
+    title: "Software availability",
+    body: [
+      "Desktop builds are distributed via GitHub Releases. You can also build from source. Features and APIs may change as the project evolves.",
+    ],
+  },
+  {
+    title: "Responsibility",
+    body: [
+      "ADE operates on your local repository and can run commands and processes. Review changes and diffs, especially those suggested by hosted or BYOK LLM providers, before applying them.",
+    ],
+  },
 ];
 
 export function TermsPage() {
@@ -61,7 +73,7 @@ export function TermsPage() {
           </Reveal>
 
           <div className="mt-10 grid gap-6">
-            {agreementSections.map((section) => (
+            {sections.map((section) => (
               <Reveal key={section.title}>
                 <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                   <div className="text-sm font-semibold text-fg">{section.title}</div>
@@ -73,24 +85,6 @@ export function TermsPage() {
                 </div>
               </Reveal>
             ))}
-            <Reveal>
-              <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
-                <div className="text-sm font-semibold text-fg">Software availability</div>
-                <p className="mt-2 text-sm leading-relaxed text-muted-fg">
-                  Desktop builds are distributed via GitHub Releases. You can also build from source. Features and APIs may
-                  change as the project evolves.
-                </p>
-              </div>
-            </Reveal>
-            <Reveal delay={0.05}>
-              <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
-                <div className="text-sm font-semibold text-fg">Responsibility</div>
-                <p className="mt-2 text-sm leading-relaxed text-muted-fg">
-                  ADE operates on your local repository and can run commands and processes. Review changes and diffs,
-                  especially those suggested by hosted or BYOK LLM providers, before applying them.
-                </p>
-              </div>
-            </Reveal>
             {GRAVITY_ADS_ON_WEBSITE ? (
               <Reveal delay={0.08}>
                 <div className="rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">

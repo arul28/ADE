@@ -11,7 +11,6 @@ import {
 } from "./clerkFrontendApi";
 import { runClerkCaptcha, signUpNeedsCaptcha } from "./clerkCaptcha";
 import { captureError } from "../../../shared/sentry/capture";
-import { markPrivacyPolicyNoticeSeen } from "../../lib/privacyPolicyNotice";
 
 /**
  * What ADE's own sign-in card needs to run a Clerk sign-in on its page.
@@ -108,8 +107,6 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
     setStep({ kind: "finishing", message: "Signing you in…" });
     try {
       if (sessionId) await api.touchSession(sessionId);
-      // The card showed the agree line for this policy version.
-      markPrivacyPolicyNoticeSeen();
       await setupRef.current.finish((url) => api.decorateNavigationUrl(url));
     } catch (cause) {
       finishedRef.current = false;

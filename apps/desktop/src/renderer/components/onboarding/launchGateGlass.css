@@ -274,6 +274,7 @@
 .ade-glass-primary:focus-visible,
 .ade-glass-secondary:focus-visible,
 .ade-glass-link:focus-visible,
+.ade-glass-legal a:focus-visible,
 .ade-gate-continue:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
   outline-offset: 2px;
@@ -616,9 +617,4 @@ html[data-motion="reduced"] .ade-gate *::after {
   text-underline-offset: 2px;
   border-radius: 4px;
   -webkit-app-region: no-drag;
-}
-
-.ade-glass-legal a:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
-  outline-offset: 2px;
 }

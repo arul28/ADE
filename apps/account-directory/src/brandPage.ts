@@ -11,6 +11,8 @@
  * Light and dark follow `prefers-color-scheme`.
  */
 
+import { PRIVACY_URL, TERMS_URL } from "../../desktop/src/shared/legalLinks";
+
 export const escapeHtml = (value: string): string =>
   value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 
@@ -334,7 +336,7 @@ export function identityChain(input: {
  * apps' sign-in card.
  */
 export const LEGAL_AGREEMENT_HTML =
-  '<p class="legal">By continuing, you agree to ADE\'s <a href="https://ade-app.dev/terms" target="_blank" rel="noreferrer">Terms</a> and <a href="https://ade-app.dev/privacy" target="_blank" rel="noreferrer">Privacy Policy</a>.</p>';
+  `<p class="legal">By continuing, you agree to ADE's <a href="${TERMS_URL}" target="_blank" rel="noreferrer">Terms</a> and <a href="${PRIVACY_URL}" target="_blank" rel="noreferrer">Privacy Policy</a>.</p>`;
 
 /**
  * The whole document. `card` is the card's inner HTML after the heading;

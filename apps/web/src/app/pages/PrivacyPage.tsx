@@ -23,7 +23,7 @@ const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 type Section = {
   title: string;
   /** The section's anchor (`/privacy#<id>`), for links from the apps. */
-  id?: string;
+  id: string;
   body: Array<string | { list: string[] }>;
   analyticsControl?: boolean;
 };
@@ -36,10 +36,10 @@ const sections: Section[] = [
       "ADE runs coding agents on your own computers and on ADE Cloud computers. Your code, git history and terminals live on the computer that runs the lane. ADE also sends some data to its own servers and to other companies so that its features work and so that ADE can find and fix problems. This page lists all of it. These items are on by default:",
       {
         list: [
-          "Product analytics, session replay, error reports and automatic diagnostic reports. The apps have no switch for these. On the desktop app, the only way to stop them is the DO_NOT_TRACK=1 setting, described under Your choices. The iPhone app has no way to stop them.",
+          "Product analytics, session replay, error reports and automatic diagnostic reports. The apps have no switch for these. On the desktop app, the main way to stop them is the DO_NOT_TRACK=1 setting, described under Your choices. The iPhone app has no way to stop them.",
           "When you are signed in, ADE copies your GitHub CLI (gh) login to your ADE account, so that your other computers and ADE Cloud can use it. It does not ask first.",
           "When you are signed in, ADE copies the logins of most AI coding tools on your computer (for example Codex and Cursor) to your ADE account, so that ADE Cloud computers can use them. It does not copy Claude Code's login.",
-          "Smart decisions sends parts of your chats, the prompt you are typing, and the last lines of CLI agent terminals to a small AI model run by OpenCode or TypeSafe.",
+          "Smart decisions sends parts of your chats, the prompt you are typing, and the last lines of idle ADE terminals to a small AI model run by OpenCode or TypeSafe.",
           "Error reports can include the last lines of ADE's logs, which can hold file paths and parts of chat text.",
           "Your account server keeps the names of your computers, projects, lanes and branches, and the folder paths of your projects, so that every device you sign in on can show them.",
         ],
@@ -56,6 +56,7 @@ const sections: Section[] = [
       "When you create an account, ADE's account service records one sign-up event in product analytics with how you signed up (for example GitHub, Google or email).",
       "About a day after you sign up, ADE sends one getting-started email through Resend. It greets you by your first name when your account has one. Every email has an unsubscribe link. ADE also sends emails about your account, your plan and your ADE Cloud computers. When you share a lane with someone, ADE emails the invite, with your name, to the address you enter.",
       "To give the ADE Cloud Free plan, ADE checks that your connected GitHub account is at least 30 days old and gives the free plan once per GitHub account and once per computer. For the computer check, ADE keeps a scrambled ID made from your operating system's machine ID; the server keeps only a keyed hash of it.",
+      "ADE's account server also keeps a keyed hash of the IP address you signed up from, to find bulk sign-ups. It is deleted with the account.",
       "You can delete your account in the app (Account › Delete account). Deletion removes what ADE's servers keep for the account, including the items in the next sections, with the exceptions under Retention. Analytics, error reports and diagnostic reports are not removed with the account; they follow the times under Retention.",
     ],
   },
@@ -99,8 +100,8 @@ const sections: Section[] = [
       {
         list: [
           "when a chat turn ends: your last message and the agent's reply;",
-          "for CLI agents in an ADE terminal: up to the last 4,000 characters on the terminal screen;",
-          "for the status line: the agent's final reply and the current status line;",
+          "for CLI agents in an ADE terminal, and for any other idle ADE terminal unless you turn off “Also check plain terminals”: up to the last 40 lines on the screen (at most 4,000 characters), with secret-looking values removed;",
+          "for the status line: the agent's final reply, your last message (up to 600 characters) and the current status line;",
           "for the model hint: the prompt you are typing, before you send it, the lane name, the number of attached files and images, and one-line summaries of your recent new chats;",
           "for the ⌘K palette: what you typed, the current page and the lane name;",
           "for lane emoji: the lane name.",
@@ -118,7 +119,7 @@ const sections: Section[] = [
       "If you use ADE's free models without your own provider account, your prompts go to OpenCode's Zen service.",
       "ADE Cloud computers run on servers from Agent 37. Everything in a cloud lane (its code, chats, terminals and the logins it uses) is on that computer. When a cloud lane rests, ADE's server keeps its saved chats, terminal copies, git summaries, queued messages and lane backups. These are encrypted with a key for your account that ADE's server holds. This is encryption at rest, not end-to-end encryption.",
       "ADE watches each cloud computer's CPU use and activity to find mining and other abuse, and to put idle computers to sleep.",
-      "ADE Cloud iPhones, where available, run on Revyl's service.",
+      "ADE Cloud iPhones, where available, run on NoMac's service. On a paid plan, when NoMac has no iPhone free, they run on Revyl's service.",
     ],
   },
   {
@@ -227,12 +228,13 @@ const sections: Section[] = [
           "Stripe — payments and billing.",
           "Resend — ADE's emails.",
           "Cloudflare — ADE's servers, databases and storage, the connection relay, the vault and key service, and diagnostic reports.",
-          "PostHog — product analytics, session replay and a copy of error reports, in the United States.",
+          "PostHog — product analytics, session replay, a copy of error reports, and the operational logs of ADE's servers, in the United States.",
           "Sentry — error and crash reports, in the United States.",
           "OpenCode — Smart decisions and ADE's free models.",
           "TypeSafe — Smart decisions, when the free allowance is used up.",
           "Agent 37 — the servers that run ADE Cloud computers.",
-          "Revyl — ADE Cloud iPhones, where available.",
+          "NoMac — ADE Cloud iPhones, where available.",
+          "Revyl — ADE Cloud iPhones on a paid plan, when NoMac has none free.",
           "Apple — push notifications, Sign in with Apple, and Apple Music when you connect it.",
           "Google and GitHub — sign-in, when you use them to sign in. GitHub also hosts ADE's releases and receives the git and GitHub requests your agents make.",
           "AI providers you use — your prompts and the content your agents send, under each provider's terms.",
@@ -251,11 +253,11 @@ const sections: Section[] = [
       {
         list: [
           "Product analytics never includes prompts, model replies, code, diffs, file contents or terminal output, and no email addresses, names or IP addresses.",
-          "ADE never reads or copies Claude Code's own login.",
+          "ADE never copies Claude Code's own login to your account or to ADE Cloud. It reads that login only on your computer, to ask Anthropic for your usage limits.",
           "Raw hardware IDs never leave your computer; only hashes do.",
           "Session replay never records terminals, code editors, images, embedded pages, console output or network traffic, and masks your content.",
           "Dictation, camera pairing and Face ID on the iPhone stay on the device.",
-          "ADE's server logs hold no URLs, request bodies, tokens, emails, account IDs or IP addresses.",
+          "The operational logs that ADE's servers send to PostHog hold no URLs, request bodies, tokens, emails, account IDs or IP addresses. Cloudflare's own logs of ADE's servers, which ADE uses to fix problems, can hold account IDs, computer IDs and error text.",
           "Development builds, tests and CI runs send no analytics and no error reports.",
         ],
       },
@@ -267,8 +269,8 @@ const sections: Section[] = [
     title: "Retention",
     body: [
       "PostHog analytics events are kept for no longer than one year, and session replays for one month. Sentry error reports are kept for 30 days. Diagnostic reports are kept for up to 30 days. Daily usage reports are kept for 180 days.",
-      "What your account server keeps (sync data, saved logins, ADE Cloud data) is kept while your account exists and is deleted with it. A saved login you remove, or a computer or lane you delete, is removed from the account sooner.",
-      "Some records stay after you delete your account, so that a new account cannot get the free plan, free hours or referral rewards again, and so that blocks and abuse reports still hold. ADE keeps them under a one-way hash of your account ID in place of the ID, with no end date. They are: the free-plan claim with the hash of your computer; the GitHub claim with your GitHub user ID; the free unlock of a payment card, by the card's fingerprint; blocks, abuse events and alerts to the ADE owner; referral records and earned hours; and the ADE Cloud iPhone sessions, for the cost report. The account record stays marked as deleted. Ask by email if you want any of these removed.",
+      "What your account server keeps (sync data, saved logins, ADE Cloud data) is kept while your account exists. Most of it is deleted with the account; the next paragraph lists what stays. A saved login you remove, or a computer or lane you delete, is removed from the account sooner.",
+      "Some records stay after you delete your account, so that a new account cannot get the free plan, free hours or referral rewards again, and so that blocks and abuse reports still hold. ADE keeps them under a one-way hash of your account ID in place of the ID, with no end date. They are: the free-plan claim with the hash of your computer; the GitHub claim with your GitHub user ID; the free unlock of a payment card, by the card's fingerprint; blocks, abuse events and alerts to the ADE owner; referral records and earned hours; and the ADE Cloud iPhone sessions, for the cost report. The account record stays marked as deleted. These also stay, under your account ID: the list of computers you signed in to ADE on (each computer's name, platform, network addresses, ADE folder path, a hash of its hardware ID and its device keys), the records of your ADE Cloud computers, and their daily usage, cost, delete and power logs. Ask by email if you want any of these removed.",
       "Desktop analytics state (its installation ID, signed-in identity hash, milestones, hashing salt, preference and quota counters) is stored in the ADE folder's secrets directory until you delete it. Your projects otherwise stay on your disk and are yours to keep, move or delete.",
       "Unpairing the iPhone app clears its saved computer and pairing credentials, but synced data, caches, the analytics ID and quota counters can stay in the app until you remove the app's data. iOS Keychain items can survive an uninstall on some systems, so unpair before you uninstall if you want to clear pairing credentials.",
       "This website stores a browser ID, event-budget counters, the first source this browser arrived from, and your analytics preference. Turning analytics off creates a new browser ID and forgets the first source, but keeps the preference and counters; clearing site data removes them.",
@@ -306,7 +308,7 @@ const sections: Section[] = [
     id: "changes",
     title: "Changes to this policy",
     body: [
-      "When ADE makes a material change, it updates this page and the date at the top, adds an entry below, and shows a one-time notice in the desktop app and the iPhone app. If you keep using ADE after a change, you accept the changed policy.",
+      "When ADE makes a material change, it updates this page and the date at the top, adds an entry below, and shows a one-time notice in the desktop app, ADE on the web and the iPhone app. If you keep using ADE after a change, you accept the changed policy.",
       {
         list: [
           "November 24, 2026 — Rewrote this policy to list everything ADE collects, without changing what ADE collects. Added: copying of GitHub CLI and AI tool logins to your account, the vaults and how they are encrypted, the sync data the account server keeps, Smart decisions and the text it sends to OpenCode and TypeSafe, the log lines attached to error reports, automatic diagnostic reports, the daily usage report, the device ID, the relay not being end-to-end encrypted, ADE Cloud data, the weather widget, and the full list of companies. Corrected earlier statements that were wrong: that prompts stay on your computer by default, that error reports do not include chat text, that diagnostic logs are shared only when you choose, that analytics starts with only a random installation ID, that the iPhone app honors an earlier opt-out, and that turning analytics off is possible in the apps.",
@@ -410,7 +412,7 @@ export function PrivacyPage() {
 
           <div className="mt-10 grid gap-6">
             {shownSections.map((section, index) => (
-              <Reveal key={section.title} delay={Math.min(index * 0.04, 0.2)}>
+              <Reveal key={section.id} delay={Math.min(index * 0.04, 0.2)}>
                 <div id={section.id} className="scroll-mt-24 rounded-[22px] border border-border bg-card/60 p-6 shadow-glass-sm">
                   <h2 className="text-sm font-semibold text-fg">{section.title}</h2>
                   <div className="mt-3 space-y-3 text-sm leading-relaxed text-muted-fg">

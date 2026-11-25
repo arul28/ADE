@@ -67,8 +67,9 @@ struct ContentView: View {
     return saved.flatMap(RootTab.init(rawValue:)) ?? .work
   }()
   @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
-  /// "We updated our Privacy Policy" is still owed on this phone.
-  @State private var privacyNoticeOwed = !PrivacyPolicyNotice.isSeen
+  /// The privacy policy version this phone last told the person about. A
+  /// sign-in that showed the agree line writes it too (`PrivacyPolicyNotice`).
+  @AppStorage(PrivacyPolicyNotice.seenVersionKey) private var privacySeenVersion = ""
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -99,10 +100,9 @@ struct ContentView: View {
     )
   }
 
-  /// Past the access gate only. A sign-in in the gate's sheet showed the agree
-  /// line and marked the version seen, so the stored mark is read here too.
+  /// Past the access gate only.
   private var showsPrivacyNotice: Bool {
-    privacyNoticeOwed && hasMobileAccess && !PrivacyPolicyNotice.isSeen
+    hasMobileAccess && privacySeenVersion != PrivacyPolicyNotice.version
   }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -270,8 +270,8 @@ struct ContentView: View {
         .padding(.horizontal, 20)
         .padding(.top, 12)
         // One key, on the banner container rather than the root: every value
-        // that mounts either banner is folded into `topBannerKey`, so both
-        // transitions still run, and a banner appearing no longer drags an
+        // that mounts any banner is folded into `topBannerKey`, so every
+        // transition still runs, and a banner appearing no longer drags an
         // unrelated root change (a tab switch, a sheet) into the same spring.
         .animation(topBannerAnimation, value: topBannerKey)
       }
@@ -333,7 +333,6 @@ struct ContentView: View {
 
   private func closePrivacyNotice() {
     PrivacyPolicyNotice.markSeen()
-    privacyNoticeOwed = false
   }
 
   private func openAppUpdate() {
@@ -511,11 +510,7 @@ struct AccountConnectStatusToast: View {
 enum PrivacyPolicyNotice {
   static let version = "2026-11-24"
   static let changesURL = URL(string: "https://ade-app.dev/privacy#changes")!
-  private static let seenVersionKey = "ade.privacyPolicyNotice.seenVersion"
-
-  static var isSeen: Bool {
-    UserDefaults.standard.string(forKey: seenVersionKey) == version
-  }
+  static let seenVersionKey = "ade.privacyPolicyNotice.seenVersion"
 
   static func markSeen() {
     UserDefaults.standard.set(version, forKey: seenVersionKey)
@@ -529,53 +524,13 @@ private struct PrivacyPolicyNoticeBanner: View {
   let onClose: () -> Void
 
   var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "checkmark.shield.fill")
-        .foregroundStyle(ADEColor.purpleAccent)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text("We updated our Privacy Policy")
-          .font(.system(.footnote, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("It now lists everything ADE collects.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      .lineLimit(2)
-      .minimumScaleFactor(0.8)
-
-      Spacer(minLength: 0)
-
-      Button("OK", action: onClose)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-        .buttonStyle(.plain)
-        .frame(minWidth: 44, minHeight: 44)
-        .contentShape(Rectangle())
-        .accessibilityIdentifier("privacy-notice-ok")
-
-      Button("Read", action: onRead)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(ADEColor.purpleAccent, in: Capsule())
-        .buttonStyle(.plain)
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
-        .accessibilityIdentifier("privacy-notice-read")
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .background(ADEColor.cardBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect()
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.purpleAccent.opacity(0.28), lineWidth: 0.75)
+    TopPromptBanner(
+      systemImage: "checkmark.shield.fill",
+      title: "We updated our Privacy Policy",
+      detail: "It now lists everything ADE collects and where it goes. What ADE collects did not change.",
+      secondary: .init(title: "OK", accessibilityLabel: "Close the privacy policy notice", identifier: "privacy-notice-ok", action: onClose),
+      primary: .init(title: "Read", accessibilityLabel: "Read what changed in the Privacy Policy", identifier: "privacy-notice-read", action: onRead)
     )
-    .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel("We updated our Privacy Policy")
   }
 }
 
@@ -586,30 +541,67 @@ private struct AppUpdateBanner: View {
   let onLater: () -> Void
 
   var body: some View {
+    TopPromptBanner(
+      systemImage: "arrow.down.circle.fill",
+      title: "ADE \(version) is available",
+      secondary: .init(title: "Later", action: onLater),
+      primary: .init(title: "Update", isEnabled: canUpdate, action: onUpdate)
+    )
+  }
+}
+
+/// The look of a prompt in the top banner stack: an icon, a title with an
+/// optional detail line, a text button and a capsule button.
+private struct TopPromptBanner: View {
+  struct Action {
+    let title: String
+    var accessibilityLabel: String? = nil
+    var identifier: String? = nil
+    var isEnabled = true
+    let action: () -> Void
+  }
+
+  let systemImage: String
+  let title: String
+  var detail: String? = nil
+  let secondary: Action
+  let primary: Action
+
+  var body: some View {
     HStack(spacing: 8) {
-      Image(systemName: "arrow.down.circle.fill")
+      Image(systemName: systemImage)
         .foregroundStyle(ADEColor.purpleAccent)
 
-      Text("ADE \(version) is available")
-        .font(.system(.footnote, design: .rounded).weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        // Two lines rather than one: at accessibility text sizes a single
-        // scaled line drops the version number the banner exists to state.
-        .lineLimit(2)
-        .minimumScaleFactor(0.8)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .font(.system(.footnote, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          // Two lines rather than one: at accessibility text sizes a single
+          // scaled line drops the part the banner exists to state.
+          .lineLimit(2)
+        if let detail {
+          Text(detail)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(3)
+        }
+      }
+      .minimumScaleFactor(0.8)
 
       Spacer(minLength: 0)
 
-      // Both actions carry a 44pt hit area. "Later" draws nothing but text, so
-      // without an explicit frame its target was the glyph box alone.
-      Button("Later", action: onLater)
+      // Both actions carry a 44pt hit area. The text button draws nothing but
+      // text, so without an explicit frame its target was the glyph box alone.
+      Button(secondary.title, action: secondary.action)
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textSecondary)
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
         .contentShape(Rectangle())
+        .accessibilityLabel(secondary.accessibilityLabel ?? secondary.title)
+        .accessibilityIdentifier(secondary.identifier ?? "")
 
-      Button("Update", action: onUpdate)
+      Button(primary.title, action: primary.action)
         .font(.caption.weight(.semibold))
         .foregroundStyle(.white)
         .padding(.horizontal, 10)
@@ -618,8 +610,10 @@ private struct AppUpdateBanner: View {
         .buttonStyle(.plain)
         .frame(minHeight: 44)
         .contentShape(Rectangle())
-        .disabled(!canUpdate)
-        .opacity(canUpdate ? 1 : 0.45)
+        .disabled(!primary.isEnabled)
+        .opacity(primary.isEnabled ? 1 : 0.45)
+        .accessibilityLabel(primary.accessibilityLabel ?? primary.title)
+        .accessibilityIdentifier(primary.identifier ?? "")
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 9)
@@ -631,7 +625,7 @@ private struct AppUpdateBanner: View {
     )
     .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("ADE \(version) is available")
+    .accessibilityLabel(title)
   }
 }
 

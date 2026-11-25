@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { ArrowRight, CircleNotch, WarningCircle } from "@phosphor-icons/react";
 import { fetchAccountStatus, accountSessionTitle, type AdeAccountSessionState } from "../../lib/account";
 import { AnotherDeviceSignInPanel } from "../account/AnotherDeviceSignInPanel";
@@ -18,9 +18,10 @@ import { markPrivacyPolicyNoticeSeen } from "../../lib/privacyPolicyNotice";
 const Banner = lazy(() => import("../ui/notice/Banner").then((module) => ({ default: module.Banner })));
 
 /**
- * Every ADE sign-up passes this card (the desktop gate, ADE Web, and the page
- * a desktop or `ade login` sign-in opens), so the agreement lives here. The
- * links open the system browser in the desktop app and a new tab on the web.
+ * Every sign-in that runs in the desktop or web renderer passes this card (the
+ * desktop gate, ADE Web, and the page a desktop or `ade login` sign-in opens),
+ * so the agreement lives here. The links open the system browser in the
+ * desktop app and a new tab on the web.
  */
 function LegalLink({ href, children }: { href: string; children: string }) {
   return (
@@ -75,6 +76,13 @@ export function GlassSignInCard({
     markPrivacyPolicyNoticeSeen();
     onSignedIn();
   }, [onSignedIn]);
+  const clerkHere = useMemo<ClerkSignInSetup | undefined>(() => clerk && {
+    ...clerk,
+    finish: (decorate) => {
+      markPrivacyPolicyNoticeSeen();
+      return clerk.finish(decorate);
+    },
+  }, [clerk]);
   const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel, otherDevice } = useSignInFlow({
     onSignedIn: onSignedInHere,
     sessionState,
@@ -102,8 +110,8 @@ export function GlassSignInCard({
         </div>
       ) : null}
 
-      {showClerk && clerk ? (
-        <ClerkSignInPanel setup={clerk} onUnavailable={onClerkUnavailable} />
+      {showClerk && clerkHere ? (
+        <ClerkSignInPanel setup={clerkHere} onUnavailable={onClerkUnavailable} />
       ) : unreadable ? (
         <div style={{ marginTop: 26, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
           {repair.available ? (
