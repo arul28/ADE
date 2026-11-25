@@ -77,9 +77,11 @@ export function noteCloudSponsoredState(next: CloudSponsoredState | null | undef
  * Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save.
  * `confirmed`: a yes the person confirmed a second time (`turnOnSponsoredCards`).
  */
-export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false): Promise<void> {
+export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false, since = generation): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
+  // Asked of an account signed out since (a confirm stayed open meanwhile): not this account's answer.
+  if (since !== generation) return;
   const current = generation;
   const refresh = () => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
   let next: Awaited<ReturnType<typeof set>>;
@@ -118,6 +120,11 @@ export function noteSponsoredNoticeShown(): void {
     .finally(() => {
       noticeSave = null;
     });
+}
+
+/** Which signed-in account answers belong to: an answer asked under another one is dropped (`setCloudSponsoredConsent`). */
+export function cloudAccountGeneration(): number {
+  return generation;
 }
 
 /** Whether the shared computer list is watched; while it is, this store does not read on its own. */

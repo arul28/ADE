@@ -259,6 +259,8 @@ struct CloudSponsoredCard: View {
   @ObservedObject private var sponsoredStore = CloudSponsoredStore.shared
   /// Turning cards on after a no asks once more (`CloudSponsoredState.confirmYes`).
   @State private var confirming = false
+  /// The account the second confirm was opened for (`AccountCloudStore.generation`).
+  @State private var confirmGeneration = 0
   /// Where the switch is going while its save runs, so it doesn't snap back before the answer.
   @State private var pendingOn: Bool?
 
@@ -278,7 +280,12 @@ struct CloudSponsoredCard: View {
             // On while the second confirm is up, so the switch doesn't snap back under it.
             get: { pendingOn ?? (sponsored.granted || sponsored.toldOn || confirming) },
             set: { on in
-              if on, sponsored.confirmYes { confirming = true } else { save(on ? CloudSponsoredState.granted : CloudSponsoredState.declined) }
+              if on, sponsored.confirmYes {
+                confirmGeneration = AccountCloudStore.shared.generation
+                confirming = true
+              } else {
+                save(on ? CloudSponsoredState.granted : CloudSponsoredState.declined)
+              }
             }
           ))
           .labelsHidden()
@@ -311,7 +318,7 @@ struct CloudSponsoredCard: View {
       }
       .adeKitCard(padding: nil)
       .alert("Turn on sponsored cards?", isPresented: $confirming) {
-        Button("Turn on") { save(CloudSponsoredState.granted, confirmed: true) }
+        Button("Turn on") { save(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
         Button("Keep them off", role: .cancel) {}
       } message: {
         Text(CloudSponsoredState.turnOnConfirm)
@@ -337,13 +344,13 @@ struct CloudSponsoredCard: View {
       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."
   }
 
-  private func save(_ consent: String, confirmed: Bool = false) {
+  private func save(_ consent: String, confirmed: Bool = false, since: Int? = nil) {
     guard !saving else { return }
     saving = true
     pendingOn = consent == CloudSponsoredState.granted
     error = nil
     Task {
-      switch await cloudSaveSponsoredConsent(consent, confirmed: confirmed) {
+      switch await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since) {
       case .success(let state): saved = state
       case .failure(let failure): error = failure.message
       }

@@ -900,7 +900,8 @@ async function handleAd(request: Request, env: GravityEnv, userId: string, now: 
   const who = sponsoredRequester(request);
   const blocked = await blockedReason(env, account, who.country, switches);
   if (blocked) return none(blocked);
-  const consent = await readConsent(env, userId);
+  // A browser's Global Privacy Control from the US opts the whole account out, not just this card.
+  const consent = await honorGpc(env, account, await readConsent(env, userId), who, now);
   if (!yesHolds(env, consent, who)) return none("consent");
   // Only a chat on one of the account's own ADE Cloud computers: never one on the person's own machine.
   const computer = await ownCloudComputer(env, userId, body.instanceId);

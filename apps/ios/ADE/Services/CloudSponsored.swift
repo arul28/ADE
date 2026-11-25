@@ -335,12 +335,16 @@ extension CloudServerClient {
 /// Saves the account's answer and shows it everywhere at once: the state
 /// the server answered, or the sentence to show when it didn't save.
 @MainActor
-func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
+func cloudSaveSponsoredConsent(_ consent: String, confirmed: Bool = false, since: Int? = nil) async -> Result<CloudSponsoredState, CloudSponsoredSaveFailure> {
+  // The answer belongs to the account that gave it (`since`: the one signed in when a confirm
+  // opened): one signed in since doesn't take it.
+  let generation = since ?? AccountCloudStore.shared.generation
+  guard generation == AccountCloudStore.shared.generation else {
+    return .failure(CloudSponsoredSaveFailure(message: "You signed in to another account. Try again."))
+  }
   guard let client = await SyncMenuSafePublisher.shared.service.cloudServerClient() else {
     return .failure(CloudSponsoredSaveFailure(message: "Sign in to ADE, then try again."))
   }
-  // The answer belongs to the account that gave it: one signed in since doesn't take it.
-  let generation = AccountCloudStore.shared.generation
   do {
     let state = try await client.setSponsoredConsent(consent, confirmed: confirmed)
     // A no deletes the account's viewer rows on the server.

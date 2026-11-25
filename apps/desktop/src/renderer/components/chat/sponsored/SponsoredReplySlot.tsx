@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ArrowUpRight, Coins, Eye, Megaphone, ShareNetwork, X } from "@phosphor-icons/react";
 import type { AgentChatEventEnvelope } from "../../../../shared/types";
 import { isGravityUrl, type CloudSponsoredAd, type CloudSponsoredAdAnswer, type CloudSponsoredConsent, type CloudSponsoredFormat } from "../../../../shared/adeCloud";
-import { noteSponsoredNoticeShown, setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
+import { cloudAccountGeneration, noteSponsoredNoticeShown, setCloudSponsoredConsent, useCloudAccount } from "../../../state/cloudAccountStore";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
@@ -412,6 +412,8 @@ const SPONSORED_SENDS =
  * US, or their browser's Global Privacy Control did), it asks once more first.
  */
 export async function turnOnSponsoredCards(confirmYes: boolean): Promise<void> {
+  // The yes belongs to the account signed in when it was asked, not one signed in while the confirm was open.
+  const since = cloudAccountGeneration();
   if (confirmYes) {
     const ok = await confirmDialog({
       title: "Turn on sponsored cards?",
@@ -422,7 +424,7 @@ export async function turnOnSponsoredCards(confirmYes: boolean): Promise<void> {
     });
     if (!ok) return;
   }
-  await setCloudSponsoredConsent("granted", confirmYes);
+  await setCloudSponsoredConsent("granted", confirmYes, since);
 }
 
 type SponsoredCardProps = { ad: CloudSponsoredAd; test: boolean; onHide: () => void };

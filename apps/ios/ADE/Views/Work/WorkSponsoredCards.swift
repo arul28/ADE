@@ -546,6 +546,8 @@ struct WorkSponsoredConsentCard: View {
   @State private var busy = false
   @State private var error: String?
   @State private var confirming = false
+  /// The account the second confirm was opened for (`AccountCloudStore.generation`).
+  @State private var confirmGeneration = 0
 
   var body: some View {
     WorkSponsoredFrame(roomy: true) {
@@ -597,7 +599,7 @@ struct WorkSponsoredConsentCard: View {
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Sponsored cards on ADE Cloud Free")
     .alert("Turn on sponsored cards?", isPresented: $confirming) {
-      Button("Turn on") { answer(CloudSponsoredState.granted, confirmed: true) }
+      Button("Turn on") { answer(CloudSponsoredState.granted, confirmed: true, since: confirmGeneration) }
       Button("Keep them off", role: .cancel) {}
     } message: {
       Text(CloudSponsoredState.turnOnConfirm)
@@ -643,7 +645,12 @@ struct WorkSponsoredConsentCard: View {
         .disabled(busy)
     } else {
       WorkSponsoredCTA(title: "Show sponsored cards", fill: fill) {
-        if confirmYes { confirming = true } else { answer(CloudSponsoredState.granted) }
+        if confirmYes {
+          confirmGeneration = AccountCloudStore.shared.generation
+          confirming = true
+        } else {
+          answer(CloudSponsoredState.granted)
+        }
       }
       .disabled(busy)
     }
@@ -667,12 +674,12 @@ struct WorkSponsoredConsentCard: View {
     .frame(minHeight: 28)
   }
 
-  private func answer(_ consent: String, confirmed: Bool = false) {
+  private func answer(_ consent: String, confirmed: Bool = false, since: Int? = nil) {
     guard !busy else { return }
     busy = true
     error = nil
     Task {
-      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent, confirmed: confirmed) { error = failure.message }
+      if case .failure(let failure) = await cloudSaveSponsoredConsent(consent, confirmed: confirmed, since: since) { error = failure.message }
       busy = false
     }
   }
