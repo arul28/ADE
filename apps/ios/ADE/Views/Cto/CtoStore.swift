@@ -390,13 +390,25 @@ final class CtoStore: ObservableObject {
   /// keeps the last answer; an older brain clears it and shows no card.
   func loadNeeds(force: Bool = false) async {
     guard let sync else { return }
-    guard sync.supportsRemoteAction("cto.getNeeds") else {
+    // Asked of the CTO's home machine, which answers the read; unknown while
+    // that machine is away, so the last answer stays.
+    switch sync.ctoHomeSupportsAction("cto.getNeeds") {
+    case .none: return
+    case .some(false):
       if !needs.isEmpty { needs = [] }
       return
+    case .some(true): break
     }
-    if let needsTask {
-      await needsTask.value
-      return
+    if let joined = needsTask {
+      await joined.value
+      // A forced read wants an answer from after its cause (a turn that just
+      // ended); the read it joined may have started before that. A newer read
+      // another caller started since is fresh enough.
+      guard force else { return }
+      if let newer = needsTask, newer != joined {
+        await newer.value
+        return
+      }
     }
     if !force, let last = lastNeedsFetchAt, Date().timeIntervalSince(last) < 5 { return }
     lastNeedsFetchAt = Date()
@@ -409,7 +421,7 @@ final class CtoStore: ObservableObject {
     }
     needsTask = task
     await task.value
-    needsTask = nil
+    if needsTask == task { needsTask = nil }
   }
 
   /// Opens the child chat a need is about, the way the profile's child rows

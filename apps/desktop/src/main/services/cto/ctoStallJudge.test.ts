@@ -3,12 +3,14 @@ import {
   CTO_STALL_IDLE_MS,
   CTO_STALL_NUDGE_GAP_MS,
   createCtoStallJudge,
+  ctoChildMovedAt,
   judgeCtoChildStall,
   type CtoChildFacts,
 } from "./ctoStallJudge";
 
 const T0 = Date.parse("2026-11-25T10:00:00.000Z");
 const MIN = 60_000;
+const at = (ms: number) => new Date(T0 + ms).toISOString();
 
 function child(overrides: Partial<CtoChildFacts> = {}): CtoChildFacts {
   return {
@@ -52,6 +54,9 @@ describe("judgeCtoChildStall", () => {
     ["idle with a green PR", { pr: openPr() }, 3 * MIN, "pr_ready"],
     ["a turn with no output for 20 min", { turnActive: true }, 20 * MIN, "hung"],
     ["a turn quiet for 10 min", { turnActive: true }, 10 * MIN, null],
+    ["a turn that started 5 min ago after a long pause", { turnActive: true, turnStartedAt: at(30 * MIN) }, 35 * MIN, null],
+    ["a turn started 20 min ago with no output since", { turnActive: true, turnStartedAt: at(30 * MIN) }, 50 * MIN, "hung"],
+    ["a card first seen 1 min ago after old output", { awaitingInput: true, pendingKind: "permission", pendingSeenAt: at(9 * MIN) }, 10 * MIN, null],
     ["quiet on purpose (settled, snoozed, waiting on its own work)", { quietOnPurpose: true }, 30 * MIN, null],
     ["ended", { ended: true }, 30 * MIN, null],
     ["stuck more than a day ago", {}, 25 * 60 * MIN, null],
@@ -60,10 +65,19 @@ describe("judgeCtoChildStall", () => {
   });
 
   it("stays quiet once the CTO handed the stall to the person, until the child moves", () => {
-    const needSetAt = new Date(T0 + 4 * MIN).toISOString();
-    expect(judgeCtoChildStall(child(), T0 + 10 * MIN, needSetAt)).toBeNull();
-    const moved = child({ lastActivityAt: new Date(T0 + 5 * MIN).toISOString() });
-    expect(judgeCtoChildStall(moved, T0 + 10 * MIN, needSetAt)?.kind).toBe("idle");
+    const need = { setAt: at(4 * MIN) };
+    expect(judgeCtoChildStall(child(), T0 + 10 * MIN, need)).toBeNull();
+    const moved = child({ lastActivityAt: at(5 * MIN) });
+    expect(judgeCtoChildStall(moved, T0 + 10 * MIN, need)?.kind).toBe("idle");
+  });
+
+  it("treats a different card as a move for a need set on a card, and keys it apart", () => {
+    const waiting = (pendingKey: string) => child({ awaitingInput: true, pendingKind: "permission", pendingKey });
+    const need = { setAt: at(4 * MIN), pendingKey: "card-1" };
+    expect(judgeCtoChildStall(waiting("card-1"), T0 + 10 * MIN, need)).toBeNull();
+    const next = judgeCtoChildStall(waiting("card-2"), T0 + 10 * MIN, need);
+    expect(next?.kind).toBe("permission");
+    expect(next?.stateKey).not.toBe(judgeCtoChildStall(waiting("card-1"), T0 + 10 * MIN)?.stateKey);
   });
 
   it("gives a child that moved and stalled again a new key", () => {
@@ -79,12 +93,22 @@ function harness(store: Map<string, unknown> = new Map(), seeded = true) {
   let now = T0;
   if (seeded && !store.has("cto:stall-nudges:v1")) store.set("cto:stall-nudges:v1", []);
   const children = new Map<string, CtoChildFacts>();
+  // Children a pass leaves out (quiet for a day, a failed summary) but that still exist.
+  const unlisted = new Map<string, CtoChildFacts>();
+  let needReadFails = false;
   const wakes: Array<{ cto: string; text: string }> = [];
   let busy = false;
   const judge = createCtoStallJudge({
     db: { getJson: (key) => store.get(key) ?? null, setJson: (key, value) => { store.set(key, JSON.parse(JSON.stringify(value))); } },
     listCtoSessionIds: async () => ["cto"],
     readChildren: async () => [...children.values()],
+    readNeedChild: async (id) => {
+      if (needReadFails) throw new Error("summary read failed");
+      const facts = children.get(id) ?? unlisted.get(id);
+      return facts
+        ? { title: facts.title, laneId: "lane-1", lastActivityAt: ctoChildMovedAt(facts), ended: facts.ended, pendingKey: facts.pendingKey }
+        : null;
+    },
     ctoBusy: () => busy,
     wakeCto: async (cto, text) => { wakes.push({ cto, text }); },
     ctoParentOf: (id) => (children.has(id) ? "cto" : null),
@@ -99,6 +123,8 @@ function harness(store: Map<string, unknown> = new Map(), seeded = true) {
     store,
     wakes,
     children,
+    unlisted,
+    setNeedReadFails: (value: boolean) => { needReadFails = value; },
     setNow: (ms: number) => { now = ms; },
     setBusy: (value: boolean) => { busy = value; },
     put: (facts: CtoChildFacts) => children.set(facts.sessionId, facts),
@@ -178,10 +204,7 @@ describe("createCtoStallJudge", () => {
     h.put(child());
     h.setNow(T0 + 4 * MIN);
     h.judge.setNeed({ ctoSessionId: "cto", childSessionId: "child-1", line: "Approve the merge of PR #12" });
-    const read = async () => h.judge.listNeeds("cto", async (id) => {
-      const facts = h.children.get(id);
-      return facts ? { title: facts.title, laneId: "lane-1", lastActivityAt: facts.lastActivityAt, ended: facts.ended } : null;
-    });
+    const read = () => h.judge.listNeeds("cto");
     expect((await read()).map((need) => need.line)).toEqual(["Approve the merge of PR #12"]);
     // A need set by the CTO also stops the nudge for that stall.
     await pass(h, T0 + 10 * MIN);
@@ -190,5 +213,30 @@ describe("createCtoStallJudge", () => {
     expect(await read()).toEqual([]);
     await pass(h, T0 + 12 * MIN);
     expect(h.store.get("cto:needs:v1")).toEqual([]);
+  });
+
+  it("keeps a need whose child a pass left out or could not read, and drops it once the child is gone", async () => {
+    const h = harness();
+    h.unlisted.set("child-1", child());
+    h.setNow(T0 + 4 * MIN);
+    h.judge.setNeed({ ctoSessionId: "cto", childSessionId: "child-1", line: "Sign in to Vercel" });
+    await pass(h, T0 + 30 * 60 * MIN);
+    h.setNeedReadFails(true);
+    await pass(h, T0 + 31 * 60 * MIN);
+    h.setNeedReadFails(false);
+    expect((await h.judge.listNeeds("cto")).map((need) => need.line)).toEqual(["Sign in to Vercel"]);
+    h.unlisted.delete("child-1");
+    await pass(h, T0 + 32 * 60 * MIN);
+    expect(h.store.get("cto:needs:v1")).toEqual([]);
+  });
+
+  it("drops a need set on a card once that card is answered, even with no new output", async () => {
+    const h = harness();
+    h.put(child({ awaitingInput: true, pendingKind: "permission", pendingKey: "card-1" }));
+    h.setNow(T0 + 4 * MIN);
+    h.judge.setNeed({ ctoSessionId: "cto", childSessionId: "child-1", line: "Approve the deploy", pendingKey: "card-1" });
+    expect(await h.judge.listNeeds("cto")).toHaveLength(1);
+    h.put(child({ turnActive: true, pendingKey: null }));
+    expect(await h.judge.listNeeds("cto")).toEqual([]);
   });
 });

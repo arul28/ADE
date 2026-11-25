@@ -740,6 +740,8 @@ private struct CtoWaitingOnYouCard: View {
   @ObservedObject var store: CtoStore
 
   @Environment(\.ctoLiveModel) private var live
+  /// "+N more" opens the rest in place, as on desktop.
+  @State private var expanded = false
 
   private static let maxRows = 3
 
@@ -752,7 +754,7 @@ private struct CtoWaitingOnYouCard: View {
   }
 
   private var card: some View {
-    let rows = Array(store.needs.prefix(Self.maxRows))
+    let rows = expanded ? store.needs : Array(store.needs.prefix(Self.maxRows))
     let more = store.needs.count - rows.count
     return VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 6) {
@@ -780,7 +782,7 @@ private struct CtoWaitingOnYouCard: View {
       if more > 0 {
         Button {
           ADEHaptics.light()
-          live?.onOpenProfile?()
+          withAnimation(.snappy(duration: 0.2)) { expanded = true }
         } label: {
           Text("+\(more) more")
             .font(.caption.weight(.medium))
@@ -790,8 +792,7 @@ private struct CtoWaitingOnYouCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(live?.onOpenProfile == nil)
-        .accessibilityHint("Shows every chat it started")
+        .accessibilityHint("Shows the rest of the chats waiting on you")
       }
     }
     .padding(.bottom, 4)

@@ -60,8 +60,13 @@ export type CtoStallKind =
 export type CtoChildFacts = {
   sessionId: string;
   title: string;
-  /** The chat's last output, ISO. Moves whenever the child does, and only then. */
+  /** The chat's last output, ISO (its start when it has none yet). Moves whenever the child does, and only then. */
   lastActivityAt: string;
+  /**
+   * When the running (or accepted) turn began, ISO; null between turns. A turn
+   * that starts after a long pause is a move even before it writes anything.
+   */
+  turnStartedAt?: string | null;
   /** Archived or gone. A chat whose runtime stopped (a brain restart) is not ended: it resumes on send. */
   ended: boolean;
   turnActive: boolean;
@@ -70,6 +75,13 @@ export type CtoChildFacts = {
   pendingKind: "question" | "permission" | null;
   /** The card's question or permission, in one line. */
   pendingText: string | null;
+  /**
+   * The card on screen, by id: a different card is a new stall. Undefined when
+   * not known (the chat is not loaded here, so its cards cannot be read).
+   */
+  pendingKey?: string | null;
+  /** When ADE first saw this card, ISO. Only times the wait; never part of a key. */
+  pendingSeenAt?: string | null;
   /**
    * The child is quiet on purpose and is nobody's to chase: settled, snoozed,
    * archived, parked at a usage limit, waiting on its own background work, a
@@ -121,11 +133,34 @@ function prReady(pr: NonNullable<CtoChildFacts["pr"]>): boolean {
     && pr.review !== "changes_requested";
 }
 
-/** A need holds while it is newer than the child's last move. */
-export function ctoNeedIsLive(needSetAt: string, childLastActivityAt: string | null | undefined): boolean {
-  const setMs = Date.parse(needSetAt);
+function latestMs(...times: Array<string | null | undefined>): number {
+  let latest = Number.NaN;
+  for (const time of times) {
+    const ms = time ? Date.parse(time) : Number.NaN;
+    if (Number.isFinite(ms) && !(ms <= latest)) latest = ms;
+  }
+  return latest;
+}
+
+/** The child's last move, ISO: its last output, or the start of the turn it runs now when that is later. */
+export function ctoChildMovedAt(facts: Pick<CtoChildFacts, "lastActivityAt" | "turnStartedAt">): string {
+  const ms = latestMs(facts.lastActivityAt, facts.turnStartedAt);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : facts.lastActivityAt;
+}
+
+/**
+ * A need holds while it is newer than the child's last move, and, when it was
+ * set on a card, while that card is still the one on screen (an answered card
+ * may not move the child's output before its next one).
+ */
+export function ctoNeedIsLive(
+  need: { setAt: string; pendingKey?: string | null },
+  child: { lastActivityAt: string | null | undefined; pendingKey?: string | null },
+): boolean {
+  const setMs = Date.parse(need.setAt);
   if (!Number.isFinite(setMs)) return false;
-  const movedMs = childLastActivityAt ? Date.parse(childLastActivityAt) : Number.NaN;
+  if (need.pendingKey && child.pendingKey !== undefined && child.pendingKey !== need.pendingKey) return false;
+  const movedMs = child.lastActivityAt ? Date.parse(child.lastActivityAt) : Number.NaN;
   return !Number.isFinite(movedMs) || movedMs <= setMs;
 }
 
@@ -133,50 +168,55 @@ export function ctoNeedIsLive(needSetAt: string, childLastActivityAt: string | n
  * Is this child stuck, and on what? Null when it is moving, quiet on purpose,
  * not stuck long enough yet, or stuck so long ago it is history.
  *
- * `needSetAt` is the CTO's own "waiting on you" line for this child: once the
- * CTO handed the stall to the person, it is not told about it again.
+ * `need` is the CTO's own "waiting on you" line for this child: once the CTO
+ * handed the stall to the person, it is not told about it again.
  */
 export function judgeCtoChildStall(
   facts: CtoChildFacts,
   nowMs: number,
-  needSetAt: string | null = null,
+  need: { setAt: string; pendingKey?: string | null } | null = null,
 ): CtoChildStall | null {
   if (facts.ended || facts.quietOnPurpose) return null;
-  const movedMs = Date.parse(facts.lastActivityAt);
+  const movedAt = ctoChildMovedAt(facts);
+  const movedMs = Date.parse(movedAt);
   if (!Number.isFinite(movedMs)) return null;
   if (nowMs - movedMs > CTO_STALL_MAX_AGE_MS) return null;
-  if (needSetAt && ctoNeedIsLive(needSetAt, facts.lastActivityAt)) return null;
-  const stuckFor = nowMs - movedMs;
-  const stall = (kind: CtoStallKind, what: string, detail = ""): CtoChildStall => ({
+  if (need && ctoNeedIsLive(need, { lastActivityAt: movedAt, pendingKey: facts.pendingKey })) return null;
+  const stall = (kind: CtoStallKind, what: string, detail: string, sinceMs: number): CtoChildStall => ({
     childSessionId: facts.sessionId,
     title: facts.title,
     kind,
     what,
-    sinceMs: movedMs,
-    stateKey: `${facts.sessionId}:${kind}${detail ? `:${detail}` : ""}:${facts.lastActivityAt}`,
+    sinceMs,
+    // Built from persisted times only, so a restart reads the same key.
+    stateKey: `${facts.sessionId}:${kind}${detail ? `:${detail}` : ""}:${movedAt}`,
     lastWords: facts.lastWords,
   });
 
   if (facts.awaitingInput) {
-    if (stuckFor < CTO_STALL_WAIT_MS) return null;
+    // A card that came up with no output since (an answer, then the next
+    // approval) waits from when it was first seen, not from the last output.
+    const sinceMs = latestMs(movedAt, facts.pendingSeenAt);
+    if (nowMs - sinceMs < CTO_STALL_WAIT_MS) return null;
     const kind = facts.pendingKind === "permission" ? "permission" : "question";
     const pending = facts.pendingText?.trim();
     const what = kind === "permission"
       ? `waiting on a permission prompt${pending ? `: ${pending}` : ""}`
       : `waiting on an answer${pending ? `: ${pending}` : ""}`;
-    return stall(kind, what);
+    return stall(kind, what, facts.pendingKey ?? "", sinceMs);
   }
+  const stuckFor = nowMs - movedMs;
   if (facts.turnActive) {
     if (stuckFor < CTO_STALL_HUNG_MS) return null;
-    return stall("hung", `mid-turn with no output for ${Math.floor(stuckFor / 60_000)} min`);
+    return stall("hung", `mid-turn with no output for ${Math.floor(stuckFor / 60_000)} min`, "", movedMs);
   }
   if (stuckFor < CTO_STALL_IDLE_MS) return null;
   const problem = facts.pr ? fixablePrProblem(facts.pr) : null;
-  if (problem && facts.pr) return stall("pr_fixable", `idle while ${problem}`, problem);
+  if (problem && facts.pr) return stall("pr_fixable", `idle while ${problem}`, problem, movedMs);
   if (facts.pr && prReady(facts.pr)) {
-    return stall("pr_ready", `idle with PR #${facts.pr.number} ready to merge or test`, String(facts.pr.number));
+    return stall("pr_ready", `idle with PR #${facts.pr.number} ready to merge or test`, String(facts.pr.number), movedMs);
   }
-  return stall("idle", "idle since its last turn");
+  return stall("idle", "idle since its last turn", "", movedMs);
 }
 
 function minutesAgo(sinceMs: number, nowMs: number): string {
@@ -214,7 +254,14 @@ export function formatCtoStallNudge(stalls: readonly CtoChildStall[], nowMs: num
 
 type KvDb = { getJson: (key: string) => unknown; setJson: (key: string, value: unknown) => void };
 
-type StoredNeed = { childSessionId: string; line: string; setAt: string; ctoSessionId: string };
+type StoredNeed = {
+  childSessionId: string;
+  line: string;
+  setAt: string;
+  ctoSessionId: string;
+  /** The card on screen when the need was set; answering it ends the need. */
+  pendingKey?: string | null;
+};
 
 export type CtoStallJudgeDeps = {
   logger?: Pick<Logger, "info" | "warn"> | null;
@@ -223,6 +270,11 @@ export type CtoStallJudgeDeps = {
   listCtoSessionIds: () => Promise<string[]>;
   /** The children of a CTO session this service runs, as the judge reads them. */
   readChildren: (ctoSessionId: string) => Promise<CtoChildFacts[]>;
+  /**
+   * What a need row reads about its child. Null only when the chat is gone;
+   * a read that fails throws, and the need is kept until a read succeeds.
+   */
+  readNeedChild: (childSessionId: string) => Promise<CtoNeedChild | null>;
   /** The CTO is busy (mid-turn, or blocked on the person): a nudge waits. */
   ctoBusy: (ctoSessionId: string) => boolean;
   /** Wake the CTO with the nudge text. */
@@ -238,8 +290,17 @@ export type CtoStallJudgeDeps = {
   clearTimer?: (handle: unknown) => void;
 };
 
-/** What a need row reads about its child. */
-export type CtoNeedChild = { title: string; laneId: string | null; lastActivityAt: string | null; ended: boolean };
+/**
+ * What a need row reads about its child. `lastActivityAt` is its last move
+ * (`ctoChildMovedAt`); `pendingKey` its card on screen, undefined when unknown.
+ */
+export type CtoNeedChild = {
+  title: string;
+  laneId: string | null;
+  lastActivityAt: string | null;
+  ended: boolean;
+  pendingKey?: string | null;
+};
 
 export type CtoStallJudge = {
   start: () => void;
@@ -248,9 +309,15 @@ export type CtoStallJudge = {
   observe: (sessionId: string) => void;
   /** Run one pass now. Tests and the backstop use it. */
   checkNow: () => Promise<void>;
-  setNeed: (args: { ctoSessionId: string; childSessionId: string; line: string | null }) => { set: boolean; line: string | null };
+  setNeed: (args: {
+    ctoSessionId: string;
+    childSessionId: string;
+    line: string | null;
+    /** The child's card on screen now, if any. */
+    pendingKey?: string | null;
+  }) => { set: boolean; line: string | null };
   /** The live needs of one CTO, oldest first. Reads only the children that have one. */
-  listNeeds: (ctoSessionId: string, readChild: (sessionId: string) => Promise<CtoNeedChild | null>) => Promise<CtoNeed[]>;
+  listNeeds: (ctoSessionId: string) => Promise<CtoNeed[]>;
 };
 
 export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
@@ -332,19 +399,23 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
 
   const checkCto = async (ctoSessionId: string, nowMs: number): Promise<number | null> => {
     const children = await deps.readChildren(ctoSessionId);
-    let needsChanged = false;
     // A need for a child that moved, ended or is gone is dropped here, so the
-    // card and the store agree without a client having to be open.
-    const byId = new Map(children.map((child) => [child.sessionId, child]));
-    const kept = needs.filter((need) => {
-      if (need.ctoSessionId !== ctoSessionId) return true;
-      const child = byId.get(need.childSessionId);
-      const live = Boolean(child && !child.ended && ctoNeedIsLive(need.setAt, child.lastActivityAt));
-      if (!live) needsChanged = true;
-      return live;
-    });
-    if (needsChanged) {
-      needs = kept;
+    // card and the store agree without a client having to be open. Each need
+    // reads its own child: `readChildren` leaves out a child it could not read
+    // or that has been quiet for a day, and neither ends the need.
+    const dropped = new Set<StoredNeed>();
+    for (const need of needs) {
+      if (need.ctoSessionId !== ctoSessionId) continue;
+      let child: CtoNeedChild | null;
+      try {
+        child = await deps.readNeedChild(need.childSessionId);
+      } catch {
+        continue;
+      }
+      if (!child || child.ended || !ctoNeedIsLive(need, child)) dropped.add(need);
+    }
+    if (dropped.size) {
+      needs = needs.filter((need) => !dropped.has(need));
       saveNeeds();
       deps.onNeedsChanged?.(ctoSessionId);
     }
@@ -355,10 +426,12 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
       if (ms > nowMs && (nextCheckMs === null || ms < nextCheckMs)) nextCheckMs = ms;
     };
     for (const child of children) {
-      const stall = judgeCtoChildStall(child, nowMs, needFor(child.sessionId)?.setAt ?? null);
+      const stall = judgeCtoChildStall(child, nowMs, needFor(child.sessionId) ?? null);
       if (!stall) {
         // Not stuck yet: look again when it could be.
-        const movedMs = Date.parse(child.lastActivityAt);
+        const movedMs = child.awaitingInput
+          ? latestMs(ctoChildMovedAt(child), child.pendingSeenAt)
+          : Date.parse(ctoChildMovedAt(child));
         if (Number.isFinite(movedMs) && !child.ended && !child.quietOnPurpose) {
           noteNext(movedMs + (child.awaitingInput ? CTO_STALL_WAIT_MS : child.turnActive ? CTO_STALL_HUNG_MS : CTO_STALL_IDLE_MS) + 1_000);
         }
@@ -453,23 +526,31 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
       schedule(OBSERVE_DEBOUNCE_MS);
     },
     checkNow,
-    setNeed: ({ ctoSessionId, childSessionId, line }) => {
+    setNeed: ({ ctoSessionId, childSessionId, line, pendingKey }) => {
       const text = line == null ? "" : normalizeCtoNeedLine(line);
       const had = needs.some((need) => need.childSessionId === childSessionId);
       needs = needs.filter((need) => need.childSessionId !== childSessionId);
-      if (text) needs.push({ childSessionId, line: text, setAt: new Date(now()).toISOString(), ctoSessionId });
+      if (text) {
+        needs.push({
+          childSessionId,
+          line: text,
+          setAt: new Date(now()).toISOString(),
+          ctoSessionId,
+          ...(pendingKey ? { pendingKey } : {}),
+        });
+      }
       if (text || had) {
         saveNeeds();
         deps.onNeedsChanged?.(ctoSessionId);
       }
       return { set: Boolean(text), line: text || null };
     },
-    listNeeds: async (ctoSessionId, readChild) => {
+    listNeeds: async (ctoSessionId) => {
       const out: CtoNeed[] = [];
       for (const need of needs) {
         if (need.ctoSessionId !== ctoSessionId) continue;
-        const child = await readChild(need.childSessionId).catch(() => null);
-        if (!child || child.ended || !ctoNeedIsLive(need.setAt, child.lastActivityAt)) continue;
+        const child = await deps.readNeedChild(need.childSessionId).catch(() => null);
+        if (!child || child.ended || !ctoNeedIsLive(need, child)) continue;
         out.push({
           childSessionId: need.childSessionId,
           childTitle: child.title,
