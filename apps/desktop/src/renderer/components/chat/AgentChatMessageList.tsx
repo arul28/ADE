@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import * as Popover from "@radix-ui/react-popover";
+import { SmartTooltip } from "../ui/SmartTooltip";
+import { Z_LAYERS } from "../ui/zLayers";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   RESET_CREDIT_OUTCOME_TEXT,
@@ -42,6 +45,7 @@ import {
   SteeringWheel,
   Lightning,
   ArrowSquareOut,
+  Smiley,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -61,7 +65,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
-import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, CTO_REACTION_MEANINGS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS, type CtoReactionEmoji } from "../../../shared/types/chat";
+import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, CTO_REACTION_MEANINGS, CHAT_REACTION_EMOJIS, CHAT_REACTION_MEANINGS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS, assistantMessageReactionKey, type ChatReactionEmoji, type CtoReactionEmoji } from "../../../shared/types/chat";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -1310,28 +1314,135 @@ function UserMessageSendConfirmations({
   );
 }
 
+type AgentChatReactHandler = (targetKey: string, emoji: ChatReactionEmoji) => Promise<void>;
+
+const REACTION_POP = { type: "spring", stiffness: 560, damping: 24 } as const;
+
 /**
- * The CTO's reaction to this message, in place of a written reply: a small
- * badge tucked under the bubble's corner. Keyed on the emoji, so a newer
- * reaction pops in again.
+ * The CTO's reaction on the person's bubble, the way a tapback sits: a round
+ * chip on the bubble's top outer corner, cut out of it by a ring in the
+ * chat's own colour. Absolute, inside the bubble's height, so landing moves
+ * nothing. Keyed on the emoji, so a newer reaction pops in again.
  */
-function UserMessageReaction({ emoji }: { emoji: CtoReactionEmoji }) {
-  const meaning = CTO_REACTION_MEANINGS[emoji];
+function UserMessageReaction({ emoji, by }: { emoji: CtoReactionEmoji; by: string }) {
+  const reduceMotion = useReducedMotion();
   return (
-    <motion.span
-      key={emoji}
-      data-ade-find-skip=""
-      data-testid="chat-user-message-reaction"
-      role="img"
-      aria-label={`Reacted ${meaning}`}
-      title={`Reacted: ${meaning}`}
-      className="relative z-10 -mt-2 mr-3 inline-flex h-[calc(var(--chat-font-size)*24/14)] min-w-[calc(var(--chat-font-size)*24/14)] select-none items-center justify-center rounded-full border border-fg/[0.10] bg-surface-raised px-1.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-none"
-      initial={{ opacity: 0, scale: 0.6 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ type: "spring", stiffness: 520, damping: 26 }}
-    >
-      {emoji}
-    </motion.span>
+    <div data-ade-find-skip="" className="absolute -left-[calc(var(--chat-font-size)*20/14)] top-0 z-10">
+      <SmartTooltip forceEnabled side="top" content={{ label: `${by} reacted ${emoji}`, description: capitalize(CTO_REACTION_MEANINGS[emoji]) }}>
+        <motion.span
+          key={emoji}
+          data-testid="chat-user-message-reaction"
+          role="img"
+          aria-label={`${by} reacted: ${CTO_REACTION_MEANINGS[emoji]}`}
+          className="flex size-[calc(var(--chat-font-size)*28/14)] select-none items-center justify-center rounded-full border border-fg/[0.12] bg-(--chat-canvas-bg) text-[length:calc(var(--chat-font-size)*14/14)] leading-none shadow-[0_0_0_3px_var(--chat-canvas-bg)]"
+          initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.4 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={reduceMotion ? { duration: 0.12 } : REACTION_POP}
+        >
+          {emoji}
+        </motion.span>
+      </SmartTooltip>
+    </div>
+  );
+}
+
+function capitalize(text: string): string {
+  return text ? `${text[0]!.toUpperCase()}${text.slice(1)}` : text;
+}
+
+/**
+ * The person's side, under a CTO reply: their reaction as a Slack-style pill
+ * that stays put, and a button on hover to pick one. Both open the same set.
+ * The pill keeps the hover row's own height, so a reaction moves nothing.
+ */
+function AssistantMessageReactions({
+  targetKey,
+  current,
+  onReact,
+}: {
+  targetKey: string;
+  current: ChatReactionEmoji | null;
+  onReact: AgentChatReactHandler;
+}) {
+  const reduceMotion = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  // Shown at once; the logged event confirms it (or the error takes it back).
+  const [pending, setPending] = useState<ChatReactionEmoji | null>(null);
+  useEffect(() => {
+    if (pending && current === pending) setPending(null);
+  }, [current, pending]);
+  const shown = pending ?? current;
+  const pick = (emoji: ChatReactionEmoji) => {
+    setOpen(false);
+    if (emoji === shown) return;
+    setPending(emoji);
+    onReact(targetKey, emoji).catch(() => setPending(null));
+  };
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      {shown ? (
+        <SmartTooltip forceEnabled side="top" content={{ label: `You reacted ${shown}`, description: `${capitalize(CHAT_REACTION_MEANINGS[shown])}. Click to change it.` }}>
+          <Popover.Trigger asChild>
+            <motion.button
+              key={shown}
+              type="button"
+              data-testid="chat-assistant-message-reaction"
+              aria-label={`You reacted: ${CHAT_REACTION_MEANINGS[shown]}. Change reaction`}
+              className="pointer-events-auto mr-1 inline-flex h-5 items-center gap-1 rounded-full border border-accent/35 bg-accent/12 px-1.5 text-[12px] leading-none opacity-100 transition-colors hover:bg-accent/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+              initial={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.5 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={reduceMotion ? { duration: 0.12 } : REACTION_POP}
+            >
+              <span aria-hidden>{shown}</span>
+              <span aria-hidden className="font-sans text-[10px] font-medium text-fg/60">1</span>
+            </motion.button>
+          </Popover.Trigger>
+        </SmartTooltip>
+      ) : (
+        <Popover.Trigger asChild>
+          <button
+            type="button"
+            data-testid="chat-assistant-message-react"
+            aria-label="React"
+            title="React"
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/45 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/45 data-[state=open]:text-fg/80"
+          >
+            <Smiley size={13} weight="regular" aria-hidden />
+          </button>
+        </Popover.Trigger>
+      )}
+      <Popover.Portal>
+        <Popover.Content
+          side="top"
+          align="start"
+          sideOffset={6}
+          collisionPadding={8}
+          onCloseAutoFocus={(event) => event.preventDefault()}
+          style={{ zIndex: Z_LAYERS.popover }}
+          className="flex gap-0.5 rounded-full border border-fg/[0.12] bg-surface-overlay p-1 shadow-xl"
+          data-testid="chat-reaction-picker"
+        >
+          {CHAT_REACTION_EMOJIS.map((emoji, index) => (
+            <motion.button
+              key={emoji}
+              type="button"
+              aria-label={capitalize(CHAT_REACTION_MEANINGS[emoji])}
+              title={capitalize(CHAT_REACTION_MEANINGS[emoji])}
+              onClick={() => pick(emoji)}
+              className={cn(
+                "flex size-8 items-center justify-center rounded-full text-[18px] leading-none transition-[background-color,transform] duration-150 hover:scale-125 hover:bg-fg/[0.08] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50",
+                emoji === shown && "bg-accent/18",
+              )}
+              initial={reduceMotion ? false : { opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.14, delay: reduceMotion ? 0 : index * 0.015 }}
+            >
+              {emoji}
+            </motion.button>
+          ))}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }
 
@@ -3078,6 +3189,7 @@ function renderEvent(
     onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
     onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
     onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+    onReactToMessage?: AgentChatReactHandler;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -3409,10 +3521,13 @@ function renderEvent(
               : <ArrowBendUpRight size={12} weight="regular" className="opacity-80" aria-hidden />}
           />
         ) : null}
+        {/* The bubble's width box, so a reaction can sit on its outer corner
+            without being clipped by the bubble's own overflow. */}
+        <div className="relative flex min-w-0 max-w-[82%] justify-end">
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-user group group/user-card relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
+            "ade-chat-message-card-user group group/user-card relative min-w-0 max-w-full overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
@@ -3540,7 +3655,10 @@ function renderEvent(
             </div>
           ) : null}
         </div>
-        {event.metadata?.ctoReaction ? <UserMessageReaction emoji={event.metadata.ctoReaction.emoji} /> : null}
+        {event.metadata?.ctoReaction ? (
+          <UserMessageReaction emoji={event.metadata.ctoReaction.emoji} by={options?.assistantLabel?.trim() || "CTO"} />
+        ) : null}
+        </div>
         <UserMessageStatusRow
           event={event}
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
@@ -3600,20 +3718,35 @@ function renderEvent(
               Interim narration and a finished turn's last reply float that line
               into the gap below instead of reserving it: there it was an empty
               strip above the next row or the turn-end line. */}
-          <div
-            data-testid="assistant-text-hover-footer"
-            className={cn(
-              "flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100",
-              options?.interimText || options?.turnEndText
-                ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
-                : "mt-0.5",
-            )}
-          >
-            {event.originTimestamp || envelope.timestampSynthetic !== true
-              ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
-              : null}
-            <MessageCopyButton value={shownText} iconOnly />
-          </div>
+          {(() => {
+            const reactKey = options?.onReactToMessage ? assistantMessageReactionKey(event) : null;
+            const reaction = reactKey ? event.userReaction ?? null : null;
+            return (
+              <div
+                data-testid="assistant-text-hover-footer"
+                className={cn(
+                  "flex h-5 items-center gap-1",
+                  options?.interimText || options?.turnEndText
+                    ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
+                    : "mt-0.5",
+                )}
+              >
+                {/* The person's reaction stays in view; the rest shows on hover. */}
+                {reactKey && reaction ? (
+                  <AssistantMessageReactions targetKey={reactKey} current={reaction} onReact={options!.onReactToMessage!} />
+                ) : null}
+                <div className="flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+                  {event.originTimestamp || envelope.timestampSynthetic !== true
+                    ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
+                    : null}
+                  <MessageCopyButton value={shownText} iconOnly />
+                  {reactKey && !reaction ? (
+                    <AssistantMessageReactions targetKey={reactKey} current={null} onReact={options!.onReactToMessage!} />
+                  ) : null}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </motion.div>
     );
@@ -5573,6 +5706,8 @@ type EventRowProps = SpawnedChatProviderProps & {
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
   onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  /** CTO chats only: the person's emoji on one of the CTO's messages. */
+  onReactToMessage?: AgentChatReactHandler;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -5659,6 +5794,7 @@ const EventRow = React.memo(function EventRow({
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
   onDismissUnprocessedMessage,
+  onReactToMessage,
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -5800,6 +5936,7 @@ const EventRow = React.memo(function EventRow({
             onRunUnprocessedMessage,
             onEditUnprocessedMessage,
             onDismissUnprocessedMessage,
+            onReactToMessage,
             turnModel,
             surfaceMode,
             surfaceProfile,
@@ -6426,6 +6563,7 @@ function AgentChatMessageListMain({
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
   onDismissUnprocessedMessage,
+  onReactToMessage,
     surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -6513,6 +6651,8 @@ function AgentChatMessageListMain({
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
   onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  /** CTO chats only: the person's emoji on one of the CTO's messages. */
+  onReactToMessage?: AgentChatReactHandler;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -9491,6 +9631,7 @@ function AgentChatMessageListMain({
           onRunUnprocessedMessage={onRunUnprocessedMessage}
           onEditUnprocessedMessage={onEditUnprocessedMessage}
           onDismissUnprocessedMessage={onDismissUnprocessedMessage}
+          onReactToMessage={onReactToMessage}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={rowAssistantLabel}
@@ -9569,6 +9710,7 @@ function AgentChatMessageListMain({
         onRunUnprocessedMessage={onRunUnprocessedMessage}
         onEditUnprocessedMessage={onEditUnprocessedMessage}
         onDismissUnprocessedMessage={onDismissUnprocessedMessage}
+        onReactToMessage={onReactToMessage}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={rowAssistantLabel}
@@ -9616,7 +9758,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onReactToMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

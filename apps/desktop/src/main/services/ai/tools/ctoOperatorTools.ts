@@ -3162,7 +3162,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "Put an emoji on the person's newest message instead of replying, when they wrote and need no words back "
       + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_LEGEND}. `
-      + "A newer reaction replaces the old one. It ends the turn with no reply: write nothing after it.",
+      + "A newer reaction replaces the old one. In a turn the person did not start (a helper's report, a wake), "
+      + "it swaps the newest 👀 you left on one of their messages, so 👀 can become ✅ once the look is done. "
+      + "It ends the turn with no reply: write nothing after it.",
     inputSchema: z.object({
       emoji: z.enum(CTO_REACTION_EMOJIS as [CtoReactionEmoji, ...CtoReactionEmoji[]]),
     }),

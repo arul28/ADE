@@ -953,6 +953,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "recoverTurn",
     "recoverCodexTurn",
     "resolveUnprocessedMessage",
+    "reactToMessage",
     "recoverContinuity",
     "restoreCancelledQueue",
     "killDroidWorker",

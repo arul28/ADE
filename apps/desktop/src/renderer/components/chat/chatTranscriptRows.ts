@@ -24,7 +24,7 @@ import {
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
-import { isCtoReactionEmoji, userMessageReactionKey } from "../../../shared/types/chat";
+import { assistantMessageReactionKey, isChatReactionEmoji, isCtoReactionEmoji, userMessageReactionKey } from "../../../shared/types/chat";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -3149,6 +3149,27 @@ function attachUserMessageReaction(
   }
 }
 
+/**
+ * The person's reaction lands on the CTO message it names
+ * (`metadata.userReaction`), the newest of theirs winning. A merged text row
+ * keeps its first fragment's ids, so its key is the one the person clicked.
+ */
+function attachAssistantMessageReaction(
+  rows: ChatTranscriptRenderEnvelope[],
+  event: Extract<AgentChatEvent, { type: "assistant_message_reaction" }>,
+): void {
+  if (!isChatReactionEmoji(event.emoji)) return;
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.event.type !== "text" || assistantMessageReactionKey(row.event) !== event.targetKey) continue;
+    rows[index] = {
+      ...row,
+      event: { ...row.event, userReaction: event.emoji },
+    };
+    return;
+  }
+}
+
 export function appendCollapsedChatTranscriptEvent(
   rows: ChatTranscriptRenderEnvelope[],
   envelope: AgentChatEventEnvelope,
@@ -3298,6 +3319,11 @@ export function appendCollapsedChatTranscriptEvent(
 
   if (event.type === "user_message_reaction") {
     attachUserMessageReaction(rows, event);
+    return;
+  }
+
+  if (event.type === "assistant_message_reaction") {
+    attachAssistantMessageReaction(rows, event);
     return;
   }
 

@@ -592,6 +592,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("resolveUnprocessedMessage", pin);
       return await callRequiredMutation("chat.resolveUnprocessedMessage", args);
     },
+    reactToMessage: async (args, pin) => {
+      guardPin("reactToMessage", pin);
+      return await callRequiredMutation("chat.reactToMessage", args);
+    },
     // Chats, lanes and terminals for the composer's @ menu.
     listMentionSuggestions: async (args, pin) => {
       guardPin("listMentionSuggestions", pin);

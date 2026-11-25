@@ -69,6 +69,8 @@ export function transcriptEventDrawsNothing(
       if (isRestartResumeScheduleId(event.metadata?.scheduledWake?.scheduleId)) return true;
       // The CTO's child report: its `spawn_completed` line already shows it.
       if (event.metadata?.hostContinuation?.reason === "cto_child_report") return true;
+      // The person's reaction to a CTO message: the badge on it is the whole of it.
+      if (event.metadata?.hostContinuation?.reason === "cto_user_reaction") return true;
       // A subagent's or peer's report: the spawn_wake_divider row above it
       // already says who came back and what it said. Same test as the
       // divider's (chatTranscriptRows), so a report never loses both.

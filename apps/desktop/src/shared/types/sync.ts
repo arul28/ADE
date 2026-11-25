@@ -3218,6 +3218,7 @@ export type SyncRemoteCommandAction =
   | "chat.recoverCodexTurn"
   | "chat.recoverTurn"
   | "chat.resolveUnprocessedMessage"
+  | "chat.reactToMessage"
   | "chat.steer"
   | "chat.typeIntoCli"
   | "chat.cancelSteer"

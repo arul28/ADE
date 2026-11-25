@@ -64,3 +64,46 @@ export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent
   }
   return false;
 }
+
+/**
+ * The message a turn that read nothing from the person may still react to:
+ * the person's newest message carrying the CTO's 👀, so the 👀 can become ✅
+ * (or another reaction) once the look it promised is done, in a later turn or
+ * after a restart. Null when no 👀 of the CTO's stands.
+ */
+export function ctoLookingReactTarget(events: readonly AgentChatEvent[], provider: AgentChatProvider): string | null {
+  const reactionByKey = new Map<string, string>();
+  const personKeys: string[] = [];
+  for (const event of events) {
+    if (event.type === "user_message_reaction") {
+      reactionByKey.set(event.targetKey, event.emoji);
+    } else if (event.type === "user_message" && ctoTurnReadsPersonMessage(event, provider)) {
+      const key = userMessageReactionKey(event);
+      if (key) personKeys.push(key);
+    }
+  }
+  for (let index = personKeys.length - 1; index >= 0; index -= 1) {
+    const key = personKeys[index]!;
+    if (reactionByKey.get(key) === "👀") return key;
+  }
+  return null;
+}
+
+/** How much of a reacted-to message the CTO is shown, so it knows which one. */
+const REACTION_QUOTE_CAP = 280;
+
+/** The hidden prompt that tells the CTO the person reacted to one of its messages. */
+export function ctoUserReactionPrompt(emoji: string, meaning: string, reacted: string): string {
+  const flat = reacted.split(/\s+/).filter(Boolean).join(" ");
+  const chars = Array.from(flat);
+  const quote = chars.length > REACTION_QUOTE_CAP ? `${chars.slice(0, REACTION_QUOTE_CAP).join("")}…` : flat;
+  return [
+    `The person reacted ${emoji} (${meaning}) to your message:`,
+    "",
+    `> ${quote}`,
+    "",
+    "A reaction, not a typed message. Answer only what it calls for, as you would a short message. "
+    + "Most reactions need nothing back: end with noReply. "
+    + "A 👎 means that message missed: say in a line what you will change, or ask what they wanted.",
+  ].join("\n");
+}

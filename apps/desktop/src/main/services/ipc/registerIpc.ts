@@ -539,6 +539,8 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
+  AgentChatReactToMessageArgs,
+  AgentChatReactToMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
@@ -9870,6 +9872,20 @@ export function registerIpc({
       steerId: request.steerId,
     });
     return await ctx.agentChatService.resolveUnprocessedMessage(request);
+  });
+
+  handle(IPC.agentChatReactToMessage, async (
+    _event,
+    arg: unknown,
+  ): Promise<AgentChatReactToMessageResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = requireRecord(arg, "Agent chat reaction request");
+    // The service checks the emoji against the set and the target against the transcript.
+    return await ctx.agentChatService.reactToMessage({
+      sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
+      targetKey: parseAgentChatRecoveryIdentifier(record.targetKey, "targetKey"),
+      emoji: String(record.emoji ?? "") as AgentChatReactToMessageArgs["emoji"],
+    });
   });
 
   handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {

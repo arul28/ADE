@@ -1691,6 +1691,16 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      /**
+       * CTO only: an emoji the person put on one of the CTO's messages.
+       * `targetKey` is `assistantMessageReactionKey` of that message; the
+       * person's newer reaction on the same key replaces the older one.
+       */
+      type: "assistant_message_reaction";
+      targetKey: string;
+      emoji: ChatReactionEmoji;
+    }
+  | {
       type: "text";
       text: string;
       messageId?: string;
@@ -1704,6 +1714,8 @@ export type AgentChatEvent =
        */
       phase?: AgentChatTextPhase;
       runtime?: AgentChatRuntime;
+      /** Renderer-folded: the person's newest `assistant_message_reaction` on this CTO message. */
+      userReaction?: ChatReactionEmoji;
     }
   | {
       type: "tool_call";
@@ -6180,10 +6192,11 @@ export type AgentChatSetRootFullAccessArgs = { allowed: boolean };
 export const CTO_INTERIM_REPLY_ID_PREFIX = "cto-reply:";
 
 /**
- * The reactions the CTO may put on the person's message (`react`), each with
- * what it means. A fixed set, so every client draws the same thing.
+ * The reactions there are, each with what it means: the CTO's on the person's
+ * message (`react`) and the person's on the CTO's. A short fixed set, so each
+ * keeps one meaning the prompt can teach and every client draws the same thing.
  */
-export const CTO_REACTION_MEANINGS = {
+export const CHAT_REACTION_MEANINGS = {
   "👍": "got it",
   "👀": "looking into it",
   "✅": "done",
@@ -6191,9 +6204,26 @@ export const CTO_REACTION_MEANINGS = {
   "❤️": "thanks",
   "😂": "funny",
   "😢": "sorry",
+  "👎": "not this",
 } as const;
 
-export type CtoReactionEmoji = keyof typeof CTO_REACTION_MEANINGS;
+export type ChatReactionEmoji = keyof typeof CHAT_REACTION_MEANINGS;
+
+/** The person's set, in picker order. */
+export const CHAT_REACTION_EMOJIS: readonly ChatReactionEmoji[] = ["👍", "👎", "❤️", "😂", "🎉", "✅", "👀", "😢"];
+
+/** The CTO's set: every reaction but 👎, which the CTO has no use for. */
+export type CtoReactionEmoji = Exclude<ChatReactionEmoji, "👎">;
+
+export const CTO_REACTION_MEANINGS: Readonly<Record<CtoReactionEmoji, string>> = {
+  "👍": CHAT_REACTION_MEANINGS["👍"],
+  "👀": CHAT_REACTION_MEANINGS["👀"],
+  "✅": CHAT_REACTION_MEANINGS["✅"],
+  "🎉": CHAT_REACTION_MEANINGS["🎉"],
+  "❤️": CHAT_REACTION_MEANINGS["❤️"],
+  "😂": CHAT_REACTION_MEANINGS["😂"],
+  "😢": CHAT_REACTION_MEANINGS["😢"],
+};
 
 export const CTO_REACTION_EMOJIS = Object.keys(CTO_REACTION_MEANINGS) as CtoReactionEmoji[];
 
@@ -6202,6 +6232,42 @@ export const CTO_REACTION_LEGEND = CTO_REACTION_EMOJIS.map((emoji) => `${emoji} 
 
 export function isCtoReactionEmoji(value: unknown): value is CtoReactionEmoji {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(CTO_REACTION_MEANINGS, value);
+}
+
+export function isChatReactionEmoji(value: unknown): value is ChatReactionEmoji {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(CHAT_REACTION_MEANINGS, value);
+}
+
+/**
+ * The emoji a model or a keyboard wrote, as the set stores it. A variation
+ * selector is ignored on both sides: some keyboards add one to ✅, and ❤
+ * without it draws as a text glyph, so the stored ❤️ keeps it. Null for
+ * anything outside the set.
+ */
+export function normalizeChatReactionEmoji(value: unknown): ChatReactionEmoji | null {
+  if (typeof value !== "string") return null;
+  const bare = value.trim().replace(/️/g, "");
+  if (!bare) return null;
+  return (Object.keys(CHAT_REACTION_MEANINGS) as ChatReactionEmoji[])
+    .find((emoji) => emoji.replace(/️/g, "") === bare) ?? null;
+}
+
+/**
+ * The key an `assistant_message_reaction` names the CTO's message by: its
+ * message id, else its item id, else its turn. Null for one with none.
+ * Clients compute the same key for each reply (iOS mirrors this).
+ */
+export function assistantMessageReactionKey(event: {
+  messageId?: string;
+  itemId?: string;
+  turnId?: string;
+}): string | null {
+  const messageId = event.messageId?.trim();
+  if (messageId) return `message:${messageId}`;
+  const itemId = event.itemId?.trim();
+  if (itemId) return `item:${itemId}`;
+  const turnId = event.turnId?.trim();
+  return turnId ? `turn:${turnId}` : null;
 }
 
 /**
@@ -6859,6 +6925,20 @@ export type AgentChatRecoverCodexTurnResult = {
   action: AgentChatCodexRecoveryAction;
   turnId: string;
   status: "waiting" | "nudged" | "retrying" | "resumed";
+};
+
+/** The person's emoji on one of the CTO's messages (`assistantMessageReactionKey`). */
+export type AgentChatReactToMessageArgs = {
+  sessionId: string;
+  targetKey: string;
+  emoji: ChatReactionEmoji;
+};
+
+export type AgentChatReactToMessageResult = {
+  targetKey: string;
+  emoji: ChatReactionEmoji;
+  /** False when that emoji was already there: nothing changed and the CTO was not told. */
+  changed: boolean;
 };
 
 export type AgentChatResolveUnprocessedMessageArgs = {

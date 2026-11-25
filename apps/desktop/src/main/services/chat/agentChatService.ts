@@ -763,6 +763,8 @@ import type {
   AgentChatRespondToInputArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
+  AgentChatReactToMessageArgs,
+  AgentChatReactToMessageResult,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatRerunLastTurnArgs,
@@ -931,7 +933,12 @@ import {
   CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS,
   CTO_INTERIM_REPLY_ID_PREFIX,
   CTO_REACTION_EMOJIS,
+  CHAT_REACTION_EMOJIS,
+  CHAT_REACTION_MEANINGS,
+  assistantMessageReactionKey,
   isCtoReactionEmoji,
+  normalizeChatReactionEmoji,
+  type ChatReactionEmoji,
   type CtoReactionEmoji,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -1092,7 +1099,7 @@ import {
   selectCrossMachineReturnSuffix,
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
-import { stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { ctoLookingReactTarget, ctoUserReactionPrompt, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
 import {
   CrossMachineHandoffReturnRefusedError,
   createCrossMachineHandoffDestination,
@@ -68086,9 +68093,19 @@ export function createAgentChatService(args: {
     }
     const turn = runningCtoTurn(args.sessionId, "react");
     if ("note" in turn) return { reacted: false, note: turn.note };
-    const targetKey = turn.managed.ctoTurn?.reactTarget ?? null;
+    // A turn that read the person reacts to what it read. Any other turn (a
+    // helper's report, a wake, the first turn after a restart) may only swap
+    // a 👀 it left standing, read from the transcript so a restart keeps it.
+    const targetKey = turn.managed.ctoTurn?.reactTarget
+      ?? ctoLookingReactTarget(
+        readRecentTranscriptEnvelopes(turn.managed).map((entry) => entry.event),
+        turn.managed.session.provider,
+      );
     if (!targetKey) {
-      return { reacted: false, note: "Not done: the person wrote nothing this turn. End with noReply, or reply." };
+      return {
+        reacted: false,
+        note: "Not done: the person wrote nothing this turn, and no 👀 of yours is waiting to be swapped. Reply, or end with noReply.",
+      };
     }
     flushBufferedReasoning(turn.managed);
     flushBufferedText(turn.managed, "interleave");
@@ -68100,6 +68117,50 @@ export function createAgentChatService(args: {
     });
     endCtoTurnWithoutText(turn.managed, turn.turnId);
     return { reacted: true };
+  };
+
+  /**
+   * The person's emoji on one of the CTO's messages. Logged as a badge on that
+   * message, replacing their earlier one there, then told to the CTO as a
+   * hidden wake (`cto_user_reaction`, which draws nothing), so it can take it
+   * as feedback and answer or stay quiet.
+   */
+  const reactToMessage = async (args: AgentChatReactToMessageArgs): Promise<AgentChatReactToMessageResult> => {
+    const emoji = normalizeChatReactionEmoji(args.emoji);
+    if (!emoji) throw new Error(`Pick one of ${CHAT_REACTION_EMOJIS.join(" ")}.`);
+    const sessionId = args.sessionId?.trim();
+    const targetKey = args.targetKey?.trim();
+    if (!sessionId || !targetKey) throw new Error("A reaction needs a chat and a message.");
+    const managed = ensureManagedSession(sessionId);
+    if (managed.deleted || managed.session.identityKey !== "cto") {
+      throw new Error("Only the CTO's messages take a reaction.");
+    }
+    if (managed.session.archivedAt) throw new Error("This chat is archived.");
+    const events = readRecentTranscriptEnvelopes(managed).map((entry) => entry.event);
+    const retracted = new Set<string>();
+    let reacted = "";
+    let previous: ChatReactionEmoji | null = null;
+    for (const event of events) {
+      if (event.type === "transcript_retraction") {
+        for (const id of event.messageIds) retracted.add(`message:${id.trim()}`);
+      } else if (event.type === "text" && assistantMessageReactionKey(event) === targetKey) {
+        reacted += event.text;
+      } else if (event.type === "assistant_message_reaction" && event.targetKey === targetKey) {
+        previous = event.emoji;
+      }
+    }
+    if (!reacted.trim() || retracted.has(targetKey)) {
+      throw new Error("That message is no longer in this chat.");
+    }
+    if (previous === emoji) return { targetKey, emoji, changed: false };
+    emitChatEvent(managed, { type: "assistant_message_reaction", targetKey, emoji });
+    await messageSession({
+      sessionId,
+      kind: "wake",
+      text: ctoUserReactionPrompt(emoji, CHAT_REACTION_MEANINGS[emoji], reacted),
+      metadata: { hostContinuation: { reason: "cto_user_reaction" } },
+    });
+    return { targetKey, emoji, changed: true };
   };
 
   /**
@@ -85452,6 +85513,7 @@ ${schedule.prompt}`
     recoverCodexTurn,
     assertRecoveryTargetOwned,
     resolveUnprocessedMessage,
+    reactToMessage,
     recoverContinuity,
     resumeSession,
     listSessions,

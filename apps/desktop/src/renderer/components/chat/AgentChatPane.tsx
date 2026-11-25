@@ -115,6 +115,7 @@ import {
   queuedSteersCanReorder,
   AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS,
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
+  type ChatReactionEmoji,
 } from "../../../shared/types/chat";
 import { musePermissionModeFromLegacyPermissionMode, nativePermissionToCliMode, resolveModelPermissionValue } from "../../../shared/modelPermissions";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -18354,6 +18355,24 @@ export function AgentChatPane({
     },
     [refreshSessions],
   );
+  // The person's emoji on a CTO message goes to the machine the CTO runs on.
+  const handleReactToMessage = useCallback(
+    async (targetKey: string, emoji: ChatReactionEmoji) => {
+      const sessionId = selectedSessionIdRef.current;
+      if (!sessionId) throw new Error("This chat is no longer selected.");
+      try {
+        await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.reactToMessage({
+          sessionId,
+          targetKey,
+          emoji,
+        }, chatPin));
+      } catch (reactError) {
+        setError(reactError instanceof Error ? reactError.message : String(reactError));
+        throw reactError;
+      }
+    },
+    [],
+  );
   const handleListRetryProviderFailure = useCallback(
     async (failedTurnId: string | null) => {
       if (!selectedSessionId) return "This chat is no longer selected.";
@@ -23133,6 +23152,7 @@ export function AgentChatPane({
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
                         onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
+                        onReactToMessage={!subagentView && selectedSession?.identityKey === "cto" && !selectedSession.archivedAt ? handleReactToMessage : undefined}
                         onRetryProviderFailure={listRetryProviderFailure}
                         onRetryCompaction={retryCompaction}
                         latestCompactionKey={latestCompactionKey}

@@ -812,6 +812,8 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
+  AgentChatReactToMessageArgs,
+  AgentChatReactToMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
@@ -9639,6 +9641,17 @@ const adeBridge = {
       agentChatSummaryCache.clear();
       return result;
     },
+    reactToMessage: async (
+      args: AgentChatReactToMessageArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatReactToMessageResult> =>
+      callPinnedOrBoundRuntimeActionOr<AgentChatReactToMessageResult>(
+        pin,
+        "chat",
+        "reactToMessage",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatReactToMessage, args),
+      ),
     recoverContinuity: async (
       args: AgentChatRecoverContinuityArgs,
       pin?: OpenProjectBinding | null,
