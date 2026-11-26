@@ -819,6 +819,20 @@ describe("createAgentChatService", () => {
         return found!;
       });
       expect((wake.event as any).metadata?.spawnCompletion).toBeUndefined();
+
+      // A later child turn reopens the CTO's row, as for any parent: the row
+      // that the first result settled must read as running again.
+      await service.messageSession({ sessionId: child.id, text: "Handle the follow-up too." });
+      await vi.waitFor(() => {
+        expect(events.filter((event) =>
+          event.sessionId === cto.id && event.event.type === "subagent_result")).toHaveLength(2);
+      });
+      const ctoStarts = events
+        .filter((event) => event.sessionId === cto.id && event.event.type === "subagent_started")
+        .map((event) => event.event);
+      expect(ctoStarts).toHaveLength(2);
+      expect((ctoStarts[0] as any).resumed).not.toBe(true);
+      expect(ctoStarts[1]).toMatchObject({ taskId: `chat:${child.id}`, resumed: true });
     });
 
     it("wakes the parent when a human messages a subagent, and names that human message in the report", async () => {
