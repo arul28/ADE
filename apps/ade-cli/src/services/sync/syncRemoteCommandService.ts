@@ -7291,8 +7291,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     // Returns the CtoMemorySnapshot the iOS client decodes (every field
-    // defaulted there); the v1-only fields are sent empty.
-    return ctoMemoryService.getSnapshot();
+    // defaulted there); the v1-only fields are sent empty. Linked work that
+    // finished closes first, as on the desktop.
+    return ctoMemoryService.getReconciledSnapshot();
   });
   // Not queueable: a whole-file write replayed later would overwrite whatever
   // the CTO or another device saved in between. `baseHash` refuses that too.
