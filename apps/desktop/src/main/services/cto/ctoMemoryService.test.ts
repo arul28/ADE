@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createCtoMemoryArchive } from "./ctoMemoryArchive";
 import { createCtoMemoryService } from "./ctoMemoryService";
 
 function createFixture() {
@@ -252,6 +253,30 @@ describe("ctoMemoryService archive", () => {
     expect(service.readNotes("project")).toBe(before);
     expect(notes.every((note) => before.includes(note))).toBe(true);
     expect(service.searchArchive().available).toBe(false);
+  });
+
+  it("changes no note when the archive can't keep the line that leaves", () => {
+    vi.useFakeTimers();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cto-memory-"));
+    const adeDir = path.join(root, ".ade");
+    // The archive opens, but every write fails (a full disk, a lock that never clears).
+    const real = createCtoMemoryArchive({ dir: path.join(adeDir, "cto") });
+    const archive = { ...real, add: () => null, addMany: () => null };
+    const service = createCtoMemoryService({ adeDir, userNotesDir: path.join(root, "home-cto"), archive });
+    fillNotes(service, new Date("2026-11-01T09:00:00.000Z"));
+    const before = service.readNotes("project");
+    const firstNote = before.split("\n")[0]!.slice(2);
+
+    const forgot = service.forget({ note: firstNote });
+    const replaced = service.remember({ note: uniqueNote("swap"), replaces: firstNote });
+    const overflow = service.remember({ note: uniqueNote("overflow") });
+    for (const result of [forgot, replaced, overflow]) {
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.error).toMatch(/Couldn't save to the archive/);
+    }
+    expect(() => service.writeNotes("project", `${before}- ${uniqueNote("typed")}\n`)).toThrow(/Couldn't save to the archive/);
+    expect(service.readNotes("project")).toBe(before);
+    real.close();
   });
 
   it("keeps every story version, replaced and forgotten notes, drained discoveries and fold facts, and imports older files once", () => {

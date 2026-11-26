@@ -130,6 +130,8 @@ describe("ctoAccountCopyService across machines", () => {
       "A decided long ago to keep the monorepo",
     ]));
     expect(a.memory.searchArchive({ query: "billing queue" }).entries[0]?.sourceLabel).toBe("Tool result (listPrs)");
+    const vault = account.vaultFor({ synced: "ready" });
+    const revisionsBefore = new Map(vault.list().map((row) => [row.key, row.revision]));
     const c = createMachine("device-c", account);
     const homeC = homeOn("device-c");
     account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, homeC);
@@ -144,8 +146,25 @@ describe("ctoAccountCopyService across machines", () => {
     const index = decodeCtoArchiveCopyIndex(account.value("archive"));
     expect(index?.ownerDeviceId).toBe("device-c");
     expect(account.liveKeys()).toEqual(expect.arrayContaining([...index!.chunks]));
+    // C wrote every chunk it took over again: a delete the old home queued
+    // against the revision it knew goes stale, and the chunk stays.
+    const inherited = index!.chunks.find((key) => revisionsBefore.has(key));
+    expect(inherited, "C's index reuses a chunk A wrote").toBeTruthy();
+    expect(vault.tryRemove!(SCOPE, CTO_ACCOUNT_COPY_VAULT_KIND, inherited!, { expectedRevision: revisionsBefore.get(inherited!) })).toBe("stale");
+    expect(account.liveKeys()).toContain(inherited);
+
+    // C pins a note back from the archive; after the move back, A's archive
+    // drops its own copy of it too, and the note is in A's notes.
+    const staging = c.memory.searchArchive({ query: "staging cluster" }).entries[0];
+    expect(staging?.text).toBe("The staging cluster is eu-west-2");
+    expect(c.memory.recallArchived({ id: staging!.id }).ok).toBe(true);
+    tick();
+    await c.service.save("turn_ended");
     account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
     await a.service.adopt({ home });
+    expect(a.memory.readNotes("project")).toContain("The staging cluster is eu-west-2");
+    expect(texts(a)).not.toContain("The staging cluster is eu-west-2");
+    expect(texts(a)).toContain("PR #4182 moved billing to the new queue");
 
     // B is not the home any more: its saves leave the copy alone.
     b.memory.writeNotes("project", "- Written on the old home after the move");
