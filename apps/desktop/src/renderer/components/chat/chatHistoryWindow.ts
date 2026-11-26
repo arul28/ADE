@@ -198,13 +198,19 @@ export function prependOlderChatHistoryPage(
   dedupeAll = false,
 ): AgentChatEventEnvelope[] {
   if (!older.length) return existing;
-  if (!existing.length) return older.slice();
   const seamWindow = dedupeAll ? existing.length : Math.min(existing.length, older.length + 64);
   const seamKeys = new Set<string>();
   for (let index = 0; index < seamWindow; index += 1) {
     seamKeys.add(chatEventDedupKey(existing[index]!));
   }
-  const fresh = older.filter((entry) => !seamKeys.has(chatEventDedupKey(entry)));
+  // One batch can hold an event twice: a computer's page, then the saved
+  // copy's newest page once the computer went to sleep mid-batch.
+  const fresh = older.filter((entry) => {
+    const key = chatEventDedupKey(entry);
+    if (seamKeys.has(key)) return false;
+    seamKeys.add(key);
+    return true;
+  });
   return fresh.length ? [...fresh, ...existing] : existing;
 }
 

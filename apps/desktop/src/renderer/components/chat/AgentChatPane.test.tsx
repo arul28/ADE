@@ -6334,13 +6334,14 @@ describe("prependOlderChatHistoryPage", () => {
     expect(merged[1]).toBe(seam);
 
     // A page of an ADE Cloud chat's saved copy can repeat an entry anywhere in
-    // the loaded list after its computer wakes, far past the seam.
+    // the loaded list after its computer wakes, far past the seam, and a batch
+    // that read the computer and then the saved copy can hold an entry twice.
     const later = Array.from({ length: 80 }, (_, index) =>
       envelope(`2026-06-10T11:00:${String(index % 60).padStart(2, "0")}.${String(index).padStart(3, "0")}Z`, 10 + index, `later-${index}`));
     const deep = envelope("2026-06-10T12:00:00.000Z", 99, "deep");
     const loadedMany = [...later, deep];
     const savedPage = prependOlderChatHistoryPage(
-      [older, envelope("2026-06-10T12:00:00.000Z", 99, "deep")],
+      [older, envelope("2026-06-10T12:00:00.000Z", 99, "deep"), envelope("2026-06-10T09:00:00.000Z", 1, "older")],
       loadedMany,
       true,
     );
