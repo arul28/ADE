@@ -1,5 +1,5 @@
 import { captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
-import { blockCommand, sendOwnerAlert } from "./blocks";
+import { blockCommand, notBlockedSql, sendOwnerAlert } from "./blocks";
 import type { CloudSponsoredState } from "./contract";
 import type { GravityEnv } from "./gravity";
 import { SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE, cloudSizeFor, type CloudSize } from "./plans";
@@ -80,22 +80,32 @@ export function smallStateOf(account: AccountRow, consent: ConsentRow | null, wh
  * the US and uses hours otherwise; ads off is Small unlimited for everyone.
  */
 export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings, now = Date.now()): Promise<boolean> {
-  return (await smallRule(env, account, settings, now)).free;
+  return SMALL_FREE_WHYS.has(await smallRule(env, account, settings, now));
 }
 
 /**
- * `smallUsesNoHours` with its reason: not on Free, the ad switch doesn't reach
- * the account, a recent US look (`look`), a yes whose looks lapsed
- * (`lapsed`), or no yes at all.
+ * Why Small is free or not: not on Free, the ad switch doesn't reach the
+ * account, a recent US look (`look`), a yes whose looks lapsed (`lapsed`), or
+ * no yes at all.
  */
-async function smallRule(env: GravityEnv, account: AccountRow, settings: CloudSettings | undefined, now: number): Promise<{ free: boolean; why: "not_free" | "unreached" | "look" | "lapsed" | "no_yes" }> {
-  if (shownPlanIdOf(account) !== "free") return { free: true, why: "not_free" };
+type SmallWhy = "not_free" | "unreached" | "look" | "lapsed" | "no_yes";
+const SMALL_FREE_WHYS: ReadonlySet<SmallWhy> = new Set(["not_free", "unreached", "look"]);
+
+async function smallRule(env: GravityEnv, account: AccountRow, settings: CloudSettings | undefined, now: number): Promise<SmallWhy> {
+  if (shownPlanIdOf(account) !== "free") return "not_free";
   const { mode } = await gravitySwitches(env, settings ?? (await readCloudSettings(env)));
-  if (!(await switchReaches(env, account, mode))) return { free: true, why: "unreached" };
+  if (!(await switchReaches(env, account, mode))) return "unreached";
   const consent = await readConsent(env, account.user_id);
-  if (lookKeepsSmallFree(consent, now)) return { free: true, why: "look" };
-  return { free: false, why: consent?.consent === "granted" ? "lapsed" : "no_yes" };
+  if (lookKeepsSmallFree(consent, now)) return "look";
+  return consent?.consent === "granted" ? "lapsed" : "no_yes";
 }
+
+/** SQL over `cloud_accounts a`: on Free as the account is shown (a test plan first, `shownPlanIdOf`). */
+const SHOWN_FREE_SQL = "coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) = 'free'";
+/** SQL over `cloud_accounts a`, binding the ad switch's mode twice: the switch reaches the account (`switchReaches`). */
+const SWITCH_REACHES_SQL = "(? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))";
+/** SQL over a `cloud_computers` alias, binding `SMALL_SHAPE`'s cpu and memory: a Small computer. */
+const smallComputerSql = (alias: string): string => `${alias}.type = 'default' and ${alias}.cpu = ? and ${alias}.memory_gb = ?`;
 
 /**
  * A look at one of the account's ADE Cloud chats or terminals found its yes
@@ -109,16 +119,27 @@ export async function noteSmallLook(env: GravityEnv, account: AccountRow, consen
   if (!smallFreeFrom(country)) return;
   if (consent.looked_at != null && now - consent.looked_at < LOOK_REFRESH_MS) return;
   // Both sides read the row as it was: the network moves only with a look that moves `looked_at`.
-  await env.DB.prepare(`
+  const saved = await env.DB.prepare(`
     update cloud_sponsored_consent set looked_at = max(coalesce(looked_at, 0), ?),
       looked_asn = case when ? >= coalesce(looked_at, 0) then ? else looked_asn end
     where user_id = ? and consent = 'granted' and decided_at = ?
-  `).bind(now, now, asn, account.user_id, consent.decided_at).run();
+  `).bind(now, now, smallLookNetwork(account, asn), account.user_id, consent.decided_at).run();
+  // A no saved meanwhile: this look counted for nothing.
+  if (!saved.meta?.changes) return;
   if (!lookKeepsSmallFree(consent, now) && await syncSmallRates(env, account, now)) {
     captureCloudFreePlan(env, waitUntil, account.user_id, "small_restored", null, now);
   }
   await smallLookTripwire(env, account, asn, now, waitUntil);
 }
+
+/**
+ * The network kept with a US look or yes: only Free's, the one plan the
+ * tripwire reads, so a paid account's is never stored.
+ */
+export const smallLookNetwork = (account: AccountRow, asn: number | null): number | null => (shownPlanIdOf(account) === "free" ? asn : null);
+
+/** The owner hears of one account at most once in this long (weeks counted from the Unix epoch, so they start Thursdays 00:00 UTC). */
+const TRIPWIRE_ALERT_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * The tripwire at a US look or yes (`gravity.ts`): one from the network the
@@ -129,19 +150,23 @@ export async function noteSmallLook(env: GravityEnv, account: AccountRow, consen
  */
 export async function smallLookTripwire(env: GravityEnv, account: AccountRow, asn: number | null, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
   // Only Free's Small costs anything without a look.
-  if (asn == null || shownPlanIdOf(account) !== "free") return;
+  const network = smallLookNetwork(account, asn);
+  if (network == null) return;
   try {
-    const own = await env.DB.prepare("select count(*) as computers from cloud_computers where user_id = ? and deleted_at is null and net_asn = ?")
-      .bind(account.user_id, asn).first<{ computers: number }>();
-    if (!own?.computers) return;
-    logCloud("cloud.sponsored.small_cloud_look", { userId: account.user_id, asn });
+    const own = await env.DB.prepare(`
+      select coalesce(sum(net_asn = ?), 0) as onNetwork, coalesce(sum(${smallComputerSql("c")}), 0) as smalls
+      from cloud_computers c where c.user_id = ? and c.deleted_at is null
+    `).bind(network, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, account.user_id).first<{ onNetwork: number; smalls: number }>();
+    // Only a look from its computers' network that keeps a live Small free matters.
+    if (!own?.onNetwork || !own.smalls) return;
+    logCloud("cloud.sponsored.small_cloud_look", { userId: account.user_id, asn: network });
     await sendOwnerAlert(env, {
-      key: `small_cloud_look:${account.user_id}:${Math.floor(now / SMALL_FREE_LOOK_MS)}`,
+      key: `small_cloud_look:${account.user_id}:${Math.floor(now / TRIPWIRE_ALERT_MS)}`,
       kind: "small_cloud_look",
       userId: account.user_id,
       subject: "ADE Cloud: free Small kept free from its own cloud computer's network",
       reason: "A US view of a cloud chat (or a turn-on of sponsored cards) that keeps this Free account's Small computers free came from the same network as its own ADE Cloud computers, not from a phone or laptop. It may be a script on the computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
-      counts: { Network: `AS${asn}`, "Its computers on that network": own.computers },
+      counts: { Network: `AS${network}`, "Its computers on that network": own.onNetwork, "Its Small computers": own.smalls },
       step: "small_cloud_look",
       abuse: true,
     }, now, waitUntil);
@@ -151,11 +176,19 @@ export async function smallLookTripwire(env: GravityEnv, account: AccountRow, as
 }
 
 /**
+ * Networks privacy relays share with everyone: Cloudflare (WARP, and part of
+ * iCloud Private Relay), Akamai and Fastly (the rest of Private Relay). A
+ * computer seen on one names no datacenter of its own, and a match on it would
+ * trip for every Safari user of ADE's web app: never kept.
+ */
+const SHARED_RELAY_NETWORKS: ReadonlySet<number> = new Set([13335, 36183, 54113]);
+
+/**
  * Keeps the network an ADE Cloud computer's brain calls from (its activity
  * report, `routes.ts`), for the tripwire. Written only when it changed.
  */
 export async function noteComputerNetwork(env: Pick<GravityEnv, "DB">, computer: Pick<ComputerRow, "instance_id" | "net_asn">, asn: number | null): Promise<void> {
-  if (asn == null || computer.net_asn === asn) return;
+  if (asn == null || SHARED_RELAY_NETWORKS.has(asn) || computer.net_asn === asn) return;
   await env.DB.prepare("update cloud_computers set net_asn = ? where instance_id = ?").bind(asn, computer.instance_id).run();
 }
 
@@ -163,25 +196,23 @@ export async function noteComputerNetwork(env: Pick<GravityEnv, "DB">, computer:
 const TRIPWIRE_REPORT_LIMIT = 25;
 
 /**
- * The daily report's tripwire alarms: Free accounts whose Small is free now
- * through a look whose network is their own ADE Cloud computers'. One line
- * each, with its block command. Empty on a quiet day.
+ * The daily report's tripwire alarms: Free accounts the ad switch reaches,
+ * not blocked, whose live Small is free now through a US look or yes whose
+ * network is their own ADE Cloud computers'. One line each, with its block
+ * command. Empty on a quiet day.
  */
 export async function smallCloudLookAlarms(env: GravityEnv, now: number): Promise<string[]> {
+  const { mode } = await gravitySwitches(env);
   const rows = await env.DB.prepare(`
-    select s.user_id, s.looked_asn from cloud_sponsored_consent s
-    where s.consent = 'granted' and s.looked_at >= ? and s.looked_asn is not null
+    select s.user_id, s.looked_asn from cloud_sponsored_consent s join cloud_accounts a on a.user_id = s.user_id
+    where s.consent = 'granted' and s.looked_at >= ? and s.looked_asn is not null and a.deleted_at is null
+      and ${SHOWN_FREE_SQL} and ${SWITCH_REACHES_SQL} and ${notBlockedSql("s.user_id")}
       and exists (select 1 from cloud_computers c where c.user_id = s.user_id and c.deleted_at is null and c.net_asn = s.looked_asn)
+      and exists (select 1 from cloud_computers c where c.user_id = s.user_id and c.deleted_at is null and ${smallComputerSql("c")})
     limit ?
-  `).bind(freeLookSince(now), TRIPWIRE_REPORT_LIMIT).all<{ user_id: string; looked_asn: number }>();
-  const settings = await readCloudSettings(env);
-  const alarms: string[] = [];
-  for (const row of rows.results ?? []) {
-    const account = await env.DB.prepare("select * from cloud_accounts where user_id = ? and deleted_at is null").bind(row.user_id).first<AccountRow>();
-    if (!account || (await smallRule(env, account, settings, now)).why !== "look") continue;
-    alarms.push(`Free account ${row.user_id}: its Small stays free through a view from its own ADE Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
-  }
-  return alarms;
+  `).bind(freeLookSince(now), mode, mode, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, TRIPWIRE_REPORT_LIMIT).all<{ user_id: string; looked_asn: number }>();
+  return (rows.results ?? []).map((row) =>
+    `Free account ${row.user_id}: its Small stays free through a US view or turn-on from its own ADE Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
 }
 
 /** The rate a computer of `size` runs at for this account: Small's is 0, or `SMALL_NO_CARDS_RATE_MILLI`. */
@@ -196,7 +227,8 @@ export const rateMilliFor = (size: Pick<CloudSize, "tier" | "multiplierMilli">, 
  * account after a switch flips. The number of computers re-rated.
  */
 export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: number, settings?: CloudSettings, waitUntil?: CloudWaitUntil): Promise<number> {
-  const { free: smallFree, why } = await smallRule(env, account, settings, now);
+  const why = await smallRule(env, account, settings, now);
+  const smallFree = SMALL_FREE_WHYS.has(why);
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(account.user_id).all<ComputerRow>();
   const statements: D1PreparedStatement[] = [];
   let changed = 0;
@@ -242,10 +274,10 @@ export async function syncAllSmallRates(env: GravityEnv, now: number, { force = 
   for (;;) {
     const users = await env.DB.prepare(`
       select distinct c.user_id from cloud_computers c join cloud_accounts a on a.user_id = c.user_id
-      where c.deleted_at is null and c.type = 'default' and c.cpu = ? and c.memory_gb = ?
+      where c.deleted_at is null and ${smallComputerSql("c")}
         and c.multiplier_milli != (case when
-          coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) != 'free'
-          or not (? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))
+          not ${SHOWN_FREE_SQL}
+          or not ${SWITCH_REACHES_SQL}
           or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted' and s.looked_at >= ?)
         then 0 else ? end)
       limit ?

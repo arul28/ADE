@@ -5520,11 +5520,19 @@ describe("sponsored cards", () => {
     clock += HOUR;
     expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });
     expect(tripped()).toEqual([0, 0]);
+    // With no live Small on the account, the look keeps nothing free: no alert.
+    harness.exec("update cloud_computers set cpu = 4, memory_gb = 8 where instance_id = ?", INSTANCE);
     clock += HOUR;
     expect(await look(fromComputer)).toEqual({ ok: true });
+    expect(tripped()).toEqual([0, 0]);
+    harness.exec("update cloud_computers set cpu = 2, memory_gb = 4 where instance_id = ?", INSTANCE);
     clock += HOUR;
     expect(await look(fromComputer)).toEqual({ ok: true });
     expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 1, 1]);
+    // The next one that week is the same alert.
+    clock += HOUR;
+    expect(await look(fromComputer)).toEqual({ ok: true });
+    expect(tripped()).toEqual([1, 1]);
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
     clock += HOUR;
     expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });

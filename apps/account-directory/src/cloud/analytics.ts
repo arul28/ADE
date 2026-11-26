@@ -220,9 +220,10 @@ export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, u
  * - `card_unlock_started`: the person opened the card page (no charge) for a too-new GitHub account.
  * - `card_unlocked`: a card saved with no charge unlocked a too-new GitHub account.
  * Free's Small with sponsored cards (`sponsoredSmall.ts`), counted only when a Small computer's rate moved:
- * - `small_lapsed`: no US look for 7 days, so the tick put its Small computers on credits.
- * - `small_restored`: a US look made them free again after a lapse.
- * Never the answer to the cards, a country or a network.
+ * - `small_lapsed`: its yes had no US look for 7 days, so its Small computers went on credits (the minute
+ *   tick, or a switch or test-plan change that re-rated them).
+ * - `small_restored`: a US look made them free again (after a lapse, or after a yes given outside the US).
+ * The step implies a yes; it carries no country or network.
  */
 export type CloudFreePlanStep =
   | "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use"

@@ -45,7 +45,7 @@ import {
   type ConsentRow,
   type SponsoredRequester,
 } from "./sponsoredConsent";
-import { noteSmallLook, smallFreeFrom, smallLookTripwire, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import { noteSmallLook, smallFreeFrom, smallLookNetwork, smallLookTripwire, smallStateOf, syncSmallRates } from "./sponsoredSmall";
 import type { CloudWaitUntil } from "./analytics";
 import { gravitySwitches, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
 import {
@@ -662,7 +662,7 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // (Free Small's tripwire). Over a yes, the later of this and the row's look when it is written holds
   // (a trip's, or one saved while the email was read), with its network: never moved back. A no keeps neither.
   const lookedAt = consent === "granted" && smallFreeFrom(who.country) ? now : null;
-  const lookedAsn = lookedAt == null ? null : requestNetwork(request);
+  const lookedAsn = lookedAt == null ? null : smallLookNetwork(account, requestNetwork(request));
   const heldLook = "case when cloud_sponsored_consent.consent = 'granted' then coalesce(cloud_sponsored_consent.looked_at, 0) else 0 end";
   const write = env.DB.prepare(`
     insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
