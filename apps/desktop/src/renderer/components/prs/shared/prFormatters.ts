@@ -14,11 +14,11 @@ export function formatPrBadgeLabel(pr: { state: PrState; githubPrNumber: number 
 function prBadgePrefix(state: PrState): string {
   switch (state) {
     case "merged":
-      return "MERGED";
+      return "Merged";
     case "closed":
-      return "CLOSED";
+      return "Closed";
     case "draft":
-      return "DRAFT";
+      return "Draft";
     default:
       return "PR";
   }

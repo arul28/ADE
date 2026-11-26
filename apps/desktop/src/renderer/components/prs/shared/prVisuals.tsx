@@ -20,10 +20,10 @@ function colorBadge(color: string) {
 }
 
 export function getPrStateBadge(state: PrState): PrBadgeSpec {
-  if (state === "draft") return { label: "DRAFT", ...colorBadge(COLORS.accent) };
-  if (state === "open") return { label: "OPEN", ...colorBadge(COLORS.info) };
-  if (state === "merged") return { label: "MERGED", ...colorBadge(COLORS.success) };
-  return { label: "CLOSED", ...colorBadge(COLORS.textSecondary) };
+  if (state === "draft") return { label: "Draft", ...colorBadge(COLORS.accent) };
+  if (state === "open") return { label: "Open", ...colorBadge(COLORS.info) };
+  if (state === "merged") return { label: "Merged", ...colorBadge(COLORS.success) };
+  return { label: "Closed", ...colorBadge(COLORS.textSecondary) };
 }
 
 export function getPrChecksBadge(status: PrChecksStatus): PrBadgeSpec {
@@ -38,10 +38,10 @@ export function getPrChecksBadge(status: PrChecksStatus): PrBadgeSpec {
 }
 
 export function getPrReviewsBadge(status: PrReviewStatus): PrBadgeSpec {
-  if (status === "approved") return { label: "APPROVED", ...colorBadge(COLORS.success) };
-  if (status === "changes_requested") return { label: "CHANGES", ...colorBadge(COLORS.danger) };
-  if (status === "requested") return { label: "REVIEW", ...colorBadge(COLORS.warning) };
-  return { label: "NONE", ...colorBadge(COLORS.textMuted) };
+  if (status === "approved") return { label: "Approved", ...colorBadge(COLORS.success) };
+  if (status === "changes_requested") return { label: "Changes", ...colorBadge(COLORS.danger) };
+  if (status === "requested") return { label: "Review", ...colorBadge(COLORS.warning) };
+  return { label: "None", ...colorBadge(COLORS.textMuted) };
 }
 
 export function getPrCiDotColor(args: {
@@ -82,7 +82,7 @@ export function PrCiRunningIndicator(props: {
 }) {
   const {
     showLabel = false,
-    label = "running",
+    label = "Running",
     color = COLORS.warning,
     size = 10,
     title = "CI checks are still running",
@@ -115,7 +115,7 @@ export function PrCiRunningIndicator(props: {
         color,
         fontFamily: SANS_FONT,
         fontSize: 10,
-        fontWeight: 600,
+        fontWeight: 500,
         lineHeight: 1,
       }}
     >

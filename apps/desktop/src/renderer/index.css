@@ -164,8 +164,7 @@ h6 {
   color: color-mix(in srgb, var(--color-warning) 82%, var(--shell-header-fg));
   font-family: var(--font-mono);
   font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
+  font-weight: 500;
   line-height: 1;
   cursor: pointer;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
@@ -3861,6 +3860,14 @@ button, [role="button"] {
     inset 0 -1px 0 rgba(0,0,0,0.16);
 }
 
+/* On a light page the black shade made a muddy grey that faded the output
+   text (ADE-290): the box is the code box and its text the code text. */
+[data-theme="light"] .ade-chat-recessed {
+  background: var(--chat-code-bg);
+  box-shadow: none;
+  color: var(--chat-code-fg);
+}
+
 /* ═══════════════════════════════════════════════════════════
    Work Tab: Liquid Glass Primitives
    — follow Apple HIG: content leads, glass recedes, concentric radii
@@ -5548,6 +5555,13 @@ button, [role="button"] {
 .ade-prose-themed.ade-thought-text,
 .ade-prose-themed.ade-thought-text :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
   color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+[data-theme="light"] .ade-prose-themed.ade-thought-text,
+[data-theme="light"] .ade-prose-themed.ade-thought-text :is(p, h1, h2, h3, h4, h5, h6, li, strong, em, td, th, blockquote, dd, dt, figcaption) {
+  /* Opaque and between muted and body text, so it stays quieter than the
+     reply but reads at 4.5 : 1 on every light theme. */
+  color: color-mix(in srgb, var(--color-fg) 40%, var(--color-muted-fg));
 }
 
 /* A markdown brief inside the user's message bubble (MarkdownBlock

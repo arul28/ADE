@@ -1786,7 +1786,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       )}
 
       {disabledReason ? (
-        <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-bg/70 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-bg/70 text-[11px] font-medium text-muted-fg backdrop-blur-[1px]">
           {disabledBusy ? (
             <CircleNotch size={12} className="animate-spin" />
           ) : (

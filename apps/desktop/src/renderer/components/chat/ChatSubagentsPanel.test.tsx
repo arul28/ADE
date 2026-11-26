@@ -477,10 +477,9 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("Subagents")).toBeTruthy();
     expect(screen.getByText("Inspect codex flow")).toBeTruthy();
     expect(screen.getByTitle("Audit chat renderer")).toBeTruthy();
-    // The background-run agent carries an inline "background" chip.
-    expect(screen.getByText("background")).toBeTruthy();
-    // No command-task Background section without backgroundItems.
-    expect(screen.queryByText("Background")).toBeNull();
+    // The background-run agent carries an inline "Background" chip, and it is
+    // the only one: no command-task Background section without backgroundItems.
+    expect(screen.getAllByText("Background")).toHaveLength(1);
   });
 
   it("names a Codex agent like its transcript card, never by its raw /root path", () => {
@@ -839,16 +838,18 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     // Section headers present and ordered.
     const text = container.textContent ?? "";
     const subagentsIdx = text.indexOf("Subagents");
-    const backgroundIdx = text.indexOf("Background");
+    // The last "Background" is the section header; the first is the agent's chip.
+    const backgroundIdx = text.lastIndexOf("Background");
     const scheduleIdx = text.indexOf("Schedule");
     expect(subagentsIdx).toBeGreaterThanOrEqual(0);
     expect(backgroundIdx).toBeGreaterThan(subagentsIdx);
     expect(scheduleIdx).toBeGreaterThan(backgroundIdx);
 
-    // Both agents in the merged Subagents list; the background one has a chip.
+    // Both agents in the merged Subagents list; the background one has a chip
+    // (alongside the Background section header).
     expect(screen.getByTitle("Explore the router")).toBeTruthy();
     expect(screen.getByTitle("Tail the dev server")).toBeTruthy();
-    expect(screen.getByText("background")).toBeTruthy();
+    expect(screen.getAllByText("Background")).toHaveLength(2);
 
     // Background section shows smart labels (cwd stripped from the collapsed row).
     expect(screen.getByText("npx vitest run t")).toBeTruthy();
@@ -1402,7 +1403,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
       // Resolved title is the row label; the runtime name stays as the small chip.
       expect(screen.getByText("Investigate flaky CI")).toBeTruthy();
-      expect(screen.getByText("codex")).toBeTruthy();
+      expect(screen.getByText("Codex")).toBeTruthy();
     });
 
     it("falls back to the snapshot description when no live title resolves", () => {
@@ -1418,7 +1419,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
       );
 
       expect(screen.getByText("Codex Chat")).toBeTruthy();
-      expect(screen.getByText("codex")).toBeTruthy();
+      expect(screen.getByText("Codex")).toBeTruthy();
     });
   });
 

@@ -68,10 +68,10 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
   return (
     <div className="flex h-full min-h-[300px] flex-col justify-center gap-2 px-5 py-4">
       <div className="flex items-center gap-2">
-        <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">Launching</div>
+        <div className="font-sans text-[11px] font-medium text-muted-fg/60">Launching…</div>
         {usedInstalledBinary ? (
           <span className="inline-flex h-5 items-center rounded-full border border-amber-300/24 bg-amber-400/[0.09] px-2 font-sans text-[10px] font-medium text-amber-50/85">
-            prebuilt — changes not included
+            Prebuilt — changes not included
           </span>
         ) : null}
         {anyFailed && onDismiss ? (

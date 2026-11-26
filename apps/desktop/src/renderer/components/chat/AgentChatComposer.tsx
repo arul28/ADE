@@ -9527,12 +9527,12 @@ function AgentChatComposerImpl({
                 )}
                 <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="shrink-0 rounded border border-teal-300/22 bg-teal-500/8 px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-teal-100/75">
+                    <span className="shrink-0 rounded border border-teal-300/22 bg-teal-500/8 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-teal-100/75">
                       Browser
                     </span>
                     <span className="truncate text-teal-50/85">{builtInBrowserContextDisplayLabel(selectedBuiltInBrowserContext)}</span>
                     {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext) ? (
-                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase text-muted-fg/55">
+                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8.5/14)] text-muted-fg/55">
                         {builtInBrowserContextRoleHint(selectedBuiltInBrowserContext)}
                       </span>
                     ) : null}
@@ -9575,12 +9575,12 @@ function AgentChatComposerImpl({
                 )}
                 <div className="min-w-0 space-y-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70">
                   <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="shrink-0 rounded border border-sky-300/22 bg-sky-500/8 px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-sky-100/75">
+                    <span className="shrink-0 rounded border border-sky-300/22 bg-sky-500/8 px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-sky-100/75">
                       App Control
                     </span>
                     <span className="truncate text-sky-50/85">{appControlContextDisplayLabel(selectedAppControlContext)}</span>
                     {appControlContextRoleHint(selectedAppControlContext) ? (
-                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8/14)] uppercase tracking-wide text-muted-fg/55">
+                      <span className="shrink-0 rounded bg-fg/[0.04] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*8.5/14)] text-muted-fg/55">
                         {appControlContextRoleHint(selectedAppControlContext)}
                       </span>
                     ) : null}

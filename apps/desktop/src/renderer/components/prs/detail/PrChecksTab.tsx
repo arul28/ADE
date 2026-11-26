@@ -311,8 +311,8 @@ const CheckRow = React.memo(function CheckRow({
       </span>
       {badge ? (
         <span
-          className="shrink-0 text-[9.5px] uppercase"
-          style={{ letterSpacing: "0.06em", color: COLORS.textDim, fontFamily: MONO_FONT }}
+          className="shrink-0 text-[10px] font-medium"
+          style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}
         >
           {badge}
         </span>
@@ -928,7 +928,7 @@ export function PrChecksTab({
                   state={pipelineStateOf(item)}
                   elapsedMs={checkElapsedMs(item, now)}
                   detailsUrl={item.detailsUrl}
-                  badge={item.source === "check" ? "external" : null}
+                  badge={item.source === "check" ? "External" : null}
                   divided={itemIndex > 0}
                   selected={node != null && node.jobId === selectedJobId}
                   onSelect={node ? () => toggleDrawerFor(node) : undefined}

@@ -2,6 +2,7 @@ import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { SponsoredReplySlot } from "./sponsored/SponsoredReplySlot";
 import { SponsoredDockOutlet, SponsoredOutletsContext, useNewSponsoredOutlets } from "./sponsored/sponsoredOutlets";
 import { msToNextBeat } from "../../lib/workBeat";
+import { sentenceCase } from "../../lib/format";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { captureError } from "../../../shared/sentry/capture";
@@ -21723,11 +21724,11 @@ export function AgentChatPane({
                   {session.completion ? (
                     <span
                       className={cn(
-                        "inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.12em]",
+                        "inline-flex items-center rounded border px-1.5 py-0.5 font-sans text-[9px] font-medium",
                         completionBadgeClass(session.completion.status),
                       )}
                     >
-                      {session.completion.status}
+                      {sentenceCase(session.completion.status)}
                     </span>
                   ) : null}
                   {sessionIndicatorStatus ? (
@@ -23075,7 +23076,7 @@ export function AgentChatPane({
                   <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0.16s' }} />
                   <span className="h-2 w-2 rounded-full bg-violet-400/60 ade-thinking-pulse" style={{ animationDelay: '0.32s' }} />
                 </div>
-                <span className="font-sans text-[11px] font-medium tracking-widest text-muted-fg/30 uppercase">Loading sessions</span>
+                <span className="font-sans text-[11px] font-medium text-muted-fg/30">Loading sessions…</span>
               </div>
             </div>
           ) : (

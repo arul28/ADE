@@ -238,8 +238,8 @@ function SubagentCardFrame({
             {name}
           </span>
           {workflowName ? (
-            <span className="shrink-0 rounded-sm bg-amber-200/[0.12] px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] uppercase tracking-[0.05em] text-amber-200/70">
-              workflow
+            <span className="shrink-0 rounded-sm bg-amber-200/[0.12] px-1 py-px font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-amber-200/70">
+              Workflow
             </span>
           ) : null}
           <span className="sr-only">{statusWord}</span>

@@ -1203,7 +1203,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         app-level banners reach the welcome screen too. The components below
         render nothing: each registers its banners with the host, which owns
         order (account, project, app, outage, integration), the two-banner cap
-        and dismissal.
+        and dismissal. With a project open it draws into that project's
+        content column instead, to the right of the project sidebar.
       */}
       <AppBannerHost />
       <ProjectMoveHost />

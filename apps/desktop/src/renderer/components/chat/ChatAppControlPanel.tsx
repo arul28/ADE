@@ -2053,7 +2053,7 @@ export function ChatAppControlPanel({
                 {elementLabel(focusElement)}
               </span>
               {elementSubLabel(focusElement) ? (
-                <span className="shrink-0 rounded border border-fg/[0.08] bg-fg/[0.03] px-1 font-mono text-[9px] uppercase tracking-wide text-muted-fg">
+                <span className="shrink-0 rounded border border-fg/[0.08] bg-fg/[0.03] px-1 font-mono text-[9.5px] text-muted-fg">
                   {elementSubLabel(focusElement)}
                 </span>
               ) : null}

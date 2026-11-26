@@ -167,7 +167,7 @@ function HowItWorks({ presetLabel, onDismiss }: { presetLabel: string; onDismiss
 function RouteBadge({ endpoint }: { endpoint: AutomationWebhookEndpoint }) {
   if (endpoint.route === "relay") return <span className={tagCls("ok")}>PUBLIC · ADE RELAY</span>;
   if (endpoint.route === "gateway") return <span className={tagCls("ok")}>PUBLIC · YOUR ADDRESS</span>;
-  return <span className={tagCls("warn")}>THIS COMPUTER ONLY</span>;
+  return <span className={tagCls("warn")}>This computer only</span>;
 }
 
 function FilterRow({

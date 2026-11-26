@@ -246,6 +246,16 @@ export function shortSha(value: string | null | undefined): string {
   return value?.slice(0, 8) ?? "";
 }
 
+/**
+ * Sentence case for a status word or short pill label shown to the user:
+ * "completed" → "Completed", "changes_requested" → "Changes requested".
+ * Display only; never feed the result back into logic that compares states.
+ */
+export function sentenceCase(text: string | null | undefined): string {
+  const spaced = (text ?? "").replace(/_/g, " ").trim();
+  return spaced ? spaced.charAt(0).toUpperCase() + spaced.slice(1) : spaced;
+}
+
 /** Map an operation status to Tailwind text+border classes (history style). */
 export function statusToneOperation(status: string): string {
   if (status === "succeeded") return "text-emerald-400 border-emerald-900";

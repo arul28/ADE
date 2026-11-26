@@ -534,7 +534,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
               // mid-word ("technic|alDetail"). `anywhere` breaks only a token
               // too long for a line of its own.
               ? "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.1] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-(color:--chat-ink)/90"
-              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.08] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
+              : "whitespace-normal [overflow-wrap:anywhere] rounded-md border border-(color:--chat-ink)/[0.08] bg-(color:--chat-inline-code-bg) px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90 [[data-theme=light]_&]:text-fg"
           }
         >
           {children}
@@ -607,7 +607,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   return (
     <div
       className={cn(
-        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words",
+        "ade-prose-themed min-w-0 max-w-full break-words",
         thought
           ? "ade-thought-text text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.65]"
           : bubble

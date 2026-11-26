@@ -45,6 +45,7 @@ import { ProjectHostRecoveryScreen, ProjectHostStartingBanner } from "./ProjectH
 import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectSidebar } from "./projectSidebar/ProjectSidebar";
 import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar/ProjectSidebarSlot";
+import { useAppBannerAnchorRef } from "../ui/notice/appBannerAnchor";
 // Home loads when a window has no project, not with every launch (its tool
 // logos alone are a few hundred KB).
 const ProjectWelcomePage = React.lazy(() => import("../projects/ProjectWelcomePage").then((module) => ({ default: module.ProjectWelcomePage })));
@@ -483,6 +484,7 @@ function ProjectTransitionVeil({ label }: { label: string }) {
 }
 
 function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
+  const bannerAnchorRef = useAppBannerAnchorRef(active);
   const navigate = useNavigate();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
@@ -653,67 +655,72 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     <ProjectSidebarSlotProvider>
       <div className="relative flex h-full min-h-0 w-full">
         <ProjectSidebar route={route} heldRoute={overlayOpen ? heldRoute : null} />
-        <div className="ade-project-main relative h-full min-h-0 min-w-0 flex-1">
-          {workSurface}
-          {lanesSurface}
-          {active && pageRoute && pagePath && !isWorkRoutePath(pagePath) && !isLanesRoutePath(pagePath) ? (
-            <div
-              ref={pageSurfaceRef}
-              className="ade-project-page h-full min-h-0 w-full"
-              {...parkedSurfaceProps(overlayOpen)}
-            >
-              <ProjectSidebarHold held={overlayOpen}>
-                <Routes location={pageLocation ?? undefined}>
-                  <Route path="/" element={<Navigate to="/work" replace />} />
-                  <Route path="/onboarding" element={<Navigate to="/work" replace />} />
-                  <Route path="/files" element={
+        {/* App banners draw in the slot at the top of this column (see
+            `appBannerAnchor.ts`), so they start to the right of the sidebar. */}
+        <div className="ade-project-main relative flex h-full min-h-0 min-w-0 flex-1 flex-col">
+          <div ref={bannerAnchorRef} className="relative shrink-0" data-testid="app-banner-slot" />
+          <div className="relative min-h-0 w-full flex-1">
+            {workSurface}
+            {lanesSurface}
+            {active && pageRoute && pagePath && !isWorkRoutePath(pagePath) && !isLanesRoutePath(pagePath) ? (
+              <div
+                ref={pageSurfaceRef}
+                className="ade-project-page h-full min-h-0 w-full"
+                {...parkedSurfaceProps(overlayOpen)}
+              >
+                <ProjectSidebarHold held={overlayOpen}>
+                  <Routes location={pageLocation ?? undefined}>
+                    <Route path="/" element={<Navigate to="/work" replace />} />
+                    <Route path="/onboarding" element={<Navigate to="/work" replace />} />
+                    <Route path="/files" element={
+                      <PageErrorBoundary>
+                        <React.Suspense fallback={LazyFallback}><FilesTab active={pageActive} /></React.Suspense>
+                      </PageErrorBoundary>
+                    } />
+                    <Route path="/prs" element={
+                      <PageErrorBoundary>
+                        <React.Suspense fallback={LazyFallback}><PRsPage active={pageActive} /></React.Suspense>
+                      </PageErrorBoundary>
+                    } />
+                    <Route path="/automations/*" element={
+                      <PageErrorBoundary>
+                        <React.Suspense fallback={LazyFallback}><AutomationsPage active={pageActive} /></React.Suspense>
+                      </PageErrorBoundary>
+                    } />
+                    <Route path="/settings" element={
+                      <PageErrorBoundary>
+                        <React.Suspense fallback={LazyFallback}><SettingsPage active={pageActive} /></React.Suspense>
+                      </PageErrorBoundary>
+                    } />
+                    <Route path="*" element={<Navigate to="/work" replace />} />
+                  </Routes>
+                </ProjectSidebarHold>
+              </div>
+            ) : null}
+            {active && (ctoMounted || isCtoRoute) ? (
+              <div
+                ref={ctoSurfaceRef}
+                className="ade-project-page h-full min-h-0 w-full"
+                {...parkedSurfaceProps(!isCtoRoute)}
+              >
+                <PageErrorBoundary>
+                  <React.Suspense fallback={LazyFallback}><CtoPage active={isCtoRoute} /></React.Suspense>
+                </PageErrorBoundary>
+              </div>
+            ) : null}
+            {active && overlayOpen && !isCtoRoute ? (
+              <div className="ade-project-page h-full min-h-0 w-full">
+                <Routes location={route}>
+                  <Route path="/history" element={
                     <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}><FilesTab active={pageActive} /></React.Suspense>
-                    </PageErrorBoundary>
-                  } />
-                  <Route path="/prs" element={
-                    <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}><PRsPage active={pageActive} /></React.Suspense>
-                    </PageErrorBoundary>
-                  } />
-                  <Route path="/automations/*" element={
-                    <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}><AutomationsPage active={pageActive} /></React.Suspense>
-                    </PageErrorBoundary>
-                  } />
-                  <Route path="/settings" element={
-                    <PageErrorBoundary>
-                      <React.Suspense fallback={LazyFallback}><SettingsPage active={pageActive} /></React.Suspense>
+                      <React.Suspense fallback={LazyFallback}><HistoryPage active={active} /></React.Suspense>
                     </PageErrorBoundary>
                   } />
                   <Route path="*" element={<Navigate to="/work" replace />} />
                 </Routes>
-              </ProjectSidebarHold>
-            </div>
-          ) : null}
-          {active && (ctoMounted || isCtoRoute) ? (
-            <div
-              ref={ctoSurfaceRef}
-              className="ade-project-page h-full min-h-0 w-full"
-              {...parkedSurfaceProps(!isCtoRoute)}
-            >
-              <PageErrorBoundary>
-                <React.Suspense fallback={LazyFallback}><CtoPage active={isCtoRoute} /></React.Suspense>
-              </PageErrorBoundary>
-            </div>
-          ) : null}
-          {active && overlayOpen && !isCtoRoute ? (
-            <div className="ade-project-page h-full min-h-0 w-full">
-              <Routes location={route}>
-                <Route path="/history" element={
-                  <PageErrorBoundary>
-                    <React.Suspense fallback={LazyFallback}><HistoryPage active={active} /></React.Suspense>
-                  </PageErrorBoundary>
-                } />
-                <Route path="*" element={<Navigate to="/work" replace />} />
-              </Routes>
-            </div>
-          ) : null}
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     </ProjectSidebarSlotProvider>

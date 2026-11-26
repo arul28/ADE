@@ -924,7 +924,7 @@ function StickyGroupHeader({
               {chevron}
             </div>
             {busyLabel ? (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-bg/75 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-bg/75 text-[11px] font-medium text-muted-fg backdrop-blur-[1px]">
                 <CircleNotch size={12} className="animate-spin" />
                 {busyLabel}
                 {onStopBusy ? (

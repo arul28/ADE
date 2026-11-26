@@ -14,7 +14,7 @@ export const FreeModelBadge = memo(function FreeModelBadge({ badge }: { badge: F
       data-free-model-badge={badge}
       title={badge === "free" ? "Free to use, no account or key" : "Free, paid for by ads"}
       className={cn(
-        "inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[9px] font-semibold leading-none",
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-px text-[9px] font-medium leading-none",
         badge === "free"
           ? "bg-sky-400/[0.13] text-sky-300/90"
           : "border border-fg/[0.10] font-medium text-muted-fg/80",

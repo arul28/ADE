@@ -37,8 +37,9 @@ type ShikiHighlighter = {
 };
 
 /**
- * The colours a block is highlighted with. The stock themes keep Shiki's
- * `github-dark-dimmed`; every other theme brings its own, keyed by a string
+ * The colours a block is highlighted with. Stock dark keeps Shiki's
+ * `github-dark-dimmed`; every other theme (stock light included: the dark
+ * token colours vanish on its light code box) brings its own, keyed by a string
  * that changes whenever its syntax colours do so a cached block never outlives
  * an edit to the theme.
  */
@@ -455,7 +456,7 @@ export const HighlightedCode = React.memo(function HighlightedCode({
   const copyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const resolvedTheme = useActiveResolvedTheme();
   const codeTheme = useMemo<CodeTheme>(() => {
-    if (usesStockCodeColors(resolvedTheme)) return STOCK_CODE_THEME;
+    if (usesStockCodeColors(resolvedTheme) && resolvedTheme.theme.baseMode === "dark") return STOCK_CODE_THEME;
     // The key covers every colour the Shiki theme is made from, so editing a
     // custom theme highlights fresh instead of reading a stale cached block.
     const data = shikiThemeData(resolvedTheme);

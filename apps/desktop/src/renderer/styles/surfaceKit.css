@@ -283,7 +283,7 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-legend > i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 .kit-legend > b { font-family: var(--font-mono); font-weight: 400; font-size: 11px; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
 
-/* Small mono tag for status words ("on track", "watch", "low"). */
+/* Small mono tag for status words ("On track", "Watch", "Low"). */
 .kit-tag {
   display: inline-flex;
   align-items: center;
@@ -292,7 +292,6 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   border-radius: 4px;
   font-family: var(--font-mono);
   font-size: 10px;
-  letter-spacing: 0.06em;
   background: color-mix(in srgb, var(--color-fg) 7%, transparent);
   color: var(--kit-text-2);
   /* One short label at a fixed height: a wrapped line would spill out of it. */

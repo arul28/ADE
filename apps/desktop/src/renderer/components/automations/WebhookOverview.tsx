@@ -6,7 +6,7 @@ import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
-import { relativeWhen } from "../../lib/format";
+import { relativeWhen, sentenceCase } from "../../lib/format";
 import { OUTCOME_STYLES, dotCls, panelCls, rowHoverCls, tagCls, toneTextCls } from "./webhookSurface";
 import { WebhookDeliveries } from "./builder/WebhookDeliveries";
 import { useTabCopyPin } from "../../state/repositoryScope";
@@ -97,7 +97,7 @@ export function WebhookOverview({ intro }: { intro?: string }) {
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2 text-[13px] font-medium text-fg">
                       {entry.ruleName}
-                      {!entry.enabled ? <span className={tagCls("neutral")}>OFF</span> : null}
+                      {!entry.enabled ? <span className={tagCls("neutral")}>Off</span> : null}
                     </span>
                     <span className="mt-0.5 block text-[11.5px] text-muted-fg">
                       {service === "Anything else" ? "Any service" : service}
@@ -108,10 +108,10 @@ export function WebhookOverview({ intro }: { intro?: string }) {
                     {last ? (
                       <>
                         <span className={dotCls(OUTCOME_STYLES[last.outcome]?.tone ?? "neutral")} />
-                        {(last.outcome === "ran" ? "ran" : last.outcome.replace(/_/g, " ")).toUpperCase()} · {relativeWhen(last.receivedAt)}
+                        {OUTCOME_STYLES[last.outcome]?.label ?? sentenceCase(last.outcome)} · {relativeWhen(last.receivedAt)}
                       </>
                     ) : (
-                      <>NO DELIVERIES YET</>
+                      <>No deliveries yet</>
                     )}
                   </span>
                 </button>

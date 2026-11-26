@@ -71,10 +71,10 @@ function expectedLeft(card: LimitCard): number | null {
 }
 
 function statusTag(left: number, expected: number | null): { text: string; tone: "ok" | "warn" | "crit" } {
-  if (left <= 5) return { text: "low", tone: "crit" };
-  if (left <= 20) return { text: "watch", tone: "warn" };
-  if (expected != null && left < expected - 10) return { text: "watch", tone: "warn" };
-  return { text: "on track", tone: "ok" };
+  if (left <= 5) return { text: "Low", tone: "crit" };
+  if (left <= 20) return { text: "Watch", tone: "warn" };
+  if (expected != null && left < expected - 10) return { text: "Watch", tone: "warn" };
+  return { text: "On track", tone: "ok" };
 }
 
 /** "Day 3 of 7" / "2h 10m of 5h" for the window the card's soonest reset belongs to. */
@@ -141,7 +141,7 @@ function Gauge({ card }: { card: LimitCard }) {
         </div>
       </div>
       <div className="usage-gauge-foot">
-        <span>{Number.isFinite(soonest) ? `resets in ${formatCountdown(soonest)}` : "\u00a0"}</span>
+        <span>{Number.isFinite(soonest) ? `Resets in ${formatCountdown(soonest)}` : "\u00a0"}</span>
       </div>
       {cycle ? (
         <div className="usage-gauge-cycle" title="Where this window is in its cycle">

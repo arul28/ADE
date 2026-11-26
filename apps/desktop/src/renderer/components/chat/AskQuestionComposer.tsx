@@ -500,7 +500,7 @@ export function AskQuestionComposer({
           </span>
           <span
             className={cn(
-              "whitespace-nowrap rounded-full border px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-[0.12em]",
+              "whitespace-nowrap rounded-full border px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium",
               "border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]",
               ACCENT_TEXT,
             )}
@@ -626,7 +626,7 @@ export function AskQuestionComposer({
         </div>
       ) : null}
       {question.multiSelect ? (
-        <div className={cn("mx-3.5 mb-2.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/40", HAIRLINE)}>
+        <div className={cn("mx-3.5 mb-2.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/40", HAIRLINE)}>
           <ListChecks size={10} weight="bold" /> Pick all that apply
         </div>
       ) : null}

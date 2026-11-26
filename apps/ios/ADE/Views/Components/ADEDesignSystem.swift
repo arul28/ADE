@@ -56,6 +56,15 @@ private func adaptiveColor(light: UIColor, dark: UIColor) -> Color {
   })
 }
 
+/// A fixed hex in light mode; in dark mode the given system colour, resolved
+/// exactly as SwiftUI drew it before (including its increased-contrast variant).
+private func adaptiveColor(light: UIColor, darkSystem: Color) -> Color {
+  let dark = UIColor(darkSystem)
+  return Color(uiColor: UIColor { traits in
+    traits.userInterfaceStyle == .dark ? dark.resolvedColor(with: traits) : light
+  })
+}
+
 private func hex(_ value: UInt32, alpha: CGFloat = 1.0) -> UIColor {
   UIColor(
     red: CGFloat((value >> 16) & 0xff) / 255.0,
@@ -85,7 +94,23 @@ enum ADEColor {
   static let warning = adaptiveColor(light: hex(0xd97706), dark: hex(0xf59e0b))
   static let danger = adaptiveColor(light: hex(0xdc2626), dark: hex(0xef4444))
   static let info = adaptiveColor(light: hex(0x2563eb), dark: hex(0x3b82f6))
+  /// `accent` / `success` for small text on light surfaces: the light values
+  /// are deep enough for WCAG AA (≥ 4.5:1 on `pageBackground`); dark is
+  /// unchanged. The plain tokens stay for fills, glyphs and large type.
+  static let accentText = adaptiveColor(light: hex(0x047857), dark: hex(0xA78BFA))
+  static let successText = adaptiveColor(light: hex(0x15803d), dark: hex(0x22c55e))
   static let purpleAccent = Color(red: 167.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)  // #A78BFA
+
+  /// Syntax-highlight token colours (chat code blocks, the Files viewer).
+  /// Dark mode keeps the system hues. Light mode uses deeper hexes so every
+  /// token reads at WCAG AA (≥ 4.5:1) on `recessedBackground` (#eae7e2), the
+  /// darkest plane code sits on; the system hues there were 1.8–3.4:1 (ADE-290).
+  static let syntaxKeyword = adaptiveColor(light: hex(0x7e22ce), darkSystem: .purple)  // 5.66:1
+  static let syntaxString = adaptiveColor(light: hex(0x166534), darkSystem: .green)    // 5.78:1
+  static let syntaxType = adaptiveColor(light: hex(0x1d4ed8), darkSystem: .blue)       // 5.43:1
+  static let syntaxNumber = adaptiveColor(light: hex(0x9a3412), darkSystem: .orange)   // 5.92:1
+  static let syntaxHeading = adaptiveColor(light: hex(0xbe185d), darkSystem: .pink)    // 4.90:1
+  static let syntaxLink = adaptiveColor(light: hex(0x115e59), darkSystem: .teal)       // 6.15:1
 
   /// Token-cache series. Was `textMuted`, the same grey the merged/GitHub
   /// underlay uses, which made a three-part stacked token bar read as two parts

@@ -363,7 +363,7 @@ export function LaneBranchSwitcher({
             <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
               <div style={{ display: "grid", gap: 8 }}>
                 <div className="flex items-center justify-between">
-                  <div style={fieldLabelStyle}>NEW BRANCH</div>
+                  <div style={fieldLabelStyle}>New branch</div>
                   <button
                     type="button"
                     onClick={() => { setNewBranchFormOpen(false); setNewBranchName(""); }}
@@ -389,7 +389,7 @@ export function LaneBranchSwitcher({
                   <div style={{ fontSize: 11, color: COLORS.danger }}>{nameValidation.reason}</div>
                 ) : null}
                 <label className="flex flex-col gap-1">
-                  <span style={fieldLabelStyle}>START FROM</span>
+                  <span style={fieldLabelStyle}>Start from</span>
                   <select
                     value={newBranchStartPoint || lane.branchRef}
                     onChange={(event) => setNewBranchStartPoint(event.target.value)}

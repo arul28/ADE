@@ -45,6 +45,7 @@ import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
 import { LaneEmojiPicker } from "./LaneEmojiPicker";
 import { isImeComposing } from "../../lib/imeComposition";
+import { sentenceCase } from "../../lib/format";
 import { formatBytes } from "../../../shared/formatting";
 import { CloudLaneComputerPanel } from "../cloudLane/CloudLaneComputerPanel";
 import { KeepChatsCheckbox } from "../cloudLane/deleteCloudLane";
@@ -284,8 +285,8 @@ function ManageLaneHeaderDetails({
               <span className="font-semibold text-fg">{laneDisplayName(lane)}</span>
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{formatBranchLabel(lane.branchRef)}</span>
-              <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-fg">
-                {lane.laneType}
+              <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg">
+                {lane.laneType === "primary" ? "Main checkout" : sentenceCase(lane.laneType)}
               </span>
               {lane.status.dirty ? (
                 <span className="whitespace-nowrap rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">

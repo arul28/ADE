@@ -449,10 +449,10 @@ function TemplateRow({
   if (template.copyPaths?.length) features.push(pluralize(template.copyPaths.length, "file"));
   if (template.envFiles?.length) features.push(pluralize(template.envFiles.length, "env file"));
   if (template.dependencies?.length) features.push(pluralize(template.dependencies.length, "install"));
-  if (laneSetupScriptHasWork(template.setupScript)) features.push("setup script");
+  if (laneSetupScriptHasWork(template.setupScript)) features.push("Setup script");
   if (template.mountPoints?.length) features.push(pluralize(template.mountPoints.length, "mount"));
-  if (template.docker?.composePath) features.push("docker");
-  if (template.envVars && Object.keys(template.envVars).length > 0) features.push("env vars");
+  if (template.docker?.composePath) features.push("Docker");
+  if (template.envVars && Object.keys(template.envVars).length > 0) features.push("Env vars");
 
   const name = template.name || "Untitled";
 
@@ -462,7 +462,7 @@ function TemplateRow({
         <div style={{ minWidth: 0, flex: "1 1 200px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
             <span className="ade-ap-rowtitle" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</span>
-            {isDefault ? <span className="kit-tag">DEFAULT</span> : null}
+            {isDefault ? <span className="kit-tag">Default</span> : null}
           </div>
           {template.description ? (
             <div className="ade-ap-rowhint" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>

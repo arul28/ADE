@@ -10,8 +10,9 @@ import {
   type AdeTheme,
   type AdeThemeFamily,
 } from "../../../shared/theme";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ThemePreview } from "./ThemePreview";
+import { sentenceCase } from "../../lib/format";
 
 /**
  * The theme picker, as two independent choices.
@@ -134,14 +135,12 @@ export function ThemeStage() {
             </span>
             <span
               style={{
-                fontFamily: MONO_FONT,
-                fontSize: 10.5,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
+                fontFamily: SANS_FONT,
+                fontSize: 11,
                 color: COLORS.textMuted,
               }}
             >
-              {painted.baseMode}
+              {sentenceCase(painted.baseMode)}
               {followsSystem && family ? " · auto" : ""}
             </span>
           </div>

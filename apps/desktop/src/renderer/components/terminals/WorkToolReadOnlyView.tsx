@@ -953,8 +953,8 @@ function Badge({
       data-testid={testId}
       className={
         tone === "recording"
-          ? "inline-flex shrink-0 items-center gap-1 rounded-sm border border-red-400/50 px-1 text-[10px] uppercase tracking-wide text-red-300"
-          : "shrink-0 rounded-sm border border-border/60 px-1 text-[10px] uppercase tracking-wide text-muted-fg"
+          ? "inline-flex shrink-0 items-center gap-1 rounded-sm border border-red-400/50 px-1 text-[10px] font-medium text-red-300"
+          : "shrink-0 rounded-sm border border-border/60 px-1 text-[10px] font-medium text-muted-fg"
       }
     >
       {tone === "recording" ? (
