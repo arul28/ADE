@@ -3678,7 +3678,9 @@ describe("update tracks", () => {
       return { updateInfo, cancellationToken: new CancellationToken() };
     });
     updater.downloadUpdate = vi.fn(async () => {
-      updater.emit("update-downloaded", { version: offer, downloadedFile: path.join(home, "update.zip") });
+      const downloadedFile = path.join(home, "update.zip");
+      fs.writeFileSync(downloadedFile, offer);
+      updater.emit("update-downloaded", { version: offer, downloadedFile });
       return [];
     });
     const service = createAutoUpdateService({
@@ -3722,11 +3724,16 @@ describe("update tracks", () => {
     const first = trackService({ currentVersion: "1.2.128-beta.7", offer: "1.2.127", statePath });
     expect(readSavedUpdateTrack(first.env)).toBeNull();
 
-    expect(first.service.startTrackSwitch("stable")).toEqual({ ok: true, target: "stable" });
+    expect(first.service.startTrackSwitch("stable", "1.2.127")).toEqual({ ok: true, target: "stable" });
     await vi.waitFor(() => expect(first.service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.127" }));
     // Beta back to Stable is an older build: allowed only inside the switch.
     expect(first.updater.allowDowngrade).toBe(true);
     expect(first.updater.setFeedURL).toHaveBeenLastCalledWith({ provider: "github", owner: "arul28", repo: "ADE" });
+    // A remote approval is for one version, even if the install refresh finds a newer one.
+    first.setOffer("1.2.128");
+    await expect(first.service.quitAndInstall()).resolves.toBe(false);
+    expect(first.service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.128" });
+    expect(first.updater.quitAndInstall).not.toHaveBeenCalled();
     // Nothing is saved before the install lands: quitting now changes nothing.
     expect(readSavedUpdateTrack(first.env)).toBeNull();
     first.service.dispose();

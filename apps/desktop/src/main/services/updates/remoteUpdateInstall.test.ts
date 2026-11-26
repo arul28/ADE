@@ -52,7 +52,7 @@ afterEach(() => {
 });
 
 describe("createRemoteUpdateInstaller", () => {
-  it("installs a staged update, but only after the brain has had time to reply", async () => {
+  it("replaces a queued install for a different build and gives the new reply time to arrive", async () => {
     vi.useFakeTimers();
     const updates = createUpdateService({ status: "ready", version: "1.2.91" });
     const installer = createRemoteUpdateInstaller({
@@ -69,7 +69,12 @@ describe("createRemoteUpdateInstaller", () => {
     // The service uninstall inside the install kills the brain that asked.
     await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.quitAndInstall).not.toHaveBeenCalled();
+    updates.set({ status: "ready", version: "1.2.92" });
+    expect(await installer.install({ targetVersion: "1.2.92" })).toMatchObject({ outcome: "installing", version: "1.2.92" });
     await vi.advanceTimersByTimeAsync(500);
+    expect(updates.quitAndInstall).not.toHaveBeenCalled();
+    expect((await installer.install({ targetVersion: "1.2.92" })).outcome).toBe("installing");
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.quitAndInstall).toHaveBeenCalledTimes(1);
     // Marked as remote, so the updated machine does not open "What's new" for nobody.
     expect(updates.quitAndInstall).toHaveBeenCalledWith(true, { requestedRemotely: true });
@@ -97,9 +102,11 @@ describe("createRemoteUpdateInstaller", () => {
   });
 
   it.each([
-    ["1.2.90", "installing", 1],
-    ["1.3.0-beta.3", "no_update", 0],
-  ] as const)("only installs a Stable build during a switch from Beta, with %s offered", async (version, outcome, installs) => {
+    ["1.2.90", "1.2.90", "installing", 1],
+    ["1.2.91", "1.2.90", "no_update", 0],
+    ["1.3.0-beta.3", "1.2.90", "no_update", 0],
+    ["1.2.90", null, "failed", 0],
+  ] as const)("enforces the approved version during a switch from Beta with %s offered and %s approved", async (version, approved, outcome, installs) => {
     vi.useFakeTimers();
     const updates = createUpdateService({ currentVersion: "1.3.0-beta.2" }, (set) => {
       set({ status: "ready", version });
@@ -107,7 +114,7 @@ describe("createRemoteUpdateInstaller", () => {
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
-      checkTrackSwitch: allowTrackSwitch,
+      checkTrackSwitch: async (target) => ({ allowed: true, target, targetVersion: approved }),
       logger,
       installDelayMs: 1_000,
     });

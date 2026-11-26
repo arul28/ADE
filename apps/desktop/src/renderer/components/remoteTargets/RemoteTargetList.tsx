@@ -1232,7 +1232,7 @@ export function RemoteTargetList({
       const updateStatus = updateAttempt
         ? describeMachineUpdateAttempt(
           updateAttempt,
-          { connected: row.connected, version: row.version, hostStartedAt: row.status?.hostStartedAt ?? null, hostUpdateBlock: row.status?.hostUpdateBlock ?? null },
+          { ...row, hostStartedAt: row.status?.hostStartedAt, hostUpdateBlock: row.status?.hostUpdateBlock },
           updateClockMs,
         )
         : null;

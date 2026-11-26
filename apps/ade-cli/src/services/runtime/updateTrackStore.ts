@@ -8,6 +8,7 @@ import {
 } from "../../../../desktop/src/shared/updateTrack";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
 import { writeJsonAtomic } from "./atomicJson";
+import type { BrainUpdateStatus } from "../../commands/brainUpdate";
 
 /**
  * The machine's chosen update track, in `~/.ade/update-track.json`.
@@ -33,6 +34,7 @@ export type UpdateTrackRecord = {
    * (`settlePendingTrackSwitch`). Absent everywhere else.
    */
   pendingSwitchFrom?: UpdateTrack;
+  pendingSwitchVersion?: string;
 };
 
 export function updateTrackFilePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -52,10 +54,12 @@ export function readSavedUpdateTrack(env: NodeJS.ProcessEnv = process.env): Upda
     const track = normalizeUpdateTrack(parsed?.track);
     if (!track) return null;
     const pendingSwitchFrom = normalizeUpdateTrack(parsed.pendingSwitchFrom);
+    const pendingSwitchVersion = typeof parsed.pendingSwitchVersion === "string" ? parsed.pendingSwitchVersion.trim() : "";
     return {
       track,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
       ...(pendingSwitchFrom ? { pendingSwitchFrom } : {}),
+      ...(pendingSwitchVersion ? { pendingSwitchVersion } : {}),
     };
   } catch {
     return null;
@@ -73,35 +77,44 @@ export function resolveSelectedUpdateTrack(
   return readSavedUpdateTrack(env)?.track ?? updateTrackOfVersion(runningVersion);
 }
 
+export type PendingTrackSwitch = { pendingSwitchFrom: UpdateTrack; pendingSwitchVersion: string };
+
 export function writeSavedUpdateTrack(
   track: UpdateTrack,
   env: NodeJS.ProcessEnv = process.env,
   now: () => Date = () => new Date(),
-  options: { pendingSwitchFrom?: UpdateTrack } = {},
+  pending?: PendingTrackSwitch,
 ): UpdateTrackRecord {
   const record: UpdateTrackRecord = {
     track,
     updatedAt: now().toISOString(),
-    ...(options.pendingSwitchFrom ? { pendingSwitchFrom: options.pendingSwitchFrom } : {}),
+    ...pending,
   };
   writeJsonAtomic(updateTrackFilePath(env), record, `${process.pid}`);
   return record;
 }
 
 /**
- * A brain's first look at a switch it saved before installing: the build now
- * running is on the saved track (it landed: keep the choice), or it is not
- * (the install rolled back or never ran: follow the running build's track
- * again, so ordinary updates are not refused as a half-made switch). Null
- * when no switch was pending.
+ * Settle only with evidence from this switch's installer. A second brain
+ * starting on an old build may share the home while the installer is active.
  */
 export function settlePendingTrackSwitch(
   runningVersion: string,
+  update: BrainUpdateStatus,
   env: NodeJS.ProcessEnv = process.env,
 ): "landed" | "reverted" | null {
   const saved = readSavedUpdateTrack(env);
-  if (!saved?.pendingSwitchFrom) return null;
+  if (!saved?.pendingSwitchFrom || !saved.updatedAt || !update.version || update.updatedAt < saved.updatedAt) return null;
+  if (saved.pendingSwitchVersion && update.version !== saved.pendingSwitchVersion) return null;
+  if (updateTrackOfVersion(update.version) !== saved.track) return null;
   const runningTrack = updateTrackOfVersion(runningVersion);
-  writeSavedUpdateTrack(runningTrack, env);
-  return runningTrack === saved.track ? "landed" : "reverted";
+  if (runningVersion === update.version && (update.state === "restarting" || update.state === "succeeded")) {
+    writeSavedUpdateTrack(saved.track, env);
+    return "landed";
+  }
+  if (update.state === "failed" && runningTrack === saved.pendingSwitchFrom) {
+    writeSavedUpdateTrack(runningTrack, env);
+    return "reverted";
+  }
+  return null;
 }

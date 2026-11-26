@@ -951,6 +951,7 @@ export function createAutoUpdateService({
   trackFeed.configure();
   let checkPromise: Promise<unknown> | null = null;
   let cancellingTrackSwitch: UpdateTrack | null = null;
+  let approvedTrackSwitchVersion: string | undefined;
   // In-flight guard for quitAndInstall. Two IPC callers (e.g. AutoUpdateControl
   // double-click, or a renderer click that races a menu trigger) can both
   // reach the await on refreshReadyUpdateBeforeInstall before either of them
@@ -2556,6 +2557,8 @@ export function createAutoUpdateService({
     if (!waitingForRestore && (snapshot.status !== "ready" || !snapshot.version)) {
       return false;
     }
+    const matchesApprovedVersion = () => !approvedTrackSwitchVersion || snapshot.version === approvedTrackSwitchVersion;
+    if (!matchesApprovedVersion()) return false;
     const originalReadySnapshot = snapshot.status === "ready"
       ? cloneSnapshot(snapshot)
       : cloneSnapshot({
@@ -2590,6 +2593,10 @@ export function createAutoUpdateService({
         if (!restored || snapshot.status !== "ready" || !snapshot.version) {
           return await abortInstall("refresh_failed", originalReadySnapshot);
         }
+      }
+      if (!matchesApprovedVersion()) {
+        logger.warn("autoUpdate.track_switch_archive_changed", { approvedVersion: approvedTrackSwitchVersion, version: snapshot.version });
+        return parkReadyInstall("refresh_failed", cloneSnapshot(snapshot));
       }
       installReadySnapshot = cloneSnapshot(snapshot);
       currentPhase = "staging";
@@ -2629,6 +2636,7 @@ export function createAutoUpdateService({
         });
         return await abortInstall("prepare_failed", installReadySnapshot);
       }
+      if (!matchesApprovedVersion()) return await abortInstall("refresh_failed", cloneSnapshot(snapshot));
       const stateBeforeInstall = readGlobalState(globalStatePath);
       // This install supersedes the record of the last one, and with it any
       // continue row that record still owed a chat no project would claim. A
@@ -2789,6 +2797,7 @@ export function createAutoUpdateService({
     const finish = (): void => {
       if (!disposed && trackFeed.state().switching === target) {
         trackFeed.beginSwitch(trackFeed.runningTrack);
+        approvedTrackSwitchVersion = undefined;
         discardUpdateForOtherTrack(trackFeed.runningTrack);
         patchSnapshot(trackPatch());
         logger.info("autoUpdate.track_switch_cancelled", { target });
@@ -2814,7 +2823,7 @@ export function createAutoUpdateService({
    * Choosing the running build's track again cancels a switch that has not
    * installed yet.
    */
-  function startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult {
+  function startTrackSwitch(target: UpdateTrack, approvedVersion?: string): UpdateTrackSwitchResult {
     if (manualInstallOnly) return { ok: false, target, reason: "This Linux installation must be updated manually." };
     if (!writeSelectedTrack) {
       return { ok: false, target, reason: "This build can't change its update track." };
@@ -2840,6 +2849,10 @@ export function createAutoUpdateService({
       }
     }
     const previousSelected = trackFeed.state().selected;
+    // Preserve a remote approval if someone selects the same pending track locally.
+    approvedTrackSwitchVersion = target === trackFeed.runningTrack
+      ? undefined
+      : approvedVersion ?? approvedTrackSwitchVersion;
     trackFeed.beginSwitch(target);
     // A staged update from the other track must never install after the
     // choice changed (for example a beta download, then "Stable" again).

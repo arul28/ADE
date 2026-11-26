@@ -28,7 +28,7 @@ type UpdateService = {
   checkForUpdates(options?: { userInitiated?: boolean }): Promise<void>;
   quitAndInstall(resumeChats?: boolean, options?: { requestedRemotely?: boolean }): Promise<boolean>;
   onStateChange(cb: (snapshot: AutoUpdateSnapshot) => void): () => void;
-  startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult;
+  startTrackSwitch(target: UpdateTrack, approvedVersion?: string): UpdateTrackSwitchResult;
   cancelTrackSwitch(target: UpdateTrack): void;
 };
 
@@ -51,7 +51,8 @@ const DEFAULT_CHECK_TIMEOUT_MS = 60_000;
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 
 function covers(version: string | null, targetVersion: string | null, track?: UpdateTrack): boolean {
-  if (!version || (track && updateTrackOfVersion(version) !== track)) return false;
+  if (!version) return false;
+  if (track) return version === targetVersion && updateTrackOfVersion(version) === track;
   return targetVersion == null || compareUpdateVersions(version, targetVersion) >= 0;
 }
 
@@ -76,9 +77,9 @@ export function createRemoteUpdateInstaller(args: {
   const installDelayMs = args.installDelayMs ?? DEFAULT_INSTALL_DELAY_MS;
   const checkTimeoutMs = args.checkTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS;
   const downloadTimeoutMs = args.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS;
-  let installTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingInstall: { timer: ReturnType<typeof setTimeout>; version: string | null; track?: UpdateTrack } | null = null;
   /** The wait for a download to finish; one at a time, the latest request wins. */
-  let pendingDownload: { stop: () => void } | null = null;
+  let pendingDownload: { stop: () => void; track?: UpdateTrack } | null = null;
   let disposed = false;
 
   /** The reason the install would refuse, or null when it would go ahead. */
@@ -101,11 +102,17 @@ export function createRemoteUpdateInstaller(args: {
     pendingDownload = null;
   };
 
+  const clearPendingInstall = (): void => {
+    if (pendingInstall) clearTimeout(pendingInstall.timer);
+    pendingInstall = null;
+  };
+
   const scheduleInstall = (service: UpdateService, version: string | null, track?: UpdateTrack): void => {
     clearPendingDownload();
-    if (installTimer) return;
-    installTimer = setTimeout(() => {
-      installTimer = null;
+    if (pendingInstall?.version === version && pendingInstall.track === track) return;
+    clearPendingInstall();
+    const timer = setTimeout(() => {
+      pendingInstall = null;
       if (disposed) return;
       if (track && !covers(service.getSnapshot().version, version, track)) {
         args.logger.warn("autoUpdate.remote_track_switch_archive_changed", { track, version });
@@ -131,10 +138,12 @@ export function createRemoteUpdateInstaller(args: {
         },
       );
     }, installDelayMs);
+    pendingInstall = { timer, version, track };
   };
 
   const installWhenDownloaded = (service: UpdateService, targetVersion: string | null, track?: UpdateTrack): void => {
     clearPendingDownload();
+    clearPendingInstall();
     let unsubscribe: (() => void) | null = null;
     const fail = (): void => {
       stop();
@@ -150,19 +159,22 @@ export function createRemoteUpdateInstaller(args: {
       unsubscribe = null;
       if (pendingDownload === entry) pendingDownload = null;
     };
-    const entry = { stop };
+    const entry = { stop, track };
     pendingDownload = entry;
     const onSnapshot = (snapshot: AutoUpdateSnapshot): void => {
       if (pendingDownload !== entry) return;
       if (snapshot.status === "ready") {
-        stop();
+        // Keep this request current through preflight, without handling another snapshot.
+        clearTimeout(timeout);
+        unsubscribe?.();
+        unsubscribe = null;
         if (covers(snapshot.version, targetVersion, track)) {
           const version = snapshot.version;
           void preflight().then((blocked) => {
-            if (pendingDownload !== null || disposed) return;
+            if (pendingDownload !== entry || disposed) return;
             if (blocked) {
               args.logger.warn("autoUpdate.remote_install_blocked", { version, reason: blocked });
-              if (track) service.cancelTrackSwitch(track);
+              fail();
               return;
             }
             scheduleInstall(service, version, track);
@@ -172,7 +184,7 @@ export function createRemoteUpdateInstaller(args: {
             targetVersion,
             version: snapshot.version,
           });
-          if (track) service.cancelTrackSwitch(track);
+          fail();
         }
         return;
       }
@@ -344,11 +356,16 @@ export function createRemoteUpdateInstaller(args: {
         requestedByName: request.requestedBy?.machineName ?? null,
         currentVersion: snapshot.currentVersion,
       });
+      let approvedVersion: string | undefined;
       try {
         // Checked here too, not trusted from the brain: this is the app that installs.
         const check = await args.checkTrackSwitch(target);
         if (!check.allowed) return result("failed", snapshot, null, check.reason);
-        const started = service.startTrackSwitch(target);
+        approvedVersion = check.targetVersion ?? undefined;
+        if (target !== runningTrack && !approvedVersion) {
+          return result("failed", snapshot, null, `ADE couldn't verify the ${label} build that would install. Try again when ${label} release details are available.`);
+        }
+        const started = service.startTrackSwitch(target, approvedVersion);
         if (!started.ok) return result("failed", snapshot, null, started.reason);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -356,11 +373,14 @@ export function createRemoteUpdateInstaller(args: {
         return result("failed", snapshot, null, message);
       }
       if (target === runningTrack) {
+        if (pendingInstall?.track) clearPendingInstall();
+        if (pendingDownload?.track) clearPendingDownload();
         return result("already_current", snapshot, snapshot.currentVersion, `Follows ${label} again. Nothing to install.`);
       }
-      // The switch offers the newest build on the selected track, including
-      // when moving back to an older Stable version.
-      const answer = await install({ targetVersion: null, requestedBy: request.requestedBy ?? null }, target);
+      if (pendingInstall?.track !== target || pendingInstall.version !== approvedVersion) clearPendingInstall();
+      clearPendingDownload();
+      // Install the release that passed the compatibility check.
+      const answer = await install({ targetVersion: approvedVersion ?? null, requestedBy: request.requestedBy ?? null }, target);
       if (answer.outcome !== "installing" && answer.outcome !== "downloading") {
         // The asking machine hears this failed: the switch must not finish later on its own.
         service.cancelTrackSwitch(target);
@@ -370,8 +390,7 @@ export function createRemoteUpdateInstaller(args: {
     dispose() {
       disposed = true;
       clearPendingDownload();
-      if (installTimer) clearTimeout(installTimer);
-      installTimer = null;
+      clearPendingInstall();
     },
   };
 }
