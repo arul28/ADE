@@ -25,6 +25,7 @@ import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
+import { savedCopyHistoryCursor, savedCopyPartOf } from "../components/chat/chatHistoryWindow";
 import { personErrorText } from "../lib/format";
 
 /** Whether a store machine id is a saved chat's computer this window has no connection to. */
@@ -201,6 +202,11 @@ function eventsFromPage(page: CloudSavedChatPage, sessionId: string): AgentChatE
   return parseAgentChatTranscript(text).filter((event) => event.sessionId === sessionId);
 }
 
+/** The history cursor of the parts before a page; 0 when it reached the first part. */
+function olderPartsCursor(page: CloudSavedChatPage): number {
+  return page.hasMore && page.nextBefore != null ? savedCopyHistoryCursor(page.nextBefore) : 0;
+}
+
 /** A saved chat's newest page, as the live history read answers it. */
 export function savedChatSnapshot(page: CloudSavedChatPage, sessionId: string): AgentChatEventHistorySnapshot {
   // No `maxEvents` window: a part can't be paged into, so the whole page shows.
@@ -210,18 +216,19 @@ export function savedChatSnapshot(page: CloudSavedChatPage, sessionId: string): 
     truncated: page.hasMore,
     sessionFound: true,
     hasOlderHistory: page.hasMore,
-    tailStartOffset: page.hasMore ? (page.nextBefore ?? 0) : 0,
+    tailStartOffset: olderPartsCursor(page),
   };
 }
 
-/** An older page: `beforeOffset` is the part sequence to read before. */
+/** An older page, read before a part cursor (`savedCopyHistoryCursor`), or the newest page for a byte cursor. */
 export function savedChatHistoryPage(page: CloudSavedChatPage, sessionId: string): AgentChatEventHistoryPage {
   return {
     sessionId,
     events: eventsFromPage(page, sessionId),
-    startOffset: page.nextBefore ?? 0,
+    startOffset: olderPartsCursor(page),
     hasMore: page.hasMore,
     sessionFound: true,
+    savedCopy: true,
   };
 }
 
@@ -618,11 +625,21 @@ export function withSavedChatReads(
       return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistory(args, pin), saved);
     },
     getEventHistoryPage: async (args, pin) => {
+      // A part cursor came from the saved copy. It pages the saved copy also
+      // once the computer is awake again: the computer's transcript has no
+      // such position, and reading it there ended the chat's older history.
+      // A byte cursor came from the computer; while the computer rests, the
+      // saved copy answers from its newest part instead.
+      const part = savedCopyPartOf(args.beforeOffset);
+      const unavailable = { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
       const saved = async (location: SavedChatLocation) => {
-        const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
-        if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
-        return savedChatHistoryPage(page, args.sessionId);
+        const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId, ...(part != null ? { before: part } : {}) }).catch(logSavedChatReadFailure);
+        return page ? savedChatHistoryPage(page, args.sessionId) : unavailable;
       };
+      if (part != null) {
+        const location = savedChatLocation(pin, args.sessionId, () => false) ?? savedChatLocationForSession(args.sessionId);
+        return location ? saved(location) : unavailable;
+      }
       const location = locate(args.sessionId, pin);
       return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistoryPage(args, pin), saved);
     },
