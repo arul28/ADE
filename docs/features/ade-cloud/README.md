@@ -2274,10 +2274,13 @@ directory wakes it (routes in `apps/account-directory/README.md`):
     first.
 - **Event wakes.** The computer lists the topics that wake it
   (`PUT /cloud/instances/:id/event-wakes`): a Linear organization, a Linear
-  agent account, or the account's custom webhooks. The webhook relay reports
-  each event (`POST /cloud/internal/event-wake`), and the directory wakes each
-  listed computer under the normal checks, at most once in 5 minutes.
-  Repository events wake nothing.
+  agent account, or the account's custom webhooks. A Linear organization is
+  kept only when the lane's own Linear connection is in it, so no one can
+  listen to another team's workspace. The webhook relay reports each event
+  (`POST /cloud/internal/event-wake`), and the directory wakes each listed
+  computer under the normal checks, at most once in 5 minutes. Of the 20
+  listeners one event reads, each account's newest comes first, so one
+  account can't fill them. Repository events wake nothing.
 
 A timed wake and an event wake are use, the same as a person's wake: the time
 awake bills hours, and the wake restarts the idle cleanup's clock.

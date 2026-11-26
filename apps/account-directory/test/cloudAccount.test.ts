@@ -744,6 +744,7 @@ describe("ADE Cloud account", () => {
       harness.insert("cloud_power_log", { instance_id: INSTANCE, user_id: OWNER, action: "wake", reason: "user", created_at: NOW - HOUR });
       harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: "2026-01-01", user_id: OWNER, multiplier_milli: 1000, metered_ms: HOUR });
       harness.insert("cloud_disk_days", { user_id: OWNER, day: "2026-01-01", peak_gb: 20, plan_gb: 20 });
+      harness.insert("cloud_linear_orgs", { user_id: OWNER, org_id: "org-own", checked_at: NOW - DAY });
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
       // Its status menu's facts carry no user id: they go with the computer.
@@ -2998,7 +2999,7 @@ describe("ADE Cloud account data and event wakes", () => {
     seedAccount(data, OWNER);
     seedComputer(data, { status: "sleeping", awake_since: null });
     provide(data, INSTANCE, "sleeping");
-    const set = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OWNER}`, "linear-org:org-1"] });
+    const set = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OWNER}`] });
     expect(set.status).toBe(200);
     const starts = () => providerCalls(data, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length;
 
@@ -3033,6 +3034,57 @@ describe("ADE Cloud account data and event wakes", () => {
     expect(await (await wake(SECRET)).json()).toEqual({ subscribed: true, woken: 0 });
     data.injectFault(null);
     expect(starts()).toBe(2);
+  });
+
+  it("a computer listens to a Linear workspace only when its lane's own Linear connection is in it, and every account's newest listener wakes first", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedAccount(data, OTHER);
+    seedComputer(data, { status: "sleeping", awake_since: null, lane_project_origin: "https://github.com/acme/widgets" });
+    provide(data, INSTANCE, "sleeping");
+    (data.env as CloudEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = SECRET;
+    let vaultUp = true;
+    let linearCalls = 0;
+    Object.assign(data.env, {
+      PUSH_RELAY_URL: RELAY,
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL) => {
+          const url = new URL(String(input));
+          if (!vaultUp) return new Response("{}", { status: 503 });
+          if (url.pathname !== "/attention/account/vault/item" || url.searchParams.get("key") !== "linear") return new Response("{}", { status: 404 });
+          const item = { scope: url.searchParams.get("scope"), kind: "integration", key: "linear", value: JSON.stringify({ v: 1, authMode: "manual", token: "lin_api_test" }), updatedAt: "2026-11-01T00:00:00.000Z" };
+          return new Response(JSON.stringify({ ok: true, item }), { status: 200 });
+        },
+      },
+    });
+    const netFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input instanceof Request ? input.url : input).startsWith("https://api.linear.app/")) return netFetch(input, init);
+      linearCalls += 1;
+      return new Response(JSON.stringify({ data: { organization: { id: "org-own" } } }), { status: 200 });
+    });
+    const put = (topics: string[]) => data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics });
+    const stored = () => data.rows("select topic from cloud_event_wakes where instance_id = ? order by topic", INSTANCE).map((row) => row.topic);
+
+    // Another team's workspace is left out; the lane's own is kept, and the account topic as it is.
+    const first = await put([`hooks-account:${OWNER}`, "linear-org:org-own", "linear-org:org-victim"]);
+    expect([first.status, ((await first.json()) as { topics: string[] }).topics]).toEqual([200, [`hooks-account:${OWNER}`, "linear-org:org-own"]]);
+    expect(stored()).toEqual([`hooks-account:${OWNER}`, "linear-org:org-own"]);
+    // A workspace that can't be checked now keeps the earlier list, for the computer to send again.
+    vaultUp = false;
+    expect((await put(["linear-org:org-other"])).status).toBe(503);
+    expect(stored()).toEqual([`hooks-account:${OWNER}`, "linear-org:org-own"]);
+
+    // Twenty newer rows of another account on the topic still leave this computer in a delivery's twenty.
+    for (let n = 0; n < 20; n += 1) {
+      seedComputer(data, { instance_id: `othr${String(n).padStart(6, "0")}`, user_id: OTHER, machine_key: `key-o${n}`, status: "sleeping", awake_since: null });
+      data.insert("cloud_event_wakes", { instance_id: `othr${String(n).padStart(6, "0")}`, topic: "linear-org:org-own", user_id: OTHER, updated_at: NOW + 1 + n });
+    }
+    // Sent again as it rests, the workspace Linear named this week is not asked for again.
+    expect((await put(["linear-org:org-own"])).status).toBe(200);
+    expect(linearCalls).toBe(1);
+    await wake(SECRET, "linear-org:org-own");
+    expect(providerCalls(data, new RegExp(`POST .*/instances/${INSTANCE}/start$`))).toHaveLength(1);
   });
 
   it("refuses an event topic of another account", async () => {

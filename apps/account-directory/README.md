@@ -411,17 +411,26 @@ minutes early.
   once (`cloud.timed_wake_recorded`). A woken row goes; one that didn't
   answer is retried each minute for 30 minutes.
 
-**Event wakes** (`src/cloud/eventWakes.ts`, migration `0040`):
+**Event wakes** (`src/cloud/eventWakes.ts`, migrations `0040`, `0069`):
 
 - `PUT /cloud/instances/:id/event-wakes {topics}` replaces the computer's
   topics: at most 20, each `linear-org:<id>`, `linear-account:<id>` or
   `hooks-account:<id>`. An account topic must name the caller's own user id
   (else 400). `[]` clears it. Another account's computer answers 404.
+- A `linear-org:<id>` topic is kept only for the workspace of the lane's own
+  Linear connection: the project's vault item (`repo:<lane origin>`), read
+  with the caller's bearer and asked Linear for `organization { id }`. Any
+  other workspace is left out of the list. A workspace that matched is kept
+  for 7 days in `cloud_linear_orgs`, so a rest save does not ask Linear
+  again. When the vault or Linear can't answer, the request answers 503 and
+  changes nothing; the computer sends the list again at its next rest.
 - `POST /cloud/internal/event-wake {topic}` comes from the webhook relay with
   `x-ade-event-wake-secret` (`CLOUD_EVENT_WAKE_SECRET`, constant-time, before
-  auth; unset 503, wrong 404). It skips awake computers and ones the idle
-  cleanup claimed in the last 20 minutes, wakes each at most once in 5
-  minutes under the normal wake checks, and answers `{subscribed, woken}`.
+  auth; unset 503, wrong 404). It reads at most 20 listeners: each account's
+  newest first, then each one's next, so one account's many computers can't
+  push another's out. It skips awake computers and ones the idle cleanup
+  claimed in the last 20 minutes, wakes each at most once in 5 minutes under
+  the normal wake checks, and answers `{subscribed, woken}`.
 
 ## ADE Cloud account
 
