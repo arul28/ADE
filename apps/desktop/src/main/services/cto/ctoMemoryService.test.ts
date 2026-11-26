@@ -236,6 +236,15 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     service.writeSkillText({ name: "hotfix", text: "1. Branch from main\n2. Announce it" });
     expect(service.undoLearned({ learnId: added.learnId, changeId: added.changes[0]!.id })).toMatchObject({ ok: false });
     expect(read(path.join(ctoDir, "skills", "hotfix", "SKILL.md"))).toContain("2. Announce it");
+
+    // A note line the CTO changed and the person then edited again: Undo refuses and keeps their wording.
+    service.remember({ note: "Staging lives at staging.acme.dev" });
+    service.beginLearningTurn();
+    service.remember({ note: "Staging lives at stage.acme.dev", replaces: "Staging lives" });
+    const renamed = service.finishLearningTurn({})!;
+    service.writeNotes("project", "- Staging lives at stage2.acme.dev\n");
+    expect(service.undoLearned({ learnId: renamed.learnId, changeId: renamed.changes[0]!.id })).toMatchObject({ ok: false });
+    expect(read(path.join(ctoDir, "MEMORY.md"))).toBe("- Staging lives at stage2.acme.dev\n");
   });
 
   it("never reports the person's own edits during a turn as learned, and forgives what they write back", () => {
@@ -254,6 +263,23 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     // The person writes it back themselves: the CTO may manage it again.
     service.writeNotes("rules", "- Use pnpm — the lockfile is pnpm's.\n- Run the linter before review — CI fails on lint.\n");
     expect(service.removeRule({ rule: "Run the linter" }).ok).toBe(true);
+
+    // Notes about the person are shared across projects: a line another project's CTO
+    // writes during this turn is not this turn's to show or undo; the line this CTO writes is.
+    const { root, adeDir } = createFixture();
+    const here = createCtoMemoryService({ adeDir, userNotesDir: path.join(root, "home-cto") });
+    const otherRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cto-memory-other-"));
+    fs.mkdirSync(path.join(otherRoot, ".ade"), { recursive: true });
+    const elsewhere = createCtoMemoryService({ adeDir: path.join(otherRoot, ".ade"), userNotesDir: path.join(root, "home-cto") });
+    here.beginLearningTurn();
+    expect(elsewhere.remember({ note: "Prefers short PR descriptions", scope: "user" }).ok).toBe(true);
+    expect(here.finishLearningTurn({})).toBeNull();
+    here.beginLearningTurn();
+    elsewhere.remember({ note: "Works in UTC", scope: "user" });
+    expect(here.remember({ note: "Reviews on Wednesdays", scope: "user" }).ok).toBe(true);
+    expect(here.finishLearningTurn({})?.changes.map(({ area, text }) => `${area}:${text}`)).toEqual([
+      "user_notes:Reviews on Wednesdays",
+    ]);
   });
 
   it("still reports a turn a brain restart cut short", () => {

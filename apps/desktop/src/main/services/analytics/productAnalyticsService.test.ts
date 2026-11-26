@@ -714,6 +714,8 @@ describe("productAnalyticsService", () => {
     { action: "cto_home_move", surface: "api", outcomes: ["completed", "kept", "failed"] },
     { action: "cto_stall_nudge", surface: "api", outcomes: ["completed", "failed"] },
     { action: "cto_need", surface: "api", outcomes: ["started"] },
+    { action: "cto_learned", surface: "api", outcomes: ["completed"] },
+    { action: "cto_learned_undo", surface: "api", outcomes: ["completed"] },
   ] as const)("accepts the CTO's $action outcomes and nothing private beside them", ({ action, surface, outcomes }) => {
     const harness = makeHarness();
 

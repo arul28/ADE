@@ -526,6 +526,16 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
     expect(isCtoOnlyAdeAction("cto_memory", "updateOpenWork")).toBe(true);
 
+    // Undo and whole-file writes are the person's alone: the CTO writes through
+    // its own tools, so every change it makes gets a Learned row and respects Undo.
+    for (const action of ["undoLearned", "updateNotes", "writeSkill", "deleteSkill"]) {
+      expect(isAllowedAdeAction("cto_memory", action)).toBe(true);
+      expect(isUserOnlyAdeAction("cto_memory", action)).toBe(true);
+      expect(isAutomationAllowedAdeAction("cto_memory", action)).toBe(false);
+    }
+    expect(isUserOnlyAdeAction("cto_memory", "updateOpenWork")).toBe(false);
+    expect(isUserOnlyAdeAction("cto_memory", "getSkill")).toBe(false);
+
     // Fail-closed: a method added to the domain later is CTO-only by default
     // rather than open by omission.
     expect(isCtoOnlyAdeAction("cto_memory", "someMethodAddedLater")).toBe(true);

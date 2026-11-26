@@ -704,7 +704,8 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
         user_notes: text(parsed.user_notes),
         skills: new Map(Object.entries(skills).flatMap(([name, value]) => (typeof value === "string" ? [[name, value] as const] : []))),
       };
-    } catch {
+    } catch (error) {
+      logger?.warn("cto_learning.baseline_unreadable", { error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   };
@@ -788,7 +789,8 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     try {
       const parsed = JSON.parse(raw) as LearnedRecord;
       return parsed?.v === 1 && Array.isArray(parsed.changes) ? parsed : null;
-    } catch {
+    } catch (error) {
+      logger?.warn("cto_learning.record_unreadable", { error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   };

@@ -571,6 +571,7 @@ import {
 } from "../ai/pinnedProviderTools";
 import { createCodexVoiceSessions } from "./codexVoiceSession";
 import type { FeatureAnalytics } from "../analytics/featureProductAnalytics";
+import { reportCtoLearning } from "../analytics/ctoLearningProductAnalytics";
 import { parseStructuredOutput, withTimeout } from "../ai/utils";
 import {
   evictOldestEntries,
@@ -23717,6 +23718,7 @@ export function createAgentChatService(args: {
       logger.warn("agent_chat.cto_learned_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
     }
     if (!learned) return false;
+    reportCtoLearning(args.analytics, "cto_learned");
     const event = ctoLearnedEvent(learned);
     setTimeout(() => {
       if (managed.deleted) return;
@@ -75487,10 +75489,11 @@ export function createAgentChatService(args: {
    * again with the same `learnId` and that change marked undone, so every
    * client updates it in place.
    */
-  const undoCtoLearned = async (args: CtoUndoLearnedArgs): Promise<CtoUndoLearnedResult> => {
+  const undoCtoLearned = async (input: CtoUndoLearnedArgs): Promise<CtoUndoLearnedResult> => {
     if (!ctoMemoryService) return { undone: false, note: "The CTO's memory is not available here." };
-    const outcome = ctoMemoryService.undoLearned({ learnId: String(args?.learnId ?? ""), changeId: String(args?.changeId ?? "") });
+    const outcome = ctoMemoryService.undoLearned({ learnId: String(input?.learnId ?? ""), changeId: String(input?.changeId ?? "") });
     if (!outcome.ok) return { undone: false, note: outcome.error };
+    reportCtoLearning(args.analytics, "cto_learned_undo");
     const sessionId = outcome.payload.sessionId ?? (await listIdentitySessions("cto"))[0]?.sessionId ?? null;
     let managed: ManagedChatSession | null = null;
     try {
