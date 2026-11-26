@@ -1628,8 +1628,9 @@ function AppNavigationBridge() {
 
     if (target.kind === "account-project") {
       // Main resolved the link's account project id first (L33). No computer
-      // that can be reached has a copy: the repository opens on ADE Cloud,
-      // as a Home row does.
+      // that can be reached has a copy (or its ADE Cloud computer sleeps, and
+      // opening never wakes one): the repository opens on ADE Cloud, as a
+      // Home row does.
       if (target.reason === "no-copy") {
         void useAppStore.getState().openAdeCloudProject(
           adeCloudProjectForTabId(target.accountProjectId, target.name?.trim() || "Project"),

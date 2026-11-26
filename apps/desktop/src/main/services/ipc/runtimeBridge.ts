@@ -520,7 +520,8 @@ export class RemoteProjectNotFoundError extends Error {
 /**
  * Opening a project reads it, and reading never wakes an ADE Cloud computer.
  * An open on one that is asleep or stopped is refused with this; the window
- * shows the repository from ADE Cloud instead (the top bar's tab fallback).
+ * shows the repository from ADE Cloud instead (the top bar's tab fallback,
+ * and main's `openAsleepCopyOnAdeCloud` for an Activity item or a link).
  * Connect, a send, or any change still wakes it.
  */
 export class CloudComputerAsleepError extends AdeExpectedError {

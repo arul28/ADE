@@ -25,7 +25,13 @@ export async function cloudWakeForUse(target: RemoteRuntimeTarget): Promise<bool
  * as the answer, when it isn't a cloud computer: telling may need a bounded
  * read of the account's computers.
  */
-type AsleepCheck = (target: RemoteRuntimeTarget) => Promise<boolean | null> | null;
+type AsleepCheck = (target: CloudAsleepTarget) => Promise<boolean | null> | null;
+
+/** What the asleep check reads of a machine: its account machine key, and its host name to tell boxes apart. */
+export type CloudAsleepTarget = {
+  pairedMachine?: { machineKey?: string | null } | null;
+  hostname?: string | null;
+};
 
 let asleepCheck: AsleepCheck | null = null;
 
@@ -34,8 +40,13 @@ export function setCloudAsleepCheck(next: AsleepCheck | null): void {
 }
 
 /** Whether this machine is a cloud computer that is asleep or stopped; null when it isn't a cloud computer. */
-export function cloudAsleepForUse(target: RemoteRuntimeTarget): Promise<boolean | null> | null {
+export function cloudAsleepForUse(target: CloudAsleepTarget): Promise<boolean | null> | null {
   return asleepCheck ? asleepCheck(target) : null;
+}
+
+/** `cloudAsleepForUse` for an account machine this desktop holds no connection to. */
+export function cloudMachineAsleep(machineKey: string): Promise<boolean | null> | null {
+  return cloudAsleepForUse({ pairedMachine: { machineKey } });
 }
 
 type RestChanged = (targetId: string, resting: boolean) => void;

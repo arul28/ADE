@@ -974,6 +974,7 @@ import {
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
 import { cloudAccountChanged, registerCloudIpc } from "../adeCloud/registerCloudIpc";
+import { cloudMachineAsleep } from "../adeCloud/cloudWakeHook";
 import { registerAdeCloudReadIpc } from "../adeCloud/adeCloudReadIpc";
 import { registerCloudLaneLifeIpc } from "../adeCloud/registerCloudLaneLifeIpc";
 import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc";
@@ -14988,7 +14989,13 @@ export function registerIpc({
       // unknown machine is paired rather than refused (contract C2; the open
       // below connects).
       const reached = await machineConnector.connect(machineKey, { connect: false });
-      if (!reached.ok) throw describeAttentionOpenFailure(new Error(reached.message), "pair", args.machineName);
+      if (!reached.ok) {
+        // An ADE Cloud computer this desktop never paired with cannot pair
+        // while it sleeps. The account says whether that is why (a read, no
+        // wake), so the caller opens the repository on ADE Cloud instead.
+        if (await cloudMachineAsleep(machineKey) === true) throw new CloudComputerAsleepError();
+        throw describeAttentionOpenFailure(new Error(reached.message), "pair", args.machineName);
+      }
       if (reached.address.kind !== "remote") throw describeAttentionOpenFailure(new Error("That is this computer."), "pair", args.machineName);
       const targetId = reached.address.targetId;
       try {
@@ -15002,7 +15009,8 @@ export function registerIpc({
         // Typed, not text-matched: the stage decides whether the user is told
         // to open the project or to check that ADE is running on that machine,
         // and rewording either throw must not flip the instruction.
-        // A sleeping cloud computer is not woken to open an item: its own sentence says so.
+        // A sleeping cloud computer is not woken to open an item; the caller
+        // opens the repository on ADE Cloud instead (`openAsleepCopyOnAdeCloud`).
         if (error instanceof CloudComputerAsleepError) throw error;
         const stage = error instanceof RemoteProjectNotFoundError ? "open" : "connect";
         throw describeAttentionOpenFailure(error, stage, args.machineName);
