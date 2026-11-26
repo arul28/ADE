@@ -735,7 +735,7 @@ function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueSe
  * account's calls go. Reads stay. The remote MCP service writes them
  * in-process, never through this domain.
  */
-function buildAccountSettingsDomainService(runtime: AdeRuntime): OpaqueService | null {
+function buildAccountSettingsDomainService(runtime: Partial<Pick<AdeRuntime, "accountSettingsStore">>): OpaqueService | null {
   const store = runtime.accountSettingsStore;
   if (!store) return null;
   const guard = (key: unknown): void => {
@@ -5140,7 +5140,7 @@ function savedChatReads(credentials: CloudAccessDeps): {
 
 /**
  * The account-level domains a brain serves with no project open, over the
- * machine's account stores (`cloud.call` and `accountVault.call` in
+ * machine's account stores (`cloud.call`, `accountVault.call` and `accountSettings.call` in
  * multiProjectRpcServer). The same services a project runtime builds, so
  * every scope answers the same; which actions are served this way is
  * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only the provider's items.
@@ -5148,12 +5148,16 @@ function savedChatReads(credentials: CloudAccessDeps): {
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
+  account_settings: OpaqueService | null;
   provider_logins: OpaqueService | null;
   passwords: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
+    // Settings › MCP servers and every other account setting, in a window
+    // with no project on this computer (a tab bound to another machine).
+    account_settings: buildAccountSettingsDomainService(runtime),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
     // Settings › Passwords & Secrets and the browser's fill with no project open.

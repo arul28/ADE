@@ -34,7 +34,8 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import { SettingsTextField } from "./primitives";
+import { SettingsSegmented, SettingsTextField } from "./primitives";
+import { setGithubConnectMode, useGithubConnectMode, type GithubConnectMode } from "../../lib/githubConnectMode";
 import {
   IntegrationCard,
   IntegrationColumns,
@@ -284,6 +285,20 @@ export function GitHubSection() {
   // only this status can tell a paused renewal from a dead authorization. Shared
   // with the install panel on this same page, which is where it is disconnected.
   const { appAuth } = useGithubAppUserAuth(pin);
+  // The account's choice: with "GitHub CLI only" the page offers neither the
+  // app nor a token (an organisation that blocks both).
+  const connectMode = useGithubConnectMode();
+  const cliOnly = connectMode.mode === "cli_only";
+  const [savingConnectMode, setSavingConnectMode] = useState(false);
+  const handleConnectMode = (mode: GithubConnectMode) => {
+    setSavingConnectMode(true);
+    if (mode === "cli_only") setShowPatSetup(false);
+    void setGithubConnectMode(mode)
+      .then((error) => {
+        if (error) showToast({ tone: "error", title: "Couldn't change how GitHub connects", message: error });
+      })
+      .finally(() => setSavingConnectMode(false));
+  };
 
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -439,7 +454,7 @@ export function GitHubSection() {
   const accountCredentials = githubStatus?.accountCredentials ?? null;
   // An older remote runtime reports no credential chain. The token row still
   // has to be there, since it is where a token is added, replaced or removed.
-  const signInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
+  const allSignInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
     ? [...credentialStates, {
       source: "pat",
       available: githubStatus.tokenStored === true,
@@ -450,6 +465,15 @@ export function GitHubSection() {
       rateLimit: null,
     }]
     : credentialStates;
+  // GitHub CLI only: no idle app rows, and the token row only while a token
+  // is saved, so it can still be removed. A row that is in use stays, so the
+  // list agrees with "Reads with" above.
+  const signInRows = cliOnly
+    ? allSignInRows.filter((credential) => credential.activeFor.length > 0 || (
+      credential.source !== "app"
+      && credential.source !== "account_app"
+      && (credential.source !== "pat" || githubStatus?.patTokenStored === true)))
+    : allSignInRows;
   const activeReadCredential = credentialStates.find((credential) => credential.activeFor.includes("read")) ?? null;
   const effectiveWriteAuthSource = githubStatus?.writeAuthSource
     ?? (githubStatus?.authSource && githubStatus.authSource !== "app" ? githubStatus.authSource : "none");
@@ -828,6 +852,27 @@ export function GitHubSection() {
         ) : null}
       </div>
 
+      <IntegrationCard
+        anchor="github-connect-mode"
+        icon={<TerminalWindow size={16} weight="duotone" />}
+        title="How GitHub connects"
+        hint={cliOnly
+          ? "Only your GitHub CLI and git sign-in. ADE doesn't offer its app or a token. For every computer on your ADE account."
+          : "ADE's app, a token or your GitHub CLI sign-in. Pick GitHub CLI only if your organisation blocks the app and tokens."}
+        actions={(
+          <SettingsSegmented<GithubConnectMode>
+            ariaLabel="How GitHub connects"
+            value={connectMode.mode}
+            disabled={!connectMode.loaded || savingConnectMode}
+            onChange={handleConnectMode}
+            options={[
+              { value: "app_or_token", label: "App, token or CLI" },
+              { value: "cli_only", label: "GitHub CLI only" },
+            ]}
+          />
+        )}
+      />
+
       {repoName ? (
         <IntegrationCard anchor="github-reminders" icon={<Bell size={16} weight="duotone" />} title="Reminders"
           hint={remindersDismissed
@@ -876,7 +921,7 @@ export function GitHubSection() {
                   <span className="ade-ig-method-name">
                     <b>{credentialSourceLabel(credential.source)}</b>
                     <small>
-                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source, accountCredentials, githubStatus?.accountApp)}
+                      {credential.source === "app" ? (cliOnly ? "Reads only" : "Reads only · set up on the right") : credentialSourceDetail(credential.source, accountCredentials, githubStatus?.accountApp)}
                     </small>
                   </span>
                   <span className="ade-ig-method-side">
@@ -885,7 +930,7 @@ export function GitHubSection() {
                         Remove
                       </button>
                     ) : null}
-                    {isPat ? (
+                    {isPat && !cliOnly ? (
                       <button type="button" className="ade-modern-btn" data-size="sm" disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
                         {showPatSetup ? "Cancel" : githubStatus?.patTokenStored ? "Replace" : "Add token"}
                       </button>
@@ -923,7 +968,21 @@ export function GitHubSection() {
           </div>
         </IntegrationCard>
 
-        <GitHubAppInstallPanel pin={pin} accountApp={githubStatus?.accountApp ?? null} onAccountAppChanged={handleRefreshStatus} />
+        {cliOnly ? (
+          <IntegrationCard
+            anchor="github-cli-only"
+            icon={<WebhooksLogo size={16} weight="duotone" />}
+            title="What needs ADE for GitHub"
+            hint="Everything else works with your GitHub CLI and git sign-in."
+          >
+            <div className="ade-ig-choice" data-github-app-only-features="">
+              <p><b>Live pull request updates.</b> ADE checks GitHub every few minutes instead, so a new review or check shows a little later.</p>
+              <p><b>GitHub on ADE Cloud computers.</b> Share your GitHub CLI sign-in with your ADE account instead (on the GitHub CLI row).</p>
+            </div>
+          </IntegrationCard>
+        ) : (
+          <GitHubAppInstallPanel pin={pin} accountApp={githubStatus?.accountApp ?? null} onAccountAppChanged={handleRefreshStatus} />
+        )}
       </IntegrationColumns>
     </IntegrationPage>
   );

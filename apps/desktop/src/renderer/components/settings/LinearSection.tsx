@@ -5,11 +5,13 @@ import {
   CaretDown,
   CheckCircle,
   CircleNotch,
+  Copy,
   Key,
   LinkSimple,
 } from "@phosphor-icons/react";
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
+import { isGithubAutolinksRefusal } from "../../../shared/githubAutolinks";
 import { captureError } from "../../../shared/sentry/capture";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
@@ -31,6 +33,7 @@ import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvent
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { requirePin } from "../../state/repositoryScope";
+import { plainError, type PlainError } from "../../lib/plainError";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -89,7 +92,9 @@ export function LinearSection() {
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
   const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);
   const [autolinksLoading, setAutolinksLoading] = useState(false);
-  const [autolinkError, setAutolinkError] = useState<string | null>(null);
+  // Why the links could not be read or added, in plain words. `ask_admin`:
+  // the person is not an admin of the repository, so Add is not offered.
+  const [autolinkError, setAutolinkError] = useState<PlainError | null>(null);
   const [creatingAutolinkId, setCreatingAutolinkId] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState("");
   const [validating, setValidating] = useState(false);
@@ -183,6 +188,10 @@ export function LinearSection() {
     });
   }, [githubAutolinks, githubRepoSlug, teamKeys, workspaceUrlKey]);
   const configuredAutolinkCount = autolinkCandidates.filter((candidate) => candidate.configured).length;
+  // GitHub refused to show the links (not an admin, or a sign-in without
+  // Administration access). What is added is unknown, so no count and no Add:
+  // pressing it could only fail the same way.
+  const autolinksRefused = autolinkError != null && isGithubAutolinksRefusal(autolinkError.text);
 
   /* ── Load helpers ── */
   const loadProjects = useCallback(async (requestIdArg?: number) => {
@@ -223,7 +232,7 @@ export function LinearSection() {
     } catch (err) {
       if (autolinksRequestIdRef.current !== requestId) return;
       setGithubAutolinks([]);
-      setAutolinkError(err instanceof Error ? err.message : "Unable to load GitHub autolinks.");
+      setAutolinkError(plainError(err, { fallback: "ADE couldn't read this repository's links on GitHub." }));
     } finally {
       if (autolinksRequestIdRef.current === requestId) {
         setAutolinksLoading(false);
@@ -443,11 +452,22 @@ export function LinearSection() {
       }, requirePin(pin));
       await loadGithubAutolinks();
     } catch (err) {
-      setAutolinkError(err instanceof Error ? err.message : "Unable to create GitHub autolink.");
+      setAutolinkError(plainError(err, { fallback: `ADE couldn't add the ${candidate.keyPrefix} link on GitHub.` }));
     } finally {
       setCreatingAutolinkId(null);
     }
   }, [githubRepo, loadGithubAutolinks, pin]);
+
+  // The commands an admin runs to add the links this repository lacks.
+  const copyAutolinkCommandsForAdmin = useCallback(async () => {
+    const commands = autolinkCandidates.map((candidate) => candidate.command).join("\n");
+    try {
+      await window.ade.app.writeClipboardText(commands);
+      showToast({ tone: "success", title: "Copied the commands", message: "Send them to an admin of the repository. Each one adds one link." });
+    } catch {
+      showToast({ tone: "error", title: "Couldn't copy the commands", message: "Open each row to see its command." });
+    }
+  }, [autolinkCandidates]);
 
   const openApiSettings = (event: React.MouseEvent<HTMLAnchorElement>) => {
     const openExternal = window.ade?.app?.openExternal;
@@ -541,7 +561,7 @@ export function LinearSection() {
       icon={<LinkSimple size={16} weight="bold" />}
       title="Links on GitHub"
       hint={<>Issue keys like ENG-123 and ADE PR references become links in {githubRepoSlug ? <span className="ade-ig-mono">{githubRepoSlug}</span> : "this repository"}&rsquo;s PRs, commits and comments.</>}
-      badge={autolinkCandidates.length > 0 ? (
+      badge={autolinkCandidates.length > 0 && !autolinksRefused ? (
         <span className="kit-tag" data-tone={configuredAutolinkCount === autolinkCandidates.length ? "ok" : undefined}>
           {configuredAutolinkCount === autolinkCandidates.length ? "All added" : `${configuredAutolinkCount} of ${autolinkCandidates.length} added`}
         </span>
@@ -574,7 +594,7 @@ export function LinearSection() {
                   <span className="ade-ig-mini-detail">{candidate.desc}</span>
                   {candidate.configured ? (
                     <span className="kit-tag" data-tone="ok"><CheckCircle size={11} weight="fill" /> Added</span>
-                  ) : (
+                  ) : autolinksRefused ? null : (
                     <button
                       type="button"
                       className="ade-modern-btn"
@@ -603,7 +623,19 @@ export function LinearSection() {
         <p className="ade-ig-note">Links for your team keys appear once ADE has loaded the workspace&rsquo;s projects.</p>
       ) : null}
       {autolinkError ? (
-        <Banner layout="inline" model={{ id: "linear-autolink-error", tone: "error", title: autolinkError }} />
+        <Banner
+          layout="inline"
+          model={{
+            id: "linear-autolink-error",
+            tone: autolinksRefused ? "warning" : "error",
+            title: autolinkError.text,
+            actions: autolinksRefused && githubRepoSlug
+              ? [{ label: "Copy commands for an admin", icon: <Copy size={12} />, onClick: () => void copyAutolinkCommandsForAdmin() }]
+              : autolinkError.next === "retry"
+                ? [{ label: "Try again", onClick: () => void loadGithubAutolinks() }]
+                : undefined,
+          }}
+        />
       ) : null}
     </IntegrationCard>
   );

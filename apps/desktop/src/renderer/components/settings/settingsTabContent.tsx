@@ -720,7 +720,7 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
     <ProjectCopyScopeProvider page={copy.page}>
       {/* Not a SettingsColumn: its bottom padding would push the page down. */}
       <div className="ade-settings-column ade-settings-column--wide ade-copy-scope-column">
-        <ProjectCopyBar copy={copy} />
+        <ProjectCopyBar copy={copy} subject={tab === "integrations" ? "integrations" : "settings"} />
       </div>
       <MachineTabContent tab={tab} machine={copy.page} standalone={false} />
     </ProjectCopyScopeProvider>

@@ -1,7 +1,7 @@
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowSquareOut, Check, CircleNotch, Robot } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretDown, Check, CircleNotch, Robot } from "@phosphor-icons/react";
 import type { AiPermissionSettings, LinearAgentOverview, ModelConfig, OpenProjectBinding } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -360,13 +360,27 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
           <span className="ade-ig-step-num" aria-hidden>3</span>
           <div className="ade-ig-step-main">
             <div className="ade-ig-step-head"><b>Assign issues to ADE in Linear</b></div>
-            <p className="ade-ig-note">
-              {installed && status
-                ? otherMembers.length === 0
+            {installed && status && otherMembers.length > 0 ? (
+              // One short line however many teammates use ADE; the names open
+              // on demand instead of growing the step.
+              <details className="ade-linear-link" data-linear-agent-members="">
+                <summary className="ade-ig-note">
+                  {otherMembers.length === 1 ? "1 other person uses ADE" : `${otherMembers.length} other people use ADE`} in this workspace. Their issues run on their own ADE.{" "}
+                  <CaretDown size={11} className="ade-linear-links-caret" aria-label="Show who" />
+                </summary>
+                <div className="ade-ig-chips" style={{ marginTop: 6 }}>
+                  {otherMembers.map((member, index) => (
+                    <span key={member.linearUserId || `${member.displayName ?? "someone"}-${index}`} className="kit-tag">{member.displayName ?? "Someone"}</span>
+                  ))}
+                </div>
+              </details>
+            ) : (
+              <p className="ade-ig-note">
+                {installed && status
                   ? "You're the only one using ADE in this workspace so far."
-                  : `Also using ADE: ${otherMembers.map((member) => member.displayName ?? "someone").join(", ")}. Their issues run on their own ADE.`
-                : "Or write @ADE in a comment. ADE replies in Linear as it works."}
-            </p>
+                  : "Or write @ADE in a comment. ADE replies in Linear as it works."}
+              </p>
+            )}
             {installed && status ? (
               <div className="ade-ig-inline-field">
                 <span>When someone without ADE assigns one</span>

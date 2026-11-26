@@ -127,7 +127,7 @@ import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
 } from "./githubRestPagination";
-import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
+import { listGithubAutolinksOrExplain } from "../../../shared/githubAutolinks";
 import { redactGitOutput } from "../../utils/redaction";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
 import { createGithubPatAccountSync } from "./githubPatAccountSync";
@@ -2338,15 +2338,16 @@ export function createGithubService({
   });
 
   const listRepoAutolinks = async (owner: string, name: string): Promise<GitHubAutolink[]> => {
-    let data: Record<string, unknown>[];
-    try {
-      data = await apiRequestAllPages<Record<string, unknown>>({
-        path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
-        query: { per_page: 100 },
-      });
-    } catch (error) {
-      throw githubAutolinksAccessError(owner, name, error instanceof GithubCredentialAttemptError ? error.status : null) ?? error;
-    }
+    const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+    // A refusal reads the person's own permission, so the page says "only
+    // admins can add these" instead of a bare 404.
+    const data = await listGithubAutolinksOrExplain({
+      owner,
+      name,
+      list: () => apiRequestAllPages<Record<string, unknown>>({ path: `${repoPath}/autolinks`, query: { per_page: 100 } }),
+      readRepo: async () => (await apiRequest<unknown>({ method: "GET", path: repoPath })).data,
+      statusOf: (error) => (error instanceof GithubCredentialAttemptError ? error.status : null),
+    });
     return data.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
   };
 

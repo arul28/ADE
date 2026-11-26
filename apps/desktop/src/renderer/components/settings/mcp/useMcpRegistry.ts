@@ -67,6 +67,8 @@ export type McpRegistryView = {
 };
 
 export type McpRegistryApi = McpRegistryView & {
+  /** A reload is running (the page's Try again shows it). */
+  reloading: boolean;
   reload: () => Promise<void>;
   /** Each resolves to null on success, or one sentence saying what went wrong. */
   saveServer: (server: McpRegistryServer, secrets: readonly McpSecretValue[], mode: "create" | "edit") => Promise<string | null>;
@@ -103,6 +105,7 @@ export function useMcpRegistry(): McpRegistryApi {
   const projectRoot = useAppStore((state) =>
     state.projectBinding?.kind === "remote" ? null : state.project?.rootPath?.trim() || null);
   const [view, setView] = useState<McpRegistryView>(EMPTY);
+  const [reloading, setReloading] = useState(false);
   // The newest load wins: a slow answer for a project the user has left must
   // not overwrite the page for the project they are on.
   const loadSeq = useRef(0);
@@ -167,13 +170,17 @@ export function useMcpRegistry(): McpRegistryApi {
 
   const reload = useCallback(async (): Promise<void> => {
     const seq = ++loadSeq.current;
+    setReloading(true);
     let next: McpRegistryView;
     try {
       next = await readAll();
     } catch (error) {
       next = { ...EMPTY, phase: "unavailable", message: errorSentence(error) };
     }
-    if (seq === loadSeq.current) setView(next);
+    if (seq === loadSeq.current) {
+      setView(next);
+      setReloading(false);
+    }
   }, [readAll]);
 
   useEffect(() => {
@@ -358,7 +365,7 @@ export function useMcpRegistry(): McpRegistryApi {
     return result.ok ? null : result.message;
   }), [mutate]);
 
-  return { ...view, reload, saveServer, removeServer, setLevel, setSecret, importFound, signIn, cancelSignIn, signOut };
+  return { ...view, reloading, reload, saveServer, removeServer, setLevel, setSecret, importFound, signIn, cancelSignIn, signOut };
 }
 
 /** The secret values of one server this computer does not hold, as `field` + `name`. */

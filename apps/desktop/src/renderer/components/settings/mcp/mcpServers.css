@@ -66,3 +66,21 @@
   font-size: 12px;
 }
 .ade-mcp-pair { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) auto; gap: 8px; align-items: center; }
+
+/* Search beside Add, and the pager under a long list (ADE-238). */
+.ade-mcp-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ade-mcp-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.ade-mcp-pager > .ade-modern-muted {
+  margin: 0 6px 0 0;
+}

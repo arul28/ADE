@@ -24,6 +24,7 @@ import {
   isGithubAppUserAuthSupported,
 } from "../../lib/githubIntegrationStatus";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
+import { useGithubConnectMode } from "../../lib/githubConnectMode";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { settingsRouteFor } from "../settings/settingsManifest";
@@ -149,6 +150,8 @@ export function IntegrationBanners({
   const { repo: issueRepo } = useProjectGitHubRepo();
   const issueAccess = useGitHubIssueWriteAccess(currentProjectRoot ? issueRepo : null);
 
+  // "GitHub CLI only" (Settings › GitHub, account-wide): no app prompts.
+  const githubCliOnly = useGithubConnectMode().mode === "cli_only";
   const [appInstall, setAppInstall] = useState<GitHubAppInstallationStatus | null>(null);
   const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(null);
   const [appStatusLoaded, setAppStatusLoaded] = useState(false);
@@ -368,7 +371,9 @@ export function IntegrationBanners({
       && typeof rawInstall.appName === "string"
       && typeof rawInstall.relayConfigured === "boolean"
       && authDtoIsReal;
-    if (!githubSuppressed && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
+    // "GitHub CLI only" (Settings › GitHub): the person can't use the app, so
+    // nothing asks them to install or authorize it.
+    if (!githubSuppressed && !githubCliOnly && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall, account);
       const block = deriveGithubRealtimeBlock(account, repo);
@@ -580,6 +585,7 @@ export function IntegrationBanners({
     const issueApp = issueAccess?.app ?? null;
     if (
       !githubSuppressed
+      && !githubCliOnly
       && currentProjectRoot
       && issueAccess
       && issueApp?.needsApproval
@@ -625,6 +631,7 @@ export function IntegrationBanners({
   }, [
     machineId,
     issueAccess,
+    githubCliOnly,
     relayOutage,
     relayHealth,
     appStatusLoaded,

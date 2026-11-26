@@ -377,6 +377,32 @@ describe("account vault store", () => {
     expect(fs.existsSync(legacyPath)).toBe(false);
   });
 
+  // A pull drops rows of a kind this ADE does not know and still moves its
+  // cursor past them. A computer that pulled ADE MCP's key on an older ADE
+  // never got it after updating, and stayed "Getting ready" for good.
+  it("pulls from the start once when this ADE reads kinds the saved cursor was taken without", async () => {
+    fs.writeFileSync(path.join(adeDir, "account-vault.json"), JSON.stringify({
+      version: 1,
+      seqCounter: 0,
+      accountUserId: USER,
+      cursor: "cursor-past-the-key",
+      items: {},
+      pending: [],
+    }), "utf8");
+    relay.getAccountVault.mockImplementation(async ({ since }: { since: string | null }) => (since === null
+      ? { items: [{ ...item("account_secret", "mcp-secret", "2026-10-29T00:00:00.000Z"), scope: "ade_mcp", kind: "ade_mcp" }], cursor: "cursor-now", truncated: false }
+      : { items: [], cursor: since, truncated: false }));
+
+    const store = makeStore();
+    await store.sync();
+    expect(relay.getAccountVault).toHaveBeenLastCalledWith({ since: null });
+    expect(store.get("ade_mcp", "ade_mcp", "account_secret")).toBe("mcp-secret");
+
+    // Once caught up, the next computer start pulls from where it got to.
+    await makeStore().sync({ maxAgeMs: 0 });
+    expect(relay.getAccountVault).toHaveBeenLastCalledWith({ since: "cursor-now" });
+  });
+
   it("drops signed-out mutations and logs each dropped operation once", () => {
     accountUserId = null;
     const logger = { info: vi.fn(), warn: vi.fn() };

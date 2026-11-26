@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowClockwise, CheckCircle, Key, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretLeft, CaretRight, CheckCircle, Key, MagnifyingGlass, PencilSimple, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { REGISTRY_MCP_PROVIDER_IDS, registryMcpSupport } from "../../../../shared/callerMcpServers";
 import { flashRowHighlight } from "../../../lib/flashRowHighlight";
 import {
@@ -23,7 +23,9 @@ import { McpSecretWarnings, mcpServerHoldsPlainSecret } from "./McpSecretWarning
 import { McpServerDialog } from "./McpServerDialog";
 import { missingMcpSecrets, useMcpRegistry, type McpRegistryApi, type McpRegistryLevel } from "./useMcpRegistry";
 import "./mcpServers.css";
+import "../integrations/integrationPage.css";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * Settings › Integrations › MCP servers.
@@ -78,6 +80,45 @@ function targetLine(server: Pick<McpRegistryServer, "transport" | "command" | "a
   return [server.command ?? "", ...(server.args ?? [])].join(" ");
 }
 
+/** Rows per page in each list: a long registry stays one screen, not a scroll. */
+const MCP_PAGE_SIZE = 10;
+
+function matchesQuery(needle: string, server: Pick<McpRegistryServer, "name" | "transport" | "command" | "args" | "url">): boolean {
+  if (!needle) return true;
+  return server.name.toLowerCase().includes(needle) || targetLine(server).toLowerCase().includes(needle);
+}
+
+/** The page of `items` to show, with the page clamped to what exists. */
+function pageOf<T>(items: readonly T[], page: number): { rows: T[]; page: number; pages: number } {
+  const pages = Math.max(1, Math.ceil(items.length / MCP_PAGE_SIZE));
+  const current = Math.min(Math.max(0, page), pages - 1);
+  return { rows: items.slice(current * MCP_PAGE_SIZE, (current + 1) * MCP_PAGE_SIZE), page: current, pages };
+}
+
+/** "11–20 of 34" with Previous and Next; nothing when everything fits on one page. */
+function McpPager({ total, page, pages, onPage, label }: {
+  total: number;
+  page: number;
+  pages: number;
+  onPage: (page: number) => void;
+  label: string;
+}) {
+  if (pages <= 1) return null;
+  const first = page * MCP_PAGE_SIZE + 1;
+  const last = Math.min(total, (page + 1) * MCP_PAGE_SIZE);
+  return (
+    <div className="ade-mcp-pager" role="navigation" aria-label={label}>
+      <span className="ade-modern-muted">{first}–{last} of {total}</span>
+      <button type="button" className="ade-modern-btn" data-variant="ghost" data-icon="true" aria-label="Previous page" disabled={page === 0} onClick={() => onPage(page - 1)}>
+        <CaretLeft size={12} weight="bold" />
+      </button>
+      <button type="button" className="ade-modern-btn" data-variant="ghost" data-icon="true" aria-label="Next page" disabled={page >= pages - 1} onClick={() => onPage(page + 1)}>
+        <CaretRight size={12} weight="bold" />
+      </button>
+    </div>
+  );
+}
+
 export function McpServersSection() {
   const registry = useMcpRegistry();
   const [searchParams] = useSearchParams();
@@ -90,6 +131,25 @@ export function McpServersSection() {
   // of the page stays usable while it runs.
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const ready = registry.phase === "ready";
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const [serverPage, setServerPage] = useState(0);
+  const [foundPage, setFoundPage] = useState(0);
+  const filteredServers = useMemo(() => registry.servers.filter((server) => matchesQuery(needle, server)), [needle, registry.servers]);
+  const filteredFound = useMemo(() => registry.found.filter((server) => matchesQuery(needle, server)), [needle, registry.found]);
+  // A new search starts both lists at their first page.
+  useEffect(() => {
+    setServerPage(0);
+    setFoundPage(0);
+  }, [needle]);
+  // A link to one server (`?mcpServer=`) opens the page it is on.
+  useEffect(() => {
+    if (!focusServer) return;
+    const index = filteredServers.findIndex((server) => server.name === focusServer);
+    if (index >= 0) setServerPage(Math.floor(index / MCP_PAGE_SIZE));
+  }, [filteredServers, focusServer]);
+  const serversShown = pageOf(filteredServers, serverPage);
+  const foundShown = pageOf(filteredFound, foundPage);
 
   useEffect(() => {
     if (focusedServerRef.current?.name !== focusServer) {
@@ -102,7 +162,7 @@ export function McpServersSection() {
     if (!row) return;
     request.focused = true;
     return flashRowHighlight(row);
-  }, [focusServer, ready, registry.servers]);
+  }, [focusServer, ready, registry.servers, serverPage]);
 
   /** Runs one change on one row, and says so when it did not take. */
   const run = useCallback(async (key: string, failed: string, change: () => Promise<string | null>): Promise<boolean> => {
@@ -169,11 +229,14 @@ export function McpServersSection() {
               id: "mcp-registry-unavailable",
               tone: "warning",
               title: "MCP servers can't be changed right now",
-              // Plain words, not the service's own error text: that names
-              // internal parts ("Domain 'account_settings' ...") the reader
-              // cannot act on.
-              detail: "ADE's background service did not answer. This is the copy saved on this computer.",
-              actions: [{ label: "Try again", onClick: () => void registry.reload() }],
+              // The real cause in plain words (`plainError` replaces text
+              // written for logs, such as "Domain 'account_settings' ...").
+              detail: `${plainErrorText(registry.message, "ADE's background service did not answer.")} The list below is the copy saved on this computer.`,
+              actions: [{
+                label: registry.reloading ? "Trying again…" : "Try again",
+                busy: registry.reloading,
+                onClick: () => void registry.reload(),
+              }],
             }}
           />
         ) : null}
@@ -184,19 +247,36 @@ export function McpServersSection() {
           title="In your account"
           hint="Every ADE agent gets these, on every computer you sign in on."
           actions={(
-            <button
-              type="button"
-              className="ade-modern-btn"
-              data-tone="primary"
-              disabled={!ready}
-              onClick={() => setDialog({ editing: null })}
-              data-mcp-add=""
-            >
-              <Plus size={12} weight="bold" /> Add
-            </button>
+            <span className="ade-mcp-head-actions">
+              {registry.servers.length + registry.found.length > MCP_PAGE_SIZE || needle ? (
+                <label className="ade-ix-search" style={{ width: 200 }}>
+                  <MagnifyingGlass size={13} />
+                  <input
+                    type="search"
+                    value={query}
+                    placeholder="Search servers"
+                    aria-label="Search MCP servers"
+                    data-mcp-search=""
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                </label>
+              ) : null}
+              <button
+                type="button"
+                className="ade-modern-btn"
+                data-tone="primary"
+                disabled={!ready}
+                onClick={() => setDialog({ editing: null })}
+                data-mcp-add=""
+              >
+                <Plus size={12} weight="bold" /> Add
+              </button>
+            </span>
           )}
         >
-          {registry.servers.length === 0 ? (
+          {registry.servers.length > 0 && filteredServers.length === 0 ? (
+            <div className="ade-mcp-empty" data-mcp-search-empty="">No server matches &ldquo;{query.trim()}&rdquo;.</div>
+          ) : registry.servers.length === 0 ? (
             <div className="ade-mcp-empty" data-mcp-empty="">
               {registry.phase === "loading"
                 ? "Loading…"
@@ -206,7 +286,7 @@ export function McpServersSection() {
             </div>
           ) : (
             <div className="ade-modern-rows" data-mcp-server-list="">
-              {registry.servers.map((server) => (
+              {serversShown.rows.map((server) => (
                 <ServerRow
                   key={server.name}
                   server={server}
@@ -226,6 +306,7 @@ export function McpServersSection() {
               ))}
             </div>
           )}
+          <McpPager total={filteredServers.length} page={serversShown.page} pages={serversShown.pages} onPage={setServerPage} label="Servers in your account" />
         </ModernSection>
 
         <ModernSection
@@ -239,13 +320,17 @@ export function McpServersSection() {
             </button>
           )}
         >
-          {registry.found.length === 0 ? (
+          {filteredFound.length === 0 ? (
             <div className="ade-mcp-empty" data-mcp-found-empty="">
-              {registry.phase === "loading" ? "Loading…" : "Nothing here that ADE does not already have."}
+              {registry.phase === "loading"
+                ? "Loading…"
+                : registry.found.length > 0
+                  ? <>Nothing found here matches &ldquo;{query.trim()}&rdquo;.</>
+                  : "Nothing here that ADE does not already have."}
             </div>
           ) : (
             <div className="ade-modern-rows" data-mcp-found-list="">
-              {registry.found.map((server) => (
+              {foundShown.rows.map((server) => (
                 <div key={server.name} className="ade-mcp-row" data-mcp-found={server.name}>
                   <div className="ade-mcp-head">
                     <span className="ade-mcp-name">{server.name}</span>
@@ -269,6 +354,7 @@ export function McpServersSection() {
               ))}
             </div>
           )}
+          <McpPager total={filteredFound.length} page={foundShown.page} pages={foundShown.pages} onPage={setFoundPage} label="Servers found on this computer" />
           {registry.skipped.length > 0 ? (
             <p className="ade-modern-muted">
               Not offered, because ADE can't hold a server with this name or shape: {list(registry.skipped)}.

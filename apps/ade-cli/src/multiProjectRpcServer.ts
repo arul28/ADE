@@ -711,6 +711,7 @@ const RUNTIME_METHODS = new Set([
   "providers.remoteSignInCode",
   "cloud.call",
   "accountVault.call",
+  "accountSettings.call",
   "attention.call",
   "notify.send",
   "providers.status",

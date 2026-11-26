@@ -29,11 +29,12 @@ import {
   GALLERY_APPS,
   galleryApp,
   galleryIdForKnownApp,
+  LocalConnectionMark,
   McpAppLogo,
   type GalleryAppId,
   type TokenSnippetId,
 } from "./adeMcp/adeMcpApps";
-import { agoText, connectionHow, heroPanelNote, isAnswering, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
+import { agoText, connectionHow, heroPanelNote, isAnswering, isLocalConnection, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
 import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
@@ -471,7 +472,15 @@ export function AdeMcpPage() {
                 const isToken = connection.kind === "token";
                 return (
                   <div key={connection.id} className="ade-amcp-row ade-amcp-connection">
-                    <McpAppLogo app={connection.app ?? (isToken ? "token" : "other")} size={30} />
+                    {isLocalConnection(connection) ? (
+                      // Used in the last ten minutes: the arrow moves.
+                      <LocalConnectionMark
+                        app={connection.app ?? "other"}
+                        active={connection.lastUsedAt != null && Date.now() - Date.parse(connection.lastUsedAt) < 10 * 60_000}
+                      />
+                    ) : (
+                      <McpAppLogo app={connection.app ?? (isToken ? "token" : "other")} size={30} />
+                    )}
                     <div className="ade-amcp-row-main">
                       <div className="ade-amcp-row-title"><b>{connection.label}</b></div>
                       <div className="ade-amcp-row-detail ade-amcp-row-detail-quiet">
