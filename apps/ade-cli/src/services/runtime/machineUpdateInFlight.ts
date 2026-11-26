@@ -14,16 +14,22 @@ import type { MachineUpdateAndRestartResult } from "./machineUpdateAndRestart";
  * synchronously before it loads the (lazy) updater: an await in between let a
  * second caller miss a run that was just finishing and start another.
  */
-let inFlight: Promise<MachineUpdateAndRestartResult> | null = null;
+let inFlight: { run: Promise<MachineUpdateAndRestartResult>; trackSwitch: boolean } | null = null;
 
 export function joinOrStartMachineUpdate(
   start: () => Promise<MachineUpdateAndRestartResult>,
+  { trackSwitch = false }: { trackSwitch?: boolean } = {},
 ): Promise<MachineUpdateAndRestartResult> {
-  if (inFlight) return inFlight;
+  if (inFlight) {
+    if (trackSwitch || inFlight.trackSwitch) {
+      return Promise.reject(new Error("An ADE update or track switch is already running. Try again after it finishes."));
+    }
+    return inFlight.run;
+  }
   const run = start();
-  inFlight = run;
+  inFlight = { run, trackSwitch };
   const clear = (): void => {
-    if (inFlight === run) inFlight = null;
+    if (inFlight?.run === run) inFlight = null;
   };
   run.then(clear, clear);
   return run;

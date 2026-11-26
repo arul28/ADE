@@ -655,9 +655,9 @@ export function YourMacsCard({
     );
   }, [connectedIds, isThisMac, machines, ownWebMachines, usingWorkspaceRoster]);
 
-  const reloadMachines = useCallback(() => {
+  const reloadMachines = useCallback(async () => {
     invalidateAccountMachines();
-    void load();
+    await load();
   }, [load]);
   const routes = useMachineRoutesControl({
     enabled: !webMode && routesAvailable(),

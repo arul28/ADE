@@ -433,20 +433,19 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     if (engine) return await engine.handle(name, rawParams, connection);
     if (isAppUpdateMethod) {
       const installer = args.getAppUpdateInstaller?.() ?? null;
-      const track = method === DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD ? normalizeUpdateTrack(rawParams.track) : null;
-      if (installer && track) {
-        return await installer.switchTrack({ track, requestedBy: sanitizeUpdateRequestedBy(rawParams.requestedBy) });
+      const requestedBy = sanitizeUpdateRequestedBy(rawParams.requestedBy);
+      if (installer && method === DESKTOP_APP_UPDATE_INSTALL_METHOD) {
+        return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion), requestedBy });
       }
-      if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.methodNotFound,
-          `Action '${method}' is not exposed by the desktop bridge.`,
-        );
+      if (installer && method === DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD) {
+        const track = normalizeUpdateTrack(rawParams.track);
+        if (!track) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app_update.switchTrack requires track 'stable' or 'beta'.");
+        return await installer.switchTrack({ track, requestedBy });
       }
-      return await installer.install({
-        targetVersion: normalizedString(rawParams.targetVersion),
-        requestedBy: sanitizeUpdateRequestedBy(rawParams.requestedBy),
-      });
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${method}' is not exposed by the desktop bridge.`,
+      );
     }
     // The brain's attach probe (`probeDesktopBridge`). The name predates the
     // bridge dropping its secret and is kept so older brains' probes answer.

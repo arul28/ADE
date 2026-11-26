@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   DesktopTower,
   DeviceMobile,
@@ -15,6 +15,7 @@ import {
   type AttentionPreferences,
 } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
+import { captureError } from "../../../shared/sentry/capture";
 import { isMac } from "../../lib/platform";
 import { useAccountStatus } from "../../lib/account";
 import { useActivityStore } from "../../state/activityStore";
@@ -113,6 +114,16 @@ export function useActivitySettings() {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [loadedOwnerId, setLoadedOwnerId] = useState<string | null>(null);
+  const [savingTargets, setSavingTargets] = useState<ReadonlySet<string>>(() => new Set());
+  const accountScope = useRef({ ownerId: accountOwnerId, pending: new Set<string>() });
+  useLayoutEffect(() => {
+    accountScope.current = { ownerId: accountOwnerId, pending: new Set() };
+    setSavingTargets(accountScope.current.pending);
+    setSaved(false);
+    setError(null);
+    setLoadedOwnerId(null);
+  }, [accountOwnerId]);
   const mounted = useRef(true);
   const savedTimer = useRef<number | null>(null);
 
@@ -142,6 +153,7 @@ export function useActivitySettings() {
           return;
         }
         setPreferences(normalizeActivityPreferences(next));
+        setLoadedOwnerId(accountOwnerId);
         setLoadFailed(false);
         setError(null);
       })
@@ -158,20 +170,26 @@ export function useActivitySettings() {
     return () => { cancelled = true; };
   }, [accountOwnerId, loadAttempt]);
 
-  // The account's phones. A host without the call (or a relay without the
-  // route) lists none rather than failing the page.
-  const [phones, setPhones] = useState<AttentionAccountDevice[]>([]);
+  // The account's phones. A host without the call lists none; a failed read
+  // says so under Machines (with Retry), and every other setting still works.
+  const [phoneRoster, setPhoneRoster] = useState<{
+    ownerId: string;
+    phones: AttentionAccountDevice[] | null;
+  } | null>(null);
+  const ownPhoneRoster = phoneRoster?.ownerId === accountOwnerId ? phoneRoster : null;
   useEffect(() => {
     const api = typeof window !== "undefined" ? window.ade?.attention : null;
-    setPhones([]);
+    setPhoneRoster(null);
     if (!api?.listDevices || !accountOwnerId) return;
     let cancelled = false;
     void api.listDevices(accountOwnerId)
       .then((next) => {
-        if (!cancelled && mounted.current) setPhones(next);
+        if (!cancelled && mounted.current) setPhoneRoster({ ownerId: accountOwnerId, phones: next });
       })
-      .catch(() => {
-        // Phones are extra rows; the computers and every other setting still work.
+      .catch((listError: unknown) => {
+        if (cancelled || !mounted.current) return;
+        setPhoneRoster({ ownerId: accountOwnerId, phones: null });
+        captureError(listError, { tags: { area: "activity_settings", step: "list_phones" }, fingerprint: ["activity_settings", "list_phones"] });
       });
     return () => { cancelled = true; };
   }, [accountOwnerId, loadAttempt]);
@@ -197,95 +215,78 @@ export function useActivitySettings() {
       setError("Sign in to ADE to change Activity settings.");
       return;
     }
-    if (loadFailed) return;
+    const scope = accountScope.current;
+    if (loadFailed || loadedOwnerId !== accountOwnerId || scope.ownerId !== accountOwnerId) return;
     try {
       await api.putPreferences(accountOwnerId, next);
-      if (!mounted.current) return;
+      if (!mounted.current || accountScope.current !== scope) return;
       setError(null);
       flashSaved();
     } catch (saveError) {
-      if (!mounted.current) return;
+      if (!mounted.current || accountScope.current !== scope) return;
       setError(saveError instanceof Error && saveError.message.trim()
         ? saveError.message
         : "ADE couldn’t save your Activity settings.");
     }
-  }, [accountOwnerId, flashSaved, loadFailed]);
+  }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId]);
 
   const updateAccount = useCallback((patch: Partial<AttentionPreferences["account"]>) => {
     const next: AttentionPreferences = {
       ...preferences,
       account: { ...preferences.account, ...patch },
     };
-    setPreferences(next);
+    if (!accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed) return;
+    setPreferences((current) => ({ ...current, account: { ...current.account, ...patch } }));
     void persist(next);
-  }, [persist, preferences]);
+  }, [accountOwnerId, loadFailed, loadedOwnerId, persist, preferences]);
 
-  /**
-   * Muting a machine is per-machine, not per-account, so it goes through its
-   * own relay route. It lives in the account scope's `machines` map because the
-   * web client strips `devices` before saving — a per-device home would appear
-   * to save on web and quietly not persist.
-   */
-  const setMachineMuted = useCallback(async (machineKey: string, muted: boolean) => {
-    const notificationsEnabled = !muted;
-    const next: AttentionPreferences = {
-      ...preferences,
-      machines: {
-        ...preferences.machines,
-        [machineKey]: { ...preferences.machines[machineKey], notificationsEnabled },
-      },
-    };
-    setPreferences(next);
-    const api = typeof window !== "undefined" ? window.ade?.attention : null;
-    if (!api?.putMachinePreferences || !accountOwnerId) {
-      setError("This ADE build can’t change per-machine notifications yet.");
+  const setScopeNotificationsEnabled = useCallback(async (
+    scope: "machines" | "devices",
+    id: string,
+    enabled: boolean,
+  ) => {
+    const account = accountScope.current;
+    if (!accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed || account.ownerId !== accountOwnerId) return;
+    const api = window.ade?.attention;
+    const put = scope === "machines" ? api?.putMachinePreferences : api?.putDevicePreferences;
+    const noun = scope === "machines" ? "machine" : "phone";
+    if (!put) {
+      setError(`This ADE build can’t change per-${noun} notifications yet.`);
       return;
     }
+    const key = `${scope}:${id}`;
+    if (account.pending.has(key)) return;
+    account.pending.add(key);
+    setSavingTargets(new Set(account.pending));
+    const patch = scope === "machines" ? { notificationsEnabled: enabled } : { deviceDeliveryEnabled: enabled };
     try {
-      await api.putMachinePreferences(accountOwnerId, machineKey, { notificationsEnabled });
-      if (!mounted.current) return;
+      await put(accountOwnerId, id, patch);
+      if (!mounted.current || accountScope.current !== account) return;
+      setPreferences((current) => ({
+        ...current,
+        [scope]: { ...current[scope], [id]: { ...current[scope][id], ...patch } },
+      }));
       setError(null);
       flashSaved();
     } catch (saveError) {
-      if (!mounted.current) return;
-      setPreferences(preferences);
+      if (!mounted.current || accountScope.current !== account) return;
       setError(saveError instanceof Error && saveError.message.trim()
         ? saveError.message
-        : "ADE couldn’t change notifications for that machine.");
+        : `ADE couldn’t change notifications for that ${noun}.`);
+    } finally {
+      account.pending.delete(key);
+      if (mounted.current && accountScope.current === account) setSavingTargets(new Set(account.pending));
     }
-  }, [accountOwnerId, flashSaved, preferences]);
+  }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId]);
 
-  /**
-   * Whether one phone gets notifications. Written to `devices[deviceId]` on
-   * its own relay route, the same field the phone's own switch writes.
-   */
-  const setPhoneNotificationsEnabled = useCallback(async (deviceId: string, notificationsEnabled: boolean) => {
-    const api = typeof window !== "undefined" ? window.ade?.attention : null;
-    if (!api?.putDevicePreferences || !accountOwnerId) {
-      setError("This ADE build can’t change phone notifications yet.");
-      return;
-    }
-    const next: AttentionPreferences = {
-      ...preferences,
-      devices: {
-        ...preferences.devices,
-        [deviceId]: { ...preferences.devices[deviceId], notificationsEnabled },
-      },
-    };
-    setPreferences(next);
-    try {
-      await api.putDevicePreferences(accountOwnerId, deviceId, { notificationsEnabled });
-      if (!mounted.current) return;
-      setError(null);
-      flashSaved();
-    } catch (saveError) {
-      if (!mounted.current) return;
-      setPreferences(preferences);
-      setError(saveError instanceof Error && saveError.message.trim()
-        ? saveError.message
-        : "ADE couldn’t change notifications for that phone.");
-    }
-  }, [accountOwnerId, flashSaved, preferences]);
+  const setMachineMuted = useCallback(
+    (machineKey: string, muted: boolean) => setScopeNotificationsEnabled("machines", machineKey, !muted),
+    [setScopeNotificationsEnabled],
+  );
+  const setPhoneNotificationsEnabled = useCallback(
+    (deviceId: string, enabled: boolean) => setScopeNotificationsEnabled("devices", deviceId, enabled),
+    [setScopeNotificationsEnabled],
+  );
 
   // The roster comes from the snapshot on screen, so it can only ever offer
   // machines the account actually has.
@@ -313,7 +314,8 @@ export function useActivitySettings() {
     loadFailed,
     retryLoad,
     /** Controls are read-only: loading, signed out, or the real values never arrived. */
-    busy: loading || !accountOwnerId || loadFailed,
+    busy: loading || !accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed,
+    savingTargets,
     error,
     saved,
     preferences,
@@ -323,10 +325,12 @@ export function useActivitySettings() {
     setMachineMuted,
     machineMuted: (machineKey: string) =>
       preferences.machines[machineKey]?.notificationsEnabled === false,
-    phones,
+    phones: ownPhoneRoster?.phones ?? [],
+    phonesFailed: ownPhoneRoster?.phones === null,
+    phonesLoading: Boolean(accountOwnerId && window.ade?.attention?.listDevices && !ownPhoneRoster),
     setPhoneNotificationsEnabled,
     phoneNotificationsEnabled: (deviceId: string) =>
-      preferences.devices[deviceId]?.notificationsEnabled !== false,
+      preferences.devices[deviceId]?.deviceDeliveryEnabled !== false,
   };
 }
 
@@ -505,7 +509,7 @@ export function ActivitySettingsControls({
                     <PopoverSwitch
                       label={`Notify me about ${machine.name}`}
                       checked={!machineMuted(machine.machineKey)}
-                      disabled={busy}
+                      disabled={busy || model.savingTargets.has(`machines:${machine.machineKey}`)}
                       onChange={(enabled) =>
                         void setMachineMuted(machine.machineKey, !enabled)}
                     />
@@ -616,6 +620,46 @@ function phoneName(phone: AttentionAccountDevice): string {
   return phone.name ?? (phone.kind === "tablet" ? "iPad" : "iPhone");
 }
 
+/** One computer or phone in the Machines list: its icon and name, a status line, and its switch. */
+function NotificationTargetRow({
+  icon: Icon,
+  name,
+  lit,
+  hint,
+  toggleLabel,
+  checked,
+  disabled,
+  onChange,
+}: {
+  icon: React.ElementType;
+  name: string;
+  /** The status dot is lit: online and getting notifications. */
+  lit: boolean;
+  hint: string;
+  toggleLabel: string;
+  checked: boolean;
+  disabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <ModernRow
+      title={(
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+          <Icon size={14} style={{ color: "var(--kit-text-3)" }} />
+          {name}
+        </span>
+      )}
+      hint={(
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span className="kit-dot" data-state={lit ? "ok" : undefined} aria-hidden />
+          {hint}
+        </span>
+      )}
+      control={<SettingsToggle label={toggleLabel} checked={checked} disabled={disabled} onChange={onChange} />}
+    />
+  );
+}
+
 /**
  * One switch per computer, then one per phone. A computer's switch is about
  * notifications that come from it; a phone's is about notifications sent to it.
@@ -625,6 +669,8 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
   const {
     machines,
     phones,
+    phonesFailed,
+    phonesLoading,
     busy,
     account,
     setMachineMuted,
@@ -641,76 +687,60 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
       hint="Mute a computer to stop notifications about it. Turn off a phone to stop sending notifications to it."
     >
       <ModernRows>
-        {machines.length === 0 && phones.length === 0 ? (
+        {phonesLoading ? <ModernRow title="Loading notification devices…" /> : null}
+        {!phonesLoading && !phonesFailed && machines.length === 0 && phones.length === 0 ? (
           <ModernRow title="No machines yet" hint="Machines appear here once they report Activity." />
         ) : null}
         {machines.map((machine) => {
           const muted = machineMuted(machine.machineKey);
           return (
-            <ModernRow
+            <NotificationTargetRow
               key={machine.machineKey}
-              title={(
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <DesktopTower size={14} style={{ color: "var(--kit-text-3)" }} />
-                  {machine.name}
-                </span>
-              )}
-              hint={(
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
-                  {model.loadFailed
-                    ? "Notification setting didn’t load"
-                    : muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
-                </span>
-              )}
-              control={
-                <SettingsToggle
-                  label={`Notify me about ${machine.name}`}
-                  checked={!muted}
-                  disabled={busy}
-                  onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
-                />
-              }
+              icon={DesktopTower}
+              name={machine.name}
+              lit={machine.online && !muted}
+              hint={model.loadFailed
+                ? "Notification setting didn’t load"
+                : muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+              toggleLabel={`Notify me about ${machine.name}`}
+              checked={!muted}
+              disabled={busy || model.savingTargets.has(`machines:${machine.machineKey}`)}
+              onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
             />
           );
         })}
         {phones.map((phone) => {
           const name = phoneName(phone);
           const enabled = phoneNotificationsEnabled(phone.deviceId);
-          const Icon = phone.kind === "tablet" ? DeviceTablet : DeviceMobile;
           const lastSeen = phone.lastSeenAt ? ` · seen ${relativeWhen(phone.lastSeenAt)}` : "";
           return (
-            <ModernRow
+            <NotificationTargetRow
               key={phone.deviceId}
-              title={(
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <Icon size={14} style={{ color: "var(--kit-text-3)" }} />
-                  {name}
-                </span>
-              )}
-              hint={(
-                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                  <span className="kit-dot" data-state={enabled && !phonesOff ? "ok" : undefined} aria-hidden />
-                  {model.loadFailed
-                    ? "Notification setting didn’t load"
-                    : phonesOff
-                      ? "Off · Phone notifications is off"
-                      : enabled
-                        ? `Gets notifications${lastSeen}`
-                        : "Muted · no notifications on this phone"}
-                </span>
-              )}
-              control={
-                <SettingsToggle
-                  label={`Send notifications to ${name}`}
-                  checked={enabled && !phonesOff}
-                  disabled={busy || phonesOff}
-                  onChange={(next) => void setPhoneNotificationsEnabled(phone.deviceId, next)}
-                />
-              }
+              icon={phone.kind === "tablet" ? DeviceTablet : DeviceMobile}
+              name={name}
+              lit={enabled && !phonesOff}
+              hint={model.loadFailed
+                ? "Notification setting didn’t load"
+                : phonesOff
+                  ? "Off · Phone notifications is off"
+                  : enabled
+                    ? `Gets notifications${lastSeen}`
+                    : "Muted · no notifications on this phone"}
+              toggleLabel={`Send notifications to ${name}`}
+              checked={enabled && !phonesOff}
+              disabled={busy || phonesOff || model.savingTargets.has(`devices:${phone.deviceId}`)}
+              onChange={(next) => void setPhoneNotificationsEnabled(phone.deviceId, next)}
             />
           );
         })}
+        {phonesFailed ? (
+          <ModernRow
+            icon={<DeviceMobile size={14} />}
+            title="Couldn’t load your phones"
+            hint="Your computers above still work. Try again in a moment."
+            control={<button type="button" className="ade-modern-btn" onClick={model.retryLoad}>Retry</button>}
+          />
+        ) : null}
       </ModernRows>
     </ModernSection>
   );

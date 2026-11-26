@@ -1,23 +1,25 @@
+import { useEffect, useMemo, useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
+import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { openExternalUrl } from "../../lib/openExternal";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import {
   canSwitchMachineTracks,
   canUpdateOtherMachines,
   isMachineUpdateBusy,
-  machineShownTrack,
   requestMachineTrackSwitch,
   requestMachineUpdates,
-  useConnectedMachines,
   useKnownAdeVersions,
   useMachineUpdates,
   machineUpdateIsManual,
 } from "../remoteTargets/machineUpdates";
 import {
+  connectedMachinesFromSnapshot,
   machineBehindVersion,
   machineUpdateTrack,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
+  type ConnectedMachine,
 } from "../remoteTargets/remoteMachineModel";
 import { describeMachineUpdateAttempt } from "../remoteTargets/machineUpdateStatus";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
@@ -26,13 +28,41 @@ import type { CloudMachine } from "../../../shared/adeCloud";
 import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloud/binding";
 import { UpdateTrackChip } from "../app/ChannelBadge";
 import { ModernRow, ModernRows, ModernSection, SettingsSegmented } from "./primitives";
-import type { UpdateTrack } from "../../../shared/updateTrack";
-
-const TRACK_OPTIONS = [
-  { value: "stable", label: "Stable" },
-  { value: "beta", label: "Beta" },
-] as const;
 import { Banner } from "../ui/notice";
+import type { UpdateTrack } from "../../../shared/updateTrack";
+import { UPDATE_TRACK_OPTIONS } from "./UpdateTrackControls";
+
+/** The tracks without their hints: a machine row has room for the names only. */
+const TRACK_OPTIONS = UPDATE_TRACK_OPTIONS.map(({ value, label }) => ({ value, label }));
+
+/**
+ * The connected machines, kept current by main's connection snapshot. Null
+ * until ADE has read them; `failed` when the read failed and no push has
+ * arrived since, so an error never reads as "no machines".
+ */
+function useConnectedMachines(): { machines: ConnectedMachine[] | null; failed: boolean } {
+  const [snapshot, setSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    // Whichever arrives later wins; an older read must not replace a newer push.
+    const accept = (next: RemoteRuntimeConnectionSnapshot) => {
+      if (cancelled) return;
+      setFailed(false);
+      setSnapshot((current) => (current && current.updatedAt > next.updatedAt ? current : next));
+    };
+    void window.ade.remoteRuntime.getConnectionSnapshot().then(accept).catch(() => {
+      if (!cancelled) setFailed(true);
+    });
+    const unsubscribe = window.ade.remoteRuntime.onConnectionSnapshotChanged?.(accept);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+  const machines = useMemo(() => (snapshot ? connectedMachinesFromSnapshot(snapshot) : null), [snapshot]);
+  return { machines, failed };
+}
 
 /**
  * ADE on the other machines this computer is connected to: the version each
@@ -75,18 +105,14 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // Cloud computers keep themselves current: they leave the machine rows and "Update all",
   // and go into the one ADE Cloud row.
   const ownMachines = machines.filter((machine) => !cloud.boxFor(machine.colorKey));
-  // A machine switching tracks from here is not offered its old track's build.
-  const behind = machinesBehindOnTheirTrack(
-    ownMachines.filter((machine) => machineShownTrack(machine, machineUpdates) === machineUpdateTrack(machine)),
-    known,
-  );
+  const behind = machinesBehindOnTheirTrack(ownMachines, known);
   const automaticBehind = behind.filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]));
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
   const anyBusy = automaticBehind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
   // Name tracks once Beta is anywhere in the picture: here, or on a machine.
   const showTracks = updateSnapshot.track?.running === "beta"
     || updateSnapshot.track?.selected === "beta"
-    || machines.some((machine) => machineShownTrack(machine, machineUpdates) === "beta");
+    || machines.some((machine) => machineUpdateTrack(machine) === "beta");
   const canSwitchTracks = canSwitchMachineTracks();
   const cloudBox = adeCloudRowBox(cloud);
 
@@ -133,7 +159,6 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           const updating = machineUpdates.updatingIds.has(machine.id) || status?.inFlight === true;
           const checking = machineUpdates.checkingIds.has(machine.id);
           const track = machineUpdateTrack(machine);
-          const shownTrack = machineShownTrack(machine, machineUpdates);
           const targetVersion = targetById.get(machine.id) ?? null;
           const manual = machineUpdateIsManual(machine, attempt);
           const downloadUrl = machine.downloadUrl ?? attempt?.downloadUrl;
@@ -145,13 +170,13 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           const trackSwitch = canSwitchTracks && machine.canUpdate !== false && !manual ? (
             <SettingsSegmented<UpdateTrack>
               ariaLabel={`Update track for ${machine.name}`}
-              value={shownTrack}
+              value={track}
               options={TRACK_OPTIONS}
               disabled={updating || checking}
               onChange={(next) => { void requestMachineTrackSwitch(machine, next); }}
             />
           ) : null;
-          const updateControl = shownTrack !== track ? null : targetVersion ? (
+          const updateControl = targetVersion ? (
             <button
               type="button"
               className="ade-modern-btn"
@@ -181,7 +206,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
               title={showTracks && !trackSwitch ? (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   {machine.name}
-                  <UpdateTrackChip track={shownTrack} />
+                  <UpdateTrackChip track={track} />
                 </span>
               ) : machine.name}
               hint={(

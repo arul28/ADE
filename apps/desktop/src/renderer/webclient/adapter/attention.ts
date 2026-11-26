@@ -841,13 +841,17 @@ export function createAttentionNamespace(
       if (!owner || owner !== accountOwnerId.trim()) {
         throw new Error("The ADE account changed before your phones could load.");
       }
-      return parseAttentionAccountDevices(await request(
+      const response = await request(
         "device list",
         "GET",
         "/attention/account/devices",
         undefined,
         { userInitiated: true },
-      ));
+      );
+      if (accountClient.getSnapshot().userId?.trim() !== owner) {
+        throw new Error("The ADE account changed before your phones could load.");
+      }
+      return parseAttentionAccountDevices(response);
     },
 
     /** One phone's notification override, on its own atomic relay route. */

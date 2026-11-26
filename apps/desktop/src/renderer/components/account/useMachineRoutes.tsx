@@ -129,7 +129,7 @@ export function useMachineRoutesControl(args: {
   /** Machine keys this window reaches through ADE Relay right now. */
   relayRoutedKeys: ReadonlySet<string>;
   /** Re-read the account directory (its endpoints follow a relay change). */
-  reloadMachines: () => void;
+  reloadMachines: () => Promise<void>;
 }) {
   const { enabled, rows, machines, relayRoutedKeys, reloadMachines } = args;
   const { byKey, load, setRelayEnabled } = useMachineRoutesState();
@@ -139,17 +139,23 @@ export function useMachineRoutesControl(args: {
   const [pendingOff, setPendingOff] = useState<RoutesRow | null>(null);
   /** "Check again" on this computer: running, and when the last one finished. */
   const [recheck, setRecheck] = useState<{ running: boolean; finishedAtMs: number | null }>({ running: false, finishedAtMs: null });
-  const timers = useRef<number[]>([]);
+  const timers = useRef(new Set<number>());
+  const recheckInFlight = useRef(false);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
     return () => {
       alive.current = false;
       for (const timer of timers.current) window.clearTimeout(timer);
+      timers.current.clear();
     };
   }, []);
   const later = useCallback((run: () => void, ms: number) => {
-    timers.current.push(window.setTimeout(run, ms));
+    const timer = window.setTimeout(() => {
+      timers.current.delete(timer);
+      run();
+    }, ms);
+    timers.current.add(timer);
   }, []);
 
   // This computer: on open, on focus, and every 30 seconds while visible. The
@@ -157,7 +163,7 @@ export function useMachineRoutesControl(args: {
   useEffect(() => {
     if (!enabled) return;
     const refresh = () => {
-      if (document.visibilityState === "hidden") return;
+      if (document.visibilityState === "hidden" || recheckInFlight.current) return;
       void load(null);
     };
     refresh();
@@ -215,6 +221,12 @@ export function useMachineRoutesControl(args: {
     }
   }, [later, load, reloadMachines, setRelayEnabled]);
 
+  /** The routes panel asks to update ADE on this computer: it is too old to answer. */
+  const asksForUpdate = useCallback((row: RoutesRow): boolean => {
+    const state = stateFor(row);
+    return enabled && !row.thisMac && state?.status === "error" && state.needsUpdate === true;
+  }, [enabled, stateFor]);
+
   const routeItemsFor = useCallback((row: RoutesRow): MachineRouteItem[] =>
     row.accountMachine ? machineRouteItems(row.accountMachine, enabled ? stateFor(row)?.routes ?? null : null) : [],
   [enabled, stateFor]);
@@ -247,9 +259,8 @@ export function useMachineRoutesControl(args: {
   const routesPanelFor = useCallback((row: RoutesRow): ReactNode => {
     const items = routeItemsFor(row);
     if (items.length === 0) return null;
-    const state = stateFor(row);
-    const live = enabled && state?.routes != null;
-    const needsUpdateKey = !row.thisMac && state?.status === "error" && state.needsUpdate ? row.accountMachine?.machineKey ?? null : null;
+    const live = enabled && stateFor(row)?.routes != null;
+    const needsUpdateKey = asksForUpdate(row) ? row.accountMachine?.machineKey ?? null : null;
     return (
       <>
         {needsUpdateKey ? (
@@ -268,19 +279,22 @@ export function useMachineRoutesControl(args: {
         ) : null}
       </>
     );
-  }, [busyKey, enabled, pendingOff, relayError, relaySwitchFor, routeItemsFor, stateFor]);
+  }, [asksForUpdate, busyKey, enabled, pendingOff, relayError, relaySwitchFor, routeItemsFor, stateFor]);
 
   const onExpand = useCallback((row: RoutesRow) => {
     if (enabled && (row.thisMac || row.connected)) void load(routesKey(row) === LOCAL_ROUTES_KEY ? null : row.accountMachine?.machineKey ?? null);
   }, [enabled, load]);
 
   const recheckThisComputer = useCallback(async () => {
+    if (recheckInFlight.current) return;
+    recheckInFlight.current = true;
     setRecheck((previous) => ({ ...previous, running: true }));
-    reloadMachines();
     await Promise.all([
+      reloadMachines(),
       load(null, { refresh: true }),
       new Promise<void>((resolve) => later(resolve, RECHECK_MIN_VISIBLE_MS)),
     ]);
+    recheckInFlight.current = false;
     if (alive.current) setRecheck({ running: false, finishedAtMs: Date.now() });
   }, [later, load, reloadMachines]);
 
@@ -290,9 +304,7 @@ export function useMachineRoutesControl(args: {
       machines={machines}
       rechecking={recheck.running}
       lastRecheckAtMs={recheck.finishedAtMs}
-      onRecheck={() => {
-        if (!recheck.running) void recheckThisComputer();
-      }}
+      onRecheck={() => { void recheckThisComputer(); }}
     />
   ) : null;
 
@@ -321,10 +333,6 @@ export function useMachineRoutesControl(args: {
     routesPanelFor,
     onExpand,
     localRoutes: enabled ? byKey[LOCAL_ROUTES_KEY]?.routes ?? null : null,
-    /** The routes panel already asks to update ADE on this computer. */
-    asksForUpdate: (row: RoutesRow) => {
-      const state = stateFor(row);
-      return enabled && !row.thisMac && state?.status === "error" && state.needsUpdate === true;
-    },
+    asksForUpdate,
   };
 }

@@ -877,7 +877,9 @@ export class AttentionAccountCoordinator {
     if (!this.options.accountAttentionClient?.listAttentionDevices) {
       throw accountActivityNotReadyError();
     }
-    return await this.options.accountAttentionClient.listAttentionDevices(accountOwnerId);
+    const devices = await this.options.accountAttentionClient.listAttentionDevices(accountOwnerId);
+    this.requireCurrentAccountOwner(accountOwnerId);
+    return devices;
   }
 
   /** One phone's notification override (`preferences.devices[deviceId]`). */

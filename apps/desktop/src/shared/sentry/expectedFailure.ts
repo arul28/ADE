@@ -251,6 +251,32 @@ export function isPeerVersionGapMessage(message: string): boolean {
   return PEER_VERSION_GAP.some((pattern) => pattern.test(message));
 }
 
+/**
+ * The text a genuinely unknown method produces. `runtimeRpcClient` flattens
+ * the JSON-RPC error into a plain `Error` with no `.code`, so the text is all
+ * there is. `-32601` is deliberately not matched: ADE also throws
+ * `methodNotFound` for permission denials.
+ */
+const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:/i;
+
+/**
+ * Denial phrasings ADE dresses in a `methodNotFound` code (elevated-role and
+ * owner-scope refusals, `adeRpcServer.ts`). A denial is a real problem to
+ * show, never a version gap to explain away.
+ */
+const AUTHORIZATION_DENIAL_MESSAGE = /requires elevated role|requires an authenticated owner scope|not authorized for this caller|not owned by this caller|requires .*(?:permission|scope)|permission denied|not permitted|access denied|unauthorized/i;
+
+/**
+ * Another machine refused a call because its ADE does not know it: an unknown
+ * method, or an older brain that routes a newer machine-level method as a
+ * project method (`isPeerVersionGapMessage`). The fix is updating ADE there.
+ * Only for an answer from ANOTHER machine (see `PEER_VERSION_GAP`).
+ */
+export function isPeerMissingMethodMessage(message: string): boolean {
+  if (AUTHORIZATION_DENIAL_MESSAGE.test(message)) return false;
+  return UNKNOWN_METHOD_MESSAGE.test(message) || isPeerVersionGapMessage(message);
+}
+
 // Each of these names the address or host it failed to reach, so a loopback
 // target is visible. A reset or a closed socket mid-request is not on the list:
 // its message names no address.

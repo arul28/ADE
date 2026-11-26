@@ -1,5 +1,14 @@
 # Desktop auto-update disk-space behavior
 
+## Update tracks on other machines
+
+In desktop Settings, **Update other machines** shows a **Stable / Beta** choice
+for eligible connected computers. The selected computer checks whether the
+release can open its databases, then downloads it and restarts. The row reports
+progress and shows the new track when that computer reconnects on it. ADE Cloud
+manages its own updates. A manually installed Linux package is updated on the
+computer itself.
+
 ## macOS update path
 
 ADE uses `electron-updater` with the macOS ZIP target. The behavior below was

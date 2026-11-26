@@ -26,6 +26,13 @@ export const UPDATE_TRACK_FILE = "update-track.json";
 export type UpdateTrackRecord = {
   track: UpdateTrack;
   updatedAt: string | null;
+  /**
+   * Set by a brain that saved a switch before installing the other track's
+   * build (`machine.switchUpdateTrack` on a machine with no app): the track it
+   * switched from, until its next start settles the switch
+   * (`settlePendingTrackSwitch`). Absent everywhere else.
+   */
+  pendingSwitchFrom?: UpdateTrack;
 };
 
 export function updateTrackFilePath(env: NodeJS.ProcessEnv = process.env): string {
@@ -44,7 +51,12 @@ export function readSavedUpdateTrack(env: NodeJS.ProcessEnv = process.env): Upda
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const track = normalizeUpdateTrack(parsed?.track);
     if (!track) return null;
-    return { track, updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null };
+    const pendingSwitchFrom = normalizeUpdateTrack(parsed.pendingSwitchFrom);
+    return {
+      track,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
+      ...(pendingSwitchFrom ? { pendingSwitchFrom } : {}),
+    };
   } catch {
     return null;
   }
@@ -65,8 +77,31 @@ export function writeSavedUpdateTrack(
   track: UpdateTrack,
   env: NodeJS.ProcessEnv = process.env,
   now: () => Date = () => new Date(),
+  options: { pendingSwitchFrom?: UpdateTrack } = {},
 ): UpdateTrackRecord {
-  const record: UpdateTrackRecord = { track, updatedAt: now().toISOString() };
+  const record: UpdateTrackRecord = {
+    track,
+    updatedAt: now().toISOString(),
+    ...(options.pendingSwitchFrom ? { pendingSwitchFrom: options.pendingSwitchFrom } : {}),
+  };
   writeJsonAtomic(updateTrackFilePath(env), record, `${process.pid}`);
   return record;
+}
+
+/**
+ * A brain's first look at a switch it saved before installing: the build now
+ * running is on the saved track (it landed: keep the choice), or it is not
+ * (the install rolled back or never ran: follow the running build's track
+ * again, so ordinary updates are not refused as a half-made switch). Null
+ * when no switch was pending.
+ */
+export function settlePendingTrackSwitch(
+  runningVersion: string,
+  env: NodeJS.ProcessEnv = process.env,
+): "landed" | "reverted" | null {
+  const saved = readSavedUpdateTrack(env);
+  if (!saved?.pendingSwitchFrom) return null;
+  const runningTrack = updateTrackOfVersion(runningVersion);
+  writeSavedUpdateTrack(runningTrack, env);
+  return runningTrack === saved.track ? "landed" : "reverted";
 }

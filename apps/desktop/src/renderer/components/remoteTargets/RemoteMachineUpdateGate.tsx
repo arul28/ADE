@@ -2,21 +2,12 @@ import { useMemo, type ReactNode } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { desktopUpdateRequirement, type DesktopUpdateRequirement } from "../../../shared/clientUpdateGate";
-import { isWindowsSelfInstallBlocked } from "../../../shared/updateVersions";
 import { useClientUpdateGate } from "../../state/clientUpdateGateStore";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { adeCloudInstanceIdForMachine, useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { Banner, type BannerModel } from "../ui/notice";
-import type { NoticeAction } from "../ui/notice/NoticeParts";
-import {
-  canUpdateOtherMachines,
-  isMachineUpdateBusy,
-  machineUpdateIsManual,
-  requestMachineUpdates,
-  useMachineUpdates,
-} from "./machineUpdates";
 import { connectedMachinesFromSnapshot, type ConnectedMachine } from "./remoteMachineModel";
-import { describeMachineUpdateAttempt } from "./machineUpdateStatus";
+import { useMachineUpdateAsk } from "./MachineNeedsUpdate";
 import { cloudBoxContext, useCloudBoxActions } from "./useCloudBoxActions";
 import { useCloudMachines } from "./useCloudMachines";
 
@@ -106,30 +97,8 @@ function bannerModel(name: string, block: RemoteMachineBlock, extra: Partial<Ban
 
 /** A paired desktop: the ordinary "Update & restart", with its impact confirmation. */
 function DesktopUpdateBanner({ name, block }: { name: string; block: RemoteMachineBlock }) {
-  const updates = useMachineUpdates();
-  const { machine, requirement } = block;
-  const attempt = updates.attempts[machine.id];
-  const status = attempt ? describeMachineUpdateAttempt(attempt, { ...machine, connected: true }, updates.nowMs) : null;
-  const busy = isMachineUpdateBusy(updates, machine, updates.nowMs);
-  const manual = machineUpdateIsManual(machine, attempt);
-  // A brain too old to take `machine.updateAndRestart`, a build whose app
-  // cannot run its installer, or a client that cannot ask (no bridge).
-  const askable = canUpdateOtherMachines()
-    && machine.canUpdate !== false
-    && !manual
-    && !isWindowsSelfInstallBlocked(machine.version, machine.arch ?? null);
+  const { actions, busy, askable, status, failed } = useMachineUpdateAsk(block.machine, name, block.requirement.targetVersion);
   const updateThere = `Open ADE on ${name} and update it there.`;
-  const actions: NoticeAction[] = [];
-  if (askable) {
-    actions.push({
-      label: `Update & restart ${name}`,
-      variant: "solid",
-      busy,
-      onClick: () => void requestMachineUpdates([{ ...machine, targetVersion: requirement.targetVersion }]),
-    });
-  }
-  if (manual && machine.downloadUrl) actions.push({ label: "Download the update", href: machine.downloadUrl, variant: "secondary" });
-  const failed = Boolean(status && !status.ok && !status.inFlight);
   // Asking failed (an old brain may not know the call): the panel stays and
   // says where it can be updated.
   const note = !askable || failed ? updateThere : status?.message ?? null;

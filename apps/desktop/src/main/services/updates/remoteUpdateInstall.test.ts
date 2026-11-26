@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { UpdateTrack } from "../../../shared/updateTrack";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { createRemoteUpdateInstaller } from "./remoteUpdateInstall";
 
@@ -33,6 +34,7 @@ function createUpdateService(
         await onCheck(set);
       }),
       quitAndInstall,
+      startTrackSwitch: vi.fn((target: UpdateTrack) => ({ ok: true as const, target })),
       onStateChange: (cb: (next: AutoUpdateSnapshot) => void) => {
         listeners.add(cb);
         return () => listeners.delete(cb);
@@ -42,6 +44,7 @@ function createUpdateService(
 }
 
 const logger = { info: vi.fn(), warn: vi.fn() };
+const allowTrackSwitch = async (target: UpdateTrack) => ({ allowed: true as const, target, targetVersion: null });
 
 afterEach(() => {
   vi.useRealTimers();
@@ -54,6 +57,7 @@ describe("createRemoteUpdateInstaller", () => {
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_500,
     });
@@ -78,6 +82,7 @@ describe("createRemoteUpdateInstaller", () => {
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_000,
     });
@@ -90,12 +95,34 @@ describe("createRemoteUpdateInstaller", () => {
     expect(updates.quitAndInstall).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["1.2.90", "installing", 1],
+    ["1.3.0-beta.3", "no_update", 0],
+  ] as const)("only installs a Stable build during a switch from Beta, with %s offered", async (version, outcome, installs) => {
+    vi.useFakeTimers();
+    const updates = createUpdateService({ currentVersion: "1.3.0-beta.2" }, (set) => {
+      set({ status: "ready", version });
+    });
+    const installer = createRemoteUpdateInstaller({
+      getService: () => updates.service,
+      supported: true,
+      checkTrackSwitch: allowTrackSwitch,
+      logger,
+      installDelayMs: 1_000,
+    });
+
+    expect((await installer.switchTrack({ track: "stable" })).outcome).toBe(outcome);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(updates.quitAndInstall).toHaveBeenCalledTimes(installs);
+  });
+
   it("does not install a download that failed", async () => {
     vi.useFakeTimers();
     const updates = createUpdateService({ status: "downloading", version: "1.2.91" });
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_000,
     });
@@ -121,6 +148,7 @@ describe("createRemoteUpdateInstaller", () => {
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_000,
     });

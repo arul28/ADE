@@ -7339,13 +7339,18 @@ describe("custom notifications", () => {
         values (?, ?, '2026-07-28T08:00:00.000Z')
       `).run(userId, JSON.stringify({
         devices: {
-          "phone-off": { notificationsEnabled: false },
+          "phone-off": { deviceDeliveryEnabled: false },
           "phone-quiet": { quietHours: { enabled: true, start: "11:00", end: "13:00", timeZone: "UTC" } },
           "phone-private": { hideDetails: true },
         },
         machines: { "muted-mac": { notificationsEnabled: false } },
       }));
       const env = await apnsEnv();
+      // An already-installed phone can keep writing its local setting.
+      const localSync = await accountRoute(database, userId, "PATCH", "/attention/account/preferences/devices/phone-off", {
+        notificationsEnabled: true,
+      }, { env });
+      expect(localSync.status).toBe(200);
 
       const response = await accountRoute(database, userId, "POST", "/attention/account/notify", {
         title: "  Deploy finished  ",
@@ -7378,6 +7383,39 @@ describe("custom notifications", () => {
       database.close();
       vi.unstubAllGlobals();
       vi.useRealTimers();
+    }
+  });
+
+  it("honors a mute for the same phone on the legacy machine route", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sent = captureApns();
+    const userId = "account-legacy-mute";
+    const deviceId = "account-phone";
+    const token = "ab".repeat(32);
+    try {
+      resetSpendGuardsForTests();
+      claimMachineForAccount(database, userId);
+      seedLegacyMachineDelivery(database, { deviceId: "paired-phone" });
+      insertAttentionDevice(database, { userId, deviceId, apnsToken: token });
+      const env = await apnsEnv();
+      const publish = () => legacyRelayRequest(makeLegacyRelayEnv(database, env), "POST", `/machines/${MACHINE_KEY}/publish`, {
+        notifications: [{ title: "Agent needs you" }],
+      });
+      const changeDelivery = (enabled: boolean) => accountRoute(
+        database, userId, "PATCH", `/attention/account/preferences/devices/${deviceId}`,
+        { deviceDeliveryEnabled: enabled }, { env },
+      );
+
+      expect((await changeDelivery(false)).status).toBe(200);
+      expect((await publish()).status).toBe(200);
+      expect(sent).toEqual([]);
+      expect((await changeDelivery(true)).status).toBe(200);
+      expect((await publish()).status).toBe(200);
+      expect(sent.map((push) => push.token)).toEqual([token]);
+    } finally {
+      database.close();
     }
   });
 

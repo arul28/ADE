@@ -349,6 +349,8 @@ export type AttentionPreferenceScope = {
    */
   eventPolicyDefaultsVersion?: number;
   notificationsEnabled: boolean;
+  /** Account-controlled delivery to one registered device, independent of its local switch. */
+  deviceDeliveryEnabled?: boolean;
   liveActivitiesEnabled: boolean;
   desktopFirstEnabled: boolean;
   desktopFirstDelaySeconds: number;
@@ -383,7 +385,7 @@ export function parseAttentionAccountDevices(value: unknown): AttentionAccountDe
   const list = value && typeof value === "object" && !Array.isArray(value)
     ? (value as { devices?: unknown }).devices
     : null;
-  if (!Array.isArray(list)) return [];
+  if (!Array.isArray(list)) throw new Error("ADE couldn’t read the account’s notification devices. Try again.");
   const devices: AttentionAccountDevice[] = [];
   for (const entry of list) {
     if (!entry || typeof entry !== "object") continue;

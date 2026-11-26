@@ -21,6 +21,8 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { formatTime } from "../../lib/format";
 import { ModernRow, ModernRows, ModernSection, type SettingsTone } from "../settings/primitives";
 import { TailscaleMark } from "./MachineRoutes";
+import { Banner } from "../ui/notice";
+import { machineRouteItems, type MachineRouteItem } from "./machineRouteModel";
 import type { MachineRoutesState } from "./useMachineRoutes";
 
 /** Settings anchor; the manifest entry `account.privateNetwork` points here. */
@@ -110,7 +112,12 @@ export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
 }
 
 /** The order clients try routes in, as three steps. */
-function RouteLadder({ onTailnet, total }: { onTailnet: number; total: number }) {
+function RouteLadder({ onTailnet, total, routes, checking }: {
+  onTailnet: number;
+  total: number;
+  routes: MachineRouteItem[];
+  checking: boolean;
+}) {
   const steps = [
     { key: "lan", icon: <WifiHigh size={15} weight="bold" />, name: "Local network", note: "On the same Wi-Fi, direct" },
     {
@@ -123,18 +130,23 @@ function RouteLadder({ onTailnet, total }: { onTailnet: number; total: number })
   ];
   return (
     <ol className="ade-net-ladder" aria-label="Route order">
-      {steps.map((step, index) => (
-        <li key={step.key} className="ade-net-rung" data-route={step.key}>
-          <span className="ade-net-rung-icon">{step.icon}</span>
-          <span className="ade-net-rung-copy">
-            <span className="ade-net-rung-name">
-              <span className="ade-net-rung-index kit-num">{index + 1}</span>
-              {step.name}
+      {steps.map((step, index) => {
+        const result = routes.find((route) => route.kind === step.key);
+        const status = checking ? "Checking…" : result?.word;
+        return (
+          <li key={step.key} className="ade-net-rung" data-route={step.key}>
+            <span className="ade-net-rung-icon">{step.icon}</span>
+            <span className="ade-net-rung-copy">
+              <span className="ade-net-rung-name">
+                <span className="ade-net-rung-index kit-num">{index + 1}</span>
+                {step.name}
+              </span>
+              <span className="ade-net-rung-note">{step.note}</span>
+              {status ? <span className="ade-net-rung-note" title={checking ? undefined : result?.detail ?? undefined}>{status}</span> : null}
             </span>
-            <span className="ade-net-rung-note">{step.note}</span>
-          </span>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ol>
   );
 }
@@ -153,49 +165,67 @@ function ExternalButton({ label, href, primary }: { label: string; href: string;
   );
 }
 
-/**
- * Settings › Account › Private network: how the owner's computers reach each
- * other, and the Tailscale setup that keeps ADE Relay a fallback. Everything
- * here is this computer's own reading of its own Tailscale; MagicDNS and HTTPS
- * certificates are tailnet-wide, so one computer's answer holds for all.
- */
 /** The line under the checklist: what the last check found, and when. */
 function CheckResult({
   state,
   rechecking,
   lastRecheckAtMs,
   todo,
+  complete,
 }: {
   state: MachineRoutesState | undefined;
   rechecking: boolean;
   lastRecheckAtMs: number | null;
   todo: number;
+  complete: boolean;
 }) {
-  let tone: "error" | undefined;
+  if (state?.status === "error" && !rechecking) {
+    // A failed re-read with an older answer on screen: say the list is the old one.
+    const at = lastRecheckAtMs ? ` at ${formatTime(new Date(lastRecheckAtMs).toISOString())}` : "";
+    return (
+      <div className="ade-net-check-failed">
+        <Banner
+          layout="inline"
+          model={{
+            id: "private-network-check-failed",
+            tone: "warning",
+            title: `Couldn't check${at}`,
+            detail: state.routes ? `${state.message} The steps show the last answer.` : state.message,
+            report: false,
+          }}
+        />
+      </div>
+    );
+  }
   let text: string | null = null;
   if (rechecking) {
-    text = "Checking Tailscale, MagicDNS, certificates and the secure route on this computer…";
-  } else if (state?.status === "error" && state.routes) {
-    // A failed re-read with an older answer on screen: say the list is the old one.
-    tone = "error";
-    const at = lastRecheckAtMs ? ` at ${formatTime(new Date(lastRecheckAtMs).toISOString())}` : "";
-    text = `Couldn't check${at}: ${state.message} The steps show the last answer.`;
+    text = "Checking connection routes and Tailscale setup on this computer…";
   } else if (state?.routes) {
     const at = formatTime(state.routes.checkedAt);
-    const outcome = todo === 0 ? "Everything is set up." : `${todo} ${todo === 1 ? "step needs" : "steps need"} you.`;
+    const outcome = complete
+      ? "Everything is set up."
+      : todo > 0
+        ? `${todo} ${todo === 1 ? "step needs" : "steps need"} you.`
+        : "Still setting up.";
     text = at ? `Checked at ${at}. ${outcome}` : outcome;
   }
   if (!text) return null;
   return (
-    <div className="ade-net-checked" data-tone={tone} role="status" aria-live="polite">
+    <div className="ade-net-checked" role="status" aria-live="polite">
       {rechecking
         ? <CircleNotch size={12} weight="bold" className="animate-spin" />
-        : tone === "error" ? <WarningCircle size={13} weight="fill" /> : <CheckCircle size={13} weight="fill" />}
+        : <CheckCircle size={13} weight="fill" />}
       {text}
     </div>
   );
 }
 
+/**
+ * Settings › Account › Private network: how the owner's computers reach each
+ * other, and the Tailscale setup that keeps ADE Relay a fallback. Everything
+ * here is this computer's own reading of its own Tailscale; MagicDNS and HTTPS
+ * certificates are tailnet-wide, so one computer's answer holds for all.
+ */
 export function PrivateNetworkSection({
   state,
   machines,
@@ -216,6 +246,8 @@ export function PrivateNetworkSection({
   const onTailnet = machines.filter((machine) =>
     machine.reachableEndpoints.some((endpoint) => endpoint.kind === "tailnet"),
   ).length;
+  const localMachine = routes ? machines.find((machine) => machine.machineKey === routes.machineKey) ?? null : null;
+  const routeResults = routes ? machineRouteItems(localMachine, routes) : [];
   const steps = routes ? setupSteps(routes) : [];
   const done = steps.filter((step) => step.state === "done").length;
   const todo = steps.filter((step) => step.state === "todo").length;
@@ -246,7 +278,7 @@ export function PrivateNetworkSection({
       )}
     >
       <div className="ade-net">
-        <RouteLadder onTailnet={onTailnet} total={machines.length} />
+        <RouteLadder onTailnet={onTailnet} total={machines.length} routes={routeResults} checking={checking} />
         <header className="ade-net-setup-head">
           <span className="ade-net-brand">
             <TailscaleMark size={16} />
@@ -278,12 +310,8 @@ export function PrivateNetworkSection({
             </div>
           ) : null}
         </header>
-        {routes ? <CheckResult state={state} rechecking={rechecking} lastRecheckAtMs={lastRecheckAtMs} todo={todo} /> : null}
-        {!routes ? (
-          <div className="ade-net-empty">
-            {state?.status === "error" ? state.message : "Checking Tailscale on this computer…"}
-          </div>
-        ) : showSteps ? (
+        <CheckResult state={state} rechecking={rechecking} lastRecheckAtMs={lastRecheckAtMs} todo={todo} complete={complete} />
+        {routes && showSteps ? (
           <div className="ade-net-steps">
             <ModernRows>
               {steps.map((step) => (

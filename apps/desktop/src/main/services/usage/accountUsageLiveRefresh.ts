@@ -33,7 +33,7 @@ import type {
   UsageWindow,
 } from "../../../shared/types";
 import type { PeerLiveQuota } from "../../../shared/usageLiveQuota";
-import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
+import { isPeerMissingMethodMessage } from "../../../shared/sentry/expectedFailure";
 import { getErrorMessage } from "../shared/utils";
 import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS, normalizeRollupActivity } from "./accountUsageRollup";
 import { ROLLUP_RETAINED_DAYS } from "./accountUsageRollupStore";
@@ -59,41 +59,15 @@ function machineLabel(machine: AdeAccountMachine): string {
 const TOO_OLD_MESSAGE = "This computer's ADE is too old to share usage";
 
 /**
- * The message a genuinely unknown method produces.
- *
- * `runtimeRpcClient` flattens the JSON-RPC error into a plain `Error` with no
- * `.code`, so the text is all there is. A brain that predates the machine-level
- * `usage.getUsageRollup` method routes it as a project method and answers
- * "requires params.projectId", which is the same version gap in other words.
- * `-32601` is deliberately *not* matched,
- * because ADE also throws `methodNotFound` for permission denials, and reading
- * one of those as "too old to share usage" is exactly the bug class this guard
- * exists to avoid.
- */
-const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:/i;
-
-/**
- * Denial phrasings that ADE dresses in a `methodNotFound` code.
- *
- * See `adeRpcServer.ts` — elevated-role and owner-scope refusals all use that
- * code. A scope denial is a real problem to surface, not a version mismatch to
- * explain away, so it must never reach `TOO_OLD_MESSAGE`.
- */
-const AUTHORIZATION_DENIAL_MESSAGE = /requires elevated role|requires an authenticated owner scope|not authorized for this caller|not owned by this caller|requires .*(?:permission|scope)|permission denied|not permitted|access denied|unauthorized/i;
-
-/**
  * Did the peer reject the call because it does not know the method?
  *
- * A brain that predates `usage.getUsageRollup` answers with JSON-RPC -32601.
- * Left in the generic catch that reads as "Couldn't reach this computer" on
- * every refresh, which sends the user looking at the network for a problem that
- * is a version mismatch.
+ * A brain that predates `usage.getUsageRollup` answers with JSON-RPC -32601
+ * (or "requires params.projectId"). Left in the generic catch that reads as
+ * "Couldn't reach this computer" on every refresh, which sends the user
+ * looking at the network for a problem that is a version mismatch.
  */
 function isMethodNotFound(error: unknown): boolean {
-  if (!error) return false;
-  const message = getErrorMessage(error);
-  if (AUTHORIZATION_DENIAL_MESSAGE.test(message)) return false;
-  return UNKNOWN_METHOD_MESSAGE.test(message) || isPeerVersionGapMessage(message);
+  return Boolean(error) && isPeerMissingMethodMessage(getErrorMessage(error));
 }
 
 /**

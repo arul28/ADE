@@ -71,8 +71,12 @@ export type DesktopAppUpdateInstallResult = {
 };
 
 export type DesktopAppUpdateRouting =
-  /** No desktop app answered for this machine: the caller updates the standalone runtime. */
-  | { attached: false; detail: string }
+  /**
+   * No desktop app took the request: the caller updates the standalone
+   * runtime. `refused`: an app answered but turned the method down (one that
+   * predates it), as opposed to no app being reachable.
+   */
+  | { attached: false; detail: string; refused?: boolean }
   | { attached: true; result: DesktopAppUpdateInstallResult };
 
 const CONNECT_TIMEOUT_MS = 3_000;
@@ -139,20 +143,22 @@ export async function requestDesktopAppTrackSwitch(args: {
   socketPath: string;
   track: UpdateTrack;
   requestedBy?: UpdateRequestedBy | null;
+  connectTimeoutMs?: number;
 }): Promise<DesktopAppUpdateRouting> {
   const routing = await requestDesktopApp({
     socketPath: args.socketPath,
     method: DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD,
     params: { track: args.track, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+    connectTimeoutMs: args.connectTimeoutMs,
   });
-  if (routing.attached || !/declined the request/i.test(routing.detail)) return routing;
+  if (routing.attached || !routing.refused) return routing;
   return {
     attached: true,
     result: {
       outcome: "failed",
       currentVersion: null,
       version: null,
-      message: "The ADE app on this computer is too old to switch tracks from another computer. Update it, then switch again.",
+      message: "The ADE app on this computer could not answer the track switch. Update it, then switch again.",
     },
   };
 }
@@ -210,7 +216,7 @@ async function requestDesktopApp(args: {
         };
       }
       if (error instanceof JsonRpcResponseError) {
-        return { attached: false, detail: `The ADE desktop app declined the request: ${error.message}` };
+        return { attached: false, refused: true, detail: `The ADE desktop app declined the request: ${error.message}` };
       }
       return {
         attached: true,
@@ -224,7 +230,7 @@ async function requestDesktopApp(args: {
     }
     const result = readResult(raw);
     if (!result) {
-      return { attached: false, detail: "The ADE desktop app sent an answer this brain does not understand." };
+      return { attached: false, refused: true, detail: "The ADE desktop app sent an answer this brain does not understand." };
     }
     return { attached: true, result };
   } finally {
@@ -319,6 +325,26 @@ export async function requestUpdateThroughClosedApp(args: {
   targetVersion: string | null;
   requestedBy?: UpdateRequestedBy | null;
 }): Promise<DesktopAppUpdateRouting> {
+  return await requestThroughClosedApp(args.appPath, (connectTimeoutMs) => requestDesktopAppUpdate({
+    ...args, connectTimeoutMs,
+  }));
+}
+
+export async function requestTrackSwitchThroughClosedApp(args: {
+  appPath: string;
+  socketPath: string;
+  track: UpdateTrack;
+  requestedBy?: UpdateRequestedBy | null;
+}): Promise<DesktopAppUpdateRouting> {
+  return await requestThroughClosedApp(args.appPath, (connectTimeoutMs) => requestDesktopAppTrackSwitch({
+    ...args, connectTimeoutMs,
+  }));
+}
+
+async function requestThroughClosedApp(
+  appPath: string,
+  request: (connectTimeoutMs: number) => Promise<DesktopAppUpdateRouting>,
+): Promise<DesktopAppUpdateRouting> {
   const refuse = (detail: string): DesktopAppUpdateRouting => ({
     attached: true,
     result: {
@@ -329,7 +355,7 @@ export async function requestUpdateThroughClosedApp(args: {
     },
   });
   try {
-    await openApp(args.appPath);
+    await openApp(appPath);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }
@@ -337,12 +363,7 @@ export async function requestUpdateThroughClosedApp(args: {
   let detail = "it did not answer";
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, CLOSED_APP_POLL_MS));
-    const routing = await requestDesktopAppUpdate({
-      socketPath: args.socketPath,
-      targetVersion: args.targetVersion,
-      requestedBy: args.requestedBy ?? null,
-      connectTimeoutMs: CLOSED_APP_POLL_MS,
-    });
+    const routing = await request(CLOSED_APP_POLL_MS);
     if (routing.attached) {
       // "unsupported" would send the caller to the standalone update, the very
       // switch this route exists to avoid.

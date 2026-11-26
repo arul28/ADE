@@ -3606,71 +3606,55 @@ export function createMultiProjectRpcRequestHandler(
     // The channel is the authorization: this method only exists on the runtime
     // RPC endpoint, which is a paired/authenticated transport, and the cto role
     // gate below matches every other machine-lifecycle action.
-    if (method === "machine.updateAndRestart") {
+    //
+    // "Stable / Beta" (`machine.switchUpdateTrack`) is the same kind of act:
+    // the guarded switch Settings › About runs here, then that track's build.
+    // It takes the same gate and the same one-run-at-a-time slot, so it never
+    // runs beside an update; it refuses rather than join one, whose result
+    // would read as the switch's.
+    if (method === "machine.updateAndRestart" || method === "machine.switchUpdateTrack") {
       if (!callerHasRoleAtLeast(callerRole(), "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "machine.updateAndRestart requires the cto role.",
+          `${method} requires the cto role.`,
         );
       }
       const controls = options.machineUpdateControls;
       if (!controls) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "This ADE runtime cannot update itself.",
+          method === "machine.updateAndRestart"
+            ? "This ADE runtime cannot update itself."
+            : "This ADE runtime cannot change its update track.",
         );
       }
-      const targetVersion = typeof params.targetVersion === "string"
-        && params.targetVersion.trim()
-        ? params.targetVersion.trim()
-        : null;
       // Who asked, for the logs and the next start's continue message. It
       // never changes the routing.
       const requestedBy = updateRequester(params.requestedBy, {
         authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
         clientName: callerClientName(),
       });
-      // One run per process, joined synchronously: a phone's sync command
-      // joins this run too (`machineUpdateInFlight.ts`).
+      // Checked and joined synchronously: the updater loads inside the run, so
+      // no await lets a second caller miss a run that is just starting.
+      if (method === "machine.switchUpdateTrack") {
+        const track = normalizeUpdateTrack(params.track);
+        if (!track) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "machine.switchUpdateTrack requires track 'stable' or 'beta'.");
+        }
+        return await joinOrStartMachineUpdate(async () => {
+          const { runMachineTrackSwitch } = await import("./services/runtime/machineUpdateAndRestart");
+          return await runMachineTrackSwitch(controls, track, requestedBy);
+        }, { trackSwitch: true });
+      }
+      const targetVersion = typeof params.targetVersion === "string"
+        && params.targetVersion.trim()
+        ? params.targetVersion.trim()
+        : null;
+      // One run per process: a phone's sync command joins this run too
+      // (`machineUpdateInFlight.ts`).
       return await joinOrStartMachineUpdate(async () => {
-        const { runMachineUpdateAndRestart } = await import(
-          "./services/runtime/machineUpdateAndRestart"
-        );
+        const { runMachineUpdateAndRestart } = await import("./services/runtime/machineUpdateAndRestart");
         return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
-      });
-    }
-
-    // "Stable / Beta" for this machine from another of the owner's computers:
-    // the guarded switch Settings › About runs here, then that track's build.
-    // Same gate and the same one-run-at-a-time as `machine.updateAndRestart`:
-    // a switch installs and restarts, so it never runs beside an update.
-    if (method === "machine.switchUpdateTrack") {
-      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidRequest,
-          "machine.switchUpdateTrack requires the cto role.",
-        );
-      }
-      const controls = options.machineUpdateControls;
-      if (!controls) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidRequest,
-          "This ADE runtime cannot change its update track.",
-        );
-      }
-      const track = normalizeUpdateTrack(params.track);
-      if (!track) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "machine.switchUpdateTrack requires track 'stable' or 'beta'.");
-      }
-      const requestedBy = updateRequester(params.requestedBy, {
-        authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
-        clientName: callerClientName(),
-      });
-      return await joinOrStartMachineUpdate(async () => {
-        const { runMachineTrackSwitch } = await import(
-          "./services/runtime/machineUpdateAndRestart"
-        );
-        return await runMachineTrackSwitch(controls, track, requestedBy);
       });
     }
 

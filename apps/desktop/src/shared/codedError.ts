@@ -117,11 +117,6 @@ export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
 }
 
 /**
- * Refusals whose message is written for the person: their code crosses the
- * wire as a `code: message` prefix (`encodeCodedErrorMessage`) so the sender
- * can act on it, and is not for reading.
- */
-/**
  * Another computer runs an ADE too old to answer a call this one made. The
  * fix is updating ADE there, so a surface that sees this code offers
  * "Update ADE on <machine>" with an Update button instead of the raw text
@@ -129,6 +124,11 @@ export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
  */
 export const MACHINE_NEEDS_UPDATE_CODE = "machine_needs_update";
 
+/**
+ * Refusals whose message is written for the person: their code crosses the
+ * wire as a `code: message` prefix (`encodeCodedErrorMessage`) so the sender
+ * can act on it, and is not for reading.
+ */
 const SENTENCE_REFUSAL_CODES: ReadonlySet<string> = new Set([CLOUD_COMPUTER_MOVING_CODE, MACHINE_NEEDS_UPDATE_CODE]);
 
 /**

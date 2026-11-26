@@ -174,7 +174,7 @@ import { startBrainClientUpdateCheck } from "./services/runtime/brainClientUpdat
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
-import { resolveSelectedUpdateTrack, writeSavedUpdateTrack } from "./services/runtime/updateTrackStore";
+import { resolveSelectedUpdateTrack, settlePendingTrackSwitch, writeSavedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
@@ -32267,6 +32267,10 @@ async function runServe(
     });
   };
 
+  // This machine's desktop app, over the bridge the brain already uses for the built-in browser.
+  const desktopBridgeSocketPath = (): string => process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+    || resolveReachableMachineDesktopBridgeSocketPath();
+
   // "Update & restart" asks this machine's desktop app, when one is running, to
   // install its own update: an app that owns the brain puts its own runtime
   // back over a standalone one. On a Mac or Windows PC whose app runs the
@@ -32278,8 +32282,7 @@ async function runServe(
     const { hostAppPath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
     );
-    const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || resolveReachableMachineDesktopBridgeSocketPath();
+    const socketPath = desktopBridgeSocketPath();
     let routing = await requestDesktopAppUpdate({ socketPath, targetVersion, requestedBy });
     const closedAppPath = routing.attached ? null : hostAppPath();
     if (closedAppPath && !routing.attached) {
@@ -32310,6 +32313,16 @@ async function runServe(
   // embedder's lifecycle — it is the same "never claim machine authority"
   // invariant that forces sync off, so it belongs to the profile rather
   // than to whatever the caller's role default happens to be.
+  // A track switch this brain saved before installing (`machine.switchUpdateTrack`
+  // on a machine with no app) is settled now that a build is running.
+  if (!embedded) {
+    try {
+      const settled = settlePendingTrackSwitch(VERSION);
+      if (settled) headlessProjectLogger.info("brain.track_switch_settled", { outcome: settled, version: VERSION });
+    } catch (error) {
+      headlessProjectLogger.warn("brain.track_switch_settle_failed", { error: String(error) });
+    }
+  }
   const machineUpdateControls = embedded
     ? null
     : createMachineUpdateControls({
@@ -32337,22 +32350,26 @@ async function runServe(
           const { checkTrackSwitch } = await import("../../desktop/src/main/services/updates/trackSwitchGuard");
           return await checkTrackSwitch({ target, runningVersion: VERSION, logger: headlessProjectLogger });
         },
-        save: (target) => {
-          writeSavedUpdateTrack(target);
+        save: (target, options) => {
+          writeSavedUpdateTrack(target, process.env, undefined, options);
         },
         requestDesktopApp: async (target, requestedBy) => {
-          const { requestDesktopAppTrackSwitch } = await import("./services/runtime/desktopAppUpdateBridge");
-          const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-            || resolveReachableMachineDesktopBridgeSocketPath();
-          const routing = await requestDesktopAppTrackSwitch({ socketPath, track: target, requestedBy });
+          const { hostAppPath, requestDesktopAppTrackSwitch, requestTrackSwitchThroughClosedApp } =
+            await import("./services/runtime/desktopAppUpdateBridge");
+          const socketPath = desktopBridgeSocketPath();
+          let routing = await requestDesktopAppTrackSwitch({ socketPath, track: target, requestedBy });
+          if (!routing.attached) {
+            const { readInstalledDesktopApp } = await import("../../desktop/src/main/services/native/nativeHelperPaths");
+            const installed = readInstalledDesktopApp();
+            const appPath = hostAppPath() ?? (installed?.updatable ? installed.path : null);
+            if (appPath) {
+              routing = await requestTrackSwitchThroughClosedApp({ appPath, socketPath, track: target, requestedBy });
+            }
+          }
           headlessProjectLogger.info("brain.remote_track_switch_route", routing.attached
             ? { route: "desktop_app", target, outcome: routing.result.outcome }
             : { route: "standalone", target, detail: routing.detail });
           return routing;
-        },
-        appOwnsBrain: async () => {
-          const { hostAppPath } = await import("./services/runtime/desktopAppUpdateBridge");
-          return hostAppPath() != null;
         },
       },
     });

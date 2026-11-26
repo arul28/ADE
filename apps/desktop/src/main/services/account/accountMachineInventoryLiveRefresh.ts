@@ -26,7 +26,7 @@ import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/
 import { getErrorMessage } from "../shared/utils";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
 import { machineNeedsUpdateError } from "../../../shared/codedError";
-import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
+import { isPeerMissingMethodMessage } from "../../../shared/sentry/expectedFailure";
 
 export const MACHINE_INVENTORY_MAX_LIVE_MACHINES = 12;
 export const MACHINE_INVENTORY_RATE_FLOOR_MS = 30_000;
@@ -36,8 +36,6 @@ const MAX_DETAIL_ACCOUNTS = 128;
 const MAX_DETAIL_PRESETS = 256;
 const MAX_TEXT_LENGTH = 256;
 
-const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:/i;
-const AUTHORIZATION_DENIAL_MESSAGE = /requires elevated role|requires an authenticated owner scope|not authorized for this caller|not owned by this caller|requires .*(?:permission|scope)|permission denied|not permitted|access denied|unauthorized/i;
 
 /**
  * Build the local-machine detail from the two read-only runtime actions that
@@ -106,15 +104,6 @@ export async function readLocalMachineInventoryDetail(args: {
   });
 }
 
-/** Keep this discriminator in lockstep with accountUsageLiveRefresh.ts. */
-function isMethodNotFound(error: unknown): boolean {
-  if (!error) return false;
-  const message = getErrorMessage(error);
-  if (AUTHORIZATION_DENIAL_MESSAGE.test(message)) return false;
-  // A brain from before the machine-level `account.getMachineInventory`
-  // routes it as a project method and answers "requires params.projectId".
-  return UNKNOWN_METHOD_MESSAGE.test(message) || isPeerVersionGapMessage(message);
-}
 
 function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
   const timeout = Math.max(250, Math.floor(timeoutMs));
@@ -290,7 +279,9 @@ export function createAccountMachineInventoryFetcher({
       failures.delete(machineKey);
       return safe;
     } catch (error) {
-      const tooOld = isMethodNotFound(error);
+      // A brain from before the machine-level `account.getMachineInventory`
+      // routes it as a project method and answers "requires params.projectId".
+      const tooOld = Boolean(error) && isPeerMissingMethodMessage(getErrorMessage(error));
       const failure = tooOld
         ? markExpected(machineNeedsUpdateError("Update ADE on that computer to see what it has installed."), "environment")
         : carryExpected(error, new Error(error instanceof Error && error.message ? error.message : "Details unavailable right now."));
