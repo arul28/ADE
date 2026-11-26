@@ -286,8 +286,6 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
 const NATIVE_FIRE_GRACE_MS = 90_000;
 const BUSY_DEFER_RETRY_MS = 20_000;
-/** How long a chat that just took a scheduled wake holds the next one back. */
-const DELIVERY_SETTLE_MS = 5_000;
 /** A delivery that has not returned by then no longer holds its chat's other wakes. */
 const DELIVERY_HUNG_MS = 60_000;
 const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -420,19 +418,17 @@ export function createChatScheduledWorkScheduler(
   const schedules = new Map<string, ChatScheduledWorkRecord>();
   const pausedSessionIds = new Set<string>();
   const timerHandles = new Map<string, unknown>();
-  // A chat taking a scheduled wake. A send returns before its turn shows as
-  // active, so the guard holds a moment past the delivery; one that never
-  // returns lets go after a ceiling instead of silencing the chat's wakes.
-  const deliveringSessions = new Map<string, { startedAt: number; returnedAt: number | null }>();
+  // A chat taking a scheduled wake, by when it started. Once the send returns,
+  // shouldDefer sees the accepted turn, so the hold ends with the delivery; one
+  // that never returns lets go after a ceiling instead of silencing the chat.
+  const deliveringSessions = new Map<string, { startedAt: number }>();
   const deliveryHeld = (sessionId: string): boolean => {
     const delivery = deliveringSessions.get(sessionId);
     if (!delivery) return false;
-    const held = delivery.returnedAt == null
-      ? now() - delivery.startedAt < DELIVERY_HUNG_MS
-      : now() - delivery.returnedAt < DELIVERY_SETTLE_MS;
-    if (held) return true;
+    const heldMs = now() - delivery.startedAt;
+    if (heldMs < DELIVERY_HUNG_MS) return true;
     deliveringSessions.delete(sessionId);
-    if (delivery.returnedAt == null) options.onDeliveryHung?.(sessionId, now() - delivery.startedAt);
+    options.onDeliveryHung?.(sessionId, heldMs);
     return false;
   };
   const inFlight = new Set<string>();
@@ -530,6 +526,22 @@ export function createChatScheduledWorkScheduler(
     await emitTransition(schedule, "cancelled");
   };
 
+  /**
+   * A row upserted while its old copy was being delivered inherits `fired` with
+   * nobody left to settle it. Put it back to waiting; `moveDue` spends an
+   * occurrence the old delivery used, otherwise its deadline stays.
+   */
+  const settleReplacement = async (current: ChatScheduledWorkRecord, moveDue: boolean): Promise<void> => {
+    if (current.status !== "fired") return;
+    current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
+    if (moveDue && current.kind === "cron" && current.fireAt != null && current.fireAt <= now()) {
+      current.fireAt = nextCronOccurrence(current, now());
+    }
+    await persist();
+    await emitTransition(current, current.status);
+    arm(current);
+  };
+
   const processDue = async (scheduleId: string, overdueWhenArmed: boolean): Promise<void> => {
     if (disposed || inFlight.has(scheduleId)) return;
     const schedule = schedules.get(scheduleId);
@@ -589,6 +601,11 @@ export function createChatScheduledWorkScheduler(
       }
       // A cancel, a pause or a replacement can land while the check runs; it wins.
       if (disposed || schedules.get(scheduleId) !== schedule || schedule.status !== "scheduled") return;
+      // So can the chat ending: rerun from the top, which settles an ended chat's row.
+      if (options.sessionState(schedule.sessionId) !== "active") {
+        await processDue(scheduleId, overdueWhenArmed);
+        return;
+      }
       // A long check can run past the routine's expiry.
       if (isExpired(schedule)) {
         await expire(schedule);
@@ -615,8 +632,7 @@ export function createChatScheduledWorkScheduler(
     }
 
     // Taken only once a wake is decided (below); a quiet check holds nothing.
-    let delivery: { startedAt: number; returnedAt: number | null } | null = null;
-    let fireStarted = false;
+    let delivery: { startedAt: number } | null = null;
     try {
       inFlight.add(scheduleId);
       let checkWake: ChatScheduledWorkCheckWake | undefined;
@@ -664,7 +680,7 @@ export function createChatScheduledWorkScheduler(
         };
       }
       // No await since deliveryHeld() above, so no other wake took the chat meanwhile.
-      delivery = { startedAt: now(), returnedAt: null };
+      delivery = { startedAt: now() };
       deliveringSessions.set(schedule.sessionId, delivery);
       const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
       const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
@@ -696,7 +712,14 @@ export function createChatScheduledWorkScheduler(
       // snapshot, and release the in-flight claim before returning so this id can
       // arm again later.
       const afterPersist = schedules.get(scheduleId);
-      if (!afterPersist || afterPersist.status !== "fired") {
+      if (afterPersist !== schedule) {
+        // Replaced: nothing went out, so the occurrence goes back and the new row runs on its own terms.
+        inFlight.delete(scheduleId);
+        options.releaseFire?.(cloneSchedule(schedule));
+        if (afterPersist) await settleReplacement(afterPersist, false);
+        return;
+      }
+      if (afterPersist.status !== "fired") {
         inFlight.delete(scheduleId);
         return;
       }
@@ -705,7 +728,6 @@ export function createChatScheduledWorkScheduler(
       let retry = false;
       let outcomeSummary: string | undefined;
       try {
-        fireStarted = true;
         const result = await options.fire(cloneSchedule(schedule), { late, ...(checkWake ? { check: checkWake } : {}) });
         complete = result != null && "complete" in result && result.complete === true;
         retry = result != null && "retry" in result && result.retry === true;
@@ -721,15 +743,27 @@ export function createChatScheduledWorkScheduler(
 
       const current = schedules.get(scheduleId);
       if (!current || current.status === "cancelled" || current.status === "done") return;
+      if (current !== schedule) {
+        // Replaced mid-delivery: the old result settles only the old occurrence's claim.
+        if (retry) options.releaseFire?.(cloneSchedule(schedule));
+        await settleReplacement(current, !retry);
+        return;
+      }
       if (retry) {
         options.releaseFire?.(cloneSchedule(current));
         current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
         if (previousLastFiredAt == null) delete current.lastFiredAt;
         else current.lastFiredAt = previousLastFiredAt;
         current.lateFlag = previousLateFlag;
-        if (current === schedule) setCheckState(current, previousCheck);
+        setCheckState(current, previousCheck);
         delete current.activeTurnId;
-        await persist();
+        try {
+          await persist();
+        } catch (error) {
+          // The wake was refused, so it is safe to try again; without this the row has no timer.
+          if (current.status === "scheduled") armBusyDeferRetry(current);
+          throw error;
+        }
         await emitTransition(current, current.status);
         if (current.status === "scheduled") armBusyDeferRetry(current);
         return;
@@ -751,9 +785,7 @@ export function createChatScheduledWorkScheduler(
       arm(current);
     } finally {
       if (delivery && deliveringSessions.get(schedule.sessionId) === delivery) {
-        // Only a wake that reached fire() holds the chat past its own delivery.
-        if (fireStarted) delivery.returnedAt = now();
-        else deliveringSessions.delete(schedule.sessionId);
+        deliveringSessions.delete(schedule.sessionId);
       }
     }
   };
@@ -1100,6 +1132,10 @@ export function createChatScheduledWorkScheduler(
       if (isDeferred(deferred)) {
         return { fired: false, reason: typeof deferred === "object" ? deferred.reason : "The chat is busy. Try again when its turn finishes." };
       }
+      // Another wake is being sent to this chat right now.
+      if (deliveryHeld(schedule.sessionId)) {
+        return { fired: false, reason: "The chat is busy. Try again when its turn finishes." };
+      }
       // The same shared claim a timer fire takes, on the occurrence this run
       // stands in for: another brain's timer (or its own Run now) for it then
       // loses the claim instead of delivering a second time.
@@ -1109,6 +1145,12 @@ export function createChatScheduledWorkScheduler(
       }
       inFlight.add(scheduleId);
       clearTimer(scheduleId);
+      // No await since deliveryHeld() above; released once the send returns.
+      const delivery = { startedAt: now() };
+      deliveringSessions.set(schedule.sessionId, delivery);
+      const releaseDelivery = (): void => {
+        if (deliveringSessions.get(schedule.sessionId) === delivery) deliveringSessions.delete(schedule.sessionId);
+      };
       const previousStatus = schedule.status;
       const previousLastFiredAt = schedule.lastFiredAt;
       const previousFireAt = schedule.fireAt;
@@ -1128,6 +1170,7 @@ export function createChatScheduledWorkScheduler(
         if (previousLastFiredAt == null) delete schedule.lastFiredAt;
         else schedule.lastFiredAt = previousLastFiredAt;
         inFlight.delete(scheduleId);
+        releaseDelivery();
         options.releaseFire?.(claimed);
         arm(schedule);
         return {
@@ -1149,6 +1192,7 @@ export function createChatScheduledWorkScheduler(
         // row settles the same way a timer fire's would.
       } finally {
         inFlight.delete(scheduleId);
+        releaseDelivery();
       }
       const current = schedules.get(scheduleId);
       if (!current || current.status === "cancelled" || current.status === "done") return { fired: !retry };

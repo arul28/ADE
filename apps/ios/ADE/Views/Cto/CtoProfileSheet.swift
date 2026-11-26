@@ -307,6 +307,11 @@ struct CtoRoutineList: View {
         }
       }
     }
+    // A check can change a row with no CTO turn (a quiet recovery clears
+    // "failing"), so an open list reloads once just after the next check is due.
+    .task(id: store.nextCheckReloadAt) {
+      await store.reloadRoutinesAtNextCheck(includeTerminal: detailed)
+    }
   }
 }
 

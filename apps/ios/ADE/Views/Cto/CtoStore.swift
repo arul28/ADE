@@ -380,6 +380,28 @@ final class CtoStore: ObservableObject {
     memoryLoaded = true
   }
 
+  /// Just after the soonest checked routine is next due. Its check can change
+  /// the row without a CTO turn, so an open list reloads then.
+  var nextCheckReloadAt: Date? {
+    routines
+      .filter { ctoRoutineIsPending($0) && !ctoRoutineRowPaused($0) && !($0.check ?? "").isEmpty }
+      .compactMap { item in
+        item.nextRunAt.flatMap { ISO8601DateFormatter.ctoArchive.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }
+      }
+      .min()?
+      .addingTimeInterval(5)
+  }
+
+  /// One reload at `nextCheckReloadAt`. A time already past (the check waited
+  /// on a busy chat) gets one later look rather than a tight loop.
+  func reloadRoutinesAtNextCheck(includeTerminal: Bool) async {
+    guard !isFixture, let due = nextCheckReloadAt else { return }
+    let wait = due.timeIntervalSinceNow > 0 ? due.timeIntervalSinceNow : 30
+    try? await Task.sleep(for: .seconds(wait))
+    guard !Task.isCancelled else { return }
+    await loadRoutines(includeTerminal: includeTerminal)
+  }
+
   func loadRoutines(includeTerminal: Bool = false) async {
     guard let sync, let sessionId else {
       routinesLoaded = true

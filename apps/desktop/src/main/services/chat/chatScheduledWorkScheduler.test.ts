@@ -1474,8 +1474,17 @@ describe("a cron's check", () => {
       checkedCron({ id: "cron-a" }),
       checkedCron({ id: "cron-b", check: "cat status.txt" }),
     ]);
+    // A send takes a moment to return; once it does, the chat reports its turn
+    // (shouldDefer) until the turn ends.
+    let turnEndsAt = 0;
     const fire = createFireMock();
-    if (hangs) fire.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    fire.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      if (hangs) return;
+      setTimeout(() => {
+        turnEndsAt = Date.now() + 10_000;
+        resolve(undefined);
+      }, 1_000);
+    }));
     const onDeliveryHung = vi.fn();
     const scheduler = createChatScheduledWorkScheduler({
       loadState: () => cloneState(state),
@@ -1484,6 +1493,7 @@ describe("a cron's check", () => {
       sessionState: () => "active",
       ...sharedClaims(),
       runCheck: async (schedule) => ({ ok: true, outputHash: `new-${schedule.id}`, detail: "news" }),
+      shouldDefer: () => Date.now() < turnEndsAt,
       fire,
       onDeliveryHung,
     });
@@ -1499,6 +1509,38 @@ describe("a cron's check", () => {
     expect(fire.mock.calls.map(([schedule]) => schedule.id).sort()).toEqual(["cron-a", "cron-b"]);
     expect(fire.mock.calls.every(([, context]) => (context as { check?: unknown }).check)).toBe(true);
     expect(onDeliveryHung).toHaveBeenCalledTimes(hangs ? 1 : 0);
+    scheduler.dispose();
+  });
+
+  it("refuses Run now on a chat that is taking a timer wake", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      checkedCron({ id: "cron-a" }),
+      checkedCron({ id: "cron-b", fireAt: START + 3_600_000 }),
+    ]);
+    let finishSend: () => void = () => undefined;
+    const fire = createFireMock();
+    fire.mockImplementationOnce(() => new Promise<undefined>((resolve) => { finishSend = () => resolve(undefined); }));
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async () => ({ ok: true, outputHash: "hash-new", detail: "news" }),
+      fire,
+    });
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    await expect(scheduler.runNow("cron-b")).resolves.toEqual(expect.objectContaining({ fired: false }));
+    expect(fire).toHaveBeenCalledTimes(1);
+    finishSend();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(scheduler.runNow("cron-b")).resolves.toEqual({ fired: true });
+    expect(fire).toHaveBeenCalledTimes(2);
     scheduler.dispose();
   });
 
@@ -1542,6 +1584,7 @@ describe("a cron's check", () => {
   it.each([
     ["a cancel", {}],
     ["the routine's expiry", { expiresAt: START + 70_000 }],
+    ["the chat ending", {}],
   ] as const)("lets %s that lands during the check win", async (name, overrides) => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -1551,11 +1594,12 @@ describe("a cron's check", () => {
     const claimFire = vi.fn(claims.claimFire);
     const releaseFire = vi.fn(claims.releaseFire);
     const fire = createFireMock();
+    let chatActive = true;
     const scheduler = createChatScheduledWorkScheduler({
       loadState: () => cloneState(state),
       saveState: (next) => { state = structuredClone(next); },
       isGlobalPaused: () => false,
-      sessionState: () => "active",
+      sessionState: () => (chatActive ? "active" : "ended"),
       claimFire,
       releaseFire,
       runCheck: () => new Promise((resolve) => { finishCheck = resolve; }),
@@ -1565,6 +1609,7 @@ describe("a cron's check", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     if (name === "a cancel") await scheduler.cancel("cron-check");
+    else if (name === "the chat ending") chatActive = false;
     else await vi.advanceTimersByTimeAsync(15_000);
     finishCheck({ ok: true, outputHash: "hash-new", detail: "news" });
     await vi.advanceTimersByTimeAsync(0);
