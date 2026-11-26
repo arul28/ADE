@@ -119,9 +119,10 @@ function CtoCopyBody({
             {copy.routines.map((routine, index) => (
               <li key={`${routine.title}-${index}`}>
                 <span className="ade-cto-copy-routine-title">{routine.title}</span>
-                <span className="ade-cto-copy-routine-when">
+                <span className="ade-cto-copy-routine-when" title={routine.check ? `Runs only when \`${routine.check}\` prints something new or first fails` : undefined}>
                   {routine.paused ? "Paused" : routine.cron}
                   {!routine.paused && routine.timeZone ? ` (${routine.timeZone})` : ""}
+                  {!routine.paused && routine.check ? " · on change" : ""}
                 </span>
               </li>
             ))}

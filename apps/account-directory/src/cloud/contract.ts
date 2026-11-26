@@ -2999,7 +2999,8 @@ export type CloudCtoCopy = {
   projectNotes: string;
   userNotes: string;
   openWork: string | null;
-  routines: Array<{ title: string; cron: string; timeZone?: string; paused: boolean }>;
+  /** `check`: the command that gates it; it wakes the CTO only when its output changes. */
+  routines: Array<{ title: string; cron: string; timeZone?: string; check?: string; paused: boolean }>;
   tail: string;
   tailTruncated: boolean;
   story: { summary: string; coveredThrough: string | null } | null;

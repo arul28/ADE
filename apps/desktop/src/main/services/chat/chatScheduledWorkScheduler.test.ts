@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  type ChatScheduledWorkCheckRun,
   type ChatScheduledWorkRecord,
   type ChatScheduledWorkState,
   createChatScheduledWorkScheduler,
+  decideScheduledWorkCheck,
 } from "./chatScheduledWorkScheduler";
 
 const START = Date.parse("2026-07-09T09:00:00.000Z");
@@ -1318,6 +1320,375 @@ describe("createChatScheduledWorkScheduler", () => {
     }));
     expect(scheduler.list()[0]?.activeTurnId).toBeUndefined();
     expect(requireState(state).schedules[0]?.activeTurnId).toBeUndefined();
+    scheduler.dispose();
+  });
+});
+
+describe("a cron's check", () => {
+  function checkedCron(overrides: Partial<ChatScheduledWorkRecord> = {}): ChatScheduledWorkRecord {
+    return wakeup({
+      id: "cron-check",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START + 60_000,
+      durable: true,
+      check: "gh pr checks 12",
+      checkHash: "hash-a",
+      ...overrides,
+    });
+  }
+
+  it("wakes only on new output, and once per failure", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const runs: ChatScheduledWorkCheckRun[] = [
+      { ok: true, outputHash: "hash-a", detail: "pending" },
+      { ok: true, outputHash: "hash-b", detail: "pass" },
+      { ok: false, detail: "Exited with code 1.", exitCode: 1 },
+      { ok: false, detail: "Exited with code 1.", exitCode: 1 },
+      // Back to the output from before the failure: not news.
+      { ok: true, outputHash: "hash-b", detail: "pass" },
+      { ok: true, outputHash: "hash-c", detail: "merged" },
+    ];
+    const runCheck = vi.fn(async () => runs.shift()!);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck,
+      fire,
+    });
+    await scheduler.start();
+
+    const woke: Array<string | undefined> = [];
+    for (let minute = 1; minute <= 6; minute += 1) {
+      const before = fire.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      const context = fire.mock.calls[before]?.[1] as { check?: { because: string } } | undefined;
+      woke.push(fire.mock.calls.length > before ? context?.check?.because ?? "no-check" : undefined);
+      // Every occurrence moves on, quiet or not.
+      expect(requireState(state).schedules[0]?.fireAt).toBe(START + (minute + 1) * 60_000);
+    }
+
+    expect(runCheck).toHaveBeenCalledTimes(6);
+    expect(woke).toEqual([undefined, "changed", "failed", undefined, undefined, "changed"]);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      checkHash: "hash-c",
+      lastCheckedAt: START + 6 * 60_000,
+      lastFiredAt: START + 6 * 60_000,
+    }));
+    expect(requireState(state).schedules[0]?.checkFailing).toBeUndefined();
+    scheduler.dispose();
+  });
+
+  it.each([
+    ["a pass is the baseline", { ok: true, outputHash: "hash-a" }, { wake: false, checkHash: "hash-a", checkFailing: false }],
+    ["a failure still wakes once", { ok: false }, { wake: true, because: "failed", checkFailing: true }],
+  ] as const)("on a row never checked (a restored routine), %s", (_name, run, expected) => {
+    expect(decideScheduledWorkCheck({}, run)).toEqual(expected);
+  });
+
+  it("keeps a wake that was never delivered as news for the retry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const fire = vi.fn(async (
+      _schedule: ChatScheduledWorkRecord,
+      _context: { late: boolean; check?: { because: string } },
+    ): Promise<void | { retry: true }> => undefined);
+    fire.mockResolvedValueOnce({ retry: true });
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async () => ({ ok: true, outputHash: "hash-b", detail: "pass" }),
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({ status: "scheduled", checkHash: "hash-a" }));
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(fire.mock.calls.map(([, context]) => context.check?.because)).toEqual(["changed", "changed"]);
+    expect(requireState(state).schedules[0]?.checkHash).toBe("hash-b");
+    scheduler.dispose();
+  });
+
+  it("keeps a quiet routine going when saving its quiet check fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    let failNextSave = false;
+    const claims = sharedClaims();
+    const releaseFire = vi.fn(claims.releaseFire);
+    const runCheck = vi.fn(async (): Promise<ChatScheduledWorkCheckRun> => ({ ok: true, outputHash: "hash-a", detail: "pending" }));
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => {
+        if (failNextSave) {
+          failNextSave = false;
+          throw new Error("disk full");
+        }
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      claimFire: claims.claimFire,
+      releaseFire,
+      runCheck,
+      fire: createFireMock(),
+    });
+    await scheduler.start();
+
+    failNextSave = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runCheck).toHaveBeenCalledTimes(1);
+    expect(releaseFire).toHaveBeenCalledTimes(1);
+    // The retry runs the check again and saves the spent occurrence.
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(runCheck).toHaveBeenCalledTimes(2);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START + 2 * 60_000,
+      lastCheckedAt: START + 80_000,
+    }));
+    scheduler.dispose();
+  });
+
+  it.each([
+    ["the first returns", false, 20_000],
+    // A delivery that never returns lets go of the chat after its ceiling.
+    ["the first never returns", true, 60_000],
+  ] as const)("delivers two wakes due on the same tick one after the other when %s", async (_name, hangs, secondAfterMs) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      checkedCron({ id: "cron-a" }),
+      checkedCron({ id: "cron-b", check: "cat status.txt" }),
+    ]);
+    // A send takes a moment to return; once it does, the chat reports its turn
+    // (shouldDefer) until the turn ends.
+    let turnEndsAt = 0;
+    const fire = createFireMock();
+    fire.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
+      if (hangs) return;
+      setTimeout(() => {
+        turnEndsAt = Date.now() + 10_000;
+        resolve(undefined);
+      }, 1_000);
+    }));
+    const onDeliveryHung = vi.fn();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async (schedule) => ({ ok: true, outputHash: `new-${schedule.id}`, detail: "news" }),
+      shouldDefer: () => Date.now() < turnEndsAt,
+      fire,
+      onDeliveryHung,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    // The chat takes one wake at a time; the other keeps its news for the retry.
+    expect(fire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(secondAfterMs - 20_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(fire.mock.calls.map(([schedule]) => schedule.id).sort()).toEqual(["cron-a", "cron-b"]);
+    expect(fire.mock.calls.every(([, context]) => (context as { check?: unknown }).check)).toBe(true);
+    expect(onDeliveryHung).toHaveBeenCalledTimes(hangs ? 1 : 0);
+    scheduler.dispose();
+  });
+
+  it("keeps a wake's news when its row is replaced before the send", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const fire = createFireMock();
+    let replaced = false;
+    // The routine is rewritten (no status, no hash: it inherits them) while
+    // its fired transition is being reported.
+    const { status: _status, checkHash: _hash, ...rewrite } = checkedCron({ prompt: "Rewritten prompt" });
+    const scheduler: ReturnType<typeof createChatScheduledWorkScheduler> = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async () => ({ ok: true, outputHash: "hash-new", detail: "news" }),
+      onTransition: async (_schedule, status) => {
+        if (status !== "fired" || replaced) return;
+        replaced = true;
+        await scheduler.upsert(rewrite);
+      },
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      checkHash: "hash-a",
+      prompt: "Rewritten prompt",
+    }));
+    expect(requireState(state).schedules[0]?.lastFiredAt).toBeUndefined();
+
+    // The same output is still news to the rewritten routine.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+    expect(fire.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ prompt: "Rewritten prompt" }));
+    scheduler.dispose();
+  });
+
+  it("keeps a cron running when it is rewritten as scheduled during its delivery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const cron = wakeup({ id: "cron-plain", kind: "cron", cron: "* * * * *", durable: true });
+    let state: ChatScheduledWorkState | null = storedState([cron]);
+    let scheduler: ReturnType<typeof createChatScheduledWorkScheduler> | null = null;
+    const fire = createFireMock();
+    fire.mockImplementationOnce(async () => {
+      await scheduler?.upsert({ ...cron, status: "scheduled", fireAt: START + 120_000, prompt: "Rewritten prompt" });
+      return undefined;
+    });
+    scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(fire).toHaveBeenCalledTimes(2);
+    expect(fire.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ prompt: "Rewritten prompt" }));
+    scheduler.dispose();
+  });
+
+  it("refuses Run now on a chat that is taking a timer wake", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      checkedCron({ id: "cron-a" }),
+      checkedCron({ id: "cron-b", fireAt: START + 3_600_000 }),
+    ]);
+    let finishSend: () => void = () => undefined;
+    const fire = createFireMock();
+    fire.mockImplementationOnce(() => new Promise<undefined>((resolve) => { finishSend = () => resolve(undefined); }));
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async () => ({ ok: true, outputHash: "hash-new", detail: "news" }),
+      fire,
+    });
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+
+    await expect(scheduler.runNow("cron-b")).resolves.toEqual(expect.objectContaining({ fired: false }));
+    expect(fire).toHaveBeenCalledTimes(1);
+    finishSend();
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(scheduler.runNow("cron-b")).resolves.toEqual({ fired: true });
+    expect(fire).toHaveBeenCalledTimes(2);
+    scheduler.dispose();
+  });
+
+  it("adopts the check verdict of the brain that owned the occurrence", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const claims = sharedClaims();
+    const options = {
+      loadState: () => cloneState(state),
+      saveState: (next: ChatScheduledWorkState) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active" as const,
+      claimFire: claims.claimFire,
+      releaseFire: claims.releaseFire,
+    };
+    const ownerFire = createFireMock();
+    const owner = createChatScheduledWorkScheduler({
+      ...options,
+      runCheck: async () => ({ ok: true, outputHash: "hash-b", detail: "pass" }),
+      fire: ownerFire,
+    });
+    const followerFire = createFireMock();
+    const followerCheck = vi.fn(async (): Promise<ChatScheduledWorkCheckRun> => ({ ok: true, outputHash: "hash-b", detail: "pass" }));
+    const follower = createChatScheduledWorkScheduler({ ...options, runCheck: followerCheck, fire: followerFire });
+    await owner.start();
+    await follower.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(ownerFire).toHaveBeenCalledTimes(1);
+    owner.dispose();
+    // The follower now owns later occurrences; the same output is old news.
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(followerCheck).toHaveBeenCalled();
+    expect(followerFire).not.toHaveBeenCalled();
+    follower.dispose();
+  });
+
+  it.each([
+    ["a cancel", {}],
+    ["the routine's expiry", { expiresAt: START + 70_000 }],
+    ["the chat ending", {}],
+  ] as const)("lets %s that lands during the check win", async (name, overrides) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron(overrides)]);
+    let finishCheck: (run: ChatScheduledWorkCheckRun) => void = () => undefined;
+    const claims = sharedClaims();
+    const claimFire = vi.fn(claims.claimFire);
+    const releaseFire = vi.fn(claims.releaseFire);
+    const fire = createFireMock();
+    let chatActive = true;
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => (chatActive ? "active" : "ended"),
+      claimFire,
+      releaseFire,
+      runCheck: () => new Promise((resolve) => { finishCheck = resolve; }),
+      fire,
+    });
+    await scheduler.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    if (name === "a cancel") await scheduler.cancel("cron-check");
+    else if (name === "the chat ending") chatActive = false;
+    else await vi.advanceTimersByTimeAsync(15_000);
+    finishCheck({ ok: true, outputHash: "hash-new", detail: "news" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fire).not.toHaveBeenCalled();
+    // The check runs before the claim, so there is nothing to release.
+    expect(releaseFire).not.toHaveBeenCalled();
+    expect(claimFire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({ status: "cancelled", checkHash: "hash-a" }));
     scheduler.dispose();
   });
 });

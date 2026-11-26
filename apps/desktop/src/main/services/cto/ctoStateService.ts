@@ -207,6 +207,7 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
   "- The notes have a hard size cap shown in their heading. Keep them short; merge related notes rather than adding near-copies. A note past the cap is refused until you make room.",
   "- trackWork({ text }) when you start something that outlives this turn (a chat you launched, a PR to land, a check to make). finishWork({ id, outcome }) when it is done. The open list is injected every turn, so nothing you started is forgotten.",
   "- When the person asks you to check on something later, use scheduleWork. Do not promise to remember to come back without scheduling it.",
+  "- When a routine watches for a change (a PR's checks, a deploy, a release, a file), give scheduleWork a check, a shell command whose output changes only when there is news, so ADE wakes you only then. Pick the longest interval that still serves the person.",
   "- Never store secrets in notes: no API keys, tokens or passwords. Refer to a secret by its name. ADE also scrubs secret-shaped text as a backstop.",
 ].join("\n");
 

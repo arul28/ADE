@@ -90,53 +90,46 @@ struct CtoRoutineRow: View {
   let item: AgentChatScheduledWorkItem
   @ObservedObject var store: CtoStore
   var accent: Color
-  /// Settings shows the prompt and the last run too.
+  /// Settings rows open in place to show the prompt, the check and the last run.
   var detailed = false
 
   @State private var confirmingCancel = false
+  @State private var open = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var pending: Bool { ctoRoutineIsPending(item) }
   private var title: String { ctoRoutineTitle(item) }
   private var canRunNow: Bool { item.source == nil && item.cancellable && store.canRunRoutines }
   private var canCancel: Bool { item.cancellable && store.canCancelRoutines }
+  private var check: String? {
+    let value = item.check?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return value.isEmpty ? nil : value
+  }
+  // A one-shot that never reported done stays "fired"; only a cron's fired is a run in progress.
+  private var running: Bool { store.runningIds.contains(item.id) || (item.status == "fired" && item.kind == "cron") }
+  private var failing: Bool { check != nil && item.checkFailing == true }
+  private var off: Bool { !pending || ctoRoutineRowPaused(item) }
+
+  private var tint: Color {
+    if running { return accent }
+    if failing { return ADEColor.danger }
+    return off ? ADEColor.textMuted : accent
+  }
 
   var body: some View {
-    HStack(alignment: detailed ? .top : .center, spacing: 10) {
-      Image(systemName: item.kind == "wakeup" ? "alarm" : "arrow.triangle.2.circlepath")
-        .font(.system(size: 14, weight: .medium))
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(width: 28)
-        .padding(.top, detailed ? 2 : 0)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-          .font(.body.weight(.medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        TimelineView(.everyMinute) { context in
-          Text(scheduleLine(now: context.date))
-            .font(.footnote)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .center, spacing: 12) {
+        tile
+        Button {
+          guard detailed else { return }
+          withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) { open.toggle() }
+        } label: {
+          summary.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
         }
-        if detailed {
-          let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-          if !prompt.isEmpty, prompt != title {
-            Text(prompt)
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(2)
-          }
-          if let outcome = item.outcomeSummary?.trimmingCharacters(in: .whitespacesAndNewlines), !outcome.isEmpty {
-            Text(outcome)
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-          }
-        }
-      }
-      Spacer(minLength: 8)
-      if pending {
-        if store.canPauseRoutines {
+        .buttonStyle(.plain)
+        .allowsHitTesting(detailed)
+        .accessibilityHint(detailed ? (open ? "Hides details" : "Shows details") : "")
+        if pending, store.canPauseRoutines {
           Toggle("", isOn: Binding(
             get: { !ctoRoutineRowPaused(item) },
             set: { on in Task { await store.setPaused(item, paused: !on) } }
@@ -147,10 +140,19 @@ struct CtoRoutineRow: View {
           .accessibilityLabel(ctoRoutineRowPaused(item) ? "Turn on \(title)" : "Turn off \(title)")
         }
       }
+      if detailed && open {
+        details
+          .padding(.leading, 42)
+          .padding(.top, 10)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
     }
-    .padding(.vertical, 8)
-    .frame(minHeight: 52)
+    .padding(.vertical, 10)
+    .frame(minHeight: 56)
     .opacity(pending ? 1 : 0.6)
+    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: running)
+    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: failing)
+    .animation(reduceMotion ? nil : .snappy(duration: 0.3), value: off)
     .contentShape(Rectangle())
     .contextMenu {
       if pending, canRunNow {
@@ -169,11 +171,106 @@ struct CtoRoutineRow: View {
     .accessibilityIdentifier("Cto.Routine.\(item.id)")
   }
 
-  private func scheduleLine(now: Date) -> String {
-    var parts = [ctoDescribeRoutineSchedule(item, now: now)]
-    if pending && ctoRoutineRowPaused(item) { parts.append("Off") }
-    if item.late == true { parts.append("Late") }
-    return parts.joined(separator: " · ")
+  private var tile: some View {
+    RoundedRectangle(cornerRadius: 9, style: .continuous)
+      .fill(tint.opacity(off && !running && !failing ? 0.08 : 0.14))
+      .frame(width: 30, height: 30)
+      .overlay {
+        Image(systemName: check != nil ? "binoculars" : item.kind == "wakeup" ? "alarm" : "arrow.triangle.2.circlepath")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(tint)
+          .symbolEffect(.pulse, isActive: running && !reduceMotion)
+      }
+      .overlay(alignment: .topTrailing) {
+        if running || failing {
+          Circle()
+            .fill(running ? accent : ADEColor.danger)
+            .frame(width: 7, height: 7)
+            .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
+            .offset(x: 2, y: -2)
+            .transition(.scale.combined(with: .opacity))
+        }
+      }
+      .accessibilityHidden(true)
+  }
+
+  private var summary: some View {
+    TimelineView(.everyMinute) { context in
+      VStack(alignment: .leading, spacing: 2) {
+        // An open row shows its title and note in full.
+        Text(title)
+          .font(.body.weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(open ? nil : 1)
+        Text(ctoRoutineScheduleLine(item, now: context.date, compact: !detailed))
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+        // The panel keeps rows to two lines; only a run in progress earns a third.
+        if let note = ctoRoutineNote(item, now: context.date, running: running), detailed || running {
+          Text(note.text)
+            .font(.footnote)
+            .foregroundStyle(noteColor(note.tone))
+            .lineLimit(open ? nil : 1)
+            .id(note.text)
+            .transition(.opacity)
+        }
+      }
+    }
+  }
+
+  private var details: some View {
+    TimelineView(.everyMinute) { context in
+      VStack(alignment: .leading, spacing: 10) {
+        let prompt = item.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A title made from a long prompt clips, so the details show the prompt in full.
+        if !prompt.isEmpty, prompt != title || prompt.count > 32 {
+          Text(prompt)
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if let check {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("WAKES WHEN THIS CHANGES")
+              .font(.caption2.weight(.semibold))
+              .tracking(1.2)
+              .foregroundStyle(ADEColor.textMuted)
+            Text(check)
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(3)
+              .textSelection(.enabled)
+            if item.checkFailing == true {
+              Text("Failing. It wakes again when it passes with new output.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.danger)
+            } else if let status = ctoDescribeRoutineCheck(item, now: context.date) {
+              Text(status.prefix(1).uppercased() + status.dropFirst())
+                .font(.caption)
+                .foregroundStyle(item.checkFailing == true ? ADEColor.danger : ADEColor.textMuted)
+            }
+          }
+          .padding(10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(ADEColor.textPrimary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .accessibilityElement(children: .combine)
+        }
+        if let lastRan = ctoRoutineLastRan(item, now: context.date) {
+          Text(lastRan)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+    }
+  }
+
+  private func noteColor(_ tone: CtoRoutineNoteTone) -> Color {
+    switch tone {
+    case .accent: return accent
+    case .danger: return ADEColor.danger
+    case .plain: return ADEColor.textSecondary
+    }
   }
 }
 
@@ -193,21 +290,27 @@ struct CtoRoutineList: View {
         CtoEmptyLine(symbol: "calendar", text: "Nothing scheduled", hint: "Ask \(name) to check in later")
       } else {
         ForEach(Array(upcoming.enumerated()), id: \.element.id) { index, item in
-          if index > 0 { CtoRowDivider() }
+          if index > 0 { CtoRowDivider(inset: 42) }
           CtoRoutineRow(item: item, store: store, accent: accent, detailed: detailed)
         }
         if !finished.isEmpty {
-          Text("Earlier")
-            .font(.footnote.weight(.medium))
+          Text("RECENTLY RAN")
+            .font(.caption2.weight(.semibold))
+            .tracking(1.2)
             .foregroundStyle(ADEColor.textMuted)
-            .padding(.top, 14)
+            .padding(.top, 16)
             .padding(.bottom, 2)
           ForEach(Array(finished.enumerated()), id: \.element.id) { index, item in
-            if index > 0 { CtoRowDivider() }
+            if index > 0 { CtoRowDivider(inset: 42) }
             CtoRoutineRow(item: item, store: store, accent: accent, detailed: detailed)
           }
         }
       }
+    }
+    // A check can change a row with no CTO turn (a quiet recovery clears
+    // "failing"), so an open list reloads once just after the next check is due.
+    .task(id: store.nextCheckReloadAt) {
+      await store.reloadRoutinesAtNextCheck(includeTerminal: detailed)
     }
   }
 }

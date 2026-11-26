@@ -691,7 +691,7 @@ func ctoArchiveDate(_ iso: String?) -> String {
   return date.formatted(sameYear ? .dateTime.month(.abbreviated).day() : .dateTime.month(.abbreviated).day().year())
 }
 
-private extension ISO8601DateFormatter {
+extension ISO8601DateFormatter {
   static let ctoArchive: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
