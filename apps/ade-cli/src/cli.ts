@@ -37,6 +37,7 @@ import { liveOnlyCallLabel } from "./lib/liveRuntimeActions";
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   CLOUD_COMPUTER_LIST_BUDGET_MS,
   CLOUD_COMPUTER_LIST_REQUEST,
@@ -31146,6 +31147,13 @@ async function runServe(
         };
       }
     : null;
+  // Remote work still running after a short wait is held awake as
+  // `remote_action` (`holdIfSlow`). A grow asked from inside one (an Android
+  // start, a setup a remote launch runs) must not take its own request for
+  // other work a restart would cut.
+  const remoteWorkScope = new AsyncLocalStorage<{ held: boolean }>();
+  let remoteWorkHeld = 0;
+  const otherRemoteWorkHeld = (): boolean => remoteWorkHeld > (remoteWorkScope.getStore()?.held ? 1 : 0);
   // A lane launch's setup filled the disk: grow it now, while nothing else
   // runs, and the launch's setup runs again after the restart. The launch
   // itself still reads as `lane_setup` while it waits, so that one setup
@@ -31154,7 +31162,7 @@ async function runServe(
   const laneSetupOnlyRuns = async (): Promise<boolean> => {
     if (!readCloudBusy) return false;
     const busy = await readCloudBusy();
-    const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+    const others = busy.reasons.filter((reason) => reason !== "lane_setup" && (reason !== "remote_action" || otherRemoteWorkHeld()));
     if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
       headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
         reasons: others,
@@ -31199,7 +31207,8 @@ async function runServe(
     if (!readCloudBusy) return false;
     const busy = await readCloudBusy();
     // What continues after the restart (chats, ADE's agent CLIs), and the `ade` command that asked for the grow.
-    const cut = busy.reasons.filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command");
+    const cut = busy.reasons.filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command"
+      && (reason !== "remote_action" || otherRemoteWorkHeld()));
     if (cut.length || busy.waitingOnPerson) {
       headlessProjectLogger.info("cloud.disk_grow_to_fit_busy", { reasons: cut, waitingOnPerson: Boolean(busy.waitingOnPerson) });
       return false;
@@ -33240,7 +33249,9 @@ async function runServe(
   // later, in its middle. Work still running after this wait is held awake
   // until it answers; a fast one (a key typed in a terminal) writes no hold.
   const REMOTE_WORK_HOLD_AFTER_MS = 10_000;
-  const holdIfSlow = async <T>(work: Promise<T>): Promise<T> => {
+  const holdIfSlow = async <T>(run: () => Promise<T>): Promise<T> => {
+    const scope = { held: false };
+    const work = remoteWorkScope.run(scope, run);
     if (!holdCloudWork) return await work;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const slow = new Promise<boolean>((resolve) => {
@@ -33249,7 +33260,17 @@ async function runServe(
     });
     try {
       const stillRunning = await Promise.race([work.then(() => false, () => false), slow]);
-      return stillRunning ? await holdCloudWork("remote_action", 30 * 60_000, () => work) : await work;
+      if (!stillRunning) return await work;
+      return await holdCloudWork("remote_action", 30 * 60_000, async () => {
+        remoteWorkHeld += 1;
+        scope.held = true;
+        try {
+          return await work;
+        } finally {
+          scope.held = false;
+          remoteWorkHeld -= 1;
+        }
+      });
     } finally {
       clearTimeout(timer);
     }
@@ -33276,7 +33297,7 @@ async function runServe(
         const refusal = await cloudRest?.noteRemoteWork();
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
-      return remoteWork ? await holdIfSlow(handler(request)) : await handler(request);
+      return remoteWork ? await holdIfSlow(() => handler(request)) : await handler(request);
     }, handler);
   };
   const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>

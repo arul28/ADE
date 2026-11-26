@@ -53,7 +53,10 @@ export function createCloudComputerReports(deps: {
      * (`readUnsavedWork`), not commits past the lane's base. A pushed branch
      * is saved, a squash-merged one whose PR head is the branch is saved, and
      * the main checkout's own commits count. A lane git can't read counts as
-     * unsaved, so a broken read never reads "all on GitHub".
+     * unsaved, so a broken read never reads "all on GitHub". Local refs only,
+     * no fetch: a branch deleted on GitHub unmerged reads as saved until the
+     * next fetch prunes it. A delete fetches with prune before it reads
+     * (`cloudPushWork.ts`), so no work is lost.
      */
     readWork: async () => {
       const runtimes = await bootedRuntimes();
