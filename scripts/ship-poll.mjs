@@ -261,6 +261,8 @@ function main() {
     checksJson = run("gh", ["pr", "checks", String(pr.number), "--json", "name,state,bucket,link"]);
   } catch (error) {
     checksJson = String(error.stdout ?? "").trim();
+    // A PR whose CI run is still queued has no check yet: an empty list, not an error.
+    if (!checksJson && /no checks reported/i.test(String(error.stderr ?? ""))) checksJson = "[]";
     if (!checksJson) throw error;
   }
   const checks = JSON.parse(checksJson || "[]");
