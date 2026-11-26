@@ -897,8 +897,8 @@ client version and for work nobody watches
   sponsored cards (`sponsoredSmall.ts`), only when a Small computer's rate
   moved: `small_lapsed` (its yes had no US look for 7 days, so its Small went
   on credits: the minute tick, or a switch or test-plan change that re-rated
-  it) and `small_restored` (a US look made it free again, after a lapse or a
-  yes from outside the US). The step implies a yes; it carries no country or
+  it) and `small_restored` (a US look, or a US yes over a lapsed one, made it
+  free again, after a lapse or a yes from outside the US). The step implies a yes; it carries no country or
   network. One per account, step and day.
 - **`ade_cloud_phone`** (`phones.ts`): the ADE Cloud iPhone. `step` is
   `started` (with `plan`, `device`, `minutesLeft`, the minutes the credits
@@ -926,9 +926,9 @@ client version and for work nobody watches
   `free_cap_refused`, `blocked`, `unblocked`, `card_reused`,
   `blocked_returned` (a blocked GitHub account or card on a new account),
   `rate_limited`, `creates_paused`, `signup_burst` or `small_cloud_look` (Free
-  Small's tripwire: a US look or yes that keeps Small free came from the network the
-  account's own ADE Cloud computers call from; once a week per account, with
-  an owner email). One per account, step,
+  Small's tripwire: a US look or yes that keeps Small free came from ADE
+  Cloud's network, the account's own computers' or one that computers of 3+
+  accounts call from; once a week per account, with an owner email). One per account, step,
   key (hashed into the uuid, never sent) and hour. Server log lines:
   `cloud.first_chat`, `cloud.free_cap_refused`, `cloud.free_cap_step`,
   `cloud.block_computer_stopped`, `cloud.account_unblocked`,

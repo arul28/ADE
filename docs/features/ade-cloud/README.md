@@ -900,13 +900,16 @@ card, whatever the plan.
   and each look or US yes that moves `looked_at` saves its network
   (`cloud_sponsored_consent.looked_asn`, migration `0066`; a no clears it with
   `looked_at`; kept only for Free, and never a privacy relay's network such
-  as Cloudflare's, Akamai's or Fastly's). One from the network of one of the
-  account's own computers, while it has a live Small, sends the owner one alert
-  per account per week (`small_cloud_look`: an email, a Sentry `cloud.abuse`
-  issue, a `cloud_abuse_events` row and the `ade_cloud_safety` step) and adds a
-  line to the daily report while that look is what keeps Small free
-  (`smallCloudLookAlarms`). It sees only computers that send activity reports,
-  and only the latest look's network.
+  as Cloudflare's, Akamai's or Fastly's). ADE Cloud's network is the
+  account's own computers', or one that live computers of 3 accounts call from
+  (`SHARED_CLOUD_NETWORK_ACCOUNTS`: an activity report uses the account's own
+  sign-in, so one account can rewrite its computers' network, never
+  everyone's). A look or yes from it, while the account has a live Small,
+  sends the owner one alert per account per week (`small_cloud_look`: an
+  email, a Sentry `cloud.abuse` issue, a `cloud_abuse_events` row and the
+  `ade_cloud_safety` step) and adds a line to the daily report while that look
+  is what keeps Small free (`smallCloudLookAlarms`). It sees only computers
+  that send activity reports, and only the latest look's network.
 - **Start on in the US:** in `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`,
   empty asks everywhere; California, `ASK_FIRST_REGIONS` by Cloudflare's
   `regionCode`, is asked, and so is an unknown US state) the state carries

@@ -5512,7 +5512,8 @@ describe("sponsored cards", () => {
     // daily report names the account until a look from a phone's network moves on.
     const DATACENTER = 24940;
     const fromComputer = fromWhere({ country: "US", regionCode: "VA", asn: DATACENTER });
-    expect((await fromComputer("POST", `/cloud/instances/${INSTANCE}/activity`, { busy: false, idleSince: clock - 60_000, sleepsAt: clock + 60_000, runningAgents: 0, reportedAt: clock })).status).toBe(200);
+    const activity = () => ({ busy: false, idleSince: clock - 60_000, sleepsAt: clock + 60_000, runningAgents: 0, reportedAt: clock });
+    expect((await fromComputer("POST", `/cloud/instances/${INSTANCE}/activity`, activity())).status).toBe(200);
     const tripped = () => [
       harness.rows("select 1 from cloud_owner_alerts where kind = 'small_cloud_look' and sent_at is not null").length,
       harness.rows("select 1 from cloud_abuse_events where kind = 'small_cloud_look'").length,
@@ -5542,6 +5543,17 @@ describe("sponsored cards", () => {
     expect((await fromComputer("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
     expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 2, 2]);
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
+    // An activity report sent through another network (it uses the account's own sign-in) rewrites the
+    // computer's network and hides the look, until live computers of three accounts call from that network:
+    // it is ADE Cloud's own, which one account can't rewrite.
+    expect((await fromWhere({ country: "US", regionCode: "TX", asn: 9009 })("POST", `/cloud/instances/${INSTANCE}/activity`, activity())).status).toBe(200);
+    expect(await smallCloudLookAlarms(harness.env as never, clock)).toEqual([]);
+    for (const other of ["b", "c", "d"]) seedComputer(harness, { instance_id: `cloud-${other}`, user_id: `user_${other}`, net_asn: DATACENTER });
+    expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
+    clock += 7 * DAY;
+    expect(await look(fromComputer)).toEqual({ ok: true });
+    expect(tripped()).toEqual([3, 3]);
+    harness.exec("delete from cloud_computers where user_id in ('user_b', 'user_c', 'user_d')");
     // A no keeps nothing of where the person looked from: the look's network goes with its time.
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(harness.row("select looked_at, looked_asn from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ looked_at: null, looked_asn: null });

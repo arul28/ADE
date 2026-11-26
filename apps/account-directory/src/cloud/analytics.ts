@@ -222,7 +222,8 @@ export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, u
  * Free's Small with sponsored cards (`sponsoredSmall.ts`), counted only when a Small computer's rate moved:
  * - `small_lapsed`: its yes had no US look for 7 days, so its Small computers went on credits (the minute
  *   tick, or a switch or test-plan change that re-rated them).
- * - `small_restored`: a US look made them free again (after a lapse, or after a yes given outside the US).
+ * - `small_restored`: a US look (or a US yes over a lapsed one) made them free again (after a lapse, or a yes
+ *   given outside the US).
  * The step implies a yes; it carries no country or network.
  */
 export type CloudFreePlanStep =
@@ -308,7 +309,7 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
  * - `rate_limited`: too many new computers or launches in an hour.
  * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
  * - `signup_burst`: sign-ups from one address reached the hourly alarm.
- * - `small_cloud_look`: a US look or yes that keeps Free's Small free came from the network of the account's own ADE Cloud computers (`sponsoredSmall.ts`; once a week per account).
+ * - `small_cloud_look`: a US look or yes that keeps Free's Small free came from ADE Cloud's network (the account's own computers', or one computers of 3+ accounts call from) (`sponsoredSmall.ts`; once a week per account).
  */
 export type CloudSafetyStep =
   | "first_chat"

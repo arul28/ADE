@@ -10,3 +10,6 @@
 -- Additive only: apply before the Worker that reads it.
 alter table cloud_computers add column net_asn integer;
 alter table cloud_sponsored_consent add column looked_asn integer;
+-- The tripwire also counts how many accounts' live computers call from a
+-- network (the provider's, which one account can't rewrite for everyone).
+create index cloud_computers_net_asn on cloud_computers (net_asn, user_id) where deleted_at is null and net_asn is not null;
