@@ -18,6 +18,8 @@ import { writeAppliedState, type AppliedEntry } from "./providerLoginApply";
 import { PROVIDER_LOGIN_CARRY } from "./providerLoginCarry";
 import { PROVIDER_LOGIN_VAULT_KIND } from "./providerLoginPayload";
 import {
+  COLD_ACCESS_RETRY_MS,
+  COLD_GATE_LIMIT_MS,
   GATE_LIMIT_MS,
   GATE_MAX_AGE_MS,
   PROVIDER_NAMES,
@@ -45,13 +47,21 @@ export function createGate(s: SyncShared) {
    * `owner_off` with the owner's name, and the turn goes ahead.
    */
   async function gate(provider: string, options: ProviderLoginGateOptions = {}): Promise<ProviderLoginGateOutcome> {
-    // A new cloud computer's first turn can come while the ADE Cloud answer is still being read.
-    if (!ticks.length && s.accessPending) await Promise.race([s.accessPending, new Promise((resolve) => setTimeout(resolve, GATE_LIMIT_MS).unref?.())]);
-    if (!ticks.length) return { result: "ok" };
     const providerId = provider.trim().toLowerCase();
+    // A cloud computer that just started: the turn waits for the account first,
+    // so its sign-in is applied below instead of the provider refusing the turn.
+    const cold = !ticks.length;
+    if (cold) {
+      const waited = await waitForAccount(providerId);
+      if (waited !== "joined") return { result: waited };
+    }
     const gated = PROVIDER_LOGIN_CARRY.some((row) => row.provider === providerId && row.carry === "carried")
       || SAVED_KEYS.some((spec) => spec.provider === providerId);
-    if (!gated) return { result: "ok" };
+    if (!gated) {
+      // Claude's pass check (a registered check, after this gate) reads the vault: fresh after a cold start.
+      if (cold) await boundedWait(deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS }), GATE_LIMIT_MS);
+      return { result: "ok" };
+    }
     const started = now();
     const limit = <T>(promise: Promise<T> | undefined, budgetMs = GATE_LIMIT_MS): Promise<T | "timeout" | undefined> => {
       if (!promise) return Promise.resolve(undefined);
@@ -95,6 +105,63 @@ export function createGate(s: SyncShared) {
       });
     }
     return outcome;
+  }
+
+  /** Waits for `promise` (a failure counts as done) or `ms`, whichever is first. */
+  async function boundedWait(promise: Promise<unknown> | undefined, ms: number): Promise<void> {
+    if (!promise || ms <= 0) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    await Promise.race([
+      promise.catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
+  /**
+   * Before the ticks are joined (a cloud computer that just started or woke):
+   * wait for the account's sign-in and its ADE Cloud answer, at most
+   * COLD_GATE_LIMIT_MS. "joined": the ticks run now, and the gate applies this
+   * provider. "ok": an answer that never joins them (no ADE Cloud), nothing to
+   * wait for. "timeout": still no answer; later turns don't wait again until
+   * the next read (`coldWaitSpent`). Turns at the same moment share the reads.
+   */
+  async function waitForAccount(provider: string): Promise<"joined" | "ok" | "timeout"> {
+    if (s.coldWaitSpent) return "ok";
+    const started = now();
+    const deadline = started + COLD_GATE_LIMIT_MS;
+    let askedAt = Number.NEGATIVE_INFINITY;
+    while (!ticks.length) {
+      const left = deadline - now();
+      if (left <= 0) break;
+      if (s.accessPending) {
+        await boundedWait(s.accessPending, left);
+        continue;
+      }
+      const last = s.lastAccess;
+      // "ready" with no ticks: no vault here; "no_access": no ADE Cloud. Neither is a wait.
+      if (last !== "signed_out" && last !== "unreadable") return "ok";
+      if (last === "unreadable" && now() - askedAt >= COLD_ACCESS_RETRY_MS) {
+        // The network may be back since the last read: ask now, not at the 60 s re-check.
+        askedAt = now();
+        void jobs.refreshAccess();
+        continue;
+      }
+      // Signed out: until a read starts (the account's sign-in asks one). Unreadable: until the next ask.
+      const wait = last === "unreadable" ? Math.min(left, askedAt + COLD_ACCESS_RETRY_MS - now()) : left;
+      await boundedWait(jobs.nextAccessRead(), wait);
+    }
+    const waitedMs = now() - started;
+    if (ticks.length) {
+      if (waitedMs >= 100) deps.logger.info("provider_login.gate_cold", { provider, waitedMs, result: "joined" });
+      return "joined";
+    }
+    s.coldWaitSpent = true;
+    deps.logger.warn("provider_login.gate_cold", { provider, waitedMs, result: "timeout", access: s.lastAccess });
+    return "timeout";
   }
 
   /**

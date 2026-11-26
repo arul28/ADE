@@ -19,6 +19,17 @@ export function createAccess(s: SyncShared) {
   let accessRecheck: ReturnType<typeof setTimeout> | null = null;
   let accessRecheckDelayMs = ACCESS_RECHECK_MIN_MS;
   let accessGeneration = 0;
+  let nextRead: { promise: Promise<void>; resolve: () => void } | null = null;
+
+  /** Resolves when the next read of the ADE Cloud answer starts. No timer: a caller bounds its own wait. */
+  function nextAccessRead(): Promise<void> {
+    if (!nextRead) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      nextRead = { promise, resolve };
+    }
+    return nextRead.promise;
+  }
 
   function joinTicks(): void {
     if (ticks.length) return;
@@ -54,14 +65,23 @@ export function createAccess(s: SyncShared) {
 
   /** Read the ADE Cloud answer (free when cached) and join or leave the ticks to match. */
   function refreshAccess(): Promise<CloudAccessState | null> {
-    const pending = readAndMatchAccess().finally(() => {
+    return startAccessRead(false);
+  }
+
+  function startAccessRead(fromRecheck: boolean): Promise<CloudAccessState | null> {
+    const pending = readAndMatchAccess(fromRecheck).finally(() => {
       if (s.accessPending === pending) s.accessPending = null;
     });
     s.accessPending = pending;
+    // A new answer is coming: a turn that gave up on the account waits for it again.
+    s.coldWaitSpent = false;
+    const waiting = nextRead;
+    nextRead = null;
+    waiting?.resolve();
     return pending;
   }
 
-  async function readAndMatchAccess(): Promise<CloudAccessState | null> {
+  async function readAndMatchAccess(fromRecheck: boolean): Promise<CloudAccessState | null> {
     if (deps.staticOff) return null;
     const generation = ++accessGeneration;
     const state: CloudAccessState = !deps.accountUserId() || !deps.vault()
@@ -69,14 +89,17 @@ export function createAccess(s: SyncShared) {
       : await deps.cloudAccess().catch((): CloudAccessState => "unreadable");
     // A newer check (a sign-out during the ask) decides instead.
     if (generation !== accessGeneration) return state;
+    s.lastAccess = state;
     if (state === "ready") joinTicks();
     else leaveTicks();
     if (state === "unreadable") {
+      // An extra read (a turn's, a sign-in's) leaves an armed re-check and its back-off as they are.
+      if (accessRecheck && !fromRecheck) return state;
       // Not an answer about the account: ask again later, backing off, until there is one.
       clearAccessRecheck();
       accessRecheck = setTimeout(() => {
         accessRecheck = null;
-        void refreshAccess();
+        void startAccessRead(true);
       }, accessRecheckDelayMs);
       accessRecheck.unref?.();
       accessRecheckDelayMs = Math.min(accessRecheckDelayMs * 2, ACCESS_RECHECK_MAX_MS);
@@ -87,5 +110,5 @@ export function createAccess(s: SyncShared) {
     return state;
   }
 
-  return { refreshAccess, leaveTicks, clearAccessRecheck };
+  return { refreshAccess, nextAccessRead, leaveTicks, clearAccessRecheck };
 }

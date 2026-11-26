@@ -84,6 +84,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     ghCliStatus: allow.ghCliStatus,
     ghCliMessage: allow.ghCliMessage,
     leaveTicks: access.leaveTicks,
+    refreshAccess: access.refreshAccess,
+    nextAccessRead: access.nextAccessRead,
   };
   Object.assign(s.jobs, jobs);
   const { pass } = capture;

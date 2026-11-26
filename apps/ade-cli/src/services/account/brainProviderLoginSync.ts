@@ -58,7 +58,8 @@ export async function installBrainProviderLoginSync(args: {
   // most its own 2 s) instead of labelling it with the hostname; a failure or
   // a slow probe leaves the hostname, and never holds the sync up for long.
   let displayName: (() => string) | null = null;
-  if (!args.staticOff) {
+  // A cloud computer is "ADE Cloud" (below): no name to wait for, and turns wait for this install.
+  if (!args.staticOff && !isAdeCloudComputer()) {
     await Promise.race([
       import("../sync/deviceRegistryService")
         .then(async (module) => {

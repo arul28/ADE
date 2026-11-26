@@ -244,6 +244,7 @@ import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { claudeCodeRefusesBypassHere, claudeRootRuleApplies, rootFullAccessAllowed } from "../chat/claudeRootFullAccess";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
+import { providerLoginGate } from "../providerLogins/providerLoginHooks";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -7216,6 +7217,18 @@ export function createPtyService({
         runtimeCliLaunch = { ...runtimeCliLaunch, permissionMode: "edit" };
       }
       if (runtimeCliLaunch) {
+        // On a cloud computer, the account's sign-in for this CLI is written
+        // before it starts, as for a chat turn (P5 §4.4). Null everywhere else: no await.
+        const loginGate = providerLoginGate(String(runtimeCliLaunch.provider));
+        const loginOutcome = loginGate ? await loginGate : null;
+        // A terminal has no card: the lines a chat would show are logged only.
+        if (loginOutcome && (loginOutcome.result !== "ok" || loginOutcome.notices?.length)) {
+          logger.info("pty.provider_login_gate", {
+            provider: String(runtimeCliLaunch.provider),
+            result: loginOutcome.result,
+            notices: (loginOutcome.notices ?? []).map((notice) => notice.providerLogin.kind),
+          });
+        }
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
         await prepareHarnessLaunch({
