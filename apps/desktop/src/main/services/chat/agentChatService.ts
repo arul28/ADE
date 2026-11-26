@@ -84410,6 +84410,9 @@ export function createAgentChatService(args: {
       });
       return run;
     },
+    onDeliveryHung: (sessionId, heldMs) => {
+      logger.warn("agent_chat.scheduled_work_delivery_hung", { sessionId, heldMs });
+    },
     wakeMessageRecorded: async (schedule) => {
       // A provider's native schedule and a tracked CLI leave no marked message
       // here, so they cannot be told apart from a delivery that happened.

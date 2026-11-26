@@ -1463,7 +1463,11 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
-  it("delivers two wakes due on the same tick one after the other", async () => {
+  it.each([
+    ["the first returns", false, 20_000],
+    // A delivery that never returns lets go of the chat after its ceiling.
+    ["the first never returns", true, 60_000],
+  ] as const)("delivers two wakes due on the same tick one after the other when %s", async (_name, hangs, secondAfterMs) => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
     let state: ChatScheduledWorkState | null = storedState([
@@ -1471,6 +1475,8 @@ describe("a cron's check", () => {
       checkedCron({ id: "cron-b", check: "cat status.txt" }),
     ]);
     const fire = createFireMock();
+    if (hangs) fire.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    const onDeliveryHung = vi.fn();
     const scheduler = createChatScheduledWorkScheduler({
       loadState: () => cloneState(state),
       saveState: (next) => { state = structuredClone(next); },
@@ -1479,16 +1485,20 @@ describe("a cron's check", () => {
       ...sharedClaims(),
       runCheck: async (schedule) => ({ ok: true, outputHash: `new-${schedule.id}`, detail: "news" }),
       fire,
+      onDeliveryHung,
     });
     await scheduler.start();
 
     await vi.advanceTimersByTimeAsync(60_000);
     // The chat takes one wake at a time; the other keeps its news for the retry.
     expect(fire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(secondAfterMs - 20_000);
+    expect(fire).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(20_000);
 
     expect(fire.mock.calls.map(([schedule]) => schedule.id).sort()).toEqual(["cron-a", "cron-b"]);
     expect(fire.mock.calls.every(([, context]) => (context as { check?: unknown }).check)).toBe(true);
+    expect(onDeliveryHung).toHaveBeenCalledTimes(hangs ? 1 : 0);
     scheduler.dispose();
   });
 

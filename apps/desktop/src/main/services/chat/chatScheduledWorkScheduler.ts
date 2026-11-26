@@ -239,6 +239,8 @@ export type ChatScheduledWorkSchedulerOptions = {
     schedule: ChatScheduledWorkRecord,
     status: ChatScheduledWorkStatus,
   ) => MaybePromise<void>;
+  /** A delivery that never returned stopped holding its chat's other wakes. */
+  onDeliveryHung?(sessionId: string, heldMs: number): void;
 };
 
 export type ChatScheduledWorkScheduler = {
@@ -428,8 +430,10 @@ export function createChatScheduledWorkScheduler(
     const held = delivery.returnedAt == null
       ? now() - delivery.startedAt < DELIVERY_HUNG_MS
       : now() - delivery.returnedAt < DELIVERY_SETTLE_MS;
-    if (!held) deliveringSessions.delete(sessionId);
-    return held;
+    if (held) return true;
+    deliveringSessions.delete(sessionId);
+    if (delivery.returnedAt == null) options.onDeliveryHung?.(sessionId, now() - delivery.startedAt);
+    return false;
   };
   const inFlight = new Set<string>();
   let started = false;
