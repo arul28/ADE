@@ -573,7 +573,7 @@ export function pushWorkGithubMessage(problem: "refused" | "unreachable", outcom
  * launch that failed before it made the lane (a provider refused its key)
  * leaves the computer with only its main checkout. A delete is the way out.
  */
-export const LANE_NOT_ON_COMPUTER_MESSAGE = "This lane isn't on the computer (its setup didn't finish), so there is no lane to keep. Delete the computer instead.";
+export const LANE_NOT_ON_COMPUTER_MESSAGE = "This lane isn't on the computer (its setup didn't finish, or it was removed there), so there is no lane to keep. Delete the computer instead.";
 
 /* ---- A copy: a new computer with the original's disk ---- */
 

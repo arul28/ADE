@@ -52,10 +52,20 @@ export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: 
 
 const GITHUB_REFUSED_KINDS: ReadonlySet<string> = new Set(["auth_failed", "permission_denied", "repository_not_found"]);
 const GITHUB_UNREACHABLE = /could not resolve host|failed to connect|connection (timed out|refused|reset)|timed out|network is unreachable/i;
+/** The host of each remote URL git names in its error (`https://`, `ssh://`, `git@`), past any user part. */
+const REMOTE_HOST = /(?:https?:\/\/|ssh:\/\/|git@)(?:[^@\s/'"]+@)?([a-z0-9.-]+)/gi;
 
-/** Why GitHub stopped a fetch or a push, read from git's error; undefined when it wasn't GitHub. */
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Why GitHub stopped a fetch or a push, read from git's error; undefined when
+ * it wasn't GitHub. `git fetch --all` also reads other remotes: an error that
+ * names only other hosts (a GitLab remote's 403) is not GitHub's to fix.
+ */
 function githubFailReason(error: unknown): CloudPushWorkFailReason | undefined {
-  const text = error instanceof Error ? error.message : String(error);
+  const text = errorText(error);
+  const hosts = Array.from(text.matchAll(REMOTE_HOST), (match) => match[1]!.toLowerCase());
+  if (hosts.length > 0 && !hosts.some((host) => host === "github.com" || host.endsWith(".github.com"))) return undefined;
   const kind = classifyGitPushFailure(text)?.kind;
   if (kind && GITHUB_REFUSED_KINDS.has(kind)) return "github_refused";
   const name = error instanceof Error ? error.name : "";
@@ -65,19 +75,33 @@ function githubFailReason(error: unknown): CloudPushWorkFailReason | undefined {
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
+/**
+ * Commits a dirty lane, then pushes it; null when both went through. Only the
+ * push talks to GitHub, so only its failure carries GitHub's reason: a slow
+ * commit hook is the lane's own.
+ */
 async function pushLane(
   runtime: Pick<AdeRuntime, "gitService">,
   laneId: string,
   dirty: boolean,
   message: string,
-): Promise<void> {
+): Promise<{ error: unknown; reason?: CloudPushWorkFailReason } | null> {
   if (dirty) {
-    // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
-    await runtime.gitService.stageAll({ laneId, paths: [] });
-    // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
-    await runtime.gitService.commit({ laneId, message });
+    try {
+      // `git add -A` honours .gitignore: files git ignores are never committed or pushed.
+      await runtime.gitService.stageAll({ laneId, paths: [] });
+      // A computer with no git identity commits with ADE's (the runtime's `commitIdentityFallback`).
+      await runtime.gitService.commit({ laneId, message });
+    } catch (error) {
+      return { error };
+    }
   }
-  await runtime.gitService.push({ laneId });
+  try {
+    await runtime.gitService.push({ laneId });
+    return null;
+  } catch (error) {
+    return { error, reason: githubFailReason(error) };
+  }
 }
 
 export async function pushCloudComputerWork(args: {
@@ -98,7 +122,7 @@ export async function pushCloudComputerWork(args: {
   const message = args.message?.trim() || COMMIT_MESSAGE;
   if (!args.check && args.ensureIdentity) {
     await args.ensureIdentity().catch((error: unknown) => {
-      args.logger?.warn("cloud.push_work_identity_failed", { error: error instanceof Error ? error.message : String(error) });
+      args.logger?.warn("cloud.push_work_identity_failed", { error: errorText(error) });
     });
   }
   const tally: CloudPushWorkResult = { readsRemotes: true, pushed: 0, failed: 0, skipped: 0, lanes: [] };
@@ -121,11 +145,14 @@ export async function pushCloudComputerWork(args: {
       let fetchFailed: { reason?: CloudPushWorkFailReason } | null = null;
       const anchor = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0];
       if (anchor) {
+        const deadline = AbortSignal.timeout(FETCH_STEP_TIMEOUT_MS);
         try {
-          await runtime.gitService.fetch({ laneId: anchor.id, allRemotes: true, signal: AbortSignal.timeout(FETCH_STEP_TIMEOUT_MS) });
+          await runtime.gitService.fetch({ laneId: anchor.id, allRemotes: true, signal: deadline });
         } catch (error) {
-          fetchFailed = { reason: githubFailReason(error) };
-          args.logger?.warn("cloud.push_work_fetch_failed", { error: error instanceof Error ? error.message : String(error) });
+          // The step's own deadline stops git with a plain "Git was cancelled.":
+          // nothing else runs at a free or a check, so that is a fetch with no answer.
+          fetchFailed = { reason: deadline.aborted ? "github_unreachable" : githubFailReason(error) };
+          args.logger?.warn("cloud.push_work_fetch_failed", { error: errorText(error) });
         }
       }
       for (const lane of lanes) {
@@ -144,7 +171,7 @@ export async function pushCloudComputerWork(args: {
         } catch (error) {
           entry.state = "failed";
           tally.failed += 1;
-          args.logger?.warn("cloud.push_work_lane_unreadable", { laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
+          args.logger?.warn("cloud.push_work_lane_unreadable", { laneId: lane.id, error: errorText(error) });
           continue;
         }
         const { dirty, unpushedCommits: ahead } = unsaved;
@@ -156,22 +183,21 @@ export async function pushCloudComputerWork(args: {
           if (primary) tally.skipped += 1;
           continue;
         }
-        try {
-          await pushLane(runtime, lane.id, dirty, message);
+        const failure = await pushLane(runtime, lane.id, dirty, message);
+        if (!failure) {
           entry.state = "pushed";
           tally.pushed += 1;
-        } catch (error) {
-          entry.state = "failed";
-          const reason = githubFailReason(error);
-          if (reason) entry.reason = reason;
-          tally.failed += 1;
-          args.logger?.warn("cloud.push_work_lane_failed", { laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
+          continue;
         }
+        entry.state = "failed";
+        if (failure.reason) entry.reason = failure.reason;
+        tally.failed += 1;
+        args.logger?.warn("cloud.push_work_lane_failed", { laneId: lane.id, error: errorText(failure.error) });
       }
     } catch (error) {
       // A project that couldn't be read wasn't saved; the tally must not say it was.
       tally.failed += 1;
-      args.logger?.warn("cloud.push_work_project_failed", { error: error instanceof Error ? error.message : String(error) });
+      args.logger?.warn("cloud.push_work_project_failed", { error: errorText(error) });
     }
   }
   args.logger?.info("cloud.push_work", { pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped, check: args.check === true });

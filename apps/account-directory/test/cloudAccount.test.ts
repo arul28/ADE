@@ -5404,7 +5404,7 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
     }, "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."],
     ["the lane isn't on the computer (a launch that failed before it made the lane)", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("clean", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true })] });
-    }, "This lane isn't on the computer (its setup didn't finish), so there is no lane to keep. Delete the computer instead."],
+    }, "This lane isn't on the computer (its setup didn't finish, or it was removed there), so there is no lane to keep. Delete the computer instead."],
     ["an older ADE's push names no lanes", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0 });
     }, "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again."],
