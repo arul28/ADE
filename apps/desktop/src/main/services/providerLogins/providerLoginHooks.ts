@@ -1,7 +1,7 @@
 /**
  * The few seams between the sign-in sync (one per brain process) and the
  * services of each project runtime. Kept in a module whose only runtime
- * import is the SDK-free Sentry capture, so the chat service reads the gate without loading the sync
+ * imports are the SDK-free Sentry capture and `withTimeout`, so the chat service reads the gate without loading the sync
  * service, and a process with no sync (the desktop main, a dev brain) pays
  * one null check.
  *
@@ -16,6 +16,7 @@
  */
 
 import { captureError } from "../../../shared/sentry/capture";
+import { withTimeout } from "../shared/withTimeout";
 import type {
   ProviderLoginGateOptions,
   ProviderLoginGateOutcome,
@@ -137,6 +138,32 @@ export const providerLoginGate = Object.assign(
   },
   { register: registerProviderLoginGate },
 );
+
+/** The most a CLI start waits for the gate; a phone's request budget is 30 s. */
+export const CLI_PROVIDER_LOGIN_WAIT_MS = 20_000;
+
+/**
+ * The gate before a CLI process starts (a launch, a resume, a reattach):
+ * `providerLoginGate` with a limit of CLI_PROVIDER_LOGIN_WAIT_MS, so a phone's
+ * request does not time out. Past it the CLI starts and the gate keeps
+ * applying the sign-in in the background. A terminal has no card, so the
+ * lines a chat would show are logged as `event`. Null gate: no await.
+ */
+export async function awaitCliProviderLogin(
+  provider: string | null | undefined,
+  log: { event: string; logger?: { info(event: string, data?: Record<string, unknown>): void } | null },
+): Promise<void> {
+  if (!provider || provider === "shell") return;
+  const loginGate = providerLoginGate(provider);
+  if (!loginGate) return;
+  const outcome = await withTimeout(loginGate, CLI_PROVIDER_LOGIN_WAIT_MS);
+  if (outcome && outcome.result === "ok" && !outcome.notices?.length) return;
+  log.logger?.info(log.event, {
+    provider,
+    result: outcome?.result ?? "start_wait_ended",
+    notices: (outcome?.notices ?? []).map((notice) => notice.providerLogin.kind),
+  });
+}
 
 export type ProviderLoginRestartOptions = {
   /**

@@ -244,7 +244,7 @@ import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { claudeCodeRefusesBypassHere, claudeRootRuleApplies, rootFullAccessAllowed } from "../chat/claudeRootFullAccess";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
-import { providerLoginGate } from "../providerLogins/providerLoginHooks";
+import { awaitCliProviderLogin } from "../providerLogins/providerLoginHooks";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -6805,24 +6805,9 @@ export function createPtyService({
     });
   };
 
-  /**
-   * On a cloud computer, the account's sign-in for a CLI's provider is written
-   * before its process starts (P5 §4.4): a new launch, a resume, a reattach.
-   * Null everywhere else: no await. A terminal has no card, so the lines a
-   * chat would show are logged only.
-   */
-  const awaitCliProviderLogin = async (provider: string | null | undefined): Promise<void> => {
-    if (!provider || provider === "shell") return;
-    const loginGate = providerLoginGate(provider);
-    const loginOutcome = loginGate ? await loginGate : null;
-    if (loginOutcome && (loginOutcome.result !== "ok" || loginOutcome.notices?.length)) {
-      logger.info("pty.provider_login_gate", {
-        provider,
-        result: loginOutcome.result,
-        notices: (loginOutcome.notices ?? []).map((notice) => notice.providerLogin.kind),
-      });
-    }
-  };
+  /** The sign-in gate before a CLI process starts (`awaitCliProviderLogin`). */
+  const awaitCliLogin = (provider: string | null | undefined): Promise<void> =>
+    awaitCliProviderLogin(provider, { event: "pty.provider_login_gate", logger });
 
   /**
    * The user's own MCP servers for resuming a tracked Claude or Codex CLI:
@@ -7236,7 +7221,7 @@ export function createPtyService({
         runtimeCliLaunch = { ...runtimeCliLaunch, permissionMode: "edit" };
       }
       if (runtimeCliLaunch) {
-        await awaitCliProviderLogin(String(runtimeCliLaunch.provider));
+        await awaitCliLogin(String(runtimeCliLaunch.provider));
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
         await prepareHarnessLaunch({
@@ -9228,7 +9213,7 @@ export function createPtyService({
           },
         }) ?? resumableSession;
       }
-      await awaitCliProviderLogin(provider);
+      await awaitCliLogin(provider);
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
@@ -9344,7 +9329,7 @@ export function createPtyService({
       }
 
       const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
-      await awaitCliProviderLogin(provider);
+      await awaitCliLogin(provider);
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
@@ -9835,7 +9820,7 @@ export function createPtyService({
           logger.info("pty.reattach_chat_cli_refused", { chatSessionId, toolType: session.toolType, reason: "sdk_chat" });
           throw markExpected(new Error(`Session '${chatSessionId}' is an agent chat, not a CLI session; it has no terminal to reattach.`), "user");
         }
-        await awaitCliProviderLogin(provider);
+        await awaitCliLogin(provider);
         const codexComputerUse = metadata?.provider === "codex"
           ? await resolveCodexComputerUseMcpConfig()
           : null;
