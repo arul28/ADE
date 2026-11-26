@@ -425,3 +425,38 @@ button.ade-cto-helper:hover {
 .ade-cto-helper-status[data-status="failed"] {
   color: var(--kit-warn, #f59e0b);
 }
+
+.ade-cto-spawn-stopped {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-fg) 45%, transparent);
+}
+
+.ade-cto-helper-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ade-cto-helper-stop {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--color-fg) 40%, transparent);
+  cursor: pointer;
+}
+
+.ade-cto-helper-stop:hover {
+  background: color-mix(in srgb, var(--color-error) 10%, transparent);
+  color: var(--color-error);
+}
+
+.ade-cto-helper-stop:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-error) 40%, transparent);
+}

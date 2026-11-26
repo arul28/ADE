@@ -40,13 +40,13 @@ export function CtoToolChips({ entries }: { entries: readonly ChatWorkLogEntry[]
   if (all.length === 0) return null;
   // A chat started on another machine draws the same row a local spawn does;
   // a spawn that failed stays a chip ("Couldn't start").
-  const started = all.filter((chip) => chip.remote);
-  const chips = started.length ? all.filter((chip) => !chip.remote) : all;
+  const started = all.flatMap((chip) => (chip.remote ? [{ id: chip.id, title: chip.text, remote: chip.remote }] : []));
+  const chips = all.filter((chip) => !chip.remote);
   return (
     <>
       {started.length ? (
         <div className="ade-cto-spawns">
-          {started.map((chip) => <CtoRemoteTaskRow key={chip.id} chip={chip} />)}
+          {started.map((spawn) => <CtoRemoteTaskRow key={spawn.id} title={spawn.title} remote={spawn.remote} />)}
         </div>
       ) : null}
       {chips.length ? <CtoChipRow chips={chips} /> : null}

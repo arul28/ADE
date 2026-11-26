@@ -1,5 +1,10 @@
-import type { ChatWorkLogEntry, SubagentCardGridMember } from "../chatTranscriptRows";
-import { ctoRemoteSpawnForEntry, ctoToolBaseName } from "./ctoToolWords";
+import type {
+  ChatTranscriptGroupedEnvelope,
+  ChatTranscriptRenderEnvelope,
+  ChatWorkLogEntry,
+  SubagentCardGridMember,
+} from "../chatTranscriptRows";
+import { ctoRemoteSpawnForEntry, ctoToolBaseName, ctoToolResultRecord } from "./ctoToolWords";
 
 /**
  * A child chat the CTO started for real work: it gets its own "Started a new
@@ -22,12 +27,11 @@ export function splitCtoSpawnMembers(members: readonly SubagentCardGridMember[])
 }
 
 /**
- * Tool calls whose only trace in the CTO thread is a spawn row: `spawnChat`
- * and the providers' own subagent tools (Claude `Agent`/`Task`, Codex
- * `spawn_agent`, OpenCode `task`, Cursor `task`). They leave the turn's tool
- * list so the thread shows one row per spawn and no tool noise.
+ * The providers' own subagent tools (Claude `Agent`/`Task`, Codex
+ * `spawn_agent`, OpenCode and Cursor `task`, Cursor `subagent`). Never an MCP
+ * call: an MCP server's own `task` tool is not a spawn.
  */
-const CTO_SPAWN_TOOL_NAMES: ReadonlySet<string> = new Set(["spawnChat", "Agent", "Task", "task", "spawn_agent"]);
+const NATIVE_SPAWN_TOOL_NAMES: ReadonlySet<string> = new Set(["Agent", "Task", "task", "subagent", "spawn_agent"]);
 
 /**
  * A finished spawn call that a spawn row already stands for, so it leaves the
@@ -40,27 +44,79 @@ const CTO_SPAWN_TOOL_NAMES: ReadonlySet<string> = new Set(["spawnChat", "Agent",
 export function isCtoSpawnToolEntry(entry: ChatWorkLogEntry): boolean {
   if (entry.entryKind !== "tool" || entry.status !== "completed") return false;
   const name = ctoToolBaseName(entry.toolName, entry.mcp?.tool ?? null);
-  if (!CTO_SPAWN_TOOL_NAMES.has(name)) return false;
-  if (name !== "spawnChat") return true;
-  return !ctoRemoteSpawnForEntry(entry) && spawnChatStartedLocally(entry.result);
+  if (name === "spawnChat") {
+    if (ctoRemoteSpawnForEntry(entry)) return false;
+    const result = ctoToolResultRecord(entry.result);
+    return result?.success !== false && typeof result?.sessionId === "string" && result.sessionId.length > 0;
+  }
+  return !entry.mcp && !/^mcp(__|\.)/.test((entry.toolName ?? "").trim()) && NATIVE_SPAWN_TOOL_NAMES.has(name);
 }
 
-/** The `spawnChat` result names the chat it made (object, JSON text, or MCP text content). */
-function spawnChatStartedLocally(result: unknown): boolean {
-  let value = result;
-  if (typeof value === "string") {
-    try {
-      value = JSON.parse(value);
-    } catch {
-      return false;
+/** Entries keep their identity while their row is unchanged, so a streamed event re-checks only new ones. */
+const spawnToolEntryCache = new WeakMap<ChatWorkLogEntry, boolean>();
+
+function isCachedCtoSpawnToolEntry(entry: ChatWorkLogEntry): boolean {
+  let hit = spawnToolEntryCache.get(entry);
+  if (hit === undefined) {
+    hit = isCtoSpawnToolEntry(entry);
+    spawnToolEntryCache.set(entry, hit);
+  }
+  return hit;
+}
+
+/**
+ * A child chat's card whose first start is in an older page: the card came
+ * from a later turn's result or restart. The "finished its turn" line already
+ * reports that turn, and a second "Started a new task" row would be wrong.
+ */
+function isUnloadedChildCard(event: ChatTranscriptGroupedEnvelope["event"]): boolean {
+  return (event.type === "subagent_spawn_anchor" || event.type === "subagent_result_card")
+    && event.startNotLoaded === true
+    && Boolean(event.childSessionId?.trim());
+}
+
+/**
+ * The CTO thread's pass over the grouped rows, before the card grids form:
+ * - A finished spawn call leaves its turn's tool list (the spawn row stands
+ *   for it). A running one stays: the working line names it.
+ * - A run of stopped cards goes back to its cards, so it draws as spawn rows
+ *   and not as a "N agents stopped" card.
+ * - A child chat's card with no loaded start draws nothing.
+ * `visible` is the input of the grouping pass; it holds a stopped run's cards.
+ */
+export function ctoTranscriptRows(
+  grouped: ChatTranscriptGroupedEnvelope[],
+  visible: readonly ChatTranscriptRenderEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  let changed = false;
+  let visibleByKey: Map<string, ChatTranscriptRenderEnvelope> | null = null;
+  const out: ChatTranscriptGroupedEnvelope[] = [];
+  for (const row of grouped) {
+    const { event } = row;
+    if (event.type === "work_log_group") {
+      const entries = event.entries.filter((entry) => !isCachedCtoSpawnToolEntry(entry));
+      if (entries.length === event.entries.length) {
+        out.push(row);
+      } else {
+        changed = true;
+        if (entries.length > 0) out.push({ ...row, event: { ...event, entries } });
+      }
+      continue;
     }
+    if (event.type === "subagent_stopped_group") {
+      changed = true;
+      visibleByKey ??= new Map(visible.map((member) => [member.key, member]));
+      for (const key of event.memberKeys) {
+        const member = visibleByKey.get(key);
+        if (member && !isUnloadedChildCard(member.event)) out.push(member);
+      }
+      continue;
+    }
+    if (isUnloadedChildCard(event)) {
+      changed = true;
+      continue;
+    }
+    out.push(row);
   }
-  if (!value || typeof value !== "object") return false;
-  const content = (value as { content?: unknown }).content;
-  if (Array.isArray(content)) {
-    const text = content.find((part) => part && typeof part === "object" && (part as { type?: unknown }).type === "text") as { text?: unknown } | undefined;
-    if (typeof text?.text === "string") return spawnChatStartedLocally(text.text);
-  }
-  const record = value as { success?: unknown; sessionId?: unknown };
-  return record.success !== false && typeof record.sessionId === "string" && record.sessionId.length > 0;
+  return changed ? out : grouped;
 }

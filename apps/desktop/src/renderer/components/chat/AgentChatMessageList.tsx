@@ -346,7 +346,7 @@ import { withChatPin } from "./chatMachinePin";
 import { CtoFreshContextDivider, CtoToolChips } from "./cto/CtoToolChips";
 import { CtoWorkingLine } from "./cto/CtoWorkingLine";
 import { CtoSpawnRows } from "./cto/CtoSpawnRows";
-import { isCtoSpawnToolEntry } from "./cto/ctoSpawnRules";
+import { ctoTranscriptRows } from "./cto/ctoSpawnRules";
 import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
 import { SponsoredInlineOutlet } from "./sponsored/sponsoredOutlets";
 
@@ -1966,37 +1966,6 @@ function InlineDisclosureRow({
       ) : null}
     </div>
   );
-}
-
-/**
- * The CTO thread draws each spawn as one row (`CtoSpawnRows`), so a finished
- * spawn call leaves its turn's tool list. A running one stays: the working
- * line names it ("Starting a chat on Codex").
- */
-// Keyed on the grouped row, which keeps its identity while its entries hold,
-// so a streaming delta does not rebuild every filtered group.
-const ctoSpawnFilteredRows = new WeakMap<TranscriptGroupedEnvelope, TranscriptGroupedEnvelope | null>();
-
-function dropCtoSpawnToolEntries(rows: TranscriptGroupedEnvelope[]): TranscriptGroupedEnvelope[] {
-  let changed = false;
-  const out: TranscriptGroupedEnvelope[] = [];
-  for (const row of rows) {
-    if (row.event.type !== "work_log_group") {
-      out.push(row);
-      continue;
-    }
-    let filtered = ctoSpawnFilteredRows.get(row);
-    if (filtered === undefined) {
-      const entries = row.event.entries.filter((entry) => !isCtoSpawnToolEntry(entry));
-      filtered = entries.length === row.event.entries.length
-        ? row
-        : entries.length > 0 ? { ...row, event: { ...row.event, entries } } : null;
-      ctoSpawnFilteredRows.set(row, filtered);
-    }
-    if (filtered !== row) changed = true;
-    if (filtered) out.push(filtered);
-  }
-  return changed ? out : rows;
 }
 
 function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: string | null): void {
@@ -3797,7 +3766,8 @@ function renderEvent(
     || event.type === "subagent_card_grid"
     || event.type === "subagent_stopped_group"
   ) {
-    // The CTO thread draws what it started as quiet rows, not cards.
+    // The CTO thread draws what it started as quiet rows, not cards
+    // (`ctoTranscriptRows` splits a stopped run back into its cards).
     if (options?.surfaceProfile === "persistent_identity" && event.type !== "subagent_stopped_group") {
       return (
         <CtoSpawnRows
@@ -3805,6 +3775,7 @@ function renderEvent(
           sessionProvider={options.sessionProvider ?? null}
           runtimePin={options.runtimePin ?? null}
           onOpenTranscript={options.chatInfoHostAvailable ? (taskId: string) => openChatInfoFromActivity(options.sessionId, taskId) : undefined}
+          onStopSubagent={options.onStopSubagent}
         />
       );
     }
@@ -7155,13 +7126,11 @@ function AgentChatMessageListMain({
     // broke activity phases — two Thinking rows separated only by a hidden
     // `context_usage` row stayed two rows instead of merging into one.
     () => {
-      const grouped = foldTurnFailureRows(groupChatTranscriptRows(
-        filterVisibleTranscriptRows(rows),
-        previousAllGroupedRowsRef.current,
-      ));
+      const visible = filterVisibleTranscriptRows(rows);
+      const grouped = foldTurnFailureRows(groupChatTranscriptRows(visible, previousAllGroupedRowsRef.current));
       // The grouping pass reuses its own previous output, so it keeps the unfiltered rows.
       previousAllGroupedRowsRef.current = grouped;
-      return surfaceProfile === "persistent_identity" ? dropCtoSpawnToolEntries(grouped) : grouped;
+      return surfaceProfile === "persistent_identity" ? ctoTranscriptRows(grouped, visible) : grouped;
     },
     [rows, surfaceProfile],
   );

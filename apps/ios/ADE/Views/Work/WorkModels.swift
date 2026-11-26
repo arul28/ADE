@@ -1742,6 +1742,9 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   /// from the child's own Work row, not the parent's transcript, so the row
   /// says "Needs you" even after the spawn result landed.
   var needsInput: Bool = false
+  /// The agent's first start is not in the loaded transcript: the snapshot
+  /// began at a result or a resumed start whose spawn sits in an older page.
+  var startNotLoaded: Bool = false
 
   var id: String { taskId }
 }

@@ -51623,9 +51623,7 @@ export function createAgentChatService(args: {
     startedSpawnedChildTurns.add(childSessionId);
     // A parent on another machine or project has no card here to reopen.
     const parent = resolveLiveOrPersistedParent(parentSessionId);
-    // The CTO thread gets no result cards (one report line per child turn),
-    // so a reopened card there would never settle.
-    if (!parent || parent.session.identityKey === "cto") return;
+    if (!parent) return;
     emitSpawnIntoParent(parent, {
       sessionId: childSessionId,
       laneId: child.session.laneId ?? null,

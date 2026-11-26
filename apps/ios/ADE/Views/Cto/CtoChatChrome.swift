@@ -137,15 +137,21 @@ func ctoToolBaseName(_ toolName: String) -> String {
 }
 
 private func ctoJSONObject(_ text: String?) -> [String: Any]? {
-  guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), text.hasPrefix("{"),
+  guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), text.hasPrefix("{") || text.hasPrefix("["),
         let data = text.data(using: .utf8),
-        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let parsed = try? JSONSerialization.jsonObject(with: data)
   else { return nil }
-  // MCP wraps a JSON result in `{ content: [{ type: "text", text }] }`.
-  if let content = object["content"] as? [[String: Any]],
-     let first = content.first(where: { ($0["type"] as? String) == "text" }),
-     let inner = first["text"] as? String,
-     let unwrapped = ctoJSONObject(inner) {
+  // MCP content blocks, bare (`[{ type: "text", text }]`) or wrapped in
+  // `{ content: [...] }`: the JSON result is the first text block.
+  func textBlockObject(_ blocks: [[String: Any]]) -> [String: Any]? {
+    guard let first = blocks.first(where: { ($0["type"] as? String) == "text" }),
+          let inner = first["text"] as? String
+    else { return nil }
+    return ctoJSONObject(inner)
+  }
+  if let blocks = parsed as? [[String: Any]] { return textBlockObject(blocks) }
+  guard let object = parsed as? [String: Any] else { return nil }
+  if let content = object["content"] as? [[String: Any]], let unwrapped = textBlockObject(content) {
     return unwrapped
   }
   return object
@@ -311,9 +317,8 @@ func ctoRemoteSpawn(_ card: WorkToolCardModel) -> (title: String?, remote: CtoRe
         let result = ctoJSONObject(card.resultText), result["success"] as? Bool != false
   else { return nil }
   let cloud = result["adeCloud"] as? Bool == true
-  let machineName = ctoStr(result["machineName"])
-    ?? (cloud ? (ctoStr((result["machine"] as? [String: Any])?["name"]) ?? "ADE Cloud") : nil)
-  guard let machineName else { return nil }
+  // Every ADE Cloud lane has its own computer, but the person sees one machine: ADE Cloud.
+  guard let machineName = cloud ? "ADE Cloud" : ctoStr(result["machineName"]) else { return nil }
   let args = ctoJSONObject(card.argsText) ?? [:]
   // An ADE Cloud launch result names no provider; the model the CTO asked for does.
   let provider = ctoStr(result["provider"]) ?? ctoProviderId(modelId: result["modelId"]) ?? ctoProviderId(modelId: args["modelId"])
@@ -334,19 +339,24 @@ private func ctoProviderId(modelId: Any?) -> String? {
   return ["anthropic": "claude", "openai": "codex"][prefix] ?? prefix
 }
 
+/// The providers' own subagent tools (Claude `Agent`/`Task`, Codex
+/// `spawn_agent`, OpenCode and Cursor `task`, Cursor `subagent`). Never an MCP
+/// call: an MCP server's own `task` tool is not a spawn.
+private let ctoNativeSpawnToolNames: Set<String> = ["Agent", "Task", "task", "subagent", "spawn_agent"]
+
 /// Spawn calls a spawn row already stands for, so they leave the CTO turn's
 /// tool list: a local `spawnChat` that started a chat, or a native subagent
 /// tool. A remote spawn draws its own row and a failed one stays. Desktop
 /// `isCtoSpawnToolEntry`.
-private let ctoSpawnToolNames: Set<String> = ["spawnChat", "Agent", "Task", "task", "spawn_agent"]
-
 func ctoIsSpawnToolMember(_ member: WorkToolGroupMember) -> Bool {
   guard case .tool(let card) = member, card.status == .completed else { return false }
   let name = ctoToolBaseName(card.toolName)
-  guard ctoSpawnToolNames.contains(name) else { return false }
-  if name != "spawnChat" { return true }
-  guard ctoRemoteSpawn(card) == nil, let result = ctoJSONObject(card.resultText) else { return false }
-  return result["success"] as? Bool != false && ctoStr(result["sessionId"]) != nil
+  if name == "spawnChat" {
+    guard ctoRemoteSpawn(card) == nil, let result = ctoJSONObject(card.resultText) else { return false }
+    return result["success"] as? Bool != false && ctoStr(result["sessionId"]) != nil
+  }
+  let raw = card.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+  return !raw.hasPrefix("mcp__") && !raw.hasPrefix("mcp.") && ctoNativeSpawnToolNames.contains(name)
 }
 
 /// The CTO fold row counts the tools its list shows, spawn calls left out.
@@ -1031,6 +1041,21 @@ func ctoIsStartedTask(_ snapshot: WorkSubagentSnapshot) -> Bool {
   workChatInfoChildSessionId(snapshot) != nil && !snapshot.readOnly
 }
 
+/// The task row's verb. A child whose first start is in an older page came
+/// from a later turn's result or restart, so the row says what that turn did,
+/// not "Started a new task" a second time. iOS turns the child's "finished
+/// its turn" notice into this result, so the row is that turn's only trace;
+/// desktop draws the notice line and drops the row (`ctoTranscriptRows`).
+func ctoTaskVerb(_ snapshot: WorkSubagentSnapshot) -> String {
+  guard snapshot.startNotLoaded else { return "Started a new task" }
+  switch snapshot.status {
+  case .running: return "Working on"
+  case .succeeded: return "Finished"
+  case .failed: return "Failed"
+  case .stopped: return "Stopped"
+  }
+}
+
 /// The CTO thread's spawn rows, in place of subagent cards: one quiet
 /// "Started a new task" row per child chat, and one "N background tasks" row
 /// for its helpers, which opens to list them. Same as desktop `CtoSpawnRows`.
@@ -1040,10 +1065,20 @@ struct CtoSpawnRowsView: View {
   let sessionProvider: String?
   /// Opens a child chat on its machine (`handleSubagentSelection`).
   var onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Stops a running native helper by its provider task; nil when the chat cannot.
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Opens Chat Info on a native helper's detail, its result.
+  var onOpenDetail: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// A child chat's current title, when a list knows it (desktop reads the machine's chats).
+  var childTitle: (@MainActor (String) -> String?)? = nil
 
   @State private var helpersOpen = false
 
   private var tasks: [WorkSubagentTimelineRow] { rows.filter { ctoIsStartedTask($0.snapshot) } }
+
+  private func taskTitle(_ snapshot: WorkSubagentSnapshot) -> String {
+    workChatInfoChildSessionId(snapshot).flatMap { childTitle?($0) } ?? workSubagentMeaningfulName(snapshot)
+  }
   private var helpers: [WorkSubagentTimelineRow] { rows.filter { !ctoIsStartedTask($0.snapshot) } }
 
   var body: some View {
@@ -1053,11 +1088,11 @@ struct CtoSpawnRowsView: View {
           Task { await onOpen?(row.snapshot) }
         } label: {
           HStack(spacing: 7) {
-            Text("Started a new task")
+            Text(ctoTaskVerb(row.snapshot))
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize()
             CtoSpawnAvatar(provider: row.snapshot.provider)
-            Text(row.snapshot.description)
+            Text(taskTitle(row.snapshot))
               .fontWeight(.medium)
               .foregroundStyle(ADEColor.textPrimary.opacity(0.86))
               .lineLimit(1)
@@ -1071,7 +1106,7 @@ struct CtoSpawnRowsView: View {
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Started a new task: \(row.snapshot.description)")
+        .accessibilityLabel("\(ctoTaskVerb(row.snapshot)): \(taskTitle(row.snapshot))")
         .accessibilityHint("Opens the chat")
         .accessibilityIdentifier("Cto.StartedTask")
       }
@@ -1082,12 +1117,14 @@ struct CtoSpawnRowsView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private var helpersSummary: (noun: String, summary: String, running: Int, failed: Int) {
-    let running = helpers.filter { $0.snapshot.status == .running }.count
-    let failed = helpers.filter { $0.snapshot.status == .failed }.count
-    let summary = running > 0 ? "\(running) running" : failed > 0 ? "\(failed) failed" : "done"
+  /// The collapsed row: running wins, then failed, then stopped, then done.
+  private var helpersSummary: (noun: String, summary: String, icon: String, tint: Color) {
     let noun = helpers.count == 1 ? "1 background task" : "\(helpers.count) background tasks"
-    return (noun, summary, running, failed)
+    func count(_ status: WorkSubagentSnapshot.Status) -> Int { helpers.filter { $0.snapshot.status == status }.count }
+    if count(.running) > 0 { return (noun, "\(count(.running)) running", "circle.dotted", ADEColor.accent) }
+    if count(.failed) > 0 { return (noun, "\(count(.failed)) failed", "exclamationmark.circle", ADEColor.warning) }
+    if count(.stopped) > 0 { return (noun, "\(count(.stopped)) stopped", "stop.circle", ADEColor.textSecondary) }
+    return (noun, "done", "checkmark.circle", ADEColor.success)
   }
 
   private var helpersRow: some View {
@@ -1097,9 +1134,9 @@ struct CtoSpawnRowsView: View {
         withAnimation(.snappy(duration: 0.2)) { helpersOpen.toggle() }
       } label: {
         HStack(spacing: 7) {
-          Image(systemName: facts.running > 0 ? "circle.dotted" : facts.failed > 0 ? "exclamationmark.circle" : "checkmark.circle")
+          Image(systemName: facts.icon)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(facts.running > 0 ? ADEColor.accent : facts.failed > 0 ? ADEColor.warning : ADEColor.success)
+            .foregroundStyle(facts.tint)
           Text(facts.noun)
             .fontWeight(.medium)
             .foregroundStyle(ADEColor.textPrimary.opacity(0.86))
@@ -1120,7 +1157,7 @@ struct CtoSpawnRowsView: View {
       if helpersOpen {
         VStack(alignment: .leading, spacing: 0) {
           ForEach(helpers, id: \.id) { row in
-            CtoHelperLine(snapshot: row.snapshot, sessionProvider: sessionProvider, onOpen: onOpen)
+            CtoHelperLine(snapshot: row.snapshot, sessionProvider: sessionProvider, onOpen: onOpen, onOpenDetail: onOpenDetail, onStop: onStop)
           }
         }
         .padding(.leading, 10)
@@ -1134,11 +1171,13 @@ struct CtoSpawnRowsView: View {
 }
 
 /// One helper in the opened background-tasks row. A helper chat opens; a
-/// native subagent has no chat of its own on the phone.
+/// native subagent has no chat of its own, so it opens its detail in Chat Info.
 private struct CtoHelperLine: View {
   let snapshot: WorkSubagentSnapshot
   let sessionProvider: String?
   var onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+  var onOpenDetail: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)?
 
   private var isChat: Bool { workChatInfoChildSessionId(snapshot) != nil }
 
@@ -1151,10 +1190,7 @@ private struct CtoHelperLine: View {
     }
   }
 
-  private var name: String {
-    if let label = snapshot.label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty { return label }
-    return snapshot.description
-  }
+  private var name: String { workSubagentMeaningfulName(snapshot) }
 
   private var line: some View {
     HStack(spacing: 7) {
@@ -1172,14 +1208,33 @@ private struct CtoHelperLine: View {
   }
 
   var body: some View {
-    if isChat {
-      Button { Task { await onOpen?(snapshot) } } label: { line.contentShape(Rectangle()) }
+    HStack(spacing: 2) {
+      if isChat {
+        Button { Task { await onOpen?(snapshot) } } label: { line.contentShape(Rectangle()) }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(name), \(statusWord)")
+          .accessibilityHint("Opens the chat")
+      } else if let onOpenDetail {
+        Button { Task { await onOpenDetail(snapshot) } } label: { line.contentShape(Rectangle()) }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(name), \(statusWord)")
+          .accessibilityHint("Shows its result")
+      } else {
+        line
+          .accessibilityElement(children: .combine)
+      }
+      // The same rule as the subagent card's Stop: a native helper's provider task, while it runs.
+      if let onStop, workSubagentCanStopTask(snapshot) {
+        Button { Task { await onStop(snapshot) } } label: {
+          Image(systemName: "stop.fill")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.warning)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(name), \(statusWord)")
-        .accessibilityHint("Opens the chat")
-    } else {
-      line
-        .accessibilityElement(children: .combine)
+        .accessibilityLabel(workSubagentStopLabel(snapshot))
+      }
     }
   }
 }

@@ -32,30 +32,33 @@ function record(value: unknown): Record<string, unknown> | null {
 }
 
 /** Tool results arrive as objects or as JSON text, depending on the provider. */
-function resultRecord(value: unknown): Record<string, unknown> | null {
+export function ctoToolResultRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (!trimmed.startsWith("{")) return null;
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
     try {
-      return record(JSON.parse(trimmed));
+      return ctoToolResultRecord(JSON.parse(trimmed));
     } catch {
       return null;
     }
   }
+  // MCP content blocks, bare (`[{ type: "text", text }]`) or wrapped in
+  // `{ content: [...] }`: the JSON result is the first text block.
+  if (Array.isArray(value)) return mcpTextRecord(value);
   const direct = record(value);
   if (!direct) return null;
-  // MCP wraps a JSON result in `{ content: [{ type: "text", text }] }`.
-  const content = Array.isArray(direct.content) ? direct.content : null;
-  const firstText = content?.find((part) => record(part)?.type === "text");
-  const text = record(firstText)?.text;
-  if (typeof text === "string") return resultRecord(text) ?? direct;
-  return direct;
+  return (Array.isArray(direct.content) ? mcpTextRecord(direct.content) : null) ?? direct;
+}
+
+function mcpTextRecord(blocks: readonly unknown[]): Record<string, unknown> | null {
+  const text = record(blocks.find((part) => record(part)?.type === "text"))?.text;
+  return typeof text === "string" ? ctoToolResultRecord(text) : null;
 }
 
 /** A finished call that did not do what it was asked: it errored, was stopped, or said `success: false`. */
 function isFailedToolEntry(entry: ChatWorkLogEntry): boolean {
   if (entry.status === "failed" || entry.status === "interrupted") return true;
-  const result = resultRecord(entry.result);
+  const result = ctoToolResultRecord(entry.result);
   return result?.success === false || (typeof result?.error === "string" && result.error.trim().length > 0);
 }
 
@@ -108,7 +111,15 @@ export type CtoToolChip = {
    * Cloud. No subagent card lands here for it, so the call draws the
    * "Started a new task" row itself.
    */
-  remote?: { sessionId: string | null; laneId: string | null; machineName: string | null; provider: string | null };
+  remote?: CtoRemoteSpawn;
+};
+
+/** Where a chat `spawnChat` started on another machine or ADE Cloud runs. */
+export type CtoRemoteSpawn = {
+  sessionId: string | null;
+  laneId: string | null;
+  machineName: string;
+  provider: string | null;
 };
 
 /**
@@ -116,20 +127,23 @@ export type CtoToolChip = {
  * its result; null for a local spawn (its subagent card draws the row), a
  * failure, or anything else.
  */
-export function ctoRemoteSpawnForEntry(entry: ChatWorkLogEntry): CtoToolChip["remote"] & { title: string | null } | null {
+export function ctoRemoteSpawnForEntry(entry: ChatWorkLogEntry): { remote: CtoRemoteSpawn; title: string | null } | null {
   if (entry.entryKind !== "tool" || entryToolName(entry) !== "spawnChat" || entry.status !== "completed") return null;
-  const result = resultRecord(entry.result);
+  const result = ctoToolResultRecord(entry.result);
   if (!result || result.success === false) return null;
   const cloud = result.adeCloud === true;
-  const machineName = str(result.machineName) ?? (cloud ? (str(record(result.machine)?.name) ?? "ADE Cloud") : null);
+  // Every ADE Cloud lane has its own computer, but the person sees one machine: ADE Cloud.
+  const machineName = cloud ? "ADE Cloud" : str(result.machineName);
   if (!machineName) return null;
   const args = record(entry.args) ?? {};
   return {
-    sessionId: str(result.sessionId),
-    laneId: str(result.laneId),
-    machineName,
-    // An ADE Cloud launch result names no provider; the model the CTO asked for does.
-    provider: str(result.provider) ?? providerIdFromModelId(result.modelId) ?? providerIdFromModelId(args.modelId),
+    remote: {
+      sessionId: str(result.sessionId),
+      laneId: str(result.laneId),
+      machineName,
+      // An ADE Cloud launch result names no provider; the model the CTO asked for does.
+      provider: str(result.provider) ?? providerIdFromModelId(result.modelId) ?? providerIdFromModelId(args.modelId),
+    },
     title: spawnTitle(args, result),
   };
 }
@@ -191,19 +205,18 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
   if (entry.status === "running") return null;
   const name = entryToolName(entry);
   if (name === "spawnChat") {
-    const remote = ctoRemoteSpawnForEntry(entry);
-    if (remote) {
-      const { title, ...where } = remote;
-      return { id: entry.id, kind: "started", verb: "Started a new task", text: title ? clipWords(title) : null, failed: false, remote: where };
+    const spawn = ctoRemoteSpawnForEntry(entry);
+    if (spawn) {
+      return { id: entry.id, kind: "started", verb: "Started a new task", text: spawn.title ? clipWords(spawn.title) : null, failed: false, remote: spawn.remote };
     }
     // A local spawn that started draws its row from its subagent card. One
     // that failed, on any machine, says so in the thread.
     if (!isFailedToolEntry(entry)) return null;
-    const title = spawnTitle(record(entry.args) ?? {}, resultRecord(entry.result));
+    const title = spawnTitle(record(entry.args) ?? {}, ctoToolResultRecord(entry.result));
     return { id: entry.id, kind: "started", verb: FAILED_VERB.started, text: title ? clipWords(title) : null, failed: true };
   }
   const args = record(entry.args) ?? {};
-  const result = resultRecord(entry.result);
+  const result = ctoToolResultRecord(entry.result);
   const payload = record(result?.result) ?? record(result?.item) ?? result;
   const failed = isFailedToolEntry(entry);
   // A declined confirm is not a failure of the call, but nothing changed.

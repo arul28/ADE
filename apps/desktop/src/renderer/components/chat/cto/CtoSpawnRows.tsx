@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, Square, StopCircle } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { deriveSubagentCardName } from "../../../../shared/chatSubagents";
 import { pluralCount } from "../../../../shared/formatting";
@@ -14,7 +14,7 @@ import { usePinTargetsTab } from "../../../state/crossMachineLanes";
 import { useChatMachineSessions, useSpawnedChildPaneStatuses } from "../chatSubagentRoster";
 import type { SubagentCardGridMember } from "../chatTranscriptRows";
 import { splitCtoSpawnMembers } from "./ctoSpawnRules";
-import type { CtoToolChip } from "./ctoToolWords";
+import type { CtoRemoteSpawn } from "./ctoToolWords";
 import "./ctoChat.css";
 
 type CtoSpawnRowsProps = {
@@ -25,6 +25,8 @@ type CtoSpawnRowsProps = {
   runtimePin?: OpenProjectBinding | null;
   /** Opens a native helper's transcript in the chat info pane; absent when the host has none. */
   onOpenTranscript?: (agentKey: string) => void;
+  /** Stops a running native helper by its provider task id; absent when the chat cannot. */
+  onStopSubagent?: (taskId: string) => void;
 };
 
 /**
@@ -32,7 +34,7 @@ type CtoSpawnRowsProps = {
  * "Started a new task" row per child chat, and one "N background tasks" row
  * for its read-only helpers and native subagents, which opens to list them.
  */
-export function CtoSpawnRows({ members, sessionProvider, runtimePin, onOpenTranscript }: CtoSpawnRowsProps) {
+export function CtoSpawnRows({ members, sessionProvider, runtimePin, onOpenTranscript, onStopSubagent }: CtoSpawnRowsProps) {
   const { tasks, helpers } = useMemo(() => splitCtoSpawnMembers(members), [members]);
   return (
     <div className="ade-cto-spawns" data-testid="cto-spawn-rows">
@@ -45,6 +47,7 @@ export function CtoSpawnRows({ members, sessionProvider, runtimePin, onOpenTrans
           sessionProvider={sessionProvider ?? null}
           runtimePin={runtimePin ?? null}
           onOpenTranscript={onOpenTranscript}
+          onStopSubagent={onStopSubagent}
         />
       ) : null}
     </div>
@@ -112,10 +115,9 @@ function CtoStartedTaskRow({ member, runtimePin }: { member: SubagentCardGridMem
  * other machine's chats (no pin: this thread's pin names the CTO's machine,
  * the same rule the `spawn_completed` line follows for a child elsewhere).
  */
-export function CtoRemoteTaskRow({ chip }: { chip: CtoToolChip }) {
-  const remote = chip.remote;
-  const title = chip.text ?? "a chat";
-  const sessionId = remote?.sessionId ?? null;
+export function CtoRemoteTaskRow({ title: chipTitle, remote }: { title: string | null; remote: CtoRemoteSpawn }) {
+  const title = chipTitle ?? "a chat";
+  const { sessionId } = remote;
   const openChild = useOpenChildChat(null);
   return (
     <button
@@ -123,13 +125,13 @@ export function CtoRemoteTaskRow({ chip }: { chip: CtoToolChip }) {
       className="ade-cto-spawn"
       data-testid="cto-started-task"
       disabled={!sessionId}
-      onClick={() => openChild(sessionId, remote?.laneId ?? null)}
+      onClick={() => openChild(sessionId, remote.laneId)}
       title={sessionId ? `Open ${title}` : title}
     >
       <span className="ade-cto-spawn-verb">Started a new task</span>
-      <ProviderAvatar provider={remote?.provider ?? null} />
+      <ProviderAvatar provider={remote.provider} />
       <span className="ade-cto-spawn-title">{title}</span>
-      {remote?.machineName ? <span className="ade-cto-spawn-verb">on {remote.machineName}</span> : null}
+      <span className="ade-cto-spawn-verb">on {remote.machineName}</span>
       {sessionId ? <CaretRight size={10} className="ade-cto-spawn-caret" aria-hidden /> : null}
     </button>
   );
@@ -140,14 +142,17 @@ function CtoBackgroundTasksRow({
   sessionProvider,
   runtimePin,
   onOpenTranscript,
+  onStopSubagent,
 }: {
   helpers: readonly SubagentCardGridMember[];
   sessionProvider: string | null;
   runtimePin: OpenProjectBinding | null;
   onOpenTranscript?: (agentKey: string) => void;
+  onStopSubagent?: (taskId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const openChild = useOpenChildChat(runtimePin);
+  const sessions = useChatMachineSessions();
   const childIds = useMemo(
     () => helpers.map((member) => member.event.childSessionId?.trim() || "").filter(Boolean),
     [helpers],
@@ -158,9 +163,7 @@ function CtoBackgroundTasksRow({
     const status = spawnedChildCardStatus(member.event, childSessionId ? childStatuses.get(childSessionId) : null);
     return { member, childSessionId, status };
   });
-  const running = rows.filter((row) => row.status === "running").length;
-  const failed = rows.filter((row) => row.status === "failed").length;
-  const summary = running > 0 ? `${running} running` : failed > 0 ? `${failed} failed` : "done";
+  const { glyph, summary } = backgroundTasksSummary(rows.map((row) => row.status));
   return (
     <div className="ade-cto-helpers" data-open={open ? "true" : undefined}>
       <button
@@ -170,7 +173,9 @@ function CtoBackgroundTasksRow({
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <ChatStatusGlyph status={running > 0 ? "working" : failed > 0 ? "failed" : "completed"} size={11} />
+        {glyph === "stopped"
+          ? <StopCircle size={11} className="ade-cto-spawn-stopped" aria-hidden />
+          : <ChatStatusGlyph status={glyph} size={11} />}
         <span className="ade-cto-spawn-title">{pluralCount(helpers.length, "background task")}</span>
         <span className="ade-cto-spawn-verb">· {summary}</span>
         {open ? <CaretDown size={10} className="ade-cto-spawn-caret" aria-hidden /> : <CaretRight size={10} className="ade-cto-spawn-caret" aria-hidden />}
@@ -179,12 +184,16 @@ function CtoBackgroundTasksRow({
         <ul className="ade-cto-helper-list">
           {rows.map(({ member, childSessionId, status }) => {
             const name = deriveSubagentCardName(member.event);
-            const openHelper = childSessionId
-              ? () => openChild(childSessionId, null)
-              : onOpenTranscript
-                ? () => onOpenTranscript(member.event.agentKey)
-                : null;
-            const statusWord = status === "running" ? "running" : status === "completed" ? "done" : status;
+            let openHelper: (() => void) | null = null;
+            if (childSessionId) {
+              const laneId = sessions?.find((session) => session.id === childSessionId)?.laneId ?? null;
+              openHelper = () => openChild(childSessionId, laneId);
+            }
+            else if (onOpenTranscript) openHelper = () => onOpenTranscript(member.event.agentKey);
+            const statusWord = status === "completed" ? "done" : status;
+            // The same rule as the subagent card's Stop: a native helper's provider task, while it runs.
+            const taskId = member.event.taskId;
+            const stop = onStopSubagent && taskId && status === "running" ? () => onStopSubagent(taskId) : null;
             const body = (
               <>
                 <ProviderAvatar provider={member.event.provider ?? (childSessionId ? null : sessionProvider)} size={16} />
@@ -193,12 +202,17 @@ function CtoBackgroundTasksRow({
               </>
             );
             return (
-              <li key={member.key}>
+              <li key={member.key} className="ade-cto-helper-item">
                 {openHelper ? (
                   <button type="button" className="ade-cto-helper" onClick={openHelper} title={`Open ${name}`}>{body}</button>
                 ) : (
                   <span className="ade-cto-helper" title={name}>{body}</span>
                 )}
+                {stop ? (
+                  <button type="button" className="ade-cto-helper-stop" onClick={stop} aria-label={`Stop ${name}`} title="Stop this subagent">
+                    <Square size={9} weight="fill" aria-hidden />
+                  </button>
+                ) : null}
               </li>
             );
           })}
@@ -206,4 +220,16 @@ function CtoBackgroundTasksRow({
       ) : null}
     </div>
   );
+}
+
+/** The collapsed row's glyph and words: running wins, then failed, then stopped, then done. */
+function backgroundTasksSummary(statuses: readonly string[]): { glyph: "working" | "failed" | "stopped" | "completed"; summary: string } {
+  const count = (wanted: string) => statuses.filter((status) => status === wanted).length;
+  const running = count("running");
+  if (running > 0) return { glyph: "working", summary: `${running} running` };
+  const failed = count("failed");
+  if (failed > 0) return { glyph: "failed", summary: `${failed} failed` };
+  const stopped = count("stopped");
+  if (stopped > 0) return { glyph: "stopped", summary: `${stopped} stopped` };
+  return { glyph: "completed", summary: "done" };
 }

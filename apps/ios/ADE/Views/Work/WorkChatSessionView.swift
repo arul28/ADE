@@ -930,6 +930,10 @@ struct WorkChatSessionView: View {
   var onSelectSubagent: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
   /// Opens a chat the CTO started on another machine or ADE Cloud.
   var onOpenRemoteSpawnedChat: (@MainActor (CtoRemoteSpawn) -> Void)? = nil
+  /// Opens Chat Info on a native subagent's detail (its result); the CTO's background-tasks row uses it.
+  var onOpenSubagentDetail: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// A spawned child chat's current title (renamed or auto-titled), when a list knows it.
+  var childChatTitle: (@MainActor (String) -> String?)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   /// Approve a Codex plan and implement it in a chat of its own. Nil when this
   /// screen's host cannot offer it; the plan card then shows Approve alone.

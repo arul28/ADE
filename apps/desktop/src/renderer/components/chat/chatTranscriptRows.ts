@@ -242,6 +242,11 @@ export type SubagentSpawnAnchorRenderEvent = {
   spawnKind: AgentChatSpawnKind | null;
   /** A spawned ADE chat that started read-only: a background helper. */
   readOnly?: boolean;
+  /**
+   * The agent's first start is not in the loaded transcript: the card came
+   * from a result or a resumed start whose spawn sits in an older page.
+   */
+  startNotLoaded?: boolean;
   /** Best-effort parent label (parent's description/agentType); null/absent if unknown. */
   parentLabel?: string | null;
   /** Claude dynamic-workflow snapshot, when this card is a workflow task. */
@@ -321,6 +326,11 @@ export type SubagentResultCardRenderEvent = {
   spawnKind: AgentChatSpawnKind | null;
   /** A spawned ADE chat that started read-only: a background helper. */
   readOnly?: boolean;
+  /**
+   * The agent's first start is not in the loaded transcript: the card came
+   * from a result or a resumed start whose spawn sits in an older page.
+   */
+  startNotLoaded?: boolean;
   /**
    * Provider task id, carried over from the running card so a settled card can
    * still be recognized (stop, workflow grouping). Optional: older stored
@@ -813,6 +823,8 @@ type SubagentAnchorState = {
   spawnKind: AgentChatSpawnKind | null;
   /** The `subagent_started` said the spawned chat is read-only (a background helper). */
   readOnly: boolean;
+  /** The state began at a result or a resumed start, not at the agent's first start. */
+  startNotLoaded: boolean;
   /** Result-only usage/worktree metadata surfaced on the result card. */
   totalTokens: number | null;
   toolUseCount: number | null;
@@ -2752,6 +2764,7 @@ function spawnAnchorEvent(
     taskId: state.taskId,
     spawnKind: state.spawnKind,
     ...(state.readOnly ? { readOnly: true } : {}),
+    ...(state.startNotLoaded ? { startNotLoaded: true } : {}),
     parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
     workflowProgress: state.workflowProgress,
     workflowName: state.workflowName,
@@ -2908,6 +2921,7 @@ function handleSubagentLifecycleEvent(
       taskId: taskId && !taskId.startsWith("chat:") ? taskId : null,
       spawnKind: null,
       readOnly: false,
+      startNotLoaded: event.type !== "subagent_started" || event.resumed === true,
       totalTokens: null,
       toolUseCount: null,
       worktreeBranch: null,
@@ -3113,6 +3127,7 @@ function handleSubagentLifecycleEvent(
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
     ...(state.readOnly ? { readOnly: true } : {}),
+    ...(state.startNotLoaded ? { startNotLoaded: true } : {}),
     taskId: state.taskId,
     workflowProgress: state.workflowProgress,
     workflowName: state.workflowName,
