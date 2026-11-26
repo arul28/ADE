@@ -188,6 +188,9 @@ export type CtoWriteSkillArgs = {
   baseHash?: string;
 };
 
+/** A skill write's answer: the snapshot, plus the file as written (its hash is the next `baseHash`). Older hosts send no `skill`. */
+export type CtoWriteSkillResult = CtoMemorySnapshot & { skill?: CtoSkillFile };
+
 export type CtoDeleteSkillArgs = { name: string };
 
 /** Undo one change a CTO turn's "Learned" row lists. Only the person may. */

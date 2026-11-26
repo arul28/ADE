@@ -198,6 +198,7 @@ import type {
   CtoUpdateNotesArgs,
   CtoGetSkillArgs,
   CtoWriteSkillArgs,
+  CtoWriteSkillResult,
   CtoDeleteSkillArgs,
   CtoSkillFile,
   CtoMemorySnapshot,
@@ -1846,15 +1847,15 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("getSkill requires `name`.");
       return ctoMemoryService.readSkill(args.name);
     },
-    writeSkill: (args?: Partial<CtoWriteSkillArgs>): CtoMemorySnapshot => {
+    writeSkill: (args?: Partial<CtoWriteSkillArgs>): CtoWriteSkillResult => {
       if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("writeSkill requires `name`.");
       if (typeof args.text !== "string") throw new Error("writeSkill requires a string `text` field.");
-      ctoMemoryService.writeSkillText({
+      const skill = ctoMemoryService.writeSkillText({
         name: args.name,
         text: args.text,
         baseHash: typeof args.baseHash === "string" ? args.baseHash : null,
       });
-      return ctoMemoryService.getSnapshot();
+      return { ...ctoMemoryService.getSnapshot(), skill };
     },
     deleteSkill: (args?: Partial<CtoDeleteSkillArgs>): CtoMemorySnapshot => {
       if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("deleteSkill requires `name`.");

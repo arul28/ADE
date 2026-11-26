@@ -748,6 +748,7 @@ import type {
   CtoUpdateOpenWorkArgs,
   CtoGetSkillArgs,
   CtoWriteSkillArgs,
+  CtoWriteSkillResult,
   CtoDeleteSkillArgs,
   CtoSkillFile,
   CtoUndoLearnedArgs,
@@ -14418,16 +14419,16 @@ export function registerIpc({
     return ctx.ctoMemoryService.readSkill(arg.name);
   });
 
-  handle(IPC.ctoWriteSkill, async (_event, arg: CtoWriteSkillArgs): Promise<CtoMemorySnapshot> => {
+  handle(IPC.ctoWriteSkill, async (_event, arg: CtoWriteSkillArgs): Promise<CtoWriteSkillResult> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     if (typeof arg?.name !== "string" || typeof arg.text !== "string") throw new Error("writeSkill requires a name and text.");
-    ctx.ctoMemoryService.writeSkillText({
+    const skill = ctx.ctoMemoryService.writeSkillText({
       name: arg.name,
       text: arg.text,
       baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
     });
-    return ctx.ctoMemoryService.getSnapshot();
+    return { ...ctx.ctoMemoryService.getSnapshot(), skill };
   });
 
   handle(IPC.ctoDeleteSkill, async (_event, arg: CtoDeleteSkillArgs): Promise<CtoMemorySnapshot> => {

@@ -567,8 +567,7 @@ struct CtoNotesEditor: View {
       save: { text, baseHash in await store.saveNotes(scope, text: text, baseHash: baseHash) },
       savedHash: { CtoNotesEditor.hash(of: scope, in: store.memory) },
       reload: {
-        await store.loadMemory()
-        guard let memory = store.memory else { return nil }
+        guard await store.loadMemory(), let memory = store.memory else { return nil }
         return (CtoNotesEditor.text(of: scope, in: memory), CtoNotesEditor.hash(of: scope, in: memory))
       },
       onSaved: { store.savedTick += 1 }

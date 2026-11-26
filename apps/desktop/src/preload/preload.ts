@@ -489,6 +489,7 @@ import type {
   CtoUpdateOpenWorkArgs,
   CtoGetSkillArgs,
   CtoWriteSkillArgs,
+  CtoWriteSkillResult,
   CtoDeleteSkillArgs,
   CtoSkillFile,
   CtoUndoLearnedArgs,
@@ -15679,7 +15680,7 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "getSkill", { args }, () =>
         ipcRenderer.invoke(IPC.ctoGetSkill, args),
       ),
-    writeSkill: async (args: CtoWriteSkillArgs, pin?: OpenProjectBinding | null): Promise<CtoMemorySnapshot> =>
+    writeSkill: async (args: CtoWriteSkillArgs, pin?: OpenProjectBinding | null): Promise<CtoWriteSkillResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "writeSkill", { args }, () =>
         ipcRenderer.invoke(IPC.ctoWriteSkill, args),
       ),

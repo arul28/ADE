@@ -69,7 +69,7 @@ function createMachine(deviceId: string, account: ReturnType<typeof createAccoun
     logger: silent,
     now: () => clock,
   });
-  return { deviceId, memory, service, reach };
+  return { deviceId, adeDir, memory, service, reach };
 }
 
 const homeOn = (deviceId: string): CtoHomeMachineRecord => ({
@@ -194,5 +194,13 @@ describe("ctoAccountCopyService across machines", () => {
     expect((await c.service.adopt({ home: homeC })).restored).toBe(true);
     expect(c.memory.listSkills().map((skill) => skill.name)).toEqual(["c-keep"]);
     expect(c.memory.readRules()).toContain("Keep PRs small");
+
+    // A skill that can't be read leaves the whole set out too: a copy missing
+    // it would delete it from the next home.
+    fs.mkdirSync(path.join(c.adeDir, "cto", "skills", "broken", "SKILL.md"), { recursive: true });
+    tick();
+    await c.service.save("turn_ended");
+    expect(account.copy()?.ownerDeviceId).toBe("device-c");
+    expect(account.copy()?.skills).toBeUndefined();
   });
 });

@@ -23,6 +23,7 @@ import {
   type CtoUpdateOpenWorkArgs,
   type CtoGetSkillArgs,
   type CtoWriteSkillArgs,
+  type CtoWriteSkillResult,
   type CtoDeleteSkillArgs,
   type CtoSkillFile,
   type CtoUndoLearnedArgs,
@@ -1329,7 +1330,7 @@ function createCtoNamespace(
       args,
       unavailableOnHost("The CTO's skills aren't available on the connected ADE host."),
     ),
-    writeSkill: (args: CtoWriteSkillArgs) => call<CtoMemorySnapshot>(
+    writeSkill: (args: CtoWriteSkillArgs) => call<CtoWriteSkillResult>(
       "cto.writeSkill",
       args,
       unavailableOnHost("The CTO's skills can't be changed on the connected ADE host."),

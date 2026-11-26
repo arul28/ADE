@@ -25,7 +25,7 @@ struct CtoTextFileEditor: View {
   let reload: () async -> (text: String, hash: String?)?
   var onSaved: () -> Void = {}
 
-  private enum SaveState: Equatable { case idle, saving, saved, conflict, failed(String) }
+  private enum SaveState: Equatable { case idle, saving, saved, conflict, reloading, failed(String) }
 
   @State private var draft = ""
   @State private var baseHash: String? = nil
@@ -53,7 +53,7 @@ struct CtoTextFileEditor: View {
           .scrollContentBackground(.hidden)
           .padding(8)
           .frame(minHeight: minHeight)
-          .disabled(!canEdit)
+          .disabled(!canEdit || state == .reloading)
           .autocorrectionDisabled(monospaced)
           .textInputAutocapitalization(monospaced ? .never : .sentences)
           .accessibilityLabel(accessibilityLabel)
@@ -108,6 +108,8 @@ struct CtoTextFileEditor: View {
       EmptyView()
     case .saving:
       Text("Saving…").font(.footnote).foregroundStyle(ADEColor.textMuted)
+    case .reloading:
+      Text("Reloading…").font(.footnote).foregroundStyle(ADEColor.textMuted)
     case .saved:
       Text("Saved").font(.footnote).foregroundStyle(ADEColor.textMuted)
     case .conflict:
@@ -140,8 +142,13 @@ struct CtoTextFileEditor: View {
     }
   }
 
+  /// Only a fresh read replaces the draft; a failed one keeps it and the conflict.
   private func runReload() async {
-    guard let file = await reload() else { return }
+    state = .reloading
+    guard let file = await reload() else {
+      state = .conflict
+      return
+    }
     dirty = false
     draft = file.text
     baseHash = file.hash
@@ -352,12 +359,12 @@ struct CtoSkillEditorSheet: View {
               monospaced: true,
               save: { text, baseHash in
                 let result = await store.saveSkill(name, text: text, baseHash: baseHash)
-                if result == .saved { await load() }
+                if result == .saved { await adoptWritten() }
                 return result
               },
               savedHash: { self.file?.hash },
               reload: {
-                await load()
+                guard await load() else { return nil }
                 return self.file.map { ($0.text, $0.hash) }
               },
               onSaved: { store.savedTick += 1 }
@@ -390,13 +397,28 @@ struct CtoSkillEditorSheet: View {
     .task { await load() }
   }
 
-  private func load() async {
+  /// After a save: the skill as it was written (its committed hash), not a
+  /// later read that could already hold someone else's change. An older host
+  /// sends no file back, so read it.
+  private func adoptWritten() async {
+    if let written = store.writtenSkills[name] {
+      file = written
+    } else {
+      await load()
+    }
+  }
+
+  /// False when the read failed (the file on screen stays).
+  @discardableResult
+  private func load() async -> Bool {
+    defer { loaded = true }
     do {
       file = try await store.loadSkill(name)
       loadError = nil
+      return true
     } catch {
       loadError = ctoShortError(error, fallback: "Couldn't read the skill")
+      return false
     }
-    loaded = true
   }
 }

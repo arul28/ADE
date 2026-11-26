@@ -237,6 +237,11 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     service.writeSkillText({ name: "hotfix", text: "1. Branch from main\n2. Announce it" });
     expect(service.undoLearned({ learnId: added.learnId, changeId: added.changes[0]!.id })).toMatchObject({ ok: false });
     expect(read(path.join(ctoDir, "skills", "hotfix", "SKILL.md"))).toContain("2. Announce it");
+    // Deleting a skill removes its SKILL.md and keeps a file the person put beside it.
+    fs.writeFileSync(path.join(ctoDir, "skills", "hotfix", "checklist.txt"), "mine");
+    expect(service.deleteSkillAsPerson("hotfix").ok).toBe(true);
+    expect(fs.existsSync(path.join(ctoDir, "skills", "hotfix", "SKILL.md"))).toBe(false);
+    expect(read(path.join(ctoDir, "skills", "hotfix", "checklist.txt"))).toBe("mine");
 
     // A note line the CTO changed and the person then edited again: Undo refuses and keeps their wording.
     service.remember({ note: "Staging lives at staging.acme.dev" });
@@ -255,6 +260,15 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     service.writeNotes("project", "- The API lives in apps/api\n");
     service.writeSkillText({ name: "deploy", text: "1. Push to main" });
     expect(service.finishLearningTurn({})).toBeNull();
+
+    // The person saves the rules after the CTO added one in the same turn:
+    // the CTO's rule is still its change to show and undo, theirs is not.
+    service.beginLearningTurn();
+    service.addRule({ rule: "Tag releases from main", why: "the changelog reads tags" });
+    service.writeNotes("rules", `${service.readRules().trimEnd()}\n- Keep PRs small — reviews stay fast.\n`);
+    expect(service.finishLearningTurn({})?.changes.map(({ op, text }) => `${op}:${text}`)).toEqual([
+      "added:Tag releases from main — the changelog reads tags.",
+    ]);
 
     service.beginLearningTurn();
     service.addRule({ rule: "Run the linter before review", why: "CI fails on lint" });
@@ -305,6 +319,12 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     // The baseline is gone once used: the next turn starts fresh.
     restarted.beginLearningTurn();
     expect(restarted.finishLearningTurn({})).toBeNull();
+    // A replace the CTO made before a restart still reads as one change.
+    restarted.beginLearningTurn();
+    expect(restarted.addRule({ rule: "Freeze deploys over holidays", why: "nobody is on call", replaces: "Ship on Thursdays" }).ok).toBe(true);
+    const again = createCtoMemoryService({ adeDir, userNotesDir: path.join(root, "home-cto") });
+    again.beginLearningTurn();
+    expect(again.finishLearningTurn({})?.changes.map(({ op }) => op)).toEqual(["changed"]);
   });
 
   it("refuses a near-copy of a rule and sharpens it in place with replaces", () => {

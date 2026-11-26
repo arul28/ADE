@@ -290,6 +290,20 @@ export function diffLineItems(
   return changes;
 }
 
+/**
+ * `base` with the lines that went from `before` to `after` applied: the
+ * person's edit, and nothing else. Whole lines, so headings and wording stay.
+ */
+function rebaseLines(base: string, before: string, after: string): string {
+  const split = (text: string) => text.split("\n").filter((line) => line.trim());
+  const was = new Set(split(before));
+  const now = split(after);
+  const kept = new Set(now);
+  const lines = split(base).filter((line) => !was.has(line) || kept.has(line));
+  for (const line of now) if (!was.has(line) && !lines.includes(line)) lines.push(line);
+  return lines.length ? `${lines.join("\n")}\n` : "";
+}
+
 /* ── Skills ── */
 
 /** Which skills changed between two states, with each one's text before and after (null: absent). */
@@ -528,12 +542,13 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
    * file that changed since the editor loaded it.
    */
   const writeRulesText = (text: string, options?: { baseHash?: string | null }): void => {
-    assertBaseHash(readRules(), options?.baseHash);
+    const before = readRules();
+    assertBaseHash(before, options?.baseHash);
     const content = withTrailingNewline(redactSecrets(text).replace(/\r\n/g, "\n").replace(/\n+$/, ""));
     const bytes = utf8Bytes(content);
     if (bytes > CTO_RULES_MAX_BYTES) throw new AdeExpectedError(rulesFullMessage(bytes), "user");
     writeLineFile("rules", content);
-    personWrote("rules");
+    personWrote("rules", before);
     changed();
   };
 
@@ -584,8 +599,14 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     writeTextAtomic(skillPath(name), text);
   };
 
+  /** Deletes the skill's SKILL.md, and its folder only when nothing else is in it (a file the person added stays). */
   const removeSkillDir = (name: string): void => {
-    fs.rmSync(path.join(skillsDir, name), { recursive: true, force: true });
+    fs.rmSync(skillPath(name), { force: true });
+    try {
+      fs.rmdirSync(path.join(skillsDir, name));
+    } catch {
+      // Not empty (the person's own files stay) or already gone.
+    }
   };
 
   /** The CTO's write: a whole how-to for one kind of task. Saving an existing name sharpens it. */
@@ -748,6 +769,8 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
         project_notes: state.project_notes,
         user_notes: state.user_notes,
         skills: Object.fromEntries(state.skills),
+        // The CTO's replaces this turn, so a restart still pairs each with its replacement.
+        replacedBy: Object.fromEntries([...replacedThisTurn].map(([area, links]) => [area, Object.fromEntries(links)])),
       }));
     } catch (error) {
       logger?.warn("cto_learning.baseline_write_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -774,17 +797,33 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     const links = replacedThisTurn.get(area) ?? new Map<string, string>();
     links.set(next, previous);
     replacedThisTurn.set(area, links);
+    if (baseline) saveBaseline(baseline);
   };
+  // A turn a restart cut short: take back the replaces it recorded.
+  if (baseline) {
+    try {
+      const saved = (JSON.parse(readFileOrEmpty(baselinePath) || "{}") as { replacedBy?: unknown }).replacedBy;
+      for (const [area, links] of Object.entries(saved && typeof saved === "object" ? saved : {})) {
+        if (!(area in LINE_AREA_LIMIT) || !links || typeof links !== "object") continue;
+        const map = new Map(Object.entries(links as Record<string, unknown>).flatMap(([next, prev]) => (typeof prev === "string" ? [[next, prev] as const] : [])));
+        if (map.size) replacedThisTurn.set(area as LineArea, map);
+      }
+    } catch {
+      // readBaselineFile already logged an unreadable baseline.
+    }
+  }
 
   /**
    * The person changed a file in the middle of a turn (Settings, another
-   * device, an account copy): their version becomes the baseline, so it is
-   * never reported as something the CTO learned.
+   * device, an account copy). Their edit moves into the baseline, so it is
+   * never reported as something the CTO learned; what the CTO wrote earlier
+   * in the turn stays a change of its own. `before` is the file just before
+   * their write; without it their whole version becomes the baseline.
    */
-  function personWrote(area: LineArea): void {
+  function personWrote(area: LineArea, before?: string): void {
     const content = readLineFile(area);
     if (baseline) {
-      baseline[area] = content;
+      baseline[area] = before == null ? content : rebaseLines(baseline[area], before, content);
       saveBaseline(baseline);
     }
     forgiveLineFile(area, content);
@@ -937,7 +976,17 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       // The name comes from a file on disk: never let it point outside skills/.
       if (ctoSkillSlug(change.text) !== change.text) return { ok: false, error: "That change can't be undone here. Edit it in Settings › Memory." };
       const left = record.after?.skills;
-      if (left && Object.hasOwn(left, change.text) && (readFileOrEmpty(skillPath(change.text)) || null) !== left[change.text]) {
+      let current: string | null;
+      try {
+        current = fs.readFileSync(skillPath(change.text), "utf8") || null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          logger?.warn("cto_learning.undo_skill_unreadable", { error: error instanceof Error ? error.message : String(error) });
+          return { ok: false, error: "Couldn't read that skill to undo it. Try again, or edit it in Settings › Memory." };
+        }
+        current = null;
+      }
+      if (left && Object.hasOwn(left, change.text) && current !== left[change.text]) {
         // Someone edited it after that turn; putting the old file back would drop their edit.
         return { ok: false, error: "This skill changed after that turn. Edit it in Settings › Memory." };
       }
@@ -974,13 +1023,15 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       }
     }
     if (baseline) saveBaseline(baseline);
+    // The refusal first: if it can't be saved this throws with the change not
+    // yet marked undone, so pressing Undo again finishes it.
+    writeUndone([...readUndone(), { area: change.area, op: change.op, text: change.text, at: nowIso() }]);
     change.undone = true;
     try {
       writeRecord(record);
     } catch (error) {
       logger?.warn("cto_learning.record_write_failed", { error: error instanceof Error ? error.message : String(error) });
     }
-    writeUndone([...readUndone(), { area: change.area, op: change.op, text: change.text, at: nowIso() }]);
     changed();
     logger?.info?.("cto_learning.undone", { area: change.area, op: change.op });
     return { ok: true, payload: payload(), ...(note ? { note } : {}) };

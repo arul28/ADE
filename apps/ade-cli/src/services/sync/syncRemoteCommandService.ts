@@ -7305,12 +7305,12 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.writeSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     if (typeof payload.text !== "string") throw new Error("cto.writeSkill requires text.");
-    ctoMemoryService.writeSkillText({
+    const skill = ctoMemoryService.writeSkillText({
       name: requireString(payload.name, "cto.writeSkill requires name."),
       text: payload.text,
       baseHash: typeof payload.baseHash === "string" ? payload.baseHash : null,
     });
-    return ctoMemoryService.getSnapshot();
+    return { ...ctoMemoryService.getSnapshot(), skill };
   });
   register("cto.deleteSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");

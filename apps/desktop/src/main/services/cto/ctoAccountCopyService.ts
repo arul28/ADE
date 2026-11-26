@@ -356,16 +356,30 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       userNotes: args.ctoMemory.readNotes("user"),
       openWork: args.ctoMemory.readOpenWorkText(),
       rules: args.ctoMemory.readRules(),
-      skills: args.ctoMemory.listSkills().flatMap((summary) => {
-        const skill = args.ctoMemory.readSkill(summary.name);
-        return skill ? [{ name: skill.name, text: skill.text }] : [];
-      }),
+      skills: readAllSkills(),
       undone: args.ctoMemory.readUndone(),
       // Routines a move brought that have no CTO thread to land on yet.
       routines: readJson<{ routines?: CtoAccountCopyRoutine[] }>(carriedRoutinesPath)?.routines ?? sources.routines,
       tail,
       story: readPortableStory(),
     };
+  };
+
+  /**
+   * Every skill, or none: a restore deletes the skills a copy leaves out, so a
+   * skill that could not be read leaves the whole set out of this copy.
+   */
+  const readAllSkills = (): Array<{ name: string; text: string }> | undefined => {
+    const skills: Array<{ name: string; text: string }> = [];
+    for (const summary of args.ctoMemory.listSkills()) {
+      const skill = args.ctoMemory.readSkill(summary.name);
+      if (!skill) {
+        logger.warn("cto.account_copy_skill_unreadable", { skills: skills.length });
+        return undefined;
+      }
+      skills.push({ name: skill.name, text: skill.text });
+    }
+    return skills;
   };
 
   const saveNow = async (reason: string): Promise<void> => {

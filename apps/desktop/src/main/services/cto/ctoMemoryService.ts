@@ -264,14 +264,15 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       learning.writeRulesText(text, options);
       return;
     }
-    assertBaseHash(readNotes(scope), options?.baseHash);
+    const before = readNotes(scope);
+    assertBaseHash(before, options?.baseHash);
     const lines = parseNoteLines(text).map(normalizeNote).filter((line) => line.length > 0);
     const bytes = utf8Bytes(renderNotes(lines));
     const limit = notesLimit(scope);
     if (bytes > limit) throw new AdeExpectedError(notesFullMessage(bytes, limit), "user");
     writeNoteLines(scope, lines);
     // The person's (or an account copy's) version: never something the CTO learned.
-    learning.personWrote(notesArea(scope));
+    learning.personWrote(notesArea(scope), before);
   };
 
   const remember = (input: {

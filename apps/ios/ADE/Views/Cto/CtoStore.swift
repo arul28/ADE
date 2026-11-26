@@ -243,15 +243,18 @@ final class CtoStore: ObservableObject {
 
   // MARK: Capabilities (an older host hides the control)
 
-  var canEditNotes: Bool { isFixture || sync?.supportsRemoteAction("cto.updateNotes") == true }
-  var canEditOpenWork: Bool { isFixture || sync?.supportsRemoteAction("cto.updateOpenWork") == true }
-  var canRefreshContext: Bool { isFixture || sync?.supportsRemoteAction("cto.refreshContext") == true }
-  /// Skills need all three calls; an older host lists none of them.
-  var canEditSkills: Bool {
-    isFixture || (sync?.supportsRemoteAction("cto.getSkill") == true
-      && sync?.supportsRemoteAction("cto.writeSkill") == true)
+  /// CTO calls go to the CTO's home machine, so ask that machine (not the
+  /// focused one) whether it runs them. Unknown while it is offline: hidden.
+  private func homeSupports(_ action: String) -> Bool {
+    isFixture || sync?.ctoHomeSupportsAction(action) == true
   }
-  var canDeleteSkills: Bool { isFixture || sync?.supportsRemoteAction("cto.deleteSkill") == true }
+
+  var canEditNotes: Bool { homeSupports("cto.updateNotes") }
+  var canEditOpenWork: Bool { homeSupports("cto.updateOpenWork") }
+  var canRefreshContext: Bool { homeSupports("cto.refreshContext") }
+  /// Skills need all three calls; an older host lists none of them.
+  var canEditSkills: Bool { homeSupports("cto.getSkill") && homeSupports("cto.writeSkill") }
+  var canDeleteSkills: Bool { homeSupports("cto.deleteSkill") }
 
   private func supportsRoutineAction(_ action: String) -> Bool {
     if isFixture { return true }
@@ -281,15 +284,19 @@ final class CtoStore: ObservableObject {
     await loadChildren()
   }
 
-  func loadMemory() async {
-    guard let sync else { return }
+  /// False when the read failed (the old memory stays).
+  @discardableResult
+  func loadMemory() async -> Bool {
+    guard let sync else { return false }
+    defer { memoryLoaded = true }
     do {
       memory = try await sync.fetchCtoMemory()
       memoryError = nil
+      return true
     } catch {
       memoryError = ctoShortError(error, fallback: "Couldn't read notes")
+      return false
     }
-    memoryLoaded = true
   }
 
   func loadRoutines(includeTerminal: Bool = false) async {
@@ -615,6 +622,9 @@ final class CtoStore: ObservableObject {
     return try await sync.fetchCtoSkill(name: name)
   }
 
+  /// The skill exactly as the last save wrote it, by name (its committed hash).
+  private(set) var writtenSkills: [String: CtoSkillFile] = [:]
+
   /// Writes a whole SKILL.md; `.conflict` when it changed since `baseHash`.
   func saveSkill(_ name: String, text: String, baseHash: String?) async -> NotesSaveResult {
     if isFixture {
@@ -628,7 +638,9 @@ final class CtoStore: ObservableObject {
     }
     guard let sync else { return .failed("Not connected") }
     do {
-      memory = try await sync.writeCtoSkill(name: name, text: text, baseHash: baseHash)
+      let written = try await sync.writeCtoSkill(name: name, text: text, baseHash: baseHash)
+      memory = written.memory
+      writtenSkills[name] = written.skill
       return .saved
     } catch {
       let message = (error as NSError).localizedDescription

@@ -628,6 +628,7 @@ import type {
   CtoUpdateOpenWorkArgs,
   CtoGetSkillArgs,
   CtoWriteSkillArgs,
+  CtoWriteSkillResult,
   CtoDeleteSkillArgs,
   CtoSkillFile,
   CtoUndoLearnedArgs,
@@ -5714,7 +5715,7 @@ declare global {
         updateOpenWork: (args: CtoUpdateOpenWorkArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         /** One skill whole, or null; `text` and `hash` feed `writeSkill`. */
         getSkill: (args: CtoGetSkillArgs, pin: OpenProjectBinding) => Promise<CtoSkillFile | null>;
-        writeSkill: (args: CtoWriteSkillArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        writeSkill: (args: CtoWriteSkillArgs, pin: OpenProjectBinding) => Promise<CtoWriteSkillResult>;
         deleteSkill: (args: CtoDeleteSkillArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         /** Undo one change of a CTO "Learned" row; the row redraws with it marked undone. */
         undoLearned: (args: CtoUndoLearnedArgs, pin: OpenProjectBinding) => Promise<CtoUndoLearnedResult>;

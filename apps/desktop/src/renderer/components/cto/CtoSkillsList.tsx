@@ -61,14 +61,23 @@ export function CtoSkillsList({
   }, [openName, pinKey, load]);
 
   const save = useCallback(async (name: string, text: string, baseHash?: string) => {
+    let written: CtoSkillFile | undefined;
     try {
-      await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pinRef.current);
+      written = (await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pinRef.current)).skill;
     } catch (err) {
       // Changed elsewhere: read the newer file, so the editor's Reload takes it.
       if (isCtoNotesChangedError(err)) await load(name);
       throw err;
     }
-    await load(name);
+    // The file as written carries the hash of this save. A read afterwards
+    // could return another device's newer write, and its hash would let the
+    // next save overwrite that write. Older hosts send no file: read it.
+    if (written) {
+      setFile(written);
+      setError(null);
+    } else {
+      await load(name);
+    }
     await onChanged();
   }, [load, onChanged]);
 

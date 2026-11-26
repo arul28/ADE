@@ -2398,6 +2398,20 @@ struct CtoSkillSummary: Codable, Hashable, Identifiable {
 }
 
 /// One whole skill, as `cto.getSkill` answers it (desktop `CtoSkillFile`).
+/// `cto.writeSkill`'s answer: the memory, plus the skill exactly as it was
+/// written (an older host sends no `skill`).
+struct CtoSkillWrite: Decodable {
+  let memory: CtoMemory
+  let skill: CtoSkillFile?
+
+  private enum CodingKeys: String, CodingKey { case skill }
+
+  init(from decoder: Decoder) throws {
+    memory = try CtoMemory(from: decoder)
+    skill = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(CtoSkillFile.self, forKey: .skill)
+  }
+}
+
 struct CtoSkillFile: Decodable, Hashable {
   var name: String
   var description: String

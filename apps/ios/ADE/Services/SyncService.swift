@@ -12835,7 +12835,7 @@ final class SyncService: ObservableObject {
 
   /// Writes a whole SKILL.md. `baseHash` refuses the write when the skill
   /// changed since the editor loaded it (`ctoNotesChangedError`).
-  func writeCtoSkill(name: String, text: String, baseHash: String?) async throws -> CtoMemory {
+  func writeCtoSkill(name: String, text: String, baseHash: String?) async throws -> CtoSkillWrite {
     let target = try ctoCommandTarget()
     var args: [String: Any] = ["name": name, "text": text]
     if let baseHash, !baseHash.isEmpty { args["baseHash"] = baseHash }
@@ -12844,7 +12844,7 @@ final class SyncService: ObservableObject {
       args: args,
       targetProjectId: target.projectId,
       targetProjectRootPath: target.rootPath,
-      as: CtoMemory.self
+      as: CtoSkillWrite.self
     )
   }
 

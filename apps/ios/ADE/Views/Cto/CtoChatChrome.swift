@@ -556,7 +556,7 @@ struct CtoLearnedCard: View {
   @State private var note: String? = nil
 
   private var canUndo: Bool {
-    live?.fixtureUndoLearned != nil || SyncService.shared?.supportsRemoteAction("cto.undoLearned") == true
+    live?.fixtureUndoLearned != nil || SyncService.shared?.ctoHomeSupportsAction("cto.undoLearned") == true
   }
 
   var body: some View {
