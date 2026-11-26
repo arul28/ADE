@@ -6738,24 +6738,24 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     projectHealth: (() => {
       // Stateful like the brain: an ignored folder leaves the line, a hidden line leaves the list.
-      type MockIgnore = { key: string; kind: "folder" | "issue"; issueId: string; path?: string; title: string; ignoredAt: string };
+      type MockIgnore = { key: string; kind: "folder" | "issue"; issueId: string; path?: string; title: string; ignoredAt: string; seen?: string };
       let ignored: MockIgnore[] = [];
       const report = () => {
         const base = createMockProjectHealthReport(now);
         const folders = new Set(ignored.filter((entry) => entry.kind === "folder").map((entry) => entry.path));
         const issues = (base.issues as ProjectHealthIssue[]).flatMap((issue): ProjectHealthIssue[] => {
-          if (ignored.some((entry) => entry.kind === "issue" && entry.issueId === issue.id)) return [];
           const paths = issue.ignorablePaths;
-          if (!paths) return [issue];
-          const left = paths.filter((folder) => !folders.has(folder));
-          if (left.length === 0) return [];
-          if (left.length === paths.length) return [issue];
-          return [{
+          const left = paths ? paths.filter((folder) => !folders.has(folder)) : null;
+          if (left && left.length === 0) return [];
+          const line: ProjectHealthIssue = !paths || !left || left.length === paths.length ? issue : {
             ...issue,
             title: `${left.join(" and ")} ${left.length === 1 ? "has" : "have"} no packages installed`,
             items: (issue.items ?? []).filter((item) => left.some((folder) => item.startsWith(`${folder}:`))),
             ignorablePaths: left,
-          }];
+          };
+          // Hidden only while it reads as it did when hidden, like the brain.
+          if (ignored.some((entry) => entry.kind === "issue" && entry.issueId === issue.id && entry.seen === line.title)) return [];
+          return [line];
         });
         return { ...base, issues, ignored };
       };
@@ -6766,7 +6766,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           if (args.path) ignored = [...ignored, { key: `folder:${args.issueId}:${args.path}`, kind: "folder", issueId: args.issueId, path: args.path, title: args.path, ignoredAt: at }];
           else {
             const issue = report().issues.find((entry) => entry.id === args.issueId);
-            if (issue) ignored = [...ignored, { key: `issue:${args.issueId}`, kind: "issue", issueId: args.issueId, title: issue.title, ignoredAt: at }];
+            if (issue) ignored = [...ignored.filter((entry) => entry.key !== `issue:${args.issueId}`), { key: `issue:${args.issueId}`, kind: "issue", issueId: args.issueId, title: issue.title, ignoredAt: at, seen: issue.title }];
           }
           return report();
         },

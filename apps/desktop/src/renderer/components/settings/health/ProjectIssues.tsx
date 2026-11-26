@@ -129,7 +129,8 @@ export function ProjectIssueList({
   onFix: (issue: ProjectHealthIssue) => void;
   ignore?: ProjectIssueIgnore;
 }) {
-  if (issues.length === 0) return null;
+  // Every line hidden: the way back stays, open.
+  if (issues.length === 0) return ignore?.entries.length ? <IgnoredList entries={ignore.entries} busy={ignore.busy} defaultOpen /> : null;
   // Problems first, then warnings, then notes.
   const order = { problem: 0, warning: 1, info: 2 } as const;
   const sorted = [...issues].sort((left, right) => order[left.severity] - order[right.severity]);

@@ -77,11 +77,17 @@ export type ProjectIssueIgnore = {
 /** The ignore and show-again calls for one project copy, each with its toast. */
 export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (report: ProjectHealthReport) => void) {
   const [busy, setBusy] = React.useState(false);
+  // A reply from a copy the page has since left must not paint over the copy it shows now.
+  const pinKeyRef = React.useRef(pin?.key ?? null);
+  pinKeyRef.current = pin?.key ?? null;
+  const report = React.useCallback((sentTo: string | null, next: ProjectHealthReport) => {
+    if (sentTo === pinKeyRef.current) onReport(next);
+  }, [onReport]);
   const unignore = React.useCallback(async (key: string, quiet = false) => {
     if (!pin) return;
     setBusy(true);
     try {
-      onReport(await window.ade.projectHealth.unignore({ key }, pin));
+      report(pin.key, await window.ade.projectHealth.unignore({ key }, pin));
       captureAttentionIgnore("attention_shown_again");
       if (!quiet) showToast({ id: IGNORE_TOAST_ID, tone: "success", title: "Showing it again" });
     } catch (err) {
@@ -89,20 +95,23 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
     } finally {
       setBusy(false);
     }
-  }, [onReport, pin]);
+  }, [pin, report]);
 
   const ignore = React.useCallback(async (issue: ProjectHealthIssue, folder: string | null) => {
     if (!pin) return;
     setBusy(true);
     try {
-      const report = await window.ade.projectHealth.ignore({
+      const next = await window.ade.projectHealth.ignore({
         issueId: issue.id,
         // A folder is ignored by name; a hidden line must still read as it did on screen.
         ...(folder ? { path: folder } : { seen: { title: issue.title, items: issue.items ?? [], ignorablePaths: issue.ignorablePaths ?? [] } }),
       }, pin);
-      onReport(report);
+      report(pin.key, next);
       captureAttentionIgnore(folder ? "attention_folder_ignored" : "attention_hidden");
-      const key = projectHealthIgnoreKey(issue.id, folder);
+      // The brain names the key (a line hide carries its copy); read it back for Undo.
+      const key = folder
+        ? projectHealthIgnoreKey(issue.id, folder)
+        : next.ignored?.find((entry) => entry.kind === "issue" && entry.issueId === issue.id)?.key ?? projectHealthIgnoreKey(issue.id);
       showToast({
         id: IGNORE_TOAST_ID,
         tone: "success",
@@ -115,7 +124,7 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
     } finally {
       setBusy(false);
     }
-  }, [onReport, pin, unignore]);
+  }, [pin, report, unignore]);
 
   /**
    * The menu for one project line: a choice per folder it names, then "hide

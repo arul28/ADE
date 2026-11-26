@@ -21781,6 +21781,12 @@ function buildHealthPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.health ?? topLevelHelpText() };
   }
+  if (args.some((arg) => /^--(un)?ignore(=|$)/.test(arg))) {
+    // Person-only at the runtime, which cannot tell this terminal from an agent's.
+    throw new CliUsageError(
+      "Ignore or show a check again in ADE: Settings → General (Needs attention) or Project → Location. The command line lists what is ignored.",
+    );
+  }
   const fixIndex = args.indexOf("--fix");
   if (fixIndex >= 0) {
     const fixId = requireValue(args[fixIndex + 1], "fix id");
@@ -21791,12 +21797,6 @@ function buildHealthPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "project_health", "fix", { fixId })],
       exitCodeFromResult: (result) => (isRecord(result) && result.ok === true ? 0 : 1),
     };
-  }
-  if (args.includes("--ignore") || args.includes("--unignore")) {
-    // Person-only at the runtime, which cannot tell this terminal from an agent's.
-    throw new CliUsageError(
-      "Ignore or show a check again in ADE: Settings → General (Needs attention) or Project → Location. The command line lists what is ignored.",
-    );
   }
   const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);
   return {

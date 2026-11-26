@@ -60,13 +60,18 @@ export type ProjectHealthIgnore = {
 } & (
   /** The folder, relative to the project, `/`-separated. */
   | { kind: "folder"; path: string }
-  /** The line's fingerprint when it was hidden. */
-  | { kind: "issue"; fingerprint: string }
+  /**
+   * The line's fingerprint when it was hidden, and the copy of the project it
+   * was hidden on: another computer's copy reads its own line, so a hide
+   * covers (and is retired by) only the copy it was made on.
+   */
+  | { kind: "issue"; fingerprint: string; copy?: string }
 );
 
-/** The one spelling of an ignore's key, for the brain that stores it and the client that undoes it. */
-export function projectHealthIgnoreKey(issueId: string, folder?: string | null): string {
-  return folder ? `folder:${issueId}:${folder}` : `issue:${issueId}`;
+/** The one spelling of an ignore's key, for the brain that stores it. Clients read it back from the report. */
+export function projectHealthIgnoreKey(issueId: string, folder?: string | null, copy?: string | null): string {
+  if (folder) return `folder:${issueId}:${folder}`;
+  return copy ? `issue:${issueId}@${copy}` : `issue:${issueId}`;
 }
 
 /** A line whose check could not run says nothing about the project, so it is never hidden. */

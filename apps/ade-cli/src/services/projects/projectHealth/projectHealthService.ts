@@ -192,14 +192,15 @@ export function normalizeIgnoredFolder(value: unknown): string | null {
   return parts.join("/");
 }
 
-function parseIgnored(raw: string | null | undefined, logger: Pick<Logger, "warn">): ProjectHealthIgnore[] {
+function parseIgnored(raw: string | null | undefined, logger: Pick<Logger, "warn">, strict = false): ProjectHealthIgnore[] {
   if (!raw) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    // The next ignore rewrites the row; say so, or the list vanishes without a trace.
     logger.warn("project_health.ignored_parse_failed", { error: error instanceof Error ? error.message : String(error) });
+    // A change must not write over a list it could not read.
+    if (strict) throw new Error("ADE couldn't read this project's ignored list, so nothing was changed.");
     return [];
   }
   if (!Array.isArray(parsed)) return [];
@@ -220,10 +221,11 @@ function parseIgnored(raw: string | null | undefined, logger: Pick<Logger, "warn
       seen.add(key);
       out.push({ key, kind: "folder", issueId, path: folder, title, ignoredAt });
     } else if (value.kind === "issue" && typeof value.fingerprint === "string" && value.fingerprint) {
-      const key = projectHealthIgnoreKey(issueId);
+      const copy = typeof value.copy === "string" && value.copy ? value.copy : undefined;
+      const key = projectHealthIgnoreKey(issueId, null, copy);
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ key, kind: "issue", issueId, fingerprint: value.fingerprint, title, ignoredAt });
+      out.push({ key, kind: "issue", issueId, fingerprint: value.fingerprint, ...(copy ? { copy } : {}), title, ignoredAt });
     }
   }
   return out;
@@ -612,16 +614,24 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     }
   };
   let cached: { at: number; report: Promise<ProjectHealthReport> } | null = null;
+  /** This copy of the project: this computer and this folder. A line hide belongs to one copy. */
+  const copyId = createHash("sha256").update(`${os.hostname()}\n${projectRoot}`).digest("hex").slice(0, 12);
+  const ownCopy = (entry: ProjectHealthIgnore) => entry.kind === "issue" && (!entry.copy || entry.copy === copyId);
 
+  /** For reports: an unreadable list ignores nothing, so every check shows. */
   function readIgnored(): ProjectHealthIgnore[] {
     try {
-      const rows = deps.db.all<{ value: string }>("select value from kv where key = ? limit 1", [PROJECT_HEALTH_IGNORED_KV_KEY]);
-      return parseIgnored(rows[0]?.value, deps.logger);
+      return readIgnoredStrict();
     } catch (error) {
-      // An unreadable list ignores nothing: every check shows.
       deps.logger.warn("project_health.ignored_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return [];
     }
+  }
+
+  /** For changes: throws rather than hand back an empty list that a write would then save over the real one. */
+  function readIgnoredStrict(): ProjectHealthIgnore[] {
+    const rows = deps.db.all<{ value: string }>("select value from kv where key = ? limit 1", [PROJECT_HEALTH_IGNORED_KV_KEY]);
+    return parseIgnored(rows[0]?.value, deps.logger, true);
   }
 
   function writeIgnored(list: ProjectHealthIgnore[]): void {
@@ -1142,40 +1152,48 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   }
 
   /**
-   * Hides each line the person hid while it still reads the same; a line that
-   * changed shows again. Reading never writes: the stale entries of changed
-   * lines are dropped by the next `ignore` (`withoutChangedHides`). Folder
-   * ignores were applied by the checks themselves.
+   * Hides each line this copy hid while it still reads the same. A line that
+   * changed shows again and its hide is retired, so it never hides itself
+   * again when it changes back. Only this copy's hides are read or retired:
+   * another computer's copy reads its own line. A line that is absent keeps
+   * its hide (its check may only have failed). Folder ignores were applied by
+   * the checks themselves.
    */
   function applyIgnored(issues: ProjectHealthIssue[]): { shown: ProjectHealthIssue[]; ignored: ProjectHealthIgnore[] } {
     const list = readIgnored();
     if (list.length === 0) return { shown: issues, ignored: [] };
-    const hidden = new Set(hiddenIssueIds(list, issues));
+    const kept = withoutChangedHides(list, issues);
+    if (kept.length !== list.length) {
+      try {
+        // Re-read strictly so a write never lands on a list that failed to read.
+        writeIgnored(withoutChangedHides(readIgnoredStrict(), issues));
+      } catch (error) {
+        deps.logger.warn("project_health.ignored_retire_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const hidden = new Set(hiddenIssueIds(kept, issues));
     return {
       shown: hidden.size > 0 ? issues.filter((issue) => !hidden.has(issue.id)) : issues,
-      // A hidden line that is absent or changed is not listed: there is nothing hidden to show again.
-      ignored: list.filter((entry) => entry.kind === "folder" || hidden.has(entry.issueId)),
+      // Only what still hides something here: a hide whose line is absent has nothing to show again.
+      ignored: kept.filter((entry) => entry.kind === "folder" || (ownCopy(entry) && hidden.has(entry.issueId))),
     };
   }
 
-  /** The lines a hide still covers: present and reading the same as when hidden. */
+  /** The lines this copy's hides still cover: present and reading the same as when hidden. */
   function hiddenIssueIds(list: ProjectHealthIgnore[], issues: ProjectHealthIssue[]): string[] {
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     return list.flatMap((entry) => {
-      if (entry.kind !== "issue") return [];
+      if (entry.kind !== "issue" || !ownCopy(entry)) return [];
       const issue = byId.get(entry.issueId);
       return issue && projectHealthIssueFingerprint(issue) === entry.fingerprint ? [issue.id] : [];
     });
   }
 
-  /**
-   * The list without hides whose line is present and now reads differently.
-   * A line that is absent keeps its entry: its check may only have failed.
-   */
+  /** The list without this copy's hides whose line is present and now reads differently. */
   function withoutChangedHides(list: ProjectHealthIgnore[], issues: ProjectHealthIssue[]): ProjectHealthIgnore[] {
     const byId = new Map(issues.map((issue) => [issue.id, issue]));
     return list.filter((entry) => {
-      if (entry.kind !== "issue") return true;
+      if (entry.kind !== "issue" || !ownCopy(entry)) return true;
       const issue = byId.get(entry.issueId);
       return !issue || projectHealthIssueFingerprint(issue) === entry.fingerprint;
     });
@@ -1193,7 +1211,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     cached = { at: Date.now(), report: Promise.resolve(report) };
     const issue = report.issues.find((entry) => entry.id === issueId);
     // Every line, hidden ones included, tells which hides went stale.
-    const list = withoutChangedHides(readIgnored(), allIssues);
+    const list = withoutChangedHides(readIgnoredStrict(), allIssues);
     const ignoredAt = new Date().toISOString();
     if (args.path != null) {
       const folder = normalizeIgnoredFolder(args.path);
@@ -1212,10 +1230,11 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       if (seen && projectHealthIssueText({ id: issue.id, title: seen.title, items: seen.items, ignorablePaths: seen.ignorablePaths }) !== projectHealthIssueText(issue)) {
         throw new Error("This line changed since you looked. Check it again, then hide it.");
       }
-      const key = projectHealthIgnoreKey(issueId);
+      const key = projectHealthIgnoreKey(issueId, null, copyId);
       writeIgnored([
-        ...list.filter((entry) => entry.key !== key),
-        { key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), title: issue.title, ignoredAt },
+        // One hide per line per copy; a legacy hide of this line (no copy) is replaced too.
+        ...list.filter((entry) => !(entry.kind === "issue" && entry.issueId === issueId && ownCopy(entry))),
+        { key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), copy: copyId, title: issue.title, ignoredAt },
       ]);
     }
     deps.logger.info("project_health.ignored", { issueId, kind: args.path != null ? "folder" : "issue" });
@@ -1225,7 +1244,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   /** Checks a folder again, or shows a hidden line again. */
   async function unignore(args: ProjectHealthUnignoreArgs): Promise<ProjectHealthReport> {
     const key = typeof args?.key === "string" ? args.key : "";
-    const list = readIgnored();
+    const list = readIgnoredStrict();
     const next = list.filter((entry) => entry.key !== key);
     if (next.length !== list.length) {
       writeIgnored(next);
