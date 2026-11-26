@@ -9,7 +9,7 @@ import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createStorageInsightsService } from "./storageInsightsService";
 import { createTestDirectoryLink } from "../../../test/symlinks";
 import { classifyDbTable, deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
-import { isMaintenanceReport, readMaintenanceJournal } from "./storageMaintenanceJournal";
+import { appendMaintenanceJournal, isMaintenanceReport, readMaintenanceJournal } from "./storageMaintenanceJournal";
 import { ADE_LAYOUT_DEFINITIONS } from "../../../shared/adeLayout";
 import {
   deriveCategoryPolicyChips,
@@ -1280,6 +1280,26 @@ describe("storageMaintenanceJournal", () => {
         { ...validReport, actions: [null] },
         validReport,
       ]));
+      expect(readMaintenanceJournal(journalPath)).toEqual([validReport]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never brings back a project folder deleted while the project was open", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-journal-"));
+    const projectRoot = path.join(root, "project");
+    const journalPath = path.join(projectRoot, ".ade", "cache", "storage-doctor-journal.json");
+    const warn = vi.fn();
+    try {
+      // The project folder is gone: nothing is written and the failure is logged.
+      expect(appendMaintenanceJournal(journalPath, validReport, { logger: { ...logger, warn }, projectRoot })).toEqual([validReport]);
+      expect(fs.existsSync(projectRoot)).toBe(false);
+      expect(warn).toHaveBeenCalledWith("storage.maintenance_journal_write_failed", expect.objectContaining({ projectRoot }));
+
+      // A live project (its .ade folder exists) still gets its cache folder and journal.
+      fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
+      appendMaintenanceJournal(journalPath, validReport, { logger, projectRoot });
       expect(readMaintenanceJournal(journalPath)).toEqual([validReport]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
