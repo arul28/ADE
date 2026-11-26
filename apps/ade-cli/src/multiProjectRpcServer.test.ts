@@ -4357,6 +4357,62 @@ describe("machine.updateAndRestart", () => {
     }
   });
 
+  it("refuses a track switch while an update runs, so neither installs over the other", async () => {
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      let releaseApply: () => void = () => {};
+      const applyStarted = new Promise<void>((resolve) => {
+        releaseApply = resolve;
+      });
+      let unblock: () => void = () => {};
+      const applyGate = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      const trackSwitch = {
+        check: vi.fn(async (target: "stable" | "beta") => ({ allowed: true as const, target, targetVersion: "1.3.0-beta.1" })),
+        save: vi.fn(),
+      };
+      const controls = makeControls({
+        applyUpdate: vi.fn(async () => {
+          releaseApply();
+          await applyGate;
+          return { ok: true, version: "1.2.56", detail: "installed" };
+        }),
+        trackSwitch,
+      });
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: createRegistry().registry,
+        machineUpdateControls: controls,
+      });
+      await initialize(handler, "cto");
+
+      const update = handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "machine.updateAndRestart",
+        params: { targetVersion: "1.2.56" },
+      });
+      await applyStarted;
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "machine.switchUpdateTrack",
+        params: { track: "beta" },
+      })).rejects.toThrow(/already running/);
+      unblock();
+      await update;
+
+      expect(trackSwitch.check).not.toHaveBeenCalled();
+      expect(trackSwitch.save).not.toHaveBeenCalled();
+      expect(controls.applyUpdate).toHaveBeenCalledTimes(1);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("returns step results for an applied update", async () => {
     const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
     process.env.ADE_DEFAULT_ROLE = "cto";
@@ -4903,6 +4959,7 @@ describe("calls from another machine's agents", () => {
     ["account.call", false],
     ["projects.add", false],
     ["machine.updateAndRestart", false],
+    ["machine.switchUpdateTrack", false],
     ["machines.call", false],
     ["projects.list", true],
   ])("lets another machine's agents call machine method %s: %s", async (method, allowed) => {

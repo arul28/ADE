@@ -55,6 +55,7 @@ import {
   runtimeEventFrameLaneId,
 } from "./runtimeEventVolume";
 import { joinOrStartMachineUpdate } from "./services/runtime/machineUpdateInFlight";
+import { normalizeUpdateTrack } from "../../desktop/src/shared/updateTrack";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import type { MachineUpdateAndRestartDeps } from "./services/runtime/machineUpdateAndRestart";
 import {
@@ -727,6 +728,7 @@ const RUNTIME_METHODS = new Set([
   "notify.send",
   "providers.status",
   "usage.getUsageRollup",
+  "account.getMachineInventory",
   "usage.getLiveQuota",
   "usage.consumeResetCredit",
   "personalChats.call",
@@ -738,6 +740,7 @@ const RUNTIME_METHODS = new Set([
   "personalChats.unsubscribeEvents",
   "machineInfo.get",
   "machine.updateAndRestart",
+  "machine.switchUpdateTrack",
   "machine.reportPowerTransition",
   "projects.list",
   "projects.accountList",
@@ -3615,36 +3618,54 @@ export function createMultiProjectRpcRequestHandler(
     // The channel is the authorization: this method only exists on the runtime
     // RPC endpoint, which is a paired/authenticated transport, and the cto role
     // gate below matches every other machine-lifecycle action.
-    if (method === "machine.updateAndRestart") {
+    //
+    // "Stable / Beta" (`machine.switchUpdateTrack`) is the same kind of act:
+    // the guarded switch Settings › About runs here, then that track's build.
+    // It takes the same gate and the same one-run-at-a-time slot, so it never
+    // runs beside an update; it refuses rather than join one, whose result
+    // would read as the switch's.
+    if (method === "machine.updateAndRestart" || method === "machine.switchUpdateTrack") {
       if (!callerHasRoleAtLeast(callerRole(), "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "machine.updateAndRestart requires the cto role.",
+          `${method} requires the cto role.`,
         );
       }
       const controls = options.machineUpdateControls;
       if (!controls) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "This ADE runtime cannot update itself.",
+          method === "machine.updateAndRestart"
+            ? "This ADE runtime cannot update itself."
+            : "This ADE runtime cannot change its update track.",
         );
       }
-      const targetVersion = typeof params.targetVersion === "string"
-        && params.targetVersion.trim()
-        ? params.targetVersion.trim()
-        : null;
       // Who asked, for the logs and the next start's continue message. It
       // never changes the routing.
       const requestedBy = updateRequester(params.requestedBy, {
         authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
         clientName: callerClientName(),
       });
-      // One run per process, joined synchronously: a phone's sync command
-      // joins this run too (`machineUpdateInFlight.ts`).
+      // Checked and joined synchronously: the updater loads inside the run, so
+      // no await lets a second caller miss a run that is just starting.
+      if (method === "machine.switchUpdateTrack") {
+        const track = normalizeUpdateTrack(params.track);
+        if (!track) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "machine.switchUpdateTrack requires track 'stable' or 'beta'.");
+        }
+        return await joinOrStartMachineUpdate(async () => {
+          const { runMachineTrackSwitch } = await import("./services/runtime/machineUpdateAndRestart");
+          return await runMachineTrackSwitch(controls, track, requestedBy);
+        }, { trackSwitch: true });
+      }
+      const targetVersion = typeof params.targetVersion === "string"
+        && params.targetVersion.trim()
+        ? params.targetVersion.trim()
+        : null;
+      // One run per process: a phone's sync command joins this run too
+      // (`machineUpdateInFlight.ts`).
       return await joinOrStartMachineUpdate(async () => {
-        const { runMachineUpdateAndRestart } = await import(
-          "./services/runtime/machineUpdateAndRestart"
-        );
+        const { runMachineUpdateAndRestart } = await import("./services/runtime/machineUpdateAndRestart");
         return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
       });
     }
@@ -4065,6 +4086,32 @@ export function createMultiProjectRpcRequestHandler(
     // finished, which the caller treats as "still reading", not as zero.
     if (method === "usage.getUsageRollup") {
       return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getUsageRollup() ?? null;
+    }
+
+    // This machine's provider inventory (accounts, sign-ins, presets) for the
+    // Account page on another of the owner's computers. Machine-level for the
+    // same reason as the rollup above: a peer calls it with no project, and
+    // before this every such call answered "requires params.projectId". Same
+    // gate as the `viewerAllowed` sync command it mirrors: names and counts,
+    // never a credential. The sign-in and model counts come from the sync
+    // host's project when one is booted; without one they stay unknown.
+    if (method === "account.getMachineInventory") {
+      const machineKey = typeof params.machineKey === "string" ? params.machineKey.trim() : "";
+      if (!machineKey) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "account.getMachineInventory requires machineKey.");
+      }
+      const hostProjectId = scopeRegistry.getActiveSyncHostProjectId?.() ?? null;
+      const hostScope = hostProjectId ? await scopeRegistry.getIfBooted(hostProjectId)?.catch(() => null) ?? null : null;
+      const [{ readMachineInventoryDetail }, { getMachineProviderInstanceStore }] = await Promise.all([
+        import("./services/account/accountMachinePublisherService"),
+        import("./services/providerInstances/providerInstanceStore"),
+      ]);
+      return await readMachineInventoryDetail({
+        machineKey,
+        providerInstanceStore: getMachineProviderInstanceStore(),
+        accountSettingsStore: hostScope?.runtime.accountSettingsStore ?? null,
+        aiIntegrationService: hostScope?.runtime.aiIntegrationService ?? null,
+      });
     }
 
     // This machine's own live quota (windows and accounts, no history), for

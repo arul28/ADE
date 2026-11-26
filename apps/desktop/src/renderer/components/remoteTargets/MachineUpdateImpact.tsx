@@ -229,6 +229,36 @@ export function rowsShowTracks(rows: readonly MachineUpdateRowModel[]): boolean 
 }
 
 /**
+ * Asks before another machine moves to the other update track. Its ADE
+ * checks its own projects, installs the newest build on that track and
+ * restarts, so the row names what is running there. Resolves true on yes.
+ */
+export async function confirmMachineTrackSwitch(machine: MachineWithImpact, track: UpdateTrack): Promise<boolean> {
+  const label = updateTrackLabel(track);
+  const row: MachineUpdateRowModel = {
+    ...remoteMachineRowModel({ ...machine, targetVersion: null }),
+    toVersion: null,
+    toTrack: track,
+  };
+  return await confirmDialog({
+    title: `Switch ${machine.name} to ${label}?`,
+    message: track === "beta"
+      ? "ADE there checks that the newest Beta build can open its projects, installs it and restarts. Projects and chats stay, and Beta can have bugs Stable doesn't."
+      : "ADE there checks that the newest Stable build can open its projects, installs it and restarts. Projects and chats stay.",
+    icon: <ArrowClockwise size={16} weight="bold" />,
+    tone: track === "beta" ? "warning" : "accent",
+    size: "md",
+    children: (
+      <div className="ade-upd-list">
+        <MachineUpdateRow row={row} showTracks />
+      </div>
+    ),
+    confirmLabel: `Switch to ${label}`,
+    cancelLabel: "Not now",
+  });
+}
+
+/**
  * Asks before "Update & restart" runs on other machines, naming what is
  * running on each. Each machine goes to a build on its own track. Resolves
  * true when the person agreed.

@@ -558,6 +558,7 @@ import {
   runNativeUpdateInstall,
 } from "./services/updates/nativeUpdateInstall";
 import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
+import { checkTrackSwitch } from "./services/updates/trackSwitchGuard";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
@@ -4041,6 +4042,8 @@ app.whenReady().then(async () => {
     supported: hasUpdateFeed,
     // Only a service-managed app uninstalls its service before installing.
     preflightInstall: shouldRepairRuntimeServiceOnFallback ? checkRuntimeServiceRemovable : undefined,
+    // "Stable / Beta" pressed on another machine runs the same guard as Settings › About.
+    checkTrackSwitch: (target) => checkTrackSwitch({ target, runningVersion: app.getVersion(), logger: updateLogger }),
     logger: updateLogger,
   });
   // The brain owns the turn-following lock so it survives this app quitting.

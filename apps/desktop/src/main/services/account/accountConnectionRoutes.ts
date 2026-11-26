@@ -1,7 +1,8 @@
 import type { MachineConnectionRoutes } from "../../../shared/types";
 import { parseMachineConnectionRoutes } from "../../../shared/machineConnectionRoutes";
 import { markExpected } from "../../../shared/expectedError";
-import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
+import { isUnsupportedAdeActionError, machineNeedsUpdateError } from "../../../shared/codedError";
+import { isPeerMissingMethodMessage } from "../../../shared/sentry/expectedFailure";
 import { unwrapAccountActionResult } from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
 
 const ROUTES_TIMEOUT_MS = 12_000;
@@ -67,17 +68,21 @@ export function createAccountConnectionRoutesBridge(
       throw markExpected(new Error("Connect to this computer to see and change its routes."), "environment");
     }
     try {
+      // The brain serves these as `account.call` actions (`multiProjectRpcServer`).
+      // A bare `account.<action>` method is not a machine method there: every
+      // brain answered it "requires params.projectId", so an up-to-date
+      // computer was told to update.
       return read(
-        await deps.callMachineMethod(targetId, `account.${action}`, args, {
+        await deps.callMachineMethod(targetId, "account.call", { action, args }, {
           timeoutMs: args.refresh === true ? ROUTES_REFRESH_TIMEOUT_MS : ROUTES_TIMEOUT_MS,
         }),
         "That computer",
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // An older peer: one without the method, or one that still wants a projectId.
-      if (/unsupported (remote )?command|method not found|unknown method/i.test(message) || isPeerVersionGapMessage(message)) {
-        throw markExpected(new Error("Update ADE on that computer to manage its routes from here."), "environment");
+      // An older peer: one without the action, or one that still wants a projectId.
+      if (isPeerMissingMethodMessage(message) || isUnsupportedAdeActionError(error)) {
+        throw markExpected(machineNeedsUpdateError("Update ADE on that computer to manage its routes from here."), "environment");
       }
       throw error;
     }

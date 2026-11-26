@@ -94,6 +94,12 @@ final class PushNotificationService: ObservableObject {
     /// device. Read mute state through `isSessionMuted(_:)`, which also honours
     /// the old per-device list.
     @Published private(set) var accountMutedSessionIds: Set<String>
+    @Published private var accountDeliveryPausedOwnerId: String?
+
+    var accountDeliveryPaused: Bool {
+        guard let ownerId = accountDeliveryPausedOwnerId else { return false }
+        return AccountService.shared.isSignedIn && AccountService.shared.identity?.userId == ownerId
+    }
 
     // MARK: - Internal state
 
@@ -251,6 +257,7 @@ final class PushNotificationService: ObservableObject {
         prefsSyncRetrier.cancel()
         sessionMuteRetrier.cancel()
         pendingSessionMutes = [:]
+        accountDeliveryPausedOwnerId = nil
         setAccountMutedSessions([], ownerId: nil)
         // Delivered notifications name the account's chats and quote them:
         // they leave Notification Center with the account.
@@ -532,9 +539,10 @@ final class PushNotificationService: ObservableObject {
             pendingSessionMutes = [:]
             sessionMuteRetrier.cancel()
         }
-        guard let ids = await AccountService.shared.fetchAttentionMutedSessionIds(),
+        guard let delivery = await AccountService.shared.fetchAttentionDeliveryPreferences(),
               AccountService.shared.identity?.userId == ownerId else { return }
-        applyAccountMutedSessions(ids, ownerId: ownerId)
+        accountDeliveryPausedOwnerId = delivery.notificationsPaused ? ownerId : nil
+        applyAccountMutedSessions(delivery.mutedSessionIds, ownerId: ownerId)
         let legacy = Set(prefs.mutedSessionIds).subtracting(accountMutedSessionIds)
         for sessionId in legacy where pendingSessionMutes[sessionId] == nil {
             pendingSessionMutes[sessionId] = true

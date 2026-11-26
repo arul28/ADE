@@ -18,8 +18,11 @@ import {
   tailscaleKeyExpiryDays,
 } from "../../../shared/machineConnectionRoutes";
 import { openExternalUrl } from "../../lib/openExternal";
+import { formatTime } from "../../lib/format";
 import { ModernRow, ModernRows, ModernSection, type SettingsTone } from "../settings/primitives";
 import { TailscaleMark } from "./MachineRoutes";
+import { Banner } from "../ui/notice";
+import { machineRouteItems, type MachineRouteItem } from "./machineRouteModel";
 import type { MachineRoutesState } from "./useMachineRoutes";
 
 /** Settings anchor; the manifest entry `account.privateNetwork` points here. */
@@ -55,6 +58,14 @@ const ROUTE_STEP: Record<MachineTailnetHttpsState, { state: StepState; hint: str
   unavailable: { state: "blocked", hint: WAITING_ON_STEPS },
 };
 
+/** Why Tailscale isn't on here, and what to do about it. */
+const TAILSCALE_OFF_HINT: Record<Exclude<MachineConnectionRoutes["tailscale"]["state"], "running" | "not_installed">, string> = {
+  needs_login: "Tailscale is installed but signed out. Sign in from the Tailscale app.",
+  stopped: "Tailscale is installed but turned off. Turn it on from the Tailscale app.",
+  starting: "Tailscale is starting. Press Check again in a moment.",
+  unknown: "Tailscale didn't answer. Open the Tailscale app and make sure it's connected, then press Check again.",
+};
+
 export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
   const ts = routes.tailscale;
   const running = ts.state === "running";
@@ -65,14 +76,12 @@ export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
     {
       id: "installed",
       title: running ? "Tailscale is on" : installed ? "Turn Tailscale on" : "Install Tailscale",
-      hint: running
+      hint: ts.state === "running"
         ? <>This computer is <span className="ade-net-mono">{ts.dnsName ?? "on your tailnet"}</span></>
-        : ts.state === "needs_login"
-          ? "Tailscale is installed but signed out. Sign in from the Tailscale app."
-          : installed
-            ? "Tailscale is installed but not connected. Connect from the Tailscale app."
-            : "Free for personal use. Install it on each computer and your phone, signed in to the same account.",
-      state: running ? "done" : "todo",
+        : ts.state === "not_installed"
+          ? "Free for personal use. Install it on each computer and your phone, signed in to the same account."
+          : TAILSCALE_OFF_HINT[ts.state],
+      state: running ? "done" : ts.state === "starting" ? "working" : "todo",
       action: installed ? undefined : { label: "Download", href: TAILSCALE_DOWNLOAD_URL },
     },
     {
@@ -103,7 +112,12 @@ export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
 }
 
 /** The order clients try routes in, as three steps. */
-function RouteLadder({ onTailnet, total }: { onTailnet: number; total: number }) {
+function RouteLadder({ onTailnet, total, routes, checking }: {
+  onTailnet: number;
+  total: number;
+  routes: MachineRouteItem[];
+  checking: boolean;
+}) {
   const steps = [
     { key: "lan", icon: <WifiHigh size={15} weight="bold" />, name: "Local network", note: "On the same Wi-Fi, direct" },
     {
@@ -116,18 +130,23 @@ function RouteLadder({ onTailnet, total }: { onTailnet: number; total: number })
   ];
   return (
     <ol className="ade-net-ladder" aria-label="Route order">
-      {steps.map((step, index) => (
-        <li key={step.key} className="ade-net-rung" data-route={step.key}>
-          <span className="ade-net-rung-icon">{step.icon}</span>
-          <span className="ade-net-rung-copy">
-            <span className="ade-net-rung-name">
-              <span className="ade-net-rung-index kit-num">{index + 1}</span>
-              {step.name}
+      {steps.map((step, index) => {
+        const result = routes.find((route) => route.kind === step.key);
+        const status = checking ? "Checking…" : result?.word;
+        return (
+          <li key={step.key} className="ade-net-rung" data-route={step.key}>
+            <span className="ade-net-rung-icon">{step.icon}</span>
+            <span className="ade-net-rung-copy">
+              <span className="ade-net-rung-name">
+                <span className="ade-net-rung-index kit-num">{index + 1}</span>
+                {step.name}
+              </span>
+              <span className="ade-net-rung-note">{step.note}</span>
+              {status ? <span className="ade-net-rung-note" title={checking ? undefined : result?.detail ?? undefined}>{status}</span> : null}
             </span>
-            <span className="ade-net-rung-note">{step.note}</span>
-          </span>
-        </li>
-      ))}
+          </li>
+        );
+      })}
     </ol>
   );
 }
@@ -146,6 +165,61 @@ function ExternalButton({ label, href, primary }: { label: string; href: string;
   );
 }
 
+/** The line under the checklist: what the last check found, and when. */
+function CheckResult({
+  state,
+  rechecking,
+  lastRecheckAtMs,
+  todo,
+  complete,
+}: {
+  state: MachineRoutesState | undefined;
+  rechecking: boolean;
+  lastRecheckAtMs: number | null;
+  todo: number;
+  complete: boolean;
+}) {
+  if (state?.status === "error" && !rechecking) {
+    // A failed re-read with an older answer on screen: say the list is the old one.
+    const at = lastRecheckAtMs ? ` at ${formatTime(new Date(lastRecheckAtMs).toISOString())}` : "";
+    return (
+      <div className="ade-net-check-failed">
+        <Banner
+          layout="inline"
+          model={{
+            id: "private-network-check-failed",
+            tone: "warning",
+            title: `Couldn't check${at}`,
+            detail: state.routes ? `${state.message} The steps show the last answer.` : state.message,
+            report: false,
+          }}
+        />
+      </div>
+    );
+  }
+  let text: string | null = null;
+  if (rechecking) {
+    text = "Checking connection routes and Tailscale setup on this computer…";
+  } else if (state?.routes) {
+    const at = formatTime(state.routes.checkedAt);
+    const outcome = complete
+      ? "Everything is set up."
+      : todo > 0
+        ? `${todo} ${todo === 1 ? "step needs" : "steps need"} you.`
+        : "Still setting up.";
+    text = at ? `Checked at ${at}. ${outcome}` : outcome;
+  }
+  if (!text) return null;
+  return (
+    <div className="ade-net-checked" role="status" aria-live="polite">
+      {rechecking
+        ? <CircleNotch size={12} weight="bold" className="animate-spin" />
+        : <CheckCircle size={13} weight="fill" />}
+      {text}
+    </div>
+  );
+}
+
 /**
  * Settings › Account › Private network: how the owner's computers reach each
  * other, and the Tailscale setup that keeps ADE Relay a fallback. Everything
@@ -155,26 +229,35 @@ function ExternalButton({ label, href, primary }: { label: string; href: string;
 export function PrivateNetworkSection({
   state,
   machines,
+  rechecking = false,
+  lastRecheckAtMs = null,
   onRecheck,
 }: {
   state: MachineRoutesState | undefined;
   machines: AdeAccountMachine[];
+  /** "Check again" is running: every step shows that it is being checked. */
+  rechecking?: boolean;
+  /** When the last "Check again" finished, for a failure the answer can't date. */
+  lastRecheckAtMs?: number | null;
   onRecheck: () => void;
 }) {
   const routes = state?.routes ?? null;
-  const checking = state?.status === "loading";
+  const checking = rechecking || state?.status === "loading";
   const onTailnet = machines.filter((machine) =>
     machine.reachableEndpoints.some((endpoint) => endpoint.kind === "tailnet"),
   ).length;
+  const localMachine = routes ? machines.find((machine) => machine.machineKey === routes.machineKey) ?? null : null;
+  const routeResults = routes ? machineRouteItems(localMachine, routes) : [];
   const steps = routes ? setupSteps(routes) : [];
   const done = steps.filter((step) => step.state === "done").length;
+  const todo = steps.filter((step) => step.state === "todo").length;
   const complete = steps.length > 0 && done === steps.length;
   const expiryDays = routes ? tailscaleKeyExpiryDays(routes.tailscale.keyExpiry, Date.now()) : null;
   const expiringSoon = expiryDays != null && expiryDays <= KEY_EXPIRY_WARN_DAYS;
   // Once everything is done the checklist has nothing to ask for; it folds
   // into the header until the owner opens it.
   const [showDone, setShowDone] = useState(false);
-  const showSteps = !complete || expiringSoon || showDone;
+  const showSteps = !complete || expiringSoon || showDone || rechecking;
   const adminSteps = steps.filter((step) => step.action?.href === TAILSCALE_DNS_ADMIN_URL).length;
 
   return (
@@ -190,12 +273,12 @@ export function PrivateNetworkSection({
           {checking
             ? <CircleNotch size={12} weight="bold" className="animate-spin" />
             : <ArrowClockwise size={12} weight="bold" />}
-          Check again
+          {rechecking ? "Checking…" : "Check again"}
         </button>
       )}
     >
       <div className="ade-net">
-        <RouteLadder onTailnet={onTailnet} total={machines.length} />
+        <RouteLadder onTailnet={onTailnet} total={machines.length} routes={routeResults} checking={checking} />
         <header className="ade-net-setup-head">
           <span className="ade-net-brand">
             <TailscaleMark size={16} />
@@ -227,21 +310,18 @@ export function PrivateNetworkSection({
             </div>
           ) : null}
         </header>
-        {!routes ? (
-          <div className="ade-net-empty">
-            {state?.status === "error" ? state.message : "Checking Tailscale on this computer…"}
-          </div>
-        ) : showSteps ? (
+        <CheckResult state={state} rechecking={rechecking} lastRecheckAtMs={lastRecheckAtMs} todo={todo} complete={complete} />
+        {routes && showSteps ? (
           <div className="ade-net-steps">
             <ModernRows>
               {steps.map((step) => (
                 <ModernRow
                   key={step.id}
-                  icon={STEP_LOOK[step.state].icon}
-                  tone={STEP_LOOK[step.state].tone}
+                  icon={STEP_LOOK[rechecking ? "working" : step.state].icon}
+                  tone={STEP_LOOK[rechecking ? "working" : step.state].tone}
                   title={step.title}
-                  hint={step.hint}
-                  control={step.action ? <ExternalButton label={step.action.label} href={step.action.href} primary /> : undefined}
+                  hint={rechecking ? "Checking…" : step.hint}
+                  control={!rechecking && step.action ? <ExternalButton label={step.action.label} href={step.action.href} primary /> : undefined}
                 />
               ))}
               {expiringSoon && expiryDays != null ? (

@@ -9,6 +9,7 @@ import {
   DEFAULT_ATTENTION_PREFERENCES,
   runAcknowledgmentChunks,
   unreachedOutcomeFields,
+  type AttentionAccountDevice,
   type AttentionAcknowledgmentOutcome,
   type AttentionPreferenceScope,
   type AttentionPreferences,
@@ -28,7 +29,13 @@ type AccountAttentionClient = Pick<
   | "reportAttentionPresence"
   | "getAttentionPreferences"
   | "putAttentionPreferences"
-> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences" | "setAttentionSessionMuted">> & {
+> & Partial<Pick<
+  PushRelayClient,
+  | "putActivityMachinePreferences"
+  | "setAttentionSessionMuted"
+  | "listAttentionDevices"
+  | "putAttentionDevicePreferences"
+>> & {
   /**
    * Purge every Activity row a removed machine published (relay
    * `DELETE /attention/account/machines/:machineKey`). Optional so a relay
@@ -856,6 +863,42 @@ export class AttentionAccountCoordinator {
     await this.options.accountAttentionClient.putActivityMachinePreferences(
       accountOwnerId,
       normalizedMachineKey,
+      partial as Partial<AttentionPreferenceScope>,
+    );
+  }
+
+  /**
+   * The account's phones and tablets. Account data on the relay, so no pin:
+   * the list is the same from every machine.
+   */
+  async listDevices(input: unknown): Promise<AttentionAccountDevice[]> {
+    const request = isRecord(input) ? input as AttentionPreferenceRequest : {};
+    const accountOwnerId = this.requireCurrentAccountOwner(request.accountOwnerId);
+    if (!this.options.accountAttentionClient?.listAttentionDevices) {
+      throw accountActivityNotReadyError();
+    }
+    const devices = await this.options.accountAttentionClient.listAttentionDevices(accountOwnerId);
+    this.requireCurrentAccountOwner(accountOwnerId);
+    return devices;
+  }
+
+  /** One phone's notification override (`preferences.devices[deviceId]`). */
+  async putDevicePreferences(
+    deviceId: unknown,
+    partial: unknown,
+    expectedAccountOwnerId: unknown,
+  ): Promise<void> {
+    const normalizedDeviceId = typeof deviceId === "string" ? deviceId.trim() : "";
+    if (!normalizedDeviceId || !isRecord(partial)) {
+      throw new Error("A valid phone notification update is required.");
+    }
+    const accountOwnerId = this.requireCurrentAccountOwner(expectedAccountOwnerId);
+    if (!this.options.accountAttentionClient?.putAttentionDevicePreferences) {
+      throw accountActivityNotReadyError();
+    }
+    await this.options.accountAttentionClient.putAttentionDevicePreferences(
+      accountOwnerId,
+      normalizedDeviceId,
       partial as Partial<AttentionPreferenceScope>,
     );
   }

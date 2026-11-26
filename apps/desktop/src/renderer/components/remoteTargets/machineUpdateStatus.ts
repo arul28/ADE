@@ -1,5 +1,6 @@
 import type { RemoteRuntimeConnectionStatus, RemoteRuntimeUpdateBlock } from "../../../shared/types";
-import { isMachineVersionOutdated, type ConnectedMachine } from "./remoteMachineModel";
+import { isMachineVersionCurrent, machineUpdateTrack, type ConnectedMachine } from "./remoteMachineModel";
+import { updateTrackOfVersion } from "../../../shared/updateTrack";
 
 // ---------------------------------------------------------------------------
 // Where an "Update & restart" sent to another machine stands: in flight,
@@ -95,6 +96,17 @@ export type MachineUpdateStatus = {
   inFlight: boolean;
 };
 
+/** The reported brain and app can satisfy a target only on its own track. */
+export function machineMatchesUpdateTarget(
+  machine: Pick<ConnectedMachine, "version" | "track" | "appTrack">,
+  targetVersion: string,
+): boolean {
+  const targetTrack = updateTrackOfVersion(targetVersion);
+  return machineUpdateTrack(machine) === targetTrack
+    && (machine.appTrack == null || machine.appTrack === targetTrack)
+    && isMachineVersionCurrent(machine.version, targetVersion);
+}
+
 /**
  * Check an attempt against the machine as it is now. Landed: the machine
  * reports the version (or newer). Not landed in time: say so plainly, with
@@ -102,12 +114,14 @@ export type MachineUpdateStatus = {
  */
 export function describeMachineUpdateAttempt(
   attempt: MachineUpdateAttempt,
-  machine: Pick<ConnectedMachine, "version" | "hostStartedAt" | "hostUpdateBlock"> & { connected: boolean },
+  machine: Pick<ConnectedMachine, "version" | "track" | "appTrack" | "hostStartedAt" | "hostUpdateBlock"> & { connected: boolean },
   nowMs: number,
 ): MachineUpdateStatus {
   const pending = attempt.pendingVersion;
   if (!pending) return { ok: attempt.ok, message: attempt.message, inFlight: false };
-  if (machine.connected && machine.version && !isMachineVersionOutdated(machine.version, pending)) {
+  // Landed: on the pending build's track at that version or newer. A switch
+  // from Beta to an older Stable is not landed while the newer Beta still runs.
+  if (machine.connected && machineMatchesUpdateTarget(machine, pending)) {
     return { ok: true, message: `Updated to ${machine.version}.`, inFlight: false };
   }
   // Its brain restarted after the update was sent and has stayed up on the

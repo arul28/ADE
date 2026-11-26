@@ -950,6 +950,8 @@ export function createAutoUpdateService({
   };
   trackFeed.configure();
   let checkPromise: Promise<unknown> | null = null;
+  let cancellingTrackSwitch: UpdateTrack | null = null;
+  let approvedTrackSwitchVersion: string | undefined;
   // In-flight guard for quitAndInstall. Two IPC callers (e.g. AutoUpdateControl
   // double-click, or a renderer click that races a menu trigger) can both
   // reach the await on refreshReadyUpdateBeforeInstall before either of them
@@ -2546,7 +2548,7 @@ export function createAutoUpdateService({
       closeAfterInstall?: boolean;
     } = {},
   ): Promise<boolean> {
-    if (manualInstallOnly) return false;
+    if (manualInstallOnly || cancellingTrackSwitch) return false;
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -2555,6 +2557,8 @@ export function createAutoUpdateService({
     if (!waitingForRestore && (snapshot.status !== "ready" || !snapshot.version)) {
       return false;
     }
+    const matchesApprovedVersion = () => !approvedTrackSwitchVersion || snapshot.version === approvedTrackSwitchVersion;
+    if (!matchesApprovedVersion()) return false;
     const originalReadySnapshot = snapshot.status === "ready"
       ? cloneSnapshot(snapshot)
       : cloneSnapshot({
@@ -2589,6 +2593,10 @@ export function createAutoUpdateService({
         if (!restored || snapshot.status !== "ready" || !snapshot.version) {
           return await abortInstall("refresh_failed", originalReadySnapshot);
         }
+      }
+      if (!matchesApprovedVersion()) {
+        logger.warn("autoUpdate.track_switch_archive_changed", { approvedVersion: approvedTrackSwitchVersion, version: snapshot.version });
+        return parkReadyInstall("refresh_failed", cloneSnapshot(snapshot));
       }
       installReadySnapshot = cloneSnapshot(snapshot);
       currentPhase = "staging";
@@ -2628,6 +2636,7 @@ export function createAutoUpdateService({
         });
         return await abortInstall("prepare_failed", installReadySnapshot);
       }
+      if (!matchesApprovedVersion()) return await abortInstall("refresh_failed", cloneSnapshot(snapshot));
       const stateBeforeInstall = readGlobalState(globalStatePath);
       // This install supersedes the record of the last one, and with it any
       // continue row that record still owed a chat no project would claim. A
@@ -2771,6 +2780,37 @@ export function createAutoUpdateService({
   const periodicTimer = autoCheckEnabled ? setInterval(checkForUpdates, periodicCheckMs) : null;
   let disposed = false;
 
+  function discardUpdateForOtherTrack(target: UpdateTrack): void {
+    if (!snapshot.version || updateTrackOfVersion(snapshot.version) === target) return;
+    logger.info("autoUpdate.track_switch_discarded_staged_update", { version: snapshot.version, target });
+    downloadedFilePath = null;
+    compressedUpdateBytes = null;
+    compressedUpdateVersion = null;
+    cleanupUpdaterCacheDir({ updaterCacheDir, logger, reason: "track_switch" });
+    patchSnapshot({ ...createEmptyAutoUpdateSnapshot(currentVersion), recentlyInstalled: snapshot.recentlyInstalled });
+  }
+
+  /** Cancel a refused remote switch, including one whose feed request is still running. */
+  function cancelTrackSwitch(target: UpdateTrack): void {
+    if (trackFeed.state().switching !== target || cancellingTrackSwitch || quitAndInstallPromise || installQuitArmed) return;
+    cancellingTrackSwitch = target;
+    const finish = (): void => {
+      if (!disposed && trackFeed.state().switching === target) {
+        trackFeed.beginSwitch(trackFeed.runningTrack);
+        approvedTrackSwitchVersion = undefined;
+        discardUpdateForOtherTrack(trackFeed.runningTrack);
+        patchSnapshot(trackPatch());
+        logger.info("autoUpdate.track_switch_cancelled", { target });
+      }
+      cancellingTrackSwitch = null;
+    };
+    // Let the in-flight request finish writing before removing its archive.
+    // The install path is blocked while this cleanup is pending.
+    const pending = checkPromise ?? restorePromise;
+    if (pending) void pending.then(finish, finish);
+    else finish();
+  }
+
   /**
    * Moves this machine to `target`. The caller runs the database guard first
    * (it needs the brain) and calls this only for an allowed switch.
@@ -2783,7 +2823,7 @@ export function createAutoUpdateService({
    * Choosing the running build's track again cancels a switch that has not
    * installed yet.
    */
-  function startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult {
+  function startTrackSwitch(target: UpdateTrack, approvedVersion?: string): UpdateTrackSwitchResult {
     if (manualInstallOnly) return { ok: false, target, reason: "This Linux installation must be updated manually." };
     if (!writeSelectedTrack) {
       return { ok: false, target, reason: "This build can't change its update track." };
@@ -2791,8 +2831,8 @@ export function createAutoUpdateService({
     if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
       return { ok: false, target, reason: "An update is installing. Try again when ADE has restarted." };
     }
-    if (snapshot.status === "downloading" || snapshot.status === "checking") {
-      return { ok: false, target, reason: "ADE is checking for or downloading an update. Try again in a moment." };
+    if (snapshot.status === "downloading" || snapshot.status === "checking" || cancellingTrackSwitch) {
+      return { ok: false, target, reason: "ADE is still handling an update check. Try again in a moment." };
     }
     if (trackFeed.goingBackTo()) {
       return { ok: false, target, reason: "ADE is going back to the version it came from. Switch tracks after it restarts." };
@@ -2809,17 +2849,14 @@ export function createAutoUpdateService({
       }
     }
     const previousSelected = trackFeed.state().selected;
+    // Preserve a remote approval if someone selects the same pending track locally.
+    approvedTrackSwitchVersion = target === trackFeed.runningTrack
+      ? undefined
+      : approvedVersion ?? approvedTrackSwitchVersion;
     trackFeed.beginSwitch(target);
     // A staged update from the other track must never install after the
     // choice changed (for example a beta download, then "Stable" again).
-    if (snapshot.status === "ready" && snapshot.version && updateTrackOfVersion(snapshot.version) !== target) {
-      logger.info("autoUpdate.track_switch_discarded_staged_update", { version: snapshot.version, target });
-      downloadedFilePath = null;
-      compressedUpdateBytes = null;
-      compressedUpdateVersion = null;
-      cleanupUpdaterCacheDir({ updaterCacheDir, logger, reason: "track_switch" });
-      patchSnapshot({ ...createEmptyAutoUpdateSnapshot(currentVersion), recentlyInstalled: snapshot.recentlyInstalled });
-    }
+    if (snapshot.status === "ready") discardUpdateForOtherTrack(target);
     patchSnapshot(trackPatch());
     logger.info("autoUpdate.track_switch_started", { from: previousSelected, target, runningTrack: trackFeed.runningTrack });
     if (trackFeed.state().switching) {
@@ -2867,6 +2904,7 @@ export function createAutoUpdateService({
       cleanupUpdaterCacheDir({ updaterCacheDir, logger, reason: "go_back" });
       patchSnapshot({ ...createEmptyAutoUpdateSnapshot(currentVersion), recentlyInstalled: snapshot.recentlyInstalled });
     }
+    approvedTrackSwitchVersion = undefined;
     trackFeed.beginGoBack(version, `https://github.com/${releaseRepository}/releases/download/v${version}/`);
     patchSnapshot(trackPatch());
     logger.info("autoUpdate.go_back_started", { version, currentVersion });
@@ -2878,6 +2916,7 @@ export function createAutoUpdateService({
   return {
     checkForUpdates,
     startTrackSwitch,
+    cancelTrackSwitch,
     startGoBack,
     getSnapshot(): AutoUpdateSnapshot {
       return cloneSnapshot(snapshot);

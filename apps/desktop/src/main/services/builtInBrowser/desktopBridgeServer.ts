@@ -38,6 +38,7 @@ import {
 import {
   DESKTOP_APP_UPDATE_BRIDGE_PREFIX,
   DESKTOP_APP_UPDATE_INSTALL_METHOD,
+  DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD,
 } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
 import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
 import {
@@ -58,6 +59,7 @@ import {
 import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
 import { sanitizeUpdateRequestedBy } from "../../../shared/types/remoteRuntime";
+import { normalizeUpdateTrack } from "../../../shared/updateTrack";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
@@ -431,16 +433,19 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     if (engine) return await engine.handle(name, rawParams, connection);
     if (isAppUpdateMethod) {
       const installer = args.getAppUpdateInstaller?.() ?? null;
-      if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.methodNotFound,
-          `Action '${method}' is not exposed by the desktop bridge.`,
-        );
+      const requestedBy = sanitizeUpdateRequestedBy(rawParams.requestedBy);
+      if (installer && method === DESKTOP_APP_UPDATE_INSTALL_METHOD) {
+        return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion), requestedBy });
       }
-      return await installer.install({
-        targetVersion: normalizedString(rawParams.targetVersion),
-        requestedBy: sanitizeUpdateRequestedBy(rawParams.requestedBy),
-      });
+      if (installer && method === DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD) {
+        const track = normalizeUpdateTrack(rawParams.track);
+        if (!track) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app_update.switchTrack requires track 'stable' or 'beta'.");
+        return await installer.switchTrack({ track, requestedBy });
+      }
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${method}' is not exposed by the desktop bridge.`,
+      );
     }
     // The brain's attach probe (`probeDesktopBridge`). The name predates the
     // bridge dropping its secret and is kept so older brains' probes answer.

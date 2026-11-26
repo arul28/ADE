@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMachineUpdateControls, runMachineUpdateAndRestart } from "./machineUpdateAndRestart";
+import { createMachineUpdateControls, runMachineTrackSwitch, runMachineUpdateAndRestart, type MachineUpdateAndRestartDeps } from "./machineUpdateAndRestart";
 
 const runBrainUpdateCommand = vi.fn();
 vi.mock("../../commands/brainUpdate", () => ({
@@ -22,6 +22,31 @@ const upToDate = {
   targetVersion: "1.2.55",
   detail: "Already on the newest version.",
 };
+
+describe("detached track switch", () => {
+  it("keeps new update requests out while the installer owns this machine", async () => {
+    const deps: MachineUpdateAndRestartDeps = {
+      currentVersion: "1.2.50",
+      checkForUpdate: async () => available,
+      applyUpdate: vi.fn(async () => ({ ok: true, version: "1.2.55", detail: "Installed." })),
+      requestRestart: vi.fn(() => ({ ok: true, detail: "Restarting." })),
+      trackSwitch: {
+        isInstalling: async () => true,
+        check: async (target) => ({ allowed: true, target, targetVersion: "1.2.55-beta.1" }),
+        save: vi.fn(),
+      },
+    };
+
+    const results = await Promise.all([
+      runMachineUpdateAndRestart(deps, "1.2.55"),
+      runMachineTrackSwitch(deps, "beta"),
+    ]);
+    expect(results.map((result) => result.ok)).toEqual([false, false]);
+    expect(deps.trackSwitch?.save).not.toHaveBeenCalled();
+    expect(deps.applyUpdate).not.toHaveBeenCalled();
+    expect(deps.requestRestart).not.toHaveBeenCalled();
+  });
+});
 
 describe("runMachineUpdateAndRestart", () => {
   it("updates, then asks the service to restart", async () => {

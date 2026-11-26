@@ -1543,7 +1543,9 @@ describe("account Attention contract", () => {
         "account-a",
         "PATCH",
         "/attention/account/preferences/devices/phone-machine-muted",
-        { soundsEnabled: true },
+        // The phone writes its own switch on every sync; a phone left on
+        // must not undo a muted machine.
+        { soundsEnabled: true, notificationsEnabled: true },
       )).status).toBe(200);
       const storedPreferences = JSON.parse(row<{ payload_json: string }>(database, `
         select payload_json
@@ -5825,6 +5827,42 @@ describe("account Attention contract", () => {
       database.close();
     }
   });
+
+  it("lists only the caller's current phones, never their push tokens", async () => {
+    const database = new SqliteD1Database();
+    try {
+      const ownToken = "aa".repeat(32);
+      const otherToken = "bb".repeat(32);
+      const ownStartToken = "cc".repeat(32);
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "own-phone",
+        apnsToken: ownToken,
+        pushToStartToken: ownStartToken,
+      });
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "own-expired-phone",
+        apnsToken: "dd".repeat(32),
+        leaseExpiresAt: "2020-01-01T00:00:00.000Z",
+      });
+      insertAttentionDevice(database, {
+        userId: "account-b",
+        deviceId: "other-phone",
+        apnsToken: otherToken,
+      });
+      const response = await accountRoute(database, "account-a", "GET", "/attention/account/devices");
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect((JSON.parse(body) as { devices: Array<{ deviceId: string }> }).devices
+        .map((device) => device.deviceId)).toEqual(["own-phone"]);
+      for (const secret of [ownToken, ownStartToken, otherToken, "other-phone", "com.ade.ios", "sandbox"]) {
+        expect(body).not.toContain(secret);
+      }
+    } finally {
+      database.close();
+    }
+  });
 });
 
 describe("account machine lifecycle", () => {
@@ -7301,13 +7339,18 @@ describe("custom notifications", () => {
         values (?, ?, '2026-07-28T08:00:00.000Z')
       `).run(userId, JSON.stringify({
         devices: {
-          "phone-off": { notificationsEnabled: false },
+          "phone-off": { deviceDeliveryEnabled: false },
           "phone-quiet": { quietHours: { enabled: true, start: "11:00", end: "13:00", timeZone: "UTC" } },
           "phone-private": { hideDetails: true },
         },
         machines: { "muted-mac": { notificationsEnabled: false } },
       }));
       const env = await apnsEnv();
+      // An already-installed phone can keep writing its local setting.
+      const localSync = await accountRoute(database, userId, "PATCH", "/attention/account/preferences/devices/phone-off", {
+        notificationsEnabled: true,
+      }, { env });
+      expect(localSync.status).toBe(200);
 
       const response = await accountRoute(database, userId, "POST", "/attention/account/notify", {
         title: "  Deploy finished  ",
@@ -7340,6 +7383,39 @@ describe("custom notifications", () => {
       database.close();
       vi.unstubAllGlobals();
       vi.useRealTimers();
+    }
+  });
+
+  it("honors a mute for the same phone on the legacy machine route", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.000Z"));
+    const database = new SqliteD1Database();
+    const sent = captureApns();
+    const userId = "account-legacy-mute";
+    const deviceId = "account-phone";
+    const token = "ab".repeat(32);
+    try {
+      resetSpendGuardsForTests();
+      claimMachineForAccount(database, userId);
+      seedLegacyMachineDelivery(database, { deviceId: "paired-phone" });
+      insertAttentionDevice(database, { userId, deviceId, apnsToken: token });
+      const env = await apnsEnv();
+      const publish = () => legacyRelayRequest(makeLegacyRelayEnv(database, env), "POST", `/machines/${MACHINE_KEY}/publish`, {
+        notifications: [{ title: "Agent needs you" }],
+      });
+      const changeDelivery = (enabled: boolean) => accountRoute(
+        database, userId, "PATCH", `/attention/account/preferences/devices/${deviceId}`,
+        { deviceDeliveryEnabled: enabled }, { env },
+      );
+
+      expect((await changeDelivery(false)).status).toBe(200);
+      expect((await publish()).status).toBe(200);
+      expect(sent).toEqual([]);
+      expect((await changeDelivery(true)).status).toBe(200);
+      expect((await publish()).status).toBe(200);
+      expect(sent.map((push) => push.token)).toEqual([token]);
+    } finally {
+      database.close();
     }
   });
 
