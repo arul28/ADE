@@ -216,6 +216,7 @@ import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
+  ghUploadEnv,
   publishProofIntoPullRequestBody,
   publishProofToPullRequest,
   readPullRequestBody,
@@ -964,6 +965,8 @@ export type InvocationStep = {
   key: string;
   method: string;
   params?: JsonObject | ((values: JsonObject) => JsonObject);
+  /** Awaited before `params` is read, in the same try (a lookup `params` cannot wait for). */
+  prepare?: (values: JsonObject) => Promise<void>;
   unwrapToolResult?: boolean;
   optional?: boolean;
   /** An optional step's budget: after this long it counts as failed, and the plan goes on. */
@@ -10321,17 +10324,22 @@ function proofIntoPrBodySteps(options: {
   const fail = (error: unknown): never => {
     throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
   };
+  // The login the upload will use reads the text too: the App token may not see the repository.
+  let env: NodeJS.ProcessEnv = process.env;
   return [
     {
       key: "proofList",
       method: "ade/actions/call",
       unwrapToolResult: true,
       optional: options.optional,
+      prepare: async () => {
+        env = await ghUploadEnv().catch(fail);
+      },
       params: (values) => {
         let ids = options.ids ?? [];
         if (!options.ids) {
           try {
-            ids = prBodyProofIds(readPullRequestBody(options.pr(values), { cwd: roots().cwd }).body);
+            ids = prBodyProofIds(readPullRequestBody(options.pr(values), { cwd: roots().cwd, env }).body);
           } catch (error) {
             fail(error);
           }
@@ -10364,6 +10372,7 @@ function proofIntoPrBodySteps(options: {
           published = publishProofIntoPullRequestBody({
             pr: options.pr(values),
             ...roots(),
+            env,
             artifacts: listed.map(publishableArtifact),
           });
         } catch (error) {
@@ -16101,6 +16110,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       };
     }
     if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or the `id` fields of `ade proof list --json`.");
+    let uploadEnv: NodeJS.ProcessEnv = process.env;
     return {
       kind: "execute",
       label: "proof publish",
@@ -16119,6 +16129,13 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           // The comment is already on the PR when this runs. A failed link must
           // not hide that; the summary reports it as a warning instead.
           optional: true,
+          prepare: async () => {
+            try {
+              uploadEnv = await ghUploadEnv();
+            } catch (error) {
+              throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
+            }
+          },
           params: (values) => {
             const listed = firstArray(unwrapActionEnvelope(values.list) as JsonObject, ["artifacts"]);
             const byId = new Map(listed.map((artifact) => [asString(artifact.id) ?? "", artifact]));
@@ -16142,6 +16159,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
                 note,
                 replace,
                 cwd: explicitProjectRoot ?? roots.workspaceRoot,
+                env: uploadEnv,
                 artifacts: ids.map((id) => publishableArtifact(byId.get(id)!)),
               });
             } catch (error) {
@@ -43353,6 +43371,7 @@ async function executePlan(
     for (const step of plan.steps) {
       if (step.skipWhen?.(values)) continue;
       try {
+        await step.prepare?.(values);
         const resolvedParams =
           typeof step.params === "function" ? step.params(values) : step.params;
         const params = step.injectProjectRootIntoArgs

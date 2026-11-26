@@ -49,7 +49,8 @@ import { defaultCliShimsRoot } from "../shared/cliShimsRoot";
  *     github.com instead of opening a sign-in window (other hosts keep theirs).
  * - The shim steps aside (runs the real `gh` with the environment as it is)
  *   when the shell has its own GitHub token, `gh` has its own login, the
- *   endpoint is gone, or ADE has no token for the owner. With no real `gh`
+ *   endpoint is gone, ADE has no token for the owner, or the command is `gh
+ *   auth login`, `logout`, `refresh` or `switch` ({@link GH_LOGIN_COMMANDS}). With no real `gh`
  *   installed it prints the shell's usual "not found" and exits 127 (on
  *   Windows: 9009 as cmd.exe does, 127 under Git Bash). PowerShell's own
  *   not-found error cannot be copied; it gets cmd.exe's text.
@@ -71,6 +72,13 @@ export const GH_SHIM_OWNER_ENV = "ADE_GH_SHIM_OWNER";
  * copy of a `gh` login.
  */
 export const GH_TOKEN_USE_UPLOAD = "upload";
+/**
+ * `gh auth` commands the shims run without ADE's token:
+ * gh refuses to save, switch or remove a login while `GH_TOKEN` is set, and
+ * `gh auth login` is what ADE tells a person to run when the App token
+ * cannot do the job (a file upload).
+ */
+const GH_LOGIN_COMMANDS = ["login", "logout", "refresh", "switch"] as const;
 const GIT_CREDENTIAL_HELPER_NAME = "git-credential-ade-github";
 const GIT_HELPER_CONFIG_KEY = "credential.https://github.com.helper";
 /** Git Credential Manager's switch for its sign-in prompts, for github.com only. */
@@ -129,6 +137,9 @@ ade_step_aside() {
   fi
   exec "$ade_real" "$@"
 }
+# gh will not save, switch or remove a login while GH_TOKEN is set, so these
+# run without ADE's token (GH_LOGIN_COMMANDS in githubShellShim.ts).
+case \${1:-} in auth) case \${2:-} in login|logout|refresh|switch) ade_step_aside "$@" ;; esac ;; esac
 if [ "\${ADE_GH_TOKEN_SOURCE:-}" = account_app ]; then
   [ -n "\${GITHUB_TOKEN:-}\${GH_ENTERPRISE_TOKEN:-}\${GITHUB_ENTERPRISE_TOKEN:-}" ] && ade_step_aside "$@"
 else
@@ -392,6 +403,8 @@ async function ghMode(args) {
   const real = findRealGh();
   if (!real) return notFound();
   if (hasOwnToken() || hasOwnGhLogin()) return runGh(real, args, env);
+  // gh will not save, switch or remove a login while GH_TOKEN is set.
+  if (args[0] === "auth" && ${JSON.stringify(GH_LOGIN_COMMANDS)}.includes(args[1])) return runGh(real, args, env);
   const token = await askToken();
   if (token === UNREACHED) {
     // A sandbox that blocks the endpoint (Codex plan mode, for one) would

@@ -17,6 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -84,46 +85,47 @@ const isGithubAppToken = (token: string): boolean => /^gh[us]_/.test(token);
 
 /**
  * Asks this machine's ADE token endpoint for a token that can upload: the
- * account's copy of a `gh` login. A child process, because the publish runs
- * synchronously. Null when ADE has none; "unreached" when the endpoint did not
- * answer (a sandbox may block it).
+ * account's copy of a `gh` login. In this process: a single-executable `ade`
+ * cannot run a script in a child. Null when ADE has none; "unreached" when the
+ * endpoint did not answer (a sandbox may block it).
  */
-function askUploadToken(endpoint: string, env: NodeJS.ProcessEnv, run: typeof spawnSync): string | null | "unreached" {
-  const script = [
-    'const http = require("node:http");',
-    `const request = http.request({ socketPath: process.argv[1], path: "/v1/token?use=${GH_TOKEN_USE_UPLOAD}", method: "GET", agent: false, timeout: 10000 }, (response) => {`,
-    '  let body = ""; response.setEncoding("utf8");',
-    '  response.on("data", (chunk) => { body += chunk; });',
-    '  response.on("end", () => { process.stdout.write(response.statusCode + "\\n" + body); });',
-    "});",
-    'request.on("timeout", () => request.destroy(new Error("timeout")));',
-    'request.on("error", () => process.exit(3));',
-    "request.end();",
-  ].join("\n");
-  const result = run(process.execPath, ["-e", script, endpoint], {
-    encoding: "utf8",
-    env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
-    timeout: 15_000,
-    windowsHide: true,
+function askUploadToken(endpoint: string): Promise<string | null | "unreached"> {
+  return new Promise((resolve) => {
+    const request = http.request(
+      { socketPath: endpoint, path: `/v1/token?use=${GH_TOKEN_USE_UPLOAD}`, method: "GET", agent: false, timeout: 15_000 },
+      (response) => {
+        let body = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          if (body.length < 4096) body += chunk;
+        });
+        response.on("end", () => {
+          if (response.statusCode === 200 && /^[A-Za-z0-9_.-]+$/.test(body)) resolve(body);
+          else resolve(response.statusCode === 200 || response.statusCode === 204 ? null : "unreached");
+        });
+        response.on("error", () => resolve("unreached"));
+      },
+    );
+    request.on("timeout", () => request.destroy());
+    request.on("error", () => resolve("unreached"));
+    request.end();
   });
-  const [status, token = ""] = String(result.stdout ?? "").split("\n");
-  if (result.status !== 0 || (status !== "200" && status !== "204")) return "unreached";
-  return status === "200" && /^[A-Za-z0-9_.-]+$/.test(token) ? token : null;
 }
 
 /**
- * The environment for `gh` calls that upload files. A token or `gh` login of
+ * The environment for every `gh` call of a publish. A token or `gh` login of
  * this machine's own is used as it is (the person's computer). When only ADE
- * gives `gh` a token, the upload uses the account's copy of a `gh` login, and
+ * gives `gh` a token, the publish uses the account's copy of a `gh` login, and
  * is refused with {@link GH_UPLOAD_NEEDS_GH_LOGIN} when that is all an App
  * token, instead of gh's "requires write access" (GitHub answers an App
- * token's upload with a 404, whatever the App's permissions).
+ * token's upload with a 404, whatever the App's permissions). Running it on
+ * its own answer returns that answer.
  */
-export function ghUploadEnv(env: NodeJS.ProcessEnv = process.env, run: typeof spawnSync = spawnSync): NodeJS.ProcessEnv {
+export async function ghUploadEnv(env: NodeJS.ProcessEnv = process.env): Promise<NodeJS.ProcessEnv> {
   if (envHasOwnGithubToken(env) || ghHasOwnGithubLogin(env)) return env;
   const endpoint = env[GH_TOKEN_ENDPOINT_ENV]?.trim();
   if (endpoint) {
-    const token = askUploadToken(endpoint, env, run);
+    const token = await askUploadToken(endpoint);
     // The shim would not reach it either and says so; gh runs as before.
     if (token === "unreached") return env;
     if (!token || isGithubAppToken(token)) throw new ProofPublishError(GH_UPLOAD_NEEDS_GH_LOGIN);
@@ -150,13 +152,13 @@ export function publishProofToPullRequest(args: {
   /** Delete this account's earlier ADE proof comments on the PR, after the new one posts. */
   replace?: boolean;
   cwd?: string;
-  env?: NodeJS.ProcessEnv;
+  /** From {@link ghUploadEnv}. Every call uses it, so `replace` finds the comments it posted. */
+  env: NodeJS.ProcessEnv;
   run?: typeof spawnSync;
 }): ProofPublishResult {
   const run = args.run ?? spawnSync;
+  const env = args.env;
   assertGhSupportsAttach(run);
-  // Every call uses the upload's login, so `replace` finds the comments it posted.
-  const env = ghUploadEnv(args.env, run);
 
   const view = run("gh", ["pr", "view", args.pr, "--json", "url", "--jq", ".url"], {
     encoding: "utf8",
@@ -280,12 +282,13 @@ export function publishProofIntoPullRequestBody(args: {
   projectRoot: string;
   artifacts: PublishableArtifact[];
   cwd?: string;
-  env?: NodeJS.ProcessEnv;
+  /** From {@link ghUploadEnv}. */
+  env: NodeJS.ProcessEnv;
   run?: typeof spawnSync;
 }): ProofPublishResult {
   const run = args.run ?? spawnSync;
+  const env = args.env;
   assertGhSupportsAttach(run);
-  const env = ghUploadEnv(args.env, run);
   const { url: prUrl, body } = readPullRequestBody(args.pr, { cwd: args.cwd, env, run });
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-publish-"));
   try {
