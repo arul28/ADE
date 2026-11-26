@@ -256,6 +256,7 @@ async function joinWithEngine(
   signal: AbortSignal,
 ): Promise<void> {
   const fitted: string[] = [];
+  let driveStuck = false;
   try {
     for (const [index, segment] of segments.entries()) {
       const analysis = await engine.analyze(segment.path, { signal });
@@ -269,8 +270,12 @@ async function joinWithEngine(
       }, { signal });
     }
     await remuxParts(fitted, outputPath, canvas);
+  } catch (error) {
+    driveStuck = isStuckMediaProcessError(error);
+    throw error;
   } finally {
-    for (const file of fitted) fs.rmSync(file, { force: true });
+    // Stuck on the drive: removing the parts would freeze this process.
+    if (!driveStuck) for (const file of fitted) fs.rmSync(file, { force: true });
   }
 }
 
@@ -310,6 +315,12 @@ export type AndroidRecordingVideo = {
   bytes: number;
   /** Set when the recording holds nothing to show: nothing is filed. */
   unusable: string | null;
+  /**
+   * The recording's drive stopped answering during the render: `files` say
+   * where the video is, and nothing may touch that drive again (no sidecar,
+   * no proof filing), or the process freezes with it.
+   */
+  driveStuck?: boolean;
 };
 
 function fileSegment(filePath: string, size: Size, durationMs: number, frames: number): AndroidRecordingSegment {
@@ -364,9 +375,9 @@ export async function produceAndroidRecordingVideo(args: {
   const frames = segments.reduce((sum, segment) => sum + segment.frames, 0);
   const signal = AbortSignal.timeout(args.budgetMs ?? ANDROID_DEMO_BUDGET_MS);
   const rawPath = outputPath.replace(/\.mp4$/u, ".raw.mp4");
-  const keepParts = (reason: string): AndroidRecordingVideo => {
+  const keepParts = (reason: string, driveStuck = false): AndroidRecordingVideo => {
     logger.warn("android.recording_join_failed", { parts: segments.length, reason });
-    return androidRawVideoFallback(segments, wallMs, reason);
+    return { ...androidRawVideoFallback(segments, wallMs, reason), ...(driveStuck ? { driveStuck: true } : {}) };
   };
 
   let rawSize: Size = segments[0]!;
@@ -378,8 +389,11 @@ export async function produceAndroidRecordingVideo(args: {
       rawSize = await joinSegments({ segments, rawPath, engines: args.engines, signal, logger });
       track = remapAndroidTrackToCanvas(args.track, segments, rawSize);
     } catch (error) {
+      const reason = `the parts of the turned screen could not be joined (${getErrorMessage(error)}), so each part is kept`;
+      // Stuck on the drive: removing the half-joined file would freeze this process.
+      if (isStuckMediaProcessError(error)) return keepParts(reason, true);
       fs.rmSync(rawPath, { force: true });
-      return keepParts(`the parts of the turned screen could not be joined (${getErrorMessage(error)}), so each part is kept`);
+      return keepParts(reason);
     }
     for (const segment of segments) fs.rmSync(segment.path, { force: true });
   }
@@ -420,7 +434,7 @@ export async function produceAndroidRecordingVideo(args: {
     // is filed where it is, size unknown.
     if (isStuckMediaProcessError(error)) {
       const segment: AndroidRecordingSegment = { path: rawPath, width: rawSize.width, height: rawSize.height, durationMs: wallMs, bytes: 0, frames };
-      return androidRawVideoFallback([segment], wallMs, reason);
+      return { ...androidRawVideoFallback([segment], wallMs, reason), driveStuck: true };
     }
     if (fs.existsSync(rawPath)) {
       fs.rmSync(outputPath, { force: true });
