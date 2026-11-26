@@ -1539,7 +1539,10 @@ account, never a pin.
     stay, `chatsKept` is true and the toast says to remove the rest in Work.
   - `cloud.delete` (`ade cloud delete <machine>`) keeps the chats.
     `cloud.lane_delete` (`ade cloud lanes delete <lane>`) deletes them, as
-    the desktop does, unless `--keep-chats`.
+    the desktop does. It refuses `keepChats` (and the CLI refuses
+    `--keep-chats`): the person picks on the card, and Keep for later is the
+    way to keep the lane and its chats. An agent can't keep the chats behind
+    the card.
   - Each person's delete sends `ade_feature_used` `cloud_lane_deleted` with
     the outcome `completed`, `kept`, `partial` or `failed`.
 - **Manage lane on a cloud lane** opens a Computer tab
@@ -1563,7 +1566,9 @@ account, never a pin.
   of its chats share it, and a send that carries it clears it. When ADE Cloud can't start one (the account is blocked or signed
   out, no hours or disk, no branch or repository), the banner turns to a
   warning with the reason and Send is off. A lane with no chat offers New
-  computer on the same branch instead. Delete asks first, removes the kept
+  computer on the same branch instead. In Lanes, a lane with no kept record
+  says "Only its N saved chats are left" (`onlyChatsLeftSentence`). Its
+  button is "Delete lane" in every case, as on the iPhone. Delete asks first, removes the kept
   record (the server refuses it while a computer holds the lane again), then
   every saved chat of that lane on its old computers, page by page; when
   chats remain, it says so and keeps the row. After the server confirms a
@@ -1777,8 +1782,7 @@ Reads wake nothing and work from any folder (`ADE_ACTION_MACHINE_SCOPED`).
     already deleted: its kept record (the
     server deletes the lane's backups and saved chats with it), then any
     chats left on its deleted computers. With no kept record, ADE deletes
-    those chats and the lane's backups itself. `--keep-chats` is refused
-    there: the chats are all that is left of the lane.
+    those chats and the lane's backups itself.
   - `lane_free`, `saved_chat_delete`, `session_delete`, `backup_forget` and
     `job_cancel` ask the same way.
   - After the person's yes, the agent's chat shows the write as one card

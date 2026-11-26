@@ -385,9 +385,12 @@ export function canDeleteCloudLaneWithoutComputer(row: Pick<CloudLaneWithoutComp
   return row.kept ? cloudLaneLifeAvailable() : Boolean(window.ade?.cloud?.savedChats?.delete);
 }
 
-/** The row's Delete, as its button and its confirm both say it. */
-export function cloudLaneWithoutComputerDeleteLabel(row: Pick<CloudLaneWithoutComputerRow, "kept" | "sessions">): string {
-  return row.sessions.length > 0 ? (row.kept ? "Delete lane and chats" : "Delete chats") : "Delete lane";
+/** The row's Delete, as its button and its confirm both say it: whatever is left of the lane goes. */
+export const CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL = "Delete lane";
+
+/** "Only its 2 saved chats are left.": a lane with no kept record is only its chats. */
+export function onlyChatsLeftSentence(count: number): string {
+  return count === 1 ? "Only its saved chat is left." : `Only its ${count} saved chats are left.`;
 }
 
 /**
@@ -401,9 +404,9 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
     title: `Delete ${row.laneName}?`,
     message: row.kept
       ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"} and its saved work that isn't on GitHub. Download that work first if you need it. Its branch stays on GitHub.`
-      : `ADE deletes ${chats ?? "its saved chats"} from ADE Cloud. Work it pushed stays on GitHub.`,
+      : `${count > 0 ? `${onlyChatsLeftSentence(count)} ` : ""}ADE deletes ${count === 1 ? "it" : count > 1 ? "them" : "its saved chats"} from ADE Cloud, and the lane leaves your lists. Work it pushed stays on GitHub.`,
     icon: <CloudMark size={16} brand />,
-    confirmLabel: cloudLaneWithoutComputerDeleteLabel(row),
+    confirmLabel: CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
     destructive: true,
   });
   if (!ok) return;
@@ -431,7 +434,7 @@ export async function deleteCloudLaneWithoutComputer(row: CloudLaneWithoutComput
       return;
     }
     dropFromStore(row, null);
-    showToast({ tone: "success", title: `Deleted ${row.laneName}`, message: !row.kept ? "Its chats are gone." : chats ? "The lane and its chats are gone." : "The lane is gone.", replayMask: { title: true } });
+    showToast({ tone: "success", title: `Deleted ${row.laneName}`, message: chats ? "The lane and its chats are gone." : "The lane is gone.", replayMask: { title: true } });
   } catch (error) {
     console.warn("[cloud] deleting a lane without a computer failed", error);
     if (removed.size) {

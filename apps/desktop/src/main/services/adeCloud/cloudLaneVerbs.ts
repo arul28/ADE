@@ -101,6 +101,8 @@ const MOVE_ENDED: ReadonlySet<string> = new Set(["done", "failed", "cancelled"])
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Where the person does it in ADE, when the caller has no chat to ask in. */
 const PERSON_PLACE = "Do it in ADE: the lane's row in Work or Lanes, or Settings › ADE Cloud. Or ask for it in an ADE chat, where ADE can ask you.";
+/** An agent's delete can't keep the chats behind the person's back: the card offers each choice. */
+const LANE_DELETE_KEEP_CHATS_GONE = "keepChats is gone: the delete card asks the person. Delete lane deletes the lane, its computer and its saved chats; Keep for later (ade cloud lanes free) removes only the computer and keeps the lane and its chats.";
 
 const iso = (ms: number | null | undefined): string | null => (typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : null);
 const dayOf = (ms: number | null | undefined): string =>
@@ -349,11 +351,9 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
     return { lane: matches[0]!, chatRows: read.chatRows, keptIds: read.keptIds };
   };
 
-  /** A delete card's line on what goes: the computer, its files, and the saved chats unless they stay. */
-  const goesLine = (count: number, keepChats: boolean): string =>
-    keepChats
-      ? "Its computer and its files go; its saved chats stay, to read later."
-      : count > 0 ? `Its computer, its files and its ${plural(count, "saved chat")} go.` : "Its computer and its files go.";
+  /** A delete card's line on what goes: the lane, its computer, its files and its saved chats. */
+  const goesLine = (count: number): string =>
+    count > 0 ? `The lane, its computer, its files and its ${plural(count, "saved chat")} go.` : "The lane, its computer and its files go.";
 
   /** What a delete would lose, from the work check (no wake for an asleep computer saved at rest). */
   const workBody = (work: CloudLaneWorkState): string => {
@@ -502,19 +502,20 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
 
     /**
      * Deletes a lane. On a computer: the work check, then the card ([Delete
-     * lane] [Keep for later] [Cancel]); the computer goes with the lane and,
-     * unless `keepChats`, its saved chats. Computer deleted: the lane's record,
-     * its saved work and its saved chats go.
+     * lane] [Keep for later] [Cancel]); Delete lane takes the computer, its
+     * files and the lane's saved chats, and Keep for later is `lane_free`.
+     * The person picks on the card: an agent can't keep the chats behind it
+     * (`keepChats` is refused). Computer deleted: the lane's record, its saved
+     * work and its saved chats go.
      */
     async lane_delete(rawArgs?: unknown) {
       const args = record(rawArgs);
       const approval = readApproval(args);
-      const keepChats = args.keepChats === true;
+      if (args.keepChats === true) throw new Error(LANE_DELETE_KEEP_CHATS_GONE);
       const { lane, keptIds } = await resolveLane(text(args, "lane"), { write: true });
       const account = deps.account();
       if (!lane.computer) {
         // The lane's chats are all that is left of it: deleting the lane deletes them (the server does it with its record).
-        if (keepChats) throw new Error(`${lane.name} has no computer, so its saved chats are the lane: deleting it deletes them. Read them first (ade cloud lanes show ${lane.laneId}), or keep the lane.`);
         const saved = lane.backup ? ` and the work ADE saved for it (${workLine({ ahead: lane.backup.commits, dirty: lane.backup.files > 0, files: lane.backup.files })})` : "";
         await deps.approve(approval, {
           action: "delete",
@@ -572,12 +573,10 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         // One line on what goes, then the work check.
         body: async () => {
           work = await account.workState({ instanceId, instance });
-          return [goesLine(lane.chats, keepChats), workBody(work)].filter(Boolean).join("\n");
+          return [goesLine(lane.chats), workBody(work)].filter(Boolean).join("\n");
         },
         confirm: "Delete lane",
-        confirmDetail: keepChats
-          ? "Its computer and its files go. Its saved chats stay, to read later."
-          : "Its computer, its files and its saved chats go for good.",
+        confirmDetail: `The lane, its computer, its files and its saved chats go for good.${lane.branch ? ` Its branch ${lane.branch} stays on GitHub.` : ""}`,
         alternative: {
           label: "Keep for later",
           detail: "ADE pushes its work to GitHub and removes only its computer. The lane and its chats stay; your next message makes a new computer.",
@@ -603,13 +602,13 @@ export function buildCloudLaneVerbs(deps: CloudLaneVerbDeps) {
         }
       }
       return await shownInChat(approval, { running: `Deleting ${lane.name}…`, done: `Deleted ${lane.name}`, failed: `Couldn't delete ${lane.name}` }, async () => {
-        const deleted = await countFailure("cloud_lane_deleted", account.deleteLane({ instanceId, skipCheck: true, keepChats }));
+        const deleted = await countFailure("cloud_lane_deleted", account.deleteLane({ instanceId, skipCheck: true }));
         const checked = work as CloudLaneWorkState | null;
-        logger.info?.("cloud.lane_delete_verb", { ok: deleted.ok, by: approval.by, keepChats, checked: checked != null });
-        captureCloudLaneAnalytics(deps.analytics, "api", "cloud_lane_deleted", !deleted.ok ? "failed" : keepChats ? "kept" : deleted.chatsKept ? "partial" : "completed");
+        logger.info?.("cloud.lane_delete_verb", { ok: deleted.ok, by: approval.by, checked: checked != null });
+        captureCloudLaneAnalytics(deps.analytics, "api", "cloud_lane_deleted", !deleted.ok ? "failed" : deleted.chatsKept ? "partial" : "completed");
         return {
           outcome: deleted.ok ? "deleted" : "failed",
-          message: deleted.ok && !keepChats && deleted.chatsKept ? `${deleted.message} Some of its saved chats are left; ade cloud lanes shows them.` : deleted.message,
+          message: deleted.ok && deleted.chatsKept ? `${deleted.message} Some of its saved chats are left; ade cloud lanes shows them.` : deleted.message,
           unpushedLanes: checked?.unpushedLanes ?? [],
           chatsKept: deleted.chatsKept,
         };

@@ -358,8 +358,8 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud lanes show fix-login --text",
     },
     lane_delete: {
-      description: "Delete an ADE Cloud lane. On a computer: ADE checks its work first (no wake when the computer is asleep and saved), then asks the person on one card: Delete lane (the computer and, unless keepChats, its saved chats go) | Keep for later (ADE pushes the work, removes the computer, keeps the lane and its chats) | Cancel. Computer already deleted: the lane's record, its saved work and its saved chats go. A full-auto chat goes on alone only for a computer it made; plan mode, automations and ADE MCP apps are told no. Returns {outcome: deleted | kept_for_later | partial | failed, message, ...}.",
-      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids), keepChats?: boolean }",
+      description: "Delete an ADE Cloud lane. On a computer: ADE checks its work first (no wake when the computer is asleep and saved), then asks the person on one card: Delete lane (the lane, its computer, its files and its saved chats go) | Keep for later (ADE pushes the work, removes the computer, keeps the lane and its chats) | Cancel. Computer already deleted: the lane's record, its saved work and its saved chats go. A full-auto chat goes on alone only for a computer it made; plan mode, automations and ADE MCP apps are told no. Returns {outcome: deleted | kept_for_later | partial | failed, message, ...}.",
+      input: "object { lane: string (its name, id, branch or ADE link; a name two lanes share is refused with their ids) }",
       example: "ade cloud lanes delete fix-login",
     },
     lane_free: {

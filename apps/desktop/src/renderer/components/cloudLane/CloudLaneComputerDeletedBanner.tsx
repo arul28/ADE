@@ -19,12 +19,13 @@ import {
   CLOUD_QUEUE_SIZE_ID,
   canDeleteCloudLaneWithoutComputer,
   cloudLaneWithoutComputerBranch,
-  cloudLaneWithoutComputerDeleteLabel,
+  CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
   cloudLaneWithoutComputerFate,
   cloudLaneWithoutComputerRowNow,
   cloudQueueSizeLabel,
   cloudTierLabel,
   deleteCloudLaneWithoutComputer,
+  onlyChatsLeftSentence,
   savedChatFateSentence,
   type CloudLaneWithoutComputerRow,
 } from "./cloudLanesWithoutComputer";
@@ -157,7 +158,7 @@ function useDeleteAction(facts: CloudLaneComputerDeleted, row: CloudLaneWithoutC
   const preview = row ?? { kept: facts.kept, sessions: [] };
   if (!canDeleteCloudLaneWithoutComputer(preview)) return null;
   return {
-    label: row ? cloudLaneWithoutComputerDeleteLabel(row) : facts.kept ? "Delete lane" : "Delete chats",
+    label: CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
     variant: "secondary",
     busy,
     onClick: () => {
@@ -218,6 +219,8 @@ export function CloudLaneComputerDeletedBanner({
   const account = useCloudAccount(Boolean(sizeMachineKey));
   const branch = facts.branch ?? "the lane's branch";
   const sizeLabel = picked ? cloudTierLabel(account, picked) : facts.sizeLabel;
+  // In Lanes, a lane with no kept record is only its saved chats: say so, so its Delete reads plainly.
+  const onlyChats = where === "lane" && !facts.kept && row && row.sessions.length > 0 ? onlyChatsLeftSentence(row.sessions.length) : null;
   if (facts.blocked) {
     const fixes: NoticeAction[] = onOpenSettings
       ? facts.blocked.actions.map((action) => ({ label: TRAY_ACTION_LABEL[action], onClick: () => onOpenSettings(action) }))
@@ -258,7 +261,7 @@ export function CloudLaneComputerDeletedBanner({
         title: "This lane's ADE Cloud computer was deleted",
         detail: (
           <>
-            {facts.fate} {next}
+            {facts.fate} {onlyChats ? `${onlyChats} ` : ""}{next}
             <WhyComputerDeleted onOpenPlans={onOpenSettings ? () => onOpenSettings("upgrade") : null} />
           </>
         ),

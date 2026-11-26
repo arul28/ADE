@@ -5206,7 +5206,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     makes a new computer). --stale: unused a week or due for
                                                     cleanup, biggest disk first. --deleted, --project <origin>
     $ ade cloud lanes <lane> --text               One lane and its saved chats (<lane>: name, id, branch or link)
-    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats (--keep-chats).
+    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats (the card also offers Keep for later)
                                                     ADE checks its work first; the card also offers Keep for later
     $ ade cloud lanes free <lane>                 Keep for later: push its work, remove its computer, keep the lane
     $ ade cloud lanes start <lane> [--size medium]
@@ -22252,7 +22252,11 @@ function buildCloudLanesPlan(args: string[], flags: { project: string | null; si
     case "start":
       return cloudStep("lane start", "lane_start", { lane, ...(flags.size ? { size: flags.size } : {}) }, "cloud-result", true);
     default:
-      return cloudStep("lane delete", "lane_delete", { lane, ...(args.includes("--keep-chats") ? { keepChats: true } : {}) }, "cloud-result", true);
+      // The person picks on the card; an agent can't keep the chats behind it.
+      if (args.includes("--keep-chats")) {
+        throw new CliUsageError("--keep-chats is gone: the delete card asks the person. Delete lane deletes the lane, its computer and its saved chats; to keep the lane and its chats, run: ade cloud lanes free <lane>");
+      }
+      return cloudStep("lane delete", "lane_delete", { lane }, "cloud-result", true);
   }
 }
 
