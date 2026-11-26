@@ -10,6 +10,7 @@ import { DangerConfirmMenuItem } from "../ui/DangerConfirmMenuItem";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 import { useDeviceMachinePin } from "./useDeviceMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * The Apple Development card's action menu.
@@ -83,7 +84,7 @@ export function AppleToolCardMenu({
       .catch((error: unknown) => {
         showToast({
           title: `${action} failed`,
-          message: error instanceof Error ? error.message : String(error),
+          message: plainErrorText(error, "ADE couldn't finish that."),
           tone: "error",
         });
       })

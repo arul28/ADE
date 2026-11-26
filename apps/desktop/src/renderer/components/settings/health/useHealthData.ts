@@ -10,6 +10,7 @@ import { getAppResourceUsageCoalesced } from "../../../lib/resourcePressure";
 import { baseName } from "../storage/storageView";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { saveProjectLocalConfig } from "../../../lib/projectLocalConfig";
+import { plainErrorText } from "../../../lib/plainError";
 
 export type StorageData = {
   snapshot: StorageSnapshot | null;
@@ -145,7 +146,7 @@ export function useHealthData(
         ...current,
         loading: false,
         refreshing: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: plainErrorText(err, "ADE couldn't read storage use."),
       }));
     }
   }, [isThisMachine, pin, wantStorage]);
@@ -215,7 +216,7 @@ export function useHealthData(
         ...current,
         loading: false,
         checking: false,
-        error: err instanceof Error ? err.message : String(err),
+        error: plainErrorText(err, "ADE couldn't check the project."),
       }));
     }
   }, [pin, reportAvailable, wantReport]);

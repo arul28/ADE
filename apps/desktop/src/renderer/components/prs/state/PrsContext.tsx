@@ -27,6 +27,7 @@ import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollG
 import { notePrChangeFiles, prChangeSplitKey, setPrChangeSplitStandDown } from "../shared/prChangeSplitStore";
 import { PrRuntimePinProvider } from "./prMachines";
 import { readerPin, usePrsReader, type PrsReader } from "./prsReader";
+import { plainErrorText } from "../../../lib/plainError";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -541,7 +542,7 @@ function PrsReaderProvider({
       setRefreshErrorRetryCount(0);
     } catch (err) {
       setRefreshErrorRetryCount((count) => count + 1);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't load the pull requests."));
     } finally {
       setLoading(false);
       initialLoadDone.current = true;

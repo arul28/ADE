@@ -23,6 +23,7 @@ import {
   publishWorkTerminalShellCount,
 } from "../terminals/workTerminalShells";
 import { withChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 type AppControlTabState = {
   terminalSessionId: string;
@@ -230,7 +231,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   tabsRef.current = tabs;
 
   const reportCreateError = useCallback((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = plainErrorText(error, "ADE couldn't start the terminal.");
     onCreateError?.(message);
   }, [onCreateError]);
 

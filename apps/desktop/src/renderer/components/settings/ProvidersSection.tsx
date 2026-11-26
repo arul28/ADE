@@ -78,6 +78,9 @@ import type {
 } from "./providers/types";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { requirePin } from "../../state/repositoryScope";
+import { plainErrorText } from "../../lib/plainError";
+
+const PROVIDER_STATUS_FAILED = "ADE couldn't read the provider status.";
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
@@ -355,7 +358,7 @@ function catalogRefreshProviderOf(provider: SettingsProviderId | undefined): Age
 }
 
 function toastActionError(title: string, err: unknown): void {
-  showToast({ tone: "error", title, message: err instanceof Error ? err.message : String(err) });
+  showToast({ tone: "error", title, message: plainErrorText(err, "That didn't work.") });
 }
 
 /**
@@ -475,7 +478,7 @@ function MachineProvidersSection({
       if (!statusKnownRef.current) setStatusLoadError(null);
     }
     setError(null);
-    const reportError = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
+    const reportError = (err: unknown) => setError(plainErrorText(err, PROVIDER_STATUS_FAILED));
     // Four separate reads, each shown when it lands: the tiles wait only on
     // the status, never on the config, the key list or Cursor's sign-in.
     const statusRead = window.ade.ai.getStatus({
@@ -489,7 +492,7 @@ function MachineProvidersSection({
         return next as AiSettingsStatus;
       },
       (err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = plainErrorText(err, PROVIDER_STATUS_FAILED);
         if (!statusKnownRef.current) setStatusLoadError(message);
         setError(message);
         return null;
@@ -547,7 +550,7 @@ function MachineProvidersSection({
     } catch (err) {
       // Keep any previously loaded methods so an intermittent failure does not
       // wipe SuperGrok / ChatGPT OAuth rows mid-session.
-      setAuthMethodsError(err instanceof Error ? err.message : String(err));
+      setAuthMethodsError(plainErrorText(err, "ADE couldn't read the sign-in options."));
     }
   }, [pin]);
 
@@ -928,7 +931,7 @@ function MachineProvidersSection({
       showToast({ tone: "error", title: "Cursor verification failed", message: verification.message || undefined });
       return { ok: false, error: verification.message || "Cursor verification failed." };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = plainErrorText(err, "ADE couldn't sign in to Cursor.");
       showToast({ tone: "error", title: "Cursor sign-in failed", message });
       return { ok: false, error: message };
     } finally {
@@ -1119,7 +1122,7 @@ function MachineProvidersSection({
     } catch (err) {
       setAcpDiagnosticsError((prev) => ({
         ...prev,
-        [provider]: err instanceof Error ? err.message : String(err),
+        [provider]: plainErrorText(err, "ADE couldn't read the diagnostics."),
       }));
     } finally {
       setAcpDiagnosticsBusy((current) => (current === provider ? null : current));
@@ -1165,7 +1168,7 @@ function MachineProvidersSection({
     } catch (err) {
       setAcpDiagnosticsError((prev) => ({
         ...prev,
-        [provider]: err instanceof Error ? err.message : String(err),
+        [provider]: plainErrorText(err, "ADE couldn't run the diagnostics."),
       }));
     } finally {
       setAcpDoctorBusy((current) => (current === provider ? null : current));

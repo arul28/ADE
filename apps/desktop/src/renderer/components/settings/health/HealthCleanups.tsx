@@ -22,6 +22,7 @@ import { CleanupRunChart, type RunColumn } from "./healthCharts";
 import { useStorageBytes } from "../storage/useStorageBytes";
 import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import type { HealthData } from "./useHealthData";
+import { plainErrorText } from "../../../lib/plainError";
 
 const TRIGGER_LABEL: Record<MaintenanceRunReport["trigger"], string> = {
   manual: "You ran it",
@@ -617,7 +618,7 @@ export function HealthCleanupRules({
       captureRuleSwitches(effectivePolicy, next);
       void loadStorage({ force: true, silent: true });
     } catch (err) {
-      showToast({ tone: "error", title: "Couldn't save the cleanup rules", message: err instanceof Error ? err.message : String(err) });
+      showToast({ tone: "error", title: "Couldn't save the cleanup rules", message: plainErrorText(err, "ADE couldn't save the cleanup rules.") });
     } finally {
       setBusy(false);
     }

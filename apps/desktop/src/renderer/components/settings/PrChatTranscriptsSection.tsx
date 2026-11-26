@@ -7,6 +7,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { requirePin } from "../../state/repositoryScope";
 import { AccountSettingNotices } from "./AccountSettingNotices";
+import { plainErrorText } from "../../lib/plainError";
 
 /** The PR settings that follow the account (`projectConfigAccountLayer.ts`). */
 const PR_ACCOUNT_KEYS = ["prs.transcriptGists", "prs.pollIntervalSeconds", "prs.autoMapByBranch"] as const;
@@ -60,7 +61,7 @@ export function PrChatTranscriptsSection() {
       }), pin);
       setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      setActionError(plainErrorText(error, "ADE couldn't save the setting."));
     } finally {
       setConfigBusy(false);
     }

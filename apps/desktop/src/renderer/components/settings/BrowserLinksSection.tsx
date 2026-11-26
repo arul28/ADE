@@ -7,6 +7,7 @@ import { refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
 import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 import { useThisComputerCopyPin } from "./ProjectCopyScope";
+import { plainErrorText } from "../../lib/plainError";
 
 const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string; hint: string; icon: Icon }> = [
   { value: "in-app", label: "In ADE", hint: "A tab in the ADE browser, beside your work.", icon: AppWindow },
@@ -64,7 +65,7 @@ export function BrowserLinksSection() {
       flash.flash();
     } catch (error) {
       setMode(previous);
-      flash.fail(error instanceof Error ? error.message : String(error));
+      flash.fail(plainErrorText(error, "ADE couldn't save the link setting."));
     } finally {
       setBusy(false);
     }

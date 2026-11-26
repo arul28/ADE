@@ -12,6 +12,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { IosSimToolsColumnProps } from "./IosSimToolsColumn";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { withChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /** How often the tools column re-reads whether the app is running. */
 const APP_STATE_POLL_MS = 4_000;
@@ -164,7 +165,7 @@ export function useIosSimDeviceTools({
       apply?.(result);
       onError(null);
     } catch (error) {
-      onError(`${label} failed. ${error instanceof Error ? error.message : String(error)}`);
+      onError(`${label} failed. ${plainErrorText(error, "ADE couldn't reach the simulator.")}`);
     }
   }, [onError]);
 
@@ -322,7 +323,7 @@ export function useIosSimDeviceTools({
         setLogRunning(true);
         setLogRows(page.rows);
       } catch (error) {
-        onError(error instanceof Error ? error.message : String(error));
+        onError(plainErrorText(error, "ADE couldn't read the device log."));
       }
     })();
   }, [activeDeviceUdid, bundleId, logOwnerArgs, logRunning, onError, runtimePinRef]);
@@ -439,7 +440,7 @@ export function useIosSimDeviceTools({
         if (cancelled) return;
         logDeviceRef.current = null;
         setLogRunning(false);
-        onError(error instanceof Error ? error.message : String(error));
+        onError(plainErrorText(error, "ADE couldn't read the device log."));
       }
     })();
     return () => {
@@ -471,7 +472,7 @@ export function useIosSimDeviceTools({
       .catch((error: unknown) => {
         if (superseded) return;
         logDeviceRef.current = followed;
-        onError(error instanceof Error ? error.message : String(error));
+        onError(plainErrorText(error, "ADE couldn't read the device log."));
       });
     return () => {
       superseded = true;

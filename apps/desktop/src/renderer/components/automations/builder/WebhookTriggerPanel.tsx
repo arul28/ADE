@@ -52,6 +52,7 @@ import { inputCls, labelCls, selectCls } from "../designTokens";
 import { choiceCls, eyebrowCls, panelCls, tagCls, toneTextCls } from "../webhookSurface";
 import { WebhookDeliveries } from "./WebhookDeliveries";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { plainErrorText } from "../../../lib/plainError";
 
 const EXPLAINER_DISMISSED_KEY = "ade.automations.webhookExplainer.dismissed";
 
@@ -292,7 +293,7 @@ export function WebhookTriggerPanel({
         const latest = latestTriggerRef.current;
         latestOnChangeRef.current({ ...latest, webhook: { preset: "generic", ...(latest.webhook ?? {}), hookId: created.hookId } });
       })
-      .catch((error: unknown) => setEndpointError(error instanceof Error ? error.message : String(error)))
+      .catch((error: unknown) => setEndpointError(plainErrorText(error, "ADE couldn't make the webhook URL.")))
       .finally(() => {
         creatingRef.current = false;
         setCreating(false);
@@ -306,7 +307,7 @@ export function WebhookTriggerPanel({
       setEndpoint(await api.getEndpoint({ hookId }, runtimePin));
       setEndpointError(null);
     } catch (error) {
-      setEndpointError(error instanceof Error ? error.message : String(error));
+      setEndpointError(plainErrorText(error, "ADE couldn't read the webhook URL."));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [api, hookId, runtimePin?.key]);
@@ -403,7 +404,7 @@ export function WebhookTriggerPanel({
       showToast({ tone: "success", title: `Saved ${signature.secretName}`, message: "Encrypted in this project's secrets." });
       return true;
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't save the secret", message: error instanceof Error ? error.message : String(error) });
+      showToast({ tone: "error", title: "Couldn't save the secret", message: plainErrorText(error, "ADE couldn't save the secret.") });
       return false;
     } finally {
       setSavingSecret(false);
@@ -431,7 +432,7 @@ export function WebhookTriggerPanel({
       setEndpoint(await api.rotateEndpoint({ hookId }, runtimePin));
       showToast({ tone: "success", title: "New URL ready", message: "Paste it into the service to replace the old one." });
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't make a new URL", message: error instanceof Error ? error.message : String(error) });
+      showToast({ tone: "error", title: "Couldn't make a new URL", message: plainErrorText(error, "ADE couldn't make a new URL.") });
     } finally {
       setRotating(false);
     }
@@ -445,7 +446,7 @@ export function WebhookTriggerPanel({
       setEndpoint(created);
       patchConfig({ hookId: created.hookId });
     } catch (error) {
-      setEndpointError(error instanceof Error ? error.message : String(error));
+      setEndpointError(plainErrorText(error, "ADE couldn't make the webhook URL."));
     } finally {
       setCreating(false);
     }
@@ -460,7 +461,7 @@ export function WebhookTriggerPanel({
       setTestResult(await api.sendTest({ hookId, config }, runtimePin));
       void refreshDeliveries();
     } catch (error) {
-      setTestError(error instanceof Error ? error.message : String(error));
+      setTestError(plainErrorText(error, "ADE couldn't send the test."));
     } finally {
       setTesting(false);
     }

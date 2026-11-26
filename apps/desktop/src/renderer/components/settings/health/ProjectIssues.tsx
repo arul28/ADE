@@ -6,6 +6,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { issueDotState } from "./healthModel";
 import { IgnoreButton, IgnoredList, type IgnoreChoice, type ProjectIssueIgnore } from "./ProjectIgnore";
+import { plainErrorText } from "../../../lib/plainError";
 
 const FIX_TOAST_ID = "settings-project-fix";
 
@@ -46,7 +47,7 @@ export function useProjectFix(pin: OpenProjectBinding | null, onReport: (report:
         id: FIX_TOAST_ID,
         tone: "error",
         title: `Couldn't run ${fix.label.toLowerCase()}`,
-        message: err instanceof Error ? err.message : String(err),
+        message: plainErrorText(err, "ADE couldn't finish that fix."),
       });
     } finally {
       setFixingId(null);

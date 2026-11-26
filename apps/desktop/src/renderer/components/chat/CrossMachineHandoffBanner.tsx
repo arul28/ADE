@@ -18,7 +18,6 @@ import type {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { CROSS_MACHINE_HANDOFF_STEPS, crossMachineContinuation } from "../../../shared/crossMachineHandoff";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { navigateToAppTarget, openAdeDeeplink } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -28,6 +27,7 @@ import { showToast } from "../app/toast/toastStore";
 import { Banner, type BannerModel } from "../ui/notice";
 import { cn } from "../ui/cn";
 import { withChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * The state of a chat's move to another machine, above its composer. The
@@ -195,7 +195,7 @@ export function CrossMachineHandoffBanner({
           : action === "brief"
             ? `Couldn't send a brief to ${machine}`
             : `Couldn't update the move to ${machine}`,
-        message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
+        message: plainErrorText(error, "ADE couldn't reach that computer.", machine),
       });
     } finally {
       setBusy(null);
@@ -416,7 +416,7 @@ export function CrossMachineBatchApprovalBanner({
       showToast({
         tone: "warning",
         title: `Couldn't ${approve ? "approve" : "deny"} the batch move to ${machine}`,
-        message: `${stripElectronErrorWrapper(error instanceof Error ? error.message : String(error))} `
+        message: `${plainErrorText(error, "ADE couldn't reach that computer.", approval.machineName.trim() || null)} `
           + `Check the batch with \`ade chat move --status ${approval.batchId}\`, or try again.`,
       });
     } finally {

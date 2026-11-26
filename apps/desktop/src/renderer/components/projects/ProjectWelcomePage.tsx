@@ -68,6 +68,7 @@ import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStarted
 import { useHasOwnComputer, useOwnWebComputers } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
+import { plainErrorText } from "../../lib/plainError";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -185,7 +186,7 @@ export function ProjectWelcomePage() {
       })
       .catch((error: unknown) => {
         if (recentReadRef.current !== request) return;
-        setRecentListError(error instanceof Error ? error.message : String(error));
+        setRecentListError(plainErrorText(error, "ADE couldn't read your recent projects."));
         setRecentsLoaded(true);
       });
   }, []);
@@ -328,7 +329,7 @@ export function ProjectWelcomePage() {
             if (isOpenBinding(opened)) navigate(workspace.consumePendingProjectPath() ?? "/work");
           } catch (error) {
             if (onUnreachable?.()) return;
-            setRowError(error instanceof Error ? error.message : String(error));
+            setRowError(plainErrorText(error, "ADE couldn't open that project."));
           }
         })();
         return;
@@ -342,7 +343,7 @@ export function ProjectWelcomePage() {
         } catch (error) {
           // An account row whose computer did not answer opens with no machine.
           if (onUnreachable?.()) return;
-          setRowError(error instanceof Error ? error.message : String(error));
+          setRowError(plainErrorText(error, "ADE couldn't open that project."));
         } finally {
           setOpeningRowKey((current) => (current === rowKey ? null : current));
         }
@@ -366,7 +367,7 @@ export function ProjectWelcomePage() {
             setDirectoryRetryError(null);
             void workspace.retryDirectory().catch((error) => {
               setDirectoryRetryError(
-                error instanceof Error ? error.message : String(error),
+                plainErrorText(error, "ADE couldn't reload the computers."),
               );
             });
           },
@@ -389,7 +390,7 @@ export function ProjectWelcomePage() {
         await workspace.adapter.activateChats(targetId);
         navigate("/chats");
       } catch (error) {
-        setRowError(error instanceof Error ? error.message : String(error));
+        setRowError(plainErrorText(error, "ADE couldn't open the chats."));
       }
     })();
   }, [activeWebMachine, navigate, workspace]);
@@ -419,7 +420,7 @@ export function ProjectWelcomePage() {
               }
             },
             (error: unknown) => {
-              if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+              if (!openNoMachineTab(rp)) setRowError(plainErrorText(error, "ADE couldn't open that project."));
             },
           ).finally(() => setOpeningRowKey((current) => (current === rowKey ? null : current)));
           return;
@@ -457,7 +458,7 @@ export function ProjectWelcomePage() {
         const state = connectionByTarget.get(targetId) ?? null;
         if (state === "connected") {
           void switchRemoteProject(targetId, projectId).catch((error) => {
-            setRowError(error instanceof Error ? error.message : String(error));
+            setRowError(plainErrorText(error, "ADE couldn't open that project."));
           });
           return;
         }
@@ -470,7 +471,7 @@ export function ProjectWelcomePage() {
           } catch (error) {
             // The machine did not come online: the repository still opens, as
             // a tab with no machine that opens a copy when one is online.
-            if (!openNoMachineTab(rp)) setRowError(error instanceof Error ? error.message : String(error));
+            if (!openNoMachineTab(rp)) setRowError(plainErrorText(error, "ADE couldn't open that project."));
           } finally {
             setConnectingKeys((prev) => {
               const next = new Set(prev);
@@ -511,7 +512,7 @@ export function ProjectWelcomePage() {
       }
       setRecentProjects(next);
     } catch (error) {
-      setRowError(error instanceof Error ? error.message : String(error));
+      setRowError(plainErrorText(error, "ADE couldn't pin that project."));
     }
   }, [recentProjects]);
 
@@ -530,7 +531,7 @@ export function ProjectWelcomePage() {
           void switchProjectToPath(path);
         }
       } catch (error) {
-        setRowError(error instanceof Error ? error.message : String(error));
+        setRowError(plainErrorText(error, "ADE couldn't open that folder."));
       }
     },
     [switchProjectToPath],
@@ -588,7 +589,7 @@ export function ProjectWelcomePage() {
               void window.ade.app
                 .openProjectInNewWindow(remoteBinding ?? localBindingFromRecent(rp))
                 .catch((error: unknown) =>
-                  setRowError(error instanceof Error ? error.message : String(error)),
+                  setRowError(plainErrorText(error, "ADE couldn't open a new window.")),
                 );
             },
           }

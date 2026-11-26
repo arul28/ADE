@@ -4,6 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { CLAUDE_AUTH_LOGIN_COMMAND } from "../../lib/claudeAuthPrompt";
 import { cn } from "../ui/cn";
 import { withChatPin } from "../chat/chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 type RevealTerminalRequest = {
   terminalId: string;
@@ -179,7 +180,7 @@ export function ClaudeLoginPromptButton({
       }
     })()
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(plainErrorText(err, "ADE couldn't open the sign-in."));
       })
       .finally(() => setOpening(false));
   }, [chatSessionId, laneId, onRevealTerminal, onTerminalCreated, opening, runtimePin]);

@@ -10,6 +10,7 @@ import {
   type LaneShareRights,
 } from "../../../shared/laneShareRights";
 import { confirmDialog } from "../ui/dialog";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * "Default access": the start value of the share sheet for a new person.
@@ -61,7 +62,7 @@ export async function writeLaneShareDefaults(defaults: LaneShareDefaults): Promi
     });
     return result?.ok === true ? null : (result && "message" in result && typeof result.message === "string" ? result.message : "The default rights were not saved.");
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return plainErrorText(error, "ADE couldn't save the default rights.");
   }
 }
 

@@ -11,6 +11,7 @@ import { useThisComputerCopyPin } from "../ProjectCopyScope";
 import type { TerminalToolType } from "../../../../shared/types";
 import type { SignInStage } from "./signInSheetParts";
 import { SignInSheetFrame, useSuccessHold, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
+import { plainErrorText } from "../../../lib/plainError";
 
 /** The terminal sign-in re-reads the saved login this often (its old cadence). */
 const TERMINAL_AUTH_POLL_MS = 4_000;
@@ -119,7 +120,7 @@ export function TerminalSignInSheet({
         terminalRef.current = { ptyId: created.ptyId, sessionId: created.sessionId };
         setTerminal({ ptyId: created.ptyId, sessionId: created.sessionId });
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(plainErrorText(err, "ADE couldn't open the sign-in terminal."));
       }
     })();
     return () => {

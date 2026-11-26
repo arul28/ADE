@@ -12,6 +12,7 @@ import { openExternalUrl } from "../../../../lib/openExternal";
 import { PiProvidersPanel } from "../../PiProvidersPanel";
 import type { ProvidersViewContext } from "../types";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { plainErrorText } from "../../../../lib/plainError";
 
 export function PiBody({ ctx }: { ctx: ProvidersViewContext }) {
   // Opening a file is an OS action on the computer in front of you. These
@@ -33,7 +34,7 @@ export function PiBody({ ctx }: { ctx: ProvidersViewContext }) {
 
   const openPath = (path: string) => {
     void window.ade.app.openPath(path).catch((reason: unknown) => {
-      ctx.actions.setError(reason instanceof Error ? reason.message : String(reason));
+      ctx.actions.setError(plainErrorText(reason, "ADE couldn't open that folder."));
     });
   };
 

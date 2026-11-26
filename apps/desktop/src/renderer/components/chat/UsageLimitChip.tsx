@@ -7,6 +7,7 @@ import { showToast } from "../app/toast/toastStore";
 import { StatusChip, type StatusChipAction } from "../ui/notice/StatusChip";
 import { useAgentChatApi } from "./agentChatApi";
 import { withChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * The usage-limit chip in the composer's status row. It sits beside the other
@@ -59,7 +60,7 @@ export function UsageLimitChip({
       })
       .catch((error: unknown) => {
         if (token !== runTokenRef.current) return;
-        showToast({ tone: "error", title: "Usage limit", message: error instanceof Error ? error.message : String(error) });
+        showToast({ tone: "error", title: "Usage limit", message: plainErrorText(error, "ADE couldn't change the usage limit.") });
       })
       .finally(() => {
         if (token === runTokenRef.current) setBusy(false);

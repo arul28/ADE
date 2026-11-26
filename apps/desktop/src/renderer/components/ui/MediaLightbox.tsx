@@ -4,6 +4,7 @@ import { formatProofDuration } from "../../../shared/proofProvenance";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "./cn";
 import { Dialog } from "./dialog";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * ADE's one full-size viewer for a picture or a video.
@@ -96,7 +97,7 @@ export function MediaLightbox({
     } catch (error) {
       showToast({
         title: "Could not copy the picture",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't copy the picture."),
         tone: "error",
       });
     } finally {
@@ -121,7 +122,7 @@ export function MediaLightbox({
     } catch (error) {
       showToast({
         title: "Could not download",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't save the file."),
         tone: "error",
       });
     } finally {

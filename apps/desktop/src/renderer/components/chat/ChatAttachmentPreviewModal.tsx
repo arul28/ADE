@@ -15,6 +15,7 @@ import {
 import { Dialog } from "../ui/dialog";
 import { useChatPaneScope } from "./agentChatApi";
 import { useAppearanceStore } from "../../state/appearanceStore";
+import { plainErrorText } from "../../lib/plainError";
 
 type ResolveState =
   | { status: "loading" }
@@ -98,7 +99,7 @@ export function ChatAttachmentPreviewModal({
         if (cancelled) return;
         setState({
           status: "error",
-          message: error instanceof Error ? error.message : String(error),
+          message: plainErrorText(error, "ADE couldn't open the attachment."),
         });
       });
     return () => {

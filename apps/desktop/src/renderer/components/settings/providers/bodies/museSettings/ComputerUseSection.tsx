@@ -10,6 +10,7 @@ import type {
 } from "../../../../../../shared/museSettings";
 import type { MuseRun } from "./museSettingsShared";
 import { ErrorNotice, FIELD, ROW, SMALL_BUTTON, SectionHeader, TEXT_MUTED, isOneOf } from "./museSettingsShared";
+import { plainErrorText } from "../../../../../lib/plainError";
 
 /** How often computer-use setup is re-read while Muse reports it in progress. */
 const SETUP_POLL_MS = 2_000;
@@ -64,7 +65,7 @@ export function ComputerUseSection({ run }: { run: MuseRun }) {
     try {
       setState(await run({ kind: "computerUse" }));
     } catch (err) {
-      setPollError(err instanceof Error ? err.message : String(err));
+      setPollError(plainErrorText(err, "ADE couldn't check computer use setup."));
     }
   }, SETUP_POLL_MS, settingUp);
 
