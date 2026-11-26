@@ -56,6 +56,12 @@ function homeRelative(path: string | null): string | null {
 
 const formatMac = (value: number) => formatStorageBytes(value, "mac");
 
+/** All, some or none of a batch removed. */
+function cleanupOutcome(done: number, failed: number): "completed" | "partial" | "failed" {
+  if (!failed) return "completed";
+  return done ? "partial" : "failed";
+}
+
 export function AppleToolsSection({
   storage,
   pin,
@@ -308,7 +314,7 @@ function RuntimesBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenPr
     try {
       const result = await work(disposition);
       showRuntimeRemoval(result);
-      captureDevToolsCleanup("runtime_removed", result.errors.length ? "failed" : "completed", result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0));
+      captureDevToolsCleanup("runtime_removed", cleanupOutcome(result.deleted.length, result.errors.length), result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0));
       // CoreSimulator drops a removed runtime a moment later; read until it is gone.
       await readRuntimesUntilGone(result.deleted.map((entry) => entry.id), pin).catch(() => null);
     } catch (err) {
@@ -417,8 +423,11 @@ function BuildDataBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenP
     try {
       const result = await window.ade.iosSimulator.derivedDataDelete({ paths: targets.map((entry) => entry.path), confirmedByUser: true }, pin);
       const failed = result.errors.length > 0;
-      captureDevToolsCleanup("build_data_deleted", failed && !result.deleted.length ? "failed" : "completed", result.freedBytes);
-      const freedWords = `${result.freedIsLowerBound ? "at least " : ""}${formatMac(result.freedBytes)}`;
+      // A measure cut short counted only part; the sizes the confirm showed are the better number then.
+      const shownBytes = targets.filter((entry) => result.deleted.some((done) => done.path === entry.path)).reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
+      const freedBytes = result.freedIsLowerBound ? Math.max(result.freedBytes, shownBytes) : result.freedBytes;
+      captureDevToolsCleanup("build_data_deleted", cleanupOutcome(result.deleted.length, result.errors.length), freedBytes);
+      const freedWords = `${result.freedIsLowerBound && shownBytes < result.freedBytes ? "at least " : ""}${formatMac(freedBytes)}`;
       showToast({
         id: "apple-settings-build-data",
         tone: failed ? (result.deleted.length ? "warning" : "error") : "success",

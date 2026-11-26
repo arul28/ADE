@@ -68,8 +68,6 @@ export function AppleMachineSection() {
   }
   return (
     <AppleMachineTools
-      // Another machine is another set of rows: nothing from the last one stays on screen.
-      key={scope.pin?.key ?? "this"}
       machineName={scope.isThisMachine ? "this Mac" : scope.machineName}
       confirmMac={kind === "unknown"}
       needsMac={needsMac}

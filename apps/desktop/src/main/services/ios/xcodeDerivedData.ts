@@ -58,6 +58,12 @@ const MEASURE_FOLDERS_AT_ONCE = 3;
 const MEASURE_CACHE_MS = 60_000;
 /** Stays under the 15 minute action timeout; past it sizes are lower bounds. */
 const MEASURE_BUDGET_MS = 10 * 60_000;
+/**
+ * How long a delete measures what it moved before it answers. The folders are
+ * already gone by then; a person waits on this, so past it the answer is a
+ * lower bound (the client already knows the sizes it showed in the confirm).
+ */
+const DELETE_MEASURE_BUDGET_MS = 20_000;
 const MAX_DELETE_PATHS = 1_000;
 const INFO_PLIST_MAX_BYTES = 256 * 1024;
 
@@ -137,9 +143,20 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
-/** A cache Xcode keeps beside the project folders (`ModuleCache.noindex`, `SymbolCache.noindex`). */
+/**
+ * The caches Xcode keeps beside the project folders, by their exact names.
+ * Not every `*.noindex`: people add that suffix to their own folders to keep
+ * Spotlight out, and a custom DerivedData location can hold those.
+ */
+const XCODE_CACHE_FOLDERS: ReadonlySet<string> = new Set([
+  MODULE_CACHE_FOLDER,
+  "SymbolCache.noindex",
+  "SDKStatCaches.noindex",
+  "CompilationCache.noindex",
+]);
+
 function isXcodeCacheFolder(name: string): boolean {
-  return name.endsWith(".noindex");
+  return XCODE_CACHE_FOLDERS.has(name);
 }
 
 export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
@@ -385,8 +402,8 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
       moved.push({ reported, trashPath });
     }
     measuredCache.delete(root);
-    // One deadline for the whole call, so a big "Delete unused" answers inside the action's timeout.
-    const deadline = Date.now() + MEASURE_BUDGET_MS;
+    // One short deadline for the whole call: the folders are gone already, so a big "Delete unused" answers in seconds.
+    const deadline = Date.now() + DELETE_MEASURE_BUDGET_MS;
     await mapLimit(moved, MEASURE_FOLDERS_AT_ONCE, async ({ reported, trashPath }) => {
       let bytes: number | null = null;
       try {

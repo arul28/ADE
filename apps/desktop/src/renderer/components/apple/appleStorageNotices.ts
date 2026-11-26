@@ -79,19 +79,18 @@ export function showCleanupResult(result: AppleDeviceCleanupResult, id: string):
  * CoreSimulator unmounts a deleted runtime a moment after `simctl runtime
  * delete` returns, so a list read straight away can still show it. Re-read
  * until the removed runtimes are gone (a few seconds at most) and hand back
- * the last list read, or null when a read failed.
+ * the last list read. A failed read throws.
  */
 export async function readRuntimesUntilGone(
   removedIds: readonly string[],
   pin: OpenProjectBinding | null,
   onInventory?: (inventory: AppleRuntimeInventory) => void,
-): Promise<AppleRuntimeInventory | null> {
-  let last: AppleRuntimeInventory | null = null;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    last = await window.ade.iosSimulator.runtimeList(pin);
-    onInventory?.(last);
-    if (!last.runtimes.some((entry) => entry.id && removedIds.includes(entry.id))) return last;
+): Promise<AppleRuntimeInventory> {
+  for (let attempt = 0; ; attempt += 1) {
+    const inventory = await window.ade.iosSimulator.runtimeList(pin);
+    onInventory?.(inventory);
+    const gone = !inventory.runtimes.some((entry) => entry.id && removedIds.includes(entry.id));
+    if (gone || attempt >= 4) return inventory;
     await new Promise((resolve) => setTimeout(resolve, 1_500));
   }
-  return last;
 }

@@ -133,7 +133,6 @@
     color-mix(in srgb, var(--seg-hue) 18%, transparent) 4px 8px
   );
 }
-.ade-dev-space-seg[data-empty="true"] { background: transparent; }
 .ade-dev-space-legend {
   margin: 0;
   padding: 0;
