@@ -1453,6 +1453,8 @@ declare global {
         openSystemSettingsPane: (
           paneId: SystemSettingsPaneId,
         ) => Promise<AppOpenSystemSettingsPaneResult>;
+        /** Open the Tailscale app on this computer. Absent on the web client. */
+        openTailscale?: () => Promise<{ opened: boolean; message?: string }>;
         revealPath: (path: string, pin?: OpenProjectBinding | null) => Promise<void>;
         openPath: (path: string, pin?: OpenProjectBinding | null) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;

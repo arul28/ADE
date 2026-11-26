@@ -604,7 +604,15 @@ Account Settings shows a named update prompt when a connected computer needs
 a newer ADE version to share its routes or provider inventory. In the
 **Connections** section, **Check again** shows progress and the latest results
 for the local network, Tailscale, and ADE Relay, along with Tailscale setup
-steps and the time of the check.
+steps and the time of the check. This computer's Tailscale reading
+(`tailscaleLocalStatus.ts`) also reports `keyExpired` (Tailscale's
+`Self.Expired`, or a key expiry already past), Tailscale's own `Health`
+warnings, and `readError` (a timeout, or Tailscale's first error line) when
+ADE got no answer it could read. The first step then says "Tailscale sign-in
+expired" with the renew path, or why ADE couldn't read Tailscale, and quotes
+Tailscale's first warning; **Open Tailscale** opens the app on this computer
+(`app.openTailscale`, a fixed list of install paths). The route tiles say
+"Sign-in expired", "Starting" or "Couldn't check" instead of "Not connected".
 
 **Renderer — settings**
 

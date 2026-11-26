@@ -70,6 +70,14 @@ export function parseMachineConnectionRoutes(value: unknown): MachineConnectionR
       magicDnsEnabled: flag(tailscale.magicDnsEnabled),
       httpsCertsEnabled: flag(tailscale.httpsCertsEnabled),
       keyExpiry: text(tailscale.keyExpiry, 64),
+      keyExpired: tailscale.keyExpired === true,
+      health: Array.isArray(tailscale.health)
+        ? tailscale.health.flatMap((entry) => {
+          const line = text(entry, 240);
+          return line ? [line] : [];
+        }).slice(0, 4)
+        : [],
+      readError: text(tailscale.readError, 200),
       checkedAt: text(tailscale.checkedAt, 64) ?? new Date(0).toISOString(),
     },
     tailnet: {

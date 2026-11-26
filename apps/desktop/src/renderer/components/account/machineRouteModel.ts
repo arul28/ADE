@@ -44,8 +44,8 @@ const TAILSCALE_DOWN: Record<Exclude<MachineTailscaleState, "running">, { tone: 
   not_installed: { tone: "off", word: "Not installed" },
   needs_login: { tone: "warn", word: "Signed out" },
   stopped: { tone: "warn", word: "Turned off" },
-  starting: { tone: "warn", word: "Not connected" },
-  unknown: { tone: "warn", word: "Not connected" },
+  starting: { tone: "warn", word: "Starting" },
+  unknown: { tone: "warn", word: "Couldn't check" },
 };
 
 const HTTPS_STATES: Record<MachineTailnetHttpsState, { tone: MachineRouteTone; word: string }> = {
@@ -103,8 +103,8 @@ export function machineRouteItems(
   const observed = routes?.tailnet.observed === true ? routes : null;
   let tailscale: MachineRouteItem;
   if (ts && ts.state !== "running") {
-    const down = TAILSCALE_DOWN[ts.state];
-    tailscale = route("tailscale", down.tone, down.word);
+    const down = ts.keyExpired ? { tone: "warn" as const, word: "Sign-in expired" } : TAILSCALE_DOWN[ts.state];
+    tailscale = route("tailscale", down.tone, down.word, ts.state === "unknown" ? ts.readError ?? null : null);
   } else if (observed ? observed.tailnet.published : tailnetHosts.length > 0) {
     tailscale = route("tailscale", "on", "Available", ts?.dnsName ?? tailnetName);
   } else if (observed && ts?.state === "running") {

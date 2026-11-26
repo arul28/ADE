@@ -31,12 +31,17 @@ const KEY_EXPIRY_WARN_DAYS = 14;
 
 type StepState = "done" | "todo" | "blocked" | "working";
 
+type StepAction =
+  | { label: string; href: string }
+  /** Runs on this computer (opening the Tailscale app). */
+  | { label: string; run: () => void };
+
 export type SetupStep = {
   id: string;
   title: string;
   hint: ReactNode;
   state: StepState;
-  action?: { label: string; href: string };
+  action?: StepAction;
 };
 
 const STEP_LOOK: Record<StepState, { icon: ReactNode; tone: SettingsTone }> = {
@@ -66,24 +71,59 @@ const TAILSCALE_OFF_HINT: Record<Exclude<MachineConnectionRoutes["tailscale"]["s
   unknown: "Tailscale didn't answer. Open the Tailscale app and make sure it's connected, then press Check again.",
 };
 
-export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
+/** Opens the Tailscale app on this computer, where the bridge can. */
+function openTailscaleAction(): StepAction | undefined {
+  const open = window.ade?.app?.openTailscale;
+  return open ? { label: "Open Tailscale", run: () => void open().catch(() => undefined) } : undefined;
+}
+
+/**
+ * Is Tailscale on this computer? An expired sign-in (Tailscale stops
+ * connecting until someone signs in again) is its own answer, with the renew
+ * path; a reading ADE couldn't get says why; Tailscale's own first warning is
+ * quoted, since it usually names the fix.
+ */
+function tailscaleStep(routes: MachineConnectionRoutes): SetupStep {
   const ts = routes.tailscale;
   const running = ts.state === "running";
   const installed = ts.state !== "not_installed";
+  const says = !running && ts.health?.[0] ? <> Tailscale says: <q>{ts.health[0]}</q></> : null;
+  if (!running && ts.keyExpired) {
+    return {
+      id: "installed",
+      title: "Tailscale sign-in expired",
+      hint: <>This computer's Tailscale sign-in expired, so Tailscale stopped connecting. Sign in again from the Tailscale app, or renew it on Tailscale's Machines page.{says}</>,
+      state: "todo",
+      action: openTailscaleAction() ?? { label: "Machines", href: TAILSCALE_MACHINES_ADMIN_URL },
+    };
+  }
+  const offHint = ts.state === "running" || ts.state === "not_installed"
+    ? null
+    : ts.state === "unknown" && ts.readError
+      ? `ADE couldn't read Tailscale: ${ts.readError} Open the Tailscale app and make sure it's connected, then press Check again.`
+      : TAILSCALE_OFF_HINT[ts.state];
+  return {
+    id: "installed",
+    title: running ? "Tailscale is on" : installed ? "Turn Tailscale on" : "Install Tailscale",
+    hint: running
+      ? <>This computer is <span className="ade-net-mono">{ts.dnsName ?? "on your tailnet"}</span></>
+      : !installed
+        ? "Free for personal use. Install it on each computer and your phone, signed in to the same account."
+        : <>{offHint}{says}</>,
+    state: running ? "done" : ts.state === "starting" ? "working" : "todo",
+    action: !installed
+      ? { label: "Download", href: TAILSCALE_DOWNLOAD_URL }
+      : running || ts.state === "starting" ? undefined : openTailscaleAction(),
+  };
+}
+
+export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
+  const ts = routes.tailscale;
+  const running = ts.state === "running";
   const https = routes.tailnetHttps;
   const routeStep = ROUTE_STEP[https.state];
   return [
-    {
-      id: "installed",
-      title: running ? "Tailscale is on" : installed ? "Turn Tailscale on" : "Install Tailscale",
-      hint: ts.state === "running"
-        ? <>This computer is <span className="ade-net-mono">{ts.dnsName ?? "on your tailnet"}</span></>
-        : ts.state === "not_installed"
-          ? "Free for personal use. Install it on each computer and your phone, signed in to the same account."
-          : TAILSCALE_OFF_HINT[ts.state],
-      state: running ? "done" : ts.state === "starting" ? "working" : "todo",
-      action: installed ? undefined : { label: "Download", href: TAILSCALE_DOWNLOAD_URL },
-    },
+    tailscaleStep(routes),
     {
       id: "magicdns",
       title: "MagicDNS",
@@ -161,6 +201,15 @@ function ExternalButton({ label, href, primary }: { label: string; href: string;
     >
       {label}
       <ArrowSquareOut size={12} weight="bold" />
+    </button>
+  );
+}
+
+function StepActionButton({ action }: { action: StepAction }) {
+  if ("href" in action) return <ExternalButton label={action.label} href={action.href} primary />;
+  return (
+    <button type="button" className="ade-acct-btn" data-tone="primary" onClick={action.run}>
+      {action.label}
     </button>
   );
 }
@@ -253,12 +302,13 @@ export function PrivateNetworkSection({
   const todo = steps.filter((step) => step.state === "todo").length;
   const complete = steps.length > 0 && done === steps.length;
   const expiryDays = routes ? tailscaleKeyExpiryDays(routes.tailscale.keyExpiry, Date.now()) : null;
-  const expiringSoon = expiryDays != null && expiryDays <= KEY_EXPIRY_WARN_DAYS;
+  // An expired sign-in is the first step's own answer; this row only warns before it.
+  const expiringSoon = expiryDays != null && expiryDays <= KEY_EXPIRY_WARN_DAYS && routes?.tailscale.keyExpired !== true;
   // Once everything is done the checklist has nothing to ask for; it folds
   // into the header until the owner opens it.
   const [showDone, setShowDone] = useState(false);
   const showSteps = !complete || expiringSoon || showDone || rechecking;
-  const adminSteps = steps.filter((step) => step.action?.href === TAILSCALE_DNS_ADMIN_URL).length;
+  const adminSteps = steps.filter((step) => step.action && "href" in step.action && step.action.href === TAILSCALE_DNS_ADMIN_URL).length;
 
   return (
     <ModernSection
@@ -321,7 +371,7 @@ export function PrivateNetworkSection({
                   tone={STEP_LOOK[rechecking ? "working" : step.state].tone}
                   title={step.title}
                   hint={rechecking ? "Checking…" : step.hint}
-                  control={!rechecking && step.action ? <ExternalButton label={step.action.label} href={step.action.href} primary /> : undefined}
+                  control={!rechecking && step.action ? <StepActionButton action={step.action} /> : undefined}
                 />
               ))}
               {expiringSoon && expiryDays != null ? (
