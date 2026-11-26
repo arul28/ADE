@@ -48,15 +48,30 @@ export function createCloudComputerReports(deps: {
   };
   const bootedRuntimes = async () => (await openRuntimes()).runtimes;
   return {
+    /**
+     * "Work not on GitHub yet": an uncommitted file, or a commit no remote has
+     * (`readUnsavedWork`), not commits past the lane's base. A pushed branch
+     * is saved, a squash-merged one whose PR head is the branch is saved, and
+     * the main checkout's own commits count. A lane git can't read counts as
+     * unsaved, so a broken read never reads "all on GitHub".
+     */
     readWork: async () => {
       const runtimes = await bootedRuntimes();
       if (!runtimes.length) return null;
       let unpushed = false;
       let prState: "draft" | "open" | "merged" | "closed" | null = null;
       for (const runtime of runtimes) {
-        for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: true })) {
-          if (lane.status?.dirty === true || (lane.status?.ahead ?? 0) > 0) unpushed = true;
+        for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: false })) {
           if (lane.laneType !== "primary") prState ??= runtime.prService?.getForLane(lane.id)?.state ?? null;
+          if (unpushed) continue;
+          try {
+            const work = await runtime.laneService.readUnsavedWork(lane.id);
+            if (work.dirty) unpushed = true;
+            else if (work.unpushedCommits > 0) unpushed = !(await runtime.laneService.getAutoArchiveFacts(lane.id)).mergedPrHasHead;
+          } catch (error) {
+            unpushed = true;
+            deps.logger?.warn("cloud.lane_work_unreadable", { laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
+          }
         }
       }
       return { checkedAt: Date.now(), unpushed, prState };
