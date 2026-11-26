@@ -120,7 +120,7 @@ async function call(path, body) {
 
 const when = (ms) => (ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "never");
 
-function printAccount({ account }) {
+function printAccount({ account, warnings = [] }) {
   const lines = [
     `${account.email ?? account.userId} (${account.userId})`,
     `  Real plan:  ${account.real.plan} · ${account.real.computers} computers · ${account.real.hours} credits this period · Stripe ${account.real.stripeStatus ?? "none"}`,
@@ -135,6 +135,7 @@ function printAccount({ account }) {
     lines.push("  Changes:");
     for (const row of account.log) lines.push(`    ${when(row.at)}  ${row.action}  ${JSON.stringify(row.detail)}`);
   }
+  for (const warning of warnings) lines.push(`  WARNING:    ${warning}`);
   console.log(lines.join("\n"));
 }
 

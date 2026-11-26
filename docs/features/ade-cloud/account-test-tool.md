@@ -30,7 +30,7 @@ Name an account by its verified email or its Clerk user id (`user_…`).
 | Command | What it does |
 |---|---|
 | `show <account>` | The real plan, the test, what is in force now, and the last changes |
-| `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, hours, outside agents, sponsored cards, Small's hours |
+| `act-as <account> free\|plus\|pro\|max` | The account acts as that plan: computer limit, outside agents, sponsored cards and their notices. Its credits are that plan's, or its own when it has more |
 | `limits <account> --computers N --hours N` | Its own computer limit and monthly credits this period, on top of the plan (`limits <account>` with no options clears both). The ADE Cloud iPhone draws from those credits, one a minute: there is no separate iPhone limit |
 | `phone <account> on\|off` | On the ADE Cloud iPhone's beta list, or off it. Not a test: it stays until changed. While `CLOUD_PHONE_ACCESS` is `beta`, `off` stops a running phone (under `all`, the list doesn't decide access). A tester picks their own phones' provider (`auto`, NoMac or Revyl) in an ADE beta build or with `ade cloud phone-provider`; the owner no longer sets it |
 | `tester <account> on\|off` | On or off the sponsored testers list |
@@ -50,8 +50,9 @@ Free.
 ### What a test changes, and what it never does
 
 A test changes what the account may do and what it sees: the plan name, the
-computer limit, the hours meter and when it stops, sponsored cards, Small's
-hours, and the outside-agent rule. Billing keeps the real plan: the Stripe
+computer limit, the hours meter and when it stops (never below the account's
+own credits unless the test sets them, see below), sponsored cards, and the
+outside-agent rule. Billing keeps the real plan: the Stripe
 subscription, its charges, extra hours, the period and its renewal. So the
 owner's Pro account can act as Free for a week and keep paying for Pro, and a
 Free account acting as Max is never charged for Max.
@@ -65,6 +66,26 @@ cleared, reset, or the test's end).
 Billing counts the real plan's hours, so a test may not give more hours than
 that to an account with earned hours or extra hours on: those would be used
 for real. The tool refuses it (409); test fewer hours, or use another account.
+
+A test never spends or blocks real credits. The meter of credits used is the
+real one, so:
+
+- Acting as a plan with fewer credits keeps the account's own credits. A Max
+  account acting as Free still has its 2,000 credits; only the plan name,
+  limits, cards and features are Free's.
+- To test running out, give the test fewer credits on purpose:
+  `limits <account> --hours N`. If that leaves the account out of credits
+  while its real plan still has some, the answer carries a warning (the
+  script prints it): at the next minute tick its computers that use credits
+  stop, its timed wake-ups are cancelled, and it gets the out-of-credits
+  email. Extra credits are off under a Free test, so a paid account already
+  past its plan's credits gets the same warning.
+- A paid account acting as Free sees the Free rule's question and notices,
+  but its Small stays unlimited. To see Small use credits for real, use a
+  real Free account.
+- When a test changes or ends (`reset` or its days are up), the credits
+  warnings the account is no longer past start over, so the real 80%, 95%
+  and out-of-credits emails still come later.
 
 ## Switches
 
@@ -87,9 +108,10 @@ users is the owner's call, asked for each time.
 
 ### The Free rule
 
-The Free rule is part of the ad switch. A Free account (or one acting as Free)
-that the ad switch reaches runs Small computers without hours only while it
-said yes to sponsored cards. A no, or no answer yet (outside the card
+The Free rule is part of the ad switch. A Free account that the ad switch
+reaches runs Small computers without hours only while it said yes to
+sponsored cards. A paid account acting as Free sees the rule's question and
+notices, but is never charged by it. A no, or no answer yet (outside the card
 countries, or never asked), has Small use half a Medium-hour an hour. Accounts
 the ad switch doesn't reach are untouched, so with `gravity_ads=testers` only
 the testers see the rule. A no is asked again two weeks later
@@ -152,6 +174,8 @@ Small keeps working to an account whose Small uses hours.
 3. Open a chat on one of your ADE Cloud computers, finish a reply, answer the
    one-time question (from the US: read the notice that cards are on).
    Gravity's test ads say "Sponsored · test".
-4. Optional: answer no to see Small use hours (the Free rule).
+4. Optional: answer no to see the Free rule's notices. On a paid account
+   acting as Free, Small still uses no credits; to see it use credits, test
+   on a real Free account.
 5. When done: `reset <you>`, `tester <you> off`, and `set gravity_ads off`
    unless the owner wants it left on.

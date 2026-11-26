@@ -1038,12 +1038,15 @@ export function shownRulesOf(account: Pick<AccountRow, "plan" | "stripe_status">
 /**
  * The plan's hours this period as the limits count them: the account test
  * tool's hours, else a test plan's, else the period's own. Billing (extra
- * hours, earned draws, the period roll) keeps `included_milli`.
+ * hours, earned draws, the period roll) keeps `included_milli`. A test plan
+ * with fewer credits than the period's keeps the period's: `used_milli` is
+ * the real meter, so acting as a lower plan must never stop real work or
+ * spend what the person paid for. Fewer credits on purpose is `test_hours_milli`.
  */
 export function includedMilliOf(account: Pick<AccountRow, "included_milli"> & Partial<TestFields>): number {
   if (account.test_hours_milli != null && account.test_hours_milli >= 0) return account.test_hours_milli;
   const test = testPlanOf(account);
-  return test ? CLOUD_PLANS[test].includedMilli : account.included_milli;
+  return test ? Math.max(CLOUD_PLANS[test].includedMilli, account.included_milli) : account.included_milli;
 }
 
 /** The plan the person pays for, `past_due` included. */
