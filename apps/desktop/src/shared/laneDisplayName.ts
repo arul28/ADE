@@ -10,3 +10,8 @@ export function laneDisplayName(lane: { name: string; laneType?: string | null }
   if (lane.laneType === "primary" && (lane.name.trim() === "" || lane.name.trim().toLowerCase() === "primary")) return PRIMARY_LANE_DISPLAY_NAME;
   return lane.name;
 }
+
+/** A session row's lane as the UI names it. A row from an older brain carries no `laneType` and keeps its stored name. */
+export function sessionLaneDisplayName(session: { laneName: string; laneType?: string | null }): string {
+  return laneDisplayName({ name: session.laneName, laneType: session.laneType });
+}

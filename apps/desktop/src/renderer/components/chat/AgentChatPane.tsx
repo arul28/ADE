@@ -309,6 +309,7 @@ import {
   residentChatEventBytes,
   trimChatEventHistory,
 } from "./chatHistoryWindow";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 /** No nesting to resolve in the pane's own shell filter: one hop, the chat. */
 const NO_NESTING: ReadonlyMap<string, string> = new Map();
 /** A pane locked to one chat has no spawned children in its session list. */
@@ -23763,7 +23764,7 @@ export function AgentChatPane({
           open={importBrowserOpen}
           onOpenChange={setImportBrowserOpen}
           laneId={importTargetLane.id}
-          laneName={importTargetLane.name}
+          laneName={laneDisplayName(importTargetLane)}
           lanes={importTargetLanes}
           sources={importSources}
           onImported={onImportedSession}

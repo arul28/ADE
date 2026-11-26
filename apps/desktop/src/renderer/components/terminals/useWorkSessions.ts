@@ -263,6 +263,7 @@ import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { noChatMachineError } from "../chat/chatMachinePin";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 export type { WorkBoardWaitingReason };
 export { lanePrWaitingReason };
@@ -527,7 +528,7 @@ export function buildWorkTabGroupModel(args: {
       const groupId = `lane:${session.laneId}`;
       const group = laneGroups.get(groupId) ?? {
         id: groupId,
-        label: lane?.name ?? session.laneName,
+        label: lane ? laneDisplayName(lane) : sessionLaneDisplayName(session),
         kind: "lane" as const,
         sessions: [],
       };
@@ -2488,6 +2489,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         session.goal,
         session.title,
         session.laneName,
+        sessionLaneDisplayName(session),
         session.toolType,
         session.lastOutputPreview,
         session.summary,
@@ -2499,7 +2501,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // vocabulary. The machine facet is resolved by the palette's cross-
       // machine index; this active-binding list has no machine dimension.
       return matchesWorkSearchFilters(parsedQuery.filters, {
-        lane: [session.laneName],
+        lane: [session.laneName, sessionLaneDisplayName(session)],
         provider: [session.toolType ?? ""],
         status: [effectiveFilingBuckets.get(session.id) ?? sessionFilingBucket(session, nowMs)],
         type: [

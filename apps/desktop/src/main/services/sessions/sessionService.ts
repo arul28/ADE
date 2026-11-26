@@ -29,6 +29,7 @@ import type {
   UpdateSessionMetaArgs,
   SessionActivityReport,
   SessionActivityValue,
+  LaneType,
 } from "../../../shared/types";
 import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
 import {
@@ -61,6 +62,7 @@ type SessionRow = {
   id: string;
   laneId: string;
   laneName: string;
+  laneType: LaneType | null;
   ptyId: string | null;
   ownerPid: number | null;
   ownerProcessStartedAt: string | null;
@@ -140,6 +142,7 @@ const SESSION_COLUMNS = `
   s.id as id,
   s.lane_id as laneId,
   l.name as laneName,
+  l.lane_type as laneType,
   s.pty_id as ptyId,
   s.owner_pid as ownerPid,
   s.owner_process_started_at as ownerProcessStartedAt,

@@ -1,4 +1,4 @@
-import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
@@ -487,7 +487,7 @@ function HandoffSessionPlaceholderCard({ job, lane, showLaneIdentity }: {
               <span className="inline-flex max-w-full items-center gap-1.5 text-[12px] font-semibold"
                 style={{ color: laneAccent ? toneText(laneAccent) : undefined }}>
                 <LaneIcon size={12} weight="regular" className="shrink-0" />
-                <span className="min-w-0 truncate"><LaneNamingLabel laneName={lane?.name ?? job.laneName} naming={false} /></span>
+                <span className="min-w-0 truncate"><LaneNamingLabel laneName={lane ? laneDisplayName(lane) : job.laneName} naming={false} /></span>
               </span>
             ) : null}
             <div className="flex min-w-0 items-center gap-1.5">
@@ -4038,7 +4038,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           key={laneId}
           sectionId={laneId}
           icon={<LaneIcon size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
-          label={list[0]?.laneName?.trim() || laneId}
+          label={(list[0] ? sessionLaneDisplayName(list[0]).trim() : "") || laneId}
           variant="lane"
           count={list.length}
           collapsed={workCollapsedLaneIds.includes(laneId)}
@@ -4054,7 +4054,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       {orphanLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const collapsed = workCollapsedLaneIds.includes(laneId);
-        const trimmedLaneName = (list[0]?.laneName ?? "").trim();
+        const trimmedLaneName = (list[0] ? sessionLaneDisplayName(list[0]) : "").trim();
         const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneHandoffJobs[0]?.laneName ?? laneId;
         const canRefreshRecords = Boolean(onRefreshOrphanSessions);
         return (
@@ -4107,7 +4107,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           archived (or one a peer on an older ADE left behind). */}
       {archivedLaneGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
-        const trimmedLaneName = (list[0]?.laneName ?? "").trim();
+        const trimmedLaneName = (list[0] ? sessionLaneDisplayName(list[0]) : "").trim();
         const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneHandoffJobs[0]?.laneName ?? laneId;
         return (
           <StickyGroupHeader

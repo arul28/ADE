@@ -23,7 +23,7 @@ import type {
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { SessionActivePrWatch } from "../prWatch";
 import type { ModelId } from "./core";
-import type { LaneLinearIssue } from "./lanes";
+import type { LaneLinearIssue, LaneType } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
 /**
@@ -343,6 +343,8 @@ export type TerminalSessionSummary = {
   cloudSavedCopy?: boolean;
   laneId: string;
   laneName: string;
+  /** The lane's kind, so a screen shows the main checkout as "Main checkout" (`sessionLaneDisplayName`); an older brain sends none. */
+  laneType?: LaneType | null;
   ptyId: string | null;
   ownerPid?: number | null;
   ownerProcessStartedAt?: string | null;

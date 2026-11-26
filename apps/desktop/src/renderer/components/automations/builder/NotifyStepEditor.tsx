@@ -51,6 +51,7 @@ import { VariableInput } from "./VariableMenu";
 import { AUTOMATION_RUN_LINK_ID, explainAutomationActionError } from "../../../../shared/automationFeatureVersions";
 import { useAutomationFeatureGate } from "../automationFeatureGate";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { sessionLaneDisplayName } from "../../../../shared/laneDisplayName";
 
 /**
  * A test send has no trigger to fill `{{…}}` values from, so each one is shown
@@ -445,7 +446,7 @@ function useProjectChoices(kind: NotifyLinkKind, pin: OpenProjectBinding | null)
       .map((session) => ({
         value: session.id,
         label: session.title || "Untitled chat",
-        detail: session.laneName,
+        detail: sessionLaneDisplayName(session),
       })),
     [sessions],
   );
