@@ -151,12 +151,23 @@ export function cloudGroupTotals(boxes: readonly CloudMachine[]): CloudGroupTota
 
 /**
  * The line under the one "ADE Cloud" machine row, in the Connections panel and
- * in Settings › Machines: "2 lanes, all asleep", "1 lane, 1 awake". Before the
- * account's computers were read it claims nothing.
+ * in Settings › Machines: "2 lanes, all asleep", "1 lane, 1 awake". `laneIds`
+ * holds the lanes with a computer and the lanes kept without one; a lane in
+ * both counts once. `awake` is null when no read in this window says which
+ * computers run (a list restored from this computer's copy), so the line
+ * gives only the lanes. Before the account's computers were read it claims
+ * nothing.
  */
-export function adeCloudMachineLine({ known, lanes, awake }: { known: boolean; lanes: number; awake: number }): string {
+export function adeCloudMachineLine({ known, laneIds, awake }: {
+  known: boolean;
+  laneIds: Iterable<string>;
+  awake: number | null;
+}): string {
   if (!known) return "Your account's cloud machine";
+  const lanes = new Set(laneIds).size;
   if (lanes === 0) return "No lanes yet: pick ADE Cloud in Run on to start one";
-  return `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
+  const count = `${lanes} ${lanes === 1 ? "lane" : "lanes"}`;
+  if (awake == null) return count;
+  return `${count}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
 }
 
