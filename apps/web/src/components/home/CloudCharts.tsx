@@ -27,9 +27,13 @@ export function CloudCharts() {
 }
 
 /** Where every competitor number comes from; it closes the ADE Cloud section. */
-export function CloudSources() {
+export function CloudSources({ className }: { className?: string }) {
   return (
-    <p className="mt-6 max-w-[82ch] text-[13px] leading-relaxed text-white/45">
+    <details className={cn("group max-w-[82ch] text-[13px] leading-relaxed text-white/45", className)}>
+      <summary className="focus-ring inline-flex cursor-pointer list-none items-center gap-1 rounded text-white/55 hover:text-white/80 [&::-webkit-details-marker]:hidden">
+        Sources <span className="transition-transform group-open:rotate-90">›</span>
+      </summary>
+      <p className="mt-2">
       Prices from each vendor's own pricing page on {CHECKED_ON}, except Capy's on {CAPY_CHECKED_ON}, for the computer only;
       model use is extra, except that Capy's plans include some model usage and its credits pay for tokens. Values marked ≈ are our
       arithmetic from that page. Free hours count only hours that come back every month, so one-time credits (Replicas, Superconductor)
@@ -39,7 +43,8 @@ export function CloudSources() {
         ademark.dev
       </a>
       .
-    </p>
+      </p>
+    </details>
   );
 }
 
@@ -88,7 +93,7 @@ function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
       <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
         <div
           className={cn("h-full rounded-full transition-[width] duration-500 ease-out", bar.ade ? "bg-[#ffc861]" : "bg-white/[0.24]")}
-          style={{ width: `${bar.value ? Math.min(100, Math.max(2, (bar.value / max) * 100)) : bar.ade ? 2 : 0}%` }}
+          style={{ width: `${bar.value > 0 ? Math.min(100, Math.max(1.5, (bar.value / max) * 100)) : 1}%` }}
         />
       </div>
     </div>
@@ -100,7 +105,8 @@ function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
  * A phone has no room for the name column beside the bar, so it gets the compact row.
  */
 function BarRow({ bar, max }: { bar: Bar; max: number }) {
-  const width = Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
+  // True to scale, so 2.5¢ and 5¢ read differently; a zero keeps a sliver so its row still has a bar.
+  const width = bar.value > 0 ? Math.max(1.5, (bar.value / max) * 82) : 1;
   return (
     <>
     <div className="sm:hidden">

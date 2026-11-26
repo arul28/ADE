@@ -6,9 +6,9 @@
  *
  *   STRIPE_SECRET_KEY=... node scripts/stripe-setup.mjs
  *
- * What it sells (Pricing v2, 2026-11-21): Plus at $5, Pro at $20 and Max at
- * $50 a month; extra hours on their own meter, 2 cents an hour on every paid
- * plan (an hour is a Medium-hour; Small uses none), one price per plan on the
+ * What it sells (Pricing v2, 2026-11-21; 4-cent extra hours and Max's 2,000
+ * hours, 2026-11-26): Plus at $5, Pro at $20 and Max at $50 a month; extra
+ * hours on their own meter, 4 cents an hour on every paid plan (an hour is a Medium-hour; Small uses none), one price per plan on the
  * one meter; and a billing portal setup (card, cancel at the period end,
  * invoices; plans change in ADE, never in the portal). The ADE Cloud iPhone
  * draws from the same credits, so it has no product of its own. Extra disk
@@ -31,9 +31,10 @@
  * lookup key `ade_cloud_extra_hours_monthly`) is left as it is: subscriptions
  * that hold it keep billing on it until the Worker moves them to their plan's
  * price, at their next renewal or plan change. The same holds for Pro's and
- * Max's prices from before Pricing v2 (1.5 and 1.2 cents): a rerun makes new
- * 2-cent ones under the same lookup keys, and the Worker moves each
- * subscription to the price its `STRIPE_EXTRA_HOURS_*_PRICE_ID` names.
+ * Max's prices from before Pricing v2 (1.5 and 1.2 cents), and every plan's
+ * 2-cent price from before 2026-11-26: a rerun makes new 4-cent ones under
+ * the same lookup keys, and the Worker moves each subscription to the price
+ * its `STRIPE_EXTRA_HOURS_*_PRICE_ID` names.
  */
 
 /**
@@ -43,9 +44,9 @@
  * `extraHourCents` is each plan's extra-hours price.
  */
 const PLAN_NUMBERS = {
-  plus: { hours: 100, computerLimit: 3, extraHourCents: 2, cents: 500 },
-  pro: { hours: 600, computerLimit: 10, extraHourCents: 2, cents: 2000 },
-  max: { hours: 1500, computerLimit: 20, extraHourCents: 2, cents: 5000 },
+  plus: { hours: 100, computerLimit: 3, extraHourCents: 4, cents: 500 },
+  pro: { hours: 600, computerLimit: 10, extraHourCents: 4, cents: 2000 },
+  max: { hours: 2000, computerLimit: 20, extraHourCents: 4, cents: 5000 },
 };
 /** "100 hours a month · 3 cloud computers · unlimited Small computers": short enough that Checkout shows it whole. */
 const planDescription = ({ hours, computerLimit }) =>
@@ -81,7 +82,7 @@ async function checkPlanNumbers() {
 const API = "https://api.stripe.com/v1";
 const API_VERSION = "2026-10-28.endive";
 const PRODUCT_TAX_CODE = "txcd_10103001";
-/** "Only if you turn them on · 2¢ an hour", or each plan's price when they differ. */
+/** "Only if you turn them on · 4¢ an hour", or each plan's price when they differ. */
 function extraHoursDescription() {
   const { plus, pro, max } = PLAN_NUMBERS;
   return plus.extraHourCents === pro.extraHourCents && pro.extraHourCents === max.extraHourCents
@@ -226,7 +227,7 @@ const ensurePlanPrice = (product, lookupKey, cents, nickname) => ensurePrice(pro
   nickname,
 }, () => true);
 
-/** One plan's flat extra-hours price per Medium-hour, on the shared hours meter: "$0.02 per hour" on Checkout. */
+/** One plan's flat extra-hours price per Medium-hour, on the shared hours meter: "$0.04 per hour" on Checkout. */
 const ensureExtraPrice = (product, meter, plan) => {
   const cents = String(PLAN_NUMBERS[plan].extraHourCents);
   const name = PRODUCTS[plan].name;

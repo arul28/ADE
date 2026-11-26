@@ -4,7 +4,10 @@
  *
  * The order is fixed: NoMac first, Revyl second, and Revyl only on a paid
  * plan, as the fallback when NoMac refuses. A free plan's phone is NoMac's
- * alone; when NoMac refuses it, the person is told the phone is busy. A tester
+ * alone; when NoMac refuses it, the person is told the phone is busy. A paid
+ * plan's Revyl use stops at the plan's own price each period
+ * (`revylLimitMicros`), so a paying account never costs more at Revyl than
+ * it pays; past it, a refusal is the same busy answer with no upgrade line. A tester
  * (on the iPhone's beta list) may pick one provider for every phone of theirs
  * (`cloud_phone_beta.provider`, set from a beta app's toggle,
  * `POST /cloud/phone/provider`): only that one, never another quietly.
@@ -19,7 +22,7 @@ import {
 import { fail } from "./http";
 import { NOMAC_PHONE } from "./phoneNomac";
 import type { PhoneProviderServer, PhoneSession } from "./phoneProvider";
-import { REVYL_PHONE } from "./phoneRevyl";
+import { REVYL_MICROS_PER_SECOND, REVYL_PHONE } from "./phoneRevyl";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
 export const PHONE_PROVIDERS: Record<CloudPhoneProvider, PhoneProviderServer> = { nomac: NOMAC_PHONE, revyl: REVYL_PHONE };
@@ -45,33 +48,75 @@ export const abilityWords = (abilities: readonly CloudPhoneAbility[]): string =>
 
 /**
  * Why a start went where it did (logs, PostHog): see `CloudPhoneEvent.route`.
- * `busyWhenRefused`: a refusal of the whole route is told as the busy answer
- * (a free plan's, which has no fallback).
+ * `busy`: a refusal of the whole route is told as the busy answer, a free
+ * plan's (no fallback) with the paid plans' line, a paid plan's past its
+ * Revyl limit without it.
  */
-export type PhoneRoute = { order: CloudPhoneProvider[]; reason: "choice" | "default"; busyWhenRefused: boolean };
+export type PhoneRoute = { order: CloudPhoneProvider[]; reason: "choice" | "default"; busy: "free" | "paid" | null };
 
-/** A free plan's phone NoMac turned away: no fallback, and the plan that has one. */
-export const phoneBusy = (): Response =>
-  fail("phone_busy", "The ADE Cloud iPhone is busy right now because of heavy use. Try again in a few minutes, or move to a paid plan for priority access.", 503);
+/** A phone NoMac turned away with no fallback left: on Free, with the plan that has one. */
+export const phoneBusy = (plan: "free" | "paid" = "free"): Response =>
+  fail(
+    "phone_busy",
+    plan === "free"
+      ? "The ADE Cloud iPhone is busy right now because of heavy use. Try again in a few minutes, or move to a paid plan for priority access."
+      : "The ADE Cloud iPhone is busy right now because of heavy use. Try again in a few minutes.",
+    503,
+  );
+
+/**
+ * What a paid account's phones may cost ADE at Revyl in one billing period:
+ * the plan's own price (owner, 2026-11-25), so about 80 minutes on Plus, 330
+ * on Pro and 830 on Max. Internal: never shown or named to the person.
+ */
+export const revylLimitMicros = (priceUsd: number): number => Math.round(priceUsd * 1_000_000);
+
+/**
+ * What the account's Revyl phones cost ADE since `periodStart`: each at least
+ * for the time it ran (a live one until now, an ended one until it ended),
+ * since Revyl's bill fills in only after a later settle read.
+ */
+export async function revylSpentMicros(env: Pick<CloudEnv, "DB">, userId: string, periodStart: number, now: number): Promise<number> {
+  const row = await env.DB.prepare(`
+    select coalesce(sum(max(cost_micros, max(0, (case when state = 'live' then ? else coalesce(ended_at, updated_at) end) - created_at) / 1000 * ?)), 0) as spent
+    from cloud_phones where user_id = ? and provider = 'revyl' and created_at >= ?
+  `).bind(now, REVYL_MICROS_PER_SECOND, userId, periodStart).first<{ spent: number }>();
+  return Math.max(0, Number(row?.spent ?? 0) || 0);
+}
+
+/** When a running Revyl phone uses up what the limit leaves after `spentMicros` (its own time so far included). */
+export const revylLimitEndsAt = (limitMicros: number, spentMicros: number, now: number): number =>
+  now + Math.max(0, Math.floor((limitMicros - spentMicros) / REVYL_MICROS_PER_SECOND)) * 1000;
+
+/** Whole minutes of Revyl phone a limit leaves after what was spent. */
+export const revylMinutesLeft = (limitMicros: number, spentMicros: number): number =>
+  Math.max(0, Math.floor((limitMicros - spentMicros) / (REVYL_MICROS_PER_SECOND * 60)));
 
 /** The provider a tester picked (`cloud_phone_beta.provider`), or null: the fixed order. */
 export const pickedProviderOf = (provider: string | null | undefined): CloudPhoneProvider | null => (isCloudPhoneProvider(provider) ? provider : null);
 
 /**
  * The providers the account's next phone may start on, in order: the
- * tester's pick alone, else NoMac, then Revyl on a paid plan. Each only where
- * it can start phones here and this client drives it.
+ * tester's pick alone, else NoMac, then Revyl on a paid plan with Revyl
+ * minutes left this period (`revylOpen`). Each only where it can start
+ * phones here and this client drives it.
  */
-export function routeOf(env: CloudEnv, { picked, free }: { picked: CloudPhoneProvider | null; free: boolean }, drives: (provider: CloudPhoneProvider) => boolean): PhoneRoute | Response {
+export function routeOf(
+  env: CloudEnv,
+  { picked, free, revylOpen = true }: { picked: CloudPhoneProvider | null; free: boolean; revylOpen?: boolean },
+  drives: (provider: CloudPhoneProvider) => boolean,
+): PhoneRoute | Response {
   const unavailable = (): Response => fail("phone_unavailable", "The ADE Cloud iPhone can't start right now. Try again soon.", 503);
   if (picked) {
     if (!PHONE_PROVIDERS[picked].canStart(env)) return unavailable();
     if (!drives(picked)) return fail("phone_needs_update", "Update ADE to use your ADE Cloud iPhone.", 409);
-    return { order: [picked], reason: "choice", busyWhenRefused: false };
+    return { order: [picked], reason: "choice", busy: null };
   }
-  const order = (free ? PROVIDER_ORDER.slice(0, 1) : PROVIDER_ORDER).filter((provider) => PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
-  if (!order.length) return free ? phoneBusy() : unavailable();
-  return { order, reason: "default", busyWhenRefused: free };
+  const nomacOnly = free || !revylOpen;
+  const order = (nomacOnly ? PROVIDER_ORDER.slice(0, 1) : PROVIDER_ORDER).filter((provider) => PHONE_PROVIDERS[provider].canStart(env) && drives(provider));
+  const busy = free ? "free" : revylOpen ? null : "paid";
+  if (!order.length) return busy ? phoneBusy(busy) : unavailable();
+  return { order, reason: "default", busy };
 }
 
 /** What the account's next phone can do beyond the basics: the first provider its route tries. */
@@ -125,10 +170,10 @@ export async function startOnRoute(env: CloudEnv, route: PhoneRoute, userId: str
   { started: { session: PhoneSession; reused: boolean }; provider: CloudPhoneProvider; reason: PhoneRoute["reason"] | "failover" } | Response
 > {
   const answer = await startAlongRoute(env, route, userId, input);
-  // A free plan's phone has no fallback: a refusal (never a lost answer, which may hide a phone) reads as busy.
-  if (answer instanceof Response && route.busyWhenRefused && definitelyRefused(answer)) {
-    logCloud("cloud.phone_start_busy", { userId, status: answer.status });
-    return phoneBusy();
+  // A phone with no fallback left: a refusal (never a lost answer, which may hide a phone) reads as busy.
+  if (answer instanceof Response && route.busy && definitelyRefused(answer)) {
+    logCloud("cloud.phone_start_busy", { userId, status: answer.status, plan: route.busy });
+    return phoneBusy(route.busy);
   }
   return answer;
 }

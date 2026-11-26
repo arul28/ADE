@@ -105,9 +105,9 @@ export function setupStartDiskGb(size: Pick<CloudSize, "diskMaxGb">, rememberedG
  */
 export const CLOUD_PLANS: Readonly<Record<CloudPlanId, CloudPlanTerms>> = {
   free: { label: "Free", includedMilli: 50_000, computerLimit: 2, priceUsd: 0, extraHourCents: null, outsideAgents: false },
-  plus: { label: "Plus", includedMilli: 100_000, computerLimit: 3, priceUsd: 5, extraHourCents: 2, outsideAgents: true },
-  pro: { label: "Pro", includedMilli: 600_000, computerLimit: 10, priceUsd: 20, extraHourCents: 2, outsideAgents: true },
-  max: { label: "Max", includedMilli: 1_500_000, computerLimit: 20, priceUsd: 50, extraHourCents: 2, outsideAgents: true },
+  plus: { label: "Plus", includedMilli: 100_000, computerLimit: 3, priceUsd: 5, extraHourCents: 4, outsideAgents: true },
+  pro: { label: "Pro", includedMilli: 600_000, computerLimit: 10, priceUsd: 20, extraHourCents: 4, outsideAgents: true },
+  max: { label: "Max", includedMilli: 2_000_000, computerLimit: 20, priceUsd: 50, extraHourCents: 4, outsideAgents: true },
 };
 
 /** A plan as `CLOUD_PLANS` holds it, with its name on this server's own pages; the catalog adds what older builds read (`diskGb`). */
@@ -150,7 +150,7 @@ export const AWAKE_COMPUTER_CAP = 25;
 /** One cent in micros (1e-6 USD), the unit money is counted in. */
 export const CENT_MICROS = 10_000;
 
-/** One extra hour (a Medium-hour) on each paid plan, in micros: 2 cents on every paid plan (Pricing v2). */
+/** One extra hour (a Medium-hour) on each paid plan, in micros: 4 cents on every paid plan (since 2026-11-26). */
 export const EXTRA_HOUR_MICROS: Readonly<Record<CloudPaidPlanId, number>> = {
   plus: Math.round(CLOUD_PLANS.plus.extraHourCents! * CENT_MICROS),
   pro: Math.round(CLOUD_PLANS.pro.extraHourCents! * CENT_MICROS),

@@ -1,39 +1,31 @@
-import { Smartphone } from "lucide-react";
-import { AppleMark } from "../home/marks";
+import { AndroidMark, AppleMark, WindowsMark } from "../home/marks";
 import { cn } from "../../lib/cn";
-import { CLOUD_PHONE_ON_WEBSITE, PHONE_CREDITS_PER_MINUTE, UNIT } from "../../lib/cloudPricing";
 
 const ITEMS = [
-  {
-    id: "ios",
-    icon: Smartphone,
-    title: "iOS Simulator in the cloud",
-    body: "Agents build your iPhone app, run it on a simulator in the cloud and send you screenshots and videos.",
-  },
   {
     id: "mac",
     icon: AppleMark,
     title: "Mac computers in the cloud",
     body: "A whole macOS computer for a task, for Xcode builds and Mac apps, with no Mac of your own awake.",
   },
+  {
+    id: "windows",
+    icon: WindowsMark,
+    title: "Windows computers in the cloud",
+    body: "A whole Windows computer for a task, for Windows apps, builds and tests.",
+  },
+  {
+    id: "android",
+    icon: AndroidMark,
+    title: "Android emulator on every computer",
+    body: "Agents run your Android app on any ADE Cloud computer, Small included.",
+  },
 ] as const;
 
-/** The ADE Cloud computers that are on the way: a card each (under a "Coming soon" heading), or (`compact`) one quiet line that says it. */
-export function ComingSoon({ compact, className }: { compact?: boolean; className?: string }) {
-  if (compact) {
-    return (
-      <p className={cn("flex flex-wrap items-center gap-x-5 gap-y-2 text-[14px] text-white/55", className)}>
-        <span className="font-medium text-white/80">Coming soon</span>
-        {ITEMS.map((item) => (
-          <span key={item.id} className="inline-flex items-center gap-2">
-            <item.icon className="h-4 w-4" /> {item.title}
-          </span>
-        ))}
-      </p>
-    );
-  }
+/** The ADE Cloud computers and tools that are on the way, a card each. */
+export function ComingSoon({ className }: { className?: string }) {
   return (
-    <div className={cn("grid gap-4 md:grid-cols-2", className)}>
+    <div className={cn("grid gap-4 md:grid-cols-2 lg:grid-cols-3", className)}>
       {ITEMS.map((item) => (
         <div
           key={item.id}
@@ -44,12 +36,6 @@ export function ComingSoon({ compact, className }: { compact?: boolean; classNam
           </span>
           <h3 className="mt-5 text-[18px] font-semibold text-white">{item.title}</h3>
           <p className="mt-2 max-w-[30rem] text-[14.5px] leading-[1.6] text-white/60">{item.body}</p>
-          {/* Its numbers show only once it is open to everyone (`CLOUD_PHONE_ON_WEBSITE`): they may still change. */}
-          {item.id === "ios" && CLOUD_PHONE_ON_WEBSITE ? (
-            <p className="mt-4 text-[13px] leading-[1.5] text-white/45">
-              It uses your plan's credits: {UNIT.count(PHONE_CREDITS_PER_MINUTE)} a minute.
-            </p>
-          ) : null}
         </div>
       ))}
     </div>

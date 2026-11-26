@@ -416,9 +416,9 @@ Pricing v2 (owner, 2026-11-21; [docs/plans/pricing-v2-and-gravity.md](../../plan
 | Plan | Price | Hours a month | Cloud computers | Extra hours | Outside agents (ADE MCP) |
 |---|---|---|---|---|---|
 | Free | $0 | 50 | 2 | none: work stops | no |
-| Plus | $5 | 100 | 3 | 2¢ an hour | yes |
-| Pro | $20 | 600 | 10 | 2¢ an hour | yes |
-| Max | $50 | 1,500 | 20 | 2¢ an hour | yes |
+| Plus | $5 | 100 | 3 | 4¢ an hour | yes |
+| Pro | $20 | 600 | 10 | 4¢ an hour | yes |
+| Max | $50 | 2,000 | 20 | 4¢ an hour | yes |
 
 The ADE Cloud iPhone has no minutes of its own: it draws from these credits,
 one a minute (below).
@@ -502,7 +502,7 @@ one a minute (below).
   plan has now is raised on the next read (`raiseFreeHours`), except for an
   account refused the free plan or held by the GitHub rules.
 - **Extra hours:** one flat Stripe metered price per plan
-  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`) on one meter, 2¢ a
+  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`) on one meter, 4¢ a
   Medium-hour on each. Checkout sells only the plan. The extra-hours item
   joins the subscription when the person first turns extra hours on
   (`ensureExtraHoursItem`), before the switch goes on, so no hour is
@@ -554,10 +554,10 @@ is on credits: the `cloud_credits` switch that rolled them out was turned to
 log keeps the flip). Where this page says hours, the person sees credits.
 
 A credit is the hour renamed, so no number changes: Free 50, Plus 100, Pro
-600, Max 1,500 a month; a Small computer uses none, Medium 1 an hour, Large
+600, Max 2,000 a month; a Small computer uses none, Medium 1 an hour, Large
 2.5, X-Large 4. The ADE Cloud iPhone draws from the same balance at one credit
 a minute (a Mac VM, later, the same). Past the plan, a paid plan's extra
-credits are the extra-hours switch at 2¢ each, so an extra iPhone minute is
+credits are the extra-hours switch at 4¢ each, so an extra iPhone minute is
 an extra credit. Free stops when the credits run out.
 
 How the server counts it (`credits.ts`, `phones.ts`, migration 0059):

@@ -214,16 +214,16 @@
     // hours" product. Subscriptions bought before Cloud 7 keep it until their
     // next renewal or plan change. Read before the older STRIPE_EXTRA_PRICE_ID.
     "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UadQVBsy4QVYccDnPEBOIkW",
-    // Each plan's own extra-hours price (Cloud 7, 2026-11-13): 2, 1.5 and 1.2
-    // cents an hour, all on the one hours meter.
-    "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbECABsy4QVYccDEYv5HvpZ",
-    "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UePypBsy4QVYccDbWcSwkUd",
-    "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UePypBsy4QVYccDO3bAKveb",
+    // Each plan's own extra-hours price, all on the one hours meter: 4 cents
+    // an hour on every plan since 2026-11-26.
+    "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UftqnBsy4QVYccDuDhyT77S",
+    "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UftqoBsy4QVYccDRliGhc4Y",
+    "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UftqoBsy4QVYccDg2JIa6yc",
     // Extra-hours prices a plan no longer sells: subscriptions holding one keep
     // it until their renewal moves it to the plan's price. Pro's and Max's
-    // Cloud 7 prices, which the Pricing v2 rerun of stripe-setup replaces; add
-    // each id a later rerun replaces.
-    "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbECABsy4QVYccDRUVKf1y7,price_1UbECABsy4QVYccD0aD7kNA5",
+    // Cloud 7 prices, which the Pricing v2 rerun of stripe-setup replaces, then
+    // every plan's 2-cent price (2026-11-26); add each id a later rerun replaces.
+    "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbECABsy4QVYccDRUVKf1y7,price_1UbECABsy4QVYccD0aD7kNA5,price_1UbECABsy4QVYccDEYv5HvpZ,price_1UePypBsy4QVYccDbWcSwkUd,price_1UePypBsy4QVYccDO3bAKveb",
     "STRIPE_METER_EVENT": "ade_cloud_small_hours",
     // Pro, Max, extra disk ($2 per 10 GB a month, its own meter, never the
     // hours price) and the billing portal setup (card, cancel, invoices).
@@ -323,13 +323,13 @@
         "STRIPE_PRO_PRICE_ID": "price_1UaNNMPWulQjqSYP5RzGDNiy",
         "STRIPE_MAX_PRICE_ID": "price_1UbMTjPWulQjqSYPlV8gvD3N",
         "STRIPE_EXTRA_HOURS_PRICE_ID": "price_1UaNNNPWulQjqSYPQ2Pz5CXM",
-        "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UbMTjPWulQjqSYPb3jzlykP",
-        "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UePyWPWulQjqSYPLOxH5HlB",
-        "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UePyXPWulQjqSYPzetEe1Dl",
-        "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbMTjPWulQjqSYPROgTWr6C,price_1UbMTkPWulQjqSYPhPcWm3l6",
+        "STRIPE_EXTRA_HOURS_PLUS_PRICE_ID": "price_1UfvWWPWulQjqSYPFpCj3L9l",
+        "STRIPE_EXTRA_HOURS_PRO_PRICE_ID": "price_1UfvWXPWulQjqSYPuiPSM7tp",
+        "STRIPE_EXTRA_HOURS_MAX_PRICE_ID": "price_1UfvWXPWulQjqSYPA3TGnfig",
+        "STRIPE_EXTRA_HOURS_RETIRED_PRICE_IDS": "price_1UbMTjPWulQjqSYPROgTWr6C,price_1UbMTkPWulQjqSYPhPcWm3l6,price_1UbMTjPWulQjqSYPb3jzlykP,price_1UePyWPWulQjqSYPLOxH5HlB,price_1UePyXPWulQjqSYPzetEe1Dl",
         "STRIPE_DISK_PRICE_ID": "price_1UbMTkPWulQjqSYPQYFuKXln",
         "STRIPE_DISK_METER_EVENT": "ade_cloud_extra_disk_gb_days",
-        "CLOUD_PHONE_ACCESS": "beta",
+        "CLOUD_PHONE_ACCESS": "all",
         // Revyl may start phones (owner's yes, 2026-11-23): second, after NoMac,
         // and only on paid plans (or a tester's own pick).
         "CLOUD_PHONE_REVYL": "on",

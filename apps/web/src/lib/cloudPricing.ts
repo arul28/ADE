@@ -26,30 +26,9 @@ import {
   type CloudPlanId,
   type CloudTierId,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_PLANS, cloudSizeForTier } from "../../../account-directory/src/cloud/plans";
+import { CLOUD_PLANS, SMALL_NO_CARDS_RATE_MILLI, cloudSizeForTier } from "../../../account-directory/src/cloud/plans";
 
 export { CLOUD_SMALL_FAIR_USE_SENTENCE, cloudComputersPhrase };
-
-/**
- * The ADE Cloud iPhone (an iOS Simulator in the cloud, paid from the credits)
- * is behind the server's `CLOUD_PHONE_ACCESS` switch, in beta for testers.
- * The website names it as coming soon everywhere (`ComingSoon`,
- * `CloudSection`, the pricing page's plan cards) with no numbers; once that
- * switch is `all`, set this to true and the coming-soon card's minutes line
- * appears.
- */
-// Flip to true in the same release that sets the server's CLOUD_PHONE_ACCESS to `all`.
-export const CLOUD_PHONE_ON_WEBSITE = false;
-
-/**
- * Ads are on for everyone: the pricing page's Free card says Small is
- * unlimited only in the US with sponsored cards on (the server ties that rule
- * to the ad switch). The privacy policy and Terms sections about Gravity's sponsored
- * cards (`PrivacyPage`, `TermsPage`) always show, whatever this says: the
- * disclosure comes before anyone sees a card.
- */
-// Flip to true in the same release that sets the server's `gravity_ads` switch to `all`.
-export const GRAVITY_ADS_ON_WEBSITE = false;
 
 /** The Free plan's ad line, on the pricing page and the home page. */
 export const ADS_FREE_PLAN_SENTENCE =
@@ -101,7 +80,7 @@ function splitOffer(sentence: string): readonly [string, string] {
   return at < 0 ? [sentence, ""] : [sentence.slice(0, at + 1), sentence.slice(at + 2)];
 }
 
-function cloudUnitWords(phoneShown: boolean): CloudUnitWords {
+function cloudUnitWords(): CloudUnitWords {
   const smallUnlimited = CLOUD_SMALL_UNLIMITED_SENTENCE;
   return {
     one: "credit",
@@ -111,17 +90,16 @@ function cloudUnitWords(phoneShown: boolean): CloudUnitWords {
     smallUnlimited,
     smallUnlimitedParts: splitOffer(smallUnlimited),
     offerRest: "Bigger computers use credits, and each plan has a number of cloud computers.",
-    // The iPhone stays off the site until it launches, so the credit's sentence names it only then.
-    unitSentence: phoneShown ? CLOUD_CREDIT_UNIT_SENTENCE : "A credit is an hour on a Medium computer. Small computers use none.",
+    unitSentence: CLOUD_CREDIT_UNIT_SENTENCE,
     rateTitle: "What a credit buys",
-    spenders: phoneShown ? "bigger computers and the ADE Cloud iPhone" : "bigger computers",
+    spenders: "bigger computers and the ADE Cloud iPhone",
     extraTitle: "Extra credits",
     extra: "extra credits",
   };
 }
 
 /** The site's unit words. */
-export const UNIT = cloudUnitWords(CLOUD_PHONE_ON_WEBSITE);
+export const UNIT = cloudUnitWords();
 
 /** The offer's first sentence without its period, for a pill or a link: "Unlimited Small computers". */
 export const CLOUD_SMALL_UNLIMITED_SHORT = UNIT.smallUnlimitedParts[0].replace(/\.$/, "");
@@ -145,15 +123,6 @@ export type PricingPlan = {
   adSupported: boolean;
   /** Days an unused computer is kept before ADE cleans it up. */
   idleDays: number;
-  /** One short line on who the plan is for. */
-  pitch: string;
-};
-
-const PLAN_PITCHES: Record<CloudPlanId, string> = {
-  free: "Try your agents in the cloud.",
-  plus: "A few lanes, most days.",
-  pro: "Agents working all day.",
-  max: "A whole team of agents.",
 };
 
 export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "max"] as const).map((id) => {
@@ -168,7 +137,6 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
     extraHourCents: plan.extraHourCents,
     adSupported: id === "free",
     idleDays: id === "free" ? CLOUD_IDLE_CLEANUP_DAYS.free : CLOUD_IDLE_CLEANUP_DAYS.paid,
-    pitch: PLAN_PITCHES[id],
   };
 });
 
@@ -190,6 +158,10 @@ export type PricingSize = {
   /** A full computer: Docker and the Android emulator. */
   full: boolean;
   use: string;
+  /** What a person would call it: "Medium Linux box". */
+  machine: string;
+  /** Its specs in words: "4 CPUs, 8 GB", plus "Docker and Android" on a full computer. */
+  specs: string;
 };
 
 const SIZE_USES: Record<CloudTierId, string> = {
@@ -211,8 +183,13 @@ export const PRICING_SIZES: readonly PricingSize[] = (["small", "medium", "large
     rate: size.multiplierMilli / 1000,
     full: size.type === "vm",
     use: SIZE_USES[id],
+    machine: `${size.label} Linux box`,
+    specs: `${size.cpu} CPUs, ${size.memoryGb} GB${size.type === "vm" ? ", Docker and Android" : ""}`,
   }];
 });
+
+/** Credits an hour Free's Small uses without sponsored cards, or outside the US: the server's `SMALL_NO_CARDS_RATE_MILLI`. */
+export const SMALL_NO_ADS_RATE = SMALL_NO_CARDS_RATE_MILLI / 1000;
 
 export const SMALL_SIZE = PRICING_SIZES.find((size) => size.rate === 0) ?? PRICING_SIZES[0]!;
 /** The sizes that use hours, smallest first. */
