@@ -248,7 +248,7 @@ export function createIssueTrackerService(args: IssueTrackerServiceArgs): IssueT
       if (!adapter || !(await isConnected(tracker))) throw new IssueTrackerError(tracker, "getViewer", "not-connected", `${tracker} is not connected on this machine.`);
       return await withIssueTrackerError(tracker, "getViewer", () => adapter.getViewer());
     },
-    async list(input: IssueListArgs) {
+    async list(input: IssueListArgs = {}) {
       const limit = Math.min(100, Math.max(1, Math.floor(input.limit ?? 25)));
       if (input.tracker) {
         const adapter = adapters.get(input.tracker);

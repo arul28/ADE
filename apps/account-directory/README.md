@@ -384,7 +384,8 @@ The Worker forwards it to `https://api.typesafe.ai/v1/systemone` with
   `jev_bonus_exhausted` with `retry-after` at the next UTC midnight.
 - A call TypeSafe did not answer gives its slot back. TypeSafe's 429 passes
   through; its 402 (ADE's spend cap) becomes the same 429; a refused key
-  answers 503. The cron sweeps rows older than a week.
+  answers 503; a refused request (400, 422 or 451) answers 400, so the brain's
+  bonus breaker stays closed and no Sentry issue opens. The cron sweeps rows older than a week.
 - The fleet cap holds the key to about $4 a day.
 - The key is the secret `JEV_API_KEY` (`wrangler secret put JEV_API_KEY`,
   also with `--env production`). Without it the route answers 503

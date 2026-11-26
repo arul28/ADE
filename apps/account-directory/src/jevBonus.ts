@@ -176,7 +176,9 @@ function mapUpstreamFailure(status: number, headers: Headers, nowMs: number): { 
       reason: "upstream_rate_limited",
     };
   }
-  if (status === 400 || status === 422) {
+  // A 451 is TypeSafe refusing this one request, not an outage: answered as
+  // a refused input so the brain's bonus breaker stays closed for the next call.
+  if (status === 400 || status === 422 || status === 451) {
     return { response: json({ error: JEV_BONUS_ERRORS.badRequest }, 400), reason: "upstream_rejected" };
   }
   if (status === 401 || status === 403) {
