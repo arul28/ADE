@@ -16126,6 +16126,126 @@ final class SyncService: ObservableObject {
     laneDeletionsKept.removeAll { $0.id == id }
   }
 
+  // MARK: Recently deleted chats and the archive
+  //
+  // Each call takes the address of the machine the row lives on: nil for the
+  // focused machine, a machine-marked project id (and its root) for another
+  // one, which `routeOrStripFleetTarget` sends over that machine's link. A
+  // decoded call that gets queued instead throws `QueuedRemoteCommandError`,
+  // so a row never reads as done before its machine did it.
+
+  /// Locating each chat's conversation can take a while on a machine with many.
+  static let deletedChatsReadTimeoutNanoseconds: UInt64 = 20_000_000_000
+
+  /// Deleted chats and CLIs whose conversation the agent still keeps.
+  func listDeletedChats(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> [DeletedChat] {
+    try await sendDecodableCommand(
+      action: "chat.listDeleted",
+      args: [:],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.deletedChatsReadTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: DeletedChatListResult.self
+    ).chats
+  }
+
+  /// One page of a deleted chat's conversation, newest first; `before` is the
+  /// previous page's `olderCursor`.
+  func deletedChatDetail(
+    _ id: String,
+    before: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> ExternalSessionDetail {
+    var args: [String: Any] = ["id": id]
+    if let before, !before.isEmpty { args["before"] = before }
+    return try await sendDecodableCommand(
+      action: "chat.getDeletedDetail",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.deletedChatsReadTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ExternalSessionDetail.self
+    )
+  }
+
+  /// Reopens a deleted chat: in its own lane, or (`laneId`) as a copy in
+  /// another lane of the same machine.
+  func reopenDeletedChat(
+    _ id: String,
+    laneId: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> DeletedChatReopenResult {
+    var args: [String: Any] = ["id": id]
+    if let laneId, !laneId.isEmpty { args["laneId"] = laneId }
+    return try await sendDecodableCommand(
+      action: "chat.reopenDeleted",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: DeletedChatReopenResult.self
+    )
+  }
+
+  /// Takes deleted chats off the list for good. The agent keeps its own copy.
+  func removeDeletedChats(_ ids: [String], targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws {
+    _ = try await sendCommand(
+      action: "chat.removeDeleted",
+      args: ["ids": ids],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
+  }
+
+  /// Every archived lane, chat and shell of the project on one machine.
+  func listArchive(targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> ArchiveListResult {
+    try await sendDecodableCommand(
+      action: "archive.list",
+      args: [:],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 15_000_000_000,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ArchiveListResult.self
+    )
+  }
+
+  /// Brings archived items back.
+  func restoreArchived(_ items: [ArchiveItemRef], targetProjectId: String? = nil, targetProjectRootPath: String? = nil) async throws -> ArchiveActionResult {
+    try await sendDecodableCommand(
+      action: "archive.restore",
+      args: ["items": items.map { ["kind": $0.kind, "id": $0.id] }],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ArchiveActionResult.self
+    )
+  }
+
+  /// Deletes archived items for good. `force` removes a lane folder that still
+  /// holds unsaved work.
+  func deleteArchived(
+    _ items: [ArchiveItemRef],
+    force: Bool = false,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> ArchiveActionResult {
+    var args: [String: Any] = ["items": items.map { ["kind": $0.kind, "id": $0.id] }]
+    if force { args["force"] = true }
+    // A lane's folder removal can take a couple of minutes.
+    return try await sendDecodableCommand(
+      action: "archive.delete",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 300_000_000_000,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: ArchiveActionResult.self
+    )
+  }
+
   /// Kept-work notices for the project on screen.
   var activeLaneDeletionsKept: [LaneDeletionKept] {
     laneDeletionsKept.filter { $0.shownInProjectId == activeProjectId }

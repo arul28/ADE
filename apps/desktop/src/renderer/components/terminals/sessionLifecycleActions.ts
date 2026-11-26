@@ -511,7 +511,7 @@ export async function setChatGoal(
 /**
  * Archive an agent CLI (Claude Code, Codex, …) on the machine that owns it,
  * like a chat: one at its prompt stops and resumes later; one mid-turn
- * finishes first. Settings › Archive brings it back.
+ * finishes first. Settings › Deleted & Archived › Archive brings it back.
  */
 export async function archiveAgentCliSession(
   session: Pick<TerminalSessionSummary, "id">,
@@ -522,7 +522,7 @@ export async function archiveAgentCliSession(
     showToast({
       id: `archive-cli:${session.id}`,
       title: "CLI session archived",
-      message: "Restore it from Settings › Archive.",
+      message: "Restore it from Settings › Deleted & Archived › Archive.",
     });
     return true;
   } catch (error) {

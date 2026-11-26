@@ -16,6 +16,9 @@ struct WorkImportSessionPreview: View {
 
   let session: ExternalSessionSummary
   let source: WorkImportSource
+  /// Reads one page (`before` is the last page's `olderCursor`) another way
+  /// than the machine's external sessions: a deleted chat's conversation.
+  var loadPage: ((_ before: String?) async throws -> ExternalSessionDetail)? = nil
 
   @State private var events: [AgentChatEventEnvelope] = []
   @State private var entries: [WorkTimelineEntry] = []
@@ -219,15 +222,11 @@ struct WorkImportSessionPreview: View {
     olderError = nil
     loadingOlder = false
     expandedCardIds = []
-    guard syncService.workImportSupportsDetail(source) else { return }
+    guard loadPage != nil || syncService.workImportSupportsDetail(source) else { return }
     loading = true
     defer { loading = false }
     do {
-      let detail = try await syncService.workImportSessionDetail(
-        provider: session.provider,
-        sessionId: session.id,
-        source: source
-      )
+      let detail = try await fetchPage(before: nil)
       guard !Task.isCancelled else { return }
       events = detail.events
       hostMessages = detail.messages
@@ -246,12 +245,7 @@ struct WorkImportSessionPreview: View {
     olderError = nil
     defer { loadingOlder = false }
     do {
-      let detail = try await syncService.workImportSessionDetail(
-        provider: session.provider,
-        sessionId: session.id,
-        before: cursor,
-        source: source
-      )
+      let detail = try await fetchPage(before: cursor)
       guard !Task.isCancelled else { return }
       let known = Set(events.map(\.id))
       events = detail.events.filter { !known.contains($0.id) } + events
@@ -261,6 +255,16 @@ struct WorkImportSessionPreview: View {
     } catch {
       olderError = "Couldn't load earlier messages."
     }
+  }
+
+  private func fetchPage(before: String?) async throws -> ExternalSessionDetail {
+    if let loadPage { return try await loadPage(before) }
+    return try await syncService.workImportSessionDetail(
+      provider: session.provider,
+      sessionId: session.id,
+      before: before,
+      source: source
+    )
   }
 
   /// Same pipeline as a Work chat transcript: envelopes to `WorkChatEnvelope`,

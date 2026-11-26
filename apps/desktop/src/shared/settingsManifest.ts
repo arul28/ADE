@@ -57,8 +57,11 @@ export const SETTINGS_TAB_IDS = [
   // still lands.
   "lanes-git",
   "project-agents",
-  // Project → Storage & cleanup: the space, archive and cleanup rules that
-  // used to share the Lanes page. `?tab=storage` was Health's id; it lands here.
+  // Project → Deleted & Archived: what you deleted or archived, from every
+  // computer at once (no copy picker), to bring back.
+  "deleted",
+  // Project → Disk space (was Storage & cleanup): the space and the cleanup
+  // rules. `?tab=storage` was Health's id; it lands here.
   "storage",
   "location",
   // Every machine on one page; a machine opens the sections that work for it.
@@ -146,7 +149,7 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
  * page (the tab's copy by default), and names the computer it is on. They
  * never follow the Settings machine picker.
  */
-export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "integrations"];
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "deleted", "storage", "location", "integrations"];
 
 export function isProjectSettingsTab(tab: SettingsTabId): boolean {
   return PROJECT_SETTINGS_TAB_IDS.includes(tab);
@@ -242,7 +245,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
   { id: "project-agents", label: "Agents", description: "What agents keep about this project: PR chat transcripts.", group: "project" },
-  { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
+  { id: "deleted", label: "Deleted & Archived", description: "Lanes and chats you deleted or archived, on every computer.", group: "project" },
+  { id: "storage", label: "Disk space", description: "The space this project takes, and what ADE cleans up on its own.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
 
   // ── System ──────────────────────────────────────────────────────────────
@@ -1491,10 +1495,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Voice",
   },
 
-  // ── Lanes, Storage & cleanup, Agents ─────────────────────────────────────
-  // Project → Lanes holds the lanes and how new ones start; Project → Storage
-  // & cleanup the space, archive and cleanups; Project → Agents what agents
-  // keep about the project. Entry ids keep their old namespaces (`storage.*`,
+  // ── Lanes, Deleted & Archived, Disk space, Agents ───────────────────────
+  // Project → Lanes holds the lanes and how new ones start; Project → Deleted
+  // & archived what can be brought back; Project → Disk space the space and
+  // cleanups; Project → Agents what agents keep about the project. Entry ids keep their old namespaces (`storage.*`,
   // `archive.*`, `lanes-git.pr-chat-transcripts`): deeplinks and telemetry
   // hold them.
   {
@@ -1551,7 +1555,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "archive.items",
     label: "Archived lanes, chats, and shells",
     keywords: ["archive", "archived", "restore", "unarchive", "delete", "cleanup", "old", "lanes", "chats", "shells"],
-    tab: "storage",
+    tab: "deleted",
     anchor: "archive",
     scope: "machine-repo",
     web: "machine",
@@ -1565,7 +1569,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
       "deleted chats", "recently deleted", "recover chat", "restore chat", "undo delete", "undelete",
       "reopen chat", "trash", "bin", "recycle", "deleted", "lost chat", "chat history", "bring back",
     ],
-    tab: "storage",
+    tab: "deleted",
     anchor: "recently-deleted",
     scope: "machine-repo",
     web: "machine",
@@ -2096,8 +2100,8 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   // `#hash` on an old link still lands on its own card.
   overview: "general",
   service: "advanced",
-  // Health (once tab id `storage`, now Storage & cleanup's id) was split up
-  // too: its space, cleanups and sessions are on Project → Storage & cleanup,
+  // Health (once tab id `storage`, now Disk space's id) was split up
+  // too: its space, cleanups and sessions are on Project → Disk space,
   // its lanes on Project → Lanes, its project checks on Project → Location,
   // its service on System → Advanced, and its summary is General.
   disk: "storage",
@@ -2106,10 +2110,11 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   cleanups: "storage",
   health: "general",
   diagnostics: "advanced",
-  archive: "storage",
-  archived: "storage",
-  "recently-deleted": "storage",
-  trash: "storage",
+  // Archive and Recently deleted left Storage & cleanup for Deleted & Archived.
+  archive: "deleted",
+  archived: "deleted",
+  "recently-deleted": "deleted",
+  trash: "deleted",
   // Swept into General before; now each has a real home.
   workspace: "location",
   project: "location",
@@ -2149,7 +2154,7 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
 /**
  * Legacy `?tab=` values that named one card's page. With no `#hash` of its
  * own, such a link scrolls to that card on its new page instead of landing on
- * the top of it: `?tab=archive` opens Project → Storage & cleanup at the archive.
+ * the top of it: `?tab=archive` opens Project → Deleted & Archived at the archive.
  */
 export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
   // Project → Secrets is now the Secrets view of Passwords & Secrets.
@@ -2188,7 +2193,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "github-connection": "integrations.github",
   "linear-connection": "integrations.linear",
   "pr-chat-transcripts": "lanes-git.pr-chat-transcripts",
-  // `session-lifecycle` is still a live anchor (Project → Storage & cleanup → Rules → Chats).
+  // `session-lifecycle` is still a live anchor (Project → Disk space → Rules → Chats).
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",

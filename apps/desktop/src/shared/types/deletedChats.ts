@@ -22,6 +22,11 @@ export type DeletedChat = {
   laneColor: string | null;
   /** False when the lane was deleted too: Reopen then asks for a lane. */
   laneExists: boolean;
+  /**
+   * True when the chat went with its lane's delete (not deleted on its own
+   * first): restoring that lane brings it back. Absent on older hosts.
+   */
+  withLane?: boolean;
   createdAt: string | null;
   lastActiveAt: string | null;
   deletedAt: string;

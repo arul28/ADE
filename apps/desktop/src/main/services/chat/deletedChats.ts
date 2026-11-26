@@ -26,6 +26,7 @@ import { isWellFormedExternalSessionId } from "../externalSessions/sessionIds";
 import { machineProviderUsageHomes } from "../usage/providerUsageHomes";
 import { providerThreadIsInHome } from "./providerThreadMove";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { hasTable, openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { assertStorageAnswering } from "../state/unansweringRoots";
 
@@ -313,26 +314,53 @@ function parseCliSnapshot(row: DeletedChatRow): DeletedCliSnapshot | null {
 
 const CHAT_TOOL_TYPE_SQL = "(s.tool_type = 'cursor' or s.tool_type like '%-chat')";
 
+type LaneChatRow = { id: string; title: string | null; toolType: string; startedAt: string | null; endedAt: string | null };
+
+function laneChatRows(db: DeletedChatsDb, laneId: string): LaneChatRow[] {
+  return db.all<LaneChatRow>(
+    `select s.id, s.title, s.tool_type as toolType, s.started_at as startedAt, s.ended_at as endedAt
+       from terminal_sessions s
+      where s.lane_id = ? and ${CHAT_TOOL_TYPE_SQL}`,
+    [laneId],
+  );
+}
+
+/**
+ * The persisted records of a lane's chats, read before a lane delete stops
+ * them. Stopping a chat drops its agent's id from the record (a closed chat
+ * must not resume), and `recordChatsDeletedWithLane` needs that id.
+ */
+export function readLaneChatRecords(db: DeletedChatsDb, args: {
+  laneId: string;
+  chatSessionsDir: string;
+}): Map<string, Record<string, unknown>> {
+  const records = new Map<string, Record<string, unknown>>();
+  for (const row of laneChatRows(db, args.laneId)) {
+    const record = readPersistedChatRecord(path.join(args.chatSessionsDir, `${row.id}.json`));
+    if (record) records.set(row.id, record);
+  }
+  return records;
+}
+
 /**
  * Deleting a lane removes its chats' rows in one statement, not through the
  * chat delete. Called just before that statement, so those chats can still be
- * reopened (as a copy, in a lane the user picks).
+ * reopened (as a copy, in a lane the user picks). `recordsBeforeStop` holds
+ * the agent ids the stop step dropped (`readLaneChatRecords`).
  */
 export function recordChatsDeletedWithLane(db: DeletedChatsDb, args: {
   laneId: string;
   laneName: string | null;
   worktreePath: string | null;
   chatSessionsDir: string;
+  recordsBeforeStop?: ReadonlyMap<string, Record<string, unknown>>;
 }): number {
-  const rows = db.all<{ id: string; title: string | null; toolType: string; startedAt: string | null; endedAt: string | null }>(
-    `select s.id, s.title, s.tool_type as toolType, s.started_at as startedAt, s.ended_at as endedAt
-       from terminal_sessions s
-      where s.lane_id = ? and ${CHAT_TOOL_TYPE_SQL}`,
-    [args.laneId],
-  );
   let recorded = 0;
-  for (const row of rows) {
-    const record = readPersistedChatRecord(path.join(args.chatSessionsDir, `${row.id}.json`));
+  for (const row of laneChatRows(db, args.laneId)) {
+    const current = readPersistedChatRecord(path.join(args.chatSessionsDir, `${row.id}.json`));
+    const before = args.recordsBeforeStop?.get(row.id) ?? null;
+    // The newer record wins, field by field; an id it no longer holds comes from before the stop.
+    const record = before && !deletedChatSourceFromRecord(current) ? { ...before, ...current } : current;
     if (!record) continue;
     // Subagents and side chats go with their parent; only chats the user had are listed.
     if (asText(record.spawnKind) === "subagent" || asText(record.sideChatParentSessionId)) continue;
@@ -601,6 +629,7 @@ function toDeletedChat(
     laneName: lane?.name ?? row.laneName,
     laneColor: lane?.color ?? null,
     laneExists: lane?.live === true,
+    ...(row.origin === "lane_delete" ? { withLane: true } : {}),
     createdAt: row.createdAt,
     lastActiveAt: row.lastActiveAt,
     deletedAt: row.deletedAt,
@@ -739,11 +768,15 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     const laneIds = [...new Set(kept.map((row) => row.laneId).filter((laneId): laneId is string => Boolean(laneId)))];
     const lanes = new Map<string, { name: string | null; color: string | null; live: boolean }>();
     if (laneIds.length) {
-      const laneRows = db.all<{ id: string; name: string | null; color: string | null; archivedAt: string | null }>(
-        `select id, name, color, archived_at as archivedAt from lanes where id in (${laneIds.map(() => "?").join(", ")})`,
+      const laneRows = db.all<{ id: string; name: string | null; laneType: string | null; color: string | null; archivedAt: string | null }>(
+        `select id, name, lane_type as laneType, color, archived_at as archivedAt from lanes where id in (${laneIds.map(() => "?").join(", ")})`,
         laneIds,
       );
-      for (const lane of laneRows) lanes.set(lane.id, { name: lane.name, color: lane.color, live: !lane.archivedAt });
+      for (const lane of laneRows) {
+        // The shown name: the main checkout reads "Main checkout", never its stored "Primary".
+        const name = lane.name == null ? null : laneDisplayName({ name: lane.name, laneType: lane.laneType });
+        lanes.set(lane.id, { name, color: lane.color, live: !lane.archivedAt });
+      }
     }
     const query = typeof args?.query === "string" ? args.query.trim().toLowerCase() : "";
     const chats = kept
@@ -911,6 +944,54 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     }
   };
 
+  /**
+   * A deleted lane came back as a new lane: its chats, which the lane delete
+   * put here, go back into it. Each is a copy, because the new lane has a new
+   * folder. Chats the person deleted one by one before the lane stay here, as
+   * do chats whose conversation the agent no longer has or a live chat holds.
+   * Never throws: a chat that fails stays here and is counted.
+   */
+  const reopenWithRestoredLane = async (args: { fromLaneId: string; toLaneId: string }): Promise<{
+    reopened: Array<{ chatSessionId: string; title: string | null }>;
+    failed: number;
+  }> => {
+    const out = { reopened: [] as Array<{ chatSessionId: string; title: string | null }>, failed: 0 };
+    const db = deps.db();
+    if (!db || !args.fromLaneId || !args.toLaneId) return out;
+    let rows: DeletedChatRow[];
+    try {
+      // Oldest first, so the newest chat is the newest in the lane again.
+      rows = db.all<DeletedChatRow>(
+        `select ${ROW_COLUMNS} from deleted_chats d
+          where d.lane_id = ? and d.origin = 'lane_delete' and d.kind is null
+            and d.hidden_at is null and ${CHAT_GONE_SQL}
+          order by coalesce(d.last_active_at, d.created_at, d.deleted_at) asc limit ?`,
+        [args.fromLaneId, LIST_LIMIT],
+      ).filter((row) => isExternalProvider(row.externalProvider) && Boolean(row.externalId));
+    } catch (error) {
+      deps.logger.warn("deleted_chats.restored_lane_read_failed", { laneId: args.fromLaneId, error: error instanceof Error ? error.message : String(error) });
+      return out;
+    }
+    if (rows.length === 0) return out;
+    const live = await liveRefKeys().catch(() => new Set<string>());
+    for (const row of rows) {
+      if (live.has(`${row.externalProvider}:${row.externalId}`)) continue;
+      if (!(await locator.locate(row).catch(() => null))) continue;
+      try {
+        const result = await reopen({ id: row.id, laneId: args.toLaneId });
+        out.reopened.push({ chatSessionId: result.chatSessionId, title: row.title });
+      } catch (error) {
+        out.failed += 1;
+        deps.logger.warn("deleted_chats.restored_lane_reopen_failed", {
+          sessionId: row.id,
+          laneId: args.toLaneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return out;
+  };
+
   const remove = (args: DeletedChatRemoveArgs): DeletedChatRemoveResult => {
     const ids = Array.isArray(args?.ids) ? args.ids.filter((id): id is string => typeof id === "string") : [];
     return { removed: hideDeletedChats(requireDb(), ids, "removed") };
@@ -932,7 +1013,7 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
     }
   };
 
-  return { remember, rememberCli, list, detail, reopen, remove, find };
+  return { remember, rememberCli, list, detail, reopen, reopenWithRestoredLane, remove, find };
 }
 
 export type DeletedChatsService = ReturnType<typeof createDeletedChatsService>;

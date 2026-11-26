@@ -1493,7 +1493,7 @@ declare global {
         reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void;
       };
       /**
-       * One copy's storage (Settings › Storage & cleanup): `pin` names the
+       * One copy's storage (Settings › Disk space): `pin` names the
        * copy, and it is required. `getPressure` is this computer's disk.
        */
       storage: {

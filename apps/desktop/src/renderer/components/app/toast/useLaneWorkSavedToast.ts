@@ -8,7 +8,7 @@ import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { useTabCopyPin } from "../../../state/repositoryScope";
-import { restoredLaneToast } from "./restoredLaneToast";
+import { restoredLaneOpeners, restoredLaneToast } from "./restoredLaneToast";
 import { READABLE_TOAST_DURATION_MS, showToast } from "./toastStore";
 
 /**
@@ -55,7 +55,7 @@ export function useLaneWorkSavedToast(): void {
         void window.ade.lanes.restoreDeleted({ id: saved.id }, restorePin)
           .then((result) => {
             captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: result.restoredUncommitted ? "completed" : "failed" });
-            showToast({ id: toastId, ...restoredLaneToast(saved, result) });
+            showToast({ id: toastId, ...restoredLaneToast(saved, result, restoredLaneOpeners(result, restorePin)) });
           })
           .catch((reason: unknown) => {
             captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: "failed" });

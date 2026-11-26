@@ -465,6 +465,9 @@
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
 		E20000000000000000000F2D /* LaneRecentlyDeleted.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F2D /* LaneRecentlyDeleted.swift */; };
+		E2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift */; };
+		E2000000000000000000DE22 /* SettingsArchiveSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE22 /* SettingsArchiveSection.swift */; };
+		E2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B1000000000000000000001A /* ADEHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* ADEHaptics.swift */; };
 		B1000000000000000000001B /* LaneConnectionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001B /* LaneConnectionPresentation.swift */; };
@@ -1083,6 +1086,9 @@
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
 		D20000000000000000000F2D /* LaneRecentlyDeleted.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRecentlyDeleted.swift; path = ADE/Views/Lanes/LaneRecentlyDeleted.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDeletedArchivedPage.swift; path = ADE/Views/Settings/SettingsDeletedArchivedPage.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE22 /* SettingsArchiveSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsArchiveSection.swift; path = ADE/Views/Settings/SettingsArchiveSection.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecentlyDeletedChatSheet.swift; path = ADE/Views/Lanes/RecentlyDeletedChatSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A1000000000000000000001A /* ADEHaptics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEHaptics.swift; path = ADE/Views/Components/ADEHaptics.swift; sourceTree = "<group>"; };
 		A1000000000000000000001B /* LaneConnectionPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneConnectionPresentation.swift; path = ADE/Views/Lanes/LaneConnectionPresentation.swift; sourceTree = "<group>"; };
@@ -1350,6 +1356,7 @@
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
 				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
 				D20000000000000000000F2D /* LaneRecentlyDeleted.swift */,
+				D2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
 				A10000000000000000000107 /* LaneEnvInitProgressView.swift */,
 				A10000000000000000000109 /* LaneBranchPickerSheet.swift */,
@@ -1703,6 +1710,8 @@
 				C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */,
 				5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */,
 				5E77000000000000000A0006 /* SettingsLanesPage.swift */,
+				D2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift */,
+				D2000000000000000000DE22 /* SettingsArchiveSection.swift */,
 				F20000000000000000000009 /* SettingsUsageChart.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
@@ -2605,6 +2614,9 @@
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
 				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
 				E20000000000000000000F2D /* LaneRecentlyDeleted.swift in Sources */,
+				E2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift in Sources */,
+				E2000000000000000000DE22 /* SettingsArchiveSection.swift in Sources */,
+				E2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,
 				E20000000000000000000F30 /* ADEFlat.swift in Sources */,

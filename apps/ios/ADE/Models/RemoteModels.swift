@@ -9823,6 +9823,267 @@ struct RestoreDeletedLaneResult: Decodable, Equatable {
   var warning: String?
   /// Other branches made for commits the lane's branch does not hold.
   var extraBranches: [String]?
+  /// The chats the lane's delete put in Recently deleted, reopened into the
+  /// restored lane. Absent from an older ADE, which leaves them there; the
+  /// phone then reopens them itself.
+  var reopenedChats: [RestoredLaneChat]?
+  /// How many of those chats could not come back; they stay in Recently deleted.
+  var chatsNotReopened: Int?
+}
+
+/// One chat a lane restore brought back with the lane.
+struct RestoredLaneChat: Codable, Equatable {
+  var chatSessionId: String
+  var title: String?
+}
+
+// MARK: - Recently deleted chats
+
+/// A deleted chat or agent CLI whose conversation its agent still keeps
+/// (`chat.listDeleted`). Every field past the id decodes leniently, so a
+/// newer or older brain never drops the row.
+struct DeletedChat: Codable, Identifiable, Equatable {
+  var id: String
+  var title: String?
+  /// The ADE chat provider it ran on (`claude`, `codex`, `opencode`, …).
+  var provider: String
+  /// Whose conversation copy Reopen reads.
+  var sourceProvider: String
+  var modelId: String?
+  var laneId: String?
+  var laneName: String?
+  var laneColor: String?
+  /// False when the lane was deleted too: Reopen then asks for a lane.
+  var laneExists: Bool
+  /// The chat went with its lane's delete; restoring that lane brings it back.
+  var withLane: Bool?
+  var createdAt: String?
+  var lastActiveAt: String?
+  var deletedAt: String
+  /// `cli` for a deleted agent CLI terminal; absent (a chat) on older hosts.
+  var kind: String?
+  /// CLI only: the terminal's tool type (`claude`, `codex`, `cursor-cli`, …).
+  var toolType: String?
+  /// CLI only: Reopen resumes the CLI's own conversation.
+  var resumable: Bool?
+
+  var isCli: Bool { kind == "cli" }
+
+  init(
+    id: String,
+    title: String? = nil,
+    provider: String,
+    sourceProvider: String? = nil,
+    modelId: String? = nil,
+    laneId: String? = nil,
+    laneName: String? = nil,
+    laneColor: String? = nil,
+    laneExists: Bool = true,
+    withLane: Bool? = nil,
+    createdAt: String? = nil,
+    lastActiveAt: String? = nil,
+    deletedAt: String,
+    kind: String? = nil,
+    toolType: String? = nil,
+    resumable: Bool? = nil
+  ) {
+    self.id = id
+    self.title = title
+    self.provider = provider
+    self.sourceProvider = sourceProvider ?? provider
+    self.modelId = modelId
+    self.laneId = laneId
+    self.laneName = laneName
+    self.laneColor = laneColor
+    self.laneExists = laneExists
+    self.withLane = withLane
+    self.createdAt = createdAt
+    self.lastActiveAt = lastActiveAt
+    self.deletedAt = deletedAt
+    self.kind = kind
+    self.toolType = toolType
+    self.resumable = resumable
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, provider, sourceProvider, modelId, laneId, laneName, laneColor, laneExists
+    case withLane, createdAt, lastActiveAt, deletedAt, kind, toolType, resumable
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    title = try? container.decodeIfPresent(String.self, forKey: .title)
+    provider = (try? container.decodeIfPresent(String.self, forKey: .provider)) ?? "unknown"
+    sourceProvider = (try? container.decodeIfPresent(String.self, forKey: .sourceProvider)) ?? provider
+    modelId = try? container.decodeIfPresent(String.self, forKey: .modelId)
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    laneName = try? container.decodeIfPresent(String.self, forKey: .laneName)
+    laneColor = try? container.decodeIfPresent(String.self, forKey: .laneColor)
+    laneExists = (try? container.decodeIfPresent(Bool.self, forKey: .laneExists)) ?? true
+    withLane = try? container.decodeIfPresent(Bool.self, forKey: .withLane)
+    createdAt = try? container.decodeIfPresent(String.self, forKey: .createdAt)
+    lastActiveAt = try? container.decodeIfPresent(String.self, forKey: .lastActiveAt)
+    deletedAt = (try? container.decodeIfPresent(String.self, forKey: .deletedAt)) ?? ""
+    kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+    toolType = try? container.decodeIfPresent(String.self, forKey: .toolType)
+    resumable = try? container.decodeIfPresent(Bool.self, forKey: .resumable)
+  }
+}
+
+/// `chat.listDeleted`: a row this build cannot read drops out alone.
+struct DeletedChatListResult: Decodable, Equatable {
+  var chats: [DeletedChat]
+
+  private enum CodingKeys: String, CodingKey { case chats }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    chats = (try? container.decodeIfPresent(ADELossyArray<DeletedChat>.self, forKey: .chats))?.wrappedValue ?? []
+  }
+}
+
+/// `chat.reopenDeleted`: the reopened chat, or for a CLI the terminal session
+/// it relaunched in.
+struct DeletedChatReopenResult: Decodable, Equatable {
+  var chatSessionId: String
+  var laneId: String
+  /// `continue`, `copy` (into another lane), or `fresh` (a CLI that could not resume).
+  var mode: String?
+  var kind: String?
+  /// CLI only: why the CLI started fresh.
+  var notice: String?
+
+  var isCli: Bool { kind == "cli" }
+}
+
+// MARK: - Archive
+
+/// One archived lane, chat or shell (`archive.list`). Optional fields decode
+/// leniently: an older or newer brain never drops the row.
+struct ArchivedItem: Decodable, Identifiable, Equatable {
+  /// `lane`, `chat` or `shell`.
+  var kind: String
+  var id: String
+  var title: String
+  var laneId: String?
+  var laneName: String?
+  var laneColor: String?
+  var archivedAt: String
+  var sizeBytes: Double?
+  var toolType: String?
+  /// An agent CLI's own name ("Claude Code", "Codex"), shown instead of "Shell".
+  var toolLabel: String?
+  var parentChatId: String?
+  /// Lane: the worktree folder is still on disk.
+  var worktreePresent: Bool?
+  var branchRef: String?
+  var freeUpDue: Bool?
+  var freeUpError: String?
+
+  init(
+    kind: String,
+    id: String,
+    title: String,
+    laneId: String? = nil,
+    laneName: String? = nil,
+    laneColor: String? = nil,
+    archivedAt: String,
+    sizeBytes: Double? = nil,
+    toolType: String? = nil,
+    toolLabel: String? = nil,
+    parentChatId: String? = nil,
+    worktreePresent: Bool? = nil,
+    branchRef: String? = nil,
+    freeUpDue: Bool? = nil,
+    freeUpError: String? = nil
+  ) {
+    self.kind = kind
+    self.id = id
+    self.title = title
+    self.laneId = laneId
+    self.laneName = laneName
+    self.laneColor = laneColor
+    self.archivedAt = archivedAt
+    self.sizeBytes = sizeBytes
+    self.toolType = toolType
+    self.toolLabel = toolLabel
+    self.parentChatId = parentChatId
+    self.worktreePresent = worktreePresent
+    self.branchRef = branchRef
+    self.freeUpDue = freeUpDue
+    self.freeUpError = freeUpError
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case kind, id, title, laneId, laneName, laneColor, archivedAt, sizeBytes, toolType, toolLabel
+    case parentChatId, worktreePresent, branchRef, freeUpDue, freeUpError
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = try container.decode(String.self, forKey: .kind)
+    id = try container.decode(String.self, forKey: .id)
+    title = (try? container.decodeIfPresent(String.self, forKey: .title)) ?? ""
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    laneName = try? container.decodeIfPresent(String.self, forKey: .laneName)
+    laneColor = try? container.decodeIfPresent(String.self, forKey: .laneColor)
+    archivedAt = (try? container.decodeIfPresent(String.self, forKey: .archivedAt)) ?? ""
+    sizeBytes = try? container.decodeIfPresent(Double.self, forKey: .sizeBytes)
+    toolType = try? container.decodeIfPresent(String.self, forKey: .toolType)
+    toolLabel = try? container.decodeIfPresent(String.self, forKey: .toolLabel)
+    parentChatId = try? container.decodeIfPresent(String.self, forKey: .parentChatId)
+    worktreePresent = try? container.decodeIfPresent(Bool.self, forKey: .worktreePresent)
+    branchRef = try? container.decodeIfPresent(String.self, forKey: .branchRef)
+    freeUpDue = try? container.decodeIfPresent(Bool.self, forKey: .freeUpDue)
+    freeUpError = try? container.decodeIfPresent(String.self, forKey: .freeUpError)
+  }
+
+  var ref: ArchiveItemRef { ArchiveItemRef(kind: kind, id: id) }
+}
+
+struct ArchiveListResult: Decodable, Equatable {
+  var items: [ArchivedItem]
+  /// Items archived at least this many days ago count as old. Absent on older hosts.
+  var staleAfterDays: Int?
+
+  private enum CodingKeys: String, CodingKey { case items, staleAfterDays }
+
+  init(items: [ArchivedItem], staleAfterDays: Int? = nil) {
+    self.items = items
+    self.staleAfterDays = staleAfterDays
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    items = (try? container.decodeIfPresent(ADELossyArray<ArchivedItem>.self, forKey: .items))?.wrappedValue ?? []
+    staleAfterDays = try? container.decodeIfPresent(Int.self, forKey: .staleAfterDays)
+  }
+}
+
+struct ArchiveItemRef: Codable, Hashable {
+  var kind: String
+  var id: String
+}
+
+/// `archive.restore` / `archive.delete`: what went, and what did not and why.
+struct ArchiveActionResult: Decodable, Equatable {
+  struct Failure: Decodable, Equatable {
+    var kind: String
+    var id: String
+    var error: String
+  }
+
+  var done: [ArchiveItemRef]
+  var failed: [Failure]
+
+  private enum CodingKeys: String, CodingKey { case done, failed }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    done = (try? container.decodeIfPresent(ADELossyArray<ArchiveItemRef>.self, forKey: .done))?.wrappedValue ?? []
+    failed = (try? container.decodeIfPresent(ADELossyArray<Failure>.self, forKey: .failed))?.wrappedValue ?? []
+  }
 }
 
 // MARK: - Typing into a running agent CLI

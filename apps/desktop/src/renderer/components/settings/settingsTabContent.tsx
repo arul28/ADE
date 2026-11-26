@@ -55,7 +55,7 @@ import { PasswordsSection } from "./passwords/PasswordsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { GeneralPage } from "./general/GeneralPage";
 import { MachinesPage } from "./machines/MachinesPage";
-import { LanesSettingsPage, StorageSettingsPage } from "./lanes/LanesSettingsPage";
+import { DeletedArchivedPage, LanesSettingsPage, StorageSettingsPage } from "./lanes/LanesSettingsPage";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
@@ -584,13 +584,18 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       machine: "local",
     },
   ],
-  // Project → Lanes, Storage & cleanup and Agents act on the copy picked on
-  // the page (its pin); every section in them reads that pin.
+  // Project → Lanes, Disk space and Agents act on the copy picked on the page
+  // (its pin); every section in them reads that pin.
   "lanes-git": [
     { entryIds: "tab", render: () => <SettingsColumn wide><LanesSettingsPage /></SettingsColumn>, machine: "routed", title: "Lanes" },
   ],
+  // Deleted & Archived lists every computer's copy at once, so it has no copy
+  // picker: each row carries the address of the machine it came from.
+  deleted: [
+    { entryIds: "tab", render: () => <SettingsColumn wide><DeletedArchivedPage /></SettingsColumn>, title: "Deleted & Archived" },
+  ],
   storage: [
-    { entryIds: "tab", render: () => <SettingsColumn wide><StorageSettingsPage /></SettingsColumn>, machine: "routed", title: "Storage & cleanup" },
+    { entryIds: "tab", render: () => <SettingsColumn wide><StorageSettingsPage /></SettingsColumn>, machine: "routed", title: "Disk space" },
   ],
   "project-agents": [
     { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection />, machine: "routed", title: "PR chat transcripts" },
@@ -695,6 +700,8 @@ export function TabContent({
   /** Standalone Settings (no project) also drops sections with nothing to show. */
   standalone?: boolean;
 }) {
+  // Deleted & Archived reads every online copy itself: no picker, no one copy.
+  if (!standalone && tab === "deleted") return <MachineTabContent tab={tab} machine={null} standalone={false} />;
   // A project page reads one copy of the project, picked on the page.
   if (!standalone && isProjectSettingsTab(tab)) return <ProjectCopyTabContent tab={tab} />;
   return <MachineTabContent tab={tab} machine={machine} standalone={standalone} />;

@@ -12,10 +12,11 @@ const RECLAIM_TOAST_ID = "settings-lane-reclaim";
  * Archive & reclaim one lane through the existing confirm: ADE reads the
  * lane's risk first (uncommitted files, unpushed commits, running work), the
  * dialog shows it and asks for a typed confirmation, and uncommitted files
- * need a separate acknowledgement. Every call goes to `pin`'s machine.
+ * need a separate acknowledgement. Every call goes to `pin`'s machine, or to
+ * the machine `open` names (a list that holds several machines' lanes).
  *
- * Returns `open(laneId)` and the dialog to render. `alreadyArchived`: the
- * lanes are in the archive (Settings → Archive's Free up space), so the
+ * Returns `open(laneId, at?)` and the dialog to render. `alreadyArchived`: the
+ * lanes are in the archive (Settings → Deleted & Archived → Archive's Free up space), so the
  * result says what was freed rather than that the lane was archived.
  */
 export function useLaneReclaim(
@@ -26,15 +27,19 @@ export function useLaneReclaim(
   const alreadyArchived = opts.alreadyArchived === true;
   const { bytes: storageBytes } = useStorageBytes();
   const [risk, setRisk] = React.useState<LaneReclaimRisk | null>(null);
+  // The machine the open lane is on: the free up goes where the review went.
+  const [riskPin, setRiskPin] = React.useState<OpenProjectBinding | null>(null);
   const [confirm, setConfirm] = React.useState("");
   const [discardDirty, setDiscardDirty] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
 
-  const open = React.useCallback(async (laneId: string) => {
+  const open = React.useCallback(async (laneId: string, at?: OpenProjectBinding | null) => {
+    const target = at ?? pin;
     try {
-      const next = await window.ade.lanes.getReclaimRisk({ laneId }, requirePin(pin));
+      const next = await window.ade.lanes.getReclaimRisk({ laneId }, requirePin(target));
       setConfirm("");
       setDiscardDirty(false);
+      setRiskPin(target);
       setRisk(next);
     } catch (err) {
       showToast({ id: RECLAIM_TOAST_ID, tone: "error", title: err instanceof Error ? err.message : "Could not review this lane" });
@@ -49,7 +54,7 @@ export function useLaneReclaim(
         laneId: risk.laneId,
         confirmation: "RECLAIM",
         ...(risk.dirty && discardDirty ? { forceDirty: true } : {}),
-      }, requirePin(pin));
+      }, requirePin(riskPin));
       showToast(result.keptForRetry
         ? {
             id: RECLAIM_TOAST_ID,
@@ -76,7 +81,7 @@ export function useLaneReclaim(
     } finally {
       setBusy(false);
     }
-  }, [alreadyArchived, confirm, discardDirty, onDone, pin, risk, storageBytes]);
+  }, [alreadyArchived, confirm, discardDirty, onDone, risk, riskPin, storageBytes]);
 
   const dialog = risk ? (
     <ReclaimConfirmDialog

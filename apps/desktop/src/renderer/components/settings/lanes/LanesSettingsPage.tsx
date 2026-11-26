@@ -1,10 +1,11 @@
 import React from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { Archive, ArrowClockwise, ClockCounterClockwise, GitBranch, GitFork, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import { decodeSettingsHash } from "../settingsHash";
+import { settingsRouteFor } from "../settingsManifest";
 import { ArchiveSection } from "../ArchiveSection";
 import { RecentlyDeletedSection } from "../RecentlyDeletedSection";
 import { SessionLifecycleSection } from "../SessionLifecycleSection";
@@ -51,13 +52,6 @@ const LANES_VIEWS: readonly View[] = [
 
 const STORAGE_VIEWS: readonly View[] = [
   { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups", "storage-dev-tools", "project"] },
-  { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
-  {
-    id: "recently-deleted",
-    label: "Recently deleted",
-    icon: <ClockCounterClockwise size={13} weight="duotone" />,
-    anchors: ["recently-deleted"],
-  },
   {
     id: "cleanup-rules",
     label: "Rules",
@@ -66,7 +60,18 @@ const STORAGE_VIEWS: readonly View[] = [
   },
 ];
 
-/** The hosted web client can reach only the archive and the rules. */
+/** Deleted & Archived: what can be brought back, newest loss first. */
+const DELETED_VIEWS: readonly View[] = [
+  {
+    id: "recently-deleted",
+    label: "Recently deleted",
+    icon: <ClockCounterClockwise size={13} weight="duotone" />,
+    anchors: ["recently-deleted"],
+  },
+  { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
+];
+
+/** The hosted web client can reach only these views. */
 const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["new-lanes", "archive", "recently-deleted", "cleanup-rules"]);
 
 /** The view among `views` that draws `anchor`, or null when none of them does. */
@@ -85,11 +90,20 @@ export function LanesSettingsPage() {
 }
 
 /**
- * Settings → Project → Storage & cleanup: the space lanes and ADE's data take,
- * the archive, and the rules for what gets archived, closed and kept.
+ * Settings → Project → Disk space: the space lanes and ADE's data take, and
+ * the rules for what gets archived, freed and kept.
  */
 export function StorageSettingsPage() {
-  return <ProjectViewsPage allViews={STORAGE_VIEWS} label="Storage settings" />;
+  return <ProjectViewsPage allViews={STORAGE_VIEWS} label="Disk space settings" />;
+}
+
+/**
+ * Settings → Project → Deleted & Archived: what you deleted or archived, from
+ * every computer with a copy of the project, to bring back. It reads no disk
+ * sizes or health, so it loads none.
+ */
+export function DeletedArchivedPage() {
+  return <ProjectViewsPage allViews={DELETED_VIEWS} label="Deleted and archived" loadsHealth={false} />;
 }
 
 /**
@@ -101,12 +115,13 @@ export function StorageSettingsPage() {
  * Remote machines: the page always acts on the machine that owns the project
  * (`useSettingsMachineScope().pin`), and so does every section in it.
  */
-function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; label: string }) {
+function ProjectViewsPage({ allViews, label, loadsHealth = true }: { allViews: readonly View[]; label: string; loadsHealth?: boolean }) {
   const { pin, isThisMachine } = useSettingsMachineScope();
   const location = useLocation();
+  const navigate = useNavigate();
   const searchAnchors = useSettingsSearchAnchors();
   const web = isWebClientMode();
-  const data = useHealthData(pin, isThisMachine, web ? {} : { storage: true, report: true });
+  const data = useHealthData(pin, isThisMachine, web || !loadsHealth ? {} : { storage: true, report: true });
   const fix = useProjectFix(pin, data.setReport);
   const ignore = useProjectIgnore(pin, data.setReport);
   const views = React.useMemo(() => (web ? allViews.filter((view) => WEB_VIEWS.has(view.id)) : allViews), [web, allViews]);
@@ -262,7 +277,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
           <HealthCleanupRules
             data={data}
             chats={<SessionLifecycleSection />}
-            onOpenArchive={() => setView("archive")}
+            onOpenArchive={() => navigate(settingsRouteFor("archive.items"))}
           />
         );
       default:

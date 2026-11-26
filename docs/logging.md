@@ -2574,7 +2574,7 @@ pattern: ADE's `ade/` prefix, the git user name, none, or custom; never the
 text), `start_default_changed` (the default branch, the primary lane's branch,
 or a named branch; never its name), `branch_renamed` from the lane menu,
 `auto_archive_changed` / `auto_free_up_changed` / `auto_delete_changed` when a
-save in Settings › Storage & cleanup › Rules turns that automatic rule on or off
+save in Settings › Disk space › Rules turns that automatic rule on or off
 (never a day count), and `space_freed` for Free up space on an archived lane.
 The archive scan's own automatic archive, free up and delete record nothing:
 they are a timer with no person's action behind them, like the idle sweep. With

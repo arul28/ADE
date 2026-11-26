@@ -5717,6 +5717,8 @@ app.whenReady().then(async () => {
       },
     });
     agentChatServiceRef = agentChatService;
+    // A restored deleted lane takes back the chats its delete kept.
+    laneService.setOnDeletedLaneRestored((args) => agentChatService.reopenDeletedChatsWithLane(args));
     // A new CLI session that names no account starts where a new chat would.
     ptyService.setNewCliSessionAccountPicker((provider, modelId) =>
       agentChatService.pickNewCliSessionAccount(provider, modelId));

@@ -709,6 +709,20 @@ export type RestoreDeletedLaneResult = {
   warning: string | null;
   /** Other branches a restore made for commits the lane's branch does not hold. */
   extraBranches: string[];
+  /**
+   * The chats the lane delete put in Recently deleted, reopened into the
+   * restored lane (as copies: the lane has a new folder). Absent from an
+   * older ADE, which leaves them in Recently deleted; a client then reopens
+   * them itself.
+   */
+  reopenedChats?: RestoredLaneChat[];
+  /** How many of those chats could not be reopened; they stay in Recently deleted. */
+  chatsNotReopened?: number;
+};
+
+export type RestoredLaneChat = {
+  chatSessionId: string;
+  title: string | null;
 };
 
 export type LaneDeleteStepName =

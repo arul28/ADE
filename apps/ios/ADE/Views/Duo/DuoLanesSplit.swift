@@ -66,15 +66,21 @@ extension LanesTabView {
       }
       laneListSections
       if quickFilter == .archived {
-        LaneRecentlyDeletedSections(
+        // The same list as Settings › Deleted & Archived, lanes only (with
+        // the chats that went with each), from every live machine.
+        RecentlyDeletedSections(
+          store: recentlyDeletedStore,
           syncService: syncService,
           machines: recentlyDeletedMachines,
+          style: .flat,
+          query: searchText,
           canRunLiveActions: canRunLiveActions,
           reloadToken: "\(refreshFeedbackToken)|\(inputs.laneDeletionsKeptIds.joined(separator: ","))",
           onRestored: { await reload(refreshRemote: true) }
         )
       }
     }
+    .recentlyDeletedPresentations(recentlyDeletedStore, syncService: syncService)
     .adeFlatList()
     .listSectionSpacing(.compact)
     .contentMargins(.bottom, 24, for: .scrollContent)
