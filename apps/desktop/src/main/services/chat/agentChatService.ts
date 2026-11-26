@@ -73363,6 +73363,7 @@ export function createAgentChatService(args: {
   const ctoStallJudgeHost = createCtoStallJudgeHost({
     logger,
     db: db ?? null,
+    analytics: args.analytics ?? null,
     loadedChat: (sessionId) => {
       const managed = managedSessions.get(sessionId);
       if (!managed) return null;

@@ -2,6 +2,8 @@ import type { AgentChatProvider, AgentChatSessionSummary, PendingInputRequest } 
 import type { CtoNeedsSnapshot } from "../../../shared/types/cto";
 import type { PrSummary } from "../../../shared/types/prs";
 import type { TerminalSessionDetail } from "../../../shared/types/sessions";
+import type { FeatureAnalytics } from "../analytics/featureProductAnalytics";
+import { reportCtoStall } from "../analytics/ctoStallProductAnalytics";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, nowIso } from "../shared/utils";
 import {
@@ -27,6 +29,8 @@ export type CtoHostLoadedChat = { parentId: string | null; identityKey: string |
 export type CtoStallJudgeHostDeps = {
   logger: Pick<Logger, "info" | "warn">;
   db: KvDb | null;
+  /** Coarse product analytics: a nudge sent or refused, a line set. */
+  analytics?: FeatureAnalytics | null;
   /** A chat loaded in this brain, or null. */
   loadedChat: (sessionId: string) => CtoHostLoadedChat | null;
   loadedChatIds: () => Iterable<string>;
@@ -257,7 +261,15 @@ export function createCtoStallJudgeHost(deps: CtoStallJudgeHostDeps): CtoStallJu
     },
     readNeedChild,
     ctoBusy: deps.ctoBusy,
-    wakeCto: deps.wakeCto,
+    wakeCto: async (ctoSessionId, text) => {
+      try {
+        await deps.wakeCto(ctoSessionId, text);
+      } catch (error) {
+        reportCtoStall(deps.analytics, "cto_stall_nudge", "failed");
+        throw error;
+      }
+      reportCtoStall(deps.analytics, "cto_stall_nudge", "completed");
+    },
     ctoParentOf,
     isCtoSession: (sessionId) => deps.loadedChat(sessionId)?.identityKey === "cto",
   });
@@ -282,7 +294,7 @@ export function createCtoStallJudgeHost(deps: CtoStallJudgeHostDeps): CtoStallJu
       }
       const row = deps.sessionRow(childSessionId);
       const basics = summary && row ? childBasics(childSessionId, row, summary) : null;
-      return judge.setNeed({
+      const result = judge.setNeed({
         ctoSessionId: args.ctoSessionId,
         childSessionId,
         line: args.line,
@@ -291,6 +303,8 @@ export function createCtoStallJudgeHost(deps: CtoStallJudgeHostDeps): CtoStallJu
         childTitle: basics?.title,
         laneId: summary?.laneId ?? null,
       });
+      if (result.set) reportCtoStall(deps.analytics, "cto_need", "started");
+      return result;
     },
   };
 }
