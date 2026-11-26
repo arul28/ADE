@@ -447,6 +447,14 @@ deletes it. An `.aderaw` capture cannot be played, so the stop reports the
 failure and files nothing. A demo render that fails is tried once more as a
 plain render first.
 
+A media process that does not exit 10 s after its SIGKILL is stuck in the
+kernel on a drive that stopped answering (`demoChildStop.ts`). The caller is
+answered with an error marked stuck (`isStuckMediaProcessError`), and nothing
+touches that drive again: no partial-file cleanup, no plain retry, no other
+engine, no raw-file fallback, and the iOS and Android recorders file nothing
+(a synchronous call there would freeze the process with the drive). The raw
+recording stays where it is.
+
 Windows and macOS produce the same demo from the same plan: cuts, sped-up
 waits, zoom, the drawn pointer and click rings, step captions, the speed badge,
 and `metadata.demo.steps` as the player's chapters. Chapters live in the proof

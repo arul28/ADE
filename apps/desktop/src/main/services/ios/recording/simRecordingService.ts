@@ -868,7 +868,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       if (driveStuck) {
         // Filing copies the movie and writes its sidecar on the same drive,
         // which would freeze this process. The raw recording stays in place.
-        warn("apple.recording.drive_stuck_not_filed", { laneId, path: filedPath });
+        warn("apple.recording.drive_stuck_not_filed", { laneId });
         return finished;
       }
       const filed = options.fileProof === false ? finished : fileAsProof(finished);

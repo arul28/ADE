@@ -93,6 +93,19 @@ and port. A project scope takes it when its sync service starts. A projectless
 brain with the shared listener takes a `projectRoot: null` lease and drops it
 when a scope takes over.
 
+The brain also takes that lease beside a scope that stays a viewer (a project
+saved to follow another machine): the project follows, the machine still
+hosts and publishes. Without it, a machine whose newest project followed
+another one published nothing and left the account. While the brain holds it
+beside a viewer, machine-wide sync calls (status, PIN, devices, relay status)
+answer for the machine even when the caller names the project; the runtime
+name stays per project (`machineWideSyncService` in
+`multiProjectRpcServer.ts`). When the scope later takes its own lease, the
+brain hands its lease back (`onSyncHostSingletonLeaseAcquired`). One process
+can hold two leases for a moment; releasing the one the lock file names
+rewrites the file for the other instead of deleting it. A failed switch no
+longer reads as one in progress: `hasSyncHostOrSwitchInFlight`.
+
 Two subsystems gate on the lease, not on a bound listener:
 
 - the relay tunnel (`syncTunnelClientService`), because the relay keeps one
@@ -1060,7 +1073,16 @@ Desktop connection UI:
 - `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` —
   the Machines tab. A publish refused by the directory names the refusal and
   shows **Reconnect this computer** (`useThisComputerRefusal`,
-  `useReconnectThisComputer`).
+  `useReconnectThisComputer`). A computer that is not connected is one line
+  (name, "Offline · last seen 6h ago", Connect, ···). The full error card
+  appears only after the person pressed Connect, Retry or Reconnect on that
+  row and it failed; ADE's own reconnects stay a word in the state line.
+  "Why offline?", Details and "How to connect" live in the row's ··· menu.
+  "Not connected" and "Not reachable right now" fold to one line with
+  Show/Hide when they hold two or more rows and none is online, updating,
+  failing after a press, renaming, showing a storage or stall note, or asked
+  for by `focusMachineKey` (`machineSectionFold.ts`); a press on Show/Hide
+  wins while the list is open.
 - `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` — the
   `relay-offline` and `this-computer-offline` banners in `AppBannerHost`.
   `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (this
