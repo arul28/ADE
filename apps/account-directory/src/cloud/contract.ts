@@ -2113,6 +2113,14 @@ export const CLOUD_LAUNCH_RECORD_TTL_MS = 7 * 24 * 60 * 60_000;
 export const CLOUD_LAUNCH_DRAFT_TTL_MS = 24 * 60 * 60_000;
 export const CLOUD_LAUNCH_MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const CLOUD_LAUNCH_MAX_FILES = 10;
+/**
+ * Open drafts one account may hold: each launch with files and each queued
+ * message with files makes one, kept a day. Far above a real day of sends;
+ * it stops a script that picks new launch ids.
+ */
+export const CLOUD_LAUNCH_MAX_OPEN_DRAFTS = 300;
+/** Bytes all of an account's open drafts may hold together (eight full launches). */
+export const CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT = 2 * 1024 * 1024 * 1024;
 export const CLOUD_LAUNCH_MAX_PROMPT_CHARS = 100_000;
 
 /**

@@ -1,7 +1,7 @@
 import * as Sentry from "@sentry/cloudflare";
 import { authenticate, type CallerTokenEnv, type CallerTokenFailureReason } from "./callerToken";
 import { logJevBonusRequest } from "./logging";
-import { utcDayKey } from "./sinkUtils";
+import { readBoundedBody, utcDayKey } from "./sinkUtils";
 
 /**
  * `POST /jev/systemone`: the ADE bonus for Jev (README, "Jev bonus").
@@ -226,10 +226,9 @@ export async function handleJevBonusRequest(
   const key = env.JEV_API_KEY?.trim();
   if (!key) return finish(json({ error: JEV_BONUS_ERRORS.unavailable }, 503), "not_configured");
 
-  const declared = Number(request.headers.get("content-length") ?? "0");
-  if (declared > MAX_BODY_BYTES) return finish(json({ error: JEV_BONUS_ERRORS.badRequest }, 413), "too_large");
-  const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) return finish(json({ error: JEV_BONUS_ERRORS.badRequest }, 413), "too_large");
+  const read = await readBoundedBody(request, MAX_BODY_BYTES);
+  if (!read.ok) return finish(json({ error: JEV_BONUS_ERRORS.badRequest }, 413), "too_large");
+  const text = read.text;
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(text);

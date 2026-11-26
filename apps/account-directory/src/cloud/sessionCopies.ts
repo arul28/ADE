@@ -16,6 +16,7 @@ import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCurso
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
 import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedComputer, type CloudEnv, type ComputerRow } from "./store";
 import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload, type SweepTarget } from "./storageSweeps";
+import { readBoundedBytes } from "../sinkUtils";
 
 /**
  * CLI-session and shell copies (README, "ADE without a computer"). A cloud
@@ -42,12 +43,10 @@ const unreadable = () => fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
 
 /** A JSON body of at most `maxBytes`. */
 export async function readCappedJson(request: Request, maxBytes: number): Promise<{ ok: true; value: Record<string, unknown> } | { ok: false; tooLarge: boolean }> {
-  const declared = Number(request.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > maxBytes) return { ok: false, tooLarge: true };
-  const raw = await request.arrayBuffer();
-  if (raw.byteLength > maxBytes) return { ok: false, tooLarge: true };
+  const read = await readBoundedBytes(request, maxBytes);
+  if (!read.ok) return { ok: false, tooLarge: true };
   try {
-    const value = JSON.parse(decoder.decode(raw)) as unknown;
+    const value = JSON.parse(decoder.decode(read.bytes)) as unknown;
     return value && typeof value === "object" && !Array.isArray(value) ? { ok: true, value: value as Record<string, unknown> } : { ok: false, tooLarge: false };
   } catch {
     return { ok: false, tooLarge: false };

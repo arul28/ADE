@@ -22,6 +22,7 @@ import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
 import { deleteSessionCopiesForLane } from "./sessionCopies";
 import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
+import { readBoundedBytes } from "../sinkUtils";
 
 /**
  * Saved chats (README, "Saved chats"). After each turn a computer sends the new
@@ -177,12 +178,10 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
 }
 
 async function readJsonBody(request: Request, maxBytes: number): Promise<{ ok: true; value: unknown } | { ok: false; tooLarge: boolean }> {
-  const declared = Number(request.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > maxBytes) return { ok: false, tooLarge: true };
-  const raw = await request.arrayBuffer();
-  if (raw.byteLength > maxBytes) return { ok: false, tooLarge: true };
+  const read = await readBoundedBytes(request, maxBytes);
+  if (!read.ok) return { ok: false, tooLarge: true };
   try {
-    return { ok: true, value: JSON.parse(decoder.decode(raw)) };
+    return { ok: true, value: JSON.parse(decoder.decode(read.bytes)) };
   } catch {
     return { ok: false, tooLarge: false };
   }

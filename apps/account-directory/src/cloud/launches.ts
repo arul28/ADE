@@ -1,7 +1,7 @@
 import { mintDeviceApprovalLink } from "../deviceAppApproval";
 import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
-import { sha256Hex } from "../sinkUtils";
+import { readBoundedBytes, sha256Hex } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   CLOUD_AUTO_SIZE,
@@ -12,8 +12,10 @@ import {
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_JOIN_TTL_MS,
   CLOUD_LAUNCH_MAX_ARGS_BYTES,
+  CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT,
   CLOUD_LAUNCH_MAX_FILE_BYTES,
   CLOUD_LAUNCH_MAX_FILES,
+  CLOUD_LAUNCH_MAX_OPEN_DRAFTS,
   CLOUD_LAUNCH_MAX_PROMPT_CHARS,
   CLOUD_LAUNCH_MAX_STAGES,
   CLOUD_LAUNCH_METADATA,
@@ -1189,19 +1191,36 @@ export async function openCopyLaunchJoin(
 
 /* ---- Files ---- */
 
+const fileTooBig = () => fail("file_too_big", "Each file can be at most 25 MB.", 413);
+const draftsFull = () => fail("uploads_full", "This account holds too many unsent files for today.", 429);
+
+/**
+ * `PUT /cloud/launches/:launch/files/:file`. An account holds at most
+ * `CLOUD_LAUNCH_MAX_OPEN_DRAFTS` open drafts and
+ * `CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT` bytes in them: the draft row is
+ * made only under the first cap, and the upload reserves its size under the
+ * second before its body is read (an unknown length reserves a whole file),
+ * so parallel uploads can't pass the cap between a check and a write.
+ */
 async function handlePutFile(request: Request, env: CloudEnv, userId: string, launchId: string, fileId: string, now: number): Promise<Response> {
   if (!UUID.test(launchId) || !FILE_ID.test(fileId)) return notFound();
   const bucket = env.CLOUD_CHATS;
   if (!bucket) return fail("unavailable", "ADE Cloud can't keep files right now. Start without them.", 503);
   const declared = Number(request.headers.get("content-length") ?? NaN);
-  if (Number.isFinite(declared) && declared > CLOUD_LAUNCH_MAX_FILE_BYTES) return fail("file_too_big", "Each file can be at most 25 MB.", 413);
+  if (Number.isFinite(declared) && declared > CLOUD_LAUNCH_MAX_FILE_BYTES) return fileTooBig();
   // A draft row comes to exist with the first file, so the cron removes files a start never named.
   await env.DB.prepare(`
     insert into cloud_launches (launch_id, user_id, state, created_at, updated_at, expires_at)
-    values (?, ?, 'draft', ?, ?, ?) on conflict (launch_id) do nothing
-  `).bind(launchId, userId, now, now, now + CLOUD_LAUNCH_DRAFT_TTL_MS).run();
+    select ?, ?, 'draft', ?, ?, ?
+    where (select count(*) from cloud_launches where user_id = ? and state = 'draft' and expires_at > ?) < ?
+    on conflict (launch_id) do nothing
+  `).bind(launchId, userId, now, now, now + CLOUD_LAUNCH_DRAFT_TTL_MS, userId, now, CLOUD_LAUNCH_MAX_OPEN_DRAFTS).run();
   const row = await readLaunch(env, launchId);
-  if (!row || row.user_id !== userId) return notFound();
+  if (!row) {
+    logCloud("cloud.launch_drafts_full", { userId, limit: CLOUD_LAUNCH_MAX_OPEN_DRAFTS });
+    return draftsFull();
+  }
+  if (row.user_id !== userId) return notFound();
   if (row.state !== "draft") return fail("launch_started", "This launch already started. Add files before you start it.", 409);
   const prefix = r2PrefixOf(userId, launchId);
   const listed = await bucket.list({ prefix, limit: CLOUD_LAUNCH_MAX_FILES + 1 });
@@ -1209,11 +1228,31 @@ async function handlePutFile(request: Request, env: CloudEnv, userId: string, la
   if (listed.objects.length >= CLOUD_LAUNCH_MAX_FILES && !listed.objects.some((object) => object.key === key)) {
     return fail("too_many_files", `A launch takes at most ${CLOUD_LAUNCH_MAX_FILES} files.`, 413);
   }
-  const bytes = await request.arrayBuffer();
-  if (bytes.byteLength > CLOUD_LAUNCH_MAX_FILE_BYTES) return fail("file_too_big", "Each file can be at most 25 MB.", 413);
-  const contentType = shortString(request.headers.get("content-type"), 120) ?? "application/octet-stream";
-  await bucket.put(key, bytes, { httpMetadata: { contentType } });
-  return json({ fileId, sizeBytes: bytes.byteLength }, 201);
+  // The same file id again replaces its file, so its old bytes make room for the new ones.
+  const replaced = listed.objects.find((object) => object.key === key)?.size ?? 0;
+  const reserve = Number.isFinite(declared) ? declared : CLOUD_LAUNCH_MAX_FILE_BYTES;
+  const reserved = await env.DB.prepare(`
+    update cloud_launches set draft_bytes = draft_bytes + ?
+    where launch_id = ? and state = 'draft'
+      and (select coalesce(sum(draft_bytes), 0) from cloud_launches where user_id = ? and state = 'draft' and expires_at > ?) - ? + ? <= ?
+  `).bind(reserve, launchId, userId, now, replaced, reserve, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT).run();
+  if ((reserved.meta?.changes ?? 0) !== 1) {
+    logCloud("cloud.launch_draft_bytes_full", { userId, limitBytes: CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT });
+    return draftsFull();
+  }
+  // The reservation settles to what the draft holds now: the new file less the one it replaced, or nothing.
+  let stored: number | null = null;
+  try {
+    const read = await readBoundedBytes(request, reserve);
+    if (!read.ok) return fileTooBig();
+    const contentType = shortString(request.headers.get("content-type"), 120) ?? "application/octet-stream";
+    await bucket.put(key, read.bytes, { httpMetadata: { contentType } });
+    stored = read.bytes.byteLength;
+    return json({ fileId, sizeBytes: stored }, 201);
+  } finally {
+    const delta = stored == null ? -reserve : stored - replaced - reserve;
+    await env.DB.prepare("update cloud_launches set draft_bytes = max(0, draft_bytes + ?) where launch_id = ?").bind(delta, launchId).run();
+  }
 }
 
 async function handleGetFile(env: CloudEnv, row: LaunchRow, fileId: string): Promise<Response> {

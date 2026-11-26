@@ -1376,7 +1376,9 @@ computer. The new computer runs its own launch. The routes are in
 [`apps/account-directory/README.md`](../../../apps/account-directory/README.md#launches-from-the-web-and-the-phone).
 
 - **Files.** `PUT /cloud/launches/:id/files/:fileId` first (at most 10, 25 MB
-  each, R2 `launches/<user>/<launch>/`). The desktop copies images attached on
+  each, R2 `launches/<user>/<launch>/`). An account holds at most 300 open
+  drafts and 2 GB in them; past either the upload answers 429
+  `uploads_full`. The route counts against the `uploads` minute. The desktop copies images attached on
   another machine to this computer first, through that machine's
   `chat.getImageDataUrl` (`cloudLaunchFileCopies.ts`); a non-image file from
   another machine stops the start with what to do.

@@ -17,6 +17,7 @@ import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
 import { callingComputer, segmentsAfter } from "./sessionCopies";
 import { logCloud, type CloudDb, type CloudEnv, type ComputerRow } from "./store";
+import { readBoundedBytes } from "../sinkUtils";
 
 /**
  * Lane backups at rest (contract: "Lane backups at rest"). Before a cloud
@@ -244,9 +245,10 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   if (!row || row.pending_upload_id !== uploadId || row.pending_at == null || now - row.pending_at > UPLOAD_STALE_MS) {
     return fail("backup_upload_gone", "This upload of the lane's work ended. Start it again.", 409);
   }
-  const plain = new Uint8Array(await request.arrayBuffer());
+  const read = await readBoundedBytes(request, CLOUD_BACKUP_MAX_PART_BYTES);
+  if (!read.ok) return tooLarge();
+  const plain = read.bytes;
   if (plain.byteLength === 0) return fail("bad_request", "That part is empty.", 400);
-  if (plain.byteLength > CLOUD_BACKUP_MAX_PART_BYTES) return tooLarge();
   // Each part fits inside the size the upload declared for its kind: a computer can't store more than it said.
   const declaredKind = (kind === "bundle" ? row.pending_bundle_bytes : row.pending_patch_bytes) ?? 0;
   if (plain.byteLength > Math.min(CLOUD_BACKUP_MAX_PART_BYTES, declaredKind - (part - 1) * CLOUD_BACKUP_MAX_PART_BYTES)) return tooLarge();
