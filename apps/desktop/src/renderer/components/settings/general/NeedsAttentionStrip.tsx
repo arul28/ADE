@@ -6,10 +6,11 @@ import { confirmDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { AgentLaunchSetup } from "../../shared/AgentLaunchSetup";
 import { useProjectFix } from "../health/ProjectIssues";
+import { IgnoreButton, IgnoredList, useProjectIgnore, type IgnoreChoice, type IgnoredEntry } from "../health/ProjectIgnore";
 import type { SettingsTabId } from "../settingsManifest";
 // Read only while rendering, so the import cycle with the tab table is safe.
 import { STANDALONE_TAB_IDS } from "../settingsTabContent";
-import { attentionAgentPrompt, attentionLines, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
+import { attentionAgentPrompt, attentionLines, canHideAttention, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
 import "../health/health.css";
 import "../overview/overview.css";
 
@@ -31,12 +32,16 @@ function AttentionRow({
   item,
   busy,
   canOpen,
+  ignoreChoices,
+  ignoreBusy,
   onFix,
   onOpen,
 }: {
   item: AttentionItem;
   busy: boolean;
   canOpen: boolean;
+  ignoreChoices: readonly IgnoreChoice[];
+  ignoreBusy: boolean;
   onFix: () => void;
   onOpen: () => void;
 }) {
@@ -85,6 +90,7 @@ function AttentionRow({
             {fixLabel}
           </button>
         ) : null}
+        <IgnoreButton choices={ignoreChoices} subject={item.title} disabled={ignoreBusy} />
         {canOpen ? (
           <button
             type="button"
@@ -117,7 +123,39 @@ export function NeedsAttentionStrip({
   const [fixingId, setFixingId] = React.useState<string | null>(null);
   // The project's own fixes run on the copy the checks were read from.
   const projectFix = useProjectFix(attention.projectPin, attention.setReport);
+  const projectIgnore = useProjectIgnore(attention.projectPin, attention.setReport);
   const needs = items.filter((item) => item.severity !== "note");
+  const ignoredEntries: IgnoredEntry[] = [
+    ...(hasProject ? projectIgnore.entriesFor(attention.sources.report) : []),
+    ...attention.hidden.map((entry): IgnoredEntry => ({
+      key: `local:${entry.id}`,
+      title: entry.title,
+      note: "Hidden on this computer until it changes",
+      kind: "hide",
+      where: entry.where || undefined,
+      showAgain: () => attention.unhide(entry.id),
+    })),
+  ];
+  const ignoreChoicesFor = (item: AttentionItem): IgnoreChoice[] => {
+    // A project row is ignored in the project, so only with a copy online to save it in.
+    if (item.projectIssue) return attention.projectPin ? projectIgnore.choicesFor(item.projectIssue) : [];
+    if (!canHideAttention(item)) return [];
+    return [{
+      id: "hide",
+      label: "Hide until it changes",
+      hint: "It comes back if anything about it changes",
+      kind: "hide",
+      run: () => {
+        attention.hide(item);
+        showToast({
+          id: "settings-attention-hide",
+          tone: "success",
+          title: "Hidden until it changes",
+          actions: [{ label: "Undo", onClick: () => attention.unhide(item.id) }],
+        });
+      },
+    }];
+  };
   const notes = items.filter((item) => item.severity === "note");
   const worst = items.some((item) => item.severity === "problem")
     ? "crit"
@@ -160,8 +198,15 @@ export function NeedsAttentionStrip({
         ? `${pluralCount(needs.length, "thing needs", "things need")} attention`
         : pluralCount(notes.length, "note");
   // Notes are counted beside the title, so the header and the list agree.
-  const subtitle = !loading && needs.length > 0 && notes.length > 0 ? pluralCount(notes.length, "note") : null;
-  const expandable = !loading && items.length > 0;
+  // With nothing left on show, the count says where the rest went.
+  const subtitle = loading
+    ? null
+    : needs.length > 0 && notes.length > 0
+      ? pluralCount(notes.length, "note")
+      : items.length === 0 && ignoredEntries.length > 0
+        ? `${ignoredEntries.length} ignored`
+        : null;
+  const expandable = !loading && (items.length > 0 || ignoredEntries.length > 0);
 
   const renderRow = (item: AttentionItem) => (
     <AttentionRow
@@ -169,6 +214,8 @@ export function NeedsAttentionStrip({
       item={item}
       busy={fixingId === item.id || (item.projectIssue?.fix != null && projectFix.fixingId === item.projectIssue.fix.id)}
       canOpen={canOpen(item.route)}
+      ignoreChoices={ignoreChoicesFor(item)}
+      ignoreBusy={projectIgnore.busy}
       onFix={() => void runFix(item)}
       onOpen={() => navigate(item.route)}
     />
@@ -221,7 +268,8 @@ export function NeedsAttentionStrip({
               <ul className="ade-attn-list" data-kind="notes" aria-label="Notes">{notes.map(renderRow)}</ul>
             </>
           ) : null}
-          {hasProject && attention.projectPin ? (
+          <IgnoredList entries={ignoredEntries} busy={projectIgnore.busy} defaultOpen={items.length === 0} />
+          {hasProject && attention.projectPin && items.length > 0 ? (
             askOpen ? (
               <div className="ade-gen-attn-ask">
                 <AgentLaunchSetup

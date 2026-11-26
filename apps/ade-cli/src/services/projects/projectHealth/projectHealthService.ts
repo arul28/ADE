@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,8 +8,11 @@ import type { Logger } from "../../../../../desktop/src/main/services/logging/lo
 import type { LaneSummary } from "../../../../../desktop/src/shared/types";
 import type {
   ProjectHealthFixResult,
+  ProjectHealthIgnore,
+  ProjectHealthIgnoreArgs,
   ProjectHealthIssue,
   ProjectHealthReport,
+  ProjectHealthUnignoreArgs,
   ProjectLaneHealth,
   ProjectLaneStaleReason,
 } from "../../../../../desktop/src/shared/types/projectHealth";
@@ -146,7 +150,71 @@ type Context = {
   previousSpellings: string[];
   lanes: LaneSummary[];
   checkouts: Checkout[];
+  /** `pathKey` of each main-checkout folder the person ignored. */
+  ignoredFolders: Set<string>;
 };
+
+/** The `kv` row the ignored list lives in. `kv` syncs, so every copy sees it. */
+export const PROJECT_HEALTH_IGNORED_KV_KEY = "project_health.ignored";
+/** A list that only grows with clicks; the cap keeps a runaway caller from bloating the row. */
+const MAX_IGNORED = 200;
+
+/** A line's identity for "hide until it changes": its id, title and items. */
+export function projectHealthIssueFingerprint(issue: Pick<ProjectHealthIssue, "id" | "title" | "items">): string {
+  return createHash("sha256")
+    .update([issue.id, issue.title, ...(issue.items ?? [])].join("\n"))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * A folder the person may ignore, as the report names it: relative,
+ * `/`-separated, inside the project. Null for the project root, an absolute
+ * path or anything that climbs out.
+ */
+export function normalizeIgnoredFolder(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (!trimmed || trimmed.startsWith("/") || /^[A-Za-z]:/.test(trimmed)) return null;
+  const parts = trimmed.split("/").filter((part) => part && part !== ".");
+  if (parts.length === 0 || parts.some((part) => part === "..")) return null;
+  return parts.join("/");
+}
+
+function parseIgnored(raw: string | null | undefined): ProjectHealthIgnore[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const out: ProjectHealthIgnore[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const value = entry as Record<string, unknown>;
+    const issueId = typeof value.issueId === "string" ? value.issueId : "";
+    const title = typeof value.title === "string" ? value.title : "";
+    const ignoredAt = typeof value.ignoredAt === "string" ? value.ignoredAt : "";
+    if (!issueId || !title) continue;
+    if (value.kind === "folder") {
+      const folder = normalizeIgnoredFolder(value.path);
+      if (!folder) continue;
+      const key = `folder:${issueId}:${folder}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, kind: "folder", issueId, path: folder, title, ignoredAt });
+    } else if (value.kind === "issue" && typeof value.fingerprint === "string" && value.fingerprint) {
+      const key = `issue:${issueId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, kind: "issue", issueId, fingerprint: value.fingerprint, title, ignoredAt });
+    }
+  }
+  return out;
+}
 
 function exists(target: string): boolean {
   try {
@@ -360,6 +428,8 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyP
       } catch {
         stat = null;
       }
+      // A folder the person ignored is not checked at all: no install, no link.
+      if (checkout.primary && ctx.ignoredFolders.has(pathKey(unit))) continue;
       const empty = stat?.isDirectory() === true && isEmptyDir(nodeModules);
       if (!stat || empty) {
         // A lane gets packages only from a lane template or its own install;
@@ -376,8 +446,9 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyP
       }
       const targetRoot = target ? path.dirname(target) : "";
       if (primary && targetRoot && isWithinPath(primary.root, targetRoot, true) && !isWithinPath(path.join(primary.root, ".ade"), targetRoot, true)) {
-        // A link to a folder that installs nothing has nothing to resolve.
-        if (hasPackageInstall(targetRoot, logger)) mark(primary, targetRoot);
+        // A link to a folder that installs nothing has nothing to resolve,
+        // and one into a folder the person ignored is left alone.
+        if (hasPackageInstall(targetRoot, logger) && !ctx.ignoredFolders.has(pathKey(targetRoot))) mark(primary, targetRoot);
       } else {
         brokenLinks.push(nodeModules);
       }
@@ -529,6 +600,29 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   };
   let cached: { at: number; report: Promise<ProjectHealthReport> } | null = null;
 
+  function readIgnored(): ProjectHealthIgnore[] {
+    try {
+      const rows = deps.db.all<{ value: string }>("select value from kv where key = ? limit 1", [PROJECT_HEALTH_IGNORED_KV_KEY]);
+      return parseIgnored(rows[0]?.value);
+    } catch (error) {
+      // An unreadable list ignores nothing: every check shows.
+      deps.logger.warn("project_health.ignored_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [];
+    }
+  }
+
+  function writeIgnored(list: ProjectHealthIgnore[]): void {
+    const kept = list.slice(-MAX_IGNORED);
+    if (kept.length === 0) {
+      deps.db.run("delete from kv where key = ?", [PROJECT_HEALTH_IGNORED_KV_KEY]);
+      return;
+    }
+    deps.db.run(
+      "insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+      [PROJECT_HEALTH_IGNORED_KV_KEY, JSON.stringify(kept)],
+    );
+  }
+
   async function context(): Promise<Context> {
     const previousRoots = previousProjectRoots(projectRoot);
     const lanes = (await deps.listLanes()).filter((lane) => !lane.archivedAt);
@@ -546,6 +640,11 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       previousSpellings: [...new Set(previousRoots.flatMap((root) => rootSpellings(root)))],
       lanes,
       checkouts,
+      ignoredFolders: new Set(
+        readIgnored()
+          .filter((entry) => entry.kind === "folder" && entry.path)
+          .map((entry) => pathKey(path.join(projectRoot, ...entry.path!.split("/")))),
+      ),
     };
   }
 
@@ -871,6 +970,10 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "dependencies",
           severity: "warning",
           ...dependencyIssueText(plan),
+          // The root is the project itself: hiding the line is the only way to quiet it.
+          ...(plan.missingFolders.some(Boolean)
+            ? { ignorablePaths: plan.missingFolders.filter(Boolean).map((folder) => folder.split(path.sep).join("/")) }
+            : {}),
           items: [
             ...plan.installs.map((install) => `${install.label}: ${install.command}`),
             ...plan.brokenLinks.map((link) => `broken link: ${path.relative(projectRoot, link)}`),
@@ -1004,17 +1107,99 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
 
     const order = { problem: 0, warning: 1, info: 2 } as const;
     issues.sort((a, b) => order[a.severity] - order[b.severity]);
+    const { shown, ignored } = applyIgnored(issues);
     const volume = await readMoveVolume(projectRoot).catch(() => null);
     return {
       projectRoot,
       checkedAt: new Date().toISOString(),
       previousRoots: ctx.previousRoots,
       drive: volume ? { name: volume.name, internal: volume.internal, freeBytes: volume.freeBytes, totalBytes: volume.totalBytes } : null,
-      issues,
+      issues: shown,
       lanes: laneReport?.lanes ?? [],
       staleAfterDays: staleAfterDays(),
       checks: checks.sort((a, b) => a.label.localeCompare(b.label)),
+      ignored,
     };
+  }
+
+  /**
+   * Hides each line the person hid while it still reads the same, and drops
+   * the entry of a line that changed (it shows again). A line that is absent
+   * keeps its entry: its check may only have failed this time. Folder
+   * ignores were applied by the checks themselves.
+   */
+  function applyIgnored(issues: ProjectHealthIssue[]): { shown: ProjectHealthIssue[]; ignored: ProjectHealthIgnore[] } {
+    const list = readIgnored();
+    if (list.length === 0) return { shown: issues, ignored: [] };
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    const changed = new Set<string>();
+    const hidden = new Set<string>();
+    for (const entry of list) {
+      if (entry.kind !== "issue") continue;
+      const issue = byId.get(entry.issueId);
+      if (!issue) continue;
+      if (projectHealthIssueFingerprint(issue) === entry.fingerprint) hidden.add(issue.id);
+      else changed.add(entry.key);
+    }
+    const kept = changed.size > 0 ? list.filter((entry) => !changed.has(entry.key)) : list;
+    if (changed.size > 0) {
+      try {
+        writeIgnored(kept);
+      } catch (error) {
+        deps.logger.warn("project_health.ignored_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return {
+      shown: hidden.size > 0 ? issues.filter((issue) => !hidden.has(issue.id)) : issues,
+      // A hidden line that is absent this time is not listed: there is nothing to show again.
+      ignored: kept.filter((entry) => entry.kind === "folder" || hidden.has(entry.issueId)),
+    };
+  }
+
+  /**
+   * Stops checking one folder (`path`, one of the line's `ignorablePaths`),
+   * or hides the whole line until it changes. Reads a fresh report, so the
+   * line being ignored is the one on screen now, and returns the next one.
+   */
+  async function ignore(args: ProjectHealthIgnoreArgs): Promise<ProjectHealthReport> {
+    const issueId = typeof args?.issueId === "string" ? args.issueId.trim() : "";
+    if (!issueId) throw new Error("Name the check to ignore.");
+    const report = await getReport({ forceRefresh: true });
+    const issue = report.issues.find((entry) => entry.id === issueId);
+    const list = readIgnored();
+    const ignoredAt = new Date().toISOString();
+    if (args.path != null) {
+      const folder = normalizeIgnoredFolder(args.path);
+      if (!folder) throw new Error(`"${String(args.path)}" is not a folder inside this project.`);
+      const key = `folder:${issueId}:${folder}`;
+      if (!list.some((entry) => entry.key === key)) {
+        // Only a folder the check names right now: a typo must not quietly ignore nothing.
+        if (!issue?.ignorablePaths?.includes(folder)) throw new Error(`${folder} isn't one of the folders this check names.`);
+        writeIgnored([...list, { key, kind: "folder", issueId, path: folder, title: folder, ignoredAt }]);
+      }
+    } else {
+      if (!issue) throw new Error("That check has nothing to hide right now.");
+      if (issue.severity === "problem") throw new Error("A problem stays in view until it is fixed.");
+      const key = `issue:${issueId}`;
+      writeIgnored([
+        ...list.filter((entry) => entry.key !== key),
+        { key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), title: issue.title, ignoredAt },
+      ]);
+    }
+    deps.logger.info("project_health.ignored", { issueId, kind: args.path != null ? "folder" : "issue" });
+    return getReport({ forceRefresh: true });
+  }
+
+  /** Checks a folder again, or shows a hidden line again. */
+  async function unignore(args: ProjectHealthUnignoreArgs): Promise<ProjectHealthReport> {
+    const key = typeof args?.key === "string" ? args.key : "";
+    const list = readIgnored();
+    const next = list.filter((entry) => entry.key !== key);
+    if (next.length !== list.length) {
+      writeIgnored(next);
+      deps.logger.info("project_health.unignored", { kind: key.split(":")[0] ?? "" });
+    }
+    return getReport({ forceRefresh: true });
   }
 
   async function getReport(args: { forceRefresh?: boolean } = {}): Promise<ProjectHealthReport> {
@@ -1105,7 +1290,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     return { ok: problems.length === 0, done, problems, report: await getReport({ forceRefresh: true }) };
   }
 
-  return { getReport, fix };
+  return { getReport, fix, ignore, unignore };
 }
 
 export type ProjectHealthService = ReturnType<typeof createProjectHealthService>;

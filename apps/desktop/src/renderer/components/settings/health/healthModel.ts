@@ -18,6 +18,12 @@ export function issuesForPage(report: ProjectHealthReport | null, page: ProjectI
   return (report?.issues ?? []).filter((issue) => projectIssuePage(issue) === page);
 }
 
+/** The report with only the ignores that belong to `page`, so each page lists its own way back. */
+export function reportIgnoredForPage(report: ProjectHealthReport | null, page: ProjectIssuePage): ProjectHealthReport | null {
+  if (!report?.ignored?.length) return report;
+  return { ...report, ignored: report.ignored.filter((entry) => projectIssuePage({ id: entry.issueId }) === page) };
+}
+
 /** Problems and warnings need attention; info lines are notes. */
 export function issuesNeedingAttention(report: ProjectHealthReport | null): ProjectHealthIssue[] {
   return (report?.issues ?? []).filter((issue) => issue.severity !== "info");

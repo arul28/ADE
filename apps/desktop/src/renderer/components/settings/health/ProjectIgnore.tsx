@@ -1,0 +1,259 @@
+import React from "react";
+import { CaretRight, EyeSlash, FolderSimpleDashed } from "@phosphor-icons/react";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import type { ProjectHealthIgnore, ProjectHealthIssue, ProjectHealthReport } from "../../../../shared/types/projectHealth";
+import { pluralCount } from "../../../../shared/formatting";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
+import { showToast } from "../../app/toast/toastStore";
+import "./projectIgnore.css";
+
+/**
+ * "Ignore" for the things Settings flags.
+ *
+ * Two ways to stop seeing something, and the menu says which is which:
+ *
+ * - **Ignore a folder.** The dependencies check names folders; a demo or
+ *   sample package is never installed on purpose. Ignoring it stops the check
+ *   looking there at all, until the person shows it again.
+ * - **Hide until it changes.** Any line. It comes back as soon as it reads
+ *   differently (another folder, another lane), so nothing new is ever hidden.
+ *
+ * A project's ignores live in the project (the brain behind `pin`), so every
+ * computer and client sees the same list. The rows outside the project hide
+ * on this computer only (`useNeedsAttention`). Both end up in `IgnoredList`.
+ */
+
+/** One way to stop seeing a row, as the Ignore menu lists it. */
+export type IgnoreChoice = {
+  id: string;
+  label: string;
+  hint: string;
+  kind: "folder" | "hide";
+  run: () => void;
+};
+
+/** One entry of the ignored list, wherever it is stored. */
+export type IgnoredEntry = {
+  key: string;
+  title: string;
+  /** "Not checked for packages", "Hidden until it changes". */
+  note: string;
+  kind: "folder" | "hide";
+  /** Where it applies, when the list mixes places: "Project", "This computer". */
+  where?: string;
+  showAgain: () => void;
+};
+
+const IGNORE_TOAST_ID = "settings-project-ignore";
+
+/** The ignore and show-again calls for one project copy, each with its toast. */
+export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (report: ProjectHealthReport) => void) {
+  const [busy, setBusy] = React.useState(false);
+  const unignore = React.useCallback(async (key: string, quiet = false) => {
+    if (!pin) return;
+    setBusy(true);
+    try {
+      onReport(await window.ade.projectHealth.unignore({ key }, pin));
+      if (!quiet) showToast({ id: IGNORE_TOAST_ID, tone: "success", title: "Showing it again" });
+    } catch (err) {
+      showToast({ id: IGNORE_TOAST_ID, tone: "error", title: "Couldn't show it again", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }, [onReport, pin]);
+
+  const ignore = React.useCallback(async (issue: ProjectHealthIssue, folder: string | null) => {
+    if (!pin) return;
+    setBusy(true);
+    try {
+      const report = await window.ade.projectHealth.ignore({ issueId: issue.id, ...(folder ? { path: folder } : {}) }, pin);
+      onReport(report);
+      const key = folder ? `folder:${issue.id}:${folder}` : `issue:${issue.id}`;
+      showToast({
+        id: IGNORE_TOAST_ID,
+        tone: "success",
+        title: folder ? `Ignoring ${folder}` : "Hidden until it changes",
+        message: folder ? "ADE won't check this folder for packages again." : undefined,
+        actions: [{ label: "Undo", onClick: () => void unignore(key, true) }],
+      });
+    } catch (err) {
+      showToast({ id: IGNORE_TOAST_ID, tone: "error", title: "Couldn't ignore it", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }, [onReport, pin, unignore]);
+
+  /**
+   * The menu for one project line: a choice per folder it names, then "hide
+   * until it changes". A problem has no "hide": it stays in view until fixed.
+   */
+  const choicesFor = React.useCallback((issue: ProjectHealthIssue): IgnoreChoice[] => [
+    ...(issue.ignorablePaths ?? []).map((folder): IgnoreChoice => ({
+      id: `folder:${folder}`,
+      label: `Ignore ${folder}`,
+      hint: "Stop checking this folder for packages",
+      kind: "folder",
+      run: () => void ignore(issue, folder),
+    })),
+    ...(issue.severity === "problem" ? [] : [{
+      id: "hide",
+      label: "Hide until it changes",
+      hint: "It comes back if anything about it changes",
+      kind: "hide" as const,
+      run: () => void ignore(issue, null),
+    }]),
+  ], [ignore]);
+
+  /** The project's ignores as list entries. */
+  const entriesFor = React.useCallback((report: ProjectHealthReport | null): IgnoredEntry[] => (report?.ignored ?? []).map((entry: ProjectHealthIgnore) => ({
+    key: entry.key,
+    title: entry.title,
+    note: entry.kind === "folder" ? "Not checked for packages" : "Hidden until it changes",
+    kind: entry.kind === "folder" ? "folder" : "hide",
+    where: "Project",
+    showAgain: () => void unignore(entry.key),
+  })), [unignore]);
+
+  return { busy, ignore, unignore, choicesFor, entriesFor };
+}
+
+/**
+ * The quiet eye-slash beside a row's own buttons. One choice runs at once
+ * (its toast carries Undo); several open a small menu that says what each does.
+ */
+export function IgnoreButton({ choices, subject, disabled }: { choices: readonly IgnoreChoice[]; subject: string; disabled?: boolean }) {
+  const anchorRef = React.useRef<HTMLButtonElement | null>(null);
+  const [open, setOpen] = React.useState(false);
+  const firstItemRef = React.useRef<HTMLButtonElement | null>(null);
+  React.useEffect(() => {
+    if (open) firstItemRef.current?.focus();
+  }, [open]);
+  if (choices.length === 0) return null;
+  const single = choices.length === 1 ? choices[0]! : null;
+  const close = () => {
+    setOpen(false);
+    anchorRef.current?.focus();
+  };
+  return (
+    <>
+      <button
+        ref={anchorRef}
+        type="button"
+        className="kit-icon-btn ade-ignore-btn"
+        aria-label={single ? `${single.label}: ${subject}` : `Ignore: ${subject}`}
+        aria-haspopup={single ? undefined : "menu"}
+        aria-expanded={single ? undefined : open}
+        title={single ? single.label : "Ignore"}
+        disabled={disabled}
+        data-open={open || undefined}
+        onClick={() => (single ? single.run() : setOpen((value) => !value))}
+      >
+        <EyeSlash size={14} />
+      </button>
+      {single ? null : (
+        <AnchoredMenu
+          open={open}
+          anchorRef={anchorRef}
+          onClose={() => setOpen(false)}
+          placement="bottom-end"
+          offset={6}
+          role="menu"
+          aria-label={`Ignore: ${subject}`}
+          className="ade-ignore-menu"
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              close();
+              return;
+            }
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+            event.preventDefault();
+            const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("[role=menuitem]"));
+            const at = items.indexOf(document.activeElement as HTMLButtonElement);
+            const next = event.key === "ArrowDown" ? (at + 1) % items.length : (at - 1 + items.length) % items.length;
+            items[next]?.focus();
+          }}
+        >
+          {choices.map((choice, index) => (
+            <React.Fragment key={choice.id}>
+              {choice.kind === "hide" && index > 0 ? <div className="ade-ignore-menu-rule" role="separator" /> : null}
+              <button
+                ref={index === 0 ? firstItemRef : undefined}
+                type="button"
+                role="menuitem"
+                className="ade-ignore-menu-item"
+                onClick={() => {
+                  close();
+                  choice.run();
+                }}
+              >
+                <span className="ade-ignore-menu-glyph" aria-hidden>
+                  {choice.kind === "folder" ? <FolderSimpleDashed size={15} /> : <EyeSlash size={15} />}
+                </span>
+                <span className="ade-ignore-menu-text">
+                  <span className="ade-ignore-menu-label">{choice.label}</span>
+                  <span className="ade-ignore-menu-hint">{choice.hint}</span>
+                </span>
+              </button>
+            </React.Fragment>
+          ))}
+        </AnchoredMenu>
+      )}
+    </>
+  );
+}
+
+/**
+ * What the person ignored, folded under one quiet line ("2 ignored"), each
+ * with Show again. It sits under the rows it came from, so the way back is
+ * where the thing used to be.
+ */
+export function IgnoredList({ entries, busy, defaultOpen = false }: { entries: readonly IgnoredEntry[]; busy?: boolean; defaultOpen?: boolean }) {
+  const [open, setOpen] = React.useState(defaultOpen);
+  const listId = React.useId();
+  if (entries.length === 0) return null;
+  return (
+    <div className="ade-ignored" data-open={open || undefined}>
+      <button
+        type="button"
+        className="ade-ignored-toggle"
+        aria-expanded={open}
+        aria-controls={listId}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <EyeSlash size={13} aria-hidden />
+        <span>{pluralCount(entries.length, "ignored item", "ignored items")}</span>
+        <CaretRight size={10} weight="bold" className="ade-ignored-caret" aria-hidden />
+      </button>
+      {open ? (
+        <ul className="ade-ignored-list" id={listId}>
+          {entries.map((entry) => (
+            <li key={entry.key} className="ade-ignored-row">
+              <span className="ade-ignored-glyph" aria-hidden>
+                {entry.kind === "folder" ? <FolderSimpleDashed size={14} /> : <EyeSlash size={14} />}
+              </span>
+              <span className="ade-ignored-text">
+                <span className="ade-ignored-title">{entry.title}</span>
+                <span className="ade-ignored-note">
+                  {entry.where ? <span className="ade-ignored-where">{entry.where}</span> : null}
+                  {entry.note}
+                </span>
+              </span>
+              <button
+                type="button"
+                className="ade-modern-btn"
+                data-size="sm"
+                data-variant="ghost"
+                disabled={busy}
+                aria-label={`Show again: ${entry.title}`}
+                onClick={entry.showAgain}
+              >
+                Show again
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}

@@ -28,6 +28,8 @@ export const IPC = {
   storageCompressNow: "ade.storage.compressNow",
   projectHealthGetReport: "ade.projectHealth.getReport",
   projectHealthFix: "ade.projectHealth.fix",
+  projectHealthIgnore: "ade.projectHealth.ignore",
+  projectHealthUnignore: "ade.projectHealth.unignore",
   storageRunMaintenanceNow: "ade.storage.runMaintenanceNow",
   storageCleanupPreview: "ade.storage.cleanupPreview",
   storageCleanup: "ade.storage.cleanup",

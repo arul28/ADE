@@ -27,6 +27,7 @@
 .ade-health-issue + .ade-health-issue { border-top: 1px solid var(--kit-rule); }
 .ade-health-issue > .kit-dot { margin-top: 6px; }
 .ade-health-issue > .ade-modern-btn { flex: none; margin-top: 1px; }
+.ade-health-issue-actions { flex: none; display: flex; align-items: center; gap: 4px; margin-top: 1px; }
 .ade-health-issue-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .ade-health-issue-title { font-size: 13px; font-weight: 500; color: var(--color-fg); }
 .ade-health-issue-detail {

@@ -5,6 +5,14 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { confirmDialog } from "../../ui/dialog";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { issueDotState } from "./healthModel";
+import { IgnoreButton, IgnoredList, type IgnoreChoice, type IgnoredEntry } from "./ProjectIgnore";
+
+/** Ignore for a list of checks: the menu for each line and the list of what was ignored. */
+export type ProjectIssueIgnore = {
+  choicesFor: (issue: ProjectHealthIssue) => IgnoreChoice[];
+  entries: readonly IgnoredEntry[];
+  busy: boolean;
+};
 
 const FIX_TOAST_ID = "settings-project-fix";
 
@@ -59,10 +67,14 @@ export function ProjectIssueRow({
   issue,
   fixing,
   onFix,
+  ignoreChoices = [],
+  ignoreBusy = false,
 }: {
   issue: ProjectHealthIssue;
   fixing: boolean;
   onFix: (issue: ProjectHealthIssue) => void;
+  ignoreChoices?: readonly IgnoreChoice[];
+  ignoreBusy?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const items = issue.items ?? [];
@@ -91,18 +103,23 @@ export function ProjectIssueRow({
           </>
         ) : null}
       </div>
-      {issue.fix ? (
-        <button
-          type="button"
-          className="ade-modern-btn"
-          data-size="sm"
-          disabled={fixing}
-          title={issue.fix.description}
-          onClick={() => onFix(issue)}
-        >
-          {fixing ? <CircleNotch size={12} className="animate-spin" /> : null}
-          {issue.fix.label}
-        </button>
+      {issue.fix || ignoreChoices.length > 0 ? (
+        <span className="ade-health-issue-actions">
+          {issue.fix ? (
+            <button
+              type="button"
+              className="ade-modern-btn"
+              data-size="sm"
+              disabled={fixing}
+              title={issue.fix.description}
+              onClick={() => onFix(issue)}
+            >
+              {fixing ? <CircleNotch size={12} className="animate-spin" /> : null}
+              {issue.fix.label}
+            </button>
+          ) : null}
+          <IgnoreButton choices={ignoreChoices} subject={issue.title} disabled={ignoreBusy} />
+        </span>
       ) : null}
     </li>
   );
@@ -112,25 +129,32 @@ export function ProjectIssueList({
   issues,
   fixingId,
   onFix,
+  ignore,
 }: {
   issues: readonly ProjectHealthIssue[];
   fixingId: string | null;
   onFix: (issue: ProjectHealthIssue) => void;
+  ignore?: ProjectIssueIgnore;
 }) {
-  if (issues.length === 0) return null;
+  if (issues.length === 0) return ignore?.entries.length ? <IgnoredList entries={ignore.entries} busy={ignore.busy} /> : null;
   // Problems first, then warnings, then notes.
   const order = { problem: 0, warning: 1, info: 2 } as const;
   const sorted = [...issues].sort((left, right) => order[left.severity] - order[right.severity]);
   return (
-    <ul className="ade-health-issues">
-      {sorted.map((issue) => (
-        <ProjectIssueRow
-          key={issue.id}
-          issue={issue}
-          fixing={fixingId != null && fixingId === issue.fix?.id}
-          onFix={onFix}
-        />
-      ))}
-    </ul>
+    <>
+      <ul className="ade-health-issues">
+        {sorted.map((issue) => (
+          <ProjectIssueRow
+            key={issue.id}
+            issue={issue}
+            fixing={fixingId != null && fixingId === issue.fix?.id}
+            onFix={onFix}
+            ignoreChoices={ignore?.choicesFor(issue)}
+            ignoreBusy={ignore?.busy}
+          />
+        ))}
+      </ul>
+      {ignore ? <IgnoredList entries={ignore.entries} busy={ignore.busy} /> : null}
+    </>
   );
 }

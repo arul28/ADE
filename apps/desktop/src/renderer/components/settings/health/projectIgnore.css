@@ -1,0 +1,183 @@
+/*
+ * Ignore: the eye-slash beside a flagged row, its menu, and the folded
+ * "N ignored items" list under the rows. Quiet on purpose: the row's own fix
+ * stays the loud button, and the way back sits where the row used to be.
+ * Theme tokens only.
+ */
+
+/* ── The button beside a row ─────────────────────────────────────────── */
+/* Out of the way until the row is pointed at or focused, so a list of
+   flagged rows reads as their fixes, not as a column of eyes. Touch
+   screens have no hover, so there it is always shown. */
+.ade-ignore-btn {
+  width: 26px;
+  height: 26px;
+  color: var(--kit-text-3);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.ade-attn-row:hover .ade-ignore-btn,
+.ade-attn-row:focus-within .ade-ignore-btn,
+.ade-health-issue:hover .ade-ignore-btn,
+.ade-health-issue:focus-within .ade-ignore-btn,
+.ade-ignore-btn[data-open="true"] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .ade-ignore-btn { opacity: 1; }
+}
+.ade-ignore-btn:hover:not(:disabled),
+.ade-ignore-btn[data-open="true"] {
+  color: var(--color-fg);
+}
+
+/* ── Its menu ─────────────────────────────────────────────────────────── */
+.ade-ignore-menu {
+  width: min(300px, calc(100vw - 24px));
+  padding: 5px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
+  background: var(--color-popup-bg, var(--color-card));
+  box-shadow: var(--shadow-popup, 0 24px 64px -24px rgba(0, 0, 0, 0.6));
+  font-family: var(--font-sans);
+}
+.ade-ignore-menu-item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 8px 10px 9px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-ignore-menu-item:hover,
+.ade-ignore-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  outline: none;
+}
+.ade-ignore-menu-glyph {
+  display: flex;
+  justify-content: center;
+  padding-top: 1px;
+  color: var(--kit-text-3);
+}
+.ade-ignore-menu-item:hover .ade-ignore-menu-glyph,
+.ade-ignore-menu-item:focus-visible .ade-ignore-menu-glyph {
+  color: var(--color-fg);
+}
+.ade-ignore-menu-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ade-ignore-menu-label {
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 17px;
+  overflow-wrap: anywhere;
+}
+.ade-ignore-menu-hint {
+  font-size: 11.5px;
+  line-height: 15px;
+  color: var(--kit-text-3);
+}
+.ade-ignore-menu-rule {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--kit-rule);
+}
+
+/* ── The folded list of what was ignored ──────────────────────────────── */
+.ade-ignored {
+  margin-top: 10px;
+}
+.ade-ignored-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 8px;
+  margin-left: -2px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ade-ignored-toggle:hover {
+  color: var(--color-fg);
+  background: var(--kit-hover);
+}
+.ade-ignored-toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  outline-offset: 1px;
+}
+.ade-ignored-caret {
+  transition: transform 140ms ease;
+}
+.ade-ignored[data-open="true"] .ade-ignored-caret {
+  transform: rotate(90deg);
+}
+.ade-ignored-list {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  border-radius: var(--radius-lg);
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 14%, transparent);
+  overflow: hidden;
+}
+.ade-ignored-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  padding: 8px 8px 8px 14px;
+}
+.ade-ignored-row + .ade-ignored-row {
+  border-top: 1px dashed color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-ignored-glyph {
+  display: flex;
+  color: var(--kit-text-3);
+}
+.ade-ignored-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ade-ignored-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 17px;
+  color: var(--kit-text-2);
+  overflow-wrap: anywhere;
+}
+.ade-ignored-note {
+  font-size: 11.5px;
+  line-height: 15px;
+  color: var(--kit-text-3);
+}
+.ade-ignored-where {
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-ignored-where::after {
+  content: " · ";
+  font-weight: 400;
+  color: var(--kit-text-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-ignored-caret,
+  .ade-ignore-btn { transition: none; }
+}

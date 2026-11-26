@@ -394,6 +394,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   remote_work: ["list", "delete"],
   // Which sign-ins ADE Cloud uses, removing one from the account, and the one OS keyring read on the person's desktop (P5).
   provider_logins: [...PROVIDER_LOGIN_ACCOUNT_WRITES, "allowKeychain", "allowGitHubCli"],
+  // What the person chose to stop seeing in Settings. An agent that hid a
+  // warning would hide it from the person it is working for.
+  project_health: ["ignore", "unignore"],
   // ADE never deletes from the archive on its own, and no agent or automation
   // deletes for the person: a delete can take a lane's uncommitted work.
   archive: ["delete"],
@@ -1462,7 +1465,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
   storage: ["cleanup", "cleanupPreview", "compressNow", "deletedLaneChatsSummary", "getSnapshot", "laneBuildOutputRemoved", "runMaintenanceNow"],
-  project_health: ["fix", "getReport"],
+  project_health: ["fix", "getReport", "ignore", "unignore"],
   archive: ["delete", "list", "restore", "summary"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],

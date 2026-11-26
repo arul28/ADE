@@ -9,8 +9,9 @@ import { Banner } from "../../ui/notice";
 import { formatBytes, relativeWhen } from "../../../lib/format";
 import { freeSpaceLevel } from "../storage/storageView";
 import { FreeSpaceMeter } from "../health/healthCharts";
-import { healthAgentPrompt, healthVerdict, issuesForPage } from "../health/healthModel";
+import { healthAgentPrompt, healthVerdict, issuesForPage, reportIgnoredForPage } from "../health/healthModel";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
+import { useProjectIgnore } from "../health/ProjectIgnore";
 import { useHealthData } from "../health/useHealthData";
 import "../health/health.css";
 import "./location.css";
@@ -29,6 +30,7 @@ export function LocationPage() {
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   const data = useHealthData(pin, isThisMachine, { report: true });
   const fix = useProjectFix(pin, data.setReport);
+  const ignore = useProjectIgnore(pin, data.setReport);
   const [askOpen, setAskOpen] = React.useState(false);
   const { report, loading, checking, error, available } = data.report;
   const issues = issuesForPage(report, "location");
@@ -142,12 +144,27 @@ export function LocationPage() {
         ) : null}
 
         {report && issues.length > 0 ? (
-          <ProjectIssueList issues={issues} fixingId={fix.fixingId} onFix={(issue) => void fix.runFix(issue)} />
+          <ProjectIssueList
+            issues={issues}
+            fixingId={fix.fixingId}
+            onFix={(issue) => void fix.runFix(issue)}
+            ignore={pin ? { choicesFor: ignore.choicesFor, entries: ignore.entriesFor(reportIgnoredForPage(report, "location")), busy: ignore.busy } : undefined}
+          />
         ) : report ? (
-          <div className="ade-modern-note" data-tone="ok">
-            <CheckCircle size={14} weight="fill" />
-            <span>No problems found in this project.</span>
-          </div>
+          <>
+            <div className="ade-modern-note" data-tone="ok">
+              <CheckCircle size={14} weight="fill" />
+              <span>No problems found in this project.</span>
+            </div>
+            {pin ? (
+              <ProjectIssueList
+                issues={[]}
+                fixingId={null}
+                onFix={() => undefined}
+                ignore={{ choicesFor: ignore.choicesFor, entries: ignore.entriesFor(reportIgnoredForPage(report, "location")), busy: ignore.busy }}
+              />
+            ) : null}
+          </>
         ) : null}
 
         {report && passed.length > 0 ? (

@@ -31,7 +31,47 @@ export type ProjectHealthIssue = {
   detail: string;
   /** Named things behind the line: lanes, files, folders. */
   items?: string[];
+  /**
+   * Folders behind the line, relative to the project, that the person can
+   * ignore one by one (`ignore` with `path`). Only the dependencies check
+   * names them today: a demo or sample package that is never installed.
+   */
+  ignorablePaths?: string[];
   fix?: ProjectHealthFix;
+};
+
+/**
+ * Something the person asked the checks to leave alone, saved in the
+ * project's database (the `kv` row `project_health.ignored`), so every copy
+ * and every client sees the same list.
+ *
+ * - `folder`: one folder is no longer checked (`ignorablePaths`). It stays
+ *   ignored until the person stops ignoring it.
+ * - `issue`: one line is hidden while it reads the same. When its title or
+ *   items change, it shows again and the entry is dropped.
+ */
+export type ProjectHealthIgnore = {
+  /** `folder:<issueId>:<path>` or `issue:<issueId>`; passed back to `unignore`. */
+  key: string;
+  kind: "folder" | "issue";
+  issueId: string;
+  /** For `folder`: the folder, relative to the project, `/`-separated. */
+  path?: string;
+  /** For `issue`: the line's fingerprint when it was hidden. */
+  fingerprint?: string;
+  /** What the ignored list shows: the folder, or the line's title. */
+  title: string;
+  ignoredAt: string;
+};
+
+export type ProjectHealthIgnoreArgs = {
+  issueId: string;
+  /** One of the issue's `ignorablePaths`. Omitted: hide the whole line until it changes. */
+  path?: string | null;
+};
+
+export type ProjectHealthUnignoreArgs = {
+  key: string;
 };
 
 /** Why a lane counts as stale. */
@@ -80,6 +120,8 @@ export type ProjectHealthReport = {
   staleAfterDays: number;
   /** Every check that ran, so "no issues" means something. */
   checks: Array<{ id: string; label: string; ok: boolean }>;
+  /** What the person ignored that still applies. Absent from an older brain. */
+  ignored?: ProjectHealthIgnore[];
 };
 
 export type ProjectHealthFixArgs = {
