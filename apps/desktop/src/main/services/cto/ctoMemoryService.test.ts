@@ -261,7 +261,12 @@ describe("ctoMemoryService archive", () => {
     const adeDir = path.join(root, ".ade");
     // The archive opens, but every write fails (a full disk, a lock that never clears).
     const real = createCtoMemoryArchive({ dir: path.join(adeDir, "cto") });
-    const archive = { ...real, add: () => null, addMany: () => null };
+    let failing = true;
+    const archive: typeof real = {
+      ...real,
+      add: (record) => (failing ? null : real.add(record)),
+      addMany: (records) => (failing ? null : real.addMany(records)),
+    };
     const service = createCtoMemoryService({ adeDir, userNotesDir: path.join(root, "home-cto"), archive });
     fillNotes(service, new Date("2026-11-01T09:00:00.000Z"));
     const before = service.readNotes("project");
@@ -276,6 +281,23 @@ describe("ctoMemoryService archive", () => {
     }
     expect(() => service.writeNotes("project", `${before}- ${uniqueNote("typed")}\n`)).toThrow(/Couldn't save to the archive/);
     expect(service.readNotes("project")).toBe(before);
+
+    // A story version written while the archive failed is kept by the next
+    // write, once the archive works again.
+    const story = (summary: string, coveredThrough: string) => ({
+      v: 1 as const, summary, coveredThrough, startsAt: "2026-11-01T00:00:00.000Z", updatedAt: coveredThrough, model: "helper",
+    });
+    failing = false;
+    service.writeStory(story("## Where things stand\nThe first version.", "2026-11-02T00:00:00.000Z"));
+    failing = true;
+    service.writeStory(story("## Where things stand\nThe version the archive missed.", "2026-11-03T00:00:00.000Z"));
+    failing = false;
+    service.writeStory(story("## Where things stand\nThe third version.", "2026-11-04T00:00:00.000Z"));
+    expect(service.searchArchive({ kinds: ["story"] }).entries.map((entry) => entry.text)).toEqual(expect.arrayContaining([
+      "## Where things stand\nThe first version.",
+      "## Where things stand\nThe version the archive missed.",
+      "## Where things stand\nThe third version.",
+    ]));
     real.close();
   });
 

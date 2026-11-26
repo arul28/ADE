@@ -196,7 +196,10 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       handle.exec(DDL);
       handle.prepare("INSERT OR IGNORE INTO meta(key, value) VALUES ('schemaVersion', ?)").run(String(SCHEMA_VERSION));
       try {
+        const hadIndex = handle.prepare("SELECT 1 FROM sqlite_master WHERE name = 'entries_fts'").get() != null;
         handle.exec(FTS_DDL);
+        // An archive a build without FTS5 wrote: its rows go into the new index too.
+        if (!hadIndex) handle.exec("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild')");
         fts = true;
       } catch (error) {
         // No FTS5 in this SQLite build: word matching still finds things.

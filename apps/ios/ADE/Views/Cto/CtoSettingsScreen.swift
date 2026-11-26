@@ -699,6 +699,38 @@ private extension ISO8601DateFormatter {
   }()
 }
 
+/// Puts the edit made from `base` to `draft` onto `host`, the text the host
+/// kept of `base` (desktop `rebaseDraft` in `ctoSettingsUi.tsx`). The edited
+/// lines, with their line breaks, must still be whole at the end or the start
+/// of `host`, so the edit never joins a line the host changed. Nil otherwise.
+func ctoRebaseDraft(base: String, draft: String, host: String) -> String? {
+  if host == base { return draft }
+  let b = Array(base.utf16), d = Array(draft.utf16), h = Array(host.utf16)
+  let newline: UInt16 = 10
+  let maxCount = min(b.count, d.count)
+  var start = 0
+  while start < maxCount && b[start] == d[start] { start += 1 }
+  var end = 0
+  while end < maxCount - start && b[b.count - 1 - end] == d[d.count - 1 - end] { end += 1 }
+  // The edit, widened to whole lines of `base`: b[from..<to].
+  var from = start
+  while from > 0 && b[from - 1] != newline { from -= 1 }
+  var to = b.count - end
+  while to < b.count && b[to] != newline { to += 1 }
+  let tail = Array(b[to...])
+  let replacement = Array(d[from..<(d.count - tail.count)])
+  // The lines from the edit on, at the end of `host` and starting a line there.
+  let at = h.count - (b.count - from)
+  if at >= 0 && h[at...].elementsEqual(b[from...]) && (at == 0 || h[at - 1] == newline) {
+    return String(decoding: Array(h[..<at]) + replacement + tail, as: UTF16.self)
+  }
+  // The lines up to the end of the edit, at the start of `host` and ending a line there.
+  if h.count >= to && h[..<to].elementsEqual(b[..<to]) && (to == h.count || h[to] == newline) {
+    return String(decoding: Array(b[..<from]) + replacement + Array(h[to...]), as: UTF16.self)
+  }
+  return nil
+}
+
 /// A notes file: saves a beat after the last keystroke, with a byte meter.
 /// A write the host refuses because the file changed meanwhile asks to reload.
 /// Over the cap it still saves when the host makes room (`overflowMovesOut`):
@@ -820,13 +852,25 @@ struct CtoNotesEditor: View {
     switch result {
     case .saved:
       dirty = draft != sent
+      state = .saved
       if let memory = store.memory {
-        baseHash = scope == .project ? memory.memoryHash : memory.userNotesHash
         // The host's answer is what it kept (notes moved out, lines trimmed):
         // a clean field shows that, not what was typed.
-        if !dirty { draft = scope == .project ? memory.memory : (memory.userNotes ?? "") }
+        let kept = scope == .project ? memory.memory : (memory.userNotes ?? "")
+        let keptHash = scope == .project ? memory.memoryHash : memory.userNotesHash
+        if !dirty {
+          draft = kept
+          baseHash = keptHash
+        } else if let rebased = ctoRebaseDraft(base: sent, draft: draft, host: kept) {
+          // Keystrokes from during the save go onto what the host kept; a
+          // draft that still holds the lines it moved out would save them back.
+          draft = rebased
+          baseHash = keptHash
+        } else {
+          // The old hash stays, so the host refuses the next save too.
+          state = .conflict
+        }
       }
-      state = .saved
       store.savedTick += 1
     case .conflict:
       state = .conflict

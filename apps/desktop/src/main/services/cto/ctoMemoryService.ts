@@ -588,6 +588,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     } else {
       // The story on disk goes into the archive first, if no import took it yet.
       archiveOps.ensureImported();
+      let replaced: CtoStoryRecord | null = null;
+      try {
+        replaced = readStory();
+      } catch {
+        // An unreadable story has no version to keep.
+      }
       fs.mkdirSync(path.dirname(storyPath), { recursive: true });
       const clean: CtoStoryRecord = {
         ...record,
@@ -596,9 +602,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       };
       writeTextAtomic(storyPath, `${JSON.stringify(clean, null, 2)}\n`);
       // Every version is kept: a fold condenses, and what it drops stays here.
-      if (clean.summary.trim()) {
-        archive?.add({ kind: "story", text: clean.summary, sourceAt: clean.coveredThrough, sourceLabel: clean.model });
-      }
+      // The version this write replaced goes in again (one row per text), so
+      // a failed archive write last time loses nothing.
+      const versions = [replaced, clean]
+        .filter((story): story is CtoStoryRecord => Boolean(story?.summary.trim()))
+        .map((story) => ({ kind: "story" as const, text: story.summary, sourceAt: story.coveredThrough, sourceLabel: story.model }));
+      if (versions.length) archive?.addMany(versions);
     }
     args.onChanged?.();
   };
