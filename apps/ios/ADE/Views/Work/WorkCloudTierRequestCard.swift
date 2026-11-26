@@ -31,13 +31,6 @@ struct WorkCloudTierRequestFacts: Equatable {
   /// What the card says the person answered (`idle`, `now`, `dismiss`); nil while it still asks.
   let answer: String?
 
-  /// Standard and full computers are different kinds: a change between them is a move to a new computer.
-  var isMove: Bool {
-    let full: Set<String> = ["large", "xlarge"]
-    guard let fromSizeId else { return false }
-    return full.contains(fromSizeId) != full.contains(toSizeId)
-  }
-
   init?(_ card: WorkAdeCardModel) {
     guard card.variant == cloudTierRequestVariant, card.id.hasPrefix("cloud-tier-request:") else { return nil }
     func row(_ key: String) -> WorkAdeCardRow? { card.rows.first { $0.key == key } }
@@ -100,7 +93,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       ADEHaptics.success()
     } catch {
       tierRequestLog.notice("tier_request answer=dismiss failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
-      runs[facts.requestId] = .failed("ADE couldn't tell the agent: \(cloudWithoutFinalStop(error.localizedDescription)).")
+      runs[facts.requestId] = .failed("ADE couldn't tell the agent: \(cloudWithoutStop(error.localizedDescription)).")
       ADEHaptics.error()
     }
   }
@@ -172,7 +165,7 @@ final class WorkCloudTierRequestRuns: ObservableObject {
     case "cancelled":
       runs[facts.requestId] = .done("The change was cancelled. \(facts.computerName) kept its size.")
     default:
-      runs[facts.requestId] = .failed("The change to \(tier.label) stopped\(outcome.error.map { ": \(cloudWithoutFinalStop($0))" } ?? "").")
+      runs[facts.requestId] = .failed("The change to \(tier.label) stopped\(outcome.error.map { ": \(cloudWithoutStop($0))" } ?? "").")
       ADEHaptics.error()
     }
     await tellEnd(sync: sync, facts: facts, sessionId: sessionId, outcome: outcome)
@@ -231,11 +224,6 @@ final class WorkCloudTierRequestRuns: ObservableObject {
   }
 }
 
-/// A sentence without its last full stop, to go inside another one.
-private func cloudWithoutFinalStop(_ text: String) -> String {
-  text.hasSuffix(".") ? String(text.dropLast()) : text
-}
-
 /// An agent's size request in its chat: what it asks for and why, the rates
 /// now and after, and two buttons. Answered (here or anywhere), it is one
 /// line with the answer.
@@ -292,8 +280,7 @@ struct WorkCloudTierRequestCard: View {
     guard let to = tiers.first(where: { $0.id == facts.toSizeId }) else { return facts.rateText }
     let from = facts.fromSizeId.flatMap { id in tiers.first { $0.id == id } }
     let line = words.changeRates(from: from, to: to)
-    let left = accountCloud.account.map { $0.hours.leftMilli + max(0, $0.earnedHours?.leftMilli ?? 0) }
-    let hours = left.flatMap { words.hoursOn(to, leftMilli: $0) }
+    let hours = accountCloud.account.flatMap { words.hoursOn(to, leftMilli: $0.hoursLeftMilli) }
     return hours.map { "\(line). \($0)" } ?? line
   }
 
@@ -347,7 +334,7 @@ struct WorkCloudTierRequestCard: View {
           .foregroundStyle(ADEColor.warning)
           .fixedSize(horizontal: false, vertical: true)
       case nil:
-        Text(facts.isMove
+        Text(isMove(facts)
           ? "ADE moves it to a new computer in a few minutes: files and chats come along, the running turn stops."
           : "It restarts on the new size in about 2 minutes: files and chats stay, the running turn stops.")
           .font(.system(size: 11.5))
@@ -390,6 +377,12 @@ struct WorkCloudTierRequestCard: View {
     .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(ADEColor.accent.opacity(0.26), lineWidth: 1))
     .accessibilityElement(children: .contain)
+  }
+
+  /// Standard and full computers are different kinds: a change between them is a move to a new computer.
+  private func isMove(_ facts: WorkCloudTierRequestFacts) -> Bool {
+    guard let from = facts.fromSizeId.flatMap(cloudPhoneTierType(id:)), let to = cloudPhoneTierType(id: facts.toSizeId) else { return false }
+    return from != to
   }
 
   private func isDone(_ run: WorkCloudTierRequestRun?) -> Bool {

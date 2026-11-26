@@ -1223,7 +1223,7 @@ extension CloudServerClient {
 }
 
 /// A sentence without its last full stop, to go inside another one.
-private func cloudWithoutStop(_ text: String) -> String {
+func cloudWithoutStop(_ text: String) -> String {
   text.hasSuffix(".") ? String(text.dropLast()) : text
 }
 

@@ -596,6 +596,8 @@ extension SyncService {
       timeoutNanoseconds: 30 * 1_000_000_000,
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
+      // `cloud.write` is machine-wide, but the card is read from the chat's project there.
+      keepsProjectForRuntimeAction: true,
       as: CloudPhoneAck.self
     )
   }

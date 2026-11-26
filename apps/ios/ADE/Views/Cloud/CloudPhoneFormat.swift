@@ -330,6 +330,11 @@ private let cloudTierOrder: [(id: String, label: String, type: String, cpu: Int,
   ("xlarge", "X-Large", "vm", 4, 16),
 ]
 
+/// A size's kind by its id (`default` standard, `vm` full), fixed for the four sizes; nil for another id.
+func cloudPhoneTierType(id: String) -> String? {
+  cloudTierOrder.first { $0.id == id }?.type
+}
+
 /// The sizes this catalog offers, Small first. A size the catalog has none
 /// for is left out. A catalog that names no tiers (an older server) is
 /// matched by shape, as the desktop does.
@@ -810,4 +815,9 @@ extension AccountMachine {
 /// The phrase with its first letter in capitals: "no credits now" → "No credits now".
 func cloudCapitalized(_ phrase: String) -> String {
   phrase.prefix(1).uppercased() + phrase.dropFirst()
+}
+
+extension CloudPhoneAccount {
+  /// The credits left, the plan's and the earned ones, as the ADE Cloud page counts them (`cloudHoursLeftMilli`).
+  var hoursLeftMilli: Int { hours.leftMilli + max(0, earnedHours?.leftMilli ?? 0) }
 }

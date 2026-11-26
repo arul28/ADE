@@ -25857,6 +25857,7 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
+    keepsProjectForRuntimeAction: Bool = false,
     as type: T.Type
   ) async throws -> T {
     let response = try await sendCommand(
@@ -25866,7 +25867,8 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: timeoutNanoseconds,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
-      fallbackToActiveProjectScope: fallbackToActiveProjectScope
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+      keepsProjectForRuntimeAction: keepsProjectForRuntimeAction
     )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
@@ -26239,7 +26241,8 @@ final class SyncService: ObservableObject {
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath rawTargetProjectRootPath: String? = nil,
-    fallbackToActiveProjectScope: Bool = true
+    fallbackToActiveProjectScope: Bool = true,
+    keepsProjectForRuntimeAction: Bool = false
   ) async throws -> Any {
     // Field diagnostics: one line per host command (name and round trip), so
     // a screen's request fan-out can be counted. No-op unless enabled.
@@ -26266,7 +26269,9 @@ final class SyncService: ObservableObject {
       args = focusedArgs
     }
     try refuseAccountProjectScopeCommand(action: action, targetProjectId: targetProjectId)
-    let runtimeScoped = commandIsRuntimeScoped(action)
+    // A machine-wide action asked to keep its project sends only the project it names, never the active one.
+    let keepsNamedProject = keepsProjectForRuntimeAction && syncNormalizedCommandScopeValue(targetProjectId) != nil
+    let runtimeScoped = commandIsRuntimeScoped(action) && !keepsNamedProject
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
@@ -26335,7 +26340,10 @@ final class SyncService: ObservableObject {
     targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
-    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
+    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely,
+    /// A machine-wide action that still acts in one project of the focused
+    /// machine (an answer read from a chat there): its target project goes along.
+    keepsProjectForRuntimeAction: Bool = false
   ) async throws -> Any {
     let targetProjectId: String?
     let targetProjectRootPath: String?
@@ -26369,7 +26377,8 @@ final class SyncService: ObservableObject {
           timeoutNanoseconds: timeoutNanoseconds,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath,
-          fallbackToActiveProjectScope: fallbackToActiveProjectScope
+          fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+          keepsProjectForRuntimeAction: keepsProjectForRuntimeAction
         )
       } catch {
         let stillLive = canSendLiveRequests()
