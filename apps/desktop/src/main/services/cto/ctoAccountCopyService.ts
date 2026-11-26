@@ -13,6 +13,11 @@
  * last turns. A new home restores those and starts its own thread, which
  * reads the carried turns once (`carriedTail`), the same way a model switch
  * rebuilds the thread on one machine.
+ *
+ * The archive travels beside the copy, in vault items of its own
+ * (`ctoArchiveCopySync.ts`), written by the home after the copy and taken in
+ * by a new home after the notes. A home never writes over another machine's
+ * archive before it has taken that one in.
  */
 
 import fs from "node:fs";
@@ -38,6 +43,7 @@ import { writeTextAtomic } from "../shared/utils";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { CtoMemoryService } from "./ctoMemoryService";
 import type { CtoStoryRecord } from "./ctoStory";
+import { createCtoArchiveCopySync } from "./ctoArchiveCopySync";
 
 const ENCODED_PREFIX = "gz1:";
 const SAVE_DEBOUNCE_MS = 3_000;
@@ -62,6 +68,13 @@ export type CtoAccountCopyVault = {
     kind: typeof CTO_ACCOUNT_COPY_VAULT_KIND,
     key: string,
     value: string,
+    options?: { expectedRevision?: string },
+  ): "queued" | "stale" | "refused";
+  /** Queue a tombstone. Missing on a vault that can't remove: old archive chunks then stay. */
+  tryRemove?(
+    scope: string,
+    kind: typeof CTO_ACCOUNT_COPY_VAULT_KIND,
+    key: string,
     options?: { expectedRevision?: string },
   ): "queued" | "stale" | "refused";
   sync(options?: { maxAgeMs?: number } | null): Promise<unknown>;
@@ -98,7 +111,16 @@ export type CtoAccountCopyServiceArgs = {
     updateIdentity: (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>) => unknown;
   };
   ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText">
-    & Partial<Pick<CtoMemoryService, "readStory" | "writeStory">>;
+    & Partial<Pick<
+      CtoMemoryService,
+      | "readStory"
+      | "writeStory"
+      | "archiveStamp"
+      | "exportArchiveForCopy"
+      | "importArchiveFromCopy"
+      | "readArchiveMeta"
+      | "writeArchiveMeta"
+    >>;
   /** The CTO thread's tail and routines, read when a copy is written. */
   readSources: () => Promise<CtoAccountCopySources>;
   /** Re-creates routines on this machine's CTO thread, replacing the ones it had. Null: the thread doesn't exist yet. */
@@ -358,15 +380,29 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
         lastWrittenHash = null;
       }
     }
+    if (!(await writeCopyIfChanged(scope, existing, reason))) return;
+    archiveSync.save(scope, self, home, reason);
+  };
+
+  /**
+   * Writes the copy when it changed since this machine last wrote it, or the
+   * account holds another machine's. False when it couldn't be written: the
+   * archive then waits for the next save.
+   */
+  const writeCopyIfChanged = async (
+    scope: string,
+    existing: { copy: CtoAccountCopy | null; revision: string | null },
+    reason: string,
+  ): Promise<boolean> => {
     const copy = await build();
-    if (!copy) return;
+    if (!copy || !args.vault) return false;
     const { savedAt: _savedAt, ...stable } = copy;
     const hash = createHash("sha256").update(JSON.stringify(stable)).digest("hex");
-    if (hash === lastWrittenHash && existing.copy && sameDevice(existing.copy.ownerDeviceId, self)) return;
+    if (hash === lastWrittenHash && existing.copy && sameDevice(existing.copy.ownerDeviceId, copy.ownerDeviceId)) return true;
     const encoded = encodeCtoAccountCopy(copy);
     if (!encoded) {
       logger.warn("cto.account_copy_too_large", { reason });
-      return;
+      return false;
     }
     const answer = args.vault.trySet(
       scope,
@@ -377,13 +413,25 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       // not pulled yet, and a blind write would replace it.
       { expectedRevision: existing.revision ?? ACCOUNT_VAULT_NO_REVISION },
     );
-    if (answer === "queued") {
-      lastWrittenHash = hash;
-      logger.info?.("cto.account_copy_saved", { reason, chars: encoded.length });
-    } else {
+    if (answer !== "queued") {
       logger.warn("cto.account_copy_not_saved", { reason, answer });
+      return false;
     }
+    lastWrittenHash = hash;
+    logger.info?.("cto.account_copy_saved", { reason, chars: encoded.length });
+    return true;
   };
+
+  /* ── The archive beside the copy (`ctoArchiveCopySync.ts`) ── */
+
+  const archiveSync = createCtoArchiveCopySync({
+    vault: args.vault,
+    repoScope: args.repoScope,
+    memory: args.ctoMemory,
+    sameDevice,
+    logger,
+    now,
+  });
 
   /** One save at a time; a request during one runs once more after it. */
   const save = (reason: string): Promise<void> => {
@@ -527,6 +575,10 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       }
     }
     if (!complete) return false;
+    // The archive, after the notes so the carried heat wins over the restore's
+    // own writes. Not required for the move: the next save takes it in before
+    // it writes this machine's archive over it.
+    archiveSync.takeAfterRestore(me());
     writeJson(takenCopyPath, {
       ownerDeviceId: copy.ownerDeviceId,
       savedAt: copy.savedAt,

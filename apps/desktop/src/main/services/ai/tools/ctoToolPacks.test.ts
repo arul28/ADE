@@ -86,7 +86,7 @@ describe("CTO tool packs", () => {
       "listPullRequests", "createPrFromLane", "landPullRequest",
       "listAutomations", "saveAutomation", "deleteAutomation",
       "handoffChatToModel",
-      "remember", "forget", "trackWork", "finishWork", "readHistory",
+      "remember", "forget", "trackWork", "finishWork", "readHistory", "searchMemory", "recallNote",
       "getRecentEvents",
       "loadCtoTools",
     ]) {

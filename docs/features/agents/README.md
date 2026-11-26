@@ -10,7 +10,7 @@ There is one persistent identity, the CTO. Everything else is an ephemeral chat 
 |---|---|
 | `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, system-prompt composition, onboarding markers, the static and volatile turn context, and the live project-state block. |
 | `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's memory store: project notes (`MEMORY.md`), notes about the person (`USER.md`), the open-work list, the worker-discovery queue, and the injection sections. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` / `readDiscoveries` / `searchMemory` / `recallNote` memory tools, and the `loadCtoTools` pack loader. |
 | `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 11 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
 | `apps/desktop/src/main/services/chat/ctoTurnContext.ts`, `codexCtoToolDeferral.ts` | The pure turn-context helpers and the Codex pack-deferral predicate, split out of `agentChatService` so they are testable without the provider graph. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH (`ade.agentTools.detect`). Informational only: ADE never runs what it finds; agents run from ADE's pinned copies. |

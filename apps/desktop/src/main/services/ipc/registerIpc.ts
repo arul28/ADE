@@ -218,6 +218,7 @@ import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { parseProjectSecretEnv, PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { PASSWORDS_PERSON_CHECK_DECLINED, type PasswordEnvFile, type PasswordsProject } from "../../../shared/types/passwords";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
+import { normalizeCtoArchiveQuery, normalizeCtoRecallArgs } from "../../../shared/types/cto";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
@@ -746,6 +747,9 @@ import type {
   CtoGetMemoryArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoArchiveQuery,
+  CtoArchivePage,
+  CtoRecallArchivedArgs,
   CtoRefreshContextResult,
   CtoMemorySnapshot,
   CtoGetLinearOAuthSessionArgs,
@@ -14402,6 +14406,19 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     ctx.ctoMemoryService.updateOpenWork(arg);
+    return ctx.ctoMemoryService.getSnapshot();
+  });
+
+  handle(IPC.ctoSearchMemoryArchive, async (_event, arg: CtoArchiveQuery = {}): Promise<CtoArchivePage> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    return ctx.ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(arg));
+  });
+
+  handle(IPC.ctoRecallArchivedNote, async (_event, arg: CtoRecallArchivedArgs): Promise<CtoMemorySnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    ctx.ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(arg));
     return ctx.ctoMemoryService.getSnapshot();
   });
 

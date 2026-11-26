@@ -12821,6 +12821,37 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The CTO's archive on its home machine. `query` is keywords (all must
+  /// match); without one, newest first and `before` pages back. `id` reads one
+  /// entry in full (a story version a list showed as a preview).
+  func searchCtoMemoryArchive(query: String? = nil, kinds: [String] = [], before: Int? = nil, id: Int? = nil, limit: Int = 30) async throws -> CtoArchivePage {
+    let target = try ctoCommandTarget()
+    var args: [String: Any] = ["limit": limit]
+    if let query, !query.isEmpty { args["query"] = query }
+    if !kinds.isEmpty { args["kinds"] = kinds }
+    if let before { args["before"] = before }
+    if let id { args["id"] = id }
+    return try await sendDecodableCommand(
+      action: "cto.searchMemoryArchive",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoArchivePage.self
+    )
+  }
+
+  /// Pins an archived note, fact or discovery back into the notes.
+  func recallCtoArchivedNote(id: Int) async throws -> CtoMemory {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.recallArchivedNote",
+      args: ["id": id],
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
+  }
+
   /// `op`: add (with `text`), complete, reopen or remove (with `id`).
   func updateCtoOpenWork(op: String, text: String? = nil, id: String? = nil) async throws -> CtoMemory {
     let target = try ctoCommandTarget()

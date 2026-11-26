@@ -9,6 +9,7 @@ import {
   selectCtoHistoryTail,
   selectCtoTail,
   type CtoStoryEntry,
+  type CtoStoryFact,
   type CtoStoryRecord,
 } from "./ctoStory";
 import { createCtoStoryUpdater, type CtoStorySession } from "./ctoStoryUpdater";
@@ -184,7 +185,7 @@ describe("createCtoStoryUpdater", () => {
   const session = (runPrompt: CtoStorySession["runPrompt"]): CtoStorySession => ({
     id: "cto-1",
     isGone: () => false,
-    readEntries: () => entries(50, 2_000),
+    readTranscript: () => ({ entries: entries(50, 2_000), toolEntries: [] }),
     pickModel: async () => "anthropic/claude-haiku-5-5",
     runPrompt,
   });
@@ -233,5 +234,47 @@ describe("createCtoStoryUpdater", () => {
     expect(store.writes.every((write) => write.summary !== storyText("run 1"))).toBe(true);
     expect(store.get()!.startsAt).toBe(at(0));
     expect(store.get()!.coveredThrough > moved.coveredThrough).toBe(true);
+  });
+
+  it("shows the fold's tool results beside its messages and keeps the facts of an accepted answer, cited to their line", async () => {
+    const store = makeStore(null);
+    const recorded: CtoStoryFact[][] = [];
+    const updater = createCtoStoryUpdater({
+      readStory: store.readStory,
+      writeStory: store.writeStory,
+      recordFacts: (facts) => { recorded.push(facts); return true; },
+      timeZone: () => null,
+      logger: silent,
+    });
+    const tools = [
+      { tool: "createPrFromLane", text: "{\"number\":2492,\"branch\":\"cto-reactions\"}", at: at(3) },
+      // In the tail, not in this fold: a later fold shows it.
+      { tool: "gitPush", text: "pushed lane-late", at: at(25) },
+    ];
+    const prompts: string[] = [];
+    const answerFor = (prompt: string, story: string) => {
+      const line = /\[#(\d+)[^\]]*\] Tool result \(createPrFromLane\)/.exec(prompt)?.[1];
+      return `${story}\n<facts>\n- #${line} fact: PR #2492 is on branch cto-reactions.\n- #999 decision: The person wants squash merges.\n</facts>`;
+    };
+    const run = (answer: (prompt: string) => string) => updater.update({
+      ...session(async ({ prompt }) => { prompts.push(prompt); return { text: answer(prompt) }; }),
+      // One batch: 12 messages outside a tail of 18.
+      readTranscript: () => ({ entries: entries(30, 2_000), toolEntries: tools }),
+    }, { force: true, reason: "test" });
+
+    // A refusal keeps no story and no facts, even when it lists some.
+    await run((prompt) => answerFor(prompt, "I can't summarize this."));
+    expect(store.writes).toHaveLength(0);
+    expect(recorded).toEqual([]);
+
+    await run((prompt) => answerFor(prompt, storyText("folded")));
+    expect(prompts[1]).toContain("Tool result (createPrFromLane): {\"number\":2492");
+    expect(prompts[1]).not.toContain("lane-late");
+    expect(store.writes[0]!.summary).toBe(storyText("folded"));
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toEqual([
+      { kind: "fact", text: "PR #2492 is on branch cto-reactions.", source: expect.objectContaining({ label: "Tool result (createPrFromLane)", at: at(3) }) },
+      { kind: "decision", text: "The person wants squash merges.", source: null },
+    ]);
   });
 });

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   CTO_PROJECT_NOTES_MAX_BYTES,
   CTO_USER_NOTES_MAX_BYTES,
@@ -6,15 +6,17 @@ import {
 } from "../../../shared/types";
 import { ModernSection } from "../settings/primitives";
 import { Banner } from "../ui/notice";
+import { CtoArchiveList } from "./CtoArchiveList";
 import { CtoOpenWorkList } from "./CtoOpenWorkList";
-import { AutosaveTextArea, CTO_SETTINGS_GROUP } from "./ctoSettingsUi";
+import { AutosaveTextArea, CTO_SETTINGS_GROUP, type AutosaveHostAnswer } from "./ctoSettingsUi";
 import { useCtoMemory } from "./useCtoMemory";
 
 /**
  * Settings › Memory: what the CTO keeps between conversations, all of it
  * editable. The project notes (`.ade/cto/MEMORY.md`), the notes about the
  * person (shared by every project on the CTO's machine) and the open-work
- * list. The CTO is given all three on every turn.
+ * list. The CTO is given all three on every turn. Below them, the archive:
+ * what left the notes, facts from past turns, discoveries and story versions.
  */
 export function CtoMemoryPanel({
   pin,
@@ -24,32 +26,44 @@ export function CtoMemoryPanel({
   /** The CTO chat: its finished turns are what change the notes. */
   sessionId: string | null;
 }) {
-  const { memory, loading, error, refresh, updateNotes, updateOpenWork } = useCtoMemory(pin);
+  const { memory, loading, error, refresh, updateNotes, updateOpenWork, recallArchived } = useCtoMemory(pin);
+  // Story folds add facts after a turn without touching the notes: re-read the archive too.
+  const [archiveTick, setArchiveTick] = useState(0);
+  const refreshAll = useCallback(() => {
+    void refresh();
+    setArchiveTick((tick) => tick + 1);
+  }, [refresh]);
 
   // The CTO writes notes while you are elsewhere; read them fresh on return.
   useEffect(() => {
-    const onFocus = () => void refresh();
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [refresh]);
+    window.addEventListener("focus", refreshAll);
+    return () => window.removeEventListener("focus", refreshAll);
+  }, [refreshAll]);
 
   // ...and while this page is open: re-read when a CTO turn ends on its home
   // machine. The editors adopt the new text, or say it changed under them.
   useEffect(() => {
     if (!pin || !sessionId) return undefined;
     return window.ade.agentChat.onEvent((envelope) => {
-      if (envelope.sessionId === sessionId && envelope.event.type === "done") void refresh();
+      if (envelope.sessionId !== sessionId || envelope.event.type !== "done") return;
+      refreshAll();
     }, pin);
     // Keyed on the pin's key: a rebuilt pin for the same machine re-subscribes nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin?.key, refresh, sessionId]);
+  }, [pin?.key, refreshAll, sessionId]);
 
   const saveProject = useCallback(
-    (text: string, baseHash?: string) => updateNotes({ scope: "project", text, ...(baseHash ? { baseHash } : {}) }),
+    async (text: string, baseHash?: string): Promise<AutosaveHostAnswer> => {
+      const next = await updateNotes({ scope: "project", text, ...(baseHash ? { baseHash } : {}) });
+      return { text: next.memory, hash: next.memoryHash };
+    },
     [updateNotes],
   );
   const saveUser = useCallback(
-    (text: string, baseHash?: string) => updateNotes({ scope: "user", text, ...(baseHash ? { baseHash } : {}) }),
+    async (text: string, baseHash?: string): Promise<AutosaveHostAnswer> => {
+      const next = await updateNotes({ scope: "user", text, ...(baseHash ? { baseHash } : {}) });
+      return { text: next.userNotes ?? "", hash: next.userNotesHash };
+    },
     [updateNotes],
   );
 
@@ -84,6 +98,7 @@ export function CtoMemoryPanel({
           value={memory.memory}
           hash={memory.memoryHash}
           limit={memory.memoryLimitBytes ?? CTO_PROJECT_NOTES_MAX_BYTES}
+          overflowMovesOut={memory.notesOverflowArchives === true}
           rows={10}
           placeholder={"- Deploys go through the release lane\n- Tests run with npm run test:unit"}
           onSave={saveProject}
@@ -115,6 +130,19 @@ export function CtoMemoryPanel({
         <div className="ade-modern-rows" style={{ padding: 8 }}>
           <CtoOpenWorkList items={memory.openWork ?? []} onChange={updateOpenWork} />
         </div>
+      </ModernSection>
+
+      <ModernSection
+        group={CTO_SETTINGS_GROUP}
+        anchor="cto.memory.archive"
+        title="Archive"
+        hint="What left the notes, facts from past turns, and every story version"
+      >
+        <CtoArchiveList
+          pin={pin}
+          refreshKey={`${memory.memoryHash ?? ""}|${memory.userNotesHash ?? ""}|${archiveTick}`}
+          onRecall={recallArchived}
+        />
       </ModernSection>
     </div>
   );

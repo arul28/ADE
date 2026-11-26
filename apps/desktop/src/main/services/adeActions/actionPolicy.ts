@@ -1191,7 +1191,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "runProjectScan",
     "updateIdentity",
   ],
-  cto_memory: ["getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery"],
+  cto_memory: ["getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery", "searchArchive", "recallArchived"],
   session: [
     "backfillDeltas",
     "clearWokeMarker",
