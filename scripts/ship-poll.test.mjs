@@ -127,6 +127,27 @@ test("routes the loop from every surface, never from CI alone", () => {
       "wait",
     ],
     [
+      "a CI run GitHub queued before any job started holds the loop",
+      { workflowRuns: [{ name: "CI", status: "queued" }] },
+      "wait",
+    ],
+    ["a CI run that passed does not hold the loop", { workflowRuns: [{ name: "CI", status: "completed", conclusion: "success" }] }, "merge"],
+    [
+      "a CI run that failed before any job started is fix work",
+      { workflowRuns: [{ name: "CI", status: "completed", conclusion: "startup_failure" }] },
+      "fix",
+    ],
+    [
+      "a rerun that passed replaces the failed attempt",
+      {
+        workflowRuns: [
+          { name: "CI", status: "completed", conclusion: "success", createdAt: "2026-10-05T17:50:00Z" },
+          { name: "CI", status: "completed", conclusion: "failure", createdAt: "2026-10-05T17:35:00Z" },
+        ],
+      },
+      "merge",
+    ],
+    [
       "a failed CI job is fix work",
       { checks: [{ name: "windows-foundation", state: "FAILURE", bucket: "fail" }] },
       "fix",

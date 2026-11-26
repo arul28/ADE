@@ -11,7 +11,8 @@ const DAY_MS = 24 * 60 * 60_000;
 
 /**
  * "This lane's cloud computer is deleted in N day(s)", in whole days, at least
- * one, and what happens after: its work is saved in ADE Cloud (never pushed),
+ * one, and what happens after: its work is saved in ADE Cloud (never pushed;
+ * files git ignores are not),
  * and the size is the one a message after the delete starts its new computer
  * at (`cloudQueueSizeLabel`).
  */
@@ -20,6 +21,7 @@ function deletingSoonWords(deletesAt: number, now: number, sizeLabel: string): {
   return {
     title: `This lane's cloud computer is deleted in ${days} ${days === 1 ? "day" : "days"}`,
     detail: "It isn't being used. Its work that isn't on GitHub is saved in ADE Cloud first, and the lane and its chats stay. "
+      + "Files git ignores, such as .env, aren't saved. "
       + `Your next message makes a new computer at ${sizeLabel}.`,
   };
 }
