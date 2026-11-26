@@ -22,10 +22,10 @@ import { formatAgo } from "../../../lib/format";
  * computer: disk parts and work come from the computer's own last report.
  */
 
-/** A size's rate as a label beside its name, in the rate table's short words: "2.5 credits an hour", "No credits". */
+/** A size's rate as a label beside its name, in the rate table's short words: "2.5 credits an hour", "Uses no credits". */
 function rateLabelOf(rate: number | null, words: CloudUnitWords): string | null {
   if (rate == null) return null;
-  return rate > 0 ? `${words.count(rate)} an hour` : "No credits";
+  return rate > 0 ? `${words.count(rate)} an hour` : "Uses no credits";
 }
 
 /** A lane not used for this long gets the "not used for a long time" mark. */

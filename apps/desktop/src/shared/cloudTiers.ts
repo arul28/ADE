@@ -124,7 +124,7 @@ const capitalized = (text: string): string => text.charAt(0).toUpperCase() + tex
 
 /**
  * A size change's rates, now → after, in one line: "4 credits an hour now →
- * 1 credit an hour on Medium", "No credits now → 1 credit an hour on Medium".
+ * 1 credit an hour on Medium", "0 credits an hour now → 1 credit an hour on Medium".
  * With no size now: "1 credit an hour on Medium"; the size it is already:
  * "Medium now · 1 credit an hour". The desktop's size card and ADE Web use
  * it; the phone writes the same (`CloudBalanceWords.changeRates`).
@@ -142,7 +142,7 @@ export function cloudTierChangeRateText(
 
 /**
  * An agent's size request, in its card's size row: "1 credit an hour on
- * Medium (4 now)", "No credits on Small (1 now)", "1 credit an hour on
+ * Medium (4 now)", "0 credits an hour on Small (1 now)", "1 credit an hour on
  * Medium (none now)"; with no size now, "1 credit an hour on Medium".
  */
 export function cloudTierRequestRateText(

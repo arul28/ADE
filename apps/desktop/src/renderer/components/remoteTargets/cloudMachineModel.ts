@@ -149,3 +149,14 @@ export function cloudGroupTotals(boxes: readonly CloudMachine[]): CloudGroupTota
   return { hoursRate, running };
 }
 
+/**
+ * The line under the one "ADE Cloud" machine row, in the Connections panel and
+ * in Settings › Machines: "2 lanes, all asleep", "1 lane, 1 awake". Before the
+ * account's computers were read it claims nothing.
+ */
+export function adeCloudMachineLine({ known, lanes, awake }: { known: boolean; lanes: number; awake: number }): string {
+  if (!known) return "Your account's cloud machine";
+  if (lanes === 0) return "No lanes yet: pick ADE Cloud in Run on to start one";
+  return `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
+}
+

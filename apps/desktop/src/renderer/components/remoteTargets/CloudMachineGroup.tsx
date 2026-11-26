@@ -22,6 +22,7 @@ import { openCloudComputerLimitCard } from "../cloudLane/CloudComputerLimitCard"
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { CloudMark, ADE_CLOUD_NAME } from "./cloudBrand";
 import {
+  adeCloudMachineLine,
   CLOUD_STATE_LABELS,
   cloudGroupTotals,
   cloudStateTone,
@@ -293,11 +294,7 @@ export function AdeCloudMachineRow({
   const hoursLeft = account ? words.short(cloudHoursLeftMilli(account)) : null;
   // Parts of one line, each its own phrase: a sentence never gets the hours
   // joined onto it with a comma ("…start one., 0 h left").
-  const line = !known
-    ? "Your account's cloud machine"
-    : lanes === 0
-      ? "No lanes yet: pick ADE Cloud in Run on to start one"
-      : `${lanes} ${lanes === 1 ? "lane" : "lanes"}, ${awake === 0 ? "all asleep" : `${awake} awake`}`;
+  const line = adeCloudMachineLine({ known, lanes, awake });
   return (
     <div style={machineRowStyle} data-ade-cloud-machine="">
       <div className="ade-cx-row-grid">
