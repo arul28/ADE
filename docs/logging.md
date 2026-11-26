@@ -2732,6 +2732,21 @@ changes. A per-action one-hour deduplication key bounds each to 24 accepted
 events a day; the realistic number is a few a week. No ceiling was raised, and
 the dashboard spec is untouched.
 
+### The CTO's linked work
+
+The brain that owns the CTO's open work records one coarse fact when an open
+item closes itself because the chat or PR it was linked to finished
+(`cto/ctoMemoryService.ts` `reconcileLinkedWork` calls `onLinkedWorkClosed`,
+reported by `reportCtoWorkAutoClosed` in
+`analytics/ctoLearningProductAnalytics.ts`): `ade_feature_used` with
+`feature: "cto"`, `action: "cto_work_auto_closed"`, `surface: "api"`,
+`outcome: "completed"` and `mode: "automatic"`, so it never counts as a person
+using ADE. The product question is whether linked work closes on its own.
+Never the item, its title, the chat, the PR, the machine, or how many closed at
+once. A one-hour deduplication key bounds it to 24 accepted events a day; the
+realistic number is a few a day while the CTO tracks work. No ceiling was
+raised, and the dashboard spec is untouched.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.

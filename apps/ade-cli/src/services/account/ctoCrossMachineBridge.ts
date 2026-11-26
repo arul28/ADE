@@ -465,7 +465,11 @@ export function createCtoCrossMachineBridge(
         action: "get",
         args: { sessionId: link.sessionId },
         timeoutMs: 10_000,
-      }).then((row) => (isRecord(row) ? knownChat(row) : null), () => null)));
+      }).then((row) => (isRecord(row) ? knownChat(row) : null), (error: unknown) => {
+        // The machine answered its lists, so this one read failing is news.
+        logger?.warn("cto_cross_machine.linked_chat_read_failed", { error: errorMessage(error) });
+        return null;
+      })));
       for (const entry of lookedUp) if (entry) known.push(entry);
       noProjectSeenAt.delete(machine.machineKey);
       return {

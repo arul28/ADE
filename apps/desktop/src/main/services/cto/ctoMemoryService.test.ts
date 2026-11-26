@@ -573,3 +573,67 @@ describe("ctoMemoryService archive", () => {
     expect(again.searchArchive({ limit: 100 }).entries).toHaveLength(page.entries.length);
   });
 });
+
+describe("ctoMemoryService linked open work", () => {
+  it("closes linked items whose chat or PR finished, without losing what the person changed while it checked", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cto-linked-"));
+    const adeDir = path.join(root, ".ade");
+    fs.mkdirSync(adeDir, { recursive: true });
+    const onLinkedWorkClosed = vi.fn();
+    const service = createCtoMemoryService({ adeDir, userNotesDir: path.join(root, "home-cto"), onLinkedWorkClosed });
+    const later = new Date(Date.now() + 60_000).toISOString();
+
+    const track = (text: string, link: NonNullable<Parameters<typeof service.trackWork>[2]>["link"]) => {
+      const result = service.trackWork(text, "cto", { link });
+      expect(result.ok, `track ${text}`).toBe(true);
+      return result.ok ? result.item.id : "";
+    };
+    const finishedChat = track("Watch CI", { kind: "chat", sessionId: "chat-finished" });
+    const mergedPr = track("Land the fix", { kind: "pr", number: 2641 });
+    const openPr = track("Land the docs", { kind: "pr", number: 2651 });
+    const restedBeforeLink = track("Review the plan", { kind: "chat", sessionId: "chat-rested-before" });
+    const finishedByPerson = track("Ship the beta", { kind: "chat", sessionId: "chat-person-finished" });
+    const removedByPerson = track("Old task", { kind: "chat", sessionId: "chat-removed" });
+
+    // The chat checks answer only when released, so the person edits the list
+    // while the reconcile is between its checks and its write.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const chats: Record<string, { done: boolean; restedAt: string | null; statusLine: string | null }> = {
+      "chat-finished": { done: false, restedAt: later, statusLine: "Waiting for CI on 57628e0" },
+      "chat-rested-before": { done: false, restedAt: "2000-01-01T00:00:00.000Z", statusLine: null },
+      "chat-person-finished": { done: true, restedAt: null, statusLine: "Shipped" },
+      "chat-removed": { done: true, restedAt: null, statusLine: null },
+    };
+    service.setLinkedWorkResolver({
+      prState: (number) => (number === 2641 ? "merged" : "open"),
+      chatState: async (link) => {
+        await gate;
+        return chats[link.sessionId] ?? null;
+      },
+    });
+
+    const running = service.reconcileLinkedWork();
+    service.updateOpenWork({ op: "complete", id: finishedByPerson });
+    service.updateOpenWork({ op: "remove", id: removedByPerson });
+    service.updateOpenWork({ op: "add", text: "Reply to Harris", owner: "user" });
+    release();
+    await expect(running).resolves.toBe(2);
+
+    const items = service.getSnapshot().openWork ?? [];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    expect(byId.get(finishedChat)).toMatchObject({ outcome: "Done: Waiting for CI on 57628e0", closedBy: "auto" });
+    expect(byId.get(finishedChat)?.doneAt).toBeTruthy();
+    expect(byId.get(mergedPr)).toMatchObject({ outcome: "Merged", closedBy: "auto" });
+    expect(byId.get(openPr)?.doneAt).toBeNull();
+    // Resting before the CTO linked it is not having done the work.
+    expect(byId.get(restedBeforeLink)?.doneAt).toBeNull();
+    // The person's own close stands; the reconcile does not write over it.
+    expect(byId.get(finishedByPerson)).toMatchObject({ closedBy: "user" });
+    expect(byId.get(finishedByPerson)?.outcome).toBeUndefined();
+    expect(byId.has(removedByPerson)).toBe(false);
+    expect(items.find((item) => item.text === "Reply to Harris")).toMatchObject({ owner: "user", doneAt: null });
+    expect(onLinkedWorkClosed).toHaveBeenCalledWith(2);
+    service.close();
+  });
+});

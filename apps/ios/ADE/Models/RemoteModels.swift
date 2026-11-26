@@ -2240,12 +2240,45 @@ struct CtoNeedsSnapshot: Decodable, Hashable {
 /// One item of the CTO's open work (desktop `CtoOpenWorkItem`).
 struct CtoOpenWorkItem: Codable, Hashable, Identifiable {
   var id: String
+  /// The whole item; with a `title`, the detail under it.
   var text: String
   var createdAt: String?
   var doneAt: String?
   var addedBy: String?
+  /// A short name for the row. Absent on older items.
+  var title: String? = nil
+  /// "user" (waiting on the person) or "cto" (the CTO is tracking it). Absent reads as "cto".
+  var owner: String? = nil
+  /// The chat or PR it is about; it closes itself when that finishes.
+  var link: CtoOpenWorkLink? = nil
+  /// How it ended ("Merged", "Done: <status line>").
+  var outcome: String? = nil
+  /// "auto" when its link closed it.
+  var closedBy: String? = nil
 
   var isDone: Bool { !(doneAt ?? "").isEmpty }
+  var waitsOnPerson: Bool { owner == "user" }
+  /// The row's first line: the title, else the whole text.
+  var displayTitle: String {
+    let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? text : trimmed
+  }
+  /// The line under the title, when there is a title.
+  var detail: String? { displayTitle == text ? nil : text }
+}
+
+/// What an open-work item is linked to (desktop `CtoOpenWorkLink`).
+struct CtoOpenWorkLink: Codable, Hashable {
+  var kind: String
+  var sessionId: String? = nil
+  var machineId: String? = nil
+  var number: Int? = nil
+
+  /// "#2641", "Chat", or "Chat on another machine".
+  var label: String {
+    if kind == "pr", let number { return "#\(number)" }
+    return (machineId ?? "").isEmpty ? "Chat" : "Chat on another machine"
+  }
 }
 
 /// Returned by `cto.getMemory`, `cto.updateNotes` and `cto.updateOpenWork`

@@ -138,6 +138,7 @@ import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoSt
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import { createCtoAccountCopyService, type CtoAccountCopyService } from "../../desktop/src/main/services/cto/ctoAccountCopyService";
 import { reportCtoHomeMove, reportCtoMessageReaction } from "../../desktop/src/main/services/analytics/ctoHomeProductAnalytics";
+import { reportCtoWorkAutoClosed } from "../../desktop/src/main/services/analytics/ctoLearningProductAnalytics";
 import { accountRepoScopeKey } from "../../desktop/src/shared/accountSettingsScope";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -2293,6 +2294,7 @@ export async function createAdeRuntime(args: {
       // Edits made while no turn runs (Settings, the side panel, another
       // device) reach the account copy too, not only at a turn's end.
       onChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
+      onLinkedWorkClosed: () => reportCtoWorkAutoClosed(productAnalyticsService),
     });
     // The CTO archive's SQLite handle; it opens on first use. `close` never throws.
     teardown.push(() => ctoMemoryService.close());

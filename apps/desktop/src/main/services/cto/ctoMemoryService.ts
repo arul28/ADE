@@ -59,6 +59,8 @@ type CtoMemoryServiceArgs = {
   logger?: Logger | null;
   /** After notes or open work change, e.g. so the account copy is saved again. */
   onChanged?: (() => void) | null;
+  /** Linked work items closed themselves (their chat or PR finished). */
+  onLinkedWorkClosed?: ((count: number) => void) | null;
   /** The archive store; defaults to `.ade/cto/archive.db` (`ctoMemoryArchive.ts`). */
   archive?: CtoMemoryArchive | null;
 };
@@ -715,6 +717,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       if (!closed) return 0;
       writeOpenWork(next);
       logger?.info?.("cto_memory.linked_work_closed", { count: closed });
+      args.onLinkedWorkClosed?.(closed);
       return closed;
     })()
       .catch((error) => {

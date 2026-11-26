@@ -317,8 +317,11 @@ struct CtoRoutineList: View {
 
 // MARK: - Open work
 
-/// The CTO's open work as a checklist: tick to complete, untick to reopen,
-/// × to remove, "Add" for a new item.
+/// The CTO's open work as a checklist in three groups: what waits on the
+/// person, what the CTO is tracking, and what finished (today's only, in the
+/// compact profile). Each row is a short title with its detail, link and
+/// outcome under it. Tick to complete, untick to reopen, × to remove, "Add"
+/// for a new item, for the person or for the CTO.
 struct CtoOpenWorkList: View {
   @ObservedObject var store: CtoStore
   var accent: Color
@@ -326,22 +329,24 @@ struct CtoOpenWorkList: View {
 
   @State private var adding = false
   @State private var draft = ""
+  @State private var draftOwner = "cto"
   @FocusState private var fieldFocused: Bool
 
   var body: some View {
     let items = store.memory?.openWork ?? []
     let open = items.filter { !$0.isDone }
+    let waiting = open.filter(\.waitsOnPerson)
+    let tracking = open.filter { !$0.waitsOnPerson }
     let doneAll = items.filter(\.isDone)
-    let done = compact ? Array(doneAll.prefix(3)) : doneAll
+    let done = compact ? doneAll.filter { Self.isToday($0.doneAt) } : doneAll
     let editable = store.canEditOpenWork
     VStack(alignment: .leading, spacing: 0) {
       if open.isEmpty && done.isEmpty && !adding {
         CtoEmptyLine(symbol: "checklist", text: "No open work")
       }
-      ForEach(Array((open + done).enumerated()), id: \.element.id) { index, item in
-        if index > 0 { CtoRowDivider() }
-        row(item, editable: editable)
-      }
+      group("Waiting on you", waiting, editable: editable)
+      group("I'm tracking", tracking, editable: editable)
+      group(compact ? "Done today" : "Done", done, editable: editable)
       if editable {
         if !(open.isEmpty && done.isEmpty) || adding { CtoRowDivider() }
         if adding {
@@ -350,11 +355,22 @@ struct CtoOpenWorkList: View {
               .font(.system(size: 17))
               .foregroundStyle(ADEColor.textMuted.opacity(0.6))
               .frame(width: 28)
-            TextField("Add open work", text: $draft)
+            TextField(draftOwner == "user" ? "What do you need to do?" : "What should the CTO track?", text: $draft)
               .font(.body)
               .focused($fieldFocused)
               .submitLabel(.done)
               .onSubmit { submit() }
+            Button {
+              draftOwner = draftOwner == "user" ? "cto" : "user"
+            } label: {
+              Text(draftOwner == "user" ? "For you" : "For the CTO")
+                .font(.footnote)
+                .foregroundStyle(accent)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(draftOwner == "user" ? "For you. Double-tap to give it to the CTO" : "For the CTO. Double-tap to make it yours")
           }
           .frame(minHeight: 44)
         } else {
@@ -385,10 +401,35 @@ struct CtoOpenWorkList: View {
     }
   }
 
+  @ViewBuilder
+  private func group(_ label: String, _ list: [CtoOpenWorkItem], editable: Bool) -> some View {
+    if !list.isEmpty {
+      Text("\(label) \(list.count)")
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+        .accessibilityAddTraits(.isHeader)
+      ForEach(Array(list.enumerated()), id: \.element.id) { index, item in
+        if index > 0 { CtoRowDivider() }
+        row(item, editable: editable)
+      }
+    }
+  }
+
+  /// Whether an ISO time falls on today's local date.
+  static func isToday(_ iso: String?) -> Bool {
+    guard let iso, !iso.isEmpty else { return false }
+    let withFraction = ISO8601DateFormatter()
+    withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    guard let date = withFraction.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return false }
+    return Calendar.current.isDateInToday(date)
+  }
+
   private func submit() {
     let text = draft
     Task {
-      if await store.addOpenWork(text) {
+      if await store.addOpenWork(text, owner: draftOwner) {
         draft = ""
         fieldFocused = true
       }
@@ -408,12 +449,34 @@ struct CtoOpenWorkList: View {
       }
       .buttonStyle(.plain)
       .disabled(!editable || store.busyIds.contains(item.id))
-      .accessibilityLabel(item.isDone ? "Reopen \(item.text)" : "Complete \(item.text)")
-      Text(item.text)
-        .font(.body)
-        .foregroundStyle(item.isDone ? ADEColor.textMuted : ADEColor.textPrimary)
-        .strikethrough(item.isDone, color: ADEColor.textMuted)
-        .lineLimit(2)
+      .accessibilityLabel(item.isDone ? "Reopen \(item.displayTitle)" : "Complete \(item.displayTitle)")
+      VStack(alignment: .leading, spacing: 2) {
+        Text(item.displayTitle)
+          .font(.body)
+          .foregroundStyle(item.isDone ? ADEColor.textMuted : ADEColor.textPrimary)
+          .strikethrough(item.isDone, color: ADEColor.textMuted)
+          .lineLimit(2)
+        if let detail = item.detail, !item.isDone {
+          Text(detail)
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(2)
+        }
+        let outcome = item.isDone ? item.outcome : nil
+        if item.link != nil || outcome != nil {
+          HStack(spacing: 6) {
+            if let link = item.link {
+              Label(link.label, systemImage: link.kind == "pr" ? "arrow.triangle.pull" : "bubble.left")
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            if let outcome { Text(outcome).lineLimit(1) }
+          }
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .padding(.vertical, 6)
       Spacer(minLength: 8)
       if editable {
         Button {
@@ -426,7 +489,7 @@ struct CtoOpenWorkList: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Remove \(item.text)")
+        .accessibilityLabel("Remove \(item.displayTitle)")
       }
     }
     .frame(minHeight: 44)
