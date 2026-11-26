@@ -79,6 +79,7 @@ import { McpMentionCardBody } from "./McpMentionCardBody";
 import { settingsEntryById, settingsEntryLabel, settingUnavailableReason } from "../settings/settingsManifest";
 import { settingAgentAccess, settingIsProtected } from "../../../shared/settingsAgentAccess";
 import { withChatPin } from "./chatMachinePin";
+import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -339,7 +340,7 @@ export async function loadChipCardData(
       kind: "chat",
       title: session.title || session.goal || "Untitled chat",
       lastActivity: session.lastActivityAt || session.endedAt || session.startedAt || null,
-      lane: session.laneName || null,
+      lane: sessionLaneDisplayName(session) || null,
       model: session.modelId ? getModelById(session.modelId)?.displayName ?? session.model ?? session.modelId : session.model || null,
       state: session.status === "running" ? "Running" : "Ended",
     };
@@ -370,7 +371,7 @@ export async function loadChipCardData(
     return {
       kind: "terminal",
       title: session.title || session.goal || "Terminal",
-      lane: session.laneName,
+      lane: sessionLaneDisplayName(session),
       tool: session.toolType || "Terminal",
       status: session.status === "running" ? "Running" : "Ended",
       startedAt: relativeWhen(session.startedAt),

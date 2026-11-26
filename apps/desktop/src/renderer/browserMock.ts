@@ -3454,6 +3454,7 @@ function createBrowserMockDemoChat(args: any): any {
     chatSessionId: id,
     laneId: lane?.id ?? "",
     laneName: lane?.name ?? "",
+    laneType: lane?.laneType ?? null,
     ptyId: null,
     tracked: true,
     pinned: false,

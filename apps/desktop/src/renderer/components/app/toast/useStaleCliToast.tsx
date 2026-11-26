@@ -10,6 +10,7 @@ import { workViewStoreForProject } from "../../../state/appStore";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { dismissToast, showToast, type ToastChip, type ToastInput } from "./toastStore";
 import { useTabCopyPin } from "../../../state/repositoryScope";
+import { sessionLaneDisplayName } from "../../../../shared/laneDisplayName";
 
 /** One id, so a re-detection updates the visible notice in place. */
 export const STALE_CLI_TOAST_ID = "stale-cli-sessions";
@@ -172,7 +173,7 @@ export function useStaleCliToast({
           else
             laneMap.set(session.laneId, {
               laneId: session.laneId,
-              laneName: session.laneName || session.laneId,
+              laneName: sessionLaneDisplayName(session) || session.laneId,
               count: 1,
             });
         }

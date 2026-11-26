@@ -1,5 +1,6 @@
 import type { TerminalSessionSummary } from "../../shared/types";
 import { isChatToolType } from "./sessions";
+import { sessionLaneDisplayName } from "../../shared/laneDisplayName";
 
 function markdownLine(value: string | null | undefined): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
@@ -11,7 +12,7 @@ export function formatSessionBundleMarkdown(sessions: TerminalSessionSummary[]):
     const kind = isChatToolType(session.toolType) ? "Chat" : "Terminal";
     const title = markdownLine(session.title) || session.id;
     const goal = markdownLine(session.goal);
-    const lane = markdownLine(session.laneName) || markdownLine(session.laneId);
+    const lane = markdownLine(sessionLaneDisplayName(session)) || markdownLine(session.laneId);
     const started = markdownLine(session.startedAt);
     const ended = markdownLine(session.endedAt);
     const status = markdownLine(session.status);

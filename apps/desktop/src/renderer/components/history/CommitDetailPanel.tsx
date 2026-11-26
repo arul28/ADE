@@ -42,6 +42,7 @@ import { PR_STATE_COLOR } from "./commitRowModel";
 import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
 import { InlineErrorNotice } from "../ui/notice";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 const FILE_ROWS = 200;
 
@@ -288,7 +289,7 @@ export function CommitDetailPanel({
         </button>
         {owner ? (
           <LaneChip
-            laneName={owner.name}
+            laneName={laneDisplayName(owner)}
             laneColor={ownerLaneColor}
             maxWidth={200}
             className="ml-1"

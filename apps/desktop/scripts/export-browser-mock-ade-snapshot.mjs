@@ -574,7 +574,7 @@ function buildSessions(projectId) {
   return maybeAll(
     "terminal_sessions",
     `
-      select ts.*, l.name as lane_name
+      select ts.*, l.name as lane_name, l.lane_type as lane_type
       from terminal_sessions ts
       inner join lanes l on l.id = ts.lane_id
       where ts.archived_at is null
@@ -587,6 +587,7 @@ function buildSessions(projectId) {
     id: row.id,
     laneId: row.lane_id,
     laneName: row.lane_name ?? row.lane_id,
+    laneType: row.lane_type ?? null,
     ptyId: row.pty_id ?? null,
     tracked: Boolean(row.tracked),
     pinned: Boolean(row.pinned),

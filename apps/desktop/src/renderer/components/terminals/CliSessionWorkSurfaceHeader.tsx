@@ -17,6 +17,7 @@ import {
 } from "../work/WorkSurfaceHeader";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 import { shouldShowClaudeCliLoginPrompt } from "../../lib/claudeAuthPrompt";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 type SessionMouseHandler = (
   session: TerminalSessionSummary,
@@ -288,7 +289,7 @@ export function CliSessionWorkSurfaceHeader({
     <WorkSurfaceHeader
       title={`${title} · ${toolLabel}`}
       laneId={session.laneId}
-      laneChipName={session.laneName}
+      laneChipName={lane ? laneDisplayName(lane) : sessionLaneDisplayName(session)}
       laneChipColor={laneAccent}
       showLaneChip
       onLaneChipClick={
