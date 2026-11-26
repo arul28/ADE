@@ -6,7 +6,7 @@ import {
   type AdeCloudAccessState,
   type CloudAccessIpcAnswer,
 } from "../../shared/adeCloudMachine";
-import { accountScopedCopy } from "./accountScopedStorage";
+import { accountScopeGeneration, accountScopedCopy } from "./accountScopedStorage";
 
 /**
  * ADE Cloud's state in this window. ADE Cloud is one machine every account
@@ -105,6 +105,7 @@ function read(): void {
     return;
   }
   reading = true;
+  const account = accountScopeGeneration();
   void bridge.read().then(
     (answer) => ({
       access: accessOf(answer),
@@ -114,6 +115,12 @@ function read(): void {
     () => ({ access, end: signInEnd }),
   ).then((next) => {
     reading = false;
+    // Started for the last account (before a sign-out or another account): ask again.
+    if (account !== accountScopeGeneration()) {
+      readAgain = false;
+      read();
+      return;
+    }
     const accessChanged = next.access.state !== access.state || next.access.reason !== access.reason;
     const endChanged = (next.end?.fingerprint ?? null) !== (signInEnd?.fingerprint ?? null)
       || (next.end?.endsInDays ?? null) !== (signInEnd?.endsInDays ?? null);

@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { CloudMachine } from "../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../shared/cloudLaneLaunch";
-import { laneComputersOf, parseSavedLaneComputers, type LaneComputer } from "../../shared/laneComputer";
+import { laneComputersOf, parseSavedLaneComputers, savedLaneComputers, type LaneComputer } from "../../shared/laneComputer";
 import { accountScopedCopy } from "./accountScopedStorage";
 import { machineNameForBinding } from "../../shared/machineIdentity";
 import type { OpenProjectBinding } from "../../shared/types/core";
@@ -144,7 +144,7 @@ function noteCloudLaneComputers(
   }
   state = { computers, cloudComputers, known: true, readAtMs };
   saved.save({
-    computers: computers.map(({ laneId, laneName, projectOrigin, instanceId, machineKey }) => ({ laneId, laneName, projectOrigin, instanceId, machineKey })),
+    computers: savedLaneComputers(computers),
     cloudComputers,
   });
   emit();
@@ -159,6 +159,15 @@ export function forgetCloudLaneComputer(instanceId: string): void {
   const cloudComputers = state.cloudComputers.filter((computer) => computer.instanceId !== instanceId);
   if (computers.length === state.computers.length && cloudComputers.length === state.cloudComputers.length) return;
   noteCloudLaneComputers(computers, cloudComputers);
+}
+
+/**
+ * Whether a read (or this account's copy) filled the index. ADE Web keeps no
+ * copy, so a page that just loaded knows no ADE Cloud computer yet: a miss
+ * then says nothing about a machine.
+ */
+export function adeCloudLaneIndexKnown(): boolean {
+  return state.known;
 }
 
 /** Hears each change of the lane computers (not a fresher read of the same list). */

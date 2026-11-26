@@ -41,6 +41,8 @@ export type AccountScopedCopy = {
 const copies: Copy[] = [];
 let scope: Scope = undefined;
 let watching = false;
+/** Moves on at each sign-out or change of account (see `accountScopeGeneration`). */
+let generation = 0;
 
 function scopeOf(status: AdeAccountStatus): Scope {
   if (status.signedIn) return status.userId?.trim() || undefined;
@@ -106,6 +108,7 @@ function noteScope(next: Scope): void {
   if (next === undefined || next === scope) return;
   const previous = scope;
   scope = next;
+  if (previous !== undefined) generation += 1;
   for (const copy of copies) {
     if (previous === undefined) {
       settle(copy);
@@ -121,9 +124,19 @@ function noteScope(next: Scope): void {
 function watch(): void {
   if (watching || typeof window === "undefined") return;
   watching = true;
+  // Only a real answer counts: a missing bridge or a failed read answers with a
+  // made-up "signed out", which `fetchAccountStatus` resolves with but never publishes.
   subscribeAccountStatus((status) => noteScope(scopeOf(status)));
-  // A status the store already holds is answered without an event.
-  void fetchAccountStatus().then((status) => noteScope(scopeOf(status)), () => undefined);
+  if (typeof window.ade?.account?.status === "function") void fetchAccountStatus({ force: true });
+}
+
+/**
+ * Moves on each time the account signed in here changes or signs out. A read
+ * that started before a change answers for the last account: its caller
+ * compares this before and after, and drops the answer when it moved.
+ */
+export function accountScopeGeneration(): number {
+  return generation;
 }
 
 /**

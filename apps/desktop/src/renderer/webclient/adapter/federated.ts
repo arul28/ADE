@@ -31,7 +31,7 @@ import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
 import { resolveMachinePresence } from "../../../shared/types/power";
 import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
-import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { adeCloudLaneIndexKnown, isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { accountProjectOrigins } from "../../../shared/accountProject";
 import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
@@ -640,7 +640,10 @@ export function createFederatedWebAdapter({
     if (manager.getSnapshot().sessions.some((session) => session.targetId === targetId && session.state === "live")) return false;
     const deviceId = manager.listEnvironments().find((environment) => environment.envId === targetId)?.hostDeviceId;
     const machine = deviceId ? accountClient.getSnapshot().machines.find((entry) => entry.deviceId === deviceId) : null;
-    if (!machine?.machineKey || !isAdeCloudComputer({ machineKey: machine.machineKey })) return false;
+    if (!machine?.machineKey) return false;
+    // A page that just loaded has read no ADE Cloud computer yet (ADE Web keeps
+    // no copy), so a miss is no answer: the server says whether it sleeps.
+    if (adeCloudLaneIndexKnown() && !isAdeCloudComputer({ machineKey: machine.machineKey })) return false;
     return await sleepingServerComputer(machine.machineKey) != null;
   };
 
@@ -1172,11 +1175,13 @@ export function createFederatedWebAdapter({
       // Cloud computer that reads offline is asked about on the account server.
       // So is one that still reads online with no connection here: the account
       // keeps it "online" for minutes after it went to sleep, and a dial alone
-      // would wait out its timeout.
+      // would wait out its timeout. A person's connect asks too while this page
+      // has read no ADE Cloud computer yet.
       const liveHere = saved != null && manager.getClient(saved.envId)?.getStatus().state === "connected";
       const askServer = machine.sleepState !== "asleep" && (
         (!background && presence === "offline")
-        || (presence === "online" && !liveHere && isAdeCloudComputer({ machineKey: key }))
+        || (presence === "online" && !liveHere
+          && (isAdeCloudComputer({ machineKey: key }) || (!background && !adeCloudLaneIndexKnown())))
       );
       const serverComputer = askServer ? await sleepingServerComputer(key) : null;
       // A background connect never wakes one: it stops here instead of dialing.
