@@ -2066,6 +2066,16 @@ One busy list, `decideCloudBusy` in
   All of this applies only to a machine the desktop knows as a cloud computer
   (`knowsBox` in `cloudMachines.ts`; an unknown key gets one read, a laptop
   key is not asked again for 10 minutes).
+- **Saved rows give way to live rows.** The saved copy redacts and cuts
+  what it stores, so a row read from it (`savedCopy` on the envelope, set in
+  `cloudSavedChats.ts`) and the same event read from the computer are two
+  payloads. Once the computer answers again, each saved row is replaced by its
+  live row: the history read, the live merge and older pages pair them by
+  chat, time, kind and sequence, equal except where the saved copy wrote
+  `[REDACTED]` or `[truncated]` (`reconcileAgentChatSavedCopies` in
+  `shared/chatHistoryMerge.ts`). Only a saved row gives way, so live text is
+  never replaced, and a live row that differs anywhere else stays its own
+  event. iOS keys its rows by `sequence`, so it needs no pairing.
 - **Waking.** A send from a saved chat wakes its computer (15–30 s). The pane
   shows "Waking the computer…" and the Work row "Waking"
   (`markCloudWakeForSend`, display only). Once the chat's connection is up
