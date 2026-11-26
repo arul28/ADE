@@ -112,7 +112,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
   // saving now would write the defaults above over them.
   const [loadFailed, setLoadFailed] = useState(false);
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveErrors, setSaveErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
   const [saved, setSaved] = useState(false);
   const [loadedOwnerId, setLoadedOwnerId] = useState<string | null>(null);
   const [savingTargets, setSavingTargets] = useState<ReadonlySet<string>>(() => new Set());
@@ -121,7 +122,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     accountScope.current = { ownerId: accountOwnerId, pending: new Set() };
     setSavingTargets(accountScope.current.pending);
     setSaved(false);
-    setError(null);
+    setLoadError(null);
+    setSaveErrors(new Map());
     setLoadedOwnerId(null);
   }, [accountOwnerId]);
   const mounted = useRef(true);
@@ -149,18 +151,18 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
         // `null`: the account service is unreachable right now.
         if (!next) {
           setLoadFailed(true);
-          setError("ADE can’t reach its account service right now, so your Activity settings didn’t load.");
+          setLoadError("ADE can’t reach its account service right now, so your Activity settings didn’t load.");
           return;
         }
         setPreferences(normalizeActivityPreferences(next));
         setLoadedOwnerId(accountOwnerId);
         setLoadFailed(false);
-        setError(null);
+        setLoadError(null);
       })
       .catch((loadError: unknown) => {
         if (cancelled || !mounted.current) return;
         setLoadFailed(true);
-        setError(loadError instanceof Error && loadError.message.trim()
+        setLoadError(loadError instanceof Error && loadError.message.trim()
           ? loadError.message
           : "ADE couldn’t load your Activity settings.");
       })
@@ -208,41 +210,47 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     }, 1_600);
   }, []);
 
-  /**
-   * Persist an explicit next value. Instant-save controls fire before their own
-   * state update commits, so reading component state here would save the value
-   * the user just replaced.
-   */
-  const persist = useCallback(async (next: AttentionPreferences) => {
-    const api = typeof window !== "undefined" ? window.ade?.attention : null;
-    if (!api || !accountOwnerId) {
-      setError("Sign in to ADE to change Activity settings.");
+  const setSaveError = useCallback((key: string, message: string | null) => {
+    setSaveErrors((current) => {
+      if (message == null && !current.has(key)) return current;
+      const next = new Map(current);
+      if (message == null) next.delete(key);
+      else next.set(key, message);
+      return next;
+    });
+  }, []);
+
+  const updateAccount = useCallback(async (patch: Partial<AttentionPreferences["account"]>) => {
+    const scope = accountScope.current;
+    if (!accountOwnerId || loadFailed || loadedOwnerId !== accountOwnerId || scope.ownerId !== accountOwnerId || scope.pending.has("account")) return;
+    const api = window.ade?.attention;
+    if (!api) {
+      setSaveError("account", "ADE couldn’t save your Activity settings.");
       return;
     }
-    const scope = accountScope.current;
-    if (loadFailed || loadedOwnerId !== accountOwnerId || scope.ownerId !== accountOwnerId) return;
+    // The account endpoint replaces the whole account scope. Keep one save
+    // in flight so a failed request can restore its last confirmed value.
+    const previous = preferences.account;
+    const account = { ...previous, ...patch };
+    scope.pending.add("account");
+    setSavingTargets(new Set(scope.pending));
+    setPreferences((current) => ({ ...current, account }));
     try {
-      await api.putPreferences(accountOwnerId, next);
+      await api.putPreferences(accountOwnerId, { ...preferences, account });
       if (!mounted.current || accountScope.current !== scope) return;
-      setError(null);
+      setSaveError("account", null);
       flashSaved();
     } catch (saveError) {
       if (!mounted.current || accountScope.current !== scope) return;
-      setError(saveError instanceof Error && saveError.message.trim()
+      setPreferences((current) => ({ ...current, account: previous }));
+      setSaveError("account", saveError instanceof Error && saveError.message.trim()
         ? saveError.message
         : "ADE couldn’t save your Activity settings.");
+    } finally {
+      scope.pending.delete("account");
+      if (mounted.current && accountScope.current === scope) setSavingTargets(new Set(scope.pending));
     }
-  }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId]);
-
-  const updateAccount = useCallback((patch: Partial<AttentionPreferences["account"]>) => {
-    const next: AttentionPreferences = {
-      ...preferences,
-      account: { ...preferences.account, ...patch },
-    };
-    if (!accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed) return;
-    setPreferences((current) => ({ ...current, account: { ...current.account, ...patch } }));
-    void persist(next);
-  }, [accountOwnerId, loadFailed, loadedOwnerId, persist, preferences]);
+  }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId, preferences, setSaveError]);
 
   const setScopeNotificationsEnabled = useCallback(async (
     scope: "machines" | "devices",
@@ -254,11 +262,11 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     const api = window.ade?.attention;
     const put = scope === "machines" ? api?.putMachinePreferences : api?.putDevicePreferences;
     const noun = scope === "machines" ? "machine" : "phone";
+    const key = `${scope}:${id}`;
     if (!put) {
-      setError(`This ADE build can’t change per-${noun} notifications yet.`);
+      setSaveError(key, `This ADE build can’t change per-${noun} notifications yet.`);
       return;
     }
-    const key = `${scope}:${id}`;
     if (account.pending.has(key)) return;
     account.pending.add(key);
     setSavingTargets(new Set(account.pending));
@@ -270,18 +278,18 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
         ...current,
         [scope]: { ...current[scope], [id]: { ...current[scope][id], ...patch } },
       }));
-      setError(null);
+      setSaveError(key, null);
       flashSaved();
     } catch (saveError) {
       if (!mounted.current || accountScope.current !== account) return;
-      setError(saveError instanceof Error && saveError.message.trim()
+      setSaveError(key, saveError instanceof Error && saveError.message.trim()
         ? saveError.message
         : `ADE couldn’t change notifications for that ${noun}.`);
     } finally {
       account.pending.delete(key);
       if (mounted.current && accountScope.current === account) setSavingTargets(new Set(account.pending));
     }
-  }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId]);
+  }, [accountOwnerId, flashSaved, loadFailed, loadedOwnerId, setSaveError]);
 
   const setMachineMuted = useCallback(
     (machineKey: string, muted: boolean) => setScopeNotificationsEnabled("machines", machineKey, !muted),
@@ -311,6 +319,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     return [...byKey.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [itemsById]);
 
+  const busy = loading || !accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed;
+  const error = loadError ?? saveErrors.get("account") ?? saveErrors.values().next().value ?? null;
   return {
     accountOwnerId,
     signedOut: !accountOwnerId,
@@ -319,10 +329,11 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     retryLoad,
     retryPhones,
     /** Controls are read-only: loading, signed out, or the real values never arrived. */
-    busy: loading || !accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed,
+    busy,
+    accountBusy: busy || savingTargets.has("account"),
     savingTargets,
     error,
-    saved,
+    saved: saved && error == null,
     preferences,
     account: preferences.account,
     machines,
@@ -412,7 +423,7 @@ export function ActivitySettingsControls({
 }) {
   const {
     account,
-    busy,
+    accountBusy: busy,
     machines,
     updateAccount,
     setMachineMuted,
@@ -516,7 +527,7 @@ export function ActivitySettingsControls({
                     <PopoverSwitch
                       label={`Notify me about ${machine.name}`}
                       checked={!machineMuted(machine.machineKey)}
-                      disabled={busy || model.savingTargets.has(`machines:${machine.machineKey}`)}
+                      disabled={model.busy || model.savingTargets.has(`machines:${machine.machineKey}`)}
                       onChange={(enabled) =>
                         void setMachineMuted(machine.machineKey, !enabled)}
                     />
@@ -587,7 +598,7 @@ function SegmentedChoice<T extends string>({
 
 /** What Activity reveals, and what the Dock badge counts. */
 export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel }) {
-  const { account, busy, updateAccount } = model;
+  const { account, accountBusy: busy, updateAccount } = model;
   return (
     <ModernSection group="Privacy" title="Privacy and badges" hint="What ambient surfaces reveal, and what the badge counts.">
       <ModernRows>
