@@ -73,9 +73,14 @@ type Source = Pick<CopyRead<Deleted>, "pin" | "machineName">;
 
 /**
  * A lane and its chats live on the machine that ran them, so one machine's
- * list is never the whole answer: each machine is read on its own.
+ * list is never the whole answer: each machine is read on its own. A call that
+ * fails keeps the rows its last read showed (a slow machine after a restore).
  */
-async function readDeleted(pin: OpenProjectBinding, timed: <R>(call: Promise<R>) => Promise<R>): Promise<Deleted> {
+async function readDeleted(
+  pin: OpenProjectBinding,
+  timed: <R>(call: Promise<R>) => Promise<R>,
+  previous: Deleted | null,
+): Promise<Deleted> {
   const [lanes, chats] = await Promise.allSettled([
     timed(window.ade.lanes.listDeleted(pin)),
     timed(window.ade.agentChat.listDeleted({}, pin)),
@@ -83,10 +88,16 @@ async function readDeleted(pin: OpenProjectBinding, timed: <R>(call: Promise<R>)
   const out: Deleted = { lanes: [], chats: [], error: null, outdated: false };
   if (lanes.status === "fulfilled") out.lanes = lanes.value;
   // A machine on an older ADE simply has no saved lanes to list.
-  else if (!isUnsupportedAdeActionError(lanes.reason)) out.error = ipcErrorMessage(lanes.reason) || "Something went wrong.";
+  else if (!isUnsupportedAdeActionError(lanes.reason)) {
+    out.lanes = previous?.lanes ?? [];
+    out.error = ipcErrorMessage(lanes.reason) || "Something went wrong.";
+  }
   if (chats.status === "fulfilled") out.chats = chats.value.chats;
   else if (isUnsupportedAdeActionError(chats.reason)) out.outdated = true;
-  else out.error ??= ipcErrorMessage(chats.reason) || "Something went wrong.";
+  else {
+    out.chats = previous?.chats ?? [];
+    out.error ??= ipcErrorMessage(chats.reason) || "Something went wrong.";
+  }
   return out;
 }
 

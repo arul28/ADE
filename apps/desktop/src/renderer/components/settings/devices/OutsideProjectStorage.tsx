@@ -11,7 +11,7 @@ import { DevToolRow, PartError, SizeCell, useDevToolHues } from "./devToolsList"
 import { devToolsSizes, useDevToolsStorage, type DevToolsPartSize } from "./useDevToolsStorage";
 
 /**
- * Storage & cleanup › Space, last: what developer tools keep on the same
+ * Disk space › Space, last: what developer tools keep on the same
  * machine outside any project (Xcode build data, simulators, runtimes,
  * Android emulators), so "what is using my disk" has one answer. Each row
  * opens the page that cleans it up, on the same machine.

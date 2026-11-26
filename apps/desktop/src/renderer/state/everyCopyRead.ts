@@ -36,12 +36,13 @@ type Answer<T> = Pick<CopyRead<T>, "value" | "error" | "done">;
 const PENDING: Answer<never> = { value: null, error: null, done: false };
 
 /**
- * `read` gets the pin and `timed`, which bounds a call to another machine
- * (the tab's own copy keeps no bound, as before). `read` may change on every
- * render; the latest one is used.
+ * `read` gets the pin, `timed`, which bounds a call to another machine (the
+ * tab's own copy keeps no bound, as before), and the machine's last answer, so
+ * a read made of several calls can keep the part whose call failed. `read`
+ * may change on every render; the latest one is used.
  */
 export function useEveryCopyRead<T>(
-  read: (pin: OpenProjectBinding, timed: <R>(call: Promise<R>) => Promise<R>) => Promise<T>,
+  read: (pin: OpenProjectBinding, timed: <R>(call: Promise<R>) => Promise<R>, previous: T | null) => Promise<T>,
   timeoutMs: number,
 ): {
   machines: Array<CopyRead<T>>;
@@ -54,6 +55,8 @@ export function useEveryCopyRead<T>(
   const copies = useActiveRepositoryCopies();
   const tabPinKey = useTabCopyPin()?.key ?? null;
   const [byKey, setByKey] = React.useState<Record<string, Answer<T>>>({});
+  const byKeyRef = React.useRef(byKey);
+  byKeyRef.current = byKey;
   // A newer read of a machine wins over an older one still in flight.
   const seqs = React.useRef(new Map<string, number>());
   // `onlinePins` keeps its identity while its keys stay the same.
@@ -86,7 +89,7 @@ export function useEveryCopyRead<T>(
     let value: T | null = null;
     let error: string | null = null;
     try {
-      value = await readRef.current(pin, timed);
+      value = await readRef.current(pin, timed, byKeyRef.current[pin.key]?.value ?? null);
     } catch (caught) {
       error = ipcErrorMessage(caught) || "Something went wrong.";
     }

@@ -1,50 +1,37 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { ArchiveSection as ArchiveSectionUnderTest } from "./ArchiveSection";
-import { SettingsMachineScopeProvider, settingsMachineScope } from "./SettingsMachineScope";
+import { ArchiveSection } from "./ArchiveSection";
+import { useAppStore } from "../../state/appStore";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { confirmDialog } from "../ui/dialog/confirm";
+import type * as ConfirmModule from "../ui/dialog/confirm";
+import type * as ToastStoreModule from "../app/toast/toastStore";
 import type { ArchivedItem, ArchiveActionArgs, ArchiveActionResult } from "../../../shared/types/archive";
 
 /**
- * Settings → Archive. The piece worth pinning is the delete batching: a lane
+ * Settings → Deleted & Archived → Archive. The piece worth pinning is the delete batching: a lane
  * delete is slow and one request has a budget, so lanes go a handful at a time,
  * and a dirty lane is retried once with `force` only after the person confirms.
  * The rest of the page is presentation.
  */
 
 vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  ...(await importOriginal<typeof ConfirmModule>()),
   confirmDialog: vi.fn(async () => true),
 }));
 
-vi.mock("../app/toast/toastStore", () => ({
+vi.mock("../app/toast/toastStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof ToastStoreModule>()),
   showToast: vi.fn(),
 }));
 
 const OLD = "2020-01-01T00:00:00.000Z";
 
-/** The machine Settings is looking at: its archive is listed and deleted there. */
+/** The tab's own copy of the project: its archive is listed and deleted there. */
 const MACHINE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
 
-function ArchiveSection() {
-  return (
-    <SettingsMachineScopeProvider
-      scope={settingsMachineScope({
-        machineId: "local",
-        machineName: "This Mac",
-        target: { kind: "pinned", binding: MACHINE_PIN },
-        isThisMachine: true,
-        isActiveBinding: true,
-        online: true,
-      })}
-    >
-      <ArchiveSectionUnderTest />
-    </SettingsMachineScopeProvider>
-  );
-}
 const originalAde = (globalThis.window as any)?.ade;
 
 function laneItem(id: string, title: string): ArchivedItem {
@@ -63,7 +50,7 @@ function laneItem(id: string, title: string): ArchivedItem {
 
 function installArchiveMock(
   items: ArchivedItem[],
-  deleteImpl: (args: ArchiveActionArgs) => Promise<ArchiveActionResult>,
+  deleteImpl: (args: ArchiveActionArgs, pin?: OpenProjectBinding | null) => Promise<ArchiveActionResult>,
 ) {
   const deleteMock = vi.fn(deleteImpl);
   (globalThis.window as any).ade = {
@@ -77,8 +64,13 @@ function installArchiveMock(
   return deleteMock;
 }
 
+beforeEach(() => {
+  useAppStore.setState({ projectBinding: MACHINE_PIN });
+});
+
 afterEach(() => {
   cleanup();
+  useAppStore.setState({ projectBinding: null });
   if (originalAde === undefined) delete (globalThis.window as any).ade;
   else (globalThis.window as any).ade = originalAde;
   vi.mocked(confirmDialog).mockReset();
@@ -99,6 +91,8 @@ describe("ArchiveSection delete batching", () => {
     expect(batches.flat().every((ref) => ref.kind === "lane")).toBe(true);
     // The first pass is not forced: a dirty lane must be surfaced, not discarded.
     expect(deleteMock.mock.calls.every((call) => call[0].force == null)).toBe(true);
+    // Each batch goes to the machine the rows are on.
+    expect(deleteMock.mock.calls.every((call) => call[1]?.key === MACHINE_PIN.key)).toBe(true);
   });
 
   it("retries a dirty lane once with force after the person confirms", async () => {
@@ -126,5 +120,6 @@ describe("ArchiveSection delete batching", () => {
     expect(deleteMock.mock.calls[0]![0].items).toEqual([{ kind: "lane", id: "lane-dirty" }]);
     expect(deleteMock.mock.calls[1]![0].force).toBe(true);
     expect(deleteMock.mock.calls[1]![0].items).toEqual([{ kind: "lane", id: "lane-dirty" }]);
+    expect(deleteMock.mock.calls[1]![1]?.key).toBe(MACHINE_PIN.key);
   });
 });

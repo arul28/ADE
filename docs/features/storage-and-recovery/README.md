@@ -717,7 +717,7 @@ before append.
 
 ### Developer tools outside the project
 
-Storage & cleanup › Space ends with **Outside this project**
+Disk space › Space ends with **Outside this project**
 (`settings/devices/OutsideProjectStorage.tsx`): one bar and one row each for
 Xcode build data, iOS simulators and simulator runtimes (on a Mac) and Android
 emulators, on the machine the page's project copy is on. Each row's Clean up

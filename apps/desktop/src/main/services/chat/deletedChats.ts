@@ -867,14 +867,21 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
         `select ${ROW_COLUMNS} from deleted_chats d
           where d.lane_id = ? and d.origin = 'lane_delete' and d.kind is null
             and d.hidden_at is null and ${CHAT_GONE_SQL}
-          order by coalesce(d.last_active_at, d.created_at, d.deleted_at) asc limit ?`,
-        [args.fromLaneId, LIST_LIMIT],
+          order by coalesce(d.last_active_at, d.created_at, d.deleted_at) asc`,
+        [args.fromLaneId],
       ).filter((row) => isExternalProvider(row.externalProvider) && Boolean(row.externalId));
     } catch (error) {
       deps.logger.warn("deleted_chats.restored_lane_read_failed", { laneId: args.fromLaneId, error: error instanceof Error ? error.message : String(error) });
       return out;
     }
     if (rows.length === 0) return out;
+    // One restore reopens at most a list's worth. The rest stay here, counted,
+    // so the notice says some chats are still in Recently deleted.
+    if (rows.length > LIST_LIMIT) {
+      out.failed += rows.length - LIST_LIMIT;
+      deps.logger.warn("deleted_chats.restored_lane_over_limit", { laneId: args.fromLaneId, chats: rows.length, limit: LIST_LIMIT });
+      rows = rows.slice(0, LIST_LIMIT);
+    }
     // Without the live list each reopen still checks for a live chat itself.
     const live = await liveRefKeys().catch((error: unknown) => {
       deps.logger.warn("deleted_chats.restored_lane_live_refs_failed", { laneId: args.fromLaneId, error: error instanceof Error ? error.message : String(error) });
