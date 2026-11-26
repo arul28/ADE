@@ -87,6 +87,12 @@ const GIT_TIMEOUT_MS = 15_000;
 /** A capsule's preparation starts only with this much of the save's time left; it never runs past the save's end. */
 const CAPSULE_PREPARE_MIN_MS = 2_000;
 const STATE_FILE = "rest-save.json";
+/**
+ * Leads every capsule mark. A capsule saved under an older mark (before its
+ * history was redacted) is sent again once, so the account keeps no
+ * unredacted copy.
+ */
+const CAPSULE_MARK_VERSION = "redacted-1";
 
 export type CloudRestSaveOptions = {
   /**
@@ -730,11 +736,11 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
                 return;
               }
               modelId = summary.modelId ?? summary.model;
-              mark = `${summary.lastActivityAt ?? ""}|${modelId}`;
+              mark = `${CAPSULE_MARK_VERSION}|${summary.lastActivityAt ?? ""}|${modelId}`;
             } else {
               provider = row.toolType === "codex" ? "codex" : "claude";
               modelId = "";
-              mark = `${row.lastActivityAt ?? row.startedAt}|${row.status}`;
+              mark = `${CAPSULE_MARK_VERSION}|${row.lastActivityAt ?? row.startedAt}|${row.status}`;
             }
             if (state.capsules[row.id] === mark) return;
             // The preparation can't be stopped once it runs, so it starts only with time left, and the

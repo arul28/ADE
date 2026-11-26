@@ -192,6 +192,22 @@ export async function uploadPendingCloudChats(timeoutMs = 45_000): Promise<Cloud
 const OPAQUE_KEYS: ReadonlySet<string> = new Set(["signature", "data", "encrypted_content", "image_url", "url"]);
 const OPAQUE_BLOB = /^(?:[A-Za-z0-9+/_-]{256,}={0,2}|data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/]+={0,2})$/;
 
+/** Node 22's lossless JSON numbers (`JSON.rawJSON`, the reviver's source text); absent on an older runtime. */
+const jsonWithRaw = JSON as unknown as { rawJSON?: (text: string) => object; isRawJSON?: (value: unknown) => boolean };
+const isRawJson = (value: unknown): boolean => jsonWithRaw.isRawJSON?.(value) === true;
+
+/** `raw` parsed with each number kept as its own text (`9007199254740993`, `1.0`); null when the runtime can't, or it isn't JSON. */
+function parseJsonExact(raw: string): unknown {
+  const rawJSON = jsonWithRaw.rawJSON;
+  if (!rawJSON) return null;
+  try {
+    return JSON.parse(raw, ((_key: string, value: unknown, context?: { source?: string }) =>
+      typeof value === "number" && context?.source !== undefined && context.source !== String(value) ? rawJSON(context.source) : value) as (key: string, value: unknown) => unknown);
+  } catch {
+    return null;
+  }
+}
+
 type RedactShape = { maxStringChars: number | null; maxDepth: number; keepOpaque: boolean };
 const TRANSCRIPT_SHAPE: RedactShape = { maxStringChars: MAX_STRING_CHARS, maxDepth: MAX_LINE_DEPTH, keepOpaque: false };
 /** A provider's own history: nothing is cut, since its resume reads every string back. */
@@ -203,7 +219,7 @@ function redactValue(value: unknown, redact: (text: string) => string, depth: nu
     const cut = shape.maxStringChars !== null && value.length > shape.maxStringChars ? `${value.slice(0, shape.maxStringChars)}\n[truncated]` : value;
     return redact(cut);
   }
-  if (!value || typeof value !== "object") return value;
+  if (!value || typeof value !== "object" || isRawJson(value)) return value;
   if (depth >= shape.maxDepth) {
     mark?.();
     return "[truncated]";
@@ -252,37 +268,48 @@ export function redactProviderHistoryFile(text: string, redact: (text: string) =
     if (next !== entry) changed = true;
     return next;
   };
-  /** The JSON value redacted, or null when nothing in it changed (the text stays byte for byte). */
-  const redactJson = (value: unknown): string | null => {
+  /** One JSON value redacted, or null when nothing in it changed (its text stays byte for byte). */
+  const redactJson = (raw: string, value: object): string | null => {
     changed = false;
     const out = redactValue(value, tracked, 0, HISTORY_SHAPE, mark);
-    return changed ? JSON.stringify(out) : null;
+    if (!changed) return null;
+    // Parsed again with each number's own text, so a large id or a `1.0` is written back as it was.
+    const exact = parseJsonExact(raw);
+    return JSON.stringify(exact && typeof exact === "object" ? redactValue(exact, redact, 0, HISTORY_SHAPE) : out);
   };
-  const parseObject = (raw: string): { value: object } | null => {
+  const parseObject = (raw: string): object | null => {
     try {
       const value: unknown = JSON.parse(raw);
-      return value && typeof value === "object" ? { value } : null;
+      return value && typeof value === "object" ? value : null;
     } catch {
       return null;
     }
   };
   const whole = text.trim() ? parseObject(text) : null;
   if (whole) {
-    const out = redactJson(whole.value);
+    const out = redactJson(text, whole);
     return out === null ? text : `${out}${text.endsWith("\n") ? "\n" : ""}`;
   }
-  const lines = text.split("\n");
-  let json = false;
-  const out = lines.map((line) => {
-    if (!line.trim()) return line;
-    const parsed = parseObject(line);
-    if (!parsed) return null;
-    json = true;
-    return redactJson(parsed.value) ?? line;
-  });
-  // Plain text (a tool result): redacted whole, so a key across lines goes too.
-  if (!json) return redact(text);
-  return out.map((line, index) => line ?? redact(lines[index]!)).join("\n");
+  // One JSON record per line. The lines between records are text, redacted
+  // together, so a key across lines (a private key) goes too; with no record
+  // at all that is the whole file (a plain tool result).
+  const out: string[] = [];
+  let block: string[] = [];
+  const endBlock = () => {
+    if (block.length) out.push(redact(block.join("\n")));
+    block = [];
+  };
+  for (const line of text.split("\n")) {
+    const value = line.trim() ? parseObject(line) : null;
+    if (!value) {
+      block.push(line);
+      continue;
+    }
+    endBlock();
+    out.push(redactJson(line, value) ?? line);
+  }
+  endBlock();
+  return out.join("\n");
 }
 
 type Reader = { size: number; read: (position: number, length: number) => Buffer };
@@ -622,11 +649,15 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
    * while the chat is idle. One stat per saved chat, once per rest save, so
    * a streaming turn still uploads once.
    */
-  async function markGrownTranscripts(): Promise<void> {
-    let changed = false;
-    for (const [sessionId, entry] of Object.entries(state.chats)) {
-      if (disposed) return;
-      if (entry.dirty || running.has(sessionId) || restoringChats.has(sessionId)) continue;
+  async function markGrownTranscripts(): Promise<string[]> {
+    const marked: string[] = [];
+    for (const sessionId of Object.keys(state.chats)) {
+      if (disposed) break;
+      if (restoringChats.has(sessionId)) continue;
+      // An upload still running sets `dirty` from the text it read, not from the file now.
+      await running.get(sessionId)?.catch(() => {});
+      const entry = state.chats[sessionId];
+      if (!entry || entry.dirty) continue;
       // A line still queued in memory counts too.
       await deps.flushTranscript(sessionId).catch((error: unknown) => {
         log?.warn("cloud.chat_upload_flush_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
@@ -640,9 +671,10 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       }
       if (size === entry.offset) continue;
       entry.dirty = true;
-      changed = true;
+      marked.push(sessionId);
     }
-    if (changed) persist();
+    if (marked.length) persist();
+    return marked;
   }
 
   async function deleteAndRestart(sessionId: string, base: string, machineKey: string, headers: Record<string, string>, entry: Entry): Promise<void> {
@@ -745,16 +777,16 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       };
       const drain = (async () => {
         await runDeletes().catch(() => {});
-        await markGrownTranscripts();
         // Dirty chats plus any upload already running, so a turn that just ended is waited for.
         pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
         await flush(pending);
-        // Then rows whose settings changed with no new text: new turns go first.
+        // Then lines written after a turn's end, and rows whose settings changed with no new text.
+        const grown = await markGrownTranscripts();
         await markChangedSettings().catch((error: unknown) => {
           log?.warn("cloud.chat_settings_check_failed", { error: error instanceof Error ? error.name : "unknown" });
         });
-        const changed = Object.entries(state.chats).filter(([id, entry]) => entry.dirty && !pending.includes(id)).map(([id]) => id);
-        pending = [...pending, ...changed];
+        const changed = [...new Set([...grown, ...Object.entries(state.chats).filter(([id, entry]) => entry.dirty && !pending.includes(id)).map(([id]) => id)])];
+        pending = [...new Set([...pending, ...changed])];
         await flush(changed);
       })();
       let timer: ReturnType<typeof setTimeout> | null = null;
