@@ -343,6 +343,7 @@ export type CliInputRoute = {
   pin: OpenProjectBinding | null;
   /** The CLI's machine is known to be disconnected. */
   offline: boolean;
+  onDelivered?: (text: string) => void;
   /**
    * With no pin: the key of the project tab the CLI belongs to. An unpinned
    * call goes to whichever project is active, so a send waits while another
@@ -454,15 +455,17 @@ async function step(sessionId: string): Promise<void> {
   try {
     // The item's id makes the send idempotent on the host: another window
     // that claimed the same item at the same moment gets this one's answer.
+    const route = runner.route;
     const sent = await sendAgentCliText({
       sessionId,
       text: head.text,
       clientMessageId: head.id,
-      pin: runner.route.pin,
+      pin: route.pin,
     });
     if (sent.kind === "typed") {
       setQueue(sessionId, getQueue(sessionId).filter((item) => item.id !== head.id));
       appendCliInputHistory(sessionId, head.text);
+      route.onDelivered?.(head.text);
       runner.busySince = null;
       runner.inFlight = false;
       // The next text waits for the turn this one started to end; give the

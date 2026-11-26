@@ -7,6 +7,8 @@ import {
 import { describe, expect, it } from "vitest";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { connectSentry } from "../../../shared/sentry/capture";
+import { replaceDynamicCopilotModelDescriptors } from "../../../shared/modelRegistry";
+import { copilotSdkModelDescriptors } from "./copilotModelsDiscovery";
 
 // ---------------------------------------------------------------------------
 // GitHub Copilot (SDK provider)
@@ -123,6 +125,32 @@ describe("copilot chat runtime", () => {
     const applied = pooled.request.mock.calls.find(([, payload]: [string, { action?: string }]) => payload.action === "apply");
     expect(applied?.[1]).toMatchObject({ eventId: "copilot-user-event-2" });
     expect(result.filesChanged).toEqual(["a.ts"]);
+  });
+
+  // The Copilot session reads the context tier when it opens. A tier picked
+  // between turns must reach the open session, or the next turn runs on the
+  // old window while the picker shows the new one.
+  it("sends a context tier picked between turns to the open Copilot session", async () => {
+    replaceDynamicCopilotModelDescriptors(copilotSdkModelDescriptors([{
+      id: "claude-long",
+      name: "Claude Long",
+      billing: { tokenPrices: { maxPromptTokens: 128_000, longContext: { maxPromptTokens: 1_000_000 } } },
+    }]));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await harness.service.createSession({
+      laneId: "lane-1", provider: "copilot", model: "claude-long", modelId: "github-copilot/claude-long",
+    } as never);
+    await harness.service.sendMessage({ sessionId: session.id, text: "open the runtime" });
+    await waitFor(() => events.some((envelope) => envelope.event.type === "done"));
+    const pooled = mockState.copilotPooled;
+    pooled.setModel.mockClear();
+
+    const updated = await harness.service.updateSession({ sessionId: session.id, copilotContextTier: "long_context" });
+
+    expect(updated.copilotContextTier).toBe("long_context");
+    expect(pooled.setModel).toHaveBeenCalledTimes(1);
+    expect(pooled.setModel).toHaveBeenCalledWith(session.id, "claude-long", undefined, { contextTier: "long_context" });
   });
 
   // An eligible rate limit is held while Copilot offers Auto. When no one says

@@ -147,6 +147,7 @@ import {
   isImageAttachmentPath,
   isHeicAttachment,
   type ActiveTurnSendMode,
+  type AgentChatCopilotContextTier,
 } from "../../../shared/types/chat";
 import { cn } from "../ui/cn";
 import { PendingInputStack, type PendingInputStackEntry } from "./PendingInputStack";
@@ -309,7 +310,9 @@ import {
   type DraftScheduleTargets,
 } from "./DraftSchedulePopover";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { isPromptSearchShortcut, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { PromptHistorySearch } from "./PromptHistorySearch";
+import type { ContextWindowChoice } from "./modelHint";
 import { PENDING_STEER_DND_MIME, usePendingSteerReorder, type PendingSteerReorder } from "./usePendingSteerReorder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
@@ -353,8 +356,6 @@ const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 /** The plain composer sizes itself with CSS; older web-client browsers measure instead. */
 const TEXTAREA_FIELD_SIZING_SUPPORTED =
   typeof CSS !== "undefined" && typeof CSS.supports === "function" && CSS.supports("field-sizing", "content");
-const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
-type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
 
 const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
@@ -1479,6 +1480,7 @@ export type ComposerOverflowItem = {
   /** The row opens a portal of its own (Account, Issue context). */
   opensMenu?: boolean;
   expanded?: boolean;
+  restoreFocus?: boolean;
   onSelect: () => void;
 };
 
@@ -1636,7 +1638,7 @@ function ComposerOverflowMenu({
                     onClick={() => {
                       setOpen(false);
                       item.onSelect();
-                      requestAnimationFrame(() => caretRef.current?.focus());
+                      if (item.restoreFocus !== false) requestAnimationFrame(() => caretRef.current?.focus());
                     }}
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
@@ -2840,8 +2842,8 @@ function AgentChatComposerImpl({
   droidPermissionMode?: AgentChatDroidPermissionMode;
   copilotPermissionMode?: "plan" | "ask" | "assisted" | "auto-edit" | "full-auto";
   onCopilotPermissionModeChange?: (mode: "plan" | "ask" | "assisted" | "auto-edit" | "full-auto") => void;
-  copilotContextTier?: "default" | "long_context";
-  onCopilotContextTierChange?: (modelId: string, tier: "default" | "long_context") => void;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  onCopilotContextTierChange?: (modelId: string, tier: AgentChatCopilotContextTier) => void;
   copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
   copilotAutoTierPending?: boolean;
   onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
@@ -3609,29 +3611,9 @@ function AgentChatComposerImpl({
   const promptHistoryDraftBeforeRef = useRef<string | null>(null);
   const promptHistoryAppliedDraftRef = useRef<string | null>(null);
   const promptHistoryObservedDraftRef = useRef(draft);
-  const promptHistorySequenceTimerRef = useRef<number | null>(null);
-  const promptHistorySequenceActiveRef = useRef(false);
-  const promptHistorySequenceDirectionRef = useRef<PromptHistoryArrowKey | null>(null);
-  const cancelPromptHistorySequence = useCallback(() => {
-    if (promptHistorySequenceTimerRef.current !== null) {
-      window.clearTimeout(promptHistorySequenceTimerRef.current);
-      promptHistorySequenceTimerRef.current = null;
-    }
-    promptHistorySequenceActiveRef.current = false;
-    promptHistorySequenceDirectionRef.current = null;
-  }, []);
-  const armPromptHistorySequence = useCallback((direction: PromptHistoryArrowKey) => {
-    cancelPromptHistorySequence();
-    promptHistorySequenceActiveRef.current = true;
-    promptHistorySequenceDirectionRef.current = direction;
-    promptHistorySequenceTimerRef.current = window.setTimeout(() => {
-      promptHistorySequenceTimerRef.current = null;
-      promptHistorySequenceActiveRef.current = false;
-    }, PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS);
-  }, [cancelPromptHistorySequence]);
+  const [promptSearchOpen, setPromptSearchOpen] = useState(false);
   const clearPromptHistory = useCallback(() => {
     const wasNavigating = promptHistoryIndexRef.current !== null;
-    cancelPromptHistorySequence();
     promptHistoryIndexRef.current = null;
     promptHistorySelectedKeyRef.current = null;
     if (wasNavigating) {
@@ -3646,29 +3628,14 @@ function AgentChatComposerImpl({
     promptHistoryDraftBeforeRef.current = null;
     promptHistoryAppliedDraftRef.current = null;
     if (wasNavigating) onPromptHistoryNavigate?.(null);
-  }, [cancelPromptHistorySequence, onPromptHistoryNavigate]);
+  }, [onPromptHistoryNavigate]);
 
   useEffect(() => {
     clearPromptHistory();
+    setPromptSearchOpen(false);
   }, [clearPromptHistory, sessionId]);
 
-  useEffect(() => {
-    const cancelIfActive = () => {
-      if (promptHistorySequenceActiveRef.current) cancelPromptHistorySequence();
-    };
-    const listenerOptions = { capture: true, passive: true } as const;
-    window.addEventListener("pointerdown", cancelIfActive, listenerOptions);
-    window.addEventListener("wheel", cancelIfActive, listenerOptions);
-    window.addEventListener("touchstart", cancelIfActive, listenerOptions);
-    return () => {
-      window.removeEventListener("pointerdown", cancelIfActive, listenerOptions);
-      window.removeEventListener("wheel", cancelIfActive, listenerOptions);
-      window.removeEventListener("touchstart", cancelIfActive, listenerOptions);
-    };
-  }, [cancelPromptHistorySequence]);
-
   useEffect(() => () => {
-    cancelPromptHistorySequence();
     const pendingStash = promptHistoryStashRef.current;
     promptHistoryStashRef.current = null;
     if (pendingStash) {
@@ -3676,7 +3643,7 @@ function AgentChatComposerImpl({
         if (entry) void pendingStash.consume(entry);
       });
     }
-  }, [cancelPromptHistorySequence]);
+  }, []);
 
   useEffect(() => {
     const previousDraft = promptHistoryObservedDraftRef.current;
@@ -7115,7 +7082,6 @@ function AgentChatComposerImpl({
     entry: AgentChatPromptHistoryEntry,
     index: number,
     currentText: string,
-    direction: PromptHistoryArrowKey,
   ) => {
     if (promptHistoryIndexRef.current === null) {
       promptHistoryDraftBeforeRef.current = currentText;
@@ -7123,7 +7089,6 @@ function AgentChatComposerImpl({
     promptHistoryIndexRef.current = index;
     promptHistorySelectedKeyRef.current = entry.eventKey;
     promptHistoryAppliedDraftRef.current = entry.text;
-    armPromptHistorySequence(direction);
     if (useRichComposer) {
       setRichEditorText(entry.text);
       onDraftChange(entry.text);
@@ -7133,7 +7098,7 @@ function AgentChatComposerImpl({
       restoreTextareaCaret(entry.text.length);
     }
     onPromptHistoryNavigate?.(entry);
-  }, [armPromptHistorySequence, onDraftChange, onPromptHistoryNavigate, restoreTextareaCaret, setRichEditorText, useRichComposer]);
+  }, [onDraftChange, onPromptHistoryNavigate, restoreTextareaCaret, setRichEditorText, useRichComposer]);
 
   const stashDraftBeforeHistory = useCallback((currentText: string) => {
     if (!currentText.trim() && attachments.length === 0) return;
@@ -7185,27 +7150,13 @@ function AgentChatComposerImpl({
     const selectionCollapsed = target instanceof HTMLTextAreaElement
       ? target.selectionStart === target.selectionEnd
       : !selection || !selection.rangeCount || selection.getRangeAt(0).collapsed;
-    if (!selectionCollapsed) {
-      cancelPromptHistorySequence();
-      return false;
-    }
+    if (!selectionCollapsed) return false;
 
     const cursorOffset = target instanceof HTMLTextAreaElement
       ? target.selectionStart ?? currentText.length
       : getRichCursorTextOffset();
     const atFirstLine = cursorOffset <= 0 || currentText.lastIndexOf("\n", cursorOffset - 1) < 0;
     const atLastLine = currentText.indexOf("\n", cursorOffset) < 0;
-    if (
-      promptHistorySequenceActiveRef.current
-      && promptHistorySequenceDirectionRef.current !== event.key
-    ) {
-      // A direction change is an action of its own. It ends the rapid sequence
-      // before the normal line-boundary rules decide whether this arrow can
-      // enter history in the opposite direction.
-      cancelPromptHistorySequence();
-    }
-    const sequenceActive = promptHistorySequenceActiveRef.current
-      && promptHistorySequenceDirectionRef.current === event.key;
 
     if (currentIndex === null) {
       // Up from a new draft is the history gesture. Preserve the draft in the
@@ -7217,15 +7168,19 @@ function AgentChatComposerImpl({
       if (!entry) return false;
       event.preventDefault();
       stashDraftBeforeHistory(currentText);
-      applyPromptHistoryEntry(entry, latestIndex, currentText, event.key);
+      applyPromptHistoryEntry(entry, latestIndex, currentText);
       return true;
     }
 
-    // While the user is actively holding a three-second same-direction arrow
-    // sequence, that direction always means history. Once the sequence expires
-    // or is interrupted, native multiline caret motion wins until the caret
-    // reaches the relevant line boundary.
-    if (!sequenceActive && (event.key === "ArrowUp" ? !atFirstLine : !atLastLine)) return false;
+    // A recalled prompt nobody has edited is still history, as in the Claude
+    // Code and Codex prompts: with the caret at its start or end (where a
+    // recall leaves it), each arrow keeps walking, however long the prompt
+    // and however long the pause. Inside the text, or once it is edited, the
+    // arrows move the caret until it reaches the first or last line.
+    const unedited = currentText.trim() === (promptHistoryAppliedDraftRef.current ?? "").trim();
+    const caretAtEdge = !currentText.slice(0, cursorOffset).trim() || !currentText.slice(cursorOffset).trim();
+    const keepsWalking = unedited && caretAtEdge;
+    if (!keepsWalking && (event.key === "ArrowUp" ? !atFirstLine : !atLastLine)) return false;
 
     event.preventDefault();
     const nextIndex = event.key === "ArrowUp" ? currentIndex - 1 : currentIndex + 1;
@@ -7240,9 +7195,21 @@ function AgentChatComposerImpl({
     }
     const entry = promptHistory[nextIndex];
     if (!entry) return true;
-    applyPromptHistoryEntry(entry, nextIndex, currentText, event.key);
+    applyPromptHistoryEntry(entry, nextIndex, currentText);
     return true;
-  }, [applyPromptHistoryEntry, cancelPromptHistorySequence, getRichCursorTextOffset, promptHistory, restorePromptHistoryDraft, serializeRichEditor, stashDraftBeforeHistory]);
+  }, [applyPromptHistoryEntry, getRichCursorTextOffset, promptHistory, restorePromptHistoryDraft, serializeRichEditor, stashDraftBeforeHistory]);
+
+  /** A search pick lands as ↑ would: ↓ past the newest still restores the draft. */
+  const pickPromptFromSearch = useCallback((entry: AgentChatPromptHistoryEntry, index: number) => {
+    setPromptSearchOpen(false);
+    const currentText = useRichComposer ? serializeRichEditor() : draft;
+    if (promptHistoryIndexRef.current === null) stashDraftBeforeHistory(currentText);
+    applyPromptHistoryEntry(entry, index, currentText);
+  }, [applyPromptHistoryEntry, draft, serializeRichEditor, stashDraftBeforeHistory, useRichComposer]);
+  const closePromptSearch = useCallback((restoreFocus = true) => {
+    setPromptSearchOpen(false);
+    if (restoreFocus) focusComposerInputRef.current();
+  }, []);
 
   /* ── Keyboard handler for composer input ── */
   /**
@@ -7278,12 +7245,11 @@ function AgentChatComposerImpl({
     if (isImeComposing(event) && !event.metaKey && !event.ctrlKey) return;
     if (handleModelChipEditKey(event)) return;
     const commandModified = event.metaKey || event.ctrlKey;
-    const isPlainHistoryArrow =
-      (event.key === "ArrowUp" || event.key === "ArrowDown")
-      && !commandModified
-      && !event.shiftKey
-      && !event.altKey;
-    if (!isPlainHistoryArrow) cancelPromptHistorySequence();
+    if (isPromptSearchShortcut(event, isMacPlatform()) && !composerInputLocked && !askQuestionActive) {
+      event.preventDefault();
+      setPromptSearchOpen(true);
+      return;
+    }
     if (
       event.key.toLowerCase() === "s"
       && commandModified
@@ -7296,7 +7262,6 @@ function AgentChatComposerImpl({
       return;
     }
     if (draftsRef.current?.handleMenuKeyDown(event)) {
-      cancelPromptHistorySequence();
       event.preventDefault();
       return;
     }
@@ -7378,7 +7343,6 @@ function AgentChatComposerImpl({
 
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
-      if (event.key === "ArrowUp" || event.key === "ArrowDown") cancelPromptHistorySequence();
       // Escape is an explicit dismissal: typing the rest of this token must not
       // bring the menu back.
       if (event.key === "Escape") { event.preventDefault(); dismissCommandMenu(commandMenuTrigger); return; }
@@ -7398,12 +7362,12 @@ function AgentChatComposerImpl({
         ? target.selectionStart === 0 && target.selectionEnd === 0
         : getRichCursorTextOffset() === 0;
       if (atPromptStart && focusLastImageAttachment()) {
-        cancelPromptHistorySequence();
         event.preventDefault();
         return;
       }
-      // Terminal-style recall: ArrowUp on the first line enters this chat's
-      // prompt history while multiline drafts keep normal text editing.
+      // Terminal-style recall: ArrowUp on the first line enters prompt
+      // history (this chat's, then every chat's on this computer) while
+      // multiline drafts keep normal text editing.
       if (handlePromptHistoryNavigation(event)) return;
     }
 
@@ -7577,7 +7541,6 @@ function AgentChatComposerImpl({
         // Prompt-history recall belongs to the prompt box. Inside an answer the
         // same keystroke replaces what the user is typing with an unrelated
         // earlier message.
-        cancelPromptHistorySequence();
         return;
       }
       handleKeyDown(event);
@@ -8155,6 +8118,21 @@ function AgentChatComposerImpl({
     }
   }, [composerMachineBinding, scheduleRequest]);
 
+  // A model with a context window choice (Copilot's long tier): the hint may
+  // suggest the window too. Read from the model, so any provider that lists
+  // tiers gets it.
+  const hintContextChoice = useMemo<ContextWindowChoice | null>(() => {
+    if (!modelId) return null;
+    const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey) ?? getModelById(modelId);
+    if (!descriptor?.supportedContextTiers?.includes("long_context")) return null;
+    return {
+      displayName: descriptor.displayName,
+      defaultWindow: descriptor.contextWindow ?? null,
+      longWindow: descriptor.longContextWindow ?? null,
+    };
+    // The tick: the runtime catalog for this machine loaded or changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
+  }, [modelCatalogScopeKey, modelId, runtimeCatalogTick]);
   const modelHint = useComposerModelHint({
     draft,
     attachments,
@@ -8169,8 +8147,13 @@ function AgentChatComposerImpl({
     // personal chat has none of (and with no project open, nothing to ask).
     hidden: turnActive || modelSelectionLocked || !modelId || Boolean(activeHarnessPreset) || !projectChatPane,
     effortPickedByHand,
+    contextChoice: hintContextChoice,
+    contextTier: copilotContextTier,
     onModelChange,
     onReasoningEffortChange,
+    onContextTierChange: onCopilotContextTierChange && modelId
+      ? (tier) => onCopilotContextTierChange(modelId, tier)
+      : null,
   });
   // Read at send time: the latest advice, without re-creating the submit callback.
   const recordModelHintSendRef = useRef(modelHint.recordSend);
@@ -8992,6 +8975,7 @@ function AgentChatComposerImpl({
   // which loads after mount and bumps the tick.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   ) : null), [compactControl, compactionPulse, modelCatalogScopeKey, modelId, onCompactContext, parallelChatMode, runtimeCatalogTick, turnActive, usageViewModel]);
+  const hasPromptHistory = promptHistory.length > 0;
   const attachmentAndToolControls = useMemo(() => (
     <>
       <SmartTooltip
@@ -9024,6 +9008,13 @@ function AgentChatComposerImpl({
           closeAccountMenu();
         }}
         items={[
+          ...(hasPromptHistory && !composerInputLocked ? [{
+            id: "prompt-history",
+            label: "Search prompt history",
+            icon: <Clock size={14} />,
+            restoreFocus: false,
+            onSelect: () => setPromptSearchOpen(true),
+          }] : []),
           ...(showLaunchAccountMenu
             ? [{
                 id: "launch-account",
@@ -9171,7 +9162,7 @@ function AgentChatComposerImpl({
         ) : null
       ) : null}
     </>
-  ), [accountMenuOpen, addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, closeAccountMenu, closeIssueContextMenu, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, issueContextMenuOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  ), [accountMenuOpen, addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, closeAccountMenu, closeIssueContextMenu, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, hasPromptHistory, iosSimulatorOpen, issueContextMenuOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
   const sendControls = useMemo(() => (turnActive ? (
 
         <>
@@ -9504,8 +9495,11 @@ function AgentChatComposerImpl({
         </>
       ) : undefined}
       trays={
-        attachments.length || pendingImageAttachments.length || contextAttachmentCount || attachError || attachNotice || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext ? (
+        promptSearchOpen || attachments.length || pendingImageAttachments.length || contextAttachmentCount || attachError || attachNotice || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext ? (
           <div className="space-y-2 px-1 py-2">
+            {promptSearchOpen ? (
+              <PromptHistorySearch entries={promptHistory} onPick={pickPromptFromSearch} onClose={closePromptSearch} />
+            ) : null}
             {selectedBuiltInBrowserContext ? (
               <div className="relative mx-3 grid grid-cols-[72px_minmax(0,1fr)] gap-2 rounded-md border border-teal-300/12 bg-black/20 p-2 pr-6">
                 <button
@@ -10126,12 +10120,10 @@ function AgentChatComposerImpl({
                   onCut={handleCut}
                   onKeyUp={captureRichSelection}
                   onMouseUp={() => {
-                    cancelPromptHistorySequence();
                     captureRichSelection();
                     disarmAttachmentChip();
                   }}
                   onBlur={() => {
-                    cancelPromptHistorySequence();
                     captureRichSelection();
                     disarmAttachmentChip();
                     closeModelChipEdit();
@@ -10336,8 +10328,6 @@ function AgentChatComposerImpl({
                   onPaste={handlePaste}
                   onCopy={handleCopy}
                   onCut={handleCut}
-                  onMouseUp={cancelPromptHistorySequence}
-                  onBlur={cancelPromptHistorySequence}
                 />
               </div>
             )}

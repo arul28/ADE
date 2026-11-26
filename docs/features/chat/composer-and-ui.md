@@ -661,6 +661,22 @@ dismissal in a ref and has three close calls:
 - Parallel mode caps attachments at `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`, since
   every lane gets the same list.
 
+### Prompt history
+
+With the cursor on the first line, press ↑ to recall a prompt. Keep pressing
+↑ or ↓ to browse while the recalled text is unchanged. Press ↓ past the newest
+prompt to restore what you were typing. The current chat's transcript comes
+first, followed by recent prompts sent in other chats on this device or browser
+profile. Hosted web keeps a separate history for each signed-in account.
+
+Open **Search prompt history** from **More composer controls** or press Ctrl+R
+on macOS (Ctrl+Shift+R on Windows and Linux). Enter recalls the selected prompt.
+
+In **Settings → Chat**, **Copy prompts to clipboard** is off by default.
+The **Message bubble** setting offers Gradient and Solid. Solid uses the
+gradient's middle color for your messages, darkened as needed for white text.
+It also gives the light-mode composer a solid background.
+
 ### Drafts and scheduled send
 
 - Cmd/Ctrl+S (or the bookmark left of the context meter) saves the prompt in
@@ -808,6 +824,9 @@ and effort for a new chat's first prompt.
   preset, in parallel launch, and on any failure. It needs Smart decisions
   (`ai.chat.smartDecisionsEnabled`) and **Model and effort hint**
   (`ai.chat.modelHintMode`: `model_and_effort` default, `effort_only`, `off`).
+  In full hint mode, GitHub Copilot can suggest Standard or Long context for
+  models that offer both. The context choice can also be changed between turns
+  from the model picker.
   The catalogue and setting cache per machine (10 min, 1 min); every call uses
   `modelRuntimePin`.
 - **Local memory** (`modelHintHistory.ts`, window `localStorage`): the last
@@ -860,7 +879,7 @@ and effort for a new chat's first prompt.
 - **Border beam.** On standard layouts the shell has `BorderBeam`
   (`colorful` at rest, slower `ocean` during a turn).
 - `launchPromptClipboardNoticeEnabled` controls the clipboard reminder,
-  separate from `launchPromptClipboardEnabled`.
+  separate from `promptClipboardCopyEnabled`.
 
 ### Parallel and auto-create launches
 

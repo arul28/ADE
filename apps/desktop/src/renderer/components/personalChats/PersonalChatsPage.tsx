@@ -168,6 +168,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     machineName: machines.find((machine) => machine.id === paneMachineId)?.name ?? null,
     onError: setError,
   });
+  const latestPersonalSession = showArchived ? null : sessions.find((session) => session.machineId === paneMachineId) ?? null;
   const terminalBridge = useMemo(
     () => (paneMachineId ? personalChatsBridgeFor(paneMachineId) : window.ade.personalChats),
     [paneMachineId],
@@ -806,6 +807,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
                 lockSessionId={selectedSessionId}
                 lockSessionProvider={selectedSession?.provider ?? null}
                 initialSessionSummary={selectedSession}
+                latestPersonalSession={latestPersonalSession}
                 availableModelIdsOverride={availableModelIds}
                 onSessionCreated={handleSessionCreated}
                 composerHandleRef={composerRef}

@@ -799,7 +799,7 @@ function resetChatTestStore() {
     focusedSessionId: null,
     projectTransition: null,
     laneInspectorTabs: {},
-    launchPromptClipboardEnabled: true,
+    promptClipboardCopyEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
     workViewByProject: {},
     laneWorkViewByScope: {},

@@ -53,7 +53,7 @@ export function ChatComposerShell({
         : undefined}
     >
       {effortFrame ? <div aria-hidden className="ade-composer-effort-frame" /> : null}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
+      <div data-chat-composer-sheen="" className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
         <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.05)_0%,transparent_72%)] opacity-50 blur-2xl" />
         <div className="absolute bottom-[-3rem] right-[-2rem] h-24 w-36 rounded-full bg-[radial-gradient(circle,var(--chat-liquid-sheen)_0%,transparent_70%)] opacity-50 blur-3xl" />
       </div>

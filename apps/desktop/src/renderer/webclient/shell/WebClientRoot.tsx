@@ -1,3 +1,4 @@
+import { createAccountSentPromptHistory, SentPromptHistoryContext } from "../../components/chat/chatPromptHistory";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { parseDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
@@ -259,6 +260,8 @@ export function WebClientRoot({
   const [account, setAccount] = useState<BrowserAccountSnapshot>(
     () => accountClient.getSnapshot(),
   );
+  const promptHistoryAccountId = accountEnvironmentOwner(account);
+  const sentPromptHistory = useMemo(() => createAccountSentPromptHistory(promptHistoryAccountId), [promptHistoryAccountId]);
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState(
     () => sessionManager.getSnapshot(),
   );
@@ -1085,7 +1088,9 @@ export function WebClientRoot({
       const AppRoot = phase.AppRoot;
       return (
         <WebWorkspaceProvider value={workspaceContext}>
-          <AppRoot key={workspaceGeneration} />
+          <SentPromptHistoryContext.Provider value={sentPromptHistory}>
+            <AppRoot key={workspaceGeneration} />
+          </SentPromptHistoryContext.Provider>
         </WebWorkspaceProvider>
       );
     }

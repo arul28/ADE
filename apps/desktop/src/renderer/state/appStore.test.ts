@@ -98,7 +98,7 @@ function resetStore() {
     chatChromeTint: "colored",
     chatShellGeometry: "default",
     smartTooltipsEnabled: true,
-    launchPromptClipboardEnabled: true,
+    promptClipboardCopyEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
     draftsButtonEnabled: true,
     appleDevice: { ...DEFAULT_APPLE_DEVICE_PREFERENCES },
@@ -429,11 +429,11 @@ describe("appStore", () => {
     });
 
     it("persists the launch prompt clipboard toggles", () => {
-      expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(true);
+      expect(useAppStore.getState().promptClipboardCopyEnabled).toBe(true);
       expect(useAppStore.getState().launchPromptClipboardNoticeEnabled).toBe(true);
-      useAppStore.getState().setLaunchPromptClipboardEnabled(false);
+      useAppStore.getState().setPromptClipboardCopyEnabled(false);
       useAppStore.getState().setLaunchPromptClipboardNoticeEnabled(false);
-      expect(useAppStore.getState().launchPromptClipboardEnabled).toBe(false);
+      expect(useAppStore.getState().promptClipboardCopyEnabled).toBe(false);
       expect(useAppStore.getState().launchPromptClipboardNoticeEnabled).toBe(false);
       const calls = mockLocalStorage.setItem.mock.calls.filter(
         ([key]) => key === "ade.userPreferences.v1",
@@ -441,7 +441,7 @@ describe("appStore", () => {
       const latest = calls[calls.length - 1];
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({
-        launchPromptClipboardEnabled: false,
+        promptClipboardCopyEnabled: false,
         launchPromptClipboardNoticeEnabled: false,
       });
     });

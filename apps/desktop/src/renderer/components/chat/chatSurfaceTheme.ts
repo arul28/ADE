@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import type { ChatChromeTint } from "../../state/appStore";
 import type { ChatSurfaceChipTone, ChatSurfaceMode } from "../../../shared/types";
 import { PROVIDER_CHAT_ACCENTS as SHARED_PROVIDER_CHAT_ACCENTS } from "../../../shared/providerColors";
+import { contrastRatio, mixColors, parseColor, toHex, WCAG_AA_TEXT_CONTRAST, type Rgb } from "../../../shared/theme/color";
 
 export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
   standard: "#71717A",
@@ -169,15 +170,38 @@ export function effectiveChatAccent(accentColor: string, chromeTint: ChatChromeT
   return chromeTint === "neutral" ? NEUTRAL_CHROME_ACCENT : accentColor;
 }
 
-/**
- * The original bubble fill, retained for Claude and neutral chrome.
- */
-const CHAT_USER_BUBBLE_GRADIENT_DEFAULT =
-  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%)";
+function bubbleGradient(
+  start: string,
+  middleAt: number,
+  end: string,
+  middleMix?: { color: string; accentWeight: number },
+) {
+  const middle = middleMix
+    ? `color-mix(in srgb, var(--chat-accent) ${middleMix.accentWeight * 100}%, ${middleMix.color})`
+    : "var(--chat-accent)";
+  return {
+    background: `linear-gradient(135deg, ${start} 0%, ${middle} ${middleAt}%, ${end} 100%)`,
+    midpoint: (accent: Rgb): Rgb => middleMix
+      ? mixColors(accent, parseColor(middleMix.color)!, middleMix.accentWeight)
+      : accent,
+  };
+}
 
-/** Codex/OpenAI — temper the near-white accent with muted violet at every stop. */
-const CHAT_USER_BUBBLE_GRADIENT_LIGHT =
-  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 24%, #575065 76%) 0%, color-mix(in srgb, var(--chat-accent) 18%, #6d4c9a 82%) 50%, color-mix(in srgb, var(--chat-accent) 16%, #493560 84%) 100%)";
+/** The original violet blend for Claude and neutral chrome. */
+const CHAT_USER_BUBBLE_GRADIENT_DEFAULT = bubbleGradient(
+  "color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%)",
+  50,
+  "color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%)",
+  { color: "#7c3aed", accentWeight: 0.6 },
+);
+
+/** Codex/OpenAI's near-white accent is tempered with muted violet. */
+const CHAT_USER_BUBBLE_GRADIENT_LIGHT = bubbleGradient(
+  "color-mix(in srgb, var(--chat-accent) 24%, #575065 76%)",
+  50,
+  "color-mix(in srgb, var(--chat-accent) 16%, #493560 84%)",
+  { color: "#6d4c9a", accentWeight: 0.18 },
+);
 
 /**
  * Accents that retain the established violet gradient family.
@@ -197,15 +221,49 @@ const ACCENTS_KEEPING_ORIGINAL_BUBBLE = new Set(
  * out the same purple; deriving the stops from `--chat-accent` is what makes a
  * per-provider colour visible as that colour.
  */
-const CHAT_USER_BUBBLE_GRADIENT_ACCENT =
-  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 88%, #ffffff 12%) 0%, var(--chat-accent) 52%, color-mix(in srgb, var(--chat-accent) 84%, #000000 16%) 100%)";
+const CHAT_USER_BUBBLE_GRADIENT_ACCENT = bubbleGradient(
+  "color-mix(in srgb, var(--chat-accent) 88%, #ffffff 12%)",
+  52,
+  "color-mix(in srgb, var(--chat-accent) 84%, #000000 16%)",
+);
 
 /**
  * Near-black accents (Cursor, Pi) — lift instead of deepen, or the bubble
  * disappears into the transcript background and stops reading as a bubble.
  */
-const CHAT_USER_BUBBLE_GRADIENT_DEEP =
-  "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #ffffff 26%) 0%, color-mix(in srgb, var(--chat-accent) 86%, #ffffff 14%) 52%, var(--chat-accent) 100%)";
+const CHAT_USER_BUBBLE_GRADIENT_DEEP = bubbleGradient(
+  "color-mix(in srgb, var(--chat-accent) 74%, #ffffff 26%)",
+  52,
+  "var(--chat-accent)",
+  { color: "#ffffff", accentWeight: 0.86 },
+);
+
+const WHITE = { r: 255, g: 255, b: 255 };
+const BLACK = { r: 0, g: 0, b: 0 };
+
+/** Keep the gradient's midpoint unless white message text needs a darker fill. */
+function solidBubbleColor(midpoint: Rgb): string {
+  if (contrastRatio(WHITE, midpoint) >= WCAG_AA_TEXT_CONTRAST) return toHex(midpoint);
+  let low = 0;
+  let high = 1;
+  // Find the lightest readable mix to within one percentage point.
+  for (let step = 0; step < 7; step++) {
+    const weight = (low + high) / 2;
+    if (contrastRatio(WHITE, mixColors(midpoint, BLACK, weight)) >= WCAG_AA_TEXT_CONTRAST) {
+      low = weight;
+    } else {
+      high = weight;
+    }
+  }
+  return toHex(mixColors(midpoint, BLACK, low));
+}
+
+function bubbleFillVars(accent: string, gradient: ReturnType<typeof bubbleGradient>): CSSProperties {
+  return {
+    ["--chat-user-bubble-gradient" as string]: gradient.background,
+    ["--chat-user-bubble-solid" as string]: solidBubbleColor(gradient.midpoint(parseColor(accent)!)),
+  };
+}
 
 /** Provider-colored chrome (default) — former “standard” lane accent strength. */
 function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | null): CSSProperties {
@@ -214,16 +272,13 @@ function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | nu
   const light = isLightChatAccent(accent);
   const deep = isDeepChatAccent(accent);
   const keepsOriginal = ACCENTS_KEEPING_ORIGINAL_BUBBLE.has(accent.toLowerCase());
-  // Only the fill differs for a pinned accent: neither Claude nor Codex is
-  // ever `deep`, so the mix ternaries were identical on both arms.
+  const gradient = keepsOriginal
+    ? (light ? CHAT_USER_BUBBLE_GRADIENT_LIGHT : CHAT_USER_BUBBLE_GRADIENT_DEFAULT)
+    : deep ? CHAT_USER_BUBBLE_GRADIENT_DEEP : CHAT_USER_BUBBLE_GRADIENT_ACCENT;
   return {
     ["--chat-user-border-accent-mix" as string]: light ? "22%" : deep ? "46%" : "28%",
     ["--chat-user-shadow-accent-mix" as string]: light ? "28%" : deep ? "44%" : "34%",
-    ["--chat-user-bubble-gradient" as string]: keepsOriginal
-      ? (light ? CHAT_USER_BUBBLE_GRADIENT_LIGHT : CHAT_USER_BUBBLE_GRADIENT_DEFAULT)
-      : deep
-        ? CHAT_USER_BUBBLE_GRADIENT_DEEP
-        : CHAT_USER_BUBBLE_GRADIENT_ACCENT,
+    ...bubbleFillVars(accent, gradient),
     ...sharedSurfaceTokens(accent, m),
   };
 }
@@ -235,7 +290,7 @@ function neutralChatSurfaceVars(): CSSProperties {
   return {
     ["--chat-user-border-accent-mix" as string]: "20%",
     ["--chat-user-shadow-accent-mix" as string]: "24%",
-    ["--chat-user-bubble-gradient" as string]: CHAT_USER_BUBBLE_GRADIENT_DEFAULT,
+    ...bubbleFillVars(accent, CHAT_USER_BUBBLE_GRADIENT_DEFAULT),
     ...sharedSurfaceTokens(accent, m),
   };
 }

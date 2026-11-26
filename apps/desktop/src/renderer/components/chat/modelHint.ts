@@ -17,10 +17,17 @@
  * dismissals of "Haiku?" for small requests and Jev says they would not take
  * it again; three acceptances and it says they would.
  *
+ * A model that offers a context window choice (Copilot's long context tier,
+ * read from the model itself, so any provider that adds tiers gets it) adds a
+ * question about the window the request needs. That works with no catalogue
+ * entry too: the catalogue covers Claude, Codex, OpenCode and Cursor, and
+ * Copilot is not among them, so there the context question is asked alone.
+ *
  * Every gap (Jev null or unsure, no catalogue, no choices) is "no hint": the
  * composer stays exactly as it was.
  */
 import { REASONING_TIERS_LOW_TO_HIGH } from "../../../shared/backgroundUtilityModel";
+import type { AgentChatCopilotContextTier } from "../../../shared/types/chat";
 import type { JevChoiceAnswer, JevDecideRequest, JevNoulAnswer, JevQuestion } from "../../../shared/types/jev";
 import type { UserCatalogModel, UserModelCatalog } from "../../../main/services/router/modelCatalog";
 import type { CheaperHintOutcome, ModelHintHistoryEntry } from "./modelHintHistory";
@@ -174,6 +181,66 @@ export function hintChoices(args: {
   return choices;
 }
 
+/** A context window choice the current model offers. */
+export type ContextWindowChoice = {
+  displayName: string;
+  defaultWindow: number | null;
+  longWindow: number | null;
+};
+
+function tokensLabel(tokens: number | null): string {
+  if (!tokens) return "";
+  return tokens >= 1_000_000
+    ? ` (${Number((tokens / 1_000_000).toFixed(1))}M tokens)`
+    : ` (${Math.round(tokens / 1_000)}K tokens)`;
+}
+
+/** The context question's answer keys, and the tier each one names. */
+const CONTEXT_ANSWER_TIER = { standard: "default", long: "long_context" } as const satisfies Record<string, AgentChatCopilotContextTier>;
+
+function contextQuestion(choice: ContextWindowChoice): JevQuestion {
+  return {
+    type: "choice",
+    instructions: "Pick the context window this request needs. The long window holds far more (very large files, long logs, reading much of a codebase at once) and costs more per request; most requests fit the standard window.",
+    criteria: {
+      standard: `Standard window${tokensLabel(choice.defaultWindow)}`,
+      long: `Long window${tokensLabel(choice.longWindow)}, costs more`,
+    } satisfies Record<keyof typeof CONTEXT_ANSWER_TIER, string>,
+  };
+}
+
+/** The tier Jev is sure of, when it is not the current one. */
+export function contextTierFromAnswer(
+  answer: JevChoiceAnswer | undefined,
+  current: AgentChatCopilotContextTier,
+): AgentChatCopilotContextTier | null {
+  if (!answer || answer.confidence < MIN_CONFIDENCE) return null;
+  const tier = CONTEXT_ANSWER_TIER[answer.choice as keyof typeof CONTEXT_ANSWER_TIER] ?? null;
+  return tier && tier !== current ? tier : null;
+}
+
+/** A hint that changes only the context window: model and effort stay. */
+export function contextHintFor(args: {
+  tier: AgentChatCopilotContextTier;
+  modelId: string;
+  displayName: string;
+  effort: string | null;
+}): ModelHint {
+  const longer = args.tier === "long_context";
+  return {
+    kind: "context",
+    modelId: args.modelId,
+    displayName: args.displayName,
+    effort: args.effort,
+    contextTier: args.tier,
+    cheaper: false,
+    direction: longer ? "up" : "down",
+    reason: longer
+      ? "Jev's read of this prompt: it needs more room than the standard window"
+      : "Jev's read of this prompt: the standard window holds it, for less",
+  };
+}
+
 export type ModelHintContext = {
   prompt: string;
   laneName: string | null;
@@ -185,6 +252,8 @@ export type ModelHintContext = {
   /** This user's answers to past cheaper-model chips, newest first. */
   outcomes: readonly CheaperHintOutcome[];
   choices: readonly HintChoice[];
+  /** The current model's context window choice, when it offers one. */
+  context: ContextWindowChoice | null;
 };
 
 function historyLine(entry: ModelHintHistoryEntry): string {
@@ -238,6 +307,7 @@ export function buildModelHintRequest(context: ModelHintContext) {
       criteria: Object.fromEntries(efforts.map((effort) => [effort, `${effort} effort`])),
     };
   }
+  if (context.context) questions.context = contextQuestion(context.context);
   return {
     feature: "model_hint",
     state: lines.filter((line) => line != null).join("\n"),
@@ -251,7 +321,7 @@ function effortsOf(choices: readonly HintChoice[]): string[] {
     .sort((a, b) => effortRank(a) - effortRank(b));
 }
 
-export type ModelHintAnswers = Partial<Record<"model" | "effort" | "cheapest", JevChoiceAnswer>> & { wouldTake?: JevNoulAnswer };
+export type ModelHintAnswers = Partial<Record<"model" | "effort" | "cheapest" | "context", JevChoiceAnswer>> & { wouldTake?: JevNoulAnswer };
 
 type Picked = { choice: HintChoice; modelConfidence: number; effortProbabilities: Record<string, number> | null };
 
@@ -274,11 +344,16 @@ function pickedChoice(answers: ModelHintAnswers, choices: readonly HintChoice[])
 }
 
 export type ModelHint = {
+  /**
+   * What changes: another model (with its effort), only the effort, or only
+   * the context window.
+   */
+  kind: "model" | "effort" | "context";
   modelId: string;
   displayName: string;
   effort: string | null;
-  /** True when only the effort differs from the current selection. */
-  effortOnly: boolean;
+  /** The context window to switch to: the whole hint for `context`, alongside the effort for `effort`. */
+  contextTier?: AgentChatCopilotContextTier;
   direction: "up" | "down";
   /** A cheaper model for a small request, from the cheapest-model question; its outcome is remembered. */
   cheaper: boolean;
@@ -340,7 +415,7 @@ export function hintFromAnswer(args: {
       modelId: cheaper.modelId,
       displayName: cheaper.displayName,
       effort: cheaper.effort,
-      effortOnly: false,
+      kind: "model",
       direction: "down",
       cheaper: true,
       reason: "A small request: a cheaper model does it as well",
@@ -363,7 +438,7 @@ export function hintFromAnswer(args: {
       modelId: current.modelId,
       displayName: current.displayName,
       effort: choice.effort,
-      effortOnly: true,
+      kind: "effort",
       cheaper: false,
       direction: effortRank(choice.effort) > effortRank(currentEffort) ? "up" : "down",
       reason,
@@ -383,7 +458,7 @@ export function hintFromAnswer(args: {
     modelId: choice.modelId,
     displayName: choice.displayName,
     effort: choice.effort,
-    effortOnly: false,
+    kind: "model",
     cheaper: false,
     direction: "up",
     reason,

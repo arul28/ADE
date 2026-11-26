@@ -2,26 +2,42 @@ import { memo } from "react";
 import { ArrowDown, ArrowUp, X } from "@phosphor-icons/react";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { reasoningEffortTierLabel } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { shortName } from "./modelHint";
+import { shortName, type ModelHint } from "./modelHint";
 import type { ComposerModelHint } from "./useComposerModelHint";
 
 function effortWord(effort: string | null): string {
   return effort ? reasoningEffortTierLabel(effort).toLowerCase() : "";
 }
 
+const CHIP_TITLE: Record<ModelHint["kind"], string> = {
+  model: "Suggested model",
+  effort: "Suggested effort",
+  context: "Suggested context window",
+};
+
 /** The chip for `useComposerModelHint`'s advice. */
 export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip }: { chip: ComposerModelHint["chip"] }) {
   if (!chip) return null;
   const { hint, apply, dismiss } = chip;
   const Arrow = hint.direction === "up" ? ArrowUp : ArrowDown;
-  const label = hint.effortOnly
-    ? `${effortWord(hint.effort)} effort?`
-    : `${shortName(hint.displayName)}${hint.effort ? ` · ${effortWord(hint.effort)}` : ""}?`;
+  const contextWord = hint.contextTier === "long_context" ? "long context" : hint.contextTier ? "standard context" : null;
+  const withContext = contextWord ? ` · ${contextWord}` : "";
+  const label = {
+    model: `${shortName(hint.displayName)}${hint.effort ? ` · ${effortWord(hint.effort)}` : ""}?`,
+    effort: `${effortWord(hint.effort)} effort${withContext}?`,
+    context: `${contextWord}?`,
+  }[hint.kind];
+  const actionLabel = hint.kind === "context"
+    ? `Use the ${contextWord} window`
+    : `Use ${hint.displayName}${hint.effort ? ` at ${effortWord(hint.effort)} effort` : ""}${contextWord ? ` with the ${contextWord} window` : ""}`;
 
   return (
     <SmartTooltip
       forceEnabled
-      content={{ label: hint.effortOnly ? "Suggested effort" : "Suggested model", description: hint.reason }}
+      content={{
+        label: CHIP_TITLE[hint.kind],
+        description: hint.reason,
+      }}
     >
       <span
         data-chat-composer-model-hint=""
@@ -29,7 +45,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip 
       >
         <button
           type="button"
-          aria-label={`Use ${hint.displayName}${hint.effort ? ` at ${effortWord(hint.effort)} effort` : ""}`}
+          aria-label={actionLabel}
           className="inline-flex h-full min-w-0 items-center gap-0.5 rounded-l-md pl-1.5 pr-1 hover:bg-violet-500/[0.08] hover:text-fg"
           onClick={apply}
         >
