@@ -62,7 +62,9 @@ extension WorkChatSessionView {
   /// The tools/files lists behind a turn line's toggles, and which one the
   /// reader opened. State lives in the central set so it survives recycling.
   func turnWorkDisclosure(turnKey: String) -> WorkTurnWorkDisclosure {
-    let activity = turnToolActivity.completedByTurnId[turnKey]
+    let completed = turnToolActivity.completedByTurnId[turnKey]
+    // The CTO thread's spawn rows stand for its spawn calls.
+    let activity = ctoLive != nil ? ctoTurnActivity(completed) : completed
     let files = turnToolActivity.completedFilesByTurnId[turnKey]
     let open: WorkTurnWorkSection? = cardExpansion.isExpanded(
       id: workTurnWorkExpansionId(.tools, turnKey: turnKey), defaultsOpen: false

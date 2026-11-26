@@ -434,6 +434,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let stopSource = optionalString(eventDict["stopSource"])
       let stopReason = optionalString(eventDict["stopReason"])
       let subagentResumed = eventDict["resumed"] as? Bool
+      let subagentReadOnly = eventDict["readOnly"] as? Bool
       // Host-attached HTTP status on a terminal SDK API error (429 = usage
       // limit). The only limit signal the transcript itself carries; never
       // inferred from assistant prose (`.specs/CONTRACT.md`).
@@ -1212,6 +1213,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         subagentSpawnDepth: subagentSpawnDepth,
         subagentResourceLinks: subagentResourceLinks,
         subagentResumed: subagentResumed,
+        subagentReadOnly: subagentReadOnly,
         apiErrorStatus: apiErrorStatus,
         isLegacySubagentCompletedFrame: type == "subagent.completed",
         stopSource: stopSource,

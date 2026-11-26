@@ -802,10 +802,12 @@ describe("createAgentChatService", () => {
       expect(notice.message).toBe('"Retry fix" · Claude · finished · PR #1234');
       expect(notice.message).not.toContain("rewrote the flaky helper");
 
-      // The subagent_result card restates the whole summary, so the CTO thread
-      // does not get one.
-      expect(events.some((event) =>
-        event.sessionId === cto.id && event.event.type === "subagent_result")).toBe(false);
+      // The CTO thread gets the child's result too, so its spawn row settles;
+      // the CTO surfaces draw only the line above, never the summary.
+      expect(events.filter((event) =>
+        event.sessionId === cto.id && event.event.type === "subagent_result").map((event) => event.event)).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
+      ]);
 
       // The model is still told, with the same single line.
       const wake = await vi.waitFor(() => {
@@ -817,6 +819,20 @@ describe("createAgentChatService", () => {
         return found!;
       });
       expect((wake.event as any).metadata?.spawnCompletion).toBeUndefined();
+
+      // A later child turn reopens the CTO's row, as for any parent: the row
+      // that the first result settled must read as running again.
+      await service.messageSession({ sessionId: child.id, text: "Handle the follow-up too." });
+      await vi.waitFor(() => {
+        expect(events.filter((event) =>
+          event.sessionId === cto.id && event.event.type === "subagent_result")).toHaveLength(2);
+      });
+      const ctoStarts = events
+        .filter((event) => event.sessionId === cto.id && event.event.type === "subagent_started")
+        .map((event) => event.event);
+      expect(ctoStarts).toHaveLength(2);
+      expect((ctoStarts[0] as any).resumed).not.toBe(true);
+      expect(ctoStarts[1]).toMatchObject({ taskId: `chat:${child.id}`, resumed: true });
     });
 
     it("wakes the parent when a human messages a subagent, and names that human message in the report", async () => {

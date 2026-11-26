@@ -31,8 +31,6 @@ export type ChildCompletionDelivery = {
   /** Carries `childTurnId`, the durable dedupe anchor in the parent transcript. */
   spawnCompletion: AgentChatSpawnCompletion;
   ctoPrNumber: number | null;
-  /** CLI children need their existing inline spawn card closed in CTO threads. */
-  emitCtoSubagentResult?: boolean;
   /** What the woken parent agent reads (subagents only). */
   wakeText: string;
   /**
@@ -161,7 +159,6 @@ export function createCliChildReports(deps: {
       summary,
       spawnCompletion,
       ctoPrNumber: readChildPullRequestNumber(null, summary),
-      emitCtoSubagentResult: true,
       routeQuietly: trigger === "reconcile" || repeatsTurnReport,
       wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
       onParentGone: (reason) => {
@@ -243,7 +240,6 @@ export function createCliChildReports(deps: {
       summary,
       spawnCompletion,
       ctoPrNumber: readChildPullRequestNumber(null, summary),
-      emitCtoSubagentResult: true,
       routeQuietly: selfReported,
       wakeText: `Your ${cliChildNoun(lineage.spawnKind)} "${childTitle}" ${resultStatus === "failed" ? "ended a turn on an error" : "finished a turn"} — ${summary}\n`
         + `(It is still open at its prompt. Full terminal output: \`ade terminal read ${row.id}\`.)`,

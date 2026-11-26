@@ -1724,6 +1724,8 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   var taskType: String? = nil
   var command: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// A spawned chat that started read-only (`permissionMode "plan"`): a background helper.
+  var readOnly: Bool = false
   var parentAgentId: String? = nil
   var spawnDepth: Int? = nil
   var resourceLinks: [AgentChatResourceLink] = []
@@ -1740,6 +1742,9 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   /// from the child's own Work row, not the parent's transcript, so the row
   /// says "Needs you" even after the spawn result landed.
   var needsInput: Bool = false
+  /// The agent's first start is not in the loaded transcript: the snapshot
+  /// began at a result or a resumed start whose spawn sits in an older page.
+  var startNotLoaded: Bool = false
 
   var id: String { taskId }
 }
@@ -2436,6 +2441,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let subagentResourceLinks: [AgentChatResourceLink]
   /// True when this start reopens a completed tracked child session.
   let subagentResumed: Bool?
+  /// A spawned chat that started read-only: a background helper.
+  let subagentReadOnly: Bool?
   /// HTTP status attached to an SDK terminal API error on a `done` frame
   /// (notably 429). Kept beside the event for the same reason as the subagent
   /// fields above: the turn footer needs "this turn ended at a usage limit"
@@ -2480,6 +2487,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink] = [],
     subagentResumed: Bool? = nil,
+    subagentReadOnly: Bool? = nil,
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
@@ -2502,6 +2510,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
     self.subagentResumed = subagentResumed
+    self.subagentReadOnly = subagentReadOnly
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
