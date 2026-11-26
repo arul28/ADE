@@ -259,17 +259,17 @@ export function diffLineItems(
     const old = linkedFrom(line);
     if (old != null && !linked.has(old)) linked.set(old, index);
   });
+  for (const index of linked.values()) paired.add(index);
   for (const old of removed) {
     const link = linked.get(old);
     if (link != null) {
-      paired.add(link);
       changes.push({ area, op: "changed", text: added[link]!, previous: old });
       continue;
     }
     let best = -1;
     let bestScore = 0.35;
     added.forEach((line, index) => {
-      if (paired.has(index) || [...linked.values()].includes(index)) return;
+      if (paired.has(index)) return;
       const score = noteSimilarity(area === "rules" ? rulePart(old) : old, area === "rules" ? rulePart(line) : line);
       if (score > bestScore) {
         best = index;
