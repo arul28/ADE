@@ -72,8 +72,13 @@ function load(): void {
   publish({ loading: true });
   void listMachines().then(
     (result) => {
-      // A read the last account started (before a sign-out or another account) lands nowhere.
-      if (current !== generation || account !== accountScopeGeneration()) return;
+      if (current !== generation) return;
+      // A read the last account started (before a sign-out or another account)
+      // lands nowhere; the account signed in now is read again.
+      if (account !== accountScopeGeneration()) {
+        load();
+        return;
+      }
       // The lane computers outlive this read, for the composer and chat chips.
       // An unread list (the web app with no computer online) is not "no computers": keep the last index.
       if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
@@ -151,7 +156,10 @@ export function refreshCloudMachines(): void {
   const account = accountScopeGeneration();
   void listMachines().then(
     (result) => {
-      if (account !== accountScopeGeneration()) return;
+      if (account !== accountScopeGeneration()) {
+        refreshCloudMachines();
+        return;
+      }
       // An unread list (the web app with no computer online) is not "no computers": keep the last index.
       if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
       noteCloudAccountRead(result);
