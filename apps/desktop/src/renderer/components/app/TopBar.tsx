@@ -157,6 +157,11 @@ import { AdeWordmark } from "../ui/AdeWordmark";
 import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
 
 /** What the window shows in front: the binding, and whether Home covers it. */
+/** Main refused the open because the ADE Cloud computer is asleep (`CloudComputerAsleepError`; Electron keeps the name in the text). */
+function refusedAsAsleep(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("CloudComputerAsleepError");
+}
+
 type WindowFront = { bindingKey: string | null; newTab: boolean };
 
 function frontOfWindow(): WindowFront {
@@ -1492,14 +1497,17 @@ export function TopBar({
    * connected computer that refused the open keeps the error banner, a folder
    * with no repository has no ADE Cloud tab, and a later choice (another
    * open, or Home) owns the front. `frontBefore` is `frontOfWindow()` taken
-   * just before the open started.
+   * just before the open started. An open refused because the computer is
+   * asleep falls back even while its link still reads connected (a sleeping
+   * computer's relay can look open).
    */
   const moveFailedOpenToAdeCloud = useCallback((
     binding: RemoteOpenProjectBinding,
     adeCloud: AdeCloudBindingProject | null,
     frontBefore: WindowFront,
+    error: unknown,
   ): boolean => {
-    const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
+    const connected = !refusedAsAsleep(error) && (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
       connection.target.id === binding.targetId && connection.state === "connected"
     ));
     const store = useAppStore.getState();
@@ -1613,7 +1621,7 @@ export function TopBar({
             const repository = adeCloudProjectForCopy(active.id, active.displayName, copy);
             const frontBefore = frontOfWindow();
             void store.switchRemoteProject(copy.targetId, copy.projectId).catch((error: unknown) => {
-              if (!moveFailedOpenToAdeCloud(copy, repository, frontBefore)) reportStripRestoreFailure(error);
+              if (!moveFailedOpenToAdeCloud(copy, repository, frontBefore, error)) reportStripRestoreFailure(error);
             });
           }
         }
@@ -1917,8 +1925,8 @@ export function TopBar({
       }
       carryRouteToCopy(remoteBinding?.key ?? project?.rootPath ?? null, binding.key, tabGroupsRef.current);
       const frontBefore = frontOfWindow();
-      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {
-        moveFailedOpenToAdeCloud(binding, adeCloudTabFor(binding), frontBefore);
+      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch((error: unknown) => {
+        moveFailedOpenToAdeCloud(binding, adeCloudTabFor(binding), frontBefore, error);
       });
     },
     [
