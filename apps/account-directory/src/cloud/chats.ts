@@ -12,6 +12,7 @@ import {
   type CloudComputerDeleteReason,
   CLOUD_INSTANCE_ID,
   cloudChatRowSettingsOf,
+  cloudLaneColorOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
@@ -123,7 +124,7 @@ async function accountBytes(env: CloudEnv, userId: string): Promise<number> {
 }
 
 /** The row's text fields and their lengths; `settings` is checked on its own (`cloudChatRowSettingsOf`). */
-type RowTextKey = Exclude<keyof CloudChatRowInput, "settings">;
+type RowTextKey = Exclude<keyof CloudChatRowInput, "settings" | "laneColor">;
 const SUMMARY_LIMITS: Record<RowTextKey, number> = {
   title: 300,
   laneId: 160,
@@ -173,6 +174,8 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
     spawnKind: spawnKind && /^[a-z][a-z0-9_-]{0,39}$/.test(spawnKind) ? spawnKind : null,
     // Settings that don't check out are left out, never a refused part.
     settings: cloudChatRowSettingsOf(record.settings),
+    // Not a `#rrggbb` hex: null, never a refused part.
+    laneColor: cloudLaneColorOf(record.laneColor),
   };
 }
 
@@ -275,6 +278,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     provider: rowInput.provider,
     model: rowInput.model,
     settings: rowInput.settings,
+    laneColor: rowInput.laneColor ?? null,
     lastActivityAt: rowInput.lastActivityAt,
     lastSeq: Math.max(seq, lastSeq),
     updatedAt: now,
@@ -290,6 +294,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     projectRoot: row.projectRoot,
     // Sealed with the rest: they say how the person works, like the title.
     ...(row.settings ? { settings: row.settings } : {}),
+    ...(row.laneColor ? { laneColor: row.laneColor } : {}),
   })));
   const lastActivityMs = rowInput.lastActivityAt ? Date.parse(rowInput.lastActivityAt) : null;
   // The row this part was read against, and only it: a copy deleted or made again since takes
@@ -381,6 +386,7 @@ export function rowToJson(row: CopyRow, summary: Record<string, unknown> | null)
     provider: text(summary?.provider),
     model: text(summary?.model),
     settings: cloudChatRowSettingsOf(summary?.settings),
+    laneColor: cloudLaneColorOf(summary?.laneColor),
     lastActivityAt: row.last_activity_at != null ? new Date(row.last_activity_at).toISOString() : null,
     lastSeq: row.last_seq,
     updatedAt: row.updated_at,

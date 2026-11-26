@@ -169,6 +169,8 @@ struct CloudComputerTruth: Decodable, Equatable {
 struct CloudLaneOverview: Decodable, Equatable {
   let laneId: String
   let laneName: String?
+  /// The lane's color (`#rrggbb`) from its saved chats or copies; nil when none says (or an older server).
+  let laneColor: String?
   let branch: String?
   /// The machine key its saved chats are under (the computer's, or the former computer's).
   let machineKey: String?
@@ -177,13 +179,14 @@ struct CloudLaneOverview: Decodable, Equatable {
   let withoutComputerReason: String?
   let prState: String?
 
-  private enum CodingKeys: String, CodingKey { case laneId, laneName, branch, machineKey, computer, withoutComputer, prState }
+  private enum CodingKeys: String, CodingKey { case laneId, laneName, laneColor, branch, machineKey, computer, withoutComputer, prState }
   private struct Without: Decodable { let reason: String? }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     laneId = try c.decode(String.self, forKey: .laneId)
     laneName = c.lenient(String.self, forKey: .laneName)
+    laneColor = cloudLaneColor(c.lenient(String.self, forKey: .laneColor))
     branch = c.lenient(String.self, forKey: .branch)
     machineKey = c.lenient(String.self, forKey: .machineKey)
     computer = c.lenient(CloudComputerTruth.self, forKey: .computer)
@@ -212,19 +215,22 @@ struct CloudSessionRow: Decodable, Equatable, Identifiable {
   let lineCount: Int
   /// When the computer last saved it (ms).
   let updatedAt: Double
+  /// The lane's color (`#rrggbb`) as its computer saved it; nil from an older one.
+  let laneColor: String?
 
   var id: String { "\(machineKey)\n\(sessionId)" }
   var isShell: Bool { kind == "shell" }
 
   private enum CodingKeys: String, CodingKey {
-    case machineKey, sessionId, kind, title, laneId, laneName, toolType, projectKey, parentChatId, status, lastActivityAt, lineCount, updatedAt
+    case machineKey, sessionId, kind, title, laneId, laneName, toolType, projectKey, parentChatId, status, lastActivityAt, lineCount, updatedAt, laneColor
   }
 
   init(
     machineKey: String, sessionId: String, kind: String, title: String?, laneId: String?, laneName: String?,
     toolType: String?, projectKey: String?, parentChatId: String?, status: String?, lastActivityAt: String?,
-    lineCount: Int, updatedAt: Double
+    lineCount: Int, updatedAt: Double, laneColor: String? = nil
   ) {
+    self.laneColor = laneColor
     self.machineKey = machineKey
     self.sessionId = sessionId
     self.kind = kind
@@ -255,6 +261,7 @@ struct CloudSessionRow: Decodable, Equatable, Identifiable {
     lastActivityAt = c.lenient(String.self, forKey: .lastActivityAt)
     lineCount = c.lenient(Int.self, forKey: .lineCount) ?? 0
     updatedAt = c.lenient(Double.self, forKey: .updatedAt) ?? 0
+    laneColor = cloudLaneColor(c.lenient(String.self, forKey: .laneColor))
   }
 }
 

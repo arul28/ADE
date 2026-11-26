@@ -11,6 +11,7 @@ import {
   type CloudSessionRowInput,
   type CloudSessionMoveResult,
   CLOUD_INSTANCE_ID,
+  cloudLaneColorOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql } from "./http";
 import { openBytes, openJson, sealBytes, sealJson, userKeys, type UserKeys } from "./seal";
@@ -152,6 +153,8 @@ function readSessionRowInput(value: unknown): CloudSessionRowInput | null {
     parentChatId,
     status: pickText(record, "status", 40),
     lastActivityAt,
+    // Not a `#rrggbb` hex: null, never a refused copy.
+    laneColor: cloudLaneColorOf(record.laneColor),
   };
 }
 
@@ -180,6 +183,7 @@ async function rowOf(keys: UserKeys, row: SessionRow): Promise<CloudSessionRow> 
     parentChatId: row.parent_chat_id,
     status: text("status"),
     lastActivityAt: row.last_activity_at != null ? new Date(row.last_activity_at).toISOString() : null,
+    laneColor: cloudLaneColorOf(record.laneColor),
     lineCount: row.line_count,
     bytes: row.bytes,
     updatedAt: row.updated_at,
@@ -215,6 +219,7 @@ async function handlePut(request: Request, env: CloudEnv, bucket: R2Bucket, user
     projectId: input.projectId,
     status: input.status,
     format,
+    ...(input.laneColor ? { laneColor: input.laneColor } : {}),
   });
   const lastActivity = input.lastActivityAt ? Date.parse(input.lastActivityAt) : null;
   const key = newObjectKey(userId, machineKey, sessionId);

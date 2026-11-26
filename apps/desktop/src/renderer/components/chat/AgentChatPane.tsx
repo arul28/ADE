@@ -287,7 +287,7 @@ import {
 } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecyclePillVisible } from "../work/useSessionLifecycleSnapshot";
-import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { listedProjectLanesNow, useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
 import { remoteConnectionMarkNow, useReadRetryOnReconnect, useRemoteConnectionMark, useRemoteTargetReconnecting } from "../../state/projectMachines";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { useCloudModelCatalog } from "../../state/cloudModelCatalog";
@@ -487,7 +487,7 @@ import { useChatLaneMoveSource } from "../laneMove/useChatLaneMoveSource";
 import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTier } from "../cloudLane/CloudLaneWithoutComputer";
 import type { CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
-import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import { cloudLaneStartBlock, withCloudLaneColor } from "../../../shared/cloudLaneLaunch";
 import { accountProjectForOrigin } from "../projects/useHomeAccountProjects";
 import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
@@ -14900,7 +14900,7 @@ export function AgentChatPane({
         origin: `https://${origin}`,
         accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
         laneName,
-        laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+        laneConfig: withCloudLaneColor(configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null, listedProjectLanesNow()),
         sizeId: cloud.sizeId,
         sizeChoice: cloud.sizeChoice,
       }),
@@ -15010,7 +15010,8 @@ export function AgentChatPane({
       // owns every ADE Cloud launch; there is no renderer chain to fall back to.
       const { cloud: _cloud, originClientId: _originClientId, ...cloudArgs } = args;
       void startAdeCloudLaunch({
-        args: { ...cloudArgs, laneId: newLaneId, laneName },
+        // The computer holds only this lane, so this window picks its color among the project's lanes.
+        args: { ...cloudArgs, laneId: newLaneId, laneName, laneConfig: withCloudLaneColor(laneConfig, listedProjectLanesNow(), existingLane?.laneId) },
         sizeId: cloud.sizeId,
         ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
         originUrl: cloud.originUrl,

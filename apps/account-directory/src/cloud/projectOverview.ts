@@ -91,6 +91,11 @@ export async function handleProjectOverview(url: URL, env: CloudEnv, userId: str
     listGitSummaries(env, keys, userId, origin),
   ]);
 
+  // A lane's color is what its saved chats and copies in this answer carry (newest first): no extra read.
+  const laneColors = new Map<string, string>();
+  for (const row of [...chats.chats, ...sessions.sessions]) {
+    if (row.laneId && row.laneColor && !laneColors.has(row.laneId)) laneColors.set(row.laneId, row.laneColor);
+  }
   const lanes: CloudLaneOverview[] = [];
   const seen = new Set<string>();
   for (const computer of computers.results ?? []) {
@@ -99,6 +104,7 @@ export async function handleProjectOverview(url: URL, env: CloudEnv, userId: str
     lanes.push({
       laneId: computer.lane_id,
       laneName: computer.lane_name ?? null,
+      laneColor: laneColors.get(computer.lane_id) ?? null,
       branch: computer.lane_branch ?? null,
       machineKey: computer.machine_key,
       computer: computerTruthOf(computer),
@@ -112,6 +118,7 @@ export async function handleProjectOverview(url: URL, env: CloudEnv, userId: str
     lanes.push({
       laneId: lane.lane_id,
       laneName: lane.lane_name,
+      laneColor: laneColors.get(lane.lane_id) ?? null,
       branch: lane.branch_ref,
       machineKey: lane.former_machine_key,
       computer: null,

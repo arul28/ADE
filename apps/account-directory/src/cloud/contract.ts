@@ -1290,7 +1290,21 @@ export type CloudChatRowInput = {
    * rests. Older computers leave it out; older servers drop it.
    */
   settings?: CloudChatRowSettings | null;
+  /**
+   * The lane's color (`#rrggbb`), so a client shows a resting lane in its own
+   * color. Older computers leave it out (null); anything that isn't a
+   * `#rrggbb` hex reads as null (`cloudLaneColorOf`).
+   */
+  laneColor?: string | null;
 };
+
+/** A lane color as a saved row or a launch carries it: `#rrggbb`. */
+const CLOUD_LANE_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/** The lane color in `value`, or null when it isn't a `#rrggbb` hex. Never a refusal. */
+export function cloudLaneColorOf(value: unknown): string | null {
+  return typeof value === "string" && CLOUD_LANE_COLOR.test(value.trim()) ? value.trim().toLowerCase() : null;
+}
 
 /** The text settings a saved chat row carries: each a short plain word or id. */
 const CLOUD_CHAT_ROW_TEXT_SETTINGS = [
@@ -1914,6 +1928,8 @@ export type CloudSessionRowInput = {
   /** `running` or `exited`, as the computer last saw it. */
   status: string | null;
   lastActivityAt: string | null;
+  /** The lane's color (`#rrggbb`); null from an older computer (`cloudLaneColorOf`). */
+  laneColor?: string | null;
 };
 
 export type CloudSessionRow = CloudSessionRowInput & {
@@ -2029,6 +2045,8 @@ export type CloudComputerTruth = {
 export type CloudLaneOverview = {
   laneId: string;
   laneName: string | null;
+  /** The lane's color (`#rrggbb`) from its saved chats or copies in this answer; null when none says. Older servers leave it out. */
+  laneColor?: string | null;
   branch: string | null;
   /** The machine key its saved chats are under (the computer's, or the former computer's). */
   machineKey: string | null;
@@ -2219,7 +2237,19 @@ export type CloudServerLaunchRequest = {
    * `autoName`: `name` is only the name from the prompt; the computer's brain renames the lane and its branch with
    * the AI name, as a lane on the person's own computer is. Left out: `name` is the person's and is kept.
    */
-  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null; autoName?: boolean };
+  lane: {
+    id: string;
+    name: string;
+    from?: string | null;
+    existingBranch?: string | null;
+    autoName?: boolean;
+    /**
+     * The lane's color (`#rrggbb`), picked by the app so it differs from the
+     * project's other lanes. Not a hex: left out. Left out, the computer picks
+     * one from the lane id.
+     */
+    color?: string | null;
+  };
   chat?: {
     provider: string;
     modelId: string;

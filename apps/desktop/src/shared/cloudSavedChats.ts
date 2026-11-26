@@ -5,6 +5,7 @@
 
 import {
   cloudChatRowSettingsOf,
+  cloudLaneColorOf,
   type CloudChatComputer,
   type CloudChatRow,
   type CloudChatRowInput,
@@ -21,6 +22,13 @@ export type { CloudChatComputer, CloudChatRowSettings, CloudComputerDeleteReason
  * computer rests. Null when the chat has none.
  */
 export { cloudChatRowSettingsOf };
+
+/**
+ * A lane color as a saved row or a launch carries it (`#rrggbb`, lower case),
+ * or null. The computer sends its lane's color with each row; a client checks
+ * it again before it paints with it.
+ */
+export { cloudLaneColorOf };
 
 /**
  * A saved row's settings as summary fields, checked again: a client never

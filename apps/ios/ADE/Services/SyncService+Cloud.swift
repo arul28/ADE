@@ -1132,6 +1132,25 @@ extension SyncService {
     return out
   }
 
+  /// Every lane the phone lists for a repository: the focused project's
+  /// (when it is that repository) and each other machine's, ADE Cloud's
+  /// resting lanes too. A new ADE Cloud lane picks a color none of them uses:
+  /// its computer holds only that lane, so only a list of them all can tell
+  /// the colors apart.
+  func listedLanes(forOrigin origin: String) async -> [LaneSummary] {
+    guard let identity = workRepoIdentity(originUrl: origin) else { return [] }
+    var out: [LaneSummary] = []
+    for machine in machineFleet?.listedMachines ?? [] {
+      for project in machine.projects where workRepoIdentity(originUrl: project.repoOriginUrl) == identity {
+        out.append(contentsOf: project.lanes.map { $0.asLaneSummary() })
+      }
+    }
+    if let activeProject, workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName) == identity {
+      out.append(contentsOf: (try? await fetchLanes()) ?? [])
+    }
+    return out
+  }
+
   /// The open project's cloud lanes, one row each, for a new chat on an
   /// existing cloud lane. Ids are namespaced to each lane's own computer
   /// (`workRemoteLaneId`). A cloud computer's main checkout is left out.
@@ -1323,8 +1342,12 @@ extension SyncService {
       guard let origin = row.projectKey.flatMap({ nonEmptyTrimmed($0) })?.lowercased() else { continue }
       var entry = project(for: origin, projectId: nonEmptyTrimmed(row.projectId), root: nonEmptyTrimmed(row.projectRoot))
       let laneId = nonEmptyTrimmed(row.laneId) ?? "saved-chats"
-      if !entry.lanes.contains(where: { $0.id == laneId }) {
-        entry.lanes.append(RemoteRosterLane(id: laneId, name: nonEmptyTrimmed(row.laneName) ?? "Saved chats", color: nil, icon: nil, laneType: "worktree", branchRef: nil))
+      // The lane's color as its computer saved it with the chat (rows run newest first).
+      let laneColor = laneId == "saved-chats" ? nil : row.laneColor
+      if let index = entry.lanes.firstIndex(where: { $0.id == laneId }) {
+        if entry.lanes[index].color == nil { entry.lanes[index].color = laneColor }
+      } else {
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: nonEmptyTrimmed(row.laneName) ?? "Saved chats", color: laneColor, icon: nil, laneType: "worktree", branchRef: nil))
       }
       if !entry.chats.contains(where: { $0.id == row.chatId }) {
         let activity = nonEmptyTrimmed(row.lastActivityAt)
@@ -1359,7 +1382,9 @@ extension SyncService {
         // lane had when the chat started (before a rename).
         if let current = box.laneName.flatMap({ nonEmptyTrimmed($0) }) { entry.lanes[index].name = current }
       } else {
-        entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: nil, icon: nil, laneType: "worktree", branchRef: box.laneBranch))
+        // No saved chat yet: the color the overview's saved copies give, if the project was read.
+        let laneColor = CloudAtRestStore.shared.lane(machineKey: box.machineKey, laneId: laneId)?.laneColor
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: box.laneName ?? "Cloud lane", color: laneColor, icon: nil, laneType: "worktree", branchRef: box.laneBranch))
       }
       projects[origin] = entry
     }
@@ -1369,8 +1394,11 @@ extension SyncService {
       guard let origin = copy.projectKey.flatMap({ nonEmptyTrimmed($0) }) else { continue }
       var entry = project(for: origin, projectId: nil, root: nil)
       let laneId = nonEmptyTrimmed(copy.laneId) ?? "saved-chats"
-      if !entry.lanes.contains(where: { $0.id == laneId }) {
-        entry.lanes.append(RemoteRosterLane(id: laneId, name: nonEmptyTrimmed(copy.laneName) ?? "Saved chats", color: nil, icon: nil, laneType: "worktree", branchRef: nil))
+      let laneColor = laneId == "saved-chats" ? nil : copy.laneColor
+      if let index = entry.lanes.firstIndex(where: { $0.id == laneId }) {
+        if entry.lanes[index].color == nil { entry.lanes[index].color = laneColor }
+      } else {
+        entry.lanes.append(RemoteRosterLane(id: laneId, name: nonEmptyTrimmed(copy.laneName) ?? "Saved chats", color: laneColor, icon: nil, laneType: "worktree", branchRef: nil))
       }
       let rowId = cloudSessionCopyRowId(machineKey: copy.machineKey, sessionId: copy.sessionId)
       if !entry.chats.contains(where: { $0.id == rowId }) {

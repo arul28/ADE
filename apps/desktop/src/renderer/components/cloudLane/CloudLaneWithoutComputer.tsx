@@ -2,6 +2,7 @@ import { useId, useMemo, useState } from "react";
 import { Plus, X } from "@phosphor-icons/react";
 import { cloudCatalogOf, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
+import { withCloudLaneColor } from "../../../shared/cloudLaneLaunch";
 import { cloudTiers, type CloudTierId } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -14,7 +15,7 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
-import { requestCloudSavedChatsRead } from "../../state/crossMachineLanes";
+import { listedProjectLanesNow, requestCloudSavedChatsRead } from "../../state/crossMachineLanes";
 import { CloudLaneSavedWork } from "./CloudLaneSavedWork";
 import { keptLaneFateSentence, noteKeptLaneDeleted } from "./cloudLanesWithoutComputer";
 import "./cloudLane.css";
@@ -77,7 +78,8 @@ export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer | null,
         laneName: lane.laneName,
         title: lane.laneName,
         prompt: "",
-        laneConfig: { mode: "existing", branchRef: cloudLaneRestartBranchRef(lane.branchRef) },
+        // The color the lane shows now (its saved chats'), else one no listed lane uses.
+        laneConfig: withCloudLaneColor({ mode: "existing", branchRef: cloudLaneRestartBranchRef(lane.branchRef) }, listedProjectLanesNow(), lane.laneId),
       },
       sizeId,
       originUrl,

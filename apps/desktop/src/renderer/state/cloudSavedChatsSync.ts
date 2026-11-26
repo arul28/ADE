@@ -24,7 +24,7 @@ import { MachineConnectError } from "../../shared/machineAddress";
 import { adeCloudEnabled } from "./cloudAccess";
 import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
 import { watchedCloudMachines } from "../components/remoteTargets/useCloudMachines";
-import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
+import { SAVED_CHATS_MACHINE_PREFIX, cloudLaneColorOf } from "../../shared/cloudSavedChats";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import {
   cloudConnectionMachineKey,
@@ -419,9 +419,17 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         : null;
       const kept = (previous?.lanes ?? []).filter((lane) => !listedLaneIds || listedLaneIds.has(lane.id));
       const known = new Set(kept.map((lane) => lane.id));
+      // A lane listed before its rows carried a color (or before a recolor) takes the newest saved one.
+      const savedColor = new Map<string, string>();
+      for (const row of rows) {
+        const color = cloudLaneColorOf(row.laneColor);
+        if (row.laneId && color && !savedColor.has(row.laneId)) savedColor.set(row.laneId, color);
+      }
       const lanes = kept.map((lane) => {
         const name = laneNow.get(lane.id)?.trim();
-        return name && name !== lane.name ? { ...lane, name } : lane;
+        const color = savedColor.get(lane.id);
+        const renamed = name && name !== lane.name ? { ...lane, name } : lane;
+        return color && color !== renamed.color ? { ...renamed, color } : renamed;
       });
       for (const row of rows.map(current)) {
         const lane = savedChatLane(row);
@@ -494,7 +502,10 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         projectId: binding.kind === "remote" ? binding.projectId : null,
         binding,
         online: false,
-        lanes: [laneComputerLane(computer, previous?.lanes.find((lane) => lane.id === computer.laneId))],
+        lanes: [laneComputerLane(
+          { ...computer, laneColor: overview?.lanes.find((lane) => lane.laneId === computer.laneId)?.laneColor ?? null },
+          previous?.lanes.find((lane) => lane.id === computer.laneId),
+        )],
         // This computer shows no saved chat of its own (they moved to another
         // computer, or there were none): saved copies an earlier read left on
         // its slice are stale and would show as duplicates.
@@ -535,7 +546,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         gitOriginUrl: context.projectKey,
       };
       const others = (previous?.lanes ?? []).filter((entry) => entry.id !== lane.laneId);
-      const row = laneComputerLane({ laneId: lane.laneId, laneName: lane.laneName ?? lane.laneId }, previous?.lanes.find((entry) => entry.id === lane.laneId));
+      const row = laneComputerLane({ laneId: lane.laneId, laneName: lane.laneName ?? lane.laneId, laneColor: lane.laneColor }, previous?.lanes.find((entry) => entry.id === lane.laneId));
       store.mergeCrossMachineLanes({
         machineId,
         machineName,
@@ -584,9 +595,13 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       const lanes = [...(previous?.lanes ?? [])];
       const known = new Set(lanes.map((lane) => lane.id));
       for (const row of rows) {
+        // A lane listed with no color takes the one its copy saved.
+        const color = cloudLaneColorOf(row.laneColor);
+        const at = color && row.laneId ? lanes.findIndex((lane) => lane.id === row.laneId && !lane.color) : -1;
+        if (at >= 0) lanes[at] = { ...lanes[at]!, color };
         if (!row.laneId || known.has(row.laneId)) continue;
         known.add(row.laneId);
-        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId }, undefined));
+        lanes.push(laneComputerLane({ laneId: row.laneId, laneName: row.laneName ?? row.laneId, laneColor: row.laneColor }, undefined));
       }
       store.mergeCrossMachineLanes({
         machineId,
@@ -660,7 +675,7 @@ async function readProjectOverview(projectKey: string | null): Promise<CloudProj
  * The one lane an ADE Cloud lane computer holds, as a row while the computer
  * can't answer. Keeps the row's first-seen time so the list does not reorder.
  */
-function laneComputerLane(computer: { laneId: string; laneName: string }, previous: LaneSummary | undefined): LaneSummary {
+function laneComputerLane(computer: { laneId: string; laneName: string; laneColor?: string | null }, previous: LaneSummary | undefined): LaneSummary {
   return {
     id: computer.laneId,
     name: computer.laneName,
@@ -670,7 +685,8 @@ function laneComputerLane(computer: { laneId: string; laneName: string }, previo
     worktreePath: "",
     isEditProtected: false,
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
-    color: null,
+    // The color its saved rows carry, else the one this list last showed.
+    color: cloudLaneColorOf(computer.laneColor) ?? previous?.color ?? null,
     icon: null,
     tags: [],
     createdAt: previous?.createdAt ?? new Date().toISOString(),

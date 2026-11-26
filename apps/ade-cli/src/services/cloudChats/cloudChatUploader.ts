@@ -36,8 +36,9 @@ const SENSITIVE_KEY = /^(?:api[_-]?key|secret|token|password|authorization)$/i;
 /**
  * `rowStale`: the chat's title, status or lane name changed after its last part; the next upload sends the row even with no new text.
  * `settings`: the composer settings the saved row last carried (`settingsKey`), so a setting changed with no turn after it still reaches the copy before a rest.
+ * `laneColor`: the lane color the saved row last carried, so a lane recolored (or a copy saved before rows carried it) gets its row again before a rest.
  */
-type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string };
+type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string; laneColor?: string | null };
 
 /** The settings of a row as one comparable string; "" when it has none. */
 function settingsKey(row: CloudSavedChatRowInput): string {
@@ -567,6 +568,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       // The row went with this part.
       entry.rowStale = false;
       entry.settings = settingsKey(row);
+      entry.laneColor = row.laneColor ?? null;
       persist();
       sent = true;
       if (mode === "turn" || !delta.more) return sent;
@@ -612,6 +614,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     entry.dirty = false;
     entry.laneId = row.laneId;
     entry.settings = settingsKey(row);
+    entry.laneColor = row.laneColor ?? null;
     persist();
     return true;
   }
@@ -632,10 +635,14 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       });
       if (!row) continue;
       const key = settingsKey(row);
+      // A lane color the copy doesn't have yet (recolored, or saved before rows carried it).
+      // A color that went away is a lane list that could not be read, not a change.
+      const colorChanged = Boolean(row.laneColor) && row.laneColor !== entry.laneColor;
       // No key recorded yet (a copy older than settings): sent once. Settings
       // that went away are a summary that could not be read, not a change:
       // sending that row would clear the saved model too.
-      if (entry.settings !== undefined && (key === entry.settings || (!key && entry.settings))) continue;
+      if (!key && entry.settings) continue;
+      if (!colorChanged && entry.settings !== undefined && key === entry.settings) continue;
       entry.rowStale = true;
       entry.dirty = true;
     }

@@ -7,6 +7,7 @@ import {
   CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT,
   CLOUD_CHAT_MESSAGES_PER_MINUTE,
   cloudChatMessageSettingsOf,
+  cloudLaneColorOf,
   type CloudChatMessageAddResult,
   type CloudChatMessageAttachment,
   type CloudChatMessageSettings,
@@ -269,7 +270,7 @@ export type ChatMessageDeps = {
 /* ---- Person routes: /cloud/chats/:m/:c/messages[/:msg] ---- */
 
 /** The facts a continue launch needs, from the target's sealed summary. */
-type TargetFacts = { provider: string | null; model: string | null; laneName: string | null; projectId: string | null };
+type TargetFacts = { provider: string | null; model: string | null; laneName: string | null; projectId: string | null; laneColor?: string | null };
 
 /** What a send goes to: a saved chat, or a saved CLI session (its session id in `chat_id`). */
 type QueueTarget = Pick<CopyRow, "machine_key" | "chat_id" | "instance_id" | "project_key" | "lane_id"> & {
@@ -298,7 +299,13 @@ function chatTarget(chat: CopyRow): QueueTarget {
     lane_id: chat.lane_id,
     facts: async (keys) => {
       const summary = await openSummary(keys, chat) as Record<string, unknown> | null;
-      return { provider: textOf(summary, "provider"), model: textOf(summary, "model"), laneName: textOf(summary, "laneName"), projectId: textOf(summary, "projectId") };
+      return {
+        provider: textOf(summary, "provider"),
+        model: textOf(summary, "model"),
+        laneName: textOf(summary, "laneName"),
+        projectId: textOf(summary, "projectId"),
+        laneColor: cloudLaneColorOf(summary?.laneColor),
+      };
     },
   };
 }
@@ -335,7 +342,13 @@ async function resolveTarget(env: CloudEnv, userId: string, machineKey: string, 
     lane_id: cli.lane_id,
     facts: async (keys) => {
       const copy = await cliSessionCopy(env, keys, userId, cli.machine_key, cli.session_id);
-      return { provider: cliProviderOf(copy?.toolType ?? null), model: null, laneName: copy?.laneName ?? null, projectId: copy?.projectId ?? null };
+      return {
+        provider: cliProviderOf(copy?.toolType ?? null),
+        model: null,
+        laneName: copy?.laneName ?? null,
+        projectId: copy?.projectId ?? null,
+        laneColor: copy?.laneColor ?? null,
+      };
     },
   };
 }
@@ -748,6 +761,8 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
       id: chat.lane_id,
       name: lane.laneName ?? facts.laneName ?? "Lane",
       ...(lane.branch ? { existingBranch: lane.branch } : {}),
+      // The lane keeps the color its last computer saved with the chat.
+      ...(facts.laneColor ? { color: facts.laneColor } : {}),
     },
     chat: {
       provider,

@@ -594,12 +594,20 @@ final class AccountCloudStore: ObservableObject {
     let generation = accountGeneration
     transcriptReads[id] = Task { @MainActor [weak self, weak sync] in
       defer { self?.transcriptReads[id] = nil }
-      guard let self, let sync, let client = await sync.cloudServerClient() else { return }
+      guard let self, let sync else { return }
+      // A read that can't happen or fails says so in the thread, with Retry
+      // (`markSnapshotStalled`), never an empty chat that looks like no history.
+      guard let client = await sync.cloudServerClient() else {
+        sync.chatThreadRegistry.markSnapshotStalled(key, message: "Sign in to ADE to read this chat.")
+        return
+      }
       let page: CloudChatTranscriptPage
       do {
         page = try await client.transcriptPage(machineKey: accountMachineKey, chatId: key.sessionId)
       } catch {
         accountCloudLog.notice("cloud_store read=transcript failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+        guard generation == self.accountGeneration, !Task.isCancelled else { return }
+        sync.chatThreadRegistry.markSnapshotStalled(key, message: "ADE couldn't read this chat's saved copy. \(cloudServerFailureMessage(error))")
         return
       }
       let sessionId = key.sessionId

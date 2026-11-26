@@ -197,10 +197,14 @@ struct CloudSavedChatRow: Decodable, Equatable {
   /// The chat's composer settings as its computer last saved them (thinking
   /// level, Fast, preset, access mode). Nil from an older server or computer.
   let settings: [String: RemoteJSONValue]?
+  /// The lane's color (`#rrggbb`) as its computer saved it, so a resting
+  /// lane shows in its own color. Nil from an older server or computer, or
+  /// anything that isn't a `#rrggbb` hex.
+  let laneColor: String?
 
   private enum CodingKeys: String, CodingKey {
     case machineKey, chatId, instanceId, title, laneId, laneName, status, toolType, provider, model
-    case projectKey, projectId, projectRoot, lastActivityAt, lastSeq, updatedAt, computer, parentChatId, spawnKind, settings
+    case projectKey, projectId, projectRoot, lastActivityAt, lastSeq, updatedAt, computer, parentChatId, spawnKind, settings, laneColor
   }
 
   init(from decoder: Decoder) throws {
@@ -226,7 +230,15 @@ struct CloudSavedChatRow: Decodable, Equatable {
     parentChatId = c.lenient(String.self, forKey: .parentChatId)
     spawnKind = c.lenient(String.self, forKey: .spawnKind)
     settings = c.lenient([String: RemoteJSONValue].self, forKey: .settings)
+    laneColor = cloudLaneColor(c.lenient(String.self, forKey: .laneColor))
   }
+}
+
+/// A lane color as a saved row carries it (`#rrggbb`, lower case), or nil.
+/// The server checks it too; the phone never paints with an unchecked value.
+func cloudLaneColor(_ value: String?) -> String? {
+  guard let trimmed = value?.trimmingCharacters(in: .whitespaces), trimmed.count == 7, trimmed.first == "#" else { return nil }
+  return trimmed.dropFirst().allSatisfy(\.isHexDigit) ? trimmed.lowercased() : nil
 }
 
 /// One page of a saved chat (`CloudChatTranscriptPage`): newest part first,

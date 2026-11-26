@@ -1080,7 +1080,10 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   (`PUT /cloud/launches/:launch/files/:file`, from the bytes on the phone),
   then starts a server launch that names them (`AccountCloudLaunchStore.start`,
   `POST /cloud/launches`); a failed upload is the launch's start error, and
-  Retry sends the rest. Only a start that never reached the server (no
+  Retry sends the rest. A new lane carries `lane.color`: the first palette
+  color no lane the phone lists for that project uses, on any machine
+  (`SyncService.listedLanes(forOrigin:)`). "New computer" for a kept lane
+  sends the color its saved chats carry. Only a start that never reached the server (no
   client, a failed upload, a clear refusal) gives the draft back; any other
   start opens the launch's page.
 - **The launch's page.** A started launch lists in Work as a row
@@ -1109,6 +1112,17 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   pages them like a `chatLogV2` host. A saved subagent chat nests
   under its parent. A computer that left the account still lists its saved
   chats under the key `cloud-saved:<accountMachineKey>`.
+  Each saved row and CLI or shell copy carries its lane's color (`laneColor`,
+  `#rrggbb`; nil from an older server or computer). The roster lane takes it
+  (`cloudSavedRosterProjects`), so Work rows, the lane header and Lanes show
+  a resting cloud lane in its own color, not grey.
+  While the read is out the thread shows its loading skeleton, not the
+  "Reconnect" empty state (`savedCloudCopyAccountKey` counts as reachable in
+  `transcriptLoadState`). A read that fails, or that can't start because the
+  phone is signed out, marks the thread failed with Retry
+  (`markSnapshotStalled`). When the phone learns only after the chat opened
+  that its computer has no live link (the account's computers still loading,
+  a link that just dropped), the thread reads the saved copy then.
 - **The queue.** A send to a cloud chat with no live link goes to
   `POST /cloud/chats/:machine/:chat/messages` with the `clientSendId` as the
   message id (`SyncService.sendChatMessage`). The server holds it, wakes the
@@ -1116,6 +1130,16 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   on a new computer in the same chat row. A send with attachments wakes the
   computer and sends over the live link. An older server (404) falls back to
   wake, connect and send.
+- **A computer that just fell asleep.** The link to a cloud computer can read
+  connected for a while after the computer slept. A text send over a live
+  link to a cloud chat waits 10 s for its answer
+  (`SyncService.sendToCloudComputerOrQueue`, the desktop's
+  `CLOUD_SEND_ANSWER_WAIT_MS`). With no answer, or a link that failed under
+  it, the same message id goes to the account's queue, which wakes the
+  computer. The computer drops a repeated id (`chatClientSendLedger`), so a
+  direct copy that did arrive never runs twice. A refusal of the computer's
+  own is shown as it is; with no queue (older server) the direct send's own
+  outcome stands.
 - **Held messages.** A send to an asleep chat looks like any send, as on
   desktop: the thread draws each held message as the person's own bubble at
   its end (`CloudHeldMessageRow`, `WorkCloudHeldThread` in

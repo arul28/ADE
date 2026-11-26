@@ -18,7 +18,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatUpdateSessionArgs,
 } from "../../shared/types/chat";
-import { SAVED_CHAT_STOPPED_STATUS, savedChatSettingsSummaryFields, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, cloudLaneColorOf, savedChatSettingsSummaryFields, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
 import type { LaneSummary } from "../../shared/types/lanes";
@@ -206,7 +206,8 @@ export function savedChatLane(row: CloudSavedChatRow): LaneSummary {
     worktreePath: "",
     isEditProtected: false,
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
-    color: null,
+    // The color its computer saved with the chat; null from an older computer.
+    color: cloudLaneColorOf(row.laneColor),
     icon: null,
     tags: [],
     createdAt: row.lastActivityAt ?? new Date(row.updatedAt).toISOString(),

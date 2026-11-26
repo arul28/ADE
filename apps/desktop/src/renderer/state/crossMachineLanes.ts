@@ -3478,3 +3478,15 @@ export function useCrossMachineLaneUnion(
     };
   }, [cloudLaneComputers, rows, workLaneOrder, workLaneSortMode]);
 }
+
+/**
+ * Every lane this window lists for the tab's project, on every machine (ADE
+ * Cloud's resting lanes too), read now. A new ADE Cloud lane picks a color
+ * none of them uses (`withCloudLaneColor`): its computer holds only that lane.
+ */
+export function listedProjectLanesNow(): Array<{ id: string; color?: string | null }> {
+  return [
+    ...useAppStore.getState().lanes,
+    ...Object.values(rootAppStoreApi.getState().crossMachineLanesByMachineId).flatMap((machine) => machine.lanes),
+  ];
+}

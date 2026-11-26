@@ -338,7 +338,7 @@ import {
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { cloudChatStoppedForRest, createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { cloudDeleteFreezeRefusal } from "./services/power/cloudDeleteFreeze";
-import { SAVED_CHAT_STOPPED_STATUS, cloudChatRowSettingsOf } from "../../desktop/src/shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, cloudChatRowSettingsOf, cloudLaneColorOf } from "../../desktop/src/shared/cloudSavedChats";
 import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
@@ -3189,6 +3189,11 @@ export async function createAdeRuntime(args: {
             });
             const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot));
             const liveStatus = summary?.status ?? row.status ?? null;
+            // The lane's color, so a client shows this lane in it while the computer rests (the list is cached).
+            const laneColor = row.laneId
+              ? cloudLaneColorOf((await laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []))
+                .find((lane) => lane.id === row.laneId)?.color)
+              : null;
             return {
               title: redactSecrets(row.title ?? row.goal ?? ""),
               laneId: row.laneId ?? null,
@@ -3219,6 +3224,7 @@ export async function createAdeRuntime(args: {
               // The composer's settings (thinking level, Fast, access mode):
               // a client shows them while this computer rests.
               settings: cloudChatRowSettingsOf(summary),
+              laneColor,
             };
           },
           flushTranscript: () => flushAllQueuedTranscriptWrites(),

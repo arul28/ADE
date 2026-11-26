@@ -1850,6 +1850,14 @@ struct WorkSessionDestinationView: View {
       // Messages ADE Cloud holds for this chat until its computer is up:
       // the thread draws them (`cloudHeldThread`); this follows the queue.
       .followsCloudQueue(fleetKey: sessionCloudMachineKey, sessionId: sessionId)
+      // The phone can learn that this chat rests on an ADE Cloud computer
+      // only after it opened (the account's computers still loading, a link
+      // that just dropped): read the saved copy then, never wait for a wake.
+      .onChange(of: savedCloudCopyAccountKey) { _, accountKey in
+        guard accountKey != nil, threadModel?.frame?.transcript.isEmpty ?? true,
+              let key = syncService.chatThreadKey(for: sessionId) else { return }
+        syncService.chatThreadRequestSnapshot(key, reason: "saved copy reachable")
+      }
       // The wake can return before this chat's link reads as live.
       .onChange(of: isLiveAndReachable) { _, live in
         guard live, session == nil, initialLoadCompleted else { return }
@@ -2836,7 +2844,20 @@ struct WorkSessionDestinationView: View {
   /// it has neither disk rows nor a host snapshot; with the host unreachable
   /// that wait would never end, so it becomes the idle "reconnect" state.
   var transcriptLoadState: WorkChatTranscriptLoadState {
-    workChatTranscriptLoadState(frame: threadModel?.frame, isLiveAndReachable: isLiveAndReachable)
+    // A sleeping ADE Cloud computer's chat reads its saved copy from the
+    // account, which answers with no live link: while that read is out the
+    // thread is loading, not waiting for a reconnect.
+    workChatTranscriptLoadState(
+      frame: threadModel?.frame,
+      isLiveAndReachable: isLiveAndReachable || savedCloudCopyAccountKey != nil
+    )
+  }
+
+  /// The account machine key this chat's saved copy is read under while its
+  /// ADE Cloud computer has no live link (asleep, or deleted); nil otherwise.
+  var savedCloudCopyAccountKey: String? {
+    guard let key = syncService.chatThreadKey(for: sessionId) else { return nil }
+    return syncService.savedCloudChatAccountKey(forThreadKey: key)
   }
 
   var artifactObservationKey: String {

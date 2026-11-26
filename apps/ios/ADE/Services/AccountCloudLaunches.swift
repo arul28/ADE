@@ -682,9 +682,18 @@ final class AccountCloudLaunchStore: ObservableObject {
     ]
     if let existingLane {
       fields["lane"] = .object(["id": .string(existingLane.id), "name": .string(existingLane.name)])
-    } else if let newLaneName = newLaneName.flatMap({ nonEmptyTrimmed($0) }) {
-      // The computer's brain renames the lane and its branch with the AI name.
-      fields["lane"] = .object(["name": .string(newLaneName), "autoName": .bool(true)])
+    } else {
+      // A new lane's color: the first one no lane the phone lists for this
+      // project uses (its computer holds only this lane, so it can't tell).
+      let color = LaneColorPalette.nextAvailableColor(amongLanes: await sync.listedLanes(forOrigin: origin))
+      var lane: [String: RemoteJSONValue] = [:]
+      if let color { lane["color"] = .string(color) }
+      if let newLaneName = newLaneName.flatMap({ nonEmptyTrimmed($0) }) {
+        // The computer's brain renames the lane and its branch with the AI name.
+        lane["name"] = .string(newLaneName)
+        lane["autoName"] = .bool(true)
+      }
+      if !lane.isEmpty { fields["lane"] = .object(lane) }
     }
     let body: RemoteJSONValue = .object(fields)
     entries.insert(Entry(
@@ -721,6 +730,12 @@ final class AccountCloudLaunchStore: ObservableObject {
       ]),
       "madeBy": .object(["kind": .string("person")]),
     ]
+    // The lane keeps the color its saved chats carry.
+    if let color = sync.cloudSavedChats.first(where: { $0.laneId == lane.laneId && $0.laneColor != nil })?.laneColor,
+       case .object(var laneFields)? = fields["lane"] {
+      laneFields["color"] = .string(color)
+      fields["lane"] = .object(laneFields)
+    }
     if let sizeId { fields["sizeId"] = .string(sizeId) }
     let body: RemoteJSONValue = .object(fields)
     entries.insert(Entry(

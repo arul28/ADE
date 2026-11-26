@@ -51,6 +51,7 @@ import {
   CLOUD_SESSION_MAX_BYTES,
   CLOUD_SESSION_MAX_LINES,
   CLOUD_SESSION_MAX_PER_COMPUTER,
+  cloudLaneColorOf,
 } from "../../../../account-directory/src/cloud/contract";
 import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
@@ -605,6 +606,23 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       return projectKeyOf.get(runtime) ?? null;
     };
 
+    // Each project's open lanes, read once per save: the Git step walks them, and a copy's row carries its lane's color.
+    type RuntimeLanes = Awaited<ReturnType<AdeRuntime["laneService"]["list"]>>;
+    const lanesOf = new Map<AdeRuntime, Promise<RuntimeLanes>>();
+    const runtimeLanes = (runtime: AdeRuntime): Promise<RuntimeLanes> => {
+      let lanes = lanesOf.get(runtime);
+      if (!lanes) {
+        lanes = Promise.resolve().then(() => runtime.laneService.list({ includeArchived: false, includeStatus: false })).catch((error: unknown) => {
+          logger.warn("cloud.rest_save_lanes_read_failed", { error: errorText(error) });
+          return [];
+        });
+        lanesOf.set(runtime, lanes);
+      }
+      return lanes;
+    };
+    const laneColorOf = async (runtime: AdeRuntime, laneId: string | null | undefined): Promise<string | null> =>
+      laneId ? cloudLaneColorOf((await runtimeLanes(runtime)).find((lane) => lane.id === laneId)?.color) : null;
+
     // 2. Shell and CLI copies: the newest across every open project.
     const terminals: Array<{ runtime: AdeRuntime; row: TerminalSessionSummary }> = [];
     for (const runtime of runtimes) {
@@ -638,7 +656,9 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
             snapshot = null;
           }
         }
-        const mark = `${window?.endOffset ?? "none"}|${snapshotMark}|${row.status}`;
+        const laneColor = await laneColorOf(runtime, row.laneId);
+        // The lane's color is in the mark: a lane recolored (or a copy saved before rows carried it) is sent again.
+        const mark = `${window?.endOffset ?? "none"}|${snapshotMark}|${row.status}${laneColor ? `|${laneColor}` : ""}`;
         if (state.sessions[row.id] === mark) return;
         let format: "text" | "xterm" = "text";
         let text: string;
@@ -667,6 +687,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           parentChatId: row.orchestrationParentSessionId ?? null,
           status: row.status ?? null,
           lastActivityAt: row.lastActivityAt ?? row.startedAt ?? null,
+          laneColor,
         };
         await api.putSessionCopy(machineKey, row.id, { instanceId, row: rowInput, format, text, lineCount });
         state.sessions[row.id] = mark;
@@ -679,12 +700,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
     // 3. A Git summary per lane, when it changed.
     const gitTasks: Array<() => Promise<void>> = [];
     for (const runtime of runtimes) {
-      let lanes: Awaited<ReturnType<AdeRuntime["laneService"]["list"]>> = [];
-      try {
-        lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false });
-      } catch (error) {
-        logger.warn("cloud.rest_save_lanes_read_failed", { error: errorText(error) });
-      }
+      const lanes = await runtimeLanes(runtime);
       for (const lane of lanes) {
         if (!lane.worktreePath || !fs.existsSync(lane.worktreePath)) continue;
         gitTasks.push(async () => {

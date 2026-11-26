@@ -3383,15 +3383,17 @@ describe("ADE Cloud without a computer", () => {
     expect(queued()).toEqual([{ message_id: "m1", state: "delivered" }]);
   });
 
-  it("a fork restore moves a saved chat to the new computer with its full history and settings: it lists once, old names still read it, nothing is uploaded again", async () => {
+  it("a fork restore moves a saved chat to the new computer with its full history, settings and lane color: it lists once, old names still read it, nothing is uploaded again", async () => {
     seedAccount(harness, OWNER);
     seedComputer(harness, { machine_key: "key-old" });
-    expect((await savePart(INSTANCE, "key-old", 1, "first\n")).status).toBe(200);
+    // A lane color that isn't `#rrggbb` is left out, never a refused part.
+    expect((await savePart(INSTANCE, "key-old", 1, "first\n", { laneColor: "url(x)" })).status).toBe(200);
+    expect(((await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ laneColor: unknown }> }).chats[0]!.laneColor).toBeNull();
     // The row's composer settings: known keys with one-token values are kept, the rest left out.
     const settings = { reasoningEffort: "xhigh", fastMode: true, modelId: "anthropic/claude-opus-4-1[1m]", presetId: "two words", permissionMode: 5, notASetting: "x" };
-    expect((await savePart(INSTANCE, "key-old", 2, "second\n", { settings })).status).toBe(200);
+    expect((await savePart(INSTANCE, "key-old", 2, "second\n", { settings, laneColor: "#60A5FA" })).status).toBe(200);
     // Sealed with the summary, never a plain column.
-    expect(JSON.stringify(harness.rows("select * from cloud_chat_copies"))).not.toContain("xhigh");
+    expect(JSON.stringify(harness.rows("select * from cloud_chat_copies"))).not.toMatch(/xhigh|60a5fa/i);
     harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
     seedComputer(harness, { instance_id: SECOND, machine_key: "key-new" });
     const move = (caller: string, toMachineKey = "key-new") => harness.send(caller, "POST", "/cloud/chats/key-old/c1/move", { toMachineKey, instanceId: SECOND });
@@ -3402,9 +3404,10 @@ describe("ADE Cloud without a computer", () => {
     expect(moved.status).toBe(200);
     expect(await moved.json()).toEqual({ chat: expect.objectContaining({ machineKey: "key-new", lastSeq: 2, forkedFrom: { machineKey: "key-old", chatId: "c1" } }), moved: true });
     // Once, under the new key; the same move again answers the moved row.
-    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; chatId: string; settings: unknown }> };
+    const listed = (await (await harness.send(OWNER, "GET", "/cloud/chats")).json()) as { chats: Array<{ machineKey: string; chatId: string; settings: unknown; laneColor: unknown }> };
     expect(listed.chats.map((chat) => [chat.machineKey, chat.chatId])).toEqual([["key-new", "c1"]]);
     expect(listed.chats[0]!.settings).toEqual({ reasoningEffort: "xhigh", fastMode: true, modelId: "anthropic/claude-opus-4-1[1m]" });
+    expect(listed.chats[0]!.laneColor).toBe("#60a5fa");
     expect(((await (await move(OWNER)).json()) as { moved: boolean }).moved).toBe(false);
     // The full history reads under the new key, and under the old one (an older client), with no new upload.
     expect([await partsOf("key-new"), await partsOf("key-old")]).toEqual([["second\n", "first\n"], ["second\n", "first\n"]]);

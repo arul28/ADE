@@ -50,6 +50,7 @@ import type {
 } from "../../../../account-directory/src/cloud/contract";
 import {
   cloudChatMessageSettingsOf,
+  cloudLaneColorOf,
   CLOUD_AUTOMATION_RUN_STAGE,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_JOIN_FILE,
@@ -455,11 +456,14 @@ function reportShapeOf(phase: ChatLaunchPhase, stages: CloudLaunchStage[]): stri
  * name, the lane and its branch, as a lane on the person's own computer is.
  */
 function laneConfigOf(request: CloudServerLaunchRequest): ChatLaunchLaneConfig {
-  if (request.lane.existingBranch) return { mode: "existing", branchRef: request.lane.existingBranch };
+  // The app's pick for the lane's color; none (an older app, the web): the lane service picks one from the lane id.
+  const color = cloudLaneColorOf(request.lane.color);
+  if (request.lane.existingBranch) return { mode: "existing", branchRef: request.lane.existingBranch, ...(color ? { color } : {}) };
   return {
     mode: "new",
     start: request.lane.from ? { from: "branch", branch: request.lane.from, on: "remote" } : { from: "default", on: "remote" },
     ...(request.lane.autoName === true ? { autoName: true } : {}),
+    ...(color ? { color } : {}),
   };
 }
 
@@ -496,6 +500,7 @@ function launchPayloadOf(
           ? { branchRef: facts.branchRef, start: null }
           : { start: { ...(baseLane.start && typeof baseLane.start === "object" ? baseLane.start : {}), ...facts.start } }),
         ...(facts.autoName ? { autoName: true } : { autoName: undefined }),
+        ...(facts.color ? { color: facts.color } : {}),
       }
     : facts;
   const chatPayload = chat

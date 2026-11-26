@@ -1425,6 +1425,15 @@ computer. The new computer runs its own launch. The routes are in
   - The kind is `chat` or `lane`. A CLI launch goes as `lane` with `cli` in
     `launch.kind`, so an older server or computer runs the lane alone.
   - `lane.autoName: true` lets the computer's brain give the AI name.
+  - `lane.color` (`#rrggbb`) is the new lane's color. The desktop, ADE Web
+    and the phone pick the first palette color that none of the project's
+    listed lanes uses, on any machine (`withCloudLaneColor`,
+    `LaneColorPalette.nextAvailableColor`). A lane that gets a new computer
+    keeps the color its saved chats carry. The server drops a color that is
+    not `#rrggbb` and never refuses for it. With no color, the computer picks
+    one from the lane id (`laneColorFromId`): a cloud computer holds only its
+    main checkout and one lane, so "first unused" would give every cloud lane
+    the same color.
   - An ADE app also sends its launch args (`launch`, at most 256 KB); the
     facts win where both say something.
   - A caller with no computer sends `project: { accountProjectId }` and may
@@ -2121,6 +2130,15 @@ One busy list, `decideCloudBusy` in
   pick a queued send carried shows until the computer saves a newer row. The
   phone shows the model, thinking level and Fast (`rosterChatSummary`) and
   still hides the access mode of a saved chat.
+- **The lane's color while it rests.** Each saved chat row and CLI or shell
+  copy carries its lane's color (`laneColor`, `#rrggbb`), read from the
+  computer's lane list. A recolored lane, or a copy saved before rows carried
+  it, sends its row again at the next rest save. The server seals the color
+  in the summary with the rest (anything that is not `#rrggbb` reads as
+  null) and returns it in `GET /cloud/chats`, `GET /cloud/sessions` and on
+  each overview lane. The desktop, ADE Web and the phone paint the resting
+  lane with it. Rows from an older computer carry none, and the lane shows
+  grey until that computer updates.
 - **The @ menu while it rests.** The menu never asks a resting or deleted
   computer, since a read must not wake it. It shows the account's machines
   (an account read, kept 15 s) and the computer's saved chats, lanes and open

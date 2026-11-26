@@ -17540,9 +17540,8 @@ final class SyncService: ObservableObject {
     if (attachments ?? []).isEmpty, !cloudFiles.isEmpty {
       throw CloudChatFilesNeedLiveLink()
     }
-    let response: Any
-    do {
-      response = try await sendCommand(
+    let sendDirect: () async throws -> Any = { [self] in
+      try await sendCommand(
         action: chatActionName("chat.send", sessionId: sessionId),
         args: args,
         // A chat timeout is ambiguous: the host may have started the turn without
@@ -17556,6 +17555,32 @@ final class SyncService: ObservableObject {
         targetProjectRootPath: targetProjectRootPath ?? scope.rootPath,
         attemptedLiveFailurePolicy: .preserveForManualRetry
       )
+    }
+    let response: Any
+    do {
+      // A chat on an ADE Cloud computer the phone still has a link to. The
+      // computer may have gone to sleep a moment ago with the link still
+      // reading connected: a send with no answer soon goes to the account's
+      // queue, which wakes the computer (the desktop's `sendToCloudComputer`).
+      if (attachments ?? []).isEmpty, !includeThreadComments, targetProjectId == nil, targetProjectRootPath == nil,
+         let key = chatThreadKey(for: sessionId),
+         isCloudFleetKey(key.machineKey),
+         !key.machineKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix),
+         let accountKey = cloudAccountMachineKey(fleetKey: key.machineKey) {
+        switch try await sendToCloudComputerOrQueue(
+          sendDirect,
+          accountKey: accountKey,
+          chatId: key.sessionId,
+          messageId: (args["clientSendId"] as? String) ?? UUID().uuidString,
+          text: text,
+          compactFirst: compactFirst
+        ) {
+        case .answered(let value): response = value
+        case .heldByServer: return .heldByServer
+        }
+      } else {
+        response = try await sendDirect()
+      }
     } catch where isSyncCloudMoveRefusal(error) && targetProjectId == nil && targetProjectRootPath == nil {
       // A move holds the chat's ADE Cloud computer: the account's queue takes
       // the message. A caller that named the project (a new chat's first
@@ -17575,6 +17600,69 @@ final class SyncService: ObservableObject {
     // phone mirrors that update rather than guessing (a slash command or a
     // dropped send leaves them pending there).
     return syncChatMessageDelivery(from: response)
+  }
+
+  enum CloudComputerSendResult {
+    case answered(Any)
+    case heldByServer
+  }
+
+  /// How long a send to an ADE Cloud computer waits for its answer before
+  /// the account's queue takes it (`CLOUD_SEND_ANSWER_WAIT_MS` on desktop).
+  static let cloudSendAnswerWaitNanoseconds: UInt64 = 10_000_000_000
+
+  /// A send over the live link to an ADE Cloud computer that may have just
+  /// gone to sleep. An answer within `cloudSendAnswerWaitNanoseconds` stands.
+  /// No answer, or a link that failed under it, sends the same message id to
+  /// the account's queue, which wakes the computer and delivers it once: the
+  /// computer answers a repeated id without sending again
+  /// (`chatClientSendLedger`), so a direct copy that did arrive never runs
+  /// twice. A refusal of the computer's own (a bad argument, a move) is
+  /// thrown as it is. Without a queue (an older server) the direct send's own
+  /// outcome stands, as before.
+  private func sendToCloudComputerOrQueue(
+    _ sendDirect: @escaping () async throws -> Any,
+    accountKey: String,
+    chatId: String,
+    messageId: String,
+    text: String,
+    compactFirst: Bool?
+  ) async throws -> CloudComputerSendResult {
+    let direct = Task { @MainActor in try await sendDirect() }
+    let first: Result<Any, Error>? = await withTaskGroup(of: Result<Any, Error>?.self) { group in
+      group.addTask { await direct.result }
+      group.addTask {
+        try? await Task.sleep(nanoseconds: Self.cloudSendAnswerWaitNanoseconds)
+        return nil
+      }
+      let winner = await group.next() ?? nil
+      // Cancels the waits only; the direct send keeps going.
+      group.cancelAll()
+      return winner
+    }
+    switch first {
+    case .success(let value)?:
+      return .answered(value)
+    case .failure(let error)? where isRemoteCommandApplicationError(error) || (error as? CloudChatFilesNeedLiveLink) != nil:
+      // The computer answered with a refusal of its own: the queue changes nothing.
+      throw error
+    default:
+      break
+    }
+    syncChatLog.notice(
+      "cloud_send_fallback session=\(chatId, privacy: .public) reason=\(first == nil ? "no_answer" : "link_failed", privacy: .public)"
+    )
+    switch await AccountCloudStore.shared.queueSend(machineKey: accountKey, chatId: chatId, messageId: messageId, text: text, compactFirst: compactFirst, using: self) {
+    case .queued:
+      return .heldByServer
+    case .refused(let message), .failed(let message):
+      // The queue refused it (hours, a block) or could not be asked. A direct
+      // send still out may yet be answered, and then its answer stands.
+      if case .success(let value) = await direct.result { return .answered(value) }
+      throw NSError(domain: "ADE", code: 46, userInfo: [NSLocalizedDescriptionKey: message])
+    case .routeMissing:
+      return .answered(try await direct.value)
+    }
   }
 
   /// A send the chat's ADE Cloud computer refused because a move to a new
