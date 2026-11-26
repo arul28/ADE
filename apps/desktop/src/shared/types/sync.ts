@@ -3283,6 +3283,8 @@ export type SyncRemoteCommandAction =
   | "cto.writeSkill"
   | "cto.deleteSkill"
   | "cto.undoLearned"
+  | "cto.searchMemoryArchive"
+  | "cto.recallArchivedNote"
   | "cto.refreshContext"
   | "cto.adoptAccountCopy"
   | "cto.getAccountCopyStatus"

@@ -161,7 +161,7 @@ import {
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
 import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
-import { isCtoNotesFile, isTrackedAgentCliToolType } from "../../../shared/types";
+import { isCtoNotesFile, isTrackedAgentCliToolType, normalizeCtoArchiveQuery, normalizeCtoRecallArgs } from "../../../shared/types";
 import {
   claimDraft,
   createDraft,
@@ -204,6 +204,8 @@ import type {
   CtoMemorySnapshot,
   CtoUndoLearnedArgs,
   CtoUndoLearnedResult,
+  CtoArchiveQuery,
+  CtoRecallArchivedArgs,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -1835,6 +1837,12 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       } else {
         throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
       }
+      return ctoMemoryService.getSnapshot();
+    },
+    searchArchive: (args?: CtoArchiveQuery) => ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(args)),
+    /** Pins an archived entry as a note again; answers the new snapshot, like the other writes. */
+    recallArchived: (args?: Partial<CtoRecallArchivedArgs>) => {
+      ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(args));
       return ctoMemoryService.getSnapshot();
     },
     /**

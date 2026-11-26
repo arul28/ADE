@@ -799,6 +799,17 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     replacedThisTurn.set(area, links);
     if (baseline) saveBaseline(baseline);
   };
+  /**
+   * Notes the CTO's write moved to the archive to make room. They are still
+   * kept (a search finds them, a recall brings them back), so they leave the
+   * baseline too and never show as something the CTO dropped.
+   */
+  const ctoArchived = (area: LineArea, lines: readonly string[]): void => {
+    if (!baseline || !lines.length) return;
+    const gone = new Set(lines.map((line) => stripBullet(line)));
+    baseline[area] = baseline[area].split("\n").filter((line) => !gone.has(stripBullet(line))).join("\n");
+    saveBaseline(baseline);
+  };
   // A turn a restart cut short: take back the replaces it recorded.
   if (baseline) {
     try {
@@ -1051,6 +1062,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     writeSkillText,
     deleteSkill,
     deleteSkillAsPerson,
+    ctoArchived,
     buildContextSections,
     undoneRefusal,
     personWrote,

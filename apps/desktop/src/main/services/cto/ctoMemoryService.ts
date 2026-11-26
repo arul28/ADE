@@ -33,6 +33,10 @@ import {
 } from "./ctoNoteText";
 
 export { CTO_MEMORY_TAG_KEYS, noteSimilarity, type CtoMemoryTagKey, type CtoMemoryTags } from "./ctoNoteText";
+import { createCtoMemoryArchive, ctoNoteKey, type CtoArchiveRecord, type CtoMemoryArchive } from "./ctoMemoryArchive";
+import { coldestFirst, createCtoMemoryArchiveOps, discoveryRecords } from "./ctoMemoryArchiveOps";
+
+export type { CtoStoryFactRecord } from "./ctoMemoryArchiveOps";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -50,6 +54,8 @@ type CtoMemoryServiceArgs = {
   logger?: Logger | null;
   /** After notes or open work change, e.g. so the account copy is saved again. */
   onChanged?: (() => void) | null;
+  /** The archive store; defaults to `.ade/cto/archive.db` (`ctoMemoryArchive.ts`). */
+  archive?: CtoMemoryArchive | null;
 };
 
 /*
@@ -60,9 +66,16 @@ type CtoMemoryServiceArgs = {
  * - `<ADE home>/cto/USER.md`: facts about the person, for every project.
  * - `.ade/cto/open-work.json`: what the CTO has started and not finished.
  *
- * The notes are capped in bytes so the per-turn prefix stays small and the
- * CTO has to keep them tidy: a `remember` past the cap is refused, and the
- * CTO merges or forgets notes to make room. Nothing here runs a model.
+ * The notes are capped in bytes so the per-turn prefix stays small. They are
+ * the pinned tier: a `remember` past the project cap moves the coldest
+ * project notes (least recently written, said again or recalled) to the
+ * archive (`ctoMemoryArchive.ts`), and `recallArchived` brings one back.
+ * Without an archive on this machine, and always for the notes about the
+ * person, the write is refused instead, so nothing is lost.
+ * Nothing here runs a model.
+ *
+ * The archive also keeps every replaced or forgotten note, every story
+ * version, the facts story folds pull out, and every discovery once drained.
  *
  * `discoveries.md` is a separate channel: any agent may append a finding, and
  * the CTO drains the new ones on each child report and decides what becomes a
@@ -192,7 +205,17 @@ function moveAside(source: string, targetDir: string): void {
 }
 
 export type CtoRememberResult =
-  | { ok: true; saved: true; note: string; replaced?: string; scope: CtoNotesScope; bytes: number; limitBytes: number }
+  | {
+    ok: true;
+    saved: true;
+    note: string;
+    replaced?: string;
+    scope: CtoNotesScope;
+    bytes: number;
+    limitBytes: number;
+    /** Colder notes moved to the archive to make room. */
+    archived?: string[];
+  }
   | { ok: true; saved: false; note: string; duplicateOf: string; scope: CtoNotesScope }
   | { ok: false; error: string; candidates?: string[] };
 
@@ -203,6 +226,9 @@ export type CtoForgetResult =
 export type CtoOpenWorkResult =
   | { ok: true; item: CtoOpenWorkItem }
   | { ok: false; error: string };
+
+/** A write that needed the archive to keep a note, when the archive write failed. */
+const NOT_ARCHIVED_ERROR = "Couldn't save to the archive, so the notes did not change. Try again.";
 
 export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const logger = args.logger ?? null;
@@ -227,6 +253,10 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     onChanged: () => args.onChanged?.(),
   });
   const notesArea = (scope: CtoNotesScope) => (scope === "user" ? "user_notes" as const : "project_notes" as const);
+  // Opened on first use, not here: building the service is on the boot path.
+  const archive: CtoMemoryArchive | null = args.archive === undefined
+    ? createCtoMemoryArchive({ dir: ctoDir, logger })
+    : args.archive;
 
   const warn = (message: string, error: unknown, meta?: Record<string, unknown>): void => {
     logger?.warn(message, {
@@ -252,27 +282,76 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   /**
+   * Moves the coldest of `lines` to the archive until the rest fit the cap,
+   * never one at an index in `keep`. A refusal writes nothing, so nothing is
+   * lost: "full" when they can't be made to fit (no archive, or the kept lines
+   * alone are too long), "not_archived" when the archive write failed.
+   *
+   * Only project notes move out. The notes about the person are shared by
+   * every project, and the archive belongs to one: a note moved into it would
+   * leave every other project's CTO without it.
+   *
+   * `alsoArchive` (the old line a write replaces) goes in the same
+   * transaction, so the write is refused when it can't be kept. With no
+   * archive on this machine it is dropped, as before there was one.
+   */
+  const evictToFit = (
+    scope: CtoNotesScope,
+    lines: readonly string[],
+    keep: ReadonlySet<number>,
+    alsoArchive: readonly CtoArchiveRecord[] = [],
+  ): { kept: string[]; archived: string[]; bytes: number } | "full" | "not_archived" => {
+    const limit = notesLimit(scope);
+    let bytes = utf8Bytes(renderNotes(lines));
+    const drop = new Set<number>();
+    if (bytes > limit) {
+      if (scope === "user" || !archive?.available()) return "full";
+      for (const index of coldestFirst(lines, archive.noteHeat(scope), keep)) {
+        if (bytes <= limit) break;
+        drop.add(index);
+        bytes = utf8Bytes(renderNotes(lines.filter((_, kept) => !drop.has(kept))));
+      }
+      if (bytes > limit) return "full";
+    }
+    const archived = [...drop].map((index) => lines[index]!);
+    const records = [...alsoArchive, ...archived.map((text): CtoArchiveRecord => ({ kind: "note", scope, text, reason: "cold" }))];
+    // One transaction: all of them reach the archive, or none and the write is refused.
+    if (records.length && archive?.available() && archive.addMany(records) == null) return "not_archived";
+    return { kept: lines.filter((_, index) => !drop.has(index)), archived, bytes };
+  };
+
+  /**
    * Replace a whole notes file, one note per line (bullets optional). Over the
-   * cap is refused with the same sentence the CTO's `remember` gets.
+   * cap, the coldest of the lines that were already there move to the archive,
+   * as for the CTO's `remember`; a line the person just wrote never does. With
+   * no archive, or when the new lines alone are over the cap, the write is
+   * refused with the same sentence `remember` gets.
    *
    * `baseHash` is the hash of the text the editor started from. When it no
    * longer matches the file (the CTO wrote a note, another device saved), the
    * write is refused rather than silently overwriting what changed.
+   *
+   * Returns the notes moved to the archive to make room.
    */
-  const writeNotes = (scope: CtoNotesFile, text: string, options?: { baseHash?: string | null }): void => {
+  const writeNotes = (scope: CtoNotesFile, text: string, options?: { baseHash?: string | null }): { archived: string[] } => {
     if (scope === "rules") {
       learning.writeRulesText(text, options);
-      return;
+      return { archived: [] };
     }
     const before = readNotes(scope);
     assertBaseHash(before, options?.baseHash);
     const lines = parseNoteLines(text).map(normalizeNote).filter((line) => line.length > 0);
-    const bytes = utf8Bytes(renderNotes(lines));
-    const limit = notesLimit(scope);
-    if (bytes > limit) throw new AdeExpectedError(notesFullMessage(bytes, limit), "user");
-    writeNoteLines(scope, lines);
+    const had = new Set(readNoteLines(scope).map(ctoNoteKey));
+    const typed = new Set(lines.flatMap((line, index) => (had.has(ctoNoteKey(line)) ? [] : [index])));
+    const fit = evictToFit(scope, lines, typed);
+    if (fit === "full") throw new AdeExpectedError(notesFullMessage(utf8Bytes(renderNotes(lines)), notesLimit(scope)), "user");
+    if (fit === "not_archived") throw new AdeExpectedError(NOT_ARCHIVED_ERROR, "user");
+    writeNoteLines(scope, fit.kept);
     // The person's (or an account copy's) version: never something the CTO learned.
     learning.personWrote(notesArea(scope), before);
+    // A line the person just wrote is not cold, wherever it sits in the file.
+    for (const index of typed) archive?.touchNote(scope, lines[index]!);
+    return { archived: fit.archived };
   };
 
   const remember = (input: {
@@ -289,6 +368,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const replaces = input.replaces?.trim() ? stripBullet(input.replaces) : null;
     let next: string[];
     let replaced: string | undefined;
+    let noteIndex: number;
     if (replaces) {
       const matches = matchLines(lines, replaces);
       if (matches.length !== 1) {
@@ -304,11 +384,17 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         };
       }
       replaced = lines[matches[0]];
+      noteIndex = matches[0];
       next = lines.map((line, index) => (index === matches[0] ? note : line));
     } else {
       const duplicate = lines.find((line) => line.toLowerCase() === note.toLowerCase())
         ?? lines.find((line) => noteSimilarity(line, note) >= NEAR_DUPLICATE_SIMILARITY);
-      if (duplicate) return { ok: true, saved: false, note, duplicateOf: duplicate, scope };
+      if (duplicate) {
+        // Said again: the note is in use, so it is not cold.
+        archive?.touchNote(scope, duplicate);
+        return { ok: true, saved: false, note, duplicateOf: duplicate, scope };
+      }
+      noteIndex = lines.length;
       next = [...lines, note];
     }
     if (!input.personAskedAgain) {
@@ -318,14 +404,29 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       if (refusal) return { ok: false, error: refusal };
     }
     const limit = notesLimit(scope);
-    const bytes = utf8Bytes(renderNotes(next));
-    if (bytes > limit) {
-      return { ok: false, error: notesFullMessage(utf8Bytes(renderNotes(lines)), limit) };
-    }
+    // Full: the coldest notes move to the archive and the new one stays.
+    // With no archive on this machine the write is refused, so nothing is lost.
+    const fit = evictToFit(scope, next, new Set([noteIndex]), replaced ? [{ kind: "note", scope, text: replaced, reason: "replaced" }] : []);
+    if (fit === "full") return { ok: false, error: notesFullMessage(utf8Bytes(renderNotes(lines)), limit) };
+    if (fit === "not_archived") return { ok: false, error: NOT_ARCHIVED_ERROR };
+    next = fit.kept;
+    const { archived, bytes } = fit;
     writeNoteLines(scope, next);
     if (scope === "user") learning.ctoWroteUserNotes(replaced ? [note, replaced] : [note]);
     if (replaced) learning.ctoReplaced(notesArea(scope), replaced, note);
-    return { ok: true, saved: true, note, ...(replaced ? { replaced } : {}), scope, bytes, limitBytes: limit };
+    // Moved to the archive to make room, not dropped: not a change to show or undo.
+    if (archived.length) learning.ctoArchived(notesArea(scope), archived);
+    archive?.touchNote(scope, note);
+    return {
+      ok: true,
+      saved: true,
+      note,
+      ...(replaced ? { replaced } : {}),
+      scope,
+      bytes,
+      limitBytes: limit,
+      ...(archived.length ? { archived } : {}),
+    };
   };
 
   const forget = (input: { note: string; scope?: CtoNotesScope; personAskedAgain?: boolean }): CtoForgetResult => {
@@ -347,6 +448,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     if (!input.personAskedAgain) {
       const refusal = learning.undoneRefusal(notesArea(scope), "remove", forgotten);
       if (refusal) return { ok: false, error: refusal };
+    }
+    // Kept first, marked forgotten (a search shows it was dropped, not that it
+    // is true): when the archive can't keep it, the note stays.
+    if (archive?.available() && archive.add({ kind: "note", scope, text: forgotten, reason: "forgotten" }) == null) {
+      return { ok: false, error: NOT_ARCHIVED_ERROR };
     }
     writeNoteLines(scope, lines.filter((_, index) => index !== matches[0]));
     if (scope === "user") learning.ctoWroteUserNotes([forgotten]);
@@ -453,6 +559,14 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     if (record == null) {
       fs.rmSync(storyPath, { force: true });
     } else {
+      // The story on disk goes into the archive first, if no import took it yet.
+      archiveOps.ensureImported();
+      let replaced: CtoStoryRecord | null = null;
+      try {
+        replaced = readStory();
+      } catch {
+        // An unreadable story has no version to keep.
+      }
       fs.mkdirSync(path.dirname(storyPath), { recursive: true });
       const clean: CtoStoryRecord = {
         ...record,
@@ -460,6 +574,13 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         ...(record.carried ? { carried: { ...record.carried, text: redactSecrets(record.carried.text) } } : {}),
       };
       writeTextAtomic(storyPath, `${JSON.stringify(clean, null, 2)}\n`);
+      // Every version is kept: a fold condenses, and what it drops stays here.
+      // The version this write replaced goes in again (one row per text), so
+      // a failed archive write last time loses nothing.
+      const versions = [replaced, clean]
+        .filter((story): story is CtoStoryRecord => Boolean(story?.summary.trim()))
+        .map((story) => ({ kind: "story" as const, text: story.summary, sourceAt: story.coveredThrough, sourceLabel: story.model }));
+      if (versions.length) archive?.addMany(versions);
     }
     args.onChanged?.();
   };
@@ -582,6 +703,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         `${archiveExists ? "" : "# Worker discoveries archive (evicted from discoveries.md)\n\n"}<!-- evicted by size cap ${nowIso()} -->\n${evicted.join("\n")}\n`,
         "utf8",
       );
+      if (archive?.addMany(discoveryRecords(evicted, "evicted")) === null) archiveOps.importDiscoveriesAgain();
       const removed = buffer.byteLength - utf8Bytes(rendered);
       writeTextAtomic(discoveriesPath, rendered);
       const cursor = readDiscoveryCursor();
@@ -692,12 +814,39 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       pendingBytes = 0;
     }
     if (!stoppedEarly) keptBytes += pendingBytes;
-    if (options.advance !== false) writeDiscoveryCursor(stoppedEarly ? windowStart + keptBytes : nextCursor);
+    if (options.advance !== false) {
+      writeDiscoveryCursor(stoppedEarly ? windowStart + keptBytes : nextCursor);
+      if (archive?.addMany(discoveryRecords(lines, "drained")) === null) archiveOps.importDiscoveriesAgain();
+    }
     if (!lines.length) return { lines: [], text: "" };
     const joined = lines.join("\n");
     const text = joined.length > budget ? `…(older content truncated)\n${joined.slice(joined.length - budget)}` : joined;
     return { lines, text };
   };
+
+  /* ── The archive (`ctoMemoryArchiveOps.ts`) ── */
+
+  const archiveOps = createCtoMemoryArchiveOps({
+    archive,
+    readFilesBeforeArchive: () => {
+      let story: CtoStoryRecord | null = null;
+      try {
+        story = readStory();
+      } catch {
+        // An unreadable story stays where it is; there is nothing to import.
+      }
+      return { evictedDiscoveries: readFileOrEmpty(discoveriesArchivePath), discoveries: readFileOrEmpty(discoveriesPath), story };
+    },
+    readNoteLines,
+    remember,
+    rememberAsPerson: (input) => {
+      const scope = input.scope ?? "project";
+      const before = readNotes(scope);
+      const result = remember({ ...input, personAskedAgain: true });
+      if (result.ok && result.saved) learning.personWrote(notesArea(scope), before);
+      return result;
+    },
+  });
 
   /* ── Snapshot and injection ── */
 
@@ -722,6 +871,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       rulesLimitBytes: CTO_RULES_MAX_BYTES,
       rulesHash: learning.rulesHash(),
       skills: learning.listSkills(),
+      notesOverflowArchives: archive?.available() ?? false,
       updatedAt: updatedCandidates.length ? updatedCandidates[updatedCandidates.length - 1] : null,
     };
   };
@@ -793,6 +943,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   resetFromV1();
 
   return {
+    ...archiveOps,
     readNotes,
     writeNotes,
     remember,
@@ -823,6 +974,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     beginLearningTurn: learning.beginTurn,
     finishLearningTurn: learning.finishTurn,
     undoLearned: learning.undo,
+    close: () => archive?.close(),
   };
 }
 

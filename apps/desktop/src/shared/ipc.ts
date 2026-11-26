@@ -1493,6 +1493,8 @@ export const IPC = {
   ctoWriteSkill: "ade.cto.writeSkill",
   ctoDeleteSkill: "ade.cto.deleteSkill",
   ctoUndoLearned: "ade.cto.undoLearned",
+  ctoSearchMemoryArchive: "ade.cto.searchMemoryArchive",
+  ctoRecallArchivedNote: "ade.cto.recallArchivedNote",
   ctoGetLinearConnectionStatus: "ade.cto.getLinearConnectionStatus",
   ctoSetLinearToken: "ade.cto.setLinearToken",
   ctoClearLinearToken: "ade.cto.clearLinearToken",

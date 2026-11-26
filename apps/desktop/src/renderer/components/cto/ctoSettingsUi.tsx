@@ -3,6 +3,7 @@ import { Check, Copy } from "@phosphor-icons/react";
 import { usageLeftLevel } from "../usage/usageDesign";
 import { SavedFlash, useSavedFlash } from "../settings/primitives";
 import { isCtoNotesChangedError } from "../../../shared/types/cto";
+import { ipcErrorMessage } from "../../lib/format";
 
 /**
  * Small pieces the CTO surfaces share (the side panel and the settings
@@ -93,17 +94,53 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
  * unsaved edits (the CTO wrote a note, the phone edited it) nothing is saved
  * over it: one quiet line says "Changed elsewhere" with a Reload that takes
  * the host's text. A text over `limit` bytes is not sent: the meter turns red
- * and says by how much.
+ * and says by how much. With `overflowMovesOut`, it is sent anyway: the host
+ * moves its oldest lines out to make room, and the field shows what it kept.
  *
  * Each save carries the host's hash of the text the draft started from
  * (`hash`), so a change that lands between the last read and the save is
  * refused by the host and shown as the same "Changed elsewhere" line.
  */
+/** What the host kept after a save, and its hash. */
+export type AutosaveHostAnswer = { text: string; hash?: string };
+
+/**
+ * Puts the edit made from `base` to `draft` onto `host`, the text the host
+ * kept of `base` (lines moved out, secrets scrubbed). The edited lines, with
+ * their line breaks, must still be whole at the end or the start of `host`,
+ * so the edit never joins a line the host changed. Null when they are not.
+ */
+function rebaseDraft(base: string, draft: string, host: string): string | null {
+  if (host === base) return draft;
+  const max = Math.min(base.length, draft.length);
+  let start = 0;
+  while (start < max && base[start] === draft[start]) start += 1;
+  let end = 0;
+  while (end < max - start && base[base.length - 1 - end] === draft[draft.length - 1 - end]) end += 1;
+  // The edit, widened to whole lines of `base`: base[from, to).
+  const from = start === 0 ? 0 : base.lastIndexOf("\n", start - 1) + 1;
+  const lineEnd = base.indexOf("\n", base.length - end);
+  const to = lineEnd < 0 ? base.length : lineEnd;
+  const tail = base.slice(to);
+  const replacement = draft.slice(from, draft.length - tail.length);
+  // The lines from the edit on, at the end of `host` and starting a line there.
+  const at = host.length - (base.length - from);
+  if (at >= 0 && host.endsWith(base.slice(from)) && (at === 0 || host[at - 1] === "\n")) {
+    return host.slice(0, at) + replacement + tail;
+  }
+  // The lines up to the end of the edit, at the start of `host` and ending a line there.
+  if (host.startsWith(base.slice(0, to)) && (to === host.length || host[to] === "\n")) {
+    return base.slice(0, from) + replacement + host.slice(to);
+  }
+  return null;
+}
+
 export function AutosaveTextArea({
   value,
   hash,
   onSave,
   limit,
+  overflowMovesOut = false,
   rows = 8,
   placeholder,
   ariaLabel,
@@ -112,9 +149,12 @@ export function AutosaveTextArea({
   value: string;
   /** The host's hash of `value`, sent back on save so a stale write is refused. */
   hash?: string;
-  onSave: (text: string, baseHash?: string) => Promise<void>;
+  /** Answers what the host kept, when the host can change the text (trimmed, lines moved out). */
+  onSave: (text: string, baseHash?: string) => Promise<AutosaveHostAnswer | void>;
   /** Byte cap; shows a meter when set. */
   limit?: number;
+  /** Over `limit` still saves: the host makes room (the CTO's notes move their coldest lines to the archive). */
+  overflowMovesOut?: boolean;
   rows?: number;
   placeholder?: string;
   ariaLabel: string;
@@ -132,6 +172,8 @@ export function AutosaveTextArea({
   draftRef.current = draft;
   const timerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
+  /** False once the editor closed: a save that answers later changes nothing here. */
+  const mountedRef = useRef(true);
   const [conflict, setConflict] = useState(false);
   const conflictRef = useRef(false);
   conflictRef.current = conflict;
@@ -175,29 +217,52 @@ export function AutosaveTextArea({
     }
     const text = draftRef.current;
     if (text === savedRef.current || savingRef.current || conflictRef.current) return;
-    if (limit != null && utf8Bytes(text) > limit) return;
+    if (!overflowMovesOut && limit != null && utf8Bytes(text) > limit) return;
     savingRef.current = true;
     try {
-      await onSave(text, savedHashRef.current);
-      savedRef.current = text;
-      // The host answers what it kept (secrets scrubbed, lines trimmed): a
-      // clean field shows that, not what was typed.
-      if (draftRef.current === text && hostRef.current !== text) adoptHost();
+      const answer = await onSave(text, savedHashRef.current);
+      if (!mountedRef.current) return;
+      if (answer) {
+        // In step with what the host kept (secrets scrubbed, lines moved
+        // out), with its hash, before the new props render: a keystroke that
+        // landed meanwhile then saves against the right base.
+        hostRef.current = answer.text;
+        hostHashRef.current = answer.hash;
+        savedRef.current = answer.text;
+        savedHashRef.current = answer.hash;
+        if (draftRef.current === text) {
+          setDraft(answer.text);
+        } else {
+          // Keystrokes from during the save go onto what the host kept; a
+          // draft that still holds the lines it moved out would save them back.
+          const rebased = rebaseDraft(text, draftRef.current, answer.text);
+          if (rebased == null) setConflict(true);
+          else setDraft(rebased);
+        }
+      } else {
+        savedRef.current = text;
+        if (draftRef.current === text && hostRef.current !== text) adoptHost();
+      }
       flash();
     } catch (err) {
+      if (!mountedRef.current) return;
       if (isCtoNotesChangedError(err)) setConflict(true);
-      else fail(err instanceof Error && err.message ? err.message : "Couldn't save.");
+      else fail(ipcErrorMessage(err) || "Couldn't save.");
     } finally {
       savingRef.current = false;
     }
     // A keystroke that landed while the save was in flight is saved next.
-    if (draftRef.current !== savedRef.current) {
+    if (mountedRef.current && draftRef.current !== savedRef.current) {
       timerRef.current = window.setTimeout(() => void save(), 900);
     }
-  }, [adoptHost, fail, flash, limit, onSave]);
+  }, [adoptHost, fail, flash, limit, onSave, overflowMovesOut]);
 
-  useEffect(() => () => {
-    if (timerRef.current != null) window.clearTimeout(timerRef.current);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    };
   }, []);
 
   return (
@@ -205,7 +270,7 @@ export function AutosaveTextArea({
       <textarea
         className="kit-input"
         aria-label={ariaLabel}
-        aria-invalid={over ? true : undefined}
+        aria-invalid={over && !overflowMovesOut ? true : undefined}
         rows={rows}
         spellCheck={false}
         placeholder={placeholder}
@@ -239,7 +304,11 @@ export function AutosaveTextArea({
               Reload
             </button>
           </span>
-        ) : over ? (
+        ) : over && overflowMovesOut && state.kind !== "error" ? (
+          <span className="text-[12px] text-[var(--kit-text-3)]" title="Lines you just wrote stay">
+            {(bytes - limit!).toLocaleString()} bytes over · the oldest notes move to the archive
+          </span>
+        ) : over && !overflowMovesOut ? (
           <span className="text-[12px] text-[var(--kit-crit)]" title="Shorten it to save">
             {(bytes - limit!).toLocaleString()} bytes over
           </span>

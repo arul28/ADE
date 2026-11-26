@@ -357,6 +357,10 @@ export function ctoStepWords(toolName: string, rawArgs: unknown): string | null 
       return "Reading a skill";
     case "deleteSkill":
       return "Deleting a skill";
+    case "searchMemory":
+      return "Searching my archive";
+    case "recallNote":
+      return "Pinning a note again";
     case "trackWork":
       return "Noting open work";
     case "finishWork":

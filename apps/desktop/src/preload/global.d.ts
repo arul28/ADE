@@ -633,6 +633,9 @@ import type {
   CtoSkillFile,
   CtoUndoLearnedArgs,
   CtoUndoLearnedResult,
+  CtoArchiveQuery,
+  CtoArchivePage,
+  CtoRecallArchivedArgs,
   CtoRefreshContextResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
@@ -5719,6 +5722,10 @@ declare global {
         deleteSkill: (args: CtoDeleteSkillArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         /** Undo one change of a CTO "Learned" row; the row redraws with it marked undone. */
         undoLearned: (args: CtoUndoLearnedArgs, pin: OpenProjectBinding) => Promise<CtoUndoLearnedResult>;
+        /** The archive on the CTO's home machine: notes that left the notes, facts, discoveries, story versions. */
+        searchMemoryArchive: (args: CtoArchiveQuery, pin: OpenProjectBinding) => Promise<CtoArchivePage>;
+        /** Pins an archived entry as a note again; answers the new snapshot. */
+        recallArchivedNote: (args: CtoRecallArchivedArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         getLinearConnectionStatus: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,

@@ -286,7 +286,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, normalizeCtoArchiveQuery, normalizeCtoRecallArgs, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../../desktop/src/shared/types/sync";
 import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
@@ -7326,6 +7326,17 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       learnId: requireString(payload.learnId, "cto.undoLearned requires learnId."),
       changeId: requireString(payload.changeId, "cto.undoLearned requires changeId."),
     });
+  });
+  // The archive lives on the CTO's home machine; a phone or the web reads it here.
+  register("cto.searchMemoryArchive", { viewerAllowed: true }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    return ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(payload));
+  });
+  // Not queueable: replayed later, a recall could push out notes written since.
+  register("cto.recallArchivedNote", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(payload));
+    return ctoMemoryService.getSnapshot();
   });
   // The person moved the CTO here: take it from its account copy. The phone
   // that made the move asks the new home itself.

@@ -17,10 +17,13 @@ struct CtoTextFileEditor: View {
   let accessibilityLabel: String
   let canEdit: Bool
   var monospaced = false
+  /// Over the cap still saves: the host makes room (the project notes move
+  /// their oldest lines to the archive).
+  var overflowMovesOut = false
   /// Writes the whole text against `baseHash`.
   let save: (String, String?) async -> CtoStore.NotesSaveResult
-  /// The file's hash after a save.
-  let savedHash: () -> String?
+  /// The file as the host kept it after a save (lines moved out, secrets scrubbed).
+  let saved: () -> (text: String, hash: String?)?
   /// Re-reads the file after a conflict.
   let reload: () async -> (text: String, hash: String?)?
   var onSaved: () -> Void = {}
@@ -35,6 +38,8 @@ struct CtoTextFileEditor: View {
 
   private var bytes: Int { draft.utf8.count }
   private var over: Bool { bytes > limit }
+  /// Over the cap with no host to make room: kept here, not sent.
+  private var blocked: Bool { over && !overflowMovesOut }
   private var font: Font { monospaced ? .callout.monospaced() : .body }
 
   var body: some View {
@@ -60,10 +65,13 @@ struct CtoTextFileEditor: View {
       }
       .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
       HStack(spacing: 8) {
-        Text("\(bytes.formatted()) of \(limit.formatted())")
+        Text(over && overflowMovesOut
+          ? "\(bytes.formatted()) of \(limit.formatted()) · oldest notes move to the archive"
+          : "\(bytes.formatted()) of \(limit.formatted())")
           .font(.footnote.monospacedDigit())
-          .foregroundStyle(over ? ADEColor.warning : ADEColor.textMuted)
+          .foregroundStyle(blocked ? ADEColor.warning : ADEColor.textMuted)
           .lineLimit(1)
+          .minimumScaleFactor(0.8)
         Spacer(minLength: 8)
         statusView
       }
@@ -88,13 +96,13 @@ struct CtoTextFileEditor: View {
     .onDisappear {
       // Leaving inside the save delay cancels it: save what is left now. The
       // store outlives this page.
-      guard dirty, !over, canEdit else { return }
+      guard dirty, !blocked, canEdit else { return }
       if case .saving = state { return }
       let save = save, text = draft, base = baseHash
       Task { _ = await save(text, base) }
     }
     .task(id: draft) {
-      guard dirty, !over, canEdit else { return }
+      guard dirty, !blocked, canEdit else { return }
       try? await Task.sleep(nanoseconds: 1_200_000_000)
       guard !Task.isCancelled else { return }
       await runSave()
@@ -132,8 +140,23 @@ struct CtoTextFileEditor: View {
     switch result {
     case .saved:
       dirty = draft != sent
-      if let next = savedHash() { baseHash = next }
       state = .saved
+      if let kept = saved() {
+        // The host's answer is what it kept (notes moved out, lines trimmed):
+        // a clean field shows that, not what was typed.
+        if !dirty {
+          draft = kept.text
+          baseHash = kept.hash
+        } else if let rebased = ctoRebaseDraft(base: sent, draft: draft, host: kept.text) {
+          // Keystrokes from during the save go onto what the host kept; a
+          // draft that still holds the lines it moved out would save them back.
+          draft = rebased
+          baseHash = kept.hash
+        } else {
+          // The old hash stays, so the host refuses the next save too.
+          state = .conflict
+        }
+      }
       onSaved()
     case .conflict:
       state = .conflict
@@ -362,7 +385,7 @@ struct CtoSkillEditorSheet: View {
                 if result == .saved { await adoptWritten() }
                 return result
               },
-              savedHash: { self.file?.hash },
+              saved: { self.file.map { ($0.text, $0.hash) } },
               reload: {
                 guard await load() else { return nil }
                 return self.file.map { ($0.text, $0.hash) }

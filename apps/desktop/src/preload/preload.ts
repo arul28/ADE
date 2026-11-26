@@ -494,6 +494,9 @@ import type {
   CtoSkillFile,
   CtoUndoLearnedArgs,
   CtoUndoLearnedResult,
+  CtoArchiveQuery,
+  CtoArchivePage,
+  CtoRecallArchivedArgs,
   CtoRefreshContextResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
@@ -15691,6 +15694,20 @@ const adeBridge = {
     undoLearned: async (args: CtoUndoLearnedArgs, pin?: OpenProjectBinding | null): Promise<CtoUndoLearnedResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "undoLearned", { args }, () =>
         ipcRenderer.invoke(IPC.ctoUndoLearned, args),
+      ),
+    searchMemoryArchive: async (
+      args: CtoArchiveQuery,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoArchivePage> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "searchArchive", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoSearchMemoryArchive, args),
+      ),
+    recallArchivedNote: async (
+      args: CtoRecallArchivedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoMemorySnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "recallArchived", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoRecallArchivedNote, args),
       ),
     getLinearConnectionStatus: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> =>
       callPinnedOrBoundRuntimeActionOr(

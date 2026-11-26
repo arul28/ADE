@@ -2265,6 +2265,9 @@ struct CtoMemory: Codable, Hashable {
   /// The CTO's skills, one how-to per kind of task, by name.
   var skills: [CtoSkillSummary]?
   var openWork: [CtoOpenWorkItem]?
+  /// True when a notes write over the cap moves the coldest notes to the
+  /// archive instead of being refused. Nil from an older host: keep the block.
+  var notesOverflowArchives: Bool?
   var updatedAt: String?
 
   init(
@@ -2282,6 +2285,7 @@ struct CtoMemory: Codable, Hashable {
     rulesHash: String? = nil,
     skills: [CtoSkillSummary]? = nil,
     openWork: [CtoOpenWorkItem]? = nil,
+    notesOverflowArchives: Bool? = nil,
     updatedAt: String? = nil
   ) {
     self.memory = memory
@@ -2298,6 +2302,7 @@ struct CtoMemory: Codable, Hashable {
     self.rulesHash = rulesHash
     self.skills = skills
     self.openWork = openWork
+    self.notesOverflowArchives = notesOverflowArchives
     self.updatedAt = updatedAt
   }
 
@@ -2326,6 +2331,7 @@ struct CtoMemory: Codable, Hashable {
       .flatMap { $0 }?
       .compactMap(\.value)
     openWork = (try? c.decodeIfPresent([CtoOpenWorkItem].self, forKey: .openWork)).flatMap { $0 }
+    notesOverflowArchives = (try? c.decodeIfPresent(Bool.self, forKey: .notesOverflowArchives)).flatMap { $0 }
     updatedAt = str(.updatedAt)
   }
 
@@ -2359,6 +2365,75 @@ func ctoNoteLines(_ text: String?) -> [String] {
       return value.trimmingCharacters(in: .whitespaces)
     }
     .filter { !$0.isEmpty }
+}
+
+/// One row of the CTO's archive (desktop `CtoArchiveEntry`): a note that left
+/// the notes, a fact or decision from a past turn, a read discovery, or a
+/// story version. Every key but `id`, `kind` and `text` is optional.
+struct CtoArchiveEntry: Codable, Hashable, Identifiable {
+  var id: Int
+  /// note, fact, decision, discovery or story.
+  var kind: String
+  var scope: String?
+  var text: String
+  var truncated: Bool?
+  var reason: String?
+  var sourceAt: String?
+  var sourceLabel: String?
+  var sourceSessionId: String?
+  var archivedAt: String?
+
+  var isStory: Bool { kind == "story" }
+
+  var kindLabel: String {
+    switch kind {
+    case "note": return "Note"
+    case "decision": return "Decision"
+    case "discovery": return "Discovery"
+    case "story": return "Story version"
+    default: return "Fact"
+    }
+  }
+
+  /// "Project · Moved out when notes filled up", "Person", "Tool result (createChat)".
+  var sourceLine: String {
+    if kind == "note" {
+      let place = scope == "user" ? "About you" : "Project"
+      switch reason {
+      case "cold": return "\(place) · Moved out when notes filled up"
+      case "replaced": return "\(place) · Replaced"
+      case "forgotten": return "\(place) · Forgotten"
+      default: return place
+      }
+    }
+    return sourceLabel ?? ""
+  }
+}
+
+/// Returned by `cto.searchMemoryArchive` (desktop `CtoArchivePage`).
+struct CtoArchivePage: Codable, Hashable {
+  var available: Bool
+  var mode: String?
+  var entries: [CtoArchiveEntry]
+  var nextBefore: Int?
+  var counts: [String: Int]?
+
+  init(available: Bool = true, mode: String? = nil, entries: [CtoArchiveEntry] = [], nextBefore: Int? = nil, counts: [String: Int]? = nil) {
+    self.available = available
+    self.mode = mode
+    self.entries = entries
+    self.nextBefore = nextBefore
+    self.counts = counts
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    available = (try? c.decodeIfPresent(Bool.self, forKey: .available)).flatMap { $0 } ?? true
+    mode = (try? c.decodeIfPresent(String.self, forKey: .mode)).flatMap { $0 }
+    entries = (try? c.decodeIfPresent([CtoArchiveEntry].self, forKey: .entries)).flatMap { $0 } ?? []
+    nextBefore = (try? c.decodeIfPresent(Int.self, forKey: .nextBefore)).flatMap { $0 }
+    counts = (try? c.decodeIfPresent([String: Int].self, forKey: .counts)).flatMap { $0 }
+  }
 }
 
 /// The start of the error a notes write gets when the file changed since the

@@ -1197,7 +1197,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIdentity",
   ],
   cto_memory: [
-    "getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery",
+    "getSnapshot", "updateNotes", "updateOpenWork", "recordDiscovery", "searchArchive", "recallArchived",
     "getSkill", "writeSkill", "deleteSkill", "undoLearned",
   ],
   session: [

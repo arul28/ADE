@@ -149,8 +149,24 @@ enum CtoPreviewData {
     "triage-flaky-test": "---\nname: triage-flaky-test\ndescription: Find why a test flakes before retrying it\n---\n\n1. Run the test 50 times on its own\n2. Look for fixed sleeps and shared state\n3. Fix the cause, then run it 50 times again\n",
   ]
 
+  static var archive: CtoArchivePage {
+    CtoArchivePage(
+      available: true,
+      mode: "recent",
+      entries: [
+        CtoArchiveEntry(id: 7, kind: "fact", scope: nil, text: "PR #482 fixes the login race; branch auth-fix, lane auth-fix.", reason: nil, sourceAt: iso(minutesFromNow: -50), sourceLabel: "Tool result (createPrFromLane)", sourceSessionId: "fixture-cto", archivedAt: iso(minutesFromNow: -40)),
+        CtoArchiveEntry(id: 6, kind: "decision", scope: nil, text: "Arul chose squash merges for release PRs.", reason: nil, sourceAt: iso(minutesFromNow: -55), sourceLabel: "Person", sourceSessionId: "fixture-cto", archivedAt: iso(minutesFromNow: -40)),
+        CtoArchiveEntry(id: 5, kind: "note", scope: "project", text: "Desktop tests need Node 22 on PATH.", reason: "cold", sourceAt: nil, sourceLabel: nil, sourceSessionId: nil, archivedAt: iso(minutesFromNow: -60 * 5)),
+        CtoArchiveEntry(id: 4, kind: "story", scope: nil, text: "## Where things stand\nThe CTO is landing the login race fix; Arul reviews PRs in the morning…", truncated: true, reason: nil, sourceAt: iso(minutesFromNow: -60 * 24), sourceLabel: "anthropic/claude-haiku-5-5", sourceSessionId: nil, archivedAt: iso(minutesFromNow: -60 * 24)),
+        CtoArchiveEntry(id: 3, kind: "discovery", scope: nil, text: "Vitest localStorage suites need Node 22 [topic:testing]", reason: "drained", sourceAt: iso(minutesFromNow: -60 * 30), sourceLabel: "Worker discovery", sourceSessionId: nil, archivedAt: iso(minutesFromNow: -60 * 30)),
+      ],
+      nextBefore: nil,
+      counts: ["note": 1, "fact": 1, "decision": 1, "discovery": 1, "story": 1]
+    )
+  }
+
   static func store() -> CtoStore {
-    CtoStore(fixtureSnapshot: snapshot, fixtureMemory: memory, fixtureSkillTexts: skillTexts, routines: routines, children: children, library: library, needs: needs)
+    CtoStore(fixtureSnapshot: snapshot, fixtureMemory: memory, fixtureSkillTexts: skillTexts, fixtureArchive: archive, routines: routines, children: children, library: library, needs: needs)
   }
 
   static func live(turnActive: Bool = false, step: String? = nil) -> CtoLiveModel {

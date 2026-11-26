@@ -3,6 +3,7 @@ import { WEB_PASSWORDS_SENTENCE } from "../../../shared/adeCloud/accountCalls";
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
+  emptyCtoArchivePage,
   peerToRuntimeDeviceState,
   type AiConfig,
   type CloudAgentArchiveArgs,
@@ -28,6 +29,9 @@ import {
   type CtoSkillFile,
   type CtoUndoLearnedArgs,
   type CtoUndoLearnedResult,
+  type CtoArchiveQuery,
+  type CtoArchivePage,
+  type CtoRecallArchivedArgs,
   type CursorAgentUsage,
   type CursorCloudAgentSummary,
   type CursorCloudArtifactDownload,
@@ -1252,6 +1256,8 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   writeSkill: 1,
   deleteSkill: 1,
   undoLearned: 1,
+  searchMemoryArchive: 1,
+  recallArchivedNote: 1,
   getLinearConnectionStatus: 0,
   setLinearToken: 1,
   clearLinearToken: 0,
@@ -1346,6 +1352,18 @@ function createCtoNamespace(
       "cto.undoLearned",
       args,
       unavailableOnHost("Undo isn't available on the connected ADE host."),
+      false,
+    ),
+    // An older host has no archive: the section stays hidden rather than erroring.
+    searchMemoryArchive: (args: CtoArchiveQuery) => call<CtoArchivePage>(
+      "cto.searchMemoryArchive",
+      args,
+      emptyCtoArchivePage(),
+    ),
+    recallArchivedNote: (args: CtoRecallArchivedArgs) => call<CtoMemorySnapshot>(
+      "cto.recallArchivedNote",
+      args,
+      unavailableOnHost("The CTO's archive can't be changed on the connected ADE host."),
       false,
     ),
     // `crossMachineEnabled` is the desktop's alone; the host strips it.

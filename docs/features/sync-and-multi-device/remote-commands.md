@@ -477,6 +477,12 @@ text.
   (v1-only fields sent empty for older phones).
 - `updateNotes`, `updateOpenWork` — queueable writes (web CTO page and
   settings).
+- `searchMemoryArchive` — the CTO's archive on its home machine
+  (`CtoArchivePage`): notes that left the notes, facts from past turns,
+  drained discoveries and story versions. Viewer-allowed read.
+- `recallArchivedNote` — pins an archived entry as a note again; answers the
+  memory snapshot. Not queueable: replayed later it could push out notes
+  written since.
 - `refreshContext` — a new provider thread; the session and memory stay.
 - `previewSystemPrompt` — the assembled prompt.
 - `getAttention` — `idle`, `awaiting-input` or `unknown` for the CTO badge,
