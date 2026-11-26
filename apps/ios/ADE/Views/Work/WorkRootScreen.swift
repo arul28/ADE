@@ -190,6 +190,10 @@ struct WorkRootSyncInputs: Equatable {
   var workStatus = SyncDomainStatus.disconnected
   var workProjectionRevision: Int?
   var rosterRevision = 0
+  /// The focused computer's roster arrived on this connection. Its first
+  /// answer after a reconnect can be an empty delta that moves no revision,
+  /// yet it is what lets Work leave out rows whose lane no computer has.
+  var rosterLiveOnConnection = false
   var chatLaunchRevision = 0
   /// Side chats opened or ended live: the rows' marks and hiding follow.
   var sideChatRevision = 0
@@ -258,6 +262,7 @@ struct WorkRootSyncInputs: Equatable {
     workProjectionRevision = sync.workProjectionRevision
     let activeProject = sync.activeProject
     rosterRevision = sync.rosterRevision(for: activeProject)
+    rosterLiveOnConnection = sync.rosterLiveOnConnection
     chatLaunchRevision = sync.chatLaunchRevision
     sideChatRevision = sync.sideChatRevision
     pendingChatCreations = sync.pendingChatCreations
@@ -431,6 +436,11 @@ struct WorkRootListScreen: View, Equatable {
     didSet { projectionDataRevision &+= 1 }
   }
   @State var lanes: [LaneSummary] = [] {
+    didSet { projectionDataRevision &+= 1 }
+  }
+  /// The project's archived lanes. Their chats are kept, and Work files them
+  /// under the lane's name rather than as orphaned sessions.
+  @State var archivedLanes: [LaneSummary] = [] {
     didSet { projectionDataRevision &+= 1 }
   }
   /// ADE-mapped PRs (synced `pull_requests` table) used to tag each session's
@@ -2660,7 +2670,8 @@ struct WorkRootListScreen: View, Equatable {
         // rather than repeated on every row beneath. Orphaned sections have no
         // lane record to read it from.
         laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status },
-        lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] },
+        // An archived lane keeps its chats but offers no lane actions.
+        lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] }.flatMap { $0.archivedAt == nil ? $0 : nil },
         laneMenu: workLaneMenuActions,
         startsQuietZone: group.id == quietZoneStartGroupId,
         branch: duoLayout.isWide ? group.laneId.flatMap { laneById[$0]?.branchRef } : nil,
@@ -2844,7 +2855,8 @@ struct WorkRootListScreen: View, Equatable {
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,
-      laneMenu: workLaneMenuActions,
+      // An archived lane's row keeps its chip but offers no lane actions.
+      laneMenu: laneById[session.laneId]?.archivedAt == nil ? workLaneMenuActions : nil,
       generateNamesAvailable: inputs.generateNamesAvailable,
       onGenerateNames: generateSessionNames,
       // Per chat: a chat on another machine (or in another project) is served

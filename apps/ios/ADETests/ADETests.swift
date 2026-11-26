@@ -17621,6 +17621,58 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(groups.last?.sessions.count, 2)
   }
 
+  /// A phone showed five chats of a lane deleted on its computer as
+  /// "Orphaned sessions: <lane id>", and Refresh could not clear them.
+  func testWorkFileSessionsWithoutLaneFilesArchivedLanesAndLeavesOutLanesNoComputerHas() {
+    func lane(_ id: String, archived: Bool) -> LaneSummary {
+      LaneSummary(
+        id: id, name: id, description: nil, laneType: "worktree", baseRef: "main", branchRef: id,
+        worktreePath: "/tmp/\(id)", attachedRootPath: nil, isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        color: nil, icon: nil, tags: [], folder: nil, createdAt: "2026-03-17T00:00:00.000Z",
+        archivedAt: archived ? "2026-03-20T00:00:00.000Z" : nil
+      )
+    }
+    func session(_ id: String, lane: String) -> TerminalSessionSummary {
+      makeTerminalSessionSummary(id: id, laneId: lane, laneName: "", toolType: "codex-chat", startedAt: "2026-03-25T12:00:00.000Z")
+    }
+    let sessions = [
+      session("in-live-lane", lane: "live"),
+      session("shell-in-roster-lane", lane: "roster-only"),
+      session("in-archived-lane", lane: "old"),
+      session("in-deleting-lane", lane: "going"),
+      session("in-lane-nobody-has", lane: "gone"),
+    ]
+
+    for (rosterLive, expectedIds) in [
+      (true, ["in-live-lane", "shell-in-roster-lane", "in-archived-lane", "in-deleting-lane"]),
+      // Until the focused computer's roster is live, nothing is left out.
+      (false, ["in-live-lane", "shell-in-roster-lane", "in-archived-lane", "in-deleting-lane", "in-lane-nobody-has"]),
+    ] {
+      let filed = workFileSessionsWithoutLane(
+        sessions: sessions,
+        lanes: [lane("live", archived: false)],
+        rosterLanes: [lane("roster-only", archived: false)],
+        archivedLanes: [lane("old", archived: true), lane("unused", archived: true)],
+        deletingLaneIds: ["going"],
+        focusedRosterLive: rosterLive
+      )
+      XCTAssertEqual(filed.sessions.map(\.id), expectedIds)
+      // A roster lane holding a row joins the lanes; an archived one stays
+      // apart, so it is never offered as a lane to start a chat in.
+      XCTAssertEqual(filed.lanes.map(\.id), ["live", "roster-only"])
+      XCTAssertEqual(filed.archivedLanes.map(\.id), ["old"])
+      let groups = workSessionGroupsByLane(
+        sessions: filed.sessions,
+        orderedLanes: filed.lanes,
+        deletingLaneIds: ["going"],
+        archivedLanes: filed.archivedLanes
+      )
+      XCTAssertEqual(groups.first { $0.id == "lane:old" }?.isOrphaned, false)
+      XCTAssertEqual(groups.first { $0.id == "lane:roster-only" }?.isOrphaned, false)
+    }
+  }
+
   func testWorkSessionGroupsByLaneShowsUpdatingPlaceholderForPendingLaneDeletion() {
     let deletingSession = makeTerminalSessionSummary(
       id: "session-deleting",

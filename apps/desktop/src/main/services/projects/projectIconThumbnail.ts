@@ -3,11 +3,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { PNG } from "pngjs";
+
+import { resizeRgbaToLongEdgeSync } from "../chat/providerInlineImageCodec";
 import { resolveProjectIcon, resolveProjectIconPath } from "./projectIconResolver";
 
 const MOBILE_PROJECT_ICON_EDGE = 64;
 const MOBILE_PROJECT_ICON_THUMBNAIL_CACHE_MAX = 64;
 const SIPS_PATH = "/usr/bin/sips";
+// The pure-JS PNG path decodes the whole image on the calling thread (a
+// 1024 px app icon is ~75 ms, once per file change: the result is cached).
+// Bound it so a larger image is skipped rather than holding the brain.
+const PNG_THUMBNAIL_MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+const PNG_THUMBNAIL_MAX_SOURCE_PIXELS = 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 export const PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES = 128 * 1024;
 const IMAGE_DATA_URL_RE = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
@@ -136,6 +145,39 @@ function sipsPngDataUrl(
 }
 
 /**
+ * A PNG thumbnail without Electron or `sips`: the headless brain on Windows
+ * and Linux. PNG sources only (what ADE detects for most repos); the box
+ * average keeps edges smooth at the small sizes the phone shows.
+ */
+function pngjsThumbnailDataUrl(sourcePath: string, edge = MOBILE_PROJECT_ICON_EDGE): string | null {
+  try {
+    const stat = fs.statSync(sourcePath);
+    if (!stat.isFile() || stat.size > PNG_THUMBNAIL_MAX_SOURCE_BYTES) return null;
+    const buffer = fs.readFileSync(sourcePath);
+    // The signature, then IHDR (always the first chunk): its size is read
+    // before decoding, so an image over the limit costs nothing.
+    if (buffer.length < 24 || !buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return null;
+    if (buffer.toString("latin1", 12, 16) !== "IHDR") return null;
+    const headerPixels = buffer.readUInt32BE(16) * buffer.readUInt32BE(20);
+    if (headerPixels <= 0 || headerPixels > PNG_THUMBNAIL_MAX_SOURCE_PIXELS) return null;
+    // Interlaced: pngjs inflates those with no size limit, so a crafted icon
+    // in a repository could exhaust memory. App icons are not interlaced.
+    if (buffer.length < 29 || buffer[28] !== 0) return null;
+    const source = PNG.sync.read(buffer);
+    if (source.width <= 0 || source.height <= 0) return null;
+    const resized = resizeRgbaToLongEdgeSync(
+      { width: source.width, height: source.height, data: source.data, hasAlpha: true },
+      edge,
+    );
+    const out = new PNG({ width: resized.width, height: resized.height });
+    out.data = Buffer.from(resized.data.buffer, resized.data.byteOffset, resized.data.byteLength);
+    return `data:image/png;base64,${PNG.sync.write(out).toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A PNG of the image at most `edge` pixels on its long side, through macOS
  * `sips` (it keeps the aspect ratio). Null on any other platform or failure.
  */
@@ -169,14 +211,18 @@ export function resolveMobileProjectIconDataUrl(
     return cached.value;
   }
 
+  // `sips` exists only on macOS: elsewhere the default would spawn a missing
+  // binary on every cache miss, so it is skipped unless one is supplied.
+  const rasterizeWithSips = options.rasterizeWithSips
+    ?? (process.platform === "darwin" ? defaultSipsRasterizer : null);
   const value = boundedThumbnailDataUrl(
     nativeImagePngDataUrl(sourcePath, options.nativeImage)
-    ?? sipsPngDataUrl(
-      sourcePath,
-      options.rasterizeWithSips ?? defaultSipsRasterizer,
-      options.tmpRoot ?? os.tmpdir(),
-    )
-    // Only read/base64-encode the original after both thumbnail paths fail.
+    ?? (rasterizeWithSips
+      ? sipsPngDataUrl(sourcePath, rasterizeWithSips, options.tmpRoot ?? os.tmpdir())
+      : null)
+    // The headless brain on Windows and Linux has neither: shrink a PNG in JS.
+    ?? pngjsThumbnailDataUrl(sourcePath)
+    // Only read/base64-encode the original after every thumbnail path fails.
     // The common native/sips paths therefore never retain a multi-megabyte
     // source image merely to return its tiny thumbnail.
     ?? (() => {

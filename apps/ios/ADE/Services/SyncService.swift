@@ -4681,6 +4681,9 @@ final class SyncService: ObservableObject {
   var rosterSeq: Int?
   /// Whether `roster_subscribe` has been sent on the current connection.
   var rosterSubscribed = false
+  /// Whether the host has sent a roster snapshot or delta on the current
+  /// connection: the roster is live, not the copy saved from an earlier one.
+  @Published private(set) var rosterLiveOnConnection = false
   /// True once the host has answered at least one roster push this launch, so
   /// the hub knows the feed is supported (older hosts never answer → fallback).
   @Published private(set) var rosterSupported = false
@@ -13374,15 +13377,20 @@ final class SyncService: ObservableObject {
   func fetchWorkListProjection() async -> (
     sessions: [TerminalSessionSummary],
     lanes: [LaneSummary],
-    pullRequests: [PullRequestListItem]
+    pullRequests: [PullRequestListItem],
+    /// Archived lanes: Work files their kept chats under the lane's name
+    /// instead of listing them as orphaned.
+    archivedLanes: [LaneSummary]
   ) {
     let database = self.database
     let read = {
       await Task.detached(priority: .userInitiated) {
-        (
+        let allLanes = database.fetchLanes(includeArchived: true)
+        return (
           sessions: database.fetchSessions(),
-          lanes: database.fetchLanes(includeArchived: false),
-          pullRequests: database.fetchPullRequestListItems()
+          lanes: allLanes.filter { $0.archivedAt == nil },
+          pullRequests: database.fetchPullRequestListItems(),
+          archivedLanes: allLanes.filter { $0.archivedAt != nil }
         )
       }.value
     }
@@ -13391,7 +13399,7 @@ final class SyncService: ObservableObject {
     // An account change during the read reset the replica: these rows are
     // the former account's. Read the new replica instead.
     if accountGeneration != accountDataGeneration { rows = await read() }
-    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests)
+    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests, rows.archivedLanes)
   }
 
   func fetchSession(id sessionId: String) async throws -> TerminalSessionSummary? {
@@ -25661,6 +25669,7 @@ final class SyncService: ObservableObject {
     // restarted, or past its resume window) answers with a full snapshot, and
     // `reloadRosterForActiveHost` drops the seq when the machine changes.
     rosterSubscribed = false
+    rosterLiveOnConnection = false
     // Pipelined hello answers belong to the socket that carried them.
     acceptedPipelinedHello = nil
     pipelinedHelloReplies.removeAll()
@@ -28990,6 +28999,7 @@ extension SyncService {
     let changedProjectIds = rosterChangedProjectIds(previous: rosterProjects, next: nextProjects)
     rosterProjects = nextProjects
     rosterSeq = snapshot.seq
+    if !rosterLiveOnConnection { rosterLiveOnConnection = true }
     // A full snapshot is a fresh start: older chats loaded before it may have
     // changed or gone, so the user loads them again.
     dropRosterOlderChats()
@@ -29010,6 +29020,7 @@ extension SyncService {
     case .dropped:
       break // duplicate / out-of-order replay
     case let .applied(projects, seq):
+      if !rosterLiveOnConnection { rosterLiveOnConnection = true }
       let nextProjects = sortRosterProjects(projects.map { $0.excludingIdentityChats() })
       // A delta already carries its changed/removed project ids. Avoid a deep
       // all-project chat-array comparison on the MainActor every 250 ms.
@@ -29266,6 +29277,7 @@ extension SyncService {
     rosterSeq = nil
     rosterSupported = false
     rosterSubscribed = false
+    rosterLiveOnConnection = false
     rosterProjectRevisions.removeAll()
     rosterRevision &+= 1
     markRosterProjectsChanged(Set(rosterProjects.map(\.projectId)))
