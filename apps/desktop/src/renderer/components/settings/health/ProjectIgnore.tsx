@@ -79,7 +79,10 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
   const [busy, setBusy] = React.useState(false);
   // A reply from a copy the page has since left must not paint over the copy it shows now.
   const pinKeyRef = React.useRef(pin?.key ?? null);
-  pinKeyRef.current = pin?.key ?? null;
+  // Follows the committed copy, not a render React may still throw away.
+  React.useLayoutEffect(() => {
+    pinKeyRef.current = pin?.key ?? null;
+  }, [pin?.key]);
   const report = React.useCallback((sentTo: string | null, next: ProjectHealthReport) => {
     if (sentTo === pinKeyRef.current) onReport(next);
   }, [onReport]);
