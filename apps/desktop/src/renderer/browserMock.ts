@@ -62,6 +62,7 @@ import type {
 } from "../shared/types/appControl";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
+import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../shared/accountDirectory";
 import { renderLaneBranchPrefix } from "../shared/laneBranchName";
 import { branchNameFromLaneRef } from "../shared/laneBaseResolution";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
@@ -1662,6 +1663,96 @@ function browserMockHeldElsewhereConnection(): any[] {
     reconnectBlocked: "disconnected",
     recovery: "held_elsewhere",
   }];
+}
+
+/**
+ * `?mockOfflineMacs`: five Macs that are turned off. Three are saved here and
+ * ADE's automatic reconnect failed on them; two (one a second install of the
+ * Studio) are only on the account. Connect on any of them fails after a beat.
+ */
+const BROWSER_MOCK_OFFLINE_MACS: Array<{ id: string; key: string; name: string; hoursAgo: number; saved: boolean; adeHome?: string }> = [
+  { id: "mock-off-studio", key: "mk_off_studio", name: "Arul's Mac Studio", hoursAgo: 11, saved: true },
+  { id: "mock-off-mbp", key: "mk_off_mbp", name: "Arul's MacBook Pro", hoursAgo: 6, saved: true },
+  { id: "mock-off-imac", key: "mk_off_imac", name: "iMac", hoursAgo: 52, saved: true },
+  { id: "mock-off-studio-dev", key: "mk_off_studio_dev", name: "Arul's Mac Studio (dev)", hoursAgo: 11, saved: false, adeHome: "~/.ade-dev-machine-storage" },
+  { id: "mock-off-macpro", key: "mk_off_macpro", name: "Mac Pro", hoursAgo: 30, saved: false },
+];
+
+function browserMockOfflineMacTarget(mac: (typeof BROWSER_MOCK_OFFLINE_MACS)[number]): any {
+  return {
+    id: mac.id,
+    name: mac.name,
+    hostname: `${mac.id}.local`,
+    transport: "paired",
+    pairedMachine: { hostIdentity: `dev_${mac.key}`, machineKey: mac.key },
+    sshUser: null,
+    port: null,
+    sshKeyPath: null,
+    lastSeenArch: "darwin-arm64",
+    runtimeBinaryVersion: "0.0.0-browser",
+    lastConnectedAt: Date.now() - mac.hoursAgo * 3_600_000,
+    autoConnect: true,
+  };
+}
+
+function browserMockOfflineMacConnections(): any[] {
+  if (!browserMockFlag("mockOfflineMacs")) return [];
+  return BROWSER_MOCK_OFFLINE_MACS.filter((mac) => mac.saved).map((mac) => {
+    const message = `Can't reach ${mac.name} — it may be asleep or ADE may be stopped there.`;
+    return {
+      target: browserMockOfflineMacTarget(mac),
+      state: "error",
+      arch: "darwin-arm64",
+      version: "0.0.0-browser",
+      route: null,
+      capabilities: null,
+      projects: [],
+      lastError: message,
+      lastErrorInfo: {
+        kind: "unreachable",
+        message,
+        detail: "relay: host_offline (ws_close_4504)",
+        failure: "unreachable",
+        correlationId: `mock-${mac.id}`,
+        attempts: [
+          { kind: "lan", host: "192.168.1.31:8787", startedAt: Date.now() - 40_000, durationMs: 3_000, outcome: "failed", failure: "timeout", errorCode: "ETIMEDOUT" },
+          { kind: "relay", host: "relay.ade-app.dev", startedAt: Date.now() - 37_000, durationMs: 420, outcome: "failed", failure: "unreachable", errorCode: "ws_close_4504" },
+        ],
+      },
+      lastAttemptedAt: Date.now() - 30_000,
+      connectedAt: null,
+      disconnectedAt: Date.now() - mac.hoursAgo * 3_600_000,
+      recovery: "reconnecting",
+    };
+  });
+}
+
+function browserMockOfflineMacAccountMachines(): any[] {
+  if (!browserMockFlag("mockOfflineMacs")) return [];
+  return BROWSER_MOCK_OFFLINE_MACS.map((mac) => ({
+    machineKey: mac.key,
+    deviceId: `dev_${mac.key}`,
+    name: mac.name,
+    platform: "darwin",
+    deviceType: "desktop",
+    ...(mac.adeHome ? { adeHome: mac.adeHome } : {}),
+    // ADE's own relay, so the account rows are dialable and list under "Not connected".
+    reachableEndpoints: [{ kind: "relay" as const, url: `${DEFAULT_ADE_TUNNEL_RELAY_URL.replace(/^https:/, "wss:")}/connect/${mac.key}` }],
+    lastSeenAt: Date.now() - mac.hoursAgo * 3_600_000,
+    online: false,
+  }));
+}
+
+/** `remoteRuntime.connect`, except a `?mockOfflineMacs` Mac fails after a beat, as a turned-off one does. */
+function withOfflineMacsConnect(connect: (id: string) => Promise<any>): (id: string) => Promise<any> {
+  return async (id) => {
+    const mac = browserMockFlag("mockOfflineMacs")
+      ? BROWSER_MOCK_OFFLINE_MACS.find((entry) => id === entry.id || id === `paired-${entry.key}`)
+      : undefined;
+    if (!mac) return connect(id);
+    await new Promise((resolve) => window.setTimeout(resolve, 1_200));
+    throw new Error(`Can't reach ${mac.name} — it may be asleep or ADE may be stopped there.`);
+  };
 }
 
 /** `remoteRuntime.connect` on `?mockRemoteConnect=in-use`'s machine ("Use it here"): it connects after a beat. */
@@ -6233,6 +6324,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 lastSeenAt: Date.now() - 6 * 3_600_000,
                 online: false,
               },
+              ...browserMockOfflineMacAccountMachines(),
             ],
           };
         },
@@ -6986,7 +7078,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         lastSeenArch: "darwin-arm64",
         runtimeBinaryVersion: "0.0.0-browser",
         lastConnectedAt: Date.now(),
-      }, ...mockCloudLaneTargets()]),
+      }, ...mockCloudLaneTargets(), ...browserMockOfflineMacConnections().map((entry) => entry.target)]),
       getConnectionSnapshot: browserMockFlag("mockOneMachine")
         ? resolved({ connections: [], connectedCount: 0, updatedAt: Date.now() })
         : resolved({
@@ -7058,7 +7150,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now() - 3 * 86_400_000,
           connectedAt: null,
-        }, ...browserMockHeldElsewhereConnection(), ...mockCloudLaneTargets().map((target) => ({
+        }, ...browserMockHeldElsewhereConnection(), ...browserMockOfflineMacConnections(), ...mockCloudLaneTargets().map((target) => ({
           target,
           state: "connected" as const,
           arch: "linux-x64",
@@ -7106,7 +7198,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         autoConnect: true,
       }),
       removeTarget: resolvedArg({ removed: true }),
-      connect: withHeldElsewhereConnect(resolvedArg({
+      connect: withOfflineMacsConnect(withHeldElsewhereConnect(resolvedArg({
         target: {
           id: "mock-remote",
           name: "Mock remote",
@@ -7121,7 +7213,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         arch: "darwin-arm64",
         version: "0.0.0-browser",
         projects: [],
-      })),
+      }))),
       listProjects: resolvedArg([{
         projectId: "mock-remote-project",
         rootPath: "/Users/ade/Projects/browser-preview",

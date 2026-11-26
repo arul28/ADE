@@ -409,6 +409,7 @@ function HostedConnectionsPanel({
           onOpenCloudSettings={goToCloudSettings}
           accountEmail={accountStatus.email ?? null}
           thisComputerCode={null}
+          focusMachineKey={machineId}
         />
       </div>
       <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
@@ -553,6 +554,7 @@ function DesktopConnectionsPanel({
             onAccountMachinesChanged={reloadAccountMachines}
             onOpenCloudSettings={goToCloudSettings}
             accountEmail={accountStatus.email ?? null}
+            focusMachineKey={machineId}
             thisComputerCode={sync.isRemoteBound || !canShowPairingCode(sync) ? null : <ThisComputerPairingCode sync={sync} />}
           />
         ) : null}

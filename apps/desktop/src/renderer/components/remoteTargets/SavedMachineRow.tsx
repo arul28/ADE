@@ -8,6 +8,7 @@ import {
   Plugs,
   PlugsConnected,
   Pulse,
+  Question,
   Trash,
   Warning,
   X,
@@ -30,6 +31,8 @@ import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import { MachineAvatar, PresenceDot, VersionChip, machineFormFactor, machinePlatform } from "./MachineIdentity";
 import { UpdateSteps, type MachineUpdatePhase } from "./UpdateSteps";
 import {
+  HELD_ELSEWHERE_ACTION_LABEL,
+  HELD_ELSEWHERE_STATE_LABEL,
   autoConnectOffReason,
   connectionStateLabel,
   formatLastSeen,
@@ -100,6 +103,15 @@ type SavedMachineRowProps = {
   formPrefill: RemoteTargetFormPrefill | null;
   testOpen: boolean;
   error: string | null;
+  /**
+   * The person pressed Connect (or Retry, Reconnect, Pair again) on this
+   * machine in this window and that attempt has not succeeded or been
+   * dismissed. Only then does a failure show as a full card on the row; a
+   * failed automatic reconnect stays one line of state.
+   */
+  userAttempted?: boolean;
+  /** The card's ✕: forget the person's failed attempt on this machine. */
+  onDismissError?: () => void;
   stageLabel?: string | null;
   transientStatus?: string | null;
   /**
@@ -172,6 +184,8 @@ export function SavedMachineRow({
   formPrefill,
   testOpen,
   error,
+  userAttempted = false,
+  onDismissError,
   stageLabel = null,
   transientStatus = null,
   updateTargetVersion = null,
@@ -271,6 +285,29 @@ export function SavedMachineRow({
   // Re-pairing only helps when the machine actually refused the pairing.
   const pairAgain = errorCard?.failure === "pairing" ? onPairAgain : null;
   const formOpen = formPrefill?.targetId === target.id;
+  // A machine restarting for an update drops its connection on purpose. That
+  // is a step of the update, not a failure, so its error card stays hidden.
+  const shownErrorCard = updatePhase === "restarting" ? null : errorCard;
+  // The full card is the answer to a press: Connect, Retry or Reconnect here
+  // failed. A machine that is simply off, and ADE's own reconnects to it,
+  // stay one line of state; the card is one ··· item away ("Why offline?").
+  const inlineErrorCard = shownErrorCard && (userAttempted || (selected && error != null))
+    ? shownErrorCard
+    : null;
+  // Said in the state line instead of a card.
+  const reachFailure = errorCard != null && (
+    errorCard.kind === "unreachable" || errorCard.failure === "unreachable" || errorCard.failure === "timeout"
+  );
+  const heldElsewhere = statusLabel === HELD_ELSEWHERE_STATE_LABEL;
+  // The account directory sees it offline: that is the state, whatever ADE's
+  // own reconnects to it are doing.
+  const stateWord = accountOnline === false && !heldElsewhere && !connectingStale
+    ? "Offline"
+    : statusLabel === "Not connected"
+      ? null
+      : reachFailure && !heldElsewhere
+        ? "Can't reach"
+        : statusLabel;
 
   const parkedLine = parked && !row.connected && !updatePhase ? parked : null;
   const presence: "online" | "busy" | "offline" | "error" = updatePhase
@@ -279,7 +316,7 @@ export function SavedMachineRow({
       ? "offline"
       : row.connected
       ? "online"
-      : errorCard && section !== "unavailable"
+      : inlineErrorCard && section !== "unavailable"
         ? "error"
         : targetConnecting && !connectingStale
           ? "busy"
@@ -304,20 +341,31 @@ export function SavedMachineRow({
                 ? onlineLine
               : slotLine
                 ? slotLine
-              : lastSeenAt || statusLabel !== "Not connected"
+              : lastSeenAt || stateWord
                 ? [
                     // The hollow dot and the section already say "not connected".
-                    statusLabel === "Not connected" ? null : statusLabel,
+                    stateWord,
                     autoConnectOff,
-                    statusLabel === "Not connected"
-                      ? formatLastSeen(lastSeenAt).replace(/^Last connected /, "Last seen ")
-                      : formatLastSeen(lastSeenAt).replace(/^Last connected /, "last seen "),
+                    stateWord
+                      ? formatLastSeen(lastSeenAt).replace(/^Last connected /, "last seen ").replace(/^Never connected$/, "never connected")
+                      : formatLastSeen(lastSeenAt).replace(/^Last connected /, "Last seen "),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
-  // A machine restarting for an update drops its connection on purpose. That
-  // is a step of the update, not a failure, so its error card stays hidden.
-  const shownErrorCard = updatePhase === "restarting" ? null : errorCard;
   const showFinalUpdateStatus = Boolean(updateStatus) && !updatePhase;
+  // "Why offline?" in ···: a machine that is not connected and has a failure to explain.
+  const explainsOffline = !row.connected && shownErrorCard != null && accountOnline !== true;
+  const errorCardFor = (card: NonNullable<typeof shownErrorCard>, onDismiss: (() => void) | null) => (
+    <RemoteErrorCard
+      card={card}
+      onRetry={!locked ? () => onConnect(target.id) : undefined}
+      retrying={connecting}
+      recovery={status?.state === "error" ? status.recovery ?? null : null}
+      action={pairAgain && !locked
+        ? { label: "Pair again", onClick: pairAgain }
+        : null}
+      onDismiss={onDismiss}
+    />
+  );
   const behind = row.connected && updateTargetVersion != null;
 
   return (
@@ -394,7 +442,7 @@ export function SavedMachineRow({
                 style={{ ...connectButtonStyle, marginRight: 4, opacity: locked ? 0.5 : 1, cursor: locked ? "not-allowed" : "pointer" }}
               >
                 <PlugsConnected size={13} weight="bold" />
-                {connectingStale ? "Retry" : "Connect"}
+                {connectingStale ? "Retry" : heldElsewhere ? HELD_ELSEWHERE_ACTION_LABEL : "Connect"}
               </button>
             ) : null}
             <MachineActionsMenu
@@ -403,9 +451,9 @@ export function SavedMachineRow({
                 ...(section !== "unavailable"
                   ? [{
                       key: "test",
-                      label: testOpen ? "Hide connection details" : "Test connection",
-                      ariaLabel: "Test",
-                      icon: <Pulse size={14} />,
+                      label: testOpen ? "Hide connection details" : explainsOffline ? "Why offline?" : "Test connection",
+                      ariaLabel: explainsOffline && !testOpen ? undefined : "Test",
+                      icon: explainsOffline && !testOpen ? <Question size={14} /> : <Pulse size={14} />,
                       disabled: busy,
                       onSelect: () => onToggleTest(target.id),
                     },
@@ -484,17 +532,7 @@ export function SavedMachineRow({
           )
         ) : null}
 
-        {shownErrorCard ? (
-          <RemoteErrorCard
-            card={shownErrorCard}
-            onRetry={!locked ? () => onConnect(target.id) : undefined}
-            retrying={connecting}
-            recovery={status?.state === "error" ? status.recovery ?? null : null}
-            action={pairAgain && !locked
-              ? { label: "Pair again", onClick: pairAgain }
-              : null}
-          />
-        ) : null}
+        {inlineErrorCard ? errorCardFor(inlineErrorCard, onDismissError ?? null) : null}
 
         {warnings.length > 0 ? (
           <div
@@ -530,7 +568,7 @@ export function SavedMachineRow({
         />
 
         {/* Which routes were tried lives with the failure, or under Test connection. */}
-        {shownErrorCard ? (
+        {inlineErrorCard ? (
           <ConnectionRouteDetails
             attempts={routeAttempts}
             correlationId={routeCorrelationId}
@@ -551,7 +589,9 @@ export function SavedMachineRow({
 
       {testOpen ? (
         <div id={`remote-target-test-${target.id}`} className="ade-cx-inset">
-          {!shownErrorCard ? (
+          {/* Why it is offline: the failure the row only names, opened from ···. */}
+          {shownErrorCard && !inlineErrorCard ? errorCardFor(shownErrorCard, () => onToggleTest(target.id)) : null}
+          {!inlineErrorCard ? (
             <ConnectionRouteDetails
               attempts={routeAttempts}
               correlationId={routeCorrelationId}

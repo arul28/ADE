@@ -2,11 +2,10 @@ import { useEffect, useState, type ReactNode } from "react";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "./MachineIdentity";
 import {
   ArrowCounterClockwise,
-  CaretDown,
-  CaretUp,
   Check,
   PencilSimple,
   PlugsConnected,
+  Question,
   X,
 } from "@phosphor-icons/react";
 import type {
@@ -69,7 +68,10 @@ type AccountMachineRowProps = {
    * not describe a machine we are talking to as one we have only heard from.
    */
   connected?: boolean;
+  /** The person's own Connect on this row failed (only a press sets it). */
   error?: string | null;
+  /** The failure card's ✕: forget that failed attempt. */
+  onDismissError?: (() => void) | null;
   /** Structured failure for the machine's saved target, when one exists. Feeds
    * the collapsed route list; the headline stays the plain-language `error`. */
   errorInfo?: RemoteRuntimeConnectErrorInfo | null;
@@ -141,7 +143,9 @@ function accountMachineStatusLabel(
   if (presence === "online") {
     return machineStatusLine(machine, { presence }) ?? "Ready to connect";
   }
-  return `${relativeLastSeen(machine.lastSeenAt)} · Open ADE on that computer`;
+  // "Open ADE on that computer" lives in ··· › Why offline?.
+  const phrase = relativeLastSeenPhrase(machine.lastSeenAt);
+  return `Offline · ${phrase ? `last seen ${phrase}` : "never seen"}`;
 }
 
 export function AccountMachineRow({
@@ -151,6 +155,7 @@ export function AccountMachineRow({
   connecting,
   connected = false,
   error = null,
+  onDismissError = null,
   errorInfo = null,
   stageLabel = null,
   successLabel = null,
@@ -341,22 +346,20 @@ export function AccountMachineRow({
                 {busy ? "Stopping…" : machineActionLabel(presence)}
               </button>
             ) : null}
-            {canExplain ? (
-              <button
-                type="button"
-                aria-expanded={detailOpen}
-                aria-controls={`account-machine-detail-${row.id}`}
-                onClick={() => onToggleDetail(row.id)}
-                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
-              >
-                {needsSetup ? "How to connect" : "Why offline?"}
-                {detailOpen ? <CaretUp size={12} weight="bold" /> : <CaretDown size={12} weight="bold" />}
-              </button>
-            ) : null}
             {!renaming ? (
               <MachineActionsMenu
                 label={`Actions for ${displayName}`}
                 actions={[
+                  // The explanation a quiet row leaves out: why it is
+                  // offline, or how to finish setting it up.
+                  ...(canExplain
+                    ? [{
+                        key: "explain",
+                        label: detailOpen ? "Hide details" : needsSetup ? "How to connect" : "Why offline?",
+                        icon: <Question size={14} />,
+                        onSelect: () => onToggleDetail(row.id),
+                      }]
+                    : []),
                   {
                     key: "rename",
                     label: "Rename",
@@ -402,6 +405,7 @@ export function AccountMachineRow({
               id: `account-machine-connect-error-${row.id}`,
               tone: isMachineStateConnectError(errorInfo?.kind) ? "warning" : "error",
               title: error,
+              ...(onDismissError ? { dismiss: { onDismiss: onDismissError } } : {}),
               actions: onPairNearby
                 ? [{ label: "It's on your network — Pair nearby instead ›", onClick: onPairNearby, variant: "link" }]
                 : undefined,
