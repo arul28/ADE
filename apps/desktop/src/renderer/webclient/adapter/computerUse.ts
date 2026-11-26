@@ -81,9 +81,17 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
         // A proof over the host's whole-file cap (8 MiB): pull it in slices,
         // the way the phone plays a long recording.
         if (!/too large/i.test(error instanceof Error ? error.message : String(error))) throw error;
-        const url = await readLargeArtifact(args.uri);
-        rememberLargeMediaUrl(cacheKey, url);
-        return url;
+        // Two tiles (or a tile and the drawer) asking at once share one pull.
+        const pending = largeMediaLoads.get(cacheKey);
+        if (pending) return pending;
+        const load = readLargeArtifact(args.uri)
+          .then((url) => {
+            rememberLargeMediaUrl(cacheKey, url);
+            return url;
+          })
+          .finally(() => largeMediaLoads.delete(cacheKey));
+        largeMediaLoads.set(cacheKey, load);
+        return load;
       }
     },
   } as unknown as AdeNamespace<"computerUse">;
@@ -117,6 +125,7 @@ const WEB_LARGE_MEDIA_MAX_BYTES = 256 * 1024 * 1024;
 /** Object URLs kept, so a scroll or a remount does not pull a long video again. */
 const LARGE_MEDIA_URL_KEEP = 4;
 const largeMediaUrls = new Map<string, string>();
+const largeMediaLoads = new Map<string, Promise<string>>();
 
 /** Evicted URLs a page element still showed, revoked once nothing shows them. */
 const retiredLargeMediaUrls = new Set<string>();
