@@ -274,6 +274,7 @@ describe("adeCloudNavigationForCopy", () => {
     ["the project listing that checkout on that machine", request(), { machineKey: "cloud-1", projectId: CANONICAL_ID }, APP_ID],
     ["the project listing that folder on that machine", request(), { machineKey: "cloud-1", rootPath: PROJECT_ROOT }, APP_ID],
     ["nothing for the same checkout on another machine", request(), { machineKey: "cloud-2", projectId: CANONICAL_ID }, null],
+    ["nothing for a named project the account does not have, even when another lists the folder", request(`ap_${"c".repeat(32)}`), { machineKey: "cloud-1", projectId: CANONICAL_ID }, null],
   ])("opens %s", (_label, incoming, copy, expected) => {
     const answer = adeCloudNavigationForCopy(incoming, list, copy);
     expect(answer?.target ?? null).toEqual(expected

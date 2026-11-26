@@ -134,8 +134,12 @@ export function adeCloudNavigationForCopy(
   const checkoutId = copy.projectId?.trim() || null;
   const rootPath = copy.rootPath?.trim() || null;
   const named = namedAccountProjectId(request.target);
-  const project = (named ? list.projects.find((entry) => entry.id === named) : undefined)
-    ?? list.projects.find((entry) => entry.copies.some((row) => (
+  // A named project, or the one it was merged into; never another project
+  // that happens to list the folder.
+  const namedProject = named ? resolveAccountProjectLink(named, null, list, [], () => false) : null;
+  const project = namedProject
+    ? (namedProject.kind === "noCopy" ? namedProject.project : null)
+    : list.projects.find((entry) => entry.copies.some((row) => (
       row.machineKey === machineKey
       && ((checkoutId !== null && row.checkoutId === checkoutId) || (rootPath !== null && row.rootPath === rootPath))
     )));
