@@ -145,8 +145,9 @@ export function createGate(s: SyncShared) {
         told = true;
         try {
           options.onWait?.("Getting this cloud computer's sign-ins from your ADE account…");
-        } catch {
+        } catch (error) {
           // The line is for the person; a caller's failure never holds the turn.
+          deps.logger.warn("provider_login.gate_line_failed", { name: error instanceof Error ? error.name : "unknown" });
         }
       }
       if (last === "unreadable" && now() - askedAt >= COLD_ACCESS_RETRY_MS) {
