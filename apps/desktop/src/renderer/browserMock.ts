@@ -10018,7 +10018,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getLinearConnectionStatus: resolvedArg(
         browserMockFlag("mockLinearOff")
           ? { ...MOCK_LINEAR_CONNECTION, tokenStored: false, connected: false }
-          : MOCK_LINEAR_CONNECTION,
+          // `?mockLinearMember`: signed in as a workspace member, not an admin.
+          : { ...MOCK_LINEAR_CONNECTION, viewerIsAdmin: !browserMockFlag("mockLinearMember") },
       ),
       setLinearToken: resolvedArg({
         ...MOCK_LINEAR_CONNECTION,

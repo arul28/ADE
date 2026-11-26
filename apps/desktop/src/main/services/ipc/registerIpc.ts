@@ -1808,6 +1808,7 @@ async function buildLinearConnectionStatus(
     organizationName: status.organizationName,
     organizationUrlKey: status.organizationUrlKey,
     organizationLogoUrl: status.organizationLogoUrl,
+    viewerIsAdmin: status.viewerIsAdmin,
     projectCount: undefined,
     projectPreview: undefined,
     checkedAt: nowIso(),

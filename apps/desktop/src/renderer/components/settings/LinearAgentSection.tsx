@@ -2,7 +2,7 @@ import { plainErrorText } from "../../lib/plainError";
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowSquareOut, CaretDown, Check, CircleNotch, Robot } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretDown, Check, CircleNotch, Copy, Robot } from "@phosphor-icons/react";
 import type { AiPermissionSettings, LinearAgentOverview, ModelConfig, OpenProjectBinding } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -20,6 +20,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
 import { useThisComputerCopyPin } from "./ProjectCopyScope";
 import { requirePin } from "../../state/repositoryScope";
+import { showToast } from "../app/toast/toastStore";
 
 const INSTALL_POLL_MS = 1_500;
 
@@ -54,8 +55,16 @@ function Field({ label, children, wide = false }: { label: string; children: Rea
  *
  * `pin` is the Settings page's machine: membership, rules and the install all
  * belong to that machine's runtime. Null follows the tab's binding.
+ *
+ * `viewerIsAdmin` comes from the same machine's Linear connection. Linear lets
+ * only workspace admins approve the agent, so a member is offered a note for
+ * an admin instead of an Add that Linear would refuse. Null (unknown) keeps Add.
  */
-export function LinearAgentSection({ connected, pin = null }: { connected: boolean; pin?: OpenProjectBinding | null }) {
+export function LinearAgentSection({ connected, viewerIsAdmin = null, pin = null }: {
+  connected: boolean;
+  viewerIsAdmin?: boolean | null;
+  pin?: OpenProjectBinding | null;
+}) {
   const navigate = useNavigate();
   // The rules live in a copy of the project: the page machine's copy, or this
   // computer's copy when the page is about this computer.
@@ -142,6 +151,24 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
     }
   }, [pin]);
 
+  // The install sign-in returns to this computer, so an admin cannot finish it
+  // from a link; they add ADE from their own ADE. The note also shows under
+  // the button: a clipboard that fails quietly (the web client's) still
+  // leaves the person something to send.
+  const [adminNote, setAdminNote] = useState<string | null>(null);
+  const copyNoteForAdmin = useCallback(async (workspace: string) => {
+    const note = `Could you add the ADE agent to our Linear workspace (${workspace})? Linear lets only workspace admins approve it. In ADE, open Settings › Integrations › Linear and click "Add to workspace". After that, anyone on the team who uses ADE can assign issues to it.`;
+    setAdminNote(note);
+    const write = window.ade?.app?.writeClipboardText;
+    try {
+      if (!write) throw new Error("No clipboard here.");
+      await write(note);
+      showToast({ tone: "success", title: "Copied a note for an admin", message: "Send it to an admin of your Linear workspace." });
+    } catch {
+      showToast({ tone: "error", title: "Couldn't copy the note", message: "Copy it from under the button instead." });
+    }
+  }, []);
+
   const run = useCallback(async (key: string, work: () => Promise<LinearAgentOverview | void>) => {
     setBusy(key);
     setError(null);
@@ -195,6 +222,8 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
   const live = connected ? overview : null;
   const status = live?.status ?? null;
   const installed = status?.installed === true;
+  // Linear lets only workspace admins add the agent; unknown (null) keeps Add.
+  const needsAdmin = connected && !installed && viewerIsAdmin === false;
   const rules = live?.rules ?? [];
   const otherMembers = status ? status.members.filter((member) => !member.isMe) : [];
   const unreachable = live != null && !live.available;
@@ -265,9 +294,19 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
                 ? "Connect Linear first."
                 : installed
                   ? `Added to ${status?.orgName ?? "this workspace"}.`
-                  : "A workspace admin approves it once. After that, teammates only connect Linear in their own ADE."}
+                  : needsAdmin
+                    ? "Only an admin of your Linear workspace can add ADE, and you are not one. Once an admin adds it from their ADE, this step is done for you too."
+                    : "A workspace admin approves it once. After that, teammates only connect Linear in their own ADE."}
             </p>
-            {connected && !installed && status ? (
+            {needsAdmin && status ? (
+              <div className="ade-ig-step-actions" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+                <button type="button" className="ade-modern-btn" onClick={() => void copyNoteForAdmin(status.orgName ?? "this workspace")}>
+                  <Copy size={12} />
+                  Copy a note for an admin
+                </button>
+                {adminNote ? <p className="ade-ig-note" style={{ userSelect: "text" }} data-testid="linear-agent-admin-note">{adminNote}</p> : null}
+              </div>
+            ) : connected && !installed && status ? (
               <div className="ade-ig-step-actions">
                 <button type="button" className="ade-modern-btn" data-tone="primary" disabled={installing} onClick={() => void handleInstall()}>
                   {installing ? <CircleNotch size={12} className="animate-spin" /> : <ArrowSquareOut size={12} />}

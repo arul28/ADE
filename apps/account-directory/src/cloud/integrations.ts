@@ -82,7 +82,7 @@ function filterOf(value: unknown): Record<string, unknown> | null | string {
 
 const LINEAR_DOCUMENTS: Record<CloudLinearOp, LinearDocument> = {
   identity: {
-    query: "query AdeCloudIdentity { viewer { id name displayName email avatarUrl } organization { id name urlKey logoUrl } }",
+    query: "query AdeCloudIdentity { viewer { id name displayName email avatarUrl admin } organization { id name urlKey logoUrl } }",
     vars: () => ({}),
   },
   teams: {

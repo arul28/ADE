@@ -128,6 +128,34 @@ export function machineState(machine: RemoteMcpMachine, relayTurnedOff = false):
   return { tone: "warn", label: "Not answering", detail: "It's on your account but isn't answering calls yet." };
 }
 
+/** A computer that should work for ADE MCP and doesn't, with what to say about it. */
+export type MachineNeedingAttention = { machine: RemoteMcpMachine; state: MachineState };
+
+/**
+ * The computers worth a warning outside the ADE MCP page: included, and in a
+ * state that will not fix itself. Left out of the list on purpose: offline
+ * (normal), left out or relay turned off (the person's choice), the first
+ * minutes of "Getting ready", and "Not checked yet". Empty when ADE MCP is off
+ * or the account is signed out, where the whole feature is the message.
+ */
+export function machinesNeedingAttention(status: RemoteMcpStatus | null): MachineNeedingAttention[] {
+  if (!status?.signedIn || !status.enabled) return [];
+  const out: MachineNeedingAttention[] = [];
+  for (const machine of status.machines) {
+    if (!machine.included || isAnswering(machine) || servingIsAGuess(machine)) continue;
+    if (machine.isThisMachine && status.relayTurnedOff === true) continue;
+    // Offline first: an offline computer on an older ADE reports "older_ade",
+    // which can wait until it is back.
+    if (machine.online === false || machine.notServingReason === "offline" || machine.notServingReason === "off_for_account") continue;
+    const state = machineState(machine, status.relayTurnedOff === true);
+    if (state.tone !== "warn" && state.tone !== "crit") continue;
+    // Still inside the usual minute or so: getting ready, not stuck.
+    if (machine.notServingReason === "waiting_for_account_secret" && state.tone !== "crit") continue;
+    out.push({ machine, state });
+  }
+  return out;
+}
+
 export type OverallState = { tone: IntegrationTone; label: string };
 
 /** One honest line for the whole account: how many included computers answer. */

@@ -831,7 +831,7 @@ export function SettingsPage({
         </div>
       )}
 
-      <div ref={contentRef} style={{ flex: 1, overflow: "auto", background: COLORS.pageBg, padding: 24 }}>
+      <div ref={contentRef} data-settings-searching={trimmedQuery ? "true" : undefined} style={{ flex: 1, overflow: "auto", background: COLORS.pageBg, padding: 24 }}>
         {/* The remote banner contrasts a remote machine against this desktop.
             A browser has no "this one", and every section already states its
             own scope, so web gets the per-section lines instead. */}
