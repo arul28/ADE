@@ -291,6 +291,22 @@ function openApp(appPath: string, platform: NodeJS.Platform = process.platform):
       });
     });
   }
+  if (platform === "linux") {
+    return new Promise((resolve, reject) => {
+      // Launch the recorded AppImage directly in the user's session. Give it
+      // its own process group so restarting the brain leaves the app running.
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      delete env.APPIMAGE;
+      delete env.APPDIR;
+      const child = spawn(appPath, [], { detached: true, stdio: "ignore", env });
+      child.once("error", reject);
+      child.once("spawn", () => {
+        child.unref();
+        resolve();
+      });
+    });
+  }
   return new Promise((resolve, reject) => {
     // `-g` keeps it behind whatever is in front on that Mac.
     execFile("/usr/bin/open", ["-g", "-a", appPath], { timeout: 15_000 }, (error, _stdout, stderr) => {

@@ -130,6 +130,8 @@ export type MachineUpdateAndRestartDeps = {
 };
 
 export type MachineTrackSwitchDeps = {
+  /** A detached standalone installer still owns updates on this machine. */
+  isInstalling?: () => Promise<boolean>;
   /** The database guard Settings › About runs (`checkTrackSwitch`), on this machine's own databases. */
   check: (target: UpdateTrack) => Promise<TrackSwitchCheckResult>;
   /**
@@ -608,6 +610,8 @@ function alreadyCurrentResult(
   };
 }
 
+const TRACK_SWITCH_INSTALLING = "A track switch is already installing on this computer. Try again after it restarts.";
+
 export async function runMachineUpdateAndRestart(
   deps: MachineUpdateAndRestartDeps,
   requestedTargetVersion: string | null = null,
@@ -615,6 +619,9 @@ export async function runMachineUpdateAndRestart(
   requestedBy: UpdateRequestedBy | null = null,
 ): Promise<MachineUpdateAndRestartResult> {
   const ownVersion = deps.currentVersion?.trim() || null;
+  if (await deps.trackSwitch?.isInstalling?.()) {
+    return failedCheckResult(TRACK_SWITCH_INSTALLING, { currentVersion: ownVersion, route: "standalone" });
+  }
   const install = deps.updateInstallMode?.();
   if (install?.updateInstallMode === "manual_download") {
     return {
@@ -728,6 +735,7 @@ export async function runMachineTrackSwitch(
     failedCheckResult(message, { currentVersion: ownVersion, route });
   const switcher = deps.trackSwitch;
   if (!switcher) return refuse("This ADE can't change its update track from another computer.");
+  if (await switcher.isInstalling?.()) return refuse(TRACK_SWITCH_INSTALLING);
   if (deps.updateInstallMode?.()?.updateInstallMode === "manual_download") {
     return refuse("This Linux package is installed by hand, so its track can't be switched from here.");
   }

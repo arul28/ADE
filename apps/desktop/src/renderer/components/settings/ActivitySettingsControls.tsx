@@ -99,7 +99,7 @@ function normalizeActivityPreferences(
  * so "what does saving mean" has exactly one answer no matter which gear the
  * user reached for.
  */
-export function useActivitySettings() {
+export function useActivitySettings({ includeDevices = false }: { includeDevices?: boolean } = {}) {
   const { status: accountStatus } = useAccountStatus();
   const accountOwnerId = accountStatus.signedIn ? accountStatus.userId : null;
   const itemsById = useActivityStore((state) => state.itemsById);
@@ -177,12 +177,14 @@ export function useActivitySettings() {
     phones: AttentionAccountDevice[] | null;
   } | null>(null);
   const ownPhoneRoster = phoneRoster?.ownerId === accountOwnerId ? phoneRoster : null;
+  const canReadDevices = includeDevices && typeof window !== "undefined" && Boolean(window.ade?.attention?.listDevices);
   useEffect(() => {
-    const api = typeof window !== "undefined" ? window.ade?.attention : null;
     setPhoneRoster(null);
-    if (!api?.listDevices || !accountOwnerId) return;
+    if (!canReadDevices || !accountOwnerId) return;
+    const listDevices = window.ade.attention?.listDevices;
+    if (!listDevices) return;
     let cancelled = false;
-    void api.listDevices(accountOwnerId)
+    void listDevices(accountOwnerId)
       .then((next) => {
         if (!cancelled && mounted.current) setPhoneRoster({ ownerId: accountOwnerId, phones: next });
       })
@@ -192,7 +194,7 @@ export function useActivitySettings() {
         captureError(listError, { tags: { area: "activity_settings", step: "list_phones" }, fingerprint: ["activity_settings", "list_phones"] });
       });
     return () => { cancelled = true; };
-  }, [accountOwnerId, loadAttempt]);
+  }, [accountOwnerId, canReadDevices, loadAttempt]);
 
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), []);
 
@@ -327,7 +329,7 @@ export function useActivitySettings() {
       preferences.machines[machineKey]?.notificationsEnabled === false,
     phones: ownPhoneRoster?.phones ?? [],
     phonesFailed: ownPhoneRoster?.phones === null,
-    phonesLoading: Boolean(accountOwnerId && window.ade?.attention?.listDevices && !ownPhoneRoster),
+    phonesLoading: Boolean(accountOwnerId && canReadDevices && !ownPhoneRoster),
     setPhoneNotificationsEnabled,
     phoneNotificationsEnabled: (deviceId: string) =>
       preferences.devices[deviceId]?.deviceDeliveryEnabled !== false,

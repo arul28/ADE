@@ -174,7 +174,7 @@ import { startBrainClientUpdateCheck } from "./services/runtime/brainClientUpdat
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
-import { resolveSelectedUpdateTrack, settlePendingTrackSwitch, writeSavedUpdateTrack } from "./services/runtime/updateTrackStore";
+import { readSavedUpdateTrack, resolveSelectedUpdateTrack, settlePendingTrackSwitch, writeSavedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
@@ -32342,6 +32342,18 @@ async function runServe(
       },
       // "Stable / Beta" pressed on another computer (`machine.switchUpdateTrack`).
       trackSwitch: {
+        isInstalling: async () => {
+          const saved = readSavedUpdateTrack();
+          if (!saved?.pendingSwitchFrom || !saved.updatedAt) return false;
+          // The RPC slot covers staging. Once the detached helper takes over,
+          // its transaction status fences updates until the new brain starts.
+          const { readBrainUpdateStatus } = await import("./commands/brainUpdate");
+          const update = readBrainUpdateStatus();
+          if (update.updatedAt < saved.updatedAt || update.state === "idle") return false;
+          if (update.state !== "failed") return true;
+          settlePendingTrackSwitch(VERSION);
+          return false;
+        },
         check: async (target) => {
           // An ADE Cloud computer updates itself from the account's server.
           if (isAdeCloudComputer()) {
