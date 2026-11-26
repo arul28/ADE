@@ -15,6 +15,9 @@ export const GITHUB_STATS_DEADLINE_MS = 30_000;
 
 const PROGRESS_EVERY_MS = 5_000;
 
+/** `gh` runs still going; Ctrl+C must stop them, since each leads its own process group. */
+const liveChildren = new Set();
+
 /**
  * Stops `child` and everything it started, then lets go of its pipes. On
  * Windows, `gh` in an ADE terminal is ADE's launcher, which runs a Node shim
@@ -59,6 +62,8 @@ function streamGhLines(args, cwd, signal, onLine) {
       detached: process.platform !== "win32",
       windowsHide: true,
     });
+    liveChildren.add(child);
+    child.on("close", () => liveChildren.delete(child));
     let pending = "";
     let stderr = "";
     let settled = false;
@@ -143,6 +148,15 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
     console.warn(`[export-browser-mock-ade] GitHub stats skipped (${reason}); the snapshot shows no GitHub numbers.`);
     return { repo: null, prRows: [], commitDates: [], coveredSince: null, error: reason };
   };
+  // While gh runs outside the terminal's process group, pass Ctrl+C on to it, then stop as usual.
+  const forwardStop = (signal) => {
+    for (const child of liveChildren) stopTree(child);
+    process.off("SIGINT", forwardStop);
+    process.off("SIGTERM", forwardStop);
+    process.kill(process.pid, signal);
+  };
+  process.once("SIGINT", forwardStop);
+  process.once("SIGTERM", forwardStop);
   let phase = "reading the repository and GitHub user";
   let listing = false;
   const prRows = [];
@@ -226,6 +240,8 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
   } finally {
     clearTimeout(timer);
     clearInterval(progress);
+    process.off("SIGINT", forwardStop);
+    process.off("SIGTERM", forwardStop);
     // A call still running after another failed must not hold the export.
     controller.abort();
   }
