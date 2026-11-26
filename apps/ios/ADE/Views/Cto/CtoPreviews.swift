@@ -241,17 +241,24 @@ enum CtoPreviewData {
   }
 
   static var transcript: [WorkChatEnvelope] {
-    [
-      envelope(1, .userMessage(text: "Morning. Where are we on the login flake?", attachments: nil, turnId: "t1", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 30),
+    // The CTO's 👀 on the first question, and the person's 🎉 on its answer.
+    var firstQuestion = envelope(1, .userMessage(text: "Morning. Where are we on the login flake?", attachments: nil, turnId: "t1", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 30)
+    firstQuestion.userMessageReactionKey = "turn:t1"
+    var firstAnswer = envelope(4, .assistantText(text: "Good news: the flake was a race between the token refresh and the first request. The fix is on **auth-fix** as PR #482; checks are running.", turnId: "t1", itemId: "m-1"), minutesAgo: 29.5)
+    firstAnswer.assistantMessageReactionKey = "item:m-1"
+    return [
+      firstQuestion,
       envelope(2, .toolCall(tool: "mcp__ade__getPullRequestStatus", argsText: #"{"prNumber":482}"#, itemId: "tc-1", parentItemId: nil, turnId: "t1"), minutesAgo: 29.8),
       envelope(3, .toolResult(tool: "mcp__ade__getPullRequestStatus", resultText: #"{"state":"open"}"#, itemId: "tc-1", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 29.7),
-      envelope(4, .assistantText(text: "Good news: the flake was a race between the token refresh and the first request. The fix is on **auth-fix** as PR #482; checks are running.", turnId: "t1", itemId: "m-1"), minutesAgo: 29.5),
+      firstAnswer,
       envelope(5, .toolCall(tool: "mcp__ade__remember", argsText: #"{"note":"Login flake = token refresh race; fixed in #482"}"#, itemId: "tc-2", parentItemId: nil, turnId: "t1"), minutesAgo: 29.4),
       envelope(6, .toolResult(tool: "mcp__ade__remember", resultText: #"{"success":true}"#, itemId: "tc-2", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 29.4),
       envelope(7, .toolCall(tool: "mcp__ade__trackWork", argsText: #"{"text":"Land the login race fix"}"#, itemId: "tc-3", parentItemId: nil, turnId: "t1"), minutesAgo: 29.3),
       envelope(8, .toolResult(tool: "mcp__ade__trackWork", resultText: #"{"success":true}"#, itemId: "tc-3", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 29.3),
       envelope(9, .toolCall(tool: "mcp__ade__scheduleWork", argsText: #"{"reason":"Recheck PR #482","delaySeconds":1500}"#, itemId: "tc-4", parentItemId: nil, turnId: "t1"), minutesAgo: 29.2),
       envelope(10, .toolResult(tool: "mcp__ade__scheduleWork", resultText: #"{"success":true,"item":{"title":"Recheck PR #482"}}"#, itemId: "tc-4", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 29.2),
+      envelope(19, .userMessageReaction(targetKey: "turn:t1", emoji: "👀", turnId: "t1"), minutesAgo: 29.9),
+      envelope(20, .assistantMessageReaction(targetKey: "item:m-1", emoji: "🎉"), minutesAgo: 28),
       envelope(11, .done(status: "completed", summary: "", usage: WorkUsageSummary(turnCount: 1, inputTokens: 18_420, outputTokens: 1_120, cacheReadTokens: 9_200, cacheCreationTokens: 0, costUsd: 0.04), turnId: "t1", model: "claude-sonnet-5", modelId: "anthropic/claude-sonnet-5"), minutesAgo: 29),
       envelope(12, .systemNotice(kind: AgentChatNoticeKind.ctoContextRefreshed.rawValue, message: "Fresh context — notes, open work, the story so far and the newest messages carried over.", detail: nil, turnId: nil, steerId: nil), minutesAgo: 10),
       envelope(13, .userMessage(text: "Land it once checks pass, then start on the release notes.", attachments: nil, turnId: "t2", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 1),
@@ -432,9 +439,16 @@ private struct CtoThreadFixture: View {
   @State private var profile: CtoProfileTab? = nil
   @State private var detent: PresentationDetent = .large
 
+  /// Takes reactions like a live CTO chat; a pick goes nowhere.
+  private var reactableThread: WorkChatSessionView {
+    var view = workPreviewChatSessionView(transcript: transcript, isStreaming: isStreaming, ctoLive: live)
+    view.onReactToAssistantMessage = { _, _ in }
+    return view
+  }
+
   var body: some View {
     NavigationStack {
-      workPreviewChatSessionView(transcript: transcript, isStreaming: isStreaming, ctoLive: live)
+      reactableThread
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

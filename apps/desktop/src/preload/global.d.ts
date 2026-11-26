@@ -435,6 +435,8 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
+  AgentChatReactToMessageArgs,
+  AgentChatReactToMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
@@ -2958,6 +2960,11 @@ declare global {
           args: AgentChatResolveUnprocessedMessageArgs,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatResolveUnprocessedMessageResult>;
+        /** The person's emoji on one of the CTO's messages, on the CTO's machine. */
+        reactToMessage: (
+          args: AgentChatReactToMessageArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatReactToMessageResult>;
         recoverContinuity: (
           args: AgentChatRecoverContinuityArgs,
           pin: OpenProjectBinding,

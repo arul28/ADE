@@ -953,6 +953,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string, steerId: string, action: \"run_next\" | \"dismiss\" }",
       example: "ade actions run chat.resolveUnprocessedMessage --input-json '{\"sessionId\":\"chat-123\",\"steerId\":\"steer-456\",\"action\":\"run_next\"}'",
     },
+    reactToMessage: {
+      description: "Put the person's emoji on one of the CTO's messages, replacing their earlier one there. It starts no turn: the CTO reads it as feedback in its next turn.",
+      input: "object { sessionId: string, targetKey: string, emoji: \"👍\" | \"👎\" | \"❤️\" | \"😂\" | \"🎉\" | \"✅\" | \"👀\" | \"😢\" }",
+      example: "ade actions run chat.reactToMessage --input-json '{\"sessionId\":\"chat-123\",\"targetKey\":\"message:msg-456\",\"emoji\":\"👍\"}'",
+    },
     recoverContinuity: {
       description: "Explicitly reconnect, reconstruct, or supersede a chat whose provider thread could not be resumed.",
       input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",

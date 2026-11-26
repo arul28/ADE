@@ -132,6 +132,7 @@ func workChatTranscriptRowRevision(_ entry: WorkTimelineRenderEntry) -> Int {
     // block, on every presentation refresh.
     hasher.combine(model.block.digest)
     hasher.combine(model.isStreamingTail)
+    workCombineAssistantReactionSignature(model.reaction, into: &hasher)
   case .assistantMonospaced(let model):
     hasher.combine(model.id)
     hasher.combine(model.messageId)
@@ -141,8 +142,17 @@ func workChatTranscriptRowRevision(_ entry: WorkTimelineRenderEntry) -> Int {
     hasher.combine(model.sourceDigest)
     hasher.combine(model.text.utf8.count)
     hasher.combine(model.accessibilityLabel)
+    workCombineAssistantReactionSignature(model.reaction, into: &hasher)
   }
   return hasher.finalize()
+}
+
+/// The person's reaction pill draws under an answer's last row, so the emoji
+/// changes what every row's menu offers and the last row's height. Which row
+/// is last matters only once there is an emoji to draw.
+private func workCombineAssistantReactionSignature(_ reaction: WorkAssistantReactionInfo, into hasher: inout Hasher) {
+  hasher.combine(reaction.emoji)
+  if reaction.emoji != nil { hasher.combine(reaction.isLastRow) }
 }
 
 /// The row signature of one timeline entry. Shared by a whole entry row and
@@ -169,8 +179,10 @@ private func workCombineTimelineEntryRowSignature(_ timelineEntry: WorkTimelineE
   hasher.combine(message.unprocessedResolution?.action)
   hasher.combine(message.unprocessedResolution?.state)
   hasher.combine(message.unprocessedResolution?.resolvedAt)
-  // The CTO's reaction badge adds height under the bubble.
+  // The CTO's reaction badge on the bubble, and the person's reaction pill
+  // under a CTO answer (which adds height).
   hasher.combine(message.ctoReaction)
+  hasher.combine(message.assistantReaction)
   workTimelineCombineMessageTextSignature(message, into: &hasher)
   if let preview = message.assistantPreview {
     // A preview is a pure function of the message text, and the text is
@@ -373,6 +385,7 @@ func workTimelineRenderEntries(
         text: preview.text,
         accessibilityLabel: accessibilityLabel,
         sourceDigest: "\(message.markdownDigest ?? ""):\(message.markdownRevision)",
+        reaction: WorkAssistantReactionInfo(key: message.assistantReactionKey, emoji: message.assistantReaction)
       )
       rendered.append(WorkTimelineRenderEntry(
         id: model.id,
@@ -404,7 +417,12 @@ func workTimelineRenderEntries(
           turnId: message.turnId,
           itemId: message.itemId,
           block: block,
-          isStreamingTail: block.id == streamingTailBlockId
+          isStreamingTail: block.id == streamingTailBlockId,
+          reaction: WorkAssistantReactionInfo(
+            key: message.assistantReactionKey,
+            emoji: message.assistantReaction,
+            isLastRow: block.id == blocks.last?.id
+          )
         )
         rendered.append(WorkTimelineRenderEntry(
           id: model.id,

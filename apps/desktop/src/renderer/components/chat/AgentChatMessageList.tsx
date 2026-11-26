@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
+import { AssistantReplyFooter, UserMessageReaction, type AgentChatReactHandler } from "./ChatMessageReactions";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   RESET_CREDIT_OUTCOME_TEXT,
@@ -61,7 +62,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
-import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, CTO_REACTION_MEANINGS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS, type CtoReactionEmoji } from "../../../shared/types/chat";
+import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS, assistantMessageReactionKey } from "../../../shared/types/chat";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -1309,31 +1310,6 @@ function UserMessageSendConfirmations({
         </motion.div>
       ) : null}
     </div>
-  );
-}
-
-/**
- * The CTO's reaction to this message, in place of a written reply: a small
- * badge tucked under the bubble's corner. Keyed on the emoji, so a newer
- * reaction pops in again.
- */
-function UserMessageReaction({ emoji }: { emoji: CtoReactionEmoji }) {
-  const meaning = CTO_REACTION_MEANINGS[emoji];
-  return (
-    <motion.span
-      key={emoji}
-      data-ade-find-skip=""
-      data-testid="chat-user-message-reaction"
-      role="img"
-      aria-label={`Reacted ${meaning}`}
-      title={`Reacted: ${meaning}`}
-      className="relative z-10 -mt-2 mr-3 inline-flex h-[calc(var(--chat-font-size)*24/14)] min-w-[calc(var(--chat-font-size)*24/14)] select-none items-center justify-center rounded-full border border-fg/[0.10] bg-surface-raised px-1.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-none"
-      initial={{ opacity: 0, scale: 0.6 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{ type: "spring", stiffness: 520, damping: 26 }}
-    >
-      {emoji}
-    </motion.span>
   );
 }
 
@@ -3080,6 +3056,7 @@ function renderEvent(
     onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
     onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
     onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+    onReactToMessage?: AgentChatReactHandler;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -3411,10 +3388,13 @@ function renderEvent(
               : <ArrowBendUpRight size={12} weight="regular" className="opacity-80" aria-hidden />}
           />
         ) : null}
+        {/* The bubble's width box, so a reaction can sit on its outer corner
+            without being clipped by the bubble's own overflow. */}
+        <div className="relative flex min-w-0 max-w-[82%] justify-end">
         <div
           className={cn(
             GLASS_CARD_CLASS,
-            "ade-chat-message-card-user group group/user-card relative min-w-0 max-w-[82%] overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
+            "ade-chat-message-card-user group group/user-card relative min-w-0 max-w-full overflow-hidden px-[length:var(--chat-bubble-user-px)] py-[length:var(--chat-bubble-user-py)]",
           )}
           style={MESSAGE_CARD_STYLE}
           data-chat-user-message-card=""
@@ -3542,7 +3522,10 @@ function renderEvent(
             </div>
           ) : null}
         </div>
-        {event.metadata?.ctoReaction ? <UserMessageReaction emoji={event.metadata.ctoReaction.emoji} /> : null}
+        {event.metadata?.ctoReaction ? (
+          <UserMessageReaction emoji={event.metadata.ctoReaction.emoji} by={options?.assistantLabel?.trim() || "CTO"} />
+        ) : null}
+        </div>
         <UserMessageStatusRow
           event={event}
           onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
@@ -3559,6 +3542,8 @@ function renderEvent(
     // In a side chat, a send block reads as a "Sent to the main chat" note,
     // and Copy takes the same text the row shows.
     const shownText = options?.sideChatTranscript ? sideChatSendBlocksToMarkdown(event.text) : event.text;
+    // Null for a reply with no id to name it by: it takes no reaction.
+    const reactKey = assistantMessageReactionKey(event);
     return (
       <motion.div
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
@@ -3602,20 +3587,23 @@ function renderEvent(
               Interim narration and a finished turn's last reply float that line
               into the gap below instead of reserving it: there it was an empty
               strip above the next row or the turn-end line. */}
-          <div
-            data-testid="assistant-text-hover-footer"
+          <AssistantReplyFooter
             className={cn(
-              "flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100",
+              "flex h-5 items-center gap-1",
               options?.interimText || options?.turnEndText
                 ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
                 : "mt-0.5",
             )}
-          >
-            {event.originTimestamp || envelope.timestampSynthetic !== true
-              ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
+            reaction={reactKey && (options?.onReactToMessage || event.userReaction)
+              ? { targetKey: reactKey, current: event.userReaction ?? null, onReact: options?.onReactToMessage }
               : null}
-            <MessageCopyButton value={shownText} iconOnly />
-          </div>
+            hoverActions={<>
+              {event.originTimestamp || envelope.timestampSynthetic !== true
+                ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
+                : null}
+              <MessageCopyButton value={shownText} iconOnly />
+            </>}
+          />
         </div>
       </motion.div>
     );
@@ -5588,6 +5576,8 @@ type EventRowProps = SpawnedChatProviderProps & {
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
   onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  /** CTO chats only: the person's emoji on one of the CTO's messages. */
+  onReactToMessage?: AgentChatReactHandler;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -5674,6 +5664,7 @@ const EventRow = React.memo(function EventRow({
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
   onDismissUnprocessedMessage,
+  onReactToMessage,
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -5815,6 +5806,7 @@ const EventRow = React.memo(function EventRow({
             onRunUnprocessedMessage,
             onEditUnprocessedMessage,
             onDismissUnprocessedMessage,
+            onReactToMessage,
             turnModel,
             surfaceMode,
             surfaceProfile,
@@ -6441,6 +6433,7 @@ function AgentChatMessageListMain({
   onRunUnprocessedMessage,
   onEditUnprocessedMessage,
   onDismissUnprocessedMessage,
+  onReactToMessage,
     surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -6528,6 +6521,8 @@ function AgentChatMessageListMain({
   onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
   onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  /** CTO chats only: the person's emoji on one of the CTO's messages. */
+  onReactToMessage?: AgentChatReactHandler;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -9505,6 +9500,7 @@ function AgentChatMessageListMain({
           onRunUnprocessedMessage={onRunUnprocessedMessage}
           onEditUnprocessedMessage={onEditUnprocessedMessage}
           onDismissUnprocessedMessage={onDismissUnprocessedMessage}
+          onReactToMessage={onReactToMessage}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={rowAssistantLabel}
@@ -9583,6 +9579,7 @@ function AgentChatMessageListMain({
         onRunUnprocessedMessage={onRunUnprocessedMessage}
         onEditUnprocessedMessage={onEditUnprocessedMessage}
         onDismissUnprocessedMessage={onDismissUnprocessedMessage}
+        onReactToMessage={onReactToMessage}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={rowAssistantLabel}
@@ -9630,7 +9627,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onReactToMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

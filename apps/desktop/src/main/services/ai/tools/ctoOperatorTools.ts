@@ -76,7 +76,7 @@ import {
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_SPAWN_KIND_VALUES,
   CTO_REACTION_EMOJIS,
-  CTO_REACTION_LEGEND,
+  CTO_REACT_TOOL_DESCRIPTION,
   isUnsupportedActiveTurnDispatchModeError,
   type AgentChatSteerResult,
   type CtoReactionEmoji,
@@ -3352,10 +3352,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "react", () => core({
-    description:
-      "Put an emoji on the person's newest message instead of replying, when they wrote and need no words back "
-      + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_LEGEND}. `
-      + "A newer reaction replaces the old one. It ends the turn with no reply: write nothing after it.",
+    description: CTO_REACT_TOOL_DESCRIPTION,
     inputSchema: z.object({
       emoji: z.enum(CTO_REACTION_EMOJIS as [CtoReactionEmoji, ...CtoReactionEmoji[]]),
     }),

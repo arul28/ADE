@@ -2664,6 +2664,19 @@ one-hour deduplication key bounds it to 24 accepted events per outcome a day in
 theory; the realistic number is a handful a month. No ceiling was raised, and
 the dashboard spec is untouched.
 
+### The person's reactions on CTO replies
+
+When the person puts an emoji on a CTO reply (`chat.reactToMessage`), the brain
+that stores it records one `ade_feature_used` event (`reactToMessage` in
+`agentChatService.ts` calls `onCtoMessageReaction`, reported by
+`reportCtoMessageReaction` in `analytics/ctoHomeProductAnalytics.ts`), with
+`feature: "cto"`, `action: "cto_message_reaction"`, `surface: "api"` and
+`outcome: "completed"`. The product question is whether people react to the CTO
+at all. Never the emoji, the message, the chat, or the machine. A refused
+reaction and a repeat of the same emoji send nothing. One deduplication key with
+a one-hour interval bounds it to 24 accepted events a day. No ceiling was raised,
+and the dashboard spec is untouched.
+
 ### The CTO's stall judge
 
 The brain that runs the CTO records two coarse facts from the stall judge

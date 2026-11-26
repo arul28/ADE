@@ -27,7 +27,7 @@ extension WorkChatSessionView {
       )
     case .assistantMarkdownBlock(let model):
       WorkAssistantMarkdownBlockRow(
-        model: model,
+        model: withAssistantReactionOverride(model),
         onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
@@ -45,12 +45,83 @@ extension WorkChatSessionView {
       .equatable()
     case .assistantMonospaced(let model):
       WorkAssistantMonospacedRow(
-        model: model,
+        model: withAssistantReactionOverride(model),
         onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
         onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
       .equatable()
     }
+  }
+
+  // MARK: - The person's reactions on CTO answers
+
+  /// The reaction context the CTO thread's cells read; nil on every other chat.
+  var assistantReactionContext: WorkAssistantReactionContext? {
+    guard onReactToAssistantMessage != nil else { return nil }
+    return WorkAssistantReactionContext { targetKey, current, emoji in
+      reactToAssistantMessage(targetKey: targetKey, current: current, emoji: emoji)
+    }
+  }
+
+  /// Shows the pick at once, sends it to the chat's machine, and puts the
+  /// old emoji back if the machine refuses. The same emoji again does nothing.
+  @MainActor
+  func reactToAssistantMessage(targetKey: String, current: String?, emoji: String) {
+    guard let send = onReactToAssistantMessage else { return }
+    let shown = assistantReactionOverrides[targetKey] ?? current
+    guard shown != emoji else { return }
+    let previousOverride = assistantReactionOverrides[targetKey]
+    assistantReactionOverrides[targetKey] = emoji
+    ADEHaptics.light()
+    Task { @MainActor in
+      do {
+        try await send(targetKey, emoji)
+      } catch {
+        // Only undo our own pick: a newer one may have replaced it meanwhile.
+        if assistantReactionOverrides[targetKey] == emoji {
+          assistantReactionOverrides[targetKey] = previousOverride
+        }
+        ADEHaptics.error()
+        reactionToast = ADEToastMessage(
+          text: "Couldn't add your reaction",
+          kind: .failure,
+          detail: error.localizedDescription
+        )
+      }
+    }
+  }
+
+  /// Drops each optimistic pick the transcript now shows itself.
+  func pruneAssistantReactionOverrides() {
+    guard !assistantReactionOverrides.isEmpty else { return }
+    var remaining = assistantReactionOverrides
+    for entry in timelinePresentation.visibleEntries {
+      guard case .message(let message) = entry.payload,
+            message.role == "assistant",
+            let key = message.assistantReactionKey,
+            let emoji = remaining[key],
+            message.assistantReaction == emoji else { continue }
+      remaining.removeValue(forKey: key)
+    }
+    if remaining.count != assistantReactionOverrides.count {
+      assistantReactionOverrides = remaining
+    }
+  }
+
+  func withAssistantReactionOverride(_ message: WorkChatMessage) -> WorkChatMessage {
+    guard !assistantReactionOverrides.isEmpty, message.role == "assistant",
+          let key = message.assistantReactionKey,
+          let emoji = assistantReactionOverrides[key] else { return message }
+    var message = message
+    message.assistantReaction = emoji
+    return message
+  }
+
+  func withAssistantReactionOverride<Row: WorkAssistantReactionRow>(_ row: Row) -> Row {
+    guard let emoji = row.reaction.key.flatMap({ assistantReactionOverrides[$0] }) else { return row }
+    var row = row
+    row.reaction.emoji = emoji
+    return row
   }
 
   /// The whole answer on its own screen, via "Open full response" in the
@@ -100,7 +171,7 @@ extension WorkChatSessionView {
     switch entry.payload {
     case .message(let message):
       WorkChatMessageBubble(
-        message: message,
+        message: withAssistantReactionOverride(message),
         isStreaming: message.id == streamingAssistantMessageId,
         maxUserBubbleWidth: maxUserBubbleWidth,
         onRunUnprocessed: onRunUnprocessedMessage,
@@ -617,6 +688,8 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
   let model: WorkAssistantMarkdownBlockRenderModel
   let onCopyMessage: () -> Void
   let onOpenFullOutput: () -> Void
+  /// The CTO thread: picks the person's reaction on this answer. Nil elsewhere.
+  @Environment(\.workAssistantReactions) private var assistantReactions
 
   /// The closures are excluded on purpose: they are rebuilt on every parent
   /// body pass and never change what is drawn.
@@ -634,8 +707,11 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
       .workAssistantMessageContextMenu(
         onCopy: onCopyMessage,
         onOpenFullOutput: onOpenFullOutput,
-        linkTexts: model.block.kind.inlineTexts
+        linkTexts: model.block.kind.inlineTexts,
+        reaction: model.reaction,
+        onReact: assistantReactions?.picker(for: model.reaction)
       )
+      .workAssistantReactionFooter(model.reaction, onReact: assistantReactions?.picker(for: model.reaction))
       .accessibilityElement(children: .contain)
       .adeInspectable(
         "Work.Chat.MessageBubble.Assistant.Block",
@@ -653,6 +729,8 @@ struct WorkAssistantMonospacedRow: View, Equatable {
   let model: WorkAssistantMonospacedRenderModel
   let onCopyMessage: () -> Void
   let onOpenFullOutput: () -> Void
+  /// The CTO thread: picks the person's reaction on this answer. Nil elsewhere.
+  @Environment(\.workAssistantReactions) private var assistantReactions
 
   /// The closures are excluded on purpose: they are rebuilt on every parent
   /// body pass and never change what is drawn.
@@ -665,8 +743,11 @@ struct WorkAssistantMonospacedRow: View, Equatable {
       .accessibilityLabel(model.accessibilityLabel)
       .workAssistantMessageContextMenu(
         onCopy: onCopyMessage,
-        onOpenFullOutput: onOpenFullOutput
+        onOpenFullOutput: onOpenFullOutput,
+        reaction: model.reaction,
+        onReact: assistantReactions?.picker(for: model.reaction)
       )
+      .workAssistantReactionFooter(model.reaction, onReact: assistantReactions?.picker(for: model.reaction))
       .adeInspectable(
         "Work.Chat.MessageBubble.Assistant.Monospace",
         metadata: [

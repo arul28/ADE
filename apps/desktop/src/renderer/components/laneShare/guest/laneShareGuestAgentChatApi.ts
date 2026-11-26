@@ -268,6 +268,7 @@ export function createLaneShareGuestAgentChatApi(
     cancelDispatchedSteer: boundChatRefusal("Taking back a sent message", WHERE),
     restoreCancelledQueue: boundChatRefusal("Restoring the queue", WHERE),
     resolveUnprocessedMessage: boundChatRefusal("Resending a message", WHERE),
+    reactToMessage: boundChatRefusal("Reacting to a message", WHERE),
     recoverTurn: boundChatRefusal("Turn recovery", WHERE),
     stopTask: boundChatRefusal("Stopping a subagent", WHERE),
     startSideChat: boundChatRefusal("A side chat", WHERE),

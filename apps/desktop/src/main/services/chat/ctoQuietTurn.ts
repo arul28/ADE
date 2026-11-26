@@ -1,4 +1,8 @@
-import { userMessageReactionKey, type AgentChatEvent, type AgentChatProvider } from "../../../shared/types/chat";
+import {
+  userMessageReactionKey,
+  type AgentChatEvent,
+  type AgentChatProvider,
+} from "../../../shared/types/chat";
 import { isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
 
 /**
@@ -6,7 +10,7 @@ import { isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
  * each committed event does to it.
  */
 export type CtoQuietTurnState = {
-  /** Set by `noReply` or `react`: this turn's later text is dropped. */
+  /** Set by `noReply` or `react` (not 👀): this turn's later text is dropped. */
   quiet: { turnId: string | null } | null;
   /**
    * The `userMessageReactionKey` of the person's newest message the running
@@ -75,4 +79,28 @@ export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent
     return !state.quiet.turnId || !eventTurnId || eventTurnId === state.quiet.turnId;
   }
   return false;
+}
+
+/**
+ * The message a turn that read nothing from the person may still react to:
+ * the person's newest message carrying the CTO's 👀, so the 👀 can become ✅
+ * (or another reaction) once the look it promised is done, in a later turn or
+ * after a restart. Null when no 👀 of the CTO's stands.
+ */
+export function ctoLookingReactTarget(events: readonly AgentChatEvent[], provider: AgentChatProvider): string | null {
+  const reactionByKey = new Map<string, string>();
+  const personKeys: string[] = [];
+  for (const event of events) {
+    if (event.type === "user_message_reaction") {
+      reactionByKey.set(event.targetKey, event.emoji);
+    } else if (event.type === "user_message" && ctoTurnReadsPersonMessage(event, provider)) {
+      const key = userMessageReactionKey(event);
+      if (key) personKeys.push(key);
+    }
+  }
+  for (let index = personKeys.length - 1; index >= 0; index -= 1) {
+    const key = personKeys[index]!;
+    if (reactionByKey.get(key) === "👀") return key;
+  }
+  return null;
 }

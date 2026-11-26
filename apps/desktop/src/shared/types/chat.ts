@@ -1701,6 +1701,19 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      /**
+       * CTO only: an emoji the person put on one of the CTO's messages.
+       * `targetKey` is `assistantMessageReactionKey` of that message; the
+       * person's newer reaction on the same key replaces the older one. It
+       * starts no turn; the CTO reads it in its next turn's context.
+       */
+      type: "assistant_message_reaction";
+      targetKey: string;
+      emoji: ChatReactionEmoji;
+      /** Never set: a reaction belongs to no turn. Here so turn readers type-check. */
+      turnId?: string;
+    }
+  | {
       type: "text";
       text: string;
       messageId?: string;
@@ -1714,6 +1727,8 @@ export type AgentChatEvent =
        */
       phase?: AgentChatTextPhase;
       runtime?: AgentChatRuntime;
+      /** Renderer-folded: the person's newest `assistant_message_reaction` on this CTO message. */
+      userReaction?: ChatReactionEmoji;
     }
   | {
       type: "tool_call";
@@ -6196,10 +6211,11 @@ export type AgentChatSetRootFullAccessArgs = { allowed: boolean };
 export const CTO_INTERIM_REPLY_ID_PREFIX = "cto-reply:";
 
 /**
- * The reactions the CTO may put on the person's message (`react`), each with
- * what it means. A fixed set, so every client draws the same thing.
+ * The reactions there are, each with what it means: the CTO's on the person's
+ * message (`react`) and the person's on the CTO's. A short fixed set, so each
+ * keeps one meaning the prompt can teach and every client draws the same thing.
  */
-export const CTO_REACTION_MEANINGS = {
+export const CHAT_REACTION_MEANINGS = {
   "👍": "got it",
   "👀": "looking into it",
   "✅": "done",
@@ -6207,17 +6223,77 @@ export const CTO_REACTION_MEANINGS = {
   "❤️": "thanks",
   "😂": "funny",
   "😢": "sorry",
+  "👎": "not this",
 } as const;
 
-export type CtoReactionEmoji = keyof typeof CTO_REACTION_MEANINGS;
+export type ChatReactionEmoji = keyof typeof CHAT_REACTION_MEANINGS;
+
+/** The person's set, in picker order. */
+export const CHAT_REACTION_EMOJIS: readonly ChatReactionEmoji[] = ["👍", "👎", "❤️", "😂", "🎉", "✅", "👀", "😢"];
+
+/** The CTO's set: every reaction but 👎, which the CTO has no use for. */
+export type CtoReactionEmoji = Exclude<ChatReactionEmoji, "👎">;
+
+export const CTO_REACTION_MEANINGS = Object.fromEntries(
+  Object.entries(CHAT_REACTION_MEANINGS).filter(([emoji]) => emoji !== "👎"),
+) as Readonly<Record<CtoReactionEmoji, string>>;
 
 export const CTO_REACTION_EMOJIS = Object.keys(CTO_REACTION_MEANINGS) as CtoReactionEmoji[];
 
 /** "👍 got it, 👀 looking into it, …" for the CTO's prompt and tool descriptions. */
 export const CTO_REACTION_LEGEND = CTO_REACTION_EMOJIS.map((emoji) => `${emoji} ${CTO_REACTION_MEANINGS[emoji]}`).join(", ");
 
+/** The CTO's `react` tool description, for the in-process tool and the ADE MCP bridge alike. */
+export const CTO_REACT_TOOL_DESCRIPTION =
+  "Put an emoji on the person's newest message instead of replying, when they wrote and need no words back "
+  + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_LEGEND}. `
+  + "A newer reaction replaces the old one. In a turn the person did not start (a helper's report, a wake), "
+  + "it swaps the newest 👀 you left on one of their messages, so 👀 can become ✅ once the look is done. "
+  + "Any reaction but 👀 ends the turn with no reply: write nothing after it. "
+  + "After 👀, end with noReply while a helper looks, or finish the look: react ✅ if all is clear, else reply with what you found.";
+
 export function isCtoReactionEmoji(value: unknown): value is CtoReactionEmoji {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(CTO_REACTION_MEANINGS, value);
+}
+
+export function isChatReactionEmoji(value: unknown): value is ChatReactionEmoji {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(CHAT_REACTION_MEANINGS, value);
+}
+
+/**
+ * The emoji a model or a keyboard wrote, as the set stores it. A variation
+ * selector is ignored on both sides: some keyboards add one to ✅, and ❤
+ * without it draws as a text glyph, so the stored ❤️ keeps it. Null for
+ * anything outside the set.
+ */
+export function normalizeChatReactionEmoji(value: unknown): ChatReactionEmoji | null {
+  if (typeof value !== "string") return null;
+  const bare = value.trim().replace(/\uFE0F/g, "");
+  if (!bare) return null;
+  return (Object.keys(CHAT_REACTION_MEANINGS) as ChatReactionEmoji[])
+    .find((emoji) => emoji.replace(/\uFE0F/g, "") === bare) ?? null;
+}
+
+/**
+ * The key an `assistant_message_reaction` names the CTO's message by: its
+ * message id, else its item id, else its turn, then `#` and the text phase
+ * when it has one. Codex can give a commentary and its answer one message id,
+ * and every client draws them as two replies, so each takes its own reaction.
+ * Null for one with no id. Clients compute the same key for each reply (iOS
+ * mirrors this).
+ */
+export function assistantMessageReactionKey(event: {
+  messageId?: string;
+  itemId?: string;
+  turnId?: string;
+  phase?: string;
+}): string | null {
+  const messageId = event.messageId?.trim();
+  const itemId = event.itemId?.trim();
+  const turnId = event.turnId?.trim();
+  const base = messageId ? `message:${messageId}` : itemId ? `item:${itemId}` : turnId ? `turn:${turnId}` : null;
+  const phase = event.phase?.trim();
+  return base && phase ? `${base}#${phase}` : base;
 }
 
 /**
@@ -6887,6 +6963,20 @@ export type AgentChatRecoverCodexTurnResult = {
   action: AgentChatCodexRecoveryAction;
   turnId: string;
   status: "waiting" | "nudged" | "retrying" | "resumed";
+};
+
+/** The person's emoji on one of the CTO's messages (`assistantMessageReactionKey`). */
+export type AgentChatReactToMessageArgs = {
+  sessionId: string;
+  targetKey: string;
+  emoji: ChatReactionEmoji;
+};
+
+export type AgentChatReactToMessageResult = {
+  targetKey: string;
+  emoji: ChatReactionEmoji;
+  /** False when that emoji was already there: nothing changed and the CTO was not told. */
+  changed: boolean;
 };
 
 export type AgentChatResolveUnprocessedMessageArgs = {

@@ -437,6 +437,10 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     // Letting agents run with Full access as root covers the whole machine;
     // an agent must not grant it to itself.
     "setRootFullAccess",
+    // A reaction on a CTO reply is the person's feedback to the CTO: an agent
+    // that set one would speak for them. Phone and web send it through the
+    // sync command `chat.reactToMessage`, which this list does not gate.
+    "reactToMessage",
   ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
@@ -973,6 +977,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "recoverTurn",
     "recoverCodexTurn",
     "resolveUnprocessedMessage",
+    "reactToMessage",
     "recoverContinuity",
     "restoreCancelledQueue",
     "killDroidWorker",

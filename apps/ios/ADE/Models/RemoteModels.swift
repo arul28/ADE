@@ -4411,17 +4411,55 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 /// `metadata.sideChat` on a message a side chat sent to its main chat.
 let agentChatSideChatMetadataKey = "sideChat"
 
-/// The reactions the CTO may put on the person's message (`react`), each with
-/// what it means. A fixed set; the same as desktop `CTO_REACTION_MEANINGS`.
-let ctoReactionMeanings: [String: String] = [
+/// The reactions the person may put on one of the CTO's messages, each with
+/// what it means. The same as desktop `CHAT_REACTION_MEANINGS`.
+let chatReactionMeanings: [String: String] = [
   "👍": "got it",
-  "👀": "looking into it",
-  "✅": "done",
-  "🎉": "celebrate",
+  "👎": "not this",
   "❤️": "thanks",
   "😂": "funny",
+  "🎉": "celebrate",
+  "✅": "done",
+  "👀": "looking into it",
   "😢": "sorry",
 ]
+
+/// The reactions the CTO may put on the person's message (`react`): every
+/// one but 👎. The same as desktop `CTO_REACTION_MEANINGS`.
+let ctoReactionMeanings: [String: String] = chatReactionMeanings.filter { $0.key != "👎" }
+
+/// The person's reactions in picker order (desktop `CHAT_REACTION_EMOJIS`).
+let chatReactionEmojis: [String] = ["👍", "👎", "❤️", "😂", "🎉", "✅", "👀", "😢"]
+
+/// The set's spelling of an emoji, ignoring variation selectors ("❤" and
+/// "❤️" are the same heart). Nil for anything outside the set. The same as
+/// desktop `normalizeChatReactionEmoji`.
+func normalizedChatReactionEmoji(_ value: String?) -> String? {
+  guard let value else { return nil }
+  let bare = value.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "\u{FE0F}", with: "")
+  guard !bare.isEmpty else { return nil }
+  return chatReactionEmojis.first { $0.replacingOccurrences(of: "\u{FE0F}", with: "") == bare }
+}
+
+/// The key an `assistant_message_reaction` names a CTO `text` event by: its
+/// message id, else its item id, else its turn (each trimmed), then `#` and
+/// the text phase when it has one (a Codex commentary and its answer can
+/// share a message id). A merged message keeps its first fragment's key. The
+/// same as desktop `assistantMessageReactionKey`; keep the two the same.
+func workAssistantMessageReactionKey(messageId: String?, itemId: String?, turnId: String?, phase: String?) -> String? {
+  let base: String
+  if let messageId = nonEmptyTrimmed(messageId) {
+    base = "message:\(messageId)"
+  } else if let itemId = nonEmptyTrimmed(itemId) {
+    base = "item:\(itemId)"
+  } else if let turnId = nonEmptyTrimmed(turnId) {
+    base = "turn:\(turnId)"
+  } else {
+    return nil
+  }
+  guard let phase = nonEmptyTrimmed(phase) else { return base }
+  return "\(base)#\(phase)"
+}
 
 /// The key a `user_message_reaction` names its message by: its steer id, else
 /// its message id, else its turn (each trimmed). Nil for a message with none.
@@ -4467,6 +4505,10 @@ enum AgentChatEvent: Decodable, Equatable {
   /// reply. `targetKey` is `workUserMessageReactionKey` of that message; the
   /// newest reaction per key wins. Draws on the bubble, never as a row.
   case userMessageReaction(targetKey: String, emoji: String, turnId: String?)
+  /// CTO only: the person's emoji on one of the CTO's messages. `targetKey`
+  /// is `workAssistantMessageReactionKey` of that message; the newest per key
+  /// wins. Starts no turn, draws under the message, never as a row.
+  case assistantMessageReaction(targetKey: String, emoji: String)
   case text(text: String, messageId: String?, turnId: String?, itemId: String?, phase: String? = nil)
   case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
@@ -4924,6 +4966,14 @@ extension AgentChatEvent {
         emoji: emoji,
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
+    case "assistant_message_reaction":
+      // A missing key or an emoji outside the fixed set is dropped: nothing draws.
+      guard let targetKey = try decodeNonEmptyString(forKey: .targetKey),
+            let emoji = normalizedChatReactionEmoji(try container.decodeIfPresent(String.self, forKey: .emoji)) else {
+        self = .unknown(type: type)
+        return
+      }
+      self = .assistantMessageReaction(targetKey: targetKey, emoji: emoji)
     case "text":
       let text = try container.decode(String.self, forKey: .text)
       let messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
@@ -5526,6 +5576,7 @@ extension AgentChatEvent {
     case .userMessage: return "user_message"
     case .userMessageResolution: return "user_message_resolution"
     case .userMessageReaction: return "user_message_reaction"
+    case .assistantMessageReaction: return "assistant_message_reaction"
     case .text: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"
@@ -5805,6 +5856,20 @@ struct AgentChatResolveUnprocessedMessageResult: Codable, Equatable {
   var action: String
   var status: String
   var replacementMessageId: String?
+}
+
+/// `chat.reactToMessage`: the person's emoji on one of the CTO's messages.
+struct AgentChatReactToMessageRequest: Codable, Equatable {
+  var sessionId: String
+  var targetKey: String
+  var emoji: String
+}
+
+struct AgentChatReactToMessageResult: Codable, Equatable {
+  var targetKey: String
+  var emoji: String
+  /// False when that emoji was already there: nothing changed.
+  var changed: Bool
 }
 
 struct AgentChatSessionIdRequest: Codable, Equatable {

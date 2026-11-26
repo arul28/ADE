@@ -387,6 +387,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // couldn't read the account yet (`failed`). Never the machine, the
   // repository, the notes, the conversation, or the routines.
   "cto_home_move",
+  // The person put an emoji on a CTO reply. Adoption only: never the emoji,
+  // the message, the chat, or the machine.
+  "cto_message_reaction",
   // The CTO's stall judge: a wake about a stuck chat the CTO started
   // (`cto_stall_nudge`, `completed` or `failed` when the CTO refused it), and
   // the CTO handing one to the person with a "Waiting on you" line

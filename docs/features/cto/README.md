@@ -252,12 +252,21 @@ Every CTO turn ends one of three ways: a written reply, a reaction, or nothing. 
 
 Both reach Claude in-process and every other CTO provider through the ADE MCP bridge (`ade-cto_noReply`, `ade-cto_react`). Either way they land in `endCtoTurnQuietly()` and `reactToCtoMessage()` in `agentChatService`:
 
-- After either call, the rest of the turn's text is dropped at `commitChatEvent`: same turn, or untagged. What the turn had already written before the call stays.
+- After either call, the rest of the turn's text is dropped at `commitChatEvent`: same turn, or untagged. What the turn had already written before the call stays. 👀 is the exception: it promises an answer, so the turn goes on and the look's findings may follow in words.
 - Quiet ends at that turn's `done`, at the next turn's start, or when the turn reads a new message: the person's, or a wake such as a child's report that arrives while the turn still runs (Claude keeps a turn open while it waits on background work). A queued, failed or unprocessed message, a board move and an ADE resend do not end it.
 - A reaction lands on the person's newest message that the running turn has read (`ctoTurnReadsPersonMessage`): not a queued, failed or unprocessed steer, and not a message ADE wrote. An `accepted` steer counts only on Codex; on other providers the later `delivered` row counts.
 - The brain stamps a `messageId` on CTO user messages that carry no id (Codex sends none), so the message has a key to react to.
-- The target lives in memory. After a brain restart `react` refuses, and the CTO replies instead.
-- Both tools return `success: false` with a note when they refuse: no turn is running, the person wrote nothing, or the emoji is outside the set. The CTO then has to reply.
+- A turn that read no person message (a helper's report, a wake, the first turn after a restart) may only swap a standing 👀. `ctoLookingReactTarget()` reads the transcript for the person's newest message whose latest CTO reaction is 👀, so 👀 can become ✅ in a later turn, also after a brain restart. With no 👀 standing, `react` refuses and the CTO replies or ends with `noReply`.
+- Both tools return `success: false` with a note when they refuse: no turn is running, the emoji is outside the set, or the person wrote nothing in this turn and no 👀 of the CTO's waits to be swapped. The CTO then has to reply or end with `noReply`.
+
+### The person's reactions to CTO messages
+
+The person can put one of eight emoji on a CTO reply: the seven above plus 👎 "not this" (`CHAT_REACTION_EMOJIS`). Desktop and web show a smiley button in the reply's hover footer and a pill under the reply once it has a reaction. iOS opens the same eight on a long press.
+
+- The client calls `chat.reactToMessage` (`AgentChatReactToMessageArgs`: `sessionId`, `targetKey`, `emoji`) with the CTO chat's pin, so a remote or ADE Cloud CTO gets it on its own machine. Phone and web reach it as a viewer-allowed remote command.
+- `targetKey` is `assistantMessageReactionKey()`: `message:<id>`, else `item:<id>`, else `turn:<id>`. The brain refuses a key whose text is gone or retracted ("That message is no longer in this chat."). The same emoji again returns `changed: false` and logs nothing.
+- The brain logs an `assistant_message_reaction` event. Clients keep the newest one per key.
+- A reaction starts no turn and costs nothing. The brain keeps a list of reactions the CTO has not seen. The next turn's context gets a "Reactions since your last turn" section with each emoji, its meaning and a 280-character quote of the message. The newest reaction on a message replaces the older one in that list. The chat state saves the list (`ctoReactionFeedback`), so a restart restores it. A chat saved without the list rebuilds it from the reactions logged after the CTO's last `done`. A send takes a reaction off the list only when the section reached the CTO. If the provider then refuses the send, the reaction goes back on the list.
 
 The child-report wake is written as a `user_message` with `metadata.hostContinuation.reason: "cto_child_report"`. The `spawn_completed` line already shows the report, so the wake draws no row on desktop, web or iOS. A quiet turn after it leaves only the turn's footer: no empty bubble and no error.
 

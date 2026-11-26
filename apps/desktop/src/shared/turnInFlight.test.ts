@@ -83,6 +83,15 @@ describe("latestTurnProgressAt", () => {
       expected: "2026-08-17T12:00:00.000Z",
     },
     {
+      // The person's emoji on an earlier CTO reply is not the turn working.
+      name: "does not let the person's reaction move the clock",
+      envelopes: [
+        envelope("2026-08-17T12:00:00.000Z", { type: "text", text: "working" }),
+        envelope("2026-08-17T12:02:00.000Z", { type: "assistant_message_reaction", targetKey: "message:m-1", emoji: "👍" }),
+      ],
+      expected: "2026-08-17T12:00:00.000Z",
+    },
+    {
       name: "skips a dropped steer and keeps the last accepted progress",
       envelopes: [
         envelope("2026-08-17T12:00:00.000Z", { type: "text", text: "working" }),
