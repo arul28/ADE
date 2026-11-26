@@ -103,7 +103,10 @@ export async function ensurePlayableVideo(args: {
       if (remux && !(await remuxedIsH264(binaryPath, output))) return false;
       return true;
     } catch (error) {
-      if ((error as Error)?.name === "AbortError") throw error;
+      if ((error as Error)?.name === "AbortError") {
+        await fs.promises.rm(output, { force: true }).catch(() => undefined);
+        throw error;
+      }
       logger?.warn("proof.video_convert_attempt_failed", { sourcePath, remux, error: getErrorMessage(error) });
       return false;
     }

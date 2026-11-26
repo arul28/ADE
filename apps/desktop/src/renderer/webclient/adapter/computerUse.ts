@@ -118,11 +118,29 @@ const WEB_LARGE_MEDIA_MAX_BYTES = 256 * 1024 * 1024;
 const LARGE_MEDIA_URL_KEEP = 4;
 const largeMediaUrls = new Map<string, string>();
 
+/** Evicted URLs a page element still showed, revoked once nothing shows them. */
+const retiredLargeMediaUrls = new Set<string>();
+
+function shownOnPage(url: string): boolean {
+  if (typeof document === "undefined") return false;
+  for (const element of Array.from(document.querySelectorAll<HTMLImageElement | HTMLVideoElement>("img, video"))) {
+    if (element.currentSrc === url || element.src === url) return true;
+  }
+  return false;
+}
+
 function rememberLargeMediaUrl(key: string, url: string): void {
   largeMediaUrls.set(key, url);
   while (largeMediaUrls.size > LARGE_MEDIA_URL_KEEP) {
     const [oldestKey, oldestUrl] = largeMediaUrls.entries().next().value as [string, string];
     largeMediaUrls.delete(oldestKey);
-    URL.revokeObjectURL(oldestUrl);
+    retiredLargeMediaUrls.add(oldestUrl);
+  }
+  // A proof still on screen keeps its bytes; revoking it would blank the
+  // video or the full-size view it opens.
+  for (const retired of retiredLargeMediaUrls) {
+    if (shownOnPage(retired)) continue;
+    retiredLargeMediaUrls.delete(retired);
+    URL.revokeObjectURL(retired);
   }
 }
