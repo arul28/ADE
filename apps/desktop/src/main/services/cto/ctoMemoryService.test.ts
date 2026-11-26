@@ -313,5 +313,20 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     // A rule that already carries its "— why" says the reason once.
     expect(service.addRule({ rule: "Run the linter first — CI fails on lint", why: "CI fails on lint" }))
       .toMatchObject({ ok: true, rule: "Run the linter first — CI fails on lint." });
+
+    // A replace that flips the rule is one change, and one Undo puts the old rule back alone.
+    service.addRule({ rule: "Push releases directly to main", why: "the release lane is slow" });
+    service.beginLearningTurn();
+    expect(service.addRule({ rule: "Never push releases directly to main", why: "CI must run first", replaces: "Push releases" }).ok)
+      .toBe(true);
+    const flipped = service.finishLearningTurn({})!;
+    expect(flipped.changes.map(({ op, text, previous }) => ({ op, text, previous }))).toEqual([{
+      op: "changed",
+      text: "Never push releases directly to main — CI must run first.",
+      previous: "Push releases directly to main — the release lane is slow.",
+    }]);
+    service.undoLearned({ learnId: flipped.learnId, changeId: flipped.changes[0]!.id });
+    expect(read(path.join(ctoDir, "RULES.md"))).toContain("- Push releases directly to main — the release lane is slow.");
+    expect(read(path.join(ctoDir, "RULES.md"))).not.toContain("Never push");
   });
 });

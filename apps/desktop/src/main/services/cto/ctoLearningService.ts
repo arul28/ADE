@@ -228,6 +228,8 @@ export function diffLineItems(
   area: LineArea,
   before: string,
   after: string,
+  /** The CTO's own `replaces` this turn, new line → the line it replaced. */
+  replacedBy: ReadonlyMap<string, string> = new Map(),
 ): Array<Omit<CtoLearnedChange, "id">> {
   const left = parseNoteLines(before);
   const right = parseNoteLines(after);
@@ -242,11 +244,32 @@ export function diffLineItems(
   const changes: Array<Omit<CtoLearnedChange, "id">> = [];
   const paired = new Set<number>();
   const leftovers: string[] = [];
+  // A line the CTO replaced pairs with its replacement even when the two read
+  // nothing alike ("Push to main" → "Never push to main"), so one Undo puts it back.
+  const linkedFrom = (line: string): string | null => {
+    let at = replacedBy.get(line);
+    for (let hops = 0; at != null && hops < replacedBy.size; hops += 1) {
+      if (removed.includes(at)) return at;
+      at = replacedBy.get(at);
+    }
+    return null;
+  };
+  const linked = new Map<string, number>();
+  added.forEach((line, index) => {
+    const old = linkedFrom(line);
+    if (old != null && !linked.has(old)) linked.set(old, index);
+  });
   for (const old of removed) {
+    const link = linked.get(old);
+    if (link != null) {
+      paired.add(link);
+      changes.push({ area, op: "changed", text: added[link]!, previous: old });
+      continue;
+    }
     let best = -1;
     let bestScore = 0.35;
     added.forEach((line, index) => {
-      if (paired.has(index)) return;
+      if (paired.has(index) || [...linked.values()].includes(index)) return;
       const score = noteSimilarity(area === "rules" ? rulePart(old) : old, area === "rules" ? rulePart(line) : line);
       if (score > bestScore) {
         best = index;
@@ -468,6 +491,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     if (bytes > CTO_RULES_MAX_BYTES) return { ok: false, error: rulesFullMessage(utf8Bytes(content)) };
     writeLineFile("rules", next);
     changed();
+    if (replaced) ctoReplaced("rules", replaced, line);
     return { ok: true, rule: line, ...(replaced ? { replaced } : {}), bytes, limitBytes: CTO_RULES_MAX_BYTES };
   };
 
@@ -742,6 +766,13 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   const ctoWroteUserNotes = (lines: readonly string[]): void => {
     for (const line of lines) userNoteLinesThisTurn.add(line);
   };
+  /** The CTO's `replaces` this turn per area (new line → old), so the row pairs them as one change. */
+  const replacedThisTurn = new Map<LineArea, Map<string, string>>();
+  const ctoReplaced = (area: LineArea, previous: string, next: string): void => {
+    const links = replacedThisTurn.get(area) ?? new Map<string, string>();
+    links.set(next, previous);
+    replacedThisTurn.set(area, links);
+  };
 
   /**
    * The person changed a file in the middle of a turn (Settings, another
@@ -771,6 +802,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   const beginTurn = (): void => {
     if (baseline) return;
     userNoteLinesThisTurn.clear();
+    replacedThisTurn.clear();
     try {
       baseline = captureState();
       saveBaseline(baseline);
@@ -833,7 +865,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     const after: NonNullable<LearnedRecord["after"]> = {};
     const diffLines = (area: LineArea): void => {
       if (start[area] === end[area]) return;
-      const lineChanges = diffLineItems(area, start[area], end[area]);
+      const lineChanges = diffLineItems(area, start[area], end[area], replacedThisTurn.get(area));
       if (!lineChanges.length) return;
       before[area] = start[area];
       changes.push(...lineChanges);
@@ -848,7 +880,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     }
     diffLines("project_notes");
     if (start.user_notes !== end.user_notes) {
-      const mine = diffLineItems("user_notes", start.user_notes, end.user_notes)
+      const mine = diffLineItems("user_notes", start.user_notes, end.user_notes, replacedThisTurn.get("user_notes"))
         .filter((change) => userNoteLinesThisTurn.has(change.text) || (change.previous != null && userNoteLinesThisTurn.has(change.previous)));
       if (mine.length) {
         before.user_notes = start.user_notes;
@@ -856,6 +888,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       }
     }
     userNoteLinesThisTurn.clear();
+    replacedThisTurn.clear();
     if (!changes.length) return null;
     const record: LearnedRecord = {
       v: 1,
@@ -966,6 +999,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     undoneRefusal,
     personWrote,
     ctoWroteUserNotes,
+    ctoReplaced,
     beginTurn,
     finishTurn,
     undo,

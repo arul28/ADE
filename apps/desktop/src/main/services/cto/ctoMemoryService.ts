@@ -321,6 +321,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     }
     writeNoteLines(scope, next);
     if (scope === "user") learning.ctoWroteUserNotes(replaced ? [note, replaced] : [note]);
+    if (replaced) learning.ctoReplaced(notesArea(scope), replaced, note);
     return { ok: true, saved: true, note, ...(replaced ? { replaced } : {}), scope, bytes, limitBytes: limit };
   };
 
