@@ -203,6 +203,12 @@ export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends Acco
    * A different relay, or none recorded, is checked as before.
    */
   conflictCheckingRelay: string | null;
+  /**
+   * The `pullSchema` the cursor was taken under. A cursor taken by an ADE that
+   * dropped rows it could not read (an unknown vault kind) has moved past
+   * them for good; a newer ADE that reads them starts its pull over.
+   */
+  pullSchema: string | null;
 };
 
 export type AccountCacheStoreConfig<
@@ -287,6 +293,15 @@ export type AccountCacheStoreConfig<
    * already here. Only called once the row is known to be newer.
    */
   toRow(remote: TRemote, cached: TRow | undefined): TRow | null;
+  /**
+   * What this ADE can read from a pull (the vault's known kinds). The pull
+   * drops rows it can't read and still moves its cursor past them, so when
+   * this changes from the one the cursor was taken under, the next pull
+   * starts from the beginning. Rows this machine already holds are kept, and
+   * a pulled row only replaces a newer one, so the repull changes only what
+   * the old cursor skipped.
+   */
+  pullSchema?: { schema: string; resetEvent: string };
   /** Optional codec for stores whose cache file is encrypted at rest. */
   readFile?: (cachePath: string) => unknown | null;
   writeFile?: (cachePath: string, contents: string) => void;
@@ -484,6 +499,7 @@ export function createAccountCacheStore<
       rows: {},
       pending: [],
       conflictCheckingRelay: null,
+      pullSchema: config.pullSchema?.schema ?? null,
     };
   }
 
@@ -554,6 +570,13 @@ export function createAccountCacheStore<
     } else if (loaded.pending !== undefined) {
       logCorruptEntry("pending");
     }
+    const loadedCursor = typeof loaded.cursor === "string" ? loaded.cursor : null;
+    const loadedPullSchema = typeof loaded.pullSchema === "string" ? loaded.pullSchema : null;
+    const pullSchema = config.pullSchema;
+    const pullSchemaChanged = pullSchema !== undefined && loadedPullSchema !== pullSchema.schema;
+    if (pullSchemaChanged && loadedCursor !== null) {
+      log.info(pullSchema.resetEvent, { from: loadedPullSchema, to: pullSchema.schema });
+    }
     cache = {
       version: config.cacheVersion,
       seqCounter: typeof loaded.seqCounter === "number"
@@ -562,10 +585,11 @@ export function createAccountCacheStore<
         ? loaded.seqCounter
         : 0,
       accountUserId,
-      cursor: typeof loaded.cursor === "string" ? loaded.cursor : null,
+      cursor: pullSchemaChanged ? null : loadedCursor,
       rows,
       pending,
       conflictCheckingRelay: typeof loaded.conflictCheckingRelay === "string" ? loaded.conflictCheckingRelay : null,
+      pullSchema: config.pullSchema?.schema ?? loadedPullSchema,
     };
     return cache;
   }
@@ -581,6 +605,7 @@ export function createAccountCacheStore<
       rows: { ...current.rows },
       pending: current.pending.map((entry) => ({ ...entry })),
       conflictCheckingRelay: current.conflictCheckingRelay,
+      pullSchema: current.pullSchema,
     };
   }
 

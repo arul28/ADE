@@ -104,6 +104,7 @@ type AutomationIngressServiceArgs = {
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
     getAppUserTokenForRelay: () => Promise<string>;
+    isGithubCliOnly?: () => boolean;
     /**
      * The relay answered 401 to this App user token. The account client asks
      * for the account's current token, so the next poll reads the new one
@@ -554,6 +555,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let subscriptionReconnectAttempt = 0;
   let subscriptionConnected = false;
   let githubRelayHealthy = false;
+  let githubRelayDisabledForCliOnly = false;
   let pollTimerIntervalMs = 0;
   let lastRelayActivityAtMs = Date.now();
   let relayPollCooldownUntilMs = 0;
@@ -1165,6 +1167,16 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       isStopped: () => stopped,
     });
     if (!run.isCurrent()) return;
+    if (args.githubService?.isGithubCliOnly?.()) {
+      if (!githubRelayDisabledForCliOnly) {
+        githubRelayDisabledForCliOnly = true;
+        clearRelayPollBackoff();
+        disableRelaySubscription();
+        updateGithubRelayStatus({ healthy: false, status: "disabled", lastError: null });
+      }
+      return;
+    }
+    githubRelayDisabledForCliOnly = false;
     if (Date.now() < relayPollCooldownUntilMs) {
       scheduleRelayPollRetry();
       return;
@@ -1775,6 +1787,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       unsubscribeSignIn = null;
       repairedDuringPoll = false;
       githubRelayHealthy = false;
+      githubRelayDisabledForCliOnly = false;
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;
       relayPollUnauthorizedCount = 0;

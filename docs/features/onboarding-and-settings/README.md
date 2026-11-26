@@ -757,6 +757,13 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     page; the hash wins (`openIntegrationFromUrl`, `settingsTabContent.tsx`).
     Only one page mounts, so search lists matches elsewhere as "On other
     pages".
+  - The machine picker says whose GitHub, Linear and Jira connections you are
+    viewing. MCP server definitions belong to your account. The MCP page
+    searches the registry and the discovered servers and shows ten rows at a
+    time in each list. **Try again** shows progress while ADE checks account sync.
+  - **Links on GitHub** checks repository access before offering **Add**.
+    Repository admins can add the links. Other collaborators can copy the commands
+    to share with an admin.
   - Each page (`IntegrationChrome.tsx`) has a banner in the maker's colours
     (`SolidLogo`, state, a sign-in panel with main actions, a facts strip with
     the top-bar switch), then two equal cards or one.
@@ -764,6 +771,13 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
 - `settings/GitHubIntegrationSection.tsx`, `GitHubSection.tsx`: the GitHub
   page. "Your sign-in" lists every credential in try order, with the token form
   (and needed permissions) inline in the token row.
+  - **How GitHub connects** is an account setting. **GitHub CLI only** uses
+    an existing `gh auth login` or a shared copy of that login for GitHub
+    operations. Git can use its usual SSH or HTTPS credentials. Live GitHub
+    App notifications require the App, and ADE checks for PR updates
+    periodically in CLI-only mode. You can remove a previously saved token
+    while CLI-only mode is on. **App, token or CLI** restores the credential
+    choices.
   - Classic PATs and CLI tokens show scopes; fine-grained PATs show
     repository-permission guidance; App tokens show installation access and
     never report missing `repo` / `workflow` scopes. The App panel says the App

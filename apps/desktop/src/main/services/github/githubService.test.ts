@@ -1366,8 +1366,9 @@ describe("githubService issue-domain helpers", () => {
     expect(lastFetchCall()[0]).toMatch(/page=2/);
   });
 
-  it("lists and creates repository autolinks", async () => {
+  it("lists and creates repository autolinks after checking admin access", async () => {
     mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, { permissions: { admin: true } }))
       .mockResolvedValueOnce(jsonResponse(200, [{
         id: 1,
         key_prefix: "ADE-",
@@ -1398,7 +1399,7 @@ describe("githubService issue-domain helpers", () => {
       urlTemplate: "https://ade-app.dev/open?number=<num>",
       isAlphanumeric: false,
     });
-    expect(mockFetch.mock.calls[0]?.[0]).toMatch(/\/repos\/acme\/ade\/autolinks/);
+    expect(mockFetch.mock.calls[0]?.[0]).toMatch(/\/repos\/acme\/ade$/);
     const [, init] = lastFetchCall();
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({

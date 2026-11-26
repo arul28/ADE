@@ -1130,7 +1130,10 @@ describe("headlessLinearServices", () => {
     }
   });
 
-  it("prefers an explicit GitHub environment token over a stored machine PAT", async () => {
+  it.each([
+    ["app_or_token", "environment", "ghp_environment_token"],
+    ["cli_only", "gh", "gho_existing_cli_login"],
+  ] as const)("uses the permitted GitHub sign-in in %s mode", async (mode, source, token) => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
     const previousGitHubToken = process.env.GITHUB_TOKEN;
@@ -1154,11 +1157,19 @@ describe("headlessLinearServices", () => {
     const githubService = createHeadlessGitHubService(
       "/tmp/ade-project",
       { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        getAccountSetting: () => mode,
+        ghAuthTokenProvider: () => ({
+          token: mode === "cli_only" ? "gho_existing_cli_login" : null,
+          ghCliPath: null,
+          ghAuthError: null,
+        }),
+      },
     );
     try {
-      expect(githubService.getTokenOrThrow()).toBe("ghp_environment_token");
+      expect(githubService.getTokenOrThrow()).toBe(token);
       await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
-        authSource: "environment",
+        authSource: source,
         connected: true,
         writeAuthSource: "none",
         patTokenStored: true,
@@ -1168,7 +1179,7 @@ describe("headlessLinearServices", () => {
         expect.anything(),
         expect.objectContaining({
           headers: expect.objectContaining({
-            authorization: "Bearer ghp_environment_token",
+            authorization: `Bearer ${token}`,
           }),
         }),
       );

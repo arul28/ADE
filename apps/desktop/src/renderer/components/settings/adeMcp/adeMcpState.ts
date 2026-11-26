@@ -46,14 +46,38 @@ const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => M
       ? "This computer's account sync is failing, so it hasn't received ADE MCP's settings."
       : "Its account sync is failing, so it hasn't received ADE MCP's settings. Open ADE on it to see why.",
   }),
-  waiting_for_account_secret: () => ({
-    tone: "warn",
-    label: "Getting ready",
-    detail: "Waiting for ADE MCP's settings to sync to it. This usually takes under a minute.",
-  }),
+  waiting_for_account_secret: (machine) => {
+    // `reportedAt` is when it started waiting: the entry is rewritten only
+    // when its state changes. A wait far past the usual minute is not
+    // "getting ready" any more; say so, and what moves it on.
+    const deadline = secretWaitEndsAt(machine);
+    if (deadline === null || Date.now() < deadline) {
+      return {
+        tone: "warn",
+        label: "Getting ready",
+        detail: "Waiting for ADE MCP's settings to sync to it. This usually takes under a minute.",
+      };
+    }
+    return {
+      tone: "crit",
+      label: "Not getting ADE MCP's key",
+      detail: "This computer is still waiting for ADE MCP's key. "
+        + (machine.isThisMachine
+          ? "Check account sync on this page."
+          : "Check account sync on that computer and make sure ADE is up to date."),
+    };
+  },
   older_ade: () => ({ tone: "warn", label: "Needs an update", detail: "It runs an older ADE that can't answer. Update ADE on it." }),
   offline: () => ({ tone: "neutral", label: "Offline", detail: "Apps reach it again when it's back online." }),
 };
+
+/** A computer still waiting for ADE MCP's key after this long is stuck, not getting ready. */
+const STUCK_WAITING_MS = 10 * 60_000;
+
+export function secretWaitEndsAt(machine: RemoteMcpMachine): number | null {
+  const reportedAt = Date.parse(machine.reportedAt ?? "");
+  return Number.isFinite(reportedAt) ? reportedAt + STUCK_WAITING_MS : null;
+}
 
 /**
  * Another computer counted as serving only because it never reported its
@@ -159,6 +183,25 @@ export function agoText(iso: string | null, now = Date.now()): string | null {
   return new Date(at).toLocaleDateString();
 }
 
+/** A connection used within this long counts as in use: its arrow moves. */
+const RECENT_USE_MS = 10 * 60_000;
+
+/** Whether the connection made a call in the last few minutes. */
+export function recentUseEndsAt(connection: RemoteMcpConnectionSummary): number {
+  return Date.parse(connection.lastUsedAt ?? "") + RECENT_USE_MS;
+}
+
+/** `localhost`, `127.0.0.1` or `[::1]`, with or without a port. */
+const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\]|::1)(?::\d+)?$/i;
+
+/**
+ * An app that signed in through a local address: it runs on the person's
+ * own computer (a desktop or terminal MCP client), not on a website.
+ */
+export function isLocalConnection(connection: RemoteMcpConnectionSummary): boolean {
+  return connection.kind === "app" && LOOPBACK_HOST.test(connection.redirectHost ?? "");
+}
+
 /** Where a known app signs in from, when that reads better than its name. */
 const SIGN_IN_PLACE: Partial<Record<RemoteMcpKnownApp, string>> = { claude: "claude.ai", grok: "grok.com", chatgpt: "ChatGPT" };
 
@@ -171,6 +214,7 @@ const SIGN_IN_PLACE: Partial<Record<RemoteMcpKnownApp, string>> = { claude: "cla
  */
 export function connectionHow(connection: RemoteMcpConnectionSummary): string {
   if (connection.kind === "token") return `Token …${connection.tokenHint}`;
+  if (isLocalConnection(connection)) return `An app on your computer · signed in through ${connection.redirectHost}`;
   if (connection.app) return `Signed in from ${SIGN_IN_PLACE[connection.app] ?? REMOTE_MCP_KNOWN_APP_LABELS[connection.app]}`;
   return connection.redirectHost ? `Signed in from ${connection.redirectHost}` : "Signed in";
 }

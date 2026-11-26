@@ -607,8 +607,11 @@ button.ade-mx-hero-chip {
   font-weight: 600;
 }
 
-/* The copy line above a project page sits close to the page it names. */
-.ade-copy-scope-column {
+/* The copy line above a project page sits close to the page it names.
+   Two classes: `.ade-settings-column` (index.css) sets the same margin and
+   padding with one, and whichever stylesheet loaded last won, which left a
+   large blank gap under the line on the Integrations page (ADE-235). */
+.ade-settings-column.ade-copy-scope-column {
   padding-bottom: 0;
   /* The page stack spaces its children 32px apart; the line sits nearer both. */
   margin-top: -12px;

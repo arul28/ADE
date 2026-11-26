@@ -3,6 +3,10 @@ import {
   type AccountStoreResult,
   type AccountStoreWriteOptions,
 } from "../../../shared/types/accountStore";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+
+/** An older brain's answer to a machine method it does not have. */
+const MACHINE_ROUTE_MISSING = /\bMethod not found\b|is unavailable in this runtime/i;
 
 type ActionRequest = {
   domain: string;
@@ -150,6 +154,7 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
     decode: (raw: unknown) => T,
     callOptions: CallOptions = {},
   ): Promise<AccountStoreResult<T>> => {
+    let viaMachineMethod = false;
     try {
       const pool = options.getPool();
       if (!pool) return unavailable<T>();
@@ -162,6 +167,7 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
         send = pool.callActionForRoot(rootPath, { domain: options.domain, action, argsList: fullArgsList })
           .then((response) => response?.result);
       } else if (machineMethod && pool.callSync) {
+        viaMachineMethod = true;
         send = pool.callSync(machineMethod, { action, argsList: fullArgsList });
       } else {
         return unavailable<T>();
@@ -185,6 +191,12 @@ export function createAccountActionBridge<TRow>(options: AccountActionBridgeOpti
       }
       const message = error instanceof Error ? error.message : String(error ?? "");
       options.logger?.debug?.(`${options.domain}.call_failed`, { action, error: message });
+      // A brain without the machine route (an older one, or one with account
+      // sync off) is the same "no brain to ask" as no project: the ordinary
+      // answer, not its internal text.
+      if (viaMachineMethod && (isUnsupportedAdeActionError(error) || MACHINE_ROUTE_MISSING.test(message))) {
+        return unavailable<T>();
+      }
       return {
         ok: false,
         unavailable: true,

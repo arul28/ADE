@@ -317,3 +317,33 @@
   .ade-amcp-activity-app { display: none; }
   .ade-amcp-activity-hop { max-width: 96px; }
 }
+
+/* A local app's connection (ADE-252): the app, an arrow, ADE MCP. */
+.ade-amcp-local-link {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ade-amcp-local-ade {
+  width: 26px;
+  height: 26px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--ig-accent, #8b7cf6), #3a2a8c);
+}
+.ade-amcp-local-arrow {
+  display: inline-grid;
+  place-items: center;
+  color: var(--kit-text-3, var(--color-muted-fg));
+}
+.ade-amcp-local-link[data-active="true"] .ade-amcp-local-arrow {
+  color: var(--ig-accent, #8b7cf6);
+  animation: ade-amcp-local-pulse 1.6s ease-in-out infinite;
+}
+@keyframes ade-amcp-local-pulse {
+  0%, 100% { opacity: 0.45; transform: translateX(-1px); }
+  50% { opacity: 1; transform: translateX(1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-amcp-local-link[data-active="true"] .ade-amcp-local-arrow { animation: none; }
+}

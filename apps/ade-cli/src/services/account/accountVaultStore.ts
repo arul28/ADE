@@ -13,6 +13,7 @@ import { machineAccountStoreLogger } from "./accountCacheDiagnostics";
 import { uploadAccountItems } from "./accountCacheUpload";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import {
+  ACCOUNT_VAULT_PULL_SCHEMA,
   NEWER_VAULT_KINDS,
   isAccountVaultItemKind,
   type AccountStaleDelete,
@@ -325,6 +326,7 @@ export function createAccountVaultStore(args: {
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     changeMarkKind: "vault",
     flushOnWrite: true,
+    pullSchema: { schema: ACCOUNT_VAULT_PULL_SCHEMA, resetEvent: "account.vault_cursor_reset" },
     now,
     events: {
       writeFailed: "account.vault_cache_write_failed",

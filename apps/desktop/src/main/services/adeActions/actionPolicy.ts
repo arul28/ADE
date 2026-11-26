@@ -481,7 +481,8 @@ export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): bo
 /**
  * Actions about the account or this machine, never one project, that a brain
  * also serves with no project open, to this computer's own connections only:
- * `cloud.call` and `accountVault.call` (multiProjectRpcServer). Every rule
+ * `cloud.call`, `accountVault.call` and `accountSettings.call`
+ * (multiProjectRpcServer). Every rule
  * above still applies to them.
  *
  * The other `cloud` actions stay with a project: a lane launch is a
@@ -497,7 +498,10 @@ export const ADE_ACTION_MACHINE_SCOPED = {
     "access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "phone_provider", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES,
     "lanes", "lane_show", "lane_git", "lane_keep", "saved_chats_list", "saved_chats_read", "sessions_list", "session_read", "backups_list", "jobs_list", "project_overview",
   ],
-  account_vault: ["get", "set", "remove"],
+  account_vault: ["get", "set", "remove", "list", "sync"],
+  // The account's settings (the MCP servers, presets, notifications), from a
+  // window with no project on this computer (`accountSettings.call`).
+  account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
   // Passwords is the account's, not a project's (`passwords.call`).

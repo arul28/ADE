@@ -750,7 +750,7 @@ export function gitTransportPushesWithLabel(status: GitHubStatus | null, adeCred
  */
 export type GithubBannerTarget = "github-settings" | "connections";
 
-export function describeGithubCliBanner(status: GitHubStatus): {
+export function describeGithubCliBanner(status: GitHubStatus, cliOnly = false): {
   subState: string;
   title: string;
   detail: string;
@@ -769,8 +769,10 @@ export function describeGithubCliBanner(status: GitHubStatus): {
   if (!status.tokenStored) {
     return {
       subState: "no-token",
-      title: "GitHub CLI or token not connected",
-      detail: "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
+      title: cliOnly ? "GitHub CLI is signed out" : "GitHub CLI or token not connected",
+      detail: cliOnly
+        ? "Run gh auth login on the computer with this project, then check again."
+        : "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
       action: "Connect GitHub",
       target: "github-settings",
     };
@@ -795,7 +797,9 @@ export function describeGithubCliBanner(status: GitHubStatus): {
     return {
       subState: "no-write-credential",
       title: "GitHub write access isn't connected",
-      detail: "The ADE GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.",
+      detail: cliOnly
+        ? "Give your GitHub CLI sign-in permission to change this repository, then check again."
+        : "The ADE GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.",
       action: "Connect GitHub",
       target: "github-settings",
     };

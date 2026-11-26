@@ -19,3 +19,8 @@
 }
 
 .ade-linear-remove:hover:not(:disabled) { color: var(--color-error); }
+
+/* The names under "N other people use ADE" (Linear agent, step 3). */
+.ade-linear-link > .ade-ig-chips {
+  margin-top: 6px;
+}

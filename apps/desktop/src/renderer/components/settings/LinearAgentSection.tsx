@@ -1,7 +1,8 @@
+import { plainErrorText } from "../../lib/plainError";
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowSquareOut, Check, CircleNotch, Robot } from "@phosphor-icons/react";
+import { ArrowSquareOut, CaretDown, Check, CircleNotch, Robot } from "@phosphor-icons/react";
 import type { AiPermissionSettings, LinearAgentOverview, ModelConfig, OpenProjectBinding } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -97,7 +98,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       setOverview(next);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load the ADE agent.");
+      setError(plainErrorText(err, "Could not load the ADE agent."));
     } finally {
       setLoading(false);
     }
@@ -137,7 +138,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       await openExternal(session.authUrl);
     } catch (err) {
       setInstalling(false);
-      setError(err instanceof Error ? err.message : "Could not start the install.");
+      setError(plainErrorText(err, "Could not start the install."));
     }
   }, [pin]);
 
@@ -149,7 +150,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       if (next) setOverview(next);
       else await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "That did not work.");
+      setError(plainErrorText(err, "That did not work."));
     } finally {
       setBusy(null);
     }
@@ -174,7 +175,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       } catch (err) {
         // Show the saved delegations rule, so a retry does not add it twice.
         await load();
-        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${err instanceof Error ? err.message : String(err)}. Add it in Automations.`);
+        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${plainErrorText(err, "ADE couldn't save the rule.")}. Add it in Automations.`);
       }
     }
   }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, rulePin, run]);
@@ -360,13 +361,27 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
           <span className="ade-ig-step-num" aria-hidden>3</span>
           <div className="ade-ig-step-main">
             <div className="ade-ig-step-head"><b>Assign issues to ADE in Linear</b></div>
-            <p className="ade-ig-note">
-              {installed && status
-                ? otherMembers.length === 0
+            {installed && status && otherMembers.length > 0 ? (
+              // One short line however many teammates use ADE; the names open
+              // on demand instead of growing the step.
+              <details className="ade-linear-link" data-linear-agent-members="">
+                <summary className="ade-ig-note">
+                  {otherMembers.length === 1 ? "1 other person uses ADE" : `${otherMembers.length} other people use ADE`} in this workspace. Their issues run on their own ADE.{" "}
+                  <CaretDown size={11} className="ade-linear-links-caret" aria-label="Show who" />
+                </summary>
+                <div className="ade-ig-chips">
+                  {otherMembers.map((member, index) => (
+                    <span key={member.linearUserId || `${member.displayName ?? "someone"}-${index}`} className="kit-tag">{member.displayName ?? "Someone"}</span>
+                  ))}
+                </div>
+              </details>
+            ) : (
+              <p className="ade-ig-note">
+                {installed && status
                   ? "You're the only one using ADE in this workspace so far."
-                  : `Also using ADE: ${otherMembers.map((member) => member.displayName ?? "someone").join(", ")}. Their issues run on their own ADE.`
-                : "Or write @ADE in a comment. ADE replies in Linear as it works."}
-            </p>
+                  : "Or write @ADE in a comment. ADE replies in Linear as it works."}
+              </p>
+            )}
             {installed && status ? (
               <div className="ade-ig-inline-field">
                 <span>When someone without ADE assigns one</span>

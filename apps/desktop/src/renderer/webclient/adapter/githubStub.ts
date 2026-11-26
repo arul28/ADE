@@ -56,7 +56,7 @@ export function githubDisconnectedStatus(): GitHubStatus {
 
 /** The `window.ade.github` namespace as the web client implements it. */
 export function createGithubNamespace(deps: {
-  call: <T>(action: string, args: unknown, fallback: T, idempotent?: boolean) => Promise<T>;
+  call: <T>(action: string, args: unknown, fallback: T | (() => T | Promise<T>), idempotent?: boolean) => Promise<T>;
   onStatusChanged: (listener: (status: unknown) => void) => () => void;
 }): Record<string, unknown> {
   const { call } = deps;
@@ -94,13 +94,15 @@ export function createGithubNamespace(deps: {
     updateIssue: (args?: unknown) => call("github.updateIssue", args ?? {}, null, false),
     commentOnIssue: (args?: unknown) => call("github.commentOnIssue", args ?? {}, null, false),
     listRepoMilestones: (args?: unknown) => call("github.listRepoMilestones", args ?? {}, []),
-    listRepoAutolinks: async () => [],
+    listRepoAutolinks: (args?: unknown) => call("github.listRepoAutolinks", args ?? {}, () => {
+      throw new Error("ADE couldn't read this repository's links. Check the connection to its computer and try again.");
+    }),
     getAppInstallationStatus: async () => ({
       installed: false,
       state: "unknown",
       appUserAuthFailure: null,
     }),
-    createRepoAutolink: async () => null,
+    createRepoAutolink: (args?: unknown) => call("github.createRepoAutolink", args ?? {}, null, false),
     listRepoLabels: (args?: unknown) => call("github.listRepoLabels", args ?? {}, []),
     listRepoCollaborators: (args?: unknown) => call("github.listRepoCollaborators", args ?? {}, []),
     listMyRepos: async () => ({ repositories: [], nextCursor: null }),

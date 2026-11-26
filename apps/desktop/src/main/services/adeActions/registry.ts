@@ -341,7 +341,8 @@ import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/clo
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
-import { cloudOnlyVaultService } from "../adeCloud/cloudVaultItems";
+import { MCP_SERVERS_SETTING_KEY } from "../../../shared/mcpRegistry";
+import { desktopMachineVaultService } from "../adeCloud/cloudVaultItems";
 import { buildCloudAgentActions } from "../adeCloud/cloudAgentActions";
 import { createCloudLaneAccount } from "../adeCloud/cloudLaneAccount";
 import { cloudDiskGrowHost } from "../adeCloud/cloudDiskGrowHost";
@@ -735,7 +736,7 @@ function buildAccountVaultDomainService(runtime: AccountDomainRuntime): OpaqueSe
  * account's calls go. Reads stay. The remote MCP service writes them
  * in-process, never through this domain.
  */
-function buildAccountSettingsDomainService(runtime: AdeRuntime): OpaqueService | null {
+function buildAccountSettingsDomainService(runtime: Partial<Pick<AdeRuntime, "accountSettingsStore">>): OpaqueService | null {
   const store = runtime.accountSettingsStore;
   if (!store) return null;
   const guard = (key: unknown): void => {
@@ -749,7 +750,19 @@ function buildAccountSettingsDomainService(runtime: AdeRuntime): OpaqueService |
     deletedKeys: (...args: Parameters<Store["deletedKeys"]>) => store.deletedKeys(...args),
     get: (...args: Parameters<Store["get"]>) => store.get(...args),
     set: (...args: Parameters<Store["set"]>) => {
-      guard(args[1]);
+      const [scope, key] = args;
+      guard(key);
+      if (scope === "all" && key === MCP_SERVERS_SETTING_KEY && store.hasRelay()
+        && store.get(scope, key) === undefined && !store.health().lastSyncedAt) {
+        // The caller composed a replacement from an empty cache. If the first
+        // pull finds anything, the caller must rebuild its edit from that list.
+        return store.sync().then((result) => {
+          if (result !== "ready" || store.get(scope, key) !== undefined) {
+            throw new AdeExpectedError("Check the MCP server list again before saving. ADE needs the latest list from your account.", "user");
+          }
+          return store.set(...args);
+        });
+      }
       return store.set(...args);
     },
     remove: (...args: Parameters<Store["remove"]>) => {
@@ -5140,20 +5153,24 @@ function savedChatReads(credentials: CloudAccessDeps): {
 
 /**
  * The account-level domains a brain serves with no project open, over the
- * machine's account stores (`cloud.call` and `accountVault.call` in
+ * machine's account stores (`cloud.call`, `accountVault.call` and `accountSettings.call` in
  * multiProjectRpcServer). The same services a project runtime builds, so
  * every scope answers the same; which actions are served this way is
- * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only the provider's items.
+ * `ADE_ACTION_MACHINE_SCOPED`. The vault opens only ADE Cloud and MCP server items.
  */
 export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime): {
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
+  account_settings: OpaqueService | null;
   provider_logins: OpaqueService | null;
   passwords: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
-    account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
+    account_vault: desktopMachineVaultService(buildAccountVaultDomainService(runtime)),
+    // Settings › MCP servers and every other account setting, in a window
+    // with no project on this computer (a tab bound to another machine).
+    account_settings: buildAccountSettingsDomainService(runtime),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
     // Settings › Passwords & Secrets and the browser's fill with no project open.

@@ -31055,7 +31055,9 @@ async function runServe(
         accountAccessToken: async () => (brainAccountAuthService.getStatus().signedIn ? await brainAccountAuthService.getAccessToken() : null),
         readGithubToken: async () => {
           const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
-          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync().catch(() => null);
+          return await createHeadlessGitHubService(process.cwd(), quiet, {
+            getAccountUserId: () => brainAccountAuthService.getStatus().userId,
+          }).getGitTransportTokenOrThrowAsync().catch(() => null);
         },
         logger: headlessProjectLogger,
       })
@@ -31420,6 +31422,7 @@ async function runServe(
     const githubService = createHeadlessGitHubService(
       process.cwd(),
       headlessProjectLogger,
+      { getAccountUserId: () => brainAccountAuthService.getStatus().userId },
     );
     const service = createProjectScaffoldService({
       logger: headlessProjectLogger,
@@ -34146,7 +34149,9 @@ async function runServe(
         lookupRepo: createGithubRepoLookup({
           getApiRequest: async () => {
             accountProjectGithubRequest ??= (() => {
-              const service = createHeadlessGitHubService(process.cwd(), headlessProjectLogger);
+              const service = createHeadlessGitHubService(process.cwd(), headlessProjectLogger, {
+                getAccountUserId: () => brainAccountAuthService.getStatus().userId,
+              });
               return (args) => service.apiRequest(args);
             })();
             return accountProjectGithubRequest;
@@ -44741,7 +44746,9 @@ async function main(): Promise<void> {
       process.exitCode = await runGitCredentialHelper(process.argv[4], {
         readToken: async () => {
           const quiet: Logger = { debug() {}, info() {}, warn() {}, error() {} };
-          return await createHeadlessGitHubService(process.cwd(), quiet).getGitTransportTokenOrThrowAsync();
+          return await createHeadlessGitHubService(process.cwd(), quiet, {
+            getAccountUserId: () => getSharedAccountAuthService({ logger: quiet }).getStatus().userId,
+          }).getGitTransportTokenOrThrowAsync();
         },
       });
       return;

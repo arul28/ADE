@@ -703,6 +703,9 @@ describe("multi-project RPC server", () => {
       ["another machine's desktop reads the vault", remoteDesktop, null, "accountVault.call", "get", /only for the ADE desktop app on this computer/],
       ["a paired device lists machines", desktop, "peer-device-1", "cloud.call", "list", /only this computer's own connections/],
       ["a paired device reads the vault", desktop, "peer-device-1", "accountVault.call", "get", /only this computer's own connections/],
+      // Settings › MCP servers in a window with no project on this computer.
+      ["the desktop reads an account setting", desktop, null, "accountSettings.call", "get", null],
+      ["a paired device reads an account setting", desktop, "peer-device-1", "accountSettings.call", "get", /only this computer's own connections/],
     ] as const)("%s", async (_label, init, peerDeviceId, method, action, refused) => {
       const service = {
         list: vi.fn(async () => ["box"]),
@@ -711,13 +714,14 @@ describe("multi-project RPC server", () => {
         get: vi.fn(() => "the-key"),
         access: vi.fn(async () => ({ enabled: !_label.includes("off the list") })),
       };
-      const { handler, projectRegistry } = await connect(init, { cloud: service, account_vault: service }, peerDeviceId);
+      const { handler, projectRegistry } = await connect(init, { cloud: service, account_vault: service, account_settings: service }, peerDeviceId);
       const call = handler({ jsonrpc: "2.0", id: 2, method, params: { action, argsList: ["all", "integration", CLOUD_PROVIDER_VAULT_ITEM] } });
       if (refused) {
         await expect(call).rejects.toThrow(refused);
         expect(service[action]).not.toHaveBeenCalled();
       } else {
-        await expect(call).resolves.toMatchObject({ domain: method === "cloud.call" ? "cloud" : "account_vault", action });
+        const domain = { "cloud.call": "cloud", "accountVault.call": "account_vault", "accountSettings.call": "account_settings" }[method];
+        await expect(call).resolves.toMatchObject({ domain, action });
         expect(service[action]).toHaveBeenCalledTimes(1);
       }
       // No call through these methods turns the caller's folder into a project.
@@ -734,7 +738,7 @@ describe("multi-project RPC server", () => {
       ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the ADE Cloud items/],
       ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
       ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
-      ["every row", "list", [], /runs in a project/],
+      ["every row", "list", [], /Choose the account scope/],
     ] as const)("the vault with no project opens only ADE Cloud's items: %s", async (_label, action, argsList, refused) => {
       const rows = new Map<string, string>([
         [`all|integration|${CLOUD_PROVIDER_VAULT_ITEM}`, "the-key"],

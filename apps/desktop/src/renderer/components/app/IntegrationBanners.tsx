@@ -24,6 +24,7 @@ import {
   isGithubAppUserAuthSupported,
 } from "../../lib/githubIntegrationStatus";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
+import { useGithubConnectMode } from "../../lib/githubConnectMode";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { settingsRouteFor } from "../settings/settingsManifest";
@@ -149,6 +150,8 @@ export function IntegrationBanners({
   const { repo: issueRepo } = useProjectGitHubRepo();
   const issueAccess = useGitHubIssueWriteAccess(currentProjectRoot ? issueRepo : null);
 
+  // "GitHub CLI only" (Settings › GitHub, account-wide): no app prompts.
+  const githubCliOnly = useGithubConnectMode().mode === "cli_only";
   const [appInstall, setAppInstall] = useState<GitHubAppInstallationStatus | null>(null);
   const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(null);
   const [appStatusLoaded, setAppStatusLoaded] = useState(false);
@@ -211,10 +214,12 @@ export function IntegrationBanners({
 
   // Reload when the project changes; hide the App block until the fresh read lands
   // so a previous repo's state can't leak across a switch.
+  // "GitHub CLI only": the app's state is never shown, so it is not read.
   useEffect(() => {
     setAppStatusLoaded(false);
+    if (githubCliOnly) return;
     void loadAppStatus(false);
-  }, [currentProjectRoot, loadAppStatus, readerPinKey]);
+  }, [currentProjectRoot, githubCliOnly, loadAppStatus, readerPinKey]);
 
   // Coalesced refresh on PR/GitHub activity — cheap, and seq-guarded against stale
   // responses. Both subscriptions are optional (browser-mock / tests may omit them).
@@ -228,7 +233,7 @@ export function IntegrationBanners({
   useEffect(() => {
     const disposers: Array<() => void> = [];
     const pin = readerPinRef.current;
-    if (!pin) return undefined;
+    if (!pin || githubCliOnly) return undefined;
     const onPrEvent = (event: PrEventPayload) => {
       // Reconcile progress pings never carry App install/auth changes — skip them
       // so a focus reconcile doesn't trigger two forced status calls.
@@ -251,7 +256,7 @@ export function IntegrationBanners({
       }
       for (const dispose of disposers) dispose();
     };
-  }, [loadAppStatus, readerPinKey]);
+  }, [githubCliOnly, loadAppStatus, readerPinKey]);
 
   // Relay outage crosses its grace threshold on wall-clock time, not on an
   // incoming event, so nothing would re-render us at the two-minute mark. Arm a
@@ -368,7 +373,9 @@ export function IntegrationBanners({
       && typeof rawInstall.appName === "string"
       && typeof rawInstall.relayConfigured === "boolean"
       && authDtoIsReal;
-    if (!githubSuppressed && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
+    // "GitHub CLI only" (Settings › GitHub): the person can't use the app, so
+    // nothing asks them to install or authorize it.
+    if (!githubSuppressed && !githubCliOnly && appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall, account);
       const block = deriveGithubRealtimeBlock(account, repo);
@@ -443,9 +450,9 @@ export function IntegrationBanners({
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
     ) {
       githubCliShown = true;
-      const described = describeGithubCliBanner(githubStatus);
+      const described = describeGithubCliBanner(githubStatus, githubCliOnly);
       // ADE Web can't run `gh auth login` on the project's computer: the account's GitHub sign-in reaches it.
-      const cli = isWebClientMode() && described.subState === "no-token"
+      const cli = !githubCliOnly && isWebClientMode() && described.subState === "no-token"
         ? {
           ...described,
           title: "GitHub isn't connected",
@@ -580,6 +587,7 @@ export function IntegrationBanners({
     const issueApp = issueAccess?.app ?? null;
     if (
       !githubSuppressed
+      && !githubCliOnly
       && currentProjectRoot
       && issueAccess
       && issueApp?.needsApproval
@@ -625,6 +633,7 @@ export function IntegrationBanners({
   }, [
     machineId,
     issueAccess,
+    githubCliOnly,
     relayOutage,
     relayHealth,
     appStatusLoaded,

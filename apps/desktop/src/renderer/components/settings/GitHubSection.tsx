@@ -34,7 +34,8 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import { SettingsTextField } from "./primitives";
+import { SettingsSegmented, SettingsTextField } from "./primitives";
+import { refreshGithubConnectMode, setGithubConnectMode, useGithubConnectMode, visibleGithubSignInRows, type GithubConnectMode } from "../../lib/githubConnectMode";
 import {
   IntegrationCard,
   IntegrationColumns,
@@ -60,7 +61,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
-import { extractError } from "../../lib/format";
+import { plainErrorText } from "../../lib/plainError";
 import { requirePin } from "../../state/repositoryScope";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
@@ -125,10 +126,12 @@ function credentialSourceDetail(
   source: GitHubCredentialState["source"],
   account: GitHubStatus["accountCredentials"] | undefined,
   accountApp?: GitHubStatus["accountApp"],
+  /** GitHub CLI only: the app panel is not on the page to point at. */
+  cliOnly = false,
 ): string {
   switch (source) {
     case "app":
-      return "ADE's GitHub app";
+      return cliOnly ? "Reads only" : "Reads only · set up on the right";
     case "gh":
       return "Your gh auth login";
     case "pat":
@@ -284,6 +287,20 @@ export function GitHubSection() {
   // only this status can tell a paused renewal from a dead authorization. Shared
   // with the install panel on this same page, which is where it is disconnected.
   const { appAuth } = useGithubAppUserAuth(pin);
+  // The account's choice: with "GitHub CLI only" the page offers neither the
+  // app nor a token (an organisation that blocks both).
+  const connectMode = useGithubConnectMode();
+  const cliOnly = connectMode.mode === "cli_only";
+  const [savingConnectMode, setSavingConnectMode] = useState(false);
+  const handleConnectMode = (mode: GithubConnectMode) => {
+    setSavingConnectMode(true);
+    if (mode === "cli_only") setShowPatSetup(false);
+    void setGithubConnectMode(mode)
+      .then((error) => {
+        if (error) showToast({ tone: "error", title: "Couldn't change how GitHub connects", message: error });
+      })
+      .finally(() => setSavingConnectMode(false));
+  };
 
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -302,7 +319,7 @@ export function GitHubSection() {
       })
       .catch((error: unknown) => {
         if (statusRequestRef.current !== request) return;
-        setStatusError(error instanceof Error ? error.message : String(error));
+        setStatusError(plainErrorText(error, "ADE couldn't check GitHub on this computer."));
       });
   }, []);
 
@@ -321,6 +338,10 @@ export function GitHubSection() {
       cancelled = true;
     };
   }, [pin, readStatus]);
+
+  useEffect(() => {
+    if (connectMode.loaded) void readStatus();
+  }, [connectMode.mode, connectMode.loaded, readStatus]);
 
   // A credential can change while this page stays open (gh logs out, a token
   // is saved elsewhere), so read the status again when ADE comes back to the
@@ -368,7 +389,7 @@ export function GitHubSection() {
           message: verification.message,
         });
       })
-      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: plainErrorText(err, "Try again in a moment.") }))
       .finally(() => setGithubBusy(false));
   };
 
@@ -381,7 +402,7 @@ export function GitHubSection() {
         setShowPatSetup(false);
         showToast({ tone: "success", title: "Token removed", message: status.authSource === "gh" ? "ADE is using your GitHub CLI sign-in." : undefined });
       })
-      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: plainErrorText(err, "Try again in a moment.") }))
       .finally(() => setGithubBusy(false));
   };
 
@@ -406,7 +427,7 @@ export function GitHubSection() {
         setGithubStatus(status);
         showToast({ tone: "success", title: enabled ? "Shared with your ADE account" : "Removed from your ADE account" });
       })
-      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: plainErrorText(err, "Try again in a moment.") }))
       .finally(() => setGithubBusy(false));
   };
 
@@ -422,7 +443,7 @@ export function GitHubSection() {
 
   const handleRefreshStatus = () => {
     setGithubBusy(true);
-    void readStatus(true).finally(() => setGithubBusy(false));
+    void Promise.all([readStatus(true), refreshGithubConnectMode()]).finally(() => setGithubBusy(false));
   };
 
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
@@ -439,7 +460,7 @@ export function GitHubSection() {
   const accountCredentials = githubStatus?.accountCredentials ?? null;
   // An older remote runtime reports no credential chain. The token row still
   // has to be there, since it is where a token is added, replaced or removed.
-  const signInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
+  const allSignInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
     ? [...credentialStates, {
       source: "pat",
       available: githubStatus.tokenStored === true,
@@ -450,6 +471,7 @@ export function GitHubSection() {
       rateLimit: null,
     }]
     : credentialStates;
+  const signInRows = visibleGithubSignInRows(allSignInRows, connectMode.mode, githubStatus?.patTokenStored === true);
   const activeReadCredential = credentialStates.find((credential) => credential.activeFor.includes("read")) ?? null;
   const effectiveWriteAuthSource = githubStatus?.writeAuthSource
     ?? (githubStatus?.authSource && githubStatus.authSource !== "app" ? githubStatus.authSource : "none");
@@ -807,7 +829,7 @@ export function GitHubSection() {
             }}
           />
         ) : null}
-        {issueAccess?.app?.needsApproval && issueAccess.app.manageUrl ? (
+        {!cliOnly && issueAccess?.app?.needsApproval && issueAccess.app.manageUrl ? (
           <Banner
             layout="inline"
             model={{
@@ -827,6 +849,27 @@ export function GitHubSection() {
           />
         ) : null}
       </div>
+
+      <IntegrationCard
+        anchor="github-connect-mode"
+        icon={<TerminalWindow size={16} weight="duotone" />}
+        title="How GitHub connects"
+        hint={connectMode.error ?? (cliOnly
+          ? "Uses your GitHub CLI and git sign-ins on the computers on your ADE account."
+          : "Pick GitHub CLI only if your organization blocks the App and personal access tokens.")}
+        actions={(
+          <SettingsSegmented<GithubConnectMode>
+            ariaLabel="How GitHub connects"
+            value={connectMode.mode}
+            disabled={!connectMode.loaded || savingConnectMode || connectMode.error != null}
+            onChange={handleConnectMode}
+            options={[
+              { value: "app_or_token", label: "App, token or CLI" },
+              { value: "cli_only", label: "GitHub CLI only" },
+            ]}
+          />
+        )}
+      />
 
       {repoName ? (
         <IntegrationCard anchor="github-reminders" icon={<Bell size={16} weight="duotone" />} title="Reminders"
@@ -864,9 +907,11 @@ export function GitHubSection() {
             {signInRows.length === 0 ? (
               <div className="ade-ig-row"><span className="ade-ig-note">Checking sign-ins…</span></div>
             ) : signInRows.map((credential) => {
-              const badge = credentialStateBadge(credential, outage != null, appAccount);
               const isPat = credential.source === "pat";
               const active = credential.activeFor.length > 0;
+              const badge = isPat && cliOnly && !active
+                ? { label: "Saved · unused", tone: "neutral" as const }
+                : credentialStateBadge(credential, outage != null, appAccount);
               const account = accountLine(credential, accountCredentials, githubStatus?.patTokenStored === true, hasMissingScopes);
               // An older runtime has no gh sharing action; its account line has no button.
               const accountAction = account && (account.action === "remove-pat" || setGhAccountSharing) ? account.action : null;
@@ -876,7 +921,7 @@ export function GitHubSection() {
                   <span className="ade-ig-method-name">
                     <b>{credentialSourceLabel(credential.source)}</b>
                     <small>
-                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source, accountCredentials, githubStatus?.accountApp)}
+                      {credentialSourceDetail(credential.source, accountCredentials, githubStatus?.accountApp, cliOnly)}
                     </small>
                   </span>
                   <span className="ade-ig-method-side">
@@ -885,7 +930,7 @@ export function GitHubSection() {
                         Remove
                       </button>
                     ) : null}
-                    {isPat ? (
+                    {isPat && !cliOnly ? (
                       <button type="button" className="ade-modern-btn" data-size="sm" disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
                         {showPatSetup ? "Cancel" : githubStatus?.patTokenStored ? "Replace" : "Add token"}
                       </button>
@@ -915,15 +960,29 @@ export function GitHubSection() {
                       {account.command ? <code className="ade-int-command" style={{ marginTop: 0 }}>{account.command}</code> : null}
                     </div>
                   ) : null}
-                  {isPat && showPatSetup ? tokenForm : null}
-                  {credential.source === activeWriteSource && !(isPat && showPatSetup) ? scopeChips : null}
+                  {isPat && showPatSetup && !cliOnly ? tokenForm : null}
+                  {credential.source === activeWriteSource && !(isPat && showPatSetup && !cliOnly) ? scopeChips : null}
                 </div>
               );
             })}
           </div>
         </IntegrationCard>
 
-        <GitHubAppInstallPanel pin={pin} accountApp={githubStatus?.accountApp ?? null} onAccountAppChanged={handleRefreshStatus} />
+        {cliOnly ? (
+          <IntegrationCard
+            anchor="github-cli-only"
+            icon={<WebhooksLogo size={16} weight="duotone" />}
+            title="What needs ADE for GitHub"
+            hint="Pull requests, checks and issues use your GitHub CLI sign-in. Pushes and pulls use git."
+          >
+            <div className="ade-ig-choice" data-github-app-only-features="">
+              <p><b>Live pull request updates.</b> GitHub sends review and check updates to ADE immediately through the App. In CLI-only mode, ADE checks for changes periodically.</p>
+              <p><b>GitHub on ADE Cloud computers.</b> Share your GitHub CLI sign-in with your ADE account instead (on the GitHub CLI row).</p>
+            </div>
+          </IntegrationCard>
+        ) : (
+          <GitHubAppInstallPanel pin={pin} accountApp={githubStatus?.accountApp ?? null} onAccountAppChanged={handleRefreshStatus} />
+        )}
       </IntegrationColumns>
     </IntegrationPage>
   );

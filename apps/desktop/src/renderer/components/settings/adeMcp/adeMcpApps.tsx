@@ -21,7 +21,7 @@ import {
   Perplexity,
   Windsurf,
 } from "@lobehub/icons";
-import { Command, Key, PlugsConnected, Robot, ShareNetwork } from "@phosphor-icons/react";
+import { ArrowsLeftRight, Command, Key, PlugsConnected, Robot, ShareNetwork } from "@phosphor-icons/react";
 import type { RemoteMcpKnownApp } from "../../../../shared/types/remoteMcp";
 import type { IntegrationHeroBrand } from "../integrations/integrationBrand";
 import { CodexAvatarMark, DroidLogo } from "../../shared/ProviderLogos";
@@ -117,6 +117,25 @@ export function McpAppLogo({ app, size = 32 }: { app: McpLogoId | null; size?: n
           <Robot size={Math.round(size * 0.32)} weight="fill" />
         </span>
       ) : null}
+    </span>
+  );
+}
+
+/**
+ * An app on the person's own computer that signed in through a local
+ * address (127.0.0.1, localhost): the app and ADE MCP side by side, with an
+ * arrow between them that moves while the connection is in use. Built from
+ * the same logo tiles as the rest of the page, so a local app reads as an
+ * ADE connection and not as a bare address.
+ */
+export function LocalConnectionMark({ app, active }: { app: McpLogoId | null; active: boolean }) {
+  return (
+    <span className="ade-amcp-local-link" data-active={active ? "true" : undefined} aria-hidden>
+      <McpAppLogo app={app} size={26} />
+      <span className="ade-amcp-local-arrow"><ArrowsLeftRight size={12} weight="bold" /></span>
+      <span className="ade-amcp-logo ade-amcp-local-ade">
+        <ShareNetwork size={14} weight="fill" />
+      </span>
     </span>
   );
 }

@@ -29,11 +29,12 @@ import {
   GALLERY_APPS,
   galleryApp,
   galleryIdForKnownApp,
+  LocalConnectionMark,
   McpAppLogo,
   type GalleryAppId,
   type TokenSnippetId,
 } from "./adeMcp/adeMcpApps";
-import { agoText, connectionHow, heroPanelNote, isAnswering, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
+import { agoText, connectionHow, heroPanelNote, isAnswering, isLocalConnection, machineState, overallState, recentUseEndsAt, secretWaitEndsAt, vaultFact } from "./adeMcp/adeMcpState";
 import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
@@ -125,6 +126,7 @@ export function AdeMcpPage() {
 
   const load = useCallback(async () => {
     const request = ++loadRequest.current;
+    setLoading(true);
     try {
       const [next, recent] = await Promise.all([
         call<RemoteMcpStatus>("getStatus"),
@@ -150,6 +152,20 @@ export function AdeMcpPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!status || busy || loading) return;
+    const now = Date.now();
+    let nextCheck = Infinity;
+    for (const machine of status.machines) {
+      if (machine.notServingReason !== "waiting_for_account_secret") continue;
+      const deadline = secretWaitEndsAt(machine);
+      if (deadline !== null && deadline > now) nextCheck = Math.min(nextCheck, deadline);
+    }
+    if (!Number.isFinite(nextCheck)) return;
+    const timer = setTimeout(() => void load(), nextCheck - now);
+    return () => clearTimeout(timer);
+  }, [busy, load, loading, status]);
 
   const run = useCallback(async (work: () => Promise<void>, fallback: string) => {
     if (busy) return;
@@ -206,6 +222,18 @@ export function AdeMcpPage() {
   const enabled = signedIn && status?.enabled === true;
   const serverUrl = enabled ? status?.serverUrl ?? null : null;
   const connections = useMemo(() => status?.connections ?? [], [status]);
+  const [activityClock, setActivityClock] = useState(Date.now);
+  useEffect(() => {
+    const now = Math.max(Date.now(), activityClock);
+    const expiry = connections.reduce((next, connection) => {
+      if (!isLocalConnection(connection)) return next;
+      const at = recentUseEndsAt(connection);
+      return at > now && at < next ? at : next;
+    }, Infinity);
+    if (!Number.isFinite(expiry)) return;
+    const timer = setTimeout(() => setActivityClock(Date.now()), expiry - now);
+    return () => clearTimeout(timer);
+  }, [activityClock, connections]);
   const machines = status?.machines ?? [];
   const overall = overallState(status, loading);
   const shownActivity = useMemo(
@@ -407,6 +435,11 @@ export function AdeMcpPage() {
           icon={<Desktop size={16} weight="duotone" />}
           title="Computers"
           hint="Apps reach the computers you include. They can ask for one by name, or let ADE pick."
+          actions={(
+            <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy || loading} onClick={() => void load()}>
+              {loading ? "Checking…" : "Check again"}
+            </button>
+          )}
         >
           <div className="ade-ig-rows">
             {machines.length ? machines.map((machine) => {
@@ -471,7 +504,11 @@ export function AdeMcpPage() {
                 const isToken = connection.kind === "token";
                 return (
                   <div key={connection.id} className="ade-amcp-row ade-amcp-connection">
-                    <McpAppLogo app={connection.app ?? (isToken ? "token" : "other")} size={30} />
+                    {isLocalConnection(connection) ? (
+                      <LocalConnectionMark app={connection.app ?? "other"} active={recentUseEndsAt(connection) > Math.max(Date.now(), activityClock)} />
+                    ) : (
+                      <McpAppLogo app={connection.app ?? (isToken ? "token" : "other")} size={30} />
+                    )}
                     <div className="ade-amcp-row-main">
                       <div className="ade-amcp-row-title"><b>{connection.label}</b></div>
                       <div className="ade-amcp-row-detail ade-amcp-row-detail-quiet">

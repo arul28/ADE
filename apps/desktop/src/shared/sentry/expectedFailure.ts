@@ -19,7 +19,7 @@ import {
 } from "../codedError";
 import { CLOUD_COMPUTER_MOVING_CODE } from "../../../../account-directory/src/cloud/contract";
 import { expectedErrorKind } from "../expectedError";
-import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
+import { GITHUB_AUTOLINKS_NOT_ADMIN, GITHUB_AUTOLINKS_REFUSED, GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
 import { STEER_NO_LONGER_QUEUED_MESSAGE } from "../steerOrder";
@@ -106,6 +106,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bAPI rate limit (?:already )?exceeded for user ID\b/,
   /\[jira:unauthenticated\]/,
   GITHUB_AUTOLINKS_REFUSED,
+  GITHUB_AUTOLINKS_NOT_ADMIN,
+  GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN,
   /^SSH authentication failed for user\(s\) /,
   /^ADE couldn't connect to this machine\. Check that ADE is open there/,
   /\bWINDOWS_DESKTOP_SIGN_IN_FAILED: Windows could not verify the password\.|^(?:invalid_argument: )?Enter a Windows user name and password\.$/,

@@ -8,6 +8,8 @@ import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemot
 import { STEER_NO_LONGER_QUEUED_MESSAGE } from "../../desktop/src/shared/steerOrder";
 import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "../../desktop/src/main/services/github/githubAccountAppCredential";
+import { ACCOUNT_SCOPE_ALL } from "../../desktop/src/shared/accountSettingsScope";
+import { GITHUB_CONNECT_MODE_SETTING_KEY } from "../../desktop/src/shared/githubConnectMode";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "../../desktop/src/main/services/github/githubSessionEnv";
 import { peekGithubRepoOwnerFromGitConfig } from "../../desktop/src/main/services/github/gitConfigOrigin";
 import { spawnSync } from "node:child_process";
@@ -99,7 +101,8 @@ import {
   readGitHubRateLimitState,
 } from "../../desktop/src/main/services/github/githubRateLimit";
 import { createBrainLogger } from "./services/runtime/brainLogger";
-import { brainLogPath } from "./services/projects/machineLayout";
+import { GITHUB_CLI_SIGN_IN_REQUIRED, githubCliCredentialInventory, githubCliLoginEnv, githubCliOnlyFromCache } from "../../desktop/src/main/services/github/githubConnectMode";
+import { brainLogPath, resolveMachineAdeDir } from "./services/projects/machineLayout";
 import type { AdeRuntimePaths } from "./bootstrap";
 import {
   createHeadlessLinearCredentialService,
@@ -161,7 +164,7 @@ import {
   registerGithubCredentialIdentity,
   type GithubCredentialCandidate,
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
-import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
+import { listGithubAutolinksOrExplain } from "../../desktop/src/shared/githubAutolinks";
 import { createGithubPatAccountSync } from "../../desktop/src/main/services/github/githubPatAccountSync";
 import { createGithubGhAccountSync, readGithubAccountCredentialState } from "../../desktop/src/main/services/github/githubGhAccountSync";
 
@@ -222,6 +225,7 @@ type HeadlessLinearDeps = {
   getAccountAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
   getAccountVault?: () => AccountVaultBridge | null | undefined;
   getAccountUserId?: () => string | null;
+  getAccountSetting?: (scope: string, key: string) => unknown;
   /** The account directory address, for the account's GitHub App sign-in. */
   getAccountDirectoryBaseUrl?: () => string | null;
   getDeviceId?: () => string | null;
@@ -482,13 +486,14 @@ async function resolveGhCliPathAsync(): Promise<string> {
 function runCommandAsync(
   executable: string,
   args: string[],
-  options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
+  options: { cwd?: string; timeoutMs: number; maxBuffer?: number; env?: NodeJS.ProcessEnv },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   // Reaped: `gh` leaves its keychain helper behind when the keychain hangs.
   // On Windows this runs off the event loop; `gh auth token` runs here (at most
   // every 30 s), and a spawn on the loop blocked it ~120 ms each time.
   return runReapedCommand(executable, args, {
     cwd: options.cwd,
+    env: options.env,
     timeoutMs: options.timeoutMs,
     maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
   }).then(({ exitCode, stdout, stderr, error }) => ({
@@ -553,6 +558,7 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
       encoding: "utf8",
       timeout: 5_000,
       windowsHide: true,
+      env: githubCliLoginEnv(),
     });
     const token = result.status === 0 ? (result.stdout?.trim() ?? "") : "";
     if (token.length > 0) {
@@ -633,6 +639,7 @@ async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
   const result = await runCommandAsync(ghCliPath, ["auth", "token", "--hostname", "github.com"], {
     timeoutMs: 5_000,
     maxBuffer: 64 * 1024,
+    env: githubCliLoginEnv(),
   });
   const token = result.exitCode === 0 ? result.stdout.trim() : "";
   if (token) return noteGhAuthResult({ token, ghCliPath, ghAuthError: null });
@@ -887,6 +894,7 @@ export function createHeadlessGitHubService(
     /** For a pasted token to follow the owner's ADE account to their other machines. */
     getAccountVault?: () => AccountVaultBridge | null | undefined;
     getAccountUserId?: () => string | null;
+    getAccountSetting?: (scope: string, key: string) => unknown;
     /**
      * The account directory address. With the account token and user id, it
      * turns on the account's GitHub App sign-in (`account_app`).
@@ -894,6 +902,9 @@ export function createHeadlessGitHubService(
     getAccountDirectoryBaseUrl?: (() => string | null | undefined) | null;
   } = {},
 ): HeadlessGitHubService {
+  const cliOnly = options.getAccountSetting
+    ? () => options.getAccountSetting?.(ACCOUNT_SCOPE_ALL, GITHUB_CONNECT_MODE_SETTING_KEY) === "cli_only"
+    : githubCliOnlyFromCache(resolveMachineAdeDir(), options.getAccountUserId);
   configureGithubRequestAccounting(getBrainRequestAccountingLogger);
   const requestGitHub = (
     input: string | URL,
@@ -1007,7 +1018,7 @@ export function createHeadlessGitHubService(
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
-    const patToken = readStoredPatToken();
+    const patToken = cliOnly() ? null : readStoredPatToken();
     const patTokenStored = Boolean(patToken);
     let ghFallback: HeadlessGitHubTokenLookup = {
       token: null,
@@ -1018,6 +1029,7 @@ export function createHeadlessGitHubService(
     };
     return selectGithubOperationCredential<HeadlessGitHubTokenLookup>({
       environment: () => {
+        if (cliOnly()) return null;
         const token = readOwnEnvironmentGithubToken();
         return token
           ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
@@ -1068,6 +1080,11 @@ export function createHeadlessGitHubService(
     await appCredentialCache.read();
 
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
+    if (cliOnly()) {
+      const gh = await (options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync());
+      ghAccountSync.noteLocalGhToken(gh.token);
+      return githubCliCredentialInventory(gh, ghAccountSync.readAccountToken());
+    }
     const patToken = await readStoredPatTokenAsync();
     const patTokenStored = Boolean(patToken);
     // Snapshotted next to `patTokenStored`, because the read that just ran is
@@ -1521,7 +1538,7 @@ export function createHeadlessGitHubService(
     accountingFetchImpl: (input, init, accounting) =>
       fetchGitHub(input, init, options.fetchImpl, accounting),
     userAgent: "ade-cli",
-    authMissingMessage: "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+    authMissingMessage: cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
     onFallback: ({ capability, fromSource, toSource }) => {
       logger.info("github.credential_fallback_used", {
         capability,
@@ -1544,7 +1561,8 @@ export function createHeadlessGitHubService(
     repo?: GitHubRepoRef;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
-    const explicitToken = args.token?.trim() ?? "";
+    const cliCredentialsOnly = cliOnly();
+    const explicitToken = cliCredentialsOnly ? "" : args.token?.trim() ?? "";
     const candidatePool: HeadlessGitHubTokenCandidate[] = explicitToken
       ? [{
           token: explicitToken,
@@ -1557,7 +1575,9 @@ export function createHeadlessGitHubService(
       : githubOperationCredentialCandidates(
           (await readCredentialInventoryAsync()).candidates,
           capability,
-        ).filter((candidate) => !args.credentialSource || candidate.source === args.credentialSource);
+        ).filter((candidate) =>
+          (!args.credentialSource || candidate.source === args.credentialSource)
+          && (!cliCredentialsOnly || !args.token || candidate.token === args.token.trim()));
     // An App credential serves a write only where the installation on the
     // repository owner accepted the right; otherwise it would 403 on every
     // write (see `githubAppGrant.ts`).
@@ -1570,7 +1590,7 @@ export function createHeadlessGitHubService(
       : [...candidatePool];
     if (candidates.length === 0) {
       throw new Error(
-        "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+        cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
       );
     }
     const url = new URL(`https://api.github.com${args.path}`);
@@ -1841,6 +1861,7 @@ export function createHeadlessGitHubService(
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
     token?: string;
+    capability?: GithubOperationCredentialCapability;
     maxPages?: number;
     stopWhenUpdatedBefore?: string | null;
   }): Promise<T[]> => {
@@ -1855,6 +1876,7 @@ export function createHeadlessGitHubService(
           path: args.path,
           query: args.query,
           token: args.token,
+          capability: args.capability,
         });
         return {
           data: first.data,
@@ -1869,6 +1891,7 @@ export function createHeadlessGitHubService(
           method: "GET",
           path: `${url.pathname}${url.search}`,
           token: args.token,
+          capability: args.capability,
         });
         return {
           data: next.data,
@@ -1933,8 +1956,8 @@ export function createHeadlessGitHubService(
   // --- account_app: `GH_TOKEN` for `gh` in shells and chats (githubSessionEnv.ts).
   const sessionGithubEnv = createGithubSessionEnv({
     answersShells: accountApp.enabled,
-    readAccountAppToken: () => accountApp.readToken(),
-    peekAccountAppToken: () => accountApp.peekToken(),
+    readAccountAppToken: () => cliOnly() ? Promise.resolve(null) : accountApp.readToken(),
+    peekAccountAppToken: () => cliOnly() ? null : accountApp.peekToken(),
     // The account's copy of a `gh` login, for an owner without the App.
     peekAccountGhToken: () => ghAccountSync.readAccountToken(),
     readGrant: readAppIssueGrant,
@@ -2523,11 +2546,14 @@ export function createHeadlessGitHubService(
           return null;
         }),
       ]);
+      const usingCliOnly = cliOnly();
       return {
         ...status,
+        // Report storage separately so Settings can remove an unused token.
+        patTokenStored: usingCliOnly ? Boolean(await readStoredPatTokenAsync()) : status.patTokenStored,
         gitTransport,
         accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
-        accountApp: await accountApp.statusFor(status.repo, readAppIssueGrant),
+        accountApp: usingCliOnly ? null : await accountApp.statusFor(status.repo, readAppIssueGrant),
       };
     },
     async getBackgroundRequestPauseUntilMs() {
@@ -2617,7 +2643,7 @@ export function createHeadlessGitHubService(
       const token = getToken();
       if (!token)
         throw new Error(
-          "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+          cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
         );
       return token;
     },
@@ -2625,7 +2651,7 @@ export function createHeadlessGitHubService(
       const token = (await readTokenAsync("write")).token ?? "";
       if (!token) {
         throw new Error(
-          "GitHub write access is unavailable. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, connect GitHub CLI, or add a PAT in Settings.",
+          cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub write access is unavailable. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, connect GitHub CLI, or add a PAT in Settings.",
         );
       }
       return token;
@@ -2634,7 +2660,7 @@ export function createHeadlessGitHubService(
       const token = (await readTokenAsync("read")).token ?? "";
       if (!token) {
         throw new Error(
-          "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+          cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
         );
       }
       return token;
@@ -2644,12 +2670,15 @@ export function createHeadlessGitHubService(
       const token = (await readGitTransportTokenAsync(opts.owner ?? null)).token ?? "";
       if (!token) {
         throw new Error(
-          "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+          cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
         );
       }
       return token;
     },
+    isGithubCliOnly: cliOnly,
+
     async getAppUserTokenForRelay() {
+      if (cliOnly()) throw markExpected(new Error("GitHub App updates are off in GitHub CLI only mode."), "user");
       return await accountApp.relayAppUserAuth.getValidTokenForRelay();
     },
     async reportAppUserTokenRejected(token: string): Promise<void> {
@@ -2783,19 +2812,14 @@ export function createHeadlessGitHubService(
       });
     },
     async listRepoAutolinks(owner, name) {
-      let rows: Record<string, unknown>[];
-      try {
-        rows = await apiRequestAllPages<Record<string, unknown>>({
-          path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/autolinks`,
-          query: { per_page: 100 },
-        });
-      } catch (error) {
-        throw githubAutolinksAccessError(
-          owner,
-          name,
-          error instanceof HeadlessGithubCredentialAttemptError ? error.status : null,
-        ) ?? error;
-      }
+      const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+      const rows = await listGithubAutolinksOrExplain({
+        owner,
+        name,
+        list: () => apiRequestAllPages<Record<string, unknown>>({ path: `${repoPath}/autolinks`, query: { per_page: 100 }, capability: "write" }),
+        readRepo: async () => (await apiRequest<unknown>({ method: "GET", path: repoPath, capability: "write" })).data,
+        statusOf: (error) => (error instanceof HeadlessGithubCredentialAttemptError ? error.status : null),
+      });
       return rows.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
     },
     async createRepoAutolink(owner, name, args) {
@@ -3500,6 +3524,7 @@ export function createHeadlessLinearServices(
       getAccountVault: args.getAccountVault,
       getAccountUserId: args.getAccountUserId,
       getAccountDirectoryBaseUrl: args.getAccountDirectoryBaseUrl,
+      getAccountSetting: args.getAccountSetting,
     },
   );
   const linearClient = createLinearClientImpl({

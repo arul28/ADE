@@ -159,6 +159,15 @@ const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set<AccountVaultItemKi
   "cto_copy",
 ]);
 
+/**
+ * The kinds this ADE reads from a vault pull, as one string. The vault cache
+ * keeps it beside its cursor: a pull drops rows of a kind it does not know,
+ * so an ADE that learns a kind pulls again from the start
+ * (`AccountCacheStoreConfig.pullSchema`). Without it, a computer that pulled
+ * ADE MCP's key on an older ADE never got it after updating.
+ */
+export const ACCOUNT_VAULT_PULL_SCHEMA = `kinds:${[...ACCOUNT_VAULT_ITEM_KINDS].sort().join(",")}`;
+
 export function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
   return typeof value === "string" && ACCOUNT_VAULT_ITEM_KINDS.has(value);
 }

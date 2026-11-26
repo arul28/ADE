@@ -18,7 +18,8 @@
  * The root path is borrowed from any booted project scope, for the same reason
  * machine-level usage reads borrow one: the account settings store is keyed by
  * the machine's ADE directory, not by whatever repository happens to be open,
- * so any scope that can reach the brain returns the same rows.
+ * so any scope that can reach the brain returns the same rows. With none
+ * booted, the brain's `accountSettings.call` answers from the same store.
  */
 
 import type {
@@ -75,6 +76,10 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
     unavailableMessage: ACCOUNT_SETTINGS_UNAVAILABLE_MESSAGE,
     getPool: options.getPool,
     getRootPath: options.getRootPath,
+    // With no project booted on this computer (the welcome screen, or a tab
+    // bound to another machine), the brain serves the account's settings from
+    // its machine store, the same rows any project scope returns.
+    machineMethod: "accountSettings.call",
     logger: options.logger,
     decodeRow: toRow,
     rejectedMessage: ACCOUNT_SETTINGS_REJECTED_MESSAGE,

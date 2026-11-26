@@ -187,15 +187,22 @@ export function useProjectCopyPage(scope: string, active = true): ProjectCopyPag
  * picker when the project has copies on more than one online computer. With
  * no picker, it names the computer only when it is not this one.
  */
-export function ProjectCopyBar({ copy }: { copy: ProjectCopyPage }) {
+export function ProjectCopyBar({ copy, subject = "settings" }: {
+  copy: ProjectCopyPage;
+  /** What the page shows of that computer, as in "Showing integrations on Mac Studio". */
+  subject?: string;
+}) {
   const { page, pick, choices, thisMachineName } = copy;
   if (!page) return null;
   const pickable = choices.length >= 2;
   if (!pickable && page.isThisMachine) return null;
   const name = page.isThisMachine ? (thisMachineName ?? page.machineName) : page.machineName;
+  // The page shows the project's settings as they are on that computer,
+  // viewed from here; the tooltip says so in full.
+  const explain = `This project is on ${pickable ? "more than one computer" : name}. Its ${subject} here are the ones on ${name}, and changes are made there.`;
   return (
-    <div className="ade-copy-scope" data-testid="settings-copy-scope">
-      <span className="ade-copy-scope-label">{pickable ? "Showing the copy on" : "Copy on"}</span>
+    <div className="ade-copy-scope" data-testid="settings-copy-scope" title={explain}>
+      <span className="ade-copy-scope-label">{`Showing ${subject} on`}</span>
       {pickable ? (
         <MachinePicker
           machines={choices}

@@ -1,7 +1,7 @@
 /**
  * The provider account, the account vault and the account's provider
  * sign-ins with no project open (`cloud.call`, `accountVault.call`,
- * `providerLogins.call` in multiProjectRpcServer): the
+ * `accountSettings.call`, `providerLogins.call` in multiProjectRpcServer): the
  * desktop's Settings in a window with no project on this computer, and
  * `ade cloud` from any folder. The services and caller rules of
  * `run_ade_action`, for the actions in `ADE_ACTION_MACHINE_SCOPED`.
@@ -23,6 +23,7 @@ import { thisDesktopOnlyRefusalFor } from "../../../../desktop/src/shared/adeAct
 const MACHINE_ACCOUNT_METHODS = {
   "cloud.call": "cloud",
   "accountVault.call": "account_vault",
+  "accountSettings.call": "account_settings",
   "providerLogins.call": "provider_logins",
   "passwords.call": "passwords",
 } as const satisfies Record<string, AdeMachineScopedDomain>;
@@ -82,7 +83,7 @@ export async function runMachineAccountAction(
   if (isUserOnlyAdeAction(domain, action) && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${domain}.${action} is limited to the ADE desktop app on this computer.`);
   }
-  // The vault with no project is the desktop's ADE Cloud code, and only that.
+  // Only the local desktop reaches the restricted machine vault.
   if (domain === "account_vault" && !localDesktop) {
     throw new JsonRpcError(JsonRpcErrorCode.policyDenied, `${method} is only for the ADE desktop app on this computer.`);
   }
