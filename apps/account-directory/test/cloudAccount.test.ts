@@ -4064,7 +4064,7 @@ describe("ADE Cloud iPhone", () => {
    * A phone NoMac settled: `minutes` billed, started at `startedAt`. `credits`: it counts in credits, its
    * minutes already in the account's balance; false is a row from before credits (history only).
    */
-  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended", credits = true): void {
+  function seedPhone(id: string, minutes: number, startedAt = PERIOD + HOUR, state = "ended", credits = true, overrides: Row = {}): void {
     harness.insert("cloud_phones", {
       phone_id: id,
       user_id: OWNER,
@@ -4079,6 +4079,7 @@ describe("ADE Cloud iPhone", () => {
       updated_at: startedAt,
       credits: credits ? 1 : 0,
       credited_milli: credits ? minutes * 1000 : 0,
+      ...overrides,
     });
   }
 
@@ -4231,25 +4232,32 @@ describe("ADE Cloud iPhone", () => {
   const startPhone = (needs?: string[]) => harness.send(OWNER, "POST", "/cloud/phone", { providers: ["nomac", "revyl"], ...(needs ? { needs } : {}) });
 
   it.each([
-    { name: "a paid plan starts on NoMac first", pick: "auto", free: false, revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1 },
-    { name: "a definite NoMac refusal hands a paid start to Revyl", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_unavailable", asked: ["nomac", "revyl"], phones: 0 },
-    { name: "a NoMac 5xx may hide a phone it made: no second start", pick: "auto", free: false, revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a NoMac timeout may hide a phone it made: no second start", pick: "auto", free: false, revyl: "on", nomac: "timeout", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a free plan's phone is NoMac's alone", pick: "auto", free: true, revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1 },
-    { name: "a free plan NoMac refuses is told it is busy, never sent to Revyl", pick: "auto", free: true, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_busy", asked: ["nomac"], phones: 0 },
-    { name: "a free plan's lost NoMac answer is not called busy", pick: "auto", free: true, revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a need never picks the provider: one the first can't do starts nothing", pick: "auto", free: false, revyl: "on", nomac: "ok", needs: ["perf"], status: 409, code: "phone_lacks", asked: [], phones: 0 },
-    { name: "a fallback that can't do a need is left out", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: ["tests"], status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a tester's NoMac pick never falls back to Revyl", pick: "nomac", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0 },
-    { name: "a tester's Revyl pick goes to Revyl, on a free plan too", pick: "revyl", free: true, revyl: "on", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: ["revyl"], phones: 0 },
-    { name: "a tester's Revyl pick with Revyl switched off starts nothing", pick: "revyl", free: false, revyl: "off", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: [], phones: 0 },
-    { name: "an account off the beta list starts nothing", pick: "none", free: false, revyl: "on", nomac: "ok", needs: undefined, status: 403, code: "phone_not_on_account", asked: [], phones: 0 },
-  ] as const)("which provider starts the phone: $name", async ({ pick, free, revyl, nomac, needs, status, code, asked, phones }) => {
+    { name: "a paid plan starts on NoMac first", pick: "auto", free: false, revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1, revylSpentUsd: 0 },
+    { name: "a definite NoMac refusal hands a paid start to Revyl", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_unavailable", asked: ["nomac", "revyl"], phones: 0, revylSpentUsd: 0 },
+    { name: "a NoMac 5xx may hide a phone it made: no second start", pick: "auto", free: false, revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0, revylSpentUsd: 0 },
+    { name: "a NoMac timeout may hide a phone it made: no second start", pick: "auto", free: false, revyl: "on", nomac: "timeout", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0, revylSpentUsd: 0 },
+    { name: "a free plan's phone is NoMac's alone", pick: "auto", free: true, revyl: "on", nomac: "ok", needs: undefined, status: 200, code: null, asked: ["nomac"], phones: 1, revylSpentUsd: 0 },
+    { name: "a free plan NoMac refuses is told it is busy, never sent to Revyl", pick: "auto", free: true, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_busy", asked: ["nomac"], phones: 0, revylSpentUsd: 0 },
+    { name: "a free plan's lost NoMac answer is not called busy", pick: "auto", free: true, revyl: "on", nomac: "down", needs: undefined, status: 502, code: "phone_unavailable", asked: ["nomac"], phones: 0, revylSpentUsd: 0 },
+    { name: "a need never picks the provider: one the first can't do starts nothing", pick: "auto", free: false, revyl: "on", nomac: "ok", needs: ["perf"], status: 409, code: "phone_lacks", asked: [], phones: 0, revylSpentUsd: 0 },
+    { name: "a fallback that can't do a need is left out", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: ["tests"], status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0, revylSpentUsd: 0 },
+    { name: "a tester's NoMac pick never falls back to Revyl", pick: "nomac", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 400, code: "phone_unavailable", asked: ["nomac"], phones: 0, revylSpentUsd: 0 },
+    { name: "a tester's Revyl pick goes to Revyl, on a free plan too", pick: "revyl", free: true, revyl: "on", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: ["revyl"], phones: 0, revylSpentUsd: 0 },
+    { name: "a tester's Revyl pick with Revyl switched off starts nothing", pick: "revyl", free: false, revyl: "off", nomac: "ok", needs: undefined, status: 503, code: "phone_unavailable", asked: [], phones: 0, revylSpentUsd: 0 },
+    { name: "an account off the beta list starts nothing", pick: "none", free: false, revyl: "on", nomac: "ok", needs: undefined, status: 403, code: "phone_not_on_account", asked: [], phones: 0, revylSpentUsd: 0 },
+    { name: "a paid plan past its Revyl limit (its own price) is NoMac's alone, and busy with no upgrade line", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_busy", asked: ["nomac"], phones: 1, revylSpentUsd: 20 },
+    { name: "a paid plan under its Revyl limit still falls back to Revyl", pick: "auto", free: false, revyl: "on", nomac: "refused", needs: undefined, status: 503, code: "phone_unavailable", asked: ["nomac", "revyl"], phones: 1, revylSpentUsd: 19.9 },
+  ] as const)("which provider starts the phone: $name", async ({ pick, free, revyl, nomac, needs, status, code, asked, phones, revylSpentUsd }) => {
     seedPhoneTester(pick, revyl, { free });
+    // What the account's Revyl phones already cost this period (Pro's limit is its $20).
+    if (revylSpentUsd > 0) seedPhone("ses_revyl_spent", 1, PERIOD + HOUR, "ended", false, { provider: "revyl", cost_micros: Math.round(revylSpentUsd * 1_000_000) });
     const calls = phoneStartNetwork(nomac);
     const response = await startPhone(needs ? [...needs] : undefined);
     expect(response.status).toBe(status);
-    if (code) expect((await response.json() as { error: { code: string } }).error.code).toBe(code);
+    const error = code ? (await response.json() as { error: { code: string; message: string } }).error : null;
+    if (code) expect(error?.code).toBe(code);
+    // Only Free is told a paid plan gets priority; a paid plan's busy answer has no upgrade line.
+    if (code === "phone_busy") expect(error?.message.includes("paid plan")).toBe(free);
     expect(calls).toEqual(asked);
     expect(harness.rows("select phone_id from cloud_phones where user_id = ?", OWNER)).toHaveLength(phones);
   });

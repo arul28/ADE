@@ -69,10 +69,11 @@ import {
   type CloudPhoneView,
 } from "./contract";
 import { readBoundedBody, sha256Hex } from "../sinkUtils";
+import { CLOUD_PLANS } from "./plans";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeOf, startOnRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { warnHours } from "./hoursWarnings";
@@ -736,7 +737,14 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
       return fail("phone_unavailable", "Your ADE Cloud iPhone isn't answering right now. Try again in a moment, or stop it first.", 503);
     }
     const minutes = Math.min(CLOUD_PHONE_MAX_MINUTES, allowedMinutes(context.usage));
-    const routed = routeOf(env, { picked, free: accountRules(context.account) === "free" }, drives);
+    const free = accountRules(context.account) === "free";
+    // A paid plan's Revyl use stops at the plan's price this period (`revylLimitMicros`); never told to the person.
+    const revylLeft = free || picked ? null : revylMinutesLeft(
+      revylLimitMicros(CLOUD_PLANS[plan].priceUsd),
+      await revylSpentMicros(env, userId, context.account.period_start, now),
+    );
+    if (revylLeft === 0) logCloud("cloud.phone_revyl_limit", { userId, plan });
+    const routed = routeOf(env, { picked, free, revylOpen: revylLeft !== 0 }, drives);
     if (routed instanceof Response) return routed;
     // One start per account at a time, across providers and machines: two starts that both saw no live phone
     // would each make one (and bill both). The other is told to try again, and then finds this phone.
@@ -797,7 +805,9 @@ async function startPhone(request: Request, env: CloudEnv, userId: string, now: 
     ({ session, reused } = started);
     // A phone with no limits of its own (Revyl's): its stop_at is the limit from the start.
     if (!PHONE_PROVIDERS[provider].ownsTimeLimit) {
-      await env.DB.prepare("update cloud_phones set stop_at = coalesce(stop_at, ?), updated_at = ? where phone_id = ? and state = 'live'").bind(now + minutes * 60_000, now, session.id).run();
+      // A Revyl phone also stops where the account's Revyl limit runs out.
+      const limit = provider === "revyl" && revylLeft != null ? Math.min(minutes, revylLeft) : minutes;
+      await env.DB.prepare("update cloud_phones set stop_at = coalesce(stop_at, ?), updated_at = ? where phone_id = ? and state = 'live'").bind(now + limit * 60_000, now, session.id).run();
     }
     logCloud("cloud.phone_started", { userId, phoneId: session.id, reused, device: session.device ?? "iphone", minutes, extra: context.usage.left === 0, provider, route: reason, ...(needs.length ? { needs } : {}) });
     if (!reused) {

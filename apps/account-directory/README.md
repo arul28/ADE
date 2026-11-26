@@ -548,7 +548,14 @@ client lists in the start's `providers`, and that have every ability in the
 start's `needs`; a failed start moves on). Revyl starts phones only with the
 owner's switch `CLOUD_PHONE_REVYL=on`. Each phone row keeps the provider it
 started on, and a Revyl phone is still read and stopped with the switch off.
-No answer names a provider; what differs is `abilities`. Who may use it is the
+No answer names a provider; what differs is `abilities`. Without a tester's
+pick, a free plan's phone is NoMac's alone (a refusal answers 503 `phone_busy`
+with the paid plans' line) and a paid plan's falls back to Revyl, up to what
+the plan itself costs each period at Revyl's rate (`revylLimitMicros`: about
+80 minutes on Plus, 330 on Pro, 830 on Max; the phone's `stop_at` stops at
+it). Past that, a paid plan's phone is NoMac's alone and a refusal is the same
+`phone_busy` without the upgrade line. The limit is internal: no answer names
+it. The daily cost report lists paid iPhone minutes and Revyl's share. Who may use it is the
 var `CLOUD_PHONE_ACCESS`: `beta` (the default: only accounts the owner adds;
 everyone else reads `off`, and a start answers 403 `phone_not_on_account`),
 `all`, or `off`. `CLOUD_PHONES_PAUSED=1` refuses
@@ -637,7 +644,7 @@ new phones (503 `phone_paused`) while running ones finish. The launch plan is
   `STRIPE_PRO_PRICE_ID`, `STRIPE_MAX_PRICE_ID`,
   `STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID` (flat, one meter; the older
   `STRIPE_EXTRA_HOURS_PRICE_ID` serves older subscriptions until renewal),
-  and `STRIPE_METER_EVENT` (2¢ a Medium-hour on every plan). Extra disk is
+  and `STRIPE_METER_EVENT` (4¢ a Medium-hour on every plan). Extra disk is
   no longer sold: `STRIPE_DISK_PRICE_ID` and `STRIPE_DISK_METER_EVENT` are
   unread, and `POST /cloud/billing/extra-disk` is a 404.
 - Each plan and add-on is its own product, so Checkout names each line. The

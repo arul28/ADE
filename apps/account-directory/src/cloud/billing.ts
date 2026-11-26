@@ -152,7 +152,7 @@ function paidPlanOfPrice(env: CloudEnv, priceId: string | null): CloudPaidPlanId
 const firstExtraHoursPrice = (env: CloudEnv): string | null => env.STRIPE_EXTRA_HOURS_PRICE_ID?.trim() || env.STRIPE_EXTRA_PRICE_ID?.trim() || null;
 
 /**
- * `plan`'s own extra-hours price (2, 1.5 or 1.2 cents an hour), all on the one
+ * `plan`'s own extra-hours price (4 cents an hour on every plan), all on the one
  * hours meter. A plan whose price isn't set yet falls back to the first price.
  */
 function extraHoursPriceFor(env: CloudEnv, plan: CloudPaidPlanId): string | null {

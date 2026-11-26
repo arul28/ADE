@@ -1,35 +1,36 @@
 import { useRef, useState, type ComponentType, type ReactNode } from "react";
-import { ArrowDown, Bot, Check, ChevronDown, Clock, Gift, Recycle, X } from "lucide-react";
+import { ArrowDown, Bot, Check, ChevronDown, Clock, Gift, Recycle, Smartphone, X } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
+import { SizesStrip } from "../../components/cloud/CloudIphone";
 import { PlanButton } from "../../components/cloud/PlanButton";
 import { Moon, NightSky, PlanTower } from "../../components/cloud/NightCity";
 import { InstallBlock } from "../../components/home/Hero";
 import { Page } from "../../components/Page";
+import { RIVALS } from "../../lib/cloudCompetitors";
 import { cn } from "../../lib/cn";
 import {
   ADS_FREE_PLAN_SENTENCE,
-  CLOUD_PHONE_ON_WEBSITE,
   CLOUD_SMALL_FAIR_USE_SENTENCE,
   FINDER_DAYS_A_MONTH,
   FREE_PLAN,
   FREE_RULES,
-  GRAVITY_ADS_ON_WEBSITE,
   HOURLY_SIZES,
+  PHONE_CREDITS_PER_MINUTE,
   INVITE_RULES,
   MOST_COMPUTERS,
   PAID_IDLE_DAYS,
-  PHONE_CREDITS_PER_MINUTE,
   PRICING_PLANS,
   PRICING_SIZES,
+  SMALL_NO_ADS_RATE,
   SMALL_SIZE,
   UNIT,
   cloudComputersPhrase,
   formatCents,
   formatCount,
-  formatUsd,
   hoursOnSize,
+  formatUsd,
   hoursOnSizesLine,
   listNames,
   suggestPlan,
@@ -56,7 +57,6 @@ const NO_OUTSIDE_AGENT_PLANS = PRICING_PLANS.filter((plan) => !plan.outsideAgent
 /** The extra unit's prices, one entry when every paid plan charges the same. */
 const EXTRA_PRICES = [...new Set(PAID_PLANS.map((plan) => plan.extraHourCents ?? 0))];
 /** The ADE Cloud iPhone joins the rate table once it is on the site. */
-const PHONE_IN_CREDITS = CLOUD_PHONE_ON_WEBSITE;
 
 const days = (count: number): string => `${count} ${count === 1 ? "day" : "days"}`;
 /** Clock hours on a computer, which every mode counts in hours. */
@@ -133,9 +133,7 @@ function PricingHero() {
             className={cn(serifHeading, "mt-5 text-balance")}
             style={{ fontSize: "clamp(40px, 5.6vw, 84px)", lineHeight: 0.98, letterSpacing: "-0.04em" }}
           >
-            {UNIT.smallUnlimitedParts[0]}
-            <br />
-            <span className="text-white/45">{UNIT.smallUnlimitedParts[1]}</span>
+            Unlimited cloud computers.
           </h1>
           <p className="mx-auto mt-5 max-w-[44rem] text-[clamp(16px,1.3vw,19px)] leading-[1.6] text-white/65">
             {UNIT.offerRest}
@@ -155,7 +153,7 @@ function PricingHero() {
         </div>
 
         <p className="mx-auto mt-8 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
-          Prices are monthly, in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} {ADS_FREE_PLAN_SENTENCE}
+          Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE}
         </p>
       </div>
     </section>
@@ -176,13 +174,10 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
   const cheapest = plan.id === CHEAPEST_PAID?.id;
   const lit = free || cheapest;
   const tone = free ? "lamp" : cheapest ? "violet" : "quiet";
-  // Where ads reach Free, its Small is unlimited only with sponsored cards on, in the US.
-  const smallNeedsAds = free && GRAVITY_ADS_ON_WEBSITE;
   return (
     <div className={cn("relative flex flex-col rounded-[26px] border p-6", PLAN_CARD_TONES[tone])}>
       <PlanTower floors={tower.floors} litShare={tower.lit} seed={tower.seed} className="absolute bottom-full right-7 opacity-95" />
       <h2 className="text-[18px] font-semibold text-white">{plan.name}</h2>
-      <p className="mt-1 text-[14px] text-white/55">{plan.pitch}</p>
       <p className="mt-4 flex items-baseline gap-1.5">
         <span
           className={cn("font-display leading-none", lit ? "text-[color:var(--color-lamp)]" : "text-white")}
@@ -192,20 +187,10 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         </span>
         <span className="text-[14px] text-white/45">a month</span>
       </p>
-      <div className="mt-5 rounded-2xl border border-white/[0.08] bg-black/25 px-4 py-3.5">
-        <p className="flex items-baseline gap-2">
-          <span className="text-[30px] font-semibold leading-none tracking-tight text-white tabular-nums">{formatCount(plan.hours)}</span>
-          <span className="text-[15px] text-white/75">{plan.hours === 1 ? UNIT.one : UNIT.many}</span>
-        </p>
-        <p className="mt-1.5 text-[13px] text-white/50">A month, for {UNIT.spenders}</p>
-      </div>
-      <dl className="mt-4 flex flex-1 flex-col text-[14px]">
+      <PlanAllowance plan={plan} free={free} />
+      <dl className="mt-5 flex flex-1 flex-col border-t border-white/[0.08] pt-2 text-[14px]">
         <PlanRow label="Cloud computers" value={formatCount(plan.computerLimit)} />
-        <PlanRow label="Small computers" value={smallNeedsAds ? "Unlimited in the US, with sponsored cards" : "Unlimited"} />
         <PlanRow label={UNIT.extraTitle} value={plan.extraHourCents == null ? "None" : `${formatCents(plan.extraHourCents)} each`} muted={plan.extraHourCents == null} />
-        <PlanRow label="Outside agents" value={plan.outsideAgents ? "Yes" : "No"} muted={!plan.outsideAgents} />
-        <PlanRow label="Ads" value={plan.adSupported ? "Ad-supported" : "No ads"} />
-        <PlanRow label="Unused computers kept" value={days(plan.idleDays)} />
       </dl>
       <PlanButton
         cta={PLAN_CTAS[plan.id].cta}
@@ -216,16 +201,57 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       >
         {PLAN_CTAS[plan.id].label}
       </PlanButton>
-      {/* Every card keeps this line's room, so the four buttons stay level. */}
-      <p aria-hidden={!free} className={cn("mt-3 text-center text-[13px] text-[color:var(--color-lamp)]", !free && "invisible")}>
-        No credit card needed
-      </p>
-      {smallNeedsAds ? (
-        <p className="mt-2 text-[12px] leading-[1.5] text-white/45">
-          Outside the US, or without sponsored cards, Small computers use your {UNIT.count(plan.hours)} too.
-        </p>
-      ) : null}
+      {/* Every card keeps these lines' room, so the four cards end level. */}
+      <div aria-hidden={!free} className={cn("mt-3 text-center text-[13px] leading-[1.5]", !free && "invisible")}>
+        <p className="text-[color:var(--color-lamp)]">No credit card needed</p>
+                  <p className="mx-auto mt-1.5 max-w-[17rem] text-white/50">
+            Unlimited free {SMALL_SIZE.machine}es with ads on, in the US. Otherwise {formatCount(SMALL_NO_ADS_RATE)} {UNIT.many} an hour.
+          </p>
+      </div>
     </div>
+  );
+}
+
+/**
+ * What a plan gets: the Small Linux box on its own line (it never comes out
+ * of the credits), then the month's credits and how far they go on each
+ * bigger machine, or on the iPhone, if they all went to that one.
+ */
+function PlanAllowance({ plan, free }: { plan: PricingPlan; free: boolean }) {
+  return (
+    <div className="mt-6 border-t border-white/[0.08] pt-5">
+      <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "with ads on" : "free"} free />
+      <p className="mt-5 flex items-baseline gap-2">
+        <span className="font-display text-[34px] leading-none text-white tabular-nums">{formatCount(plan.hours)}</span>
+        <span className="text-[15px] text-white/70">{UNIT.many} a month</span>
+      </p>
+      <p className="mt-1 text-[13px] text-white/45">Enough for up to</p>
+      <ul className="mt-1">
+        {HOURLY_SIZES.map((size) => (
+          <AllowanceRow key={size.id} name={size.machine} detail={size.specs} value={formatCount(hoursOnSize(plan.hours, size) ?? 0)} unit="h" />
+        ))}
+                  <AllowanceRow name="iOS Simulator" detail="No Mac needed" value={formatCount(Math.floor(plan.hours / PHONE_CREDITS_PER_MINUTE))} unit="min" phone />
+      </ul>
+    </div>
+  );
+}
+
+/** One machine in a plan's allowance: its name and specs, then how much of it the plan gets. */
+function AllowanceRow({ name, detail, value, unit, free, phone }: { name: string; detail: string; value: string; unit: string; free?: boolean; phone?: boolean }) {
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 list-none">
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5 text-[15px] text-white/90">
+          {phone ? <Smartphone className="h-3.5 w-3.5 shrink-0 text-[#fdba74]" /> : null}
+          {name}
+        </span>
+        <span className="block text-[12.5px] leading-[1.4] text-white/45">{detail}</span>
+      </span>
+      <span className="text-right">
+        <span className={cn("font-display leading-none tabular-nums", free ? "text-[19px] text-[color:var(--color-lamp)]" : "text-[22px] text-white")}>{value}</span>
+        <span className={cn("block text-[12px] text-white/45", !free && "inline pl-1")}>{unit}</span>
+      </span>
+    </li>
   );
 }
 
@@ -240,107 +266,18 @@ function PlanRow({ label, value, muted }: { label: string; value: string; muted?
 }
 
 /**
- * The unit, explained once: what each size uses an hour awake (and the
- * iPhone a minute, under credits once it is on the site), then how long a
- * month of each plan lasts on each size, in clock hours.
+ * The unit, explained once: what each size uses an hour awake, and the
+ * iPhone a minute once it is on the site. The plan cards already say how
+ * far each plan's credits go.
  */
 function RateSection() {
   return (
     <section aria-labelledby="rates-title" id="rates" className={cn(wrap, sectionGap, "scroll-mt-16")}>
       <SectionTitle id="rates-title" title={UNIT.rateTitle}>
-        {UNIT.unitSentence} A computer uses nothing while it sleeps, and your {UNIT.many} start over each month.
+        Bigger computers and the iPhone use {UNIT.many} only while they run. Your {UNIT.many} start over each month.
       </SectionTitle>
-      <div className="mt-8 grid gap-4 lg:grid-cols-[1fr_1fr]">
-        <div className={cn(panel, "p-5 sm:p-7")}>
-          <h3 className="text-[17px] font-semibold text-white">Each size</h3>
-          <ul className="mt-4 divide-y divide-white/[0.07]">
-            {PRICING_SIZES.map((size) => (
-              <RateRow
-                key={size.id}
-                name={size.label}
-                detail={`${size.full ? "Full computer · " : ""}${size.cpu} CPU · ${size.memoryGb} GB memory · ${size.use}`}
-                per="Each hour uses"
-                value={size.rate > 0 ? UNIT.count(size.rate) : "None"}
-                note={size.rate > 0 ? undefined : GRAVITY_ADS_ON_WEBSITE ? "Unlimited on paid plans, and on Free in the US with sponsored cards and an ADE Cloud chat there each week" : "Unlimited, on every plan"}
-              />
-            ))}
-            {PHONE_IN_CREDITS ? (
-              <RateRow name="ADE Cloud iPhone" detail="An iOS Simulator in the cloud" per="Each minute uses" value={UNIT.count(PHONE_CREDITS_PER_MINUTE)} />
-            ) : null}
-          </ul>
-        </div>
-        <div className={cn(panel, "p-5 sm:p-7")}>
-          <h3 className="text-[17px] font-semibold text-white">How long a month lasts</h3>
-          <p className="mt-1 text-[14px] text-white/50">
-            Hours on one computer of each size{PHONE_IN_CREDITS ? ", or minutes on the iPhone" : ""}, with a month of each plan's {UNIT.many}.
-          </p>
-          <table className="mt-4 w-full table-fixed border-collapse text-[14px]">
-            <thead>
-              <tr className="text-white/45">
-                <th scope="col" className="w-[26%] pb-2 text-left font-normal">
-                  <span className="sr-only">Size</span>
-                </th>
-                {PRICING_PLANS.map((plan) => (
-                  <th key={plan.id} scope="col" className="pb-2 text-right font-medium">
-                    {plan.name}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/[0.07]">
-              <tr>
-                <th scope="row" className="py-3 text-left font-semibold text-white">
-                  {SMALL_SIZE.label}
-                </th>
-                <td colSpan={PRICING_PLANS.length} className="py-3 text-center text-[color:var(--color-lamp)]">
-                  Unlimited on every plan
-                </td>
-              </tr>
-              {HOURLY_SIZES.map((size) => (
-                <tr key={size.id}>
-                  <th scope="row" className="py-3 text-left font-semibold text-white">
-                    {size.label}
-                  </th>
-                  {PRICING_PLANS.map((plan) => (
-                    <td key={plan.id} className="py-3 text-right font-mono tabular-nums text-white/85">
-                      {formatCount(hoursOnSize(plan.hours, size) ?? 0)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-              {PHONE_IN_CREDITS ? (
-                <tr>
-                  <th scope="row" className="py-3 text-left font-semibold text-white">
-                    iPhone <span className="font-normal text-white/45">(min)</span>
-                  </th>
-                  {PRICING_PLANS.map((plan) => (
-                    <td key={plan.id} className="py-3 text-right font-mono tabular-nums text-white/85">
-                      {formatCount(Math.floor(plan.hours / PHONE_CREDITS_PER_MINUTE))}
-                    </td>
-                  ))}
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <SizesStrip className="mt-8" />
     </section>
-  );
-}
-
-function RateRow({ name, detail, per, value, note }: { name: string; detail: string; per: string; value: string; note?: string }) {
-  return (
-    <li className="flex items-center justify-between gap-4 py-3.5">
-      <div className="min-w-0">
-        <p className="text-[15px] font-semibold text-white">{name}</p>
-        <p className="mt-0.5 text-[13px] leading-[1.45] text-white/50">{detail}</p>
-        {note ? <p className="mt-0.5 text-[13px] leading-[1.45] text-[color:var(--color-lamp)]/85">{note}</p> : null}
-      </div>
-      <div className="shrink-0 text-right">
-        <p className="text-[12px] text-white/45">{per}</p>
-        <p className="font-display text-[22px] leading-tight text-[color:var(--color-lamp)]">{value}</p>
-      </div>
-    </li>
   );
 }
 
@@ -357,11 +294,13 @@ function PlanFinder() {
   const [computers, setComputers] = useState(2);
   const [hoursEach, setHoursEach] = useState(120);
   const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL_SIZE.id);
+  const [phoneMinutes, setPhoneMinutes] = useState(0);
   const reported = useRef(false);
 
   const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL_SIZE;
-  const usesUnits = size.rate > 0;
-  const needed = Math.round(computers * hoursEach * size.rate);
+  const needed = Math.round(computers * hoursEach * size.rate + phoneMinutes * PHONE_CREDITS_PER_MINUTE);
+  const usesUnits = needed > 0;
+  const rivals = rivalBills(computers * hoursEach, size);
   const suggestion = suggestPlan(needed, computers);
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
@@ -403,7 +342,7 @@ function PlanFinder() {
           />
           <fieldset>
             <legend className="text-[15px] font-medium text-white/85">Size</legend>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="mt-3 grid grid-cols-2 gap-2">
               {PRICING_SIZES.map((entry) => {
                 const active = entry.id === sizeId;
                 return (
@@ -419,13 +358,23 @@ function PlanFinder() {
                         : "border-white/[0.1] text-white/70 hover:border-white/25 hover:text-white",
                     )}
                   >
-                    <span className="block text-[14px] font-semibold">{entry.label}</span>
+                    <span className="block text-[14px] font-semibold">{entry.machine}</span>
                     <span className="block text-[12px] leading-[1.4] text-white/45">{entry.use}</span>
                   </button>
                 );
               })}
             </div>
           </fieldset>
+                      <Slider
+              id="finder-phone"
+              label="iOS Simulator minutes a month"
+              value={phoneMinutes}
+              min={0}
+              max={PHONE_MINUTES_MAX}
+              step={PHONE_MINUTES_STEP}
+              display={`${formatCount(phoneMinutes)} min`}
+              onChange={(value) => change(() => setPhoneMinutes(value))}
+            />
         </div>
 
         <div className="flex flex-col justify-between rounded-[22px] bg-[#13112a] p-5 sm:p-8" aria-live="polite">
@@ -437,7 +386,7 @@ function PlanFinder() {
                 </>
               ) : (
                 <>
-                  <span className="font-semibold text-white">No {UNIT.many}:</span> {size.label} computers never use them
+                  <span className="font-semibold text-white">No {UNIT.many}:</span> {size.machine}es never use them
                 </>
               )}
             </p>
@@ -450,7 +399,7 @@ function PlanFinder() {
                 </p>
                 <p className="mt-4 text-[15px] leading-[1.6] text-white/65">
                   {!usesUnits
-                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.label} computers never use your ${UNIT.many}.`
+                    ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)}, and ${size.machine}es never use your ${UNIT.many}.`
                     : best.extraHours > 0
                       ? `${best.plan.name} has ${cloudComputersPhrase(best.plan.computerLimit)} and ${UNIT.count(best.plan.hours)}. The other ${UNIT.count(best.extraHours)} cost ${formatCents(best.plan.extraHourCents ?? 0)} each, with ${UNIT.extra} turned on.`
                       : best.plan.priceUsd === 0
@@ -463,6 +412,20 @@ function PlanFinder() {
                       ? `${other.plan.name} with ${UNIT.extra} would be about ${formatUsd(other.costUsd)}.`
                       : `Or ${other.plan.name} at ${formatUsd(other.costUsd)}, with no ${UNIT.extra}.`}
                   </p>
+                ) : null}
+                {rivals.length > 0 ? (
+                  <div className="mt-6 border-t border-white/[0.08] pt-4">
+                    <p className="text-[13px] text-white/50">The same {formatCount(computers * hoursEach)} hours on other agent apps</p>
+                    <ul className="mt-2 flex flex-col gap-1.5">
+                      {rivals.map((rival) => (
+                        <li key={rival.id} className="flex items-center gap-2.5 text-[14px]">
+                          <img src={rival.logo} alt="" aria-hidden className="h-5 w-5 rounded-[5px] bg-white/[0.06] object-contain" />
+                          <span className="flex-1 text-white/70">{rival.name}</span>
+                          <span className="tabular-nums text-white/85">{rival.label}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 ) : null}
               </>
             ) : null}
@@ -482,6 +445,26 @@ function PlanFinder() {
       </div>
     </section>
   );
+}
+
+/** The iOS Simulator slider's range: a month of Max's credits, in steps a thumb can land on. */
+const PHONE_MINUTES_STEP = 25;
+const PHONE_MINUTES_MAX = 1500;
+
+/**
+ * What the same hours cost on the agent apps that publish a monthly price, cheapest first. Their
+ * computers are 2–4 CPUs, so they stand in only for Small and Medium; a plan too small for the
+ * hours shows "No plan this big".
+ */
+function rivalBills(hours: number, size: PricingSize): Array<{ id: string; name: string; logo: string; label: string }> {
+  if (size.full) return [];
+  return RIVALS.flatMap((rival) => {
+    if (!rival.monthlyUsd) return [];
+    const usd = rival.monthlyUsd(hours);
+    return [{ id: rival.id, name: rival.name, logo: rival.logo, usd: usd ?? Number.POSITIVE_INFINITY, label: usd == null ? "No plan this big" : `${rival.estimate ? "≈" : ""}${formatUsd(usd)}` }];
+  })
+    .sort((a, b) => a.usd - b.usd)
+    .map(({ usd: _usd, ...rest }) => rest);
 }
 
 function Slider({
@@ -631,7 +614,7 @@ function ExtraCard() {
         </ul>
       )}
       <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
-        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working{GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards and an ADE Cloud chat there each week" : ""}.
+        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working in the US with sponsored cards and an ADE Cloud chat there each week.
       </p>
     </DetailCard>
   );
@@ -736,9 +719,9 @@ function FaqSection() {
             A computer that is asleep uses no {UNIT.many}, and your {UNIT.many} start over each month.
           </FaqItem>
           <FaqItem question={`What happens when my ${UNIT.many} run out?`}>
-            On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers{PHONE_IN_CREDITS ? " and the ADE Cloud iPhone" : ""} stop
+            On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers and the ADE Cloud iPhone stop
             until next month, or until you pick a paid plan; {SMALL_SIZE.label} computers keep working
-            {GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards and an ADE Cloud chat there each week" : ""}. On a paid plan, turn on {UNIT.extra} in Settings and
+             in the US with sponsored cards and an ADE Cloud chat there each week. On a paid plan, turn on {UNIT.extra} in Settings and
             your agents keep working: each extra {UNIT.one} costs {extraPriceList()}, billed after use. With {UNIT.extra}{" "}
             off, work on the bigger sizes stops at your plan's {UNIT.many}.
           </FaqItem>

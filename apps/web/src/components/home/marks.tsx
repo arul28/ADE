@@ -55,3 +55,13 @@ export function LinuxMark({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/** Android's robot head: a half dome with two eyes and two antennas. */
+export function AndroidMark({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable="false">
+      <path fillRule="evenodd" d="M2.5 19a9.5 9.5 0 0 1 19 0zM8.25 13.75a1.1 1.1 0 1 0 0 2.2a1.1 1.1 0 1 0 0-2.2zm7.5 0a1.1 1.1 0 1 0 0 2.2a1.1 1.1 0 1 0 0-2.2z" />
+      <path d="M6.9 11.2 4.9 7.7M17.1 11.2l2-3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}

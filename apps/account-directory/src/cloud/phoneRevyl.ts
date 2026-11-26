@@ -22,6 +22,9 @@ import { fail, json } from "./http";
 import { LIVE_STATES, TOKEN_MINUTES, VIEW_MINUTES, stopRefused, type PhoneProviderServer, type PhoneRead, type PhoneWhere } from "./phoneProvider";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
+/** What Revyl bills ADE: the second, at $3.60 an hour, which is 1,000 micro-dollars a second. */
+export const REVYL_MICROS_PER_SECOND = 1_000;
+
 const REVYL_API_BASE = "https://backend.revyl.ai/api/v1";
 const REQUEST_TIMEOUT_MS = 30_000;
 /** A build's own calls (the source upload, an install of a large app) get longer. */
@@ -264,8 +267,7 @@ function revylSessionOf(raw: Record<string, unknown> | null, device: string | nu
     ready_at: startedAt,
     created_at: isoOf(raw.created_at) ?? undefined,
     ended: ended ? { reason: endReasonOf(status, raw.error_message), at: endedAt } : null,
-    // Revyl bills the second at $3.60 an hour: 1,000 micro-dollars a second.
-    cost: { billed_seconds: seconds, accrued_microunits: String(seconds * 1_000) },
+    cost: { billed_seconds: seconds, accrued_microunits: String(seconds * REVYL_MICROS_PER_SECOND) },
     ref: typeof raw.workflow_run_id === "string" ? raw.workflow_run_id : null,
   };
 }
