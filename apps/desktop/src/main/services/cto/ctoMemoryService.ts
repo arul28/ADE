@@ -11,6 +11,8 @@ import {
   type CtoNotesFile,
   type CtoNotesScope,
   type CtoOpenWorkItem,
+  type CtoOpenWorkLink,
+  type CtoOpenWorkOwner,
   type CtoUpdateOpenWorkArgs,
 } from "../../../shared/types/cto";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -85,6 +87,7 @@ type CtoMemoryServiceArgs = {
 const NOTE_MAX_CHARS = 400;
 const OPEN_WORK_TEXT_MAX_CHARS = 300;
 const OPEN_WORK_OUTCOME_MAX_CHARS = 120;
+const OPEN_WORK_TITLE_MAX_CHARS = 60;
 /** Done items shown in the injected list, newest first. */
 const OPEN_WORK_INJECTED_DONE = 5;
 /** A new note this close to an existing one is the same note said again. */
@@ -169,6 +172,26 @@ function newWorkId(): string {
   return `w-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 }
 
+function normalizeOpenWorkLink(value: unknown): CtoOpenWorkLink | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind === "pr") {
+    const number = Number(record.number);
+    return Number.isInteger(number) && number > 0 ? { kind: "pr", number } : null;
+  }
+  if (record.kind === "chat") {
+    const sessionId = typeof record.sessionId === "string" ? record.sessionId.trim() : "";
+    if (!sessionId) return null;
+    const machineId = typeof record.machineId === "string" ? record.machineId.trim() : "";
+    return machineId ? { kind: "chat", sessionId, machineId } : { kind: "chat", sessionId };
+  }
+  return null;
+}
+
+function optionalText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function normalizeOpenWorkItem(value: unknown): CtoOpenWorkItem | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
@@ -177,7 +200,64 @@ function normalizeOpenWorkItem(value: unknown): CtoOpenWorkItem | null {
   if (!id || !text) return null;
   const createdAt = typeof record.createdAt === "string" && record.createdAt.trim() ? record.createdAt : nowIso();
   const doneAt = typeof record.doneAt === "string" && record.doneAt.trim() ? record.doneAt : null;
-  return { id, text, createdAt, doneAt, addedBy: record.addedBy === "user" ? "user" : "cto" };
+  const title = optionalText(record.title);
+  const link = normalizeOpenWorkLink(record.link);
+  const outcome = optionalText(record.outcome);
+  const closedBy = record.closedBy === "auto" || record.closedBy === "user" || record.closedBy === "cto" ? record.closedBy : null;
+  return {
+    id,
+    text,
+    createdAt,
+    doneAt,
+    addedBy: record.addedBy === "user" ? "user" : "cto",
+    ...(title ? { title } : {}),
+    ...(record.owner === "user" || record.owner === "cto" ? { owner: record.owner } : {}),
+    ...(link ? { link } : {}),
+    ...(outcome ? { outcome } : {}),
+    ...(closedBy ? { closedBy } : {}),
+  };
+}
+
+/** What a linked item's chat or PR looks like right now, as far as this machine knows. */
+export type CtoLinkedWorkResolver = {
+  /** The PR's state on the repo ("open", "draft", "merged", "closed"), or null when unknown. */
+  prState: (number: number) => string | null;
+  /**
+   * The chat as far as this machine can tell, or null when it cannot (a
+   * machine it has not read): done (settled, archived or ended), when it last
+   * came to rest after a clean turn, and its last status line.
+   */
+  chatState: (link: Extract<CtoOpenWorkLink, { kind: "chat" }>) => {
+    done: boolean;
+    restedAt: string | null;
+    statusLine: string | null;
+  } | null;
+};
+
+/**
+ * The outcome line for a linked item whose chat or PR has closed, or null
+ * while it is still going. A chat counts as done when it ended, or when it
+ * came to rest after the item was linked: a chat that was already resting
+ * when the CTO linked it has not done that work yet.
+ */
+export function linkedWorkOutcome(
+  item: Pick<CtoOpenWorkItem, "link" | "createdAt">,
+  resolver: CtoLinkedWorkResolver,
+): string | null {
+  const link = item.link;
+  if (!link) return null;
+  if (link.kind === "pr") {
+    const state = resolver.prState(link.number);
+    // The row already shows the PR number beside the outcome.
+    if (state === "merged") return "Merged";
+    if (state === "closed") return "Closed without merging";
+    return null;
+  }
+  const chat = resolver.chatState(link);
+  if (!chat) return null;
+  const restedSince = Boolean(chat.restedAt) && Date.parse(chat.restedAt!) > Date.parse(item.createdAt);
+  if (!chat.done && !restedSince) return null;
+  return chat.statusLine ? `Done: ${chat.statusLine}` : "Done";
 }
 
 /** Open items oldest first (a checklist), then finished ones newest first. */
@@ -585,9 +665,17 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     args.onChanged?.();
   };
 
-  const trackWork = (text: string, addedBy: CtoOpenWorkItem["addedBy"] = "cto"): CtoOpenWorkResult => {
+  const trackWork = (
+    text: string,
+    addedBy: CtoOpenWorkItem["addedBy"] = "cto",
+    extra: { title?: string | null; owner?: CtoOpenWorkOwner | null; link?: CtoOpenWorkLink | null } = {},
+  ): CtoOpenWorkResult => {
     const normalized = clipText(redactSecrets(text.replace(/\s+/g, " ").trim()), OPEN_WORK_TEXT_MAX_CHARS);
     if (!normalized.length) return { ok: false, error: "Say what the work is." };
+    const title = extra.title
+      ? clipText(redactSecrets(extra.title.replace(/\s+/g, " ").trim()), OPEN_WORK_TITLE_MAX_CHARS)
+      : "";
+    const link = extra.link ? normalizeOpenWorkLink(extra.link) : null;
     const items = readOpenWork();
     if (items.filter((item) => !item.doneAt).length >= CTO_OPEN_WORK_MAX_OPEN) {
       return { ok: false, error: `Open work is full (${CTO_OPEN_WORK_MAX_OPEN} items). Finish or remove one first.` };
@@ -595,7 +683,16 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const existingIds = new Set(items.map((item) => item.id));
     let id = newWorkId();
     while (existingIds.has(id)) id = newWorkId();
-    const item: CtoOpenWorkItem = { id, text: normalized, createdAt: nowIso(), doneAt: null, addedBy };
+    const item: CtoOpenWorkItem = {
+      id,
+      text: normalized,
+      createdAt: nowIso(),
+      doneAt: null,
+      addedBy,
+      owner: extra.owner ?? "cto",
+      ...(title && title !== normalized ? { title } : {}),
+      ...(link ? { link } : {}),
+    };
     writeOpenWork([...items, item]);
     return { ok: true, item };
   };
@@ -614,14 +711,15 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     return { ok: true, item: updated };
   };
 
-  const finishWork = (id: string, outcome?: string | null): CtoOpenWorkResult =>
+  const finishWork = (id: string, outcome?: string | null, closedBy: "cto" | "user" = "cto"): CtoOpenWorkResult =>
     updateItem(id, (item) => {
       if (item.doneAt) return item;
       const note = outcome?.replace(/\s+/g, " ").trim();
       return {
         ...item,
-        text: note ? `${item.text} (${clipText(redactSecrets(note), OPEN_WORK_OUTCOME_MAX_CHARS)})` : item.text,
+        ...(note ? { outcome: clipText(redactSecrets(note), OPEN_WORK_OUTCOME_MAX_CHARS) } : {}),
         doneAt: nowIso(),
+        closedBy,
       };
     });
 
@@ -629,7 +727,54 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     if (readOpenWork().filter((item) => !item.doneAt).length >= CTO_OPEN_WORK_MAX_OPEN) {
       return { ok: false, error: `Open work is full (${CTO_OPEN_WORK_MAX_OPEN} items). Finish or remove one first.` };
     }
-    return updateItem(id, (item) => ({ ...item, doneAt: null }));
+    // Reopened by hand, it stops closing itself: the link said done once already.
+    return updateItem(id, ({ outcome: _outcome, closedBy: _closedBy, link: _link, ...item }) => ({ ...item, doneAt: null }));
+  };
+
+  let linkedWorkResolver: CtoLinkedWorkResolver | null = null;
+  /**
+   * Close every open item whose linked chat or PR has closed, with an outcome
+   * line. Runs before each read of the list (the side panel, each CTO turn)
+   * and when PRs change, so a merged PR's item is done the next time anyone
+   * looks. Local reads only; writes only when something closed.
+   */
+  const reconcileLinkedWork = (): number => {
+    const resolver = linkedWorkResolver;
+    if (!resolver) return 0;
+    const items = readOpenWork();
+    const closures = new Map<string, string>();
+    for (const item of items) {
+      if (item.doneAt || !item.link) continue;
+      try {
+        const outcome = linkedWorkOutcome(item, resolver);
+        if (outcome) closures.set(item.id, clipText(redactSecrets(outcome), OPEN_WORK_OUTCOME_MAX_CHARS));
+      } catch (error) {
+        warn("cto_memory.linked_work_check_failed", error, { id: item.id });
+      }
+    }
+    if (!closures.size) return 0;
+    const doneAt = nowIso();
+    writeOpenWork(items.map((item) => {
+      const outcome = closures.get(item.id);
+      return outcome ? { ...item, doneAt, outcome, closedBy: "auto" as const } : item;
+    }));
+    logger?.info?.("cto_memory.linked_work_closed", { count: closures.size });
+    return closures.size;
+  };
+
+  /** Late-bound: the PR and session services exist after this one. */
+  const setLinkedWorkResolver = (resolver: CtoLinkedWorkResolver | null): void => {
+    linkedWorkResolver = resolver;
+  };
+
+  /** The open list after closing what its links say is done. */
+  const readReconciledOpenWork = (): CtoOpenWorkItem[] => {
+    try {
+      if (reconcileLinkedWork() > 0) return readOpenWork();
+    } catch (error) {
+      warn("cto_memory.linked_work_reconcile_failed", error);
+    }
+    return readOpenWork();
   };
 
   const removeWork = (id: string): CtoOpenWorkResult => {
@@ -644,9 +789,9 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   /** The settings and panel path: the person's own edits to the list. */
   const updateOpenWork = (change: CtoUpdateOpenWorkArgs): void => {
     const result = change.op === "add"
-      ? trackWork(change.text, "user")
+      ? trackWork(change.text, "user", { owner: change.owner ?? "cto" })
       : change.op === "complete"
-        ? finishWork(change.id)
+        ? finishWork(change.id, null, "user")
         : change.op === "reopen"
           ? reopenWork(change.id)
           : removeWork(change.id);
@@ -865,7 +1010,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       userNotesLimitBytes: CTO_USER_NOTES_MAX_BYTES,
       memoryHash: textHash(memory),
       userNotesHash: textHash(userNotes),
-      openWork: readOpenWork(),
+      openWork: readReconciledOpenWork(),
       rules: learning.readRules(),
       rulesBytes: utf8Bytes(learning.readRules()),
       rulesLimitBytes: CTO_RULES_MAX_BYTES,
@@ -884,12 +1029,21 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const buildMemoryContextSections = (): Array<{ title: string; body: string }> => {
     const project = readNotes("project").trim();
     const user = readNotes("user").trim();
-    const items = readOpenWork();
+    const items = readReconciledOpenWork();
     const open = items.filter((item) => !item.doneAt);
     const done = items.filter((item) => item.doneAt).slice(0, OPEN_WORK_INJECTED_DONE);
+    const describe = (item: CtoOpenWorkItem): string => {
+      const title = item.title ? `${item.title} — ` : "";
+      const link = item.link
+        ? item.link.kind === "pr"
+          ? ` [PR #${item.link.number}]`
+          : ` [chat ${item.link.sessionId}${item.link.machineId ? ` on ${item.link.machineId}` : ""}]`
+        : "";
+      return `${title}${item.text}${link}`;
+    };
     const workLines = [
-      ...open.map((item) => `- [ ] ${item.id}: ${item.text}`),
-      ...done.map((item) => `- [x] ${item.id}: ${item.text} (done)`),
+      ...open.map((item) => `- [ ] ${item.id} (${(item.owner ?? "cto") === "user" ? "waiting on the person" : "yours"}): ${describe(item)}`),
+      ...done.map((item) => `- [x] ${item.id}: ${describe(item)} (done${item.outcome ? `: ${item.outcome}` : ""}${item.closedBy === "auto" ? ", closed by its link" : ""})`),
     ];
     return [
       ...learning.buildContextSections(),
@@ -956,6 +1110,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     trackWork,
     finishWork,
     updateOpenWork,
+    reconcileLinkedWork,
+    setLinkedWorkResolver,
     recordDiscovery,
     readNewDiscoveries,
     getSnapshot,

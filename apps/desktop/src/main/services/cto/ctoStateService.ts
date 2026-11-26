@@ -38,6 +38,10 @@ import { buildCtoCapabilityManifest } from "./ctoPromptContent";
 import { isKnownTimeZone } from "../../../shared/chatScheduledWork";
 import type { CtoMemoryService } from "./ctoMemoryService";
 import type { CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
+import type { CtoRemoteMachineWork } from "../ai/tools/ctoCrossMachine";
+import { collectLivePullRequests, type CtoLivePullRequest } from "./ctoLivePullRequests";
+
+export type { CtoLivePullRequest } from "./ctoLivePullRequests";
 
 /**
  * Live project state sources for the per-turn block.
@@ -54,8 +58,8 @@ export type CtoLiveStateSources = Pick<
   CtoOperatorToolDeps,
   "laneService" | "prService" | "automationService" | "listChats"
 > & {
-  /** The account's machines, read from the bridge's cache. Never waits on the network. */
-  crossMachine?: Pick<NonNullable<CtoOperatorToolDeps["crossMachine"]>, "peekRoster"> | null;
+  /** The account's machines and their work, read from the bridge's cache. Never waits on the network. */
+  crossMachine?: Pick<NonNullable<CtoOperatorToolDeps["crossMachine"]>, "peekRoster" | "peekRemoteWork"> | null;
 };
 
 type CtoStateServiceArgs = {
@@ -228,7 +232,7 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
   "- remember({ note }) the moment you learn something durable. One short line per note. scope \"user\" is for facts about the person, shared with you in every project on this machine; the default is this project.",
   "- When a fact changes, rewrite its note: remember({ note, replaces: \"<part of the old line>\" }). When it stops being true, forget({ note: \"<part of the line>\" }).",
   "- Rules and notes have size caps shown in their headings. Keep them short; merge related lines rather than adding near-copies. When the project notes are full, your least recently used notes move to the archive to make room (searchMemory finds them); the rules and the notes about the person are hard caps, and a line past them is refused until you make room.",
-  "- trackWork({ text }) when you start something that outlives this turn (a chat you launched, a PR to land, a check to make). finishWork({ id, outcome }) when it is done. The open list is injected every turn, so nothing you started is forgotten.",
+  "- trackWork({ title, text, owner, chatSessionId | prNumber }) when you start something that outlives this turn (a chat you launched, a PR to land, a check to make), or when something waits on the person (owner \"user\"). Link the chat or PR it is about: a linked item closes itself, with an outcome, when the PR merges or closes or the chat settles as done. finishWork({ id, outcome }) for the rest. The open list is injected every turn, so nothing you started is forgotten.",
   "- When the person asks you to check on something later, use scheduleWork. Do not promise to remember to come back without scheduling it.",
   "- When a routine watches for a change (a PR's checks, a deploy, a release, a file), give scheduleWork a check, a shell command whose output changes only when there is news, so ADE wakes you only then. Pick the longest interval that still serves the person.",
   "- Never store secrets in notes: no API keys, tokens or passwords. Refer to a secret by its name. ADE also scrubs secret-shaped text as a backstop.",
@@ -706,11 +710,16 @@ function clipText(value: string, maxLength = 220): string {
  * sections are ordered most- to least-urgent precisely so the cap eats the
  * automation-run tail rather than the approvals at the top.
  *
+ * Raised to 7000 when the block gained every open PR on the repo (not only
+ * this machine's lanes', each with where it came from) and the other
+ * machines' working chats: six outside PRs and two machines of three chats
+ * each add about 1k.
+ *
  * The memory sections beside it are capped by their files (4096 + 2048 bytes
  * of notes and a bounded open-work list), so the volatile prefix stays near
  * the same 16000 characters.
  */
-export const CTO_LIVE_STATE_MAX_CHARS = 6000;
+export const CTO_LIVE_STATE_MAX_CHARS = 7000;
 
 /**
  * Heading of the static context section, and the marker the chat service looks
@@ -755,13 +764,12 @@ export type CtoLiveStateSnapshot = {
     spawnKind: string | null;
   }>;
   chatsTotal: number;
-  pullRequests: Array<{
-    number: number;
-    title: string;
-    laneId: string;
-    checks: string;
-    review: string;
-  }>;
+  /**
+   * Every open PR on the repo, not only the ones a lane here owns. `origin`
+   * says where each came from: a lane on this machine, a lane on another
+   * machine (matched by branch), or outside ADE.
+   */
+  pullRequests: CtoLivePullRequest[];
   pullRequestsTotal: number;
   approvals: Array<{ sessionId: string; title: string }>;
   approvalsTotal: number;
@@ -781,6 +789,12 @@ export type CtoLiveStateSnapshot = {
    * cannot, or before the first directory read finishes.
    */
   machines?: Array<{ name: string; machineId: string; isThisMachine: boolean; online: boolean; hasProject: boolean | null }>;
+  /**
+   * Working chats on the account's other online machines, from the bridge's
+   * last read (at most a minute old when CTO turns are frequent). Absent when
+   * nothing has been read.
+   */
+  otherMachines?: Array<Pick<CtoRemoteMachineWork, "machineId" | "name" | "readAt" | "chats" | "chatsTotal" | "error">>;
   /** Sources that threw while the snapshot was captured, by name. */
   unavailable: string[];
 };
@@ -843,7 +857,7 @@ export function renderCtoLiveStateBlock(
   lines.push(...liveStateOverflowLine(snapshot.approvals.length, snapshot.approvalsTotal, "chats"));
 
   if (snapshot.machines?.length) {
-    lines.push("", `Account machines (${snapshot.machines.length}) — the lanes and chats below are this machine's; reach the others with \`machine\``);
+    lines.push("", `Account machines (${snapshot.machines.length}) — "Lanes" and "Active chats" are this machine's; other machines' working chats follow them; act on another machine with \`machine\``);
     for (const machine of snapshot.machines) {
       const project = machine.hasProject === true
         ? "has this project"
@@ -875,10 +889,40 @@ export function renderCtoLiveStateBlock(
   }
   lines.push(...liveStateOverflowLine(snapshot.chats.length, snapshot.chatsTotal, "chats"));
 
-  lines.push("", `Open PRs (${snapshot.pullRequestsTotal})`);
+  if (snapshot.otherMachines?.length) {
+    lines.push("", "Working chats on other machines");
+    for (const machine of snapshot.otherMachines) {
+      const age = nowMs == null ? null : liveStateAgeLabel(machine.readAt, nowMs);
+      const read = age ? `read ${age} ago` : "read just now";
+      if (machine.error) {
+        lines.push(`- ${clipText(machine.name, 40)} [${machine.machineId}] — couldn't read (${clipText(machine.error, 90)})`);
+        continue;
+      }
+      lines.push(`- ${clipText(machine.name, 40)} [${machine.machineId}] — ${machine.chatsTotal} working, ${read}`);
+      for (const chat of machine.chats) {
+        const lane = chat.laneName ? ` on ${clipText(chat.laneName, 40)}` : "";
+        const status = chat.statusLine ? ` — ${clipText(chat.statusLine, 80)}` : "";
+        lines.push(`  - ${clipText(chat.title, 60)} [${chat.sessionId}]${lane}: ${chat.state}${status}`);
+      }
+      if (machine.chatsTotal > machine.chats.length) {
+        lines.push(`  - …and ${machine.chatsTotal - machine.chats.length} more`);
+      }
+    }
+  }
+
+  lines.push("", `Open PRs on the repo (${snapshot.pullRequestsTotal}) — every open PR, wherever it was opened`);
   if (!snapshot.pullRequests.length) lines.push("- none");
   for (const pr of snapshot.pullRequests) {
-    lines.push(`- #${pr.number} ${clipText(pr.title, 70)} [${pr.laneId}] — checks ${pr.checks}, review ${pr.review}`);
+    const draft = pr.isDraft ? " (draft)" : "";
+    const where = pr.origin === "this-machine"
+      ? `this machine's lane ${pr.laneName ? `"${clipText(pr.laneName, 40)}" ` : ""}[${pr.laneId}]`
+      : pr.origin === "other-machine"
+        ? `lane ${pr.laneName ? `"${clipText(pr.laneName, 40)}" ` : ""}on ${pr.machineName ?? "another machine"}`
+        : `not in ADE${pr.author ? `, by ${pr.author}` : ""}${pr.headBranch ? `, branch ${clipText(pr.headBranch, 40)}` : ""}`;
+    const state = pr.checks || pr.review
+      ? ` — checks ${pr.checks ?? "unknown"}, review ${pr.review ?? "unknown"}`
+      : "";
+    lines.push(`- #${pr.number} ${clipText(pr.title, 70)}${draft} — ${where}${state}`);
   }
   lines.push(...liveStateOverflowLine(snapshot.pullRequests.length, snapshot.pullRequestsTotal, "PRs"));
 
@@ -1131,9 +1175,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       })),
     ]);
 
+    const laneNames = new Map<string, string>();
     try {
       if (lanesRead.status === "rejected") throw lanesRead.reason;
       const lanes = lanesRead.value;
+      for (const lane of lanes) laneNames.set(lane.id, lane.name);
       snapshot.lanesTotal = lanes.length;
       snapshot.lanes = lanes.slice(0, LIVE_STATE_MAX_LANES).map((lane) => ({
         id: lane.id,
@@ -1159,7 +1205,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         title: chat.title?.trim() || chat.sessionId,
         laneId: chat.laneId,
         status: chat.status,
-        note: chat.summary?.trim() || chat.lastOutputPreview?.trim() || null,
+        note: chat.statusNote?.trim() || chat.summary?.trim() || chat.lastOutputPreview?.trim() || null,
         parentSessionId: chat.orchestrationParentSessionId?.trim() || null,
         spawnKind: chat.spawnKind ?? null,
       }));
@@ -1198,28 +1244,39 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       unavailable.push("chats");
     }
 
-    if (sources.prService) {
-      try {
-        const open = sources.prService.listAll().filter((pr) => pr.state === "open");
-        snapshot.pullRequestsTotal = open.length;
-        snapshot.pullRequests = open.slice(0, LIVE_STATE_MAX_PRS).map((pr) => ({
-          number: pr.githubPrNumber,
-          title: pr.title,
-          laneId: pr.laneId,
-          checks: pr.checksStatus,
-          review: pr.reviewStatus,
-        }));
-      } catch {
-        unavailable.push("pull requests");
-      }
-    }
-
+    // Other machines first: their lane branches tell which open PRs they opened.
+    let remoteWork: CtoRemoteMachineWork[] | null = null;
     if (sources.crossMachine) {
       try {
         const roster = sources.crossMachine.peekRoster();
         if (roster?.length) snapshot.machines = roster;
       } catch {
         unavailable.push("machines");
+      }
+      try {
+        remoteWork = sources.crossMachine.peekRemoteWork?.() ?? null;
+        if (remoteWork?.length) {
+          snapshot.otherMachines = remoteWork.map(({ machineId, name, readAt, chats, chatsTotal, error }) => ({
+            machineId,
+            name,
+            readAt,
+            chats,
+            chatsTotal,
+            ...(error ? { error } : {}),
+          }));
+        }
+      } catch {
+        unavailable.push("other machines' chats");
+      }
+    }
+
+    if (sources.prService) {
+      try {
+        const open = collectLivePullRequests(sources.prService, remoteWork, laneNames);
+        snapshot.pullRequestsTotal = open.length;
+        snapshot.pullRequests = open.slice(0, LIVE_STATE_MAX_PRS);
+      } catch {
+        unavailable.push("pull requests");
       }
     }
 

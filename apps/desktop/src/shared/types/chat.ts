@@ -3571,6 +3571,7 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    * session summary instead.
    */
   activityStatus?: SessionActivityReport | null;
+  /** The agent's status line (`ade chat note`), from the session row; absent when it set none. */
   statusNote?: string | null;
   attentionRequestedAt?: string | null;
   attentionMessage?: string | null;

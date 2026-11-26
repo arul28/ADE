@@ -7310,7 +7310,12 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     const op = payload.op;
     if (op === "add") {
-      ctoMemoryService.updateOpenWork({ op, text: requireString(payload.text, "cto.updateOpenWork add requires text.") });
+      const owner = payload.owner === "user" || payload.owner === "cto" ? payload.owner : undefined;
+      ctoMemoryService.updateOpenWork({
+        op,
+        text: requireString(payload.text, "cto.updateOpenWork add requires text."),
+        ...(owner ? { owner } : {}),
+      });
     } else if (op === "complete" || op === "reopen" || op === "remove") {
       ctoMemoryService.updateOpenWork({ op, id: requireString(payload.id, `cto.updateOpenWork ${op} requires id.`) });
     } else {

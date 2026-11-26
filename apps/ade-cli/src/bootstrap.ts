@@ -324,6 +324,7 @@ import {
   type DevServerRecord,
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
+import { isTerminalSessionDone, sessionRestedAt } from "../../desktop/src/shared/types/sessions";
 import {
   brainLogPath,
   installedAdeHomes,
@@ -2342,9 +2343,10 @@ export async function createAdeRuntime(args: {
           prService: headlessLinearServices.prService,
           automationService: automationServiceRef,
           listChats: chat.listSessions,
-          // Only a bridge the CTO's tools already built: the live-state block
-          // must not be what starts reading the account directory.
-          crossMachine: ctoCrossMachine,
+          // Building the bridge reads nothing. The block's other-machine rows
+          // read in the background at most once a minute, per CTO turn, and
+          // nothing while the switch in Settings › CTO is off.
+          crossMachine: getCtoCrossMachine(),
         };
       },
     });
@@ -4233,6 +4235,11 @@ export async function createAdeRuntime(args: {
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
         accountLanesRef.note?.();
+        try {
+          ctoMemoryService.reconcileLinkedWork();
+        } catch (error) {
+          logger.warn("cto_memory.linked_work_reconcile_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
       }
       if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
         const notification: PushPrNotification = {
@@ -4869,6 +4876,18 @@ export async function createAdeRuntime(args: {
       }));
     });
     accountLanesRef.note();
+    // A work item linked to a PR or a chat closes itself when that PR merges
+    // or closes or that chat settles as done. Checked on every read of the
+    // list (each CTO turn, the side panel) and whenever PRs change.
+    ctoMemoryService.setLinkedWorkResolver({
+      prState: (prNumber) => headlessLinearServices.prService?.getRepoPullRequestState(prNumber) ?? null,
+      chatState: (link) => {
+        if (link.machineId) return ctoCrossMachine?.peekRemoteChat?.(link.machineId, link.sessionId) ?? null;
+        const row = sessionService.get(link.sessionId);
+        if (!row) return null;
+        return { done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: row.statusNote?.trim() || null };
+      },
+    });
     headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
       emitPrEvent,
       (event) => {

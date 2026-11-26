@@ -86,6 +86,33 @@ export type CtoMachineRosterEntry = {
   hasProject: boolean | null;
 };
 
+/** One chat at work on another machine, as the live-state block shows it. */
+export type CtoRemoteChat = {
+  sessionId: string;
+  title: string;
+  laneName: string | null;
+  /** "working" while a turn runs, "needs input" while it waits on someone. */
+  state: "working" | "needs input";
+  /** The chat's own status line (`ade chat note`), when it set one. */
+  statusLine: string | null;
+};
+
+/** Another machine's lanes and working chats in this project, from the last read. */
+export type CtoRemoteMachineWork = {
+  machineId: string;
+  name: string;
+  /** When this machine was read (ISO). */
+  readAt: string;
+  /** Lane names and branches, so an open PR can be matched to the lane that opened it. */
+  lanes: Array<{ name: string; branch: string }>;
+  chats: CtoRemoteChat[];
+  chatsTotal: number;
+  /** Every chat the read saw, settled or not, so a linked work item can tell when its chat is done. */
+  known?: Array<{ sessionId: string; done: boolean; restedAt: string | null; statusLine: string | null }>;
+  /** Why the read failed, when it did. Lanes and chats are empty then. */
+  error?: string | null;
+};
+
 /** What every cross-machine tool answers while the user has the toggle off. */
 export const CTO_CROSS_MACHINE_DISABLED_MESSAGE =
   "Turned off in Settings › CTO (\"Let the CTO reach my other machines\"). Ask the user to turn it on there.";
@@ -196,4 +223,20 @@ export type CtoCrossMachineDeps = {
    * before any cross-machine tool has run in this brain.
    */
   peekRoster: () => CtoMachineRosterEntry[] | null;
+  /**
+   * Other online machines' lanes and working chats in this project, for the
+   * per-turn live-state block. Synchronous: returns the last read, and when
+   * that is over a minute old starts one background read (the account's
+   * machine list, then `lane.list` and `session.list` on each online machine
+   * that has the project). Called once per CTO turn, never on a timer, so it
+   * reads at most once a minute while the CTO is in use. Asleep and offline
+   * machines are never woken. Null while signed out, while the toggle is off,
+   * and before the first read lands.
+   */
+  peekRemoteWork?: () => CtoRemoteMachineWork[] | null;
+  /**
+   * One chat on another machine as the last `peekRemoteWork` read saw it, for
+   * a work item linked to it. Reads nothing. Null when that read did not see it.
+   */
+  peekRemoteChat?: (machineId: string, sessionId: string) => { done: boolean; restedAt: string | null; statusLine: string | null } | null;
 };

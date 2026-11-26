@@ -198,12 +198,34 @@ export type CtoUndoLearnedArgs = { learnId: string; changeId: string };
 
 export type CtoUndoLearnedResult = { undone: boolean; note?: string };
 
+/** Who an open-work item waits on: the person ("Waiting on you") or the CTO ("I'm tracking"). */
+export type CtoOpenWorkOwner = "user" | "cto";
+
+/**
+ * What an open-work item is about, so it can close itself: a chat (on any
+ * machine; `machineId` is the account machine key, absent for the CTO's home
+ * machine) or a PR on the project's repo.
+ */
+export type CtoOpenWorkLink =
+  | { kind: "chat"; sessionId: string; machineId?: string | null }
+  | { kind: "pr"; number: number };
+
 export type CtoOpenWorkItem = {
   id: string;
+  /** The whole item. With a `title`, this is the detail line under it. */
   text: string;
+  /** A short name for the row (a few words). Absent on older items: the row shows `text`. */
+  title?: string | null;
   createdAt: string;
   doneAt: string | null;
   addedBy: "cto" | "user";
+  /** Absent on older items, which read as the CTO's. */
+  owner?: CtoOpenWorkOwner;
+  link?: CtoOpenWorkLink | null;
+  /** How it ended ("merged as #12"), set when it was finished. */
+  outcome?: string | null;
+  /** "auto" when the linked chat or PR closed it, not a person or the CTO. */
+  closedBy?: "cto" | "user" | "auto" | null;
 };
 
 export type CtoUpdateNotesArgs = {
@@ -237,7 +259,7 @@ export function isCtoNotesChangedError(error: unknown): boolean {
 }
 
 export type CtoUpdateOpenWorkArgs =
-  | { op: "add"; text: string }
+  | { op: "add"; text: string; owner?: CtoOpenWorkOwner }
   | { op: "complete"; id: string }
   | { op: "reopen"; id: string }
   | { op: "remove"; id: string };

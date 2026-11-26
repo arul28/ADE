@@ -482,6 +482,7 @@ import {
 } from "./services/runtime/machineTrustResetMigration";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
+import { isTerminalSessionDone, sessionRestedAt } from "../shared/types/sessions";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
@@ -5375,6 +5376,18 @@ app.whenReady().then(async () => {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: adePaths.adeDir,
       logger,
+    });
+
+    // Linked work items close themselves on this runtime too (no other
+    // machines here: a chat on another machine stays open until the brain sees it).
+    ctoMemoryService.setLinkedWorkResolver({
+      prState: (prNumber) => prServiceRef?.getRepoPullRequestState(prNumber) ?? null,
+      chatState: (link) => {
+        if (link.machineId) return null;
+        const row = sessionService.get(link.sessionId);
+        if (!row) return null;
+        return { done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: row.statusNote?.trim() || null };
+      },
     });
 
     const ctoStateService = createCtoStateService({

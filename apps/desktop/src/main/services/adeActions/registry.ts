@@ -1846,11 +1846,12 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       });
       return ctoMemoryService.getSnapshot();
     },
-    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string }>) => {
+    updateOpenWork: (args?: Partial<{ op: string; text: string; id: string; owner: string }>) => {
       const op = args?.op;
       if (op === "add") {
         if (typeof args?.text !== "string" || !args.text.trim()) throw new Error("updateOpenWork add requires `text`.");
-        ctoMemoryService.updateOpenWork({ op, text: args.text });
+        const owner = args.owner === "user" || args.owner === "cto" ? args.owner : undefined;
+        ctoMemoryService.updateOpenWork({ op, text: args.text, ...(owner ? { owner } : {}) });
       } else if (op === "complete" || op === "reopen" || op === "remove") {
         if (typeof args?.id !== "string" || !args.id.trim()) throw new Error(`updateOpenWork ${op} requires \`id\`.`);
         ctoMemoryService.updateOpenWork({ op, id: args.id });

@@ -26,9 +26,11 @@
  * own dispatcher under the same identity (`createCtoActionCaller`), so both
  * paths apply one policy.
  *
- * Cost: nothing here reads the account directory until a cross-machine tool
- * runs. After that the live-state roster refreshes in the background at most
- * every few minutes, and never while signed out or turned off.
+ * Cost: the roster reads nothing on its own. A CTO turn's live-state read
+ * (`peekRemoteWork`) reads the account's machines and each online machine's
+ * lanes and working chats in the background, at most once a minute and only
+ * while CTO turns happen: never on a timer, never while signed out or turned
+ * off, and never waking an asleep machine.
  *
  * The user's switch (Settings › CTO, "Let the CTO reach my other machines")
  * turns all of it off.
@@ -42,6 +44,8 @@ import {
   ctoCallerInitializeParams,
 } from "../../../../desktop/src/shared/runtimeClientNames";
 import type { AdeAccountMachine } from "../../../../desktop/src/shared/types/account";
+import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
+import { isTerminalSessionDone, isTrackedAgentCliToolType, sessionRestedAt } from "../../../../desktop/src/shared/types/sessions";
 import {
   CTO_CROSS_MACHINE_DISABLED_MESSAGE,
   type CtoCrossMachineDeps,
@@ -50,6 +54,8 @@ import {
   type CtoMachineActionInfo,
   type CtoMachineTarget,
   type CtoRemoteActionCall,
+  type CtoRemoteChat,
+  type CtoRemoteMachineWork,
 } from "../../../../desktop/src/main/services/ai/tools/ctoCrossMachine";
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import type { CtoActionCaller } from "../../adeRpcServer";
@@ -75,6 +81,14 @@ const ROSTER_REFRESH_MS = 5 * 60_000;
 const LIST_PER_MACHINE_BUDGET_MS = 20_000;
 /** The live-state roster is a glance, not a directory dump. */
 const ROSTER_MAX_MACHINES = 12;
+/** How often a CTO turn may re-read the other machines' lanes and chats. */
+const REMOTE_WORK_REFRESH_MS = 60_000;
+/** One slow machine must not hold the others' rows back. */
+const REMOTE_WORK_PER_MACHINE_BUDGET_MS = 12_000;
+/** Working chats kept per machine; the rest are a count. */
+const REMOTE_WORK_MAX_CHATS = 8;
+/** Lanes kept per machine, for matching open PRs to the lane that opened them. */
+const REMOTE_WORK_MAX_LANES = 200;
 /** An all-domain action listing names actions only; one domain also carries inputs. */
 const ACTION_LIST_MAX_ROWS = 600;
 
@@ -363,6 +377,99 @@ export function createCtoCrossMachineBridge(
     }
   };
 
+  /**
+   * One machine's lanes and working chats, or null when it has no checkout of
+   * this project. Two light reads: lane rows without git status, and session
+   * rows (title, lane, runtime state, status line) rather than chat summaries.
+   */
+  const readMachineWork = async (machine: AdeAccountMachine): Promise<CtoRemoteMachineWork | null> => {
+    const base = { machineId: machine.machineKey, name: machineName(machine), readAt: new Date().toISOString() };
+    try {
+      const [lanes, sessions] = await Promise.all([
+        callOnMachine(machine, {
+          domain: "lane",
+          action: "list",
+          args: { includeArchived: false, includeStatus: false },
+          timeoutMs: 10_000,
+        }),
+        callOnMachine(machine, {
+          domain: "session",
+          action: "list",
+          // Every unsettled chat, plus the newest settled ones: a work item
+          // linked to a chat here closes when it sees that chat settled.
+          args: { includeArchived: false, limit: 80, settledLimit: 30 },
+          timeoutMs: 10_000,
+        }),
+      ]);
+      const laneRows = Array.isArray(lanes) ? lanes.filter(isRecord) : [];
+      const laneNameById = new Map<string, string>();
+      const laneList: CtoRemoteMachineWork["lanes"] = [];
+      for (const lane of laneRows) {
+        const id = typeof lane.id === "string" ? lane.id : "";
+        const name = typeof lane.name === "string" ? lane.name : "";
+        const branch = typeof lane.branchRef === "string" ? lane.branchRef.replace(/^refs\/heads\//, "") : "";
+        if (id && name) laneNameById.set(id, name);
+        if (name && branch && laneList.length < REMOTE_WORK_MAX_LANES) laneList.push({ name, branch });
+      }
+      const working: CtoRemoteChat[] = [];
+      const known: NonNullable<CtoRemoteMachineWork["known"]> = [];
+      for (const row of Array.isArray(sessions) ? sessions.filter(isRecord) : []) {
+        const toolType = typeof row.toolType === "string" ? row.toolType : null;
+        if (!isChatToolType(toolType) && !isTrackedAgentCliToolType(toolType as never)) continue;
+        const sessionId = typeof row.id === "string" ? row.id : "";
+        const statusLine = typeof row.statusNote === "string" ? row.statusNote.trim() : "";
+        const done = isTerminalSessionDone(row);
+        if (sessionId) known.push({ sessionId, done, restedAt: sessionRestedAt(row), statusLine: statusLine || null });
+        if (done || row.status !== "running") continue;
+        const runtimeState = row.runtimeState;
+        if (runtimeState !== "running" && runtimeState !== "waiting-input") continue;
+        const laneId = typeof row.laneId === "string" ? row.laneId : "";
+        working.push({
+          sessionId,
+          title: (typeof row.title === "string" ? row.title.trim() : "") || "Untitled chat",
+          laneName: laneNameById.get(laneId) ?? (typeof row.laneName === "string" ? row.laneName : null),
+          state: runtimeState === "waiting-input" ? "needs input" : "working",
+          statusLine: statusLine || null,
+        });
+      }
+      return {
+        ...base,
+        lanes: laneList,
+        chats: working.slice(0, REMOTE_WORK_MAX_CHATS),
+        chatsTotal: working.length,
+        known,
+      };
+    } catch (error) {
+      // `connectToProject` recorded a machine without this project; leave it out.
+      if (hasProjectByMachine.get(machine.machineKey) === false) return null;
+      return { ...base, lanes: [], chats: [], chatsTotal: 0, error: errorMessage(error) };
+    }
+  };
+
+  let remoteWork: { machines: CtoRemoteMachineWork[] } | null = null;
+  let remoteWorkAttemptAt = 0;
+  let remoteWorkRefresh: Promise<void> | null = null;
+  const refreshRemoteWork = async (): Promise<void> => {
+    const machines = await listAccountMachines();
+    const targets = machines
+      .filter((machine) => !isThisMachine(machine) && machine.online && hasProjectByMachine.get(machine.machineKey) !== false)
+      .slice(0, ROSTER_MAX_MACHINES);
+    const read = await Promise.all(targets.map((machine) => withTimeout(
+      readMachineWork(machine),
+      REMOTE_WORK_PER_MACHINE_BUDGET_MS,
+      `${machineName(machine)} did not answer in time.`,
+    ).catch((error): CtoRemoteMachineWork => ({
+      machineId: machine.machineKey,
+      name: machineName(machine),
+      readAt: new Date().toISOString(),
+      lanes: [],
+      chats: [],
+      chatsTotal: 0,
+      error: errorMessage(error),
+    }))));
+    remoteWork = { machines: read.filter((entry): entry is CtoRemoteMachineWork => entry != null) };
+  };
+
   const homeMachine = (): CtoMachineTarget => {
     const local = thisMachine();
     const listed = pool.peekDirectory()?.machines.find(isThisMachine) ?? null;
@@ -455,6 +562,30 @@ export function createCtoCrossMachineBridge(
           hasProject: local ? true : hasProjectByMachine.get(machine.machineKey) ?? null,
         };
       });
+    },
+
+    peekRemoteWork() {
+      if (!access().enabled || !isSignedIn()) {
+        remoteWork = null;
+        return null;
+      }
+      // Spaced by attempt, not success: a failing directory read is retried a
+      // minute later, not on every turn.
+      if (!remoteWorkRefresh && Date.now() - remoteWorkAttemptAt >= REMOTE_WORK_REFRESH_MS) {
+        remoteWorkAttemptAt = Date.now();
+        remoteWorkRefresh = refreshRemoteWork()
+          .catch((error) => {
+            logger?.info("cto_cross_machine.remote_work_read_failed", { error: errorMessage(error) });
+          })
+          .finally(() => { remoteWorkRefresh = null; });
+      }
+      return remoteWork?.machines ?? null;
+    },
+
+    peekRemoteChat(machineId, sessionId) {
+      const machine = remoteWork?.machines.find((entry) => entry.machineId === machineId);
+      const seen = machine?.known?.find((entry) => entry.sessionId === sessionId);
+      return seen ? { done: seen.done, restedAt: seen.restedAt, statusLine: seen.statusLine } : null;
     },
   };
 }

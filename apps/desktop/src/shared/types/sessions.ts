@@ -625,6 +625,36 @@ export type SessionBoardMoveUndoResult =
   };
 export type SessionSettleSource = "agent_explicit" | "user" | "pr_merge" | "operator";
 
+/**
+ * A session the person would call done: settled, archived, or its process
+ * finished. A detached session is still alive somewhere, so it is not done.
+ */
+export function isTerminalSessionDone(
+  row: { settledAt?: unknown; archivedAt?: unknown; status?: unknown },
+): boolean {
+  return Boolean(row.settledAt) || Boolean(row.archivedAt)
+    || row.status === "completed" || row.status === "failed" || row.status === "disposed";
+}
+
+/**
+ * When a live session came to rest after a clean turn (the Work row's "Done"),
+ * or null while it works, waits on someone, or its last turn failed. A chat
+ * rests between turns, so a caller that wants "finished the work it was given"
+ * compares this with when it handed the work over.
+ */
+export function sessionRestedAt(row: {
+  status?: unknown;
+  runtimeState?: unknown;
+  pendingInputItemId?: unknown;
+  attentionRequestedAt?: unknown;
+  lastTurnFailedAt?: unknown;
+  lastActivityAt?: unknown;
+}): string | null {
+  if (row.status !== "running" || row.runtimeState !== "idle") return null;
+  if (row.pendingInputItemId || row.attentionRequestedAt || row.lastTurnFailedAt) return null;
+  return typeof row.lastActivityAt === "string" && row.lastActivityAt ? row.lastActivityAt : null;
+}
+
 export type TerminalSessionDetail = TerminalSessionSummary & {
   // Reserved for future expansion (goal/tool templates, derived deltas, etc.)
 };
