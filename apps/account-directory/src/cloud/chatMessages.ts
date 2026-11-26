@@ -502,7 +502,8 @@ async function copyFilesToLaunch(env: CloudEnv, userId: string, attachments: Clo
   if (!await insertDraft(env, userId, launchId, attachments.reduce((total, file) => total + file.sizeBytes, 0), now)) return draftsFull(userId);
   for (const file of attachments) {
     const object = await bucket.get(r2KeyOf(userId, file.launchId, file.fileId));
-    if (!object) return badRequest(`Upload "${file.name}" first, then send the message.`);
+    // The draft holds the sizes the message named: a file replaced since is not copied.
+    if (!object || object.size !== file.sizeBytes) return badRequest(`Upload "${file.name}" first, then send the message.`);
     await bucket.put(r2KeyOf(userId, launchId, file.fileId), await object.arrayBuffer(), {
       httpMetadata: { contentType: object.httpMetadata?.contentType ?? "application/octet-stream" },
     });
