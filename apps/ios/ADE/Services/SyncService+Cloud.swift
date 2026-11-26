@@ -1231,6 +1231,57 @@ extension SyncService {
     return cloudServerInstances.first { $0.machineKey?.lowercased() == accountKey.lowercased() }
   }
 
+  /// The `@` menu's entity rows for a chat whose ADE Cloud computer has no live
+  /// link (asleep, or deleted), or nil for every other chat. A read never wakes
+  /// a computer, so nothing here asks it: the rows come from what the phone
+  /// already holds, as the desktop's `chatMentionMenu` builds them while the
+  /// computer rests. The computer's chats and lanes as Work lists them (its
+  /// saved copies), with the same ids its own menu gives, so a sent chip
+  /// resolves on the computer once it is awake; and the account's machines.
+  /// Terminals are left out (their processes do not outlast a sleep), and so
+  /// are PRs (the phone holds no copy of the computer's own PR rows).
+  func restingCloudChatMentionRows(sessionId: String, now: Date = Date()) -> [ChatMentionSuggestionRow]? {
+    guard chatSendsThroughCloudAccount(sessionId: sessionId), let key = chatThreadKey(for: sessionId) else { return nil }
+    let listed = machineFleet?.machine(for: key.machineKey)?.projects ?? []
+    let all = listed.isEmpty ? cloudSavedRosterProjects(fleetKey: key.machineKey) : listed
+    // The chat's own project, as the computer's menu answers for it.
+    let own = all.filter { project in project.chats.contains { $0.id == key.sessionId } }
+    let projects = own.isEmpty ? all : own
+    var rows: [ChatMentionSuggestionRow] = []
+    var seen = Set<String>()
+    for project in projects {
+      let lanes = project.lanes.filter { lane in
+        // A cloud computer's main checkout is left out, as the lane lists do;
+        // "saved-chats" is this phone's own bucket, not a lane of the computer.
+        lane.laneType != "primary" && lane.id != "saved-chats"
+      }
+      let laneNames = Dictionary(project.lanes.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+      for chat in project.chats where chat.id != key.sessionId && chat.archived != true && isWorkChatToolType(chat.toolType) {
+        guard seen.insert("chat:\(chat.id)").inserted else { continue }
+        let provider = nonEmptyTrimmed(chat.provider)
+          ?? chat.toolType.flatMap { $0.hasSuffix("-chat") ? String($0.dropLast("-chat".count)) : nil }
+        let subtitle = [laneNames[chat.laneId], provider, chat.status.rawValue]
+          .compactMap { $0.flatMap { nonEmptyTrimmed($0) } }
+          .joined(separator: " · ")
+        rows.append(ChatMentionSuggestionRow(
+          kind: "chat",
+          id: chat.id,
+          title: workMentionFirstLine(chat.title) ?? workMentionFirstLine(chat.preview, max: 60) ?? "Chat \(chat.id.prefix(8))",
+          subtitle: subtitle.isEmpty ? nil : subtitle,
+          lastActivityAt: chat.lastActivityAt.flatMap(workActivityTimestamp).map { $0.timeIntervalSince1970 * 1000 }
+        ))
+      }
+      for lane in lanes where seen.insert("lane:\(lane.id)").inserted {
+        rows.append(ChatMentionSuggestionRow(kind: "lane", id: lane.id, title: lane.displayName, subtitle: lane.branchRef, lastActivityAt: nil))
+      }
+    }
+    let thisMachine = cloudAccountMachineKey(fleetKey: key.machineKey)
+    rows.append(contentsOf: AccountService.shared.machines.map {
+      workAccountMachineMentionRow($0, thisMachineKey: thisMachine, now: now)
+    })
+    return rows
+  }
+
   /// The saved copies of one ADE Cloud computer's account-server rows as roster
   /// projects, for a connection whose own roster is still empty.
   func cloudSavedRosterProjects(fleetKey: String) -> [RemoteRosterProject] {

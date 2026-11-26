@@ -533,6 +533,107 @@ enum WorkChatMentionDetector {
   }
 }
 
+/// Swift twin of `rankChatMentionMenu` in `apps/desktop/src/shared/chatMentions.ts`,
+/// for the `@` rows this app builds itself (a chat whose ADE Cloud computer
+/// rests, `restingCloudChatMentionRows`). A kind filter lists that kind's best
+/// matches; an empty query browses each kind's newest rows, capped per kind;
+/// otherwise every row ranks as one list by match quality.
+enum WorkChatMentionMenuRanker {
+  static let maxResults = 16
+  static let maxPerKind = 8
+
+  /// `kind` is the host's kind word (`chat`, `lane`, `machine`, …), or nil.
+  static func rank(_ rows: [ChatMentionSuggestionRow], kind: String?, query: String) -> [ChatMentionSuggestionRow] {
+    let rest = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let kind { return ranked(rows.filter { $0.kind == kind }, query: rest, limit: maxResults) }
+    var kinds: [String] = []
+    var byKind: [String: [ChatMentionSuggestionRow]] = [:]
+    for row in rows {
+      if byKind[row.kind] == nil { kinds.append(row.kind) }
+      byKind[row.kind, default: []].append(row)
+    }
+    let perKind = kinds.flatMap { ranked(byKind[$0] ?? [], query: rest, limit: maxPerKind) }
+    return rest.isEmpty ? perKind : ranked(perKind, query: rest, limit: maxResults)
+  }
+
+  /// `rankChatMentionSuggestions`: match tier, then a longer confirmed title
+  /// prefix, then newest, then id, so equal rows never reshuffle per keystroke.
+  private static func ranked(_ rows: [ChatMentionSuggestionRow], query: String, limit: Int) -> [ChatMentionSuggestionRow] {
+    let scored = rows.compactMap { row -> (row: ChatMentionSuggestionRow, score: Int, prefix: Int)? in
+      guard let hit = WorkModelMentionDetector.score(title: row.title, subtitle: row.subtitle, query: query) else { return nil }
+      return (row, hit.score, hit.prefix)
+    }
+    return scored.sorted { lhs, rhs in
+      if lhs.score != rhs.score { return lhs.score < rhs.score }
+      if lhs.prefix != rhs.prefix { return lhs.prefix > rhs.prefix }
+      let lhsAt = lhs.row.lastActivityAt ?? 0
+      let rhsAt = rhs.row.lastActivityAt ?? 0
+      if lhsAt != rhsAt { return lhsAt > rhsAt }
+      return lhs.row.id < rhs.row.id
+    }
+    .prefix(limit)
+    .map(\.row)
+  }
+}
+
+/// `mentionFirstLine`: a title or preview as one menu line, whitespace folded,
+/// cut at `max`; nil when empty.
+func workMentionFirstLine(_ value: String?, max: Int = 120) -> String? {
+  guard let value else { return nil }
+  let line = value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  guard !line.isEmpty else { return nil }
+  return line.count <= max ? line : "\(line.prefix(max - 1))…"
+}
+
+/// `accountMachineMentionSuggestion`: one of the account's machines as an `@`
+/// row, read from the account (no machine is asked). Its id is the desktop's
+/// `machineMentionId`, so `@mac:` names the same machine on every surface.
+func workAccountMachineMentionRow(_ machine: AccountMachine, thisMachineKey: String?, now: Date) -> ChatMentionSuggestionRow {
+  let nowMs = now.timeIntervalSince1970 * 1000
+  let isThisMachine = thisMachineKey.map { $0 == machine.machineKey } ?? false
+  let subtitle = [isThisMachine ? "this machine" : nil, workAccountMachinePresence(machine, nowMs: nowMs)]
+    .compactMap { $0 }
+    .joined(separator: " · ")
+  return ChatMentionSuggestionRow(
+    kind: "machine",
+    id: workMachineMentionId(machineKey: machine.machineKey, deviceId: machine.deviceId),
+    title: machine.displayName,
+    subtitle: subtitle,
+    // Online machines first (all "now"), then by last heartbeat.
+    lastActivityAt: machine.online ? nowMs : machine.lastSeenAt
+  )
+}
+
+/// `machineMentionId`: the machine key when the mention grammar admits it,
+/// else the device id, else the key spelled as UTF-16 hex.
+func workMachineMentionId(machineKey: String, deviceId: String?) -> String {
+  let admits = { (value: String) in value.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil }
+  let key = machineKey.trimmingCharacters(in: .whitespacesAndNewlines)
+  if !key.isEmpty, admits(key) { return key }
+  let device = deviceId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !device.isEmpty, admits(device) { return device }
+  return "x." + key.utf16.map { String(format: "%04x", $0) }.joined()
+}
+
+/// `describeAccountMachinePresence`: "online", "asleep · last seen 3h ago",
+/// "offline · last seen 2d ago".
+func workAccountMachinePresence(_ machine: AccountMachine, nowMs: Double) -> String {
+  if machine.online && machine.sleepState != .asleep { return "online" }
+  let state = machine.sleepState == .asleep ? "asleep" : "offline"
+  guard let seen = machine.lastSeenAt else { return state }
+  let minutes = max(0, Int(((nowMs - seen) / 60_000).rounded()))
+  let ago: String
+  if minutes < 1 {
+    ago = "just now"
+  } else if minutes < 60 {
+    ago = "\(minutes)m ago"
+  } else {
+    let hours = Int((Double(minutes) / 60).rounded())
+    ago = hours < 48 ? "\(hours)h ago" : "\(Int((Double(hours) / 24).rounded()))d ago"
+  }
+  return "\(state) · last seen \(ago)"
+}
+
 // MARK: - Model mentions
 
 /// Swift twin of the `@model:` grammar in
@@ -817,7 +918,8 @@ enum WorkModelMentionDetector {
   }
 
   /// `scoreChatMentionCandidate`: a subtitle hit is weaker than any title hit.
-  private static func score(title: String, subtitle: String?, query: String) -> (score: Int, prefix: Int)? {
+  /// Also ranks the `@` rows this app builds itself (`WorkChatMentionMenuRanker`).
+  static func score(title: String, subtitle: String?, query: String) -> (score: Int, prefix: Int)? {
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if trimmed.isEmpty { return (0, 0) }
     if let hit = score(title, trimmed, allowTrailingProse: true) { return hit }
@@ -1818,6 +1920,20 @@ enum WorkComposerSuggestionSection: String, CaseIterable, Equatable {
     }
     return (nil, query)
   }
+
+  /// The host's kind word for an entity section (`chat.listMentionSuggestions`
+  /// rows carry it as `kind`); nil for the sections no host lists.
+  var mentionKindWord: String? {
+    switch self {
+    case .chats: return "chat"
+    case .lanes: return "lane"
+    case .terminals: return "terminal"
+    case .pullRequests: return "pr"
+    case .machines: return "machine"
+    case .mcpServers: return "mcp"
+    case .models, .files, .commands: return nil
+    }
+  }
 }
 
 /// Titles the @ menu showed for each committed mention token, so a pill that is
@@ -2435,8 +2551,12 @@ final class WorkComposerSuggestionController: ObservableObject {
     atFilter = parsed.filter
     atGeneration += 1
     let generation = atGeneration
+    // A chat whose ADE Cloud computer has no live link: its menu is built here
+    // from saved copies and the account, and the computer is asked nothing (a
+    // read never wakes it). Its files live on it, so none list meanwhile.
+    let restingRows = sessionId.flatMap { syncService?.restingCloudChatMentionRows(sessionId: $0) }
 
-    if parsed.filter == nil || parsed.filter == .files {
+    if restingRows == nil, parsed.filter == nil || parsed.filter == .files {
       scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: parsed.rest))
     } else {
       fetchTask?.cancel()
@@ -2448,21 +2568,19 @@ final class WorkComposerSuggestionController: ObservableObject {
     mentionTask?.cancel()
     mentionTask = nil
     // Models come from the local catalog, so `@model` asks the host for nothing.
-    if parsed.filter != .files, parsed.filter != .models, mentionsAvailable, let sync = syncService {
+    if let restingRows, parsed.filter != .files, parsed.filter != .models {
+      atMentions = Self.mentionSuggestions(from: WorkChatMentionMenuRanker.rank(
+        restingRows,
+        kind: parsed.filter?.mentionKindWord,
+        query: parsed.rest
+      ))
+      atMentionsPending = false
+    } else if parsed.filter != .files, parsed.filter != .models, mentionsAvailable, let sync = syncService {
       atMentionsPending = true
       // A section filter is re-sent as the host's own kind word, so the host
       // narrows server-side and returns that kind's full list rather than a
       // mixed best-match list the client then thins out.
-      let mentionQuery: String
-      switch parsed.filter {
-      case .chats: mentionQuery = "chat \(parsed.rest)"
-      case .lanes: mentionQuery = "lane \(parsed.rest)"
-      case .terminals: mentionQuery = "terminal \(parsed.rest)"
-      case .pullRequests: mentionQuery = "pr \(parsed.rest)"
-      case .machines: mentionQuery = "machine \(parsed.rest)"
-      case .mcpServers: mentionQuery = "mcp \(parsed.rest)"
-      case .files, .models, .commands, nil: mentionQuery = parsed.rest
-      }
+      let mentionQuery = parsed.filter?.mentionKindWord.map { "\($0) \(parsed.rest)" } ?? parsed.rest
       let excludeSessionId = sessionId
       mentionTask = Task { [weak self] in
         // Debounced harder than files: this is a host round-trip per query.
