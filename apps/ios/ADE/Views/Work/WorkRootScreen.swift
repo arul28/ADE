@@ -433,6 +433,11 @@ struct WorkRootListScreen: View, Equatable {
   @State var lanes: [LaneSummary] = [] {
     didSet { projectionDataRevision &+= 1 }
   }
+  /// The project's archived lanes. Their chats are kept, and Work files them
+  /// under the lane's name rather than as orphaned sessions.
+  @State var archivedLanes: [LaneSummary] = [] {
+    didSet { projectionDataRevision &+= 1 }
+  }
   /// ADE-mapped PRs (synced `pull_requests` table) used to tag each session's
   /// lane with its PR status next to the lane name. Combined with
   /// `syncService.laneGithubPrItems` for PRs opened outside ADE.
@@ -2651,7 +2656,8 @@ struct WorkRootListScreen: View, Equatable {
         // rather than repeated on every row beneath. Orphaned sections have no
         // lane record to read it from.
         laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status },
-        lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] },
+        // An archived lane keeps its chats but offers no lane actions.
+        lane: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0] }.flatMap { $0.archivedAt == nil ? $0 : nil },
         laneMenu: workLaneMenuActions,
         startsQuietZone: group.id == quietZoneStartGroupId,
         branch: duoLayout.isWide ? group.laneId.flatMap { laneById[$0]?.branchRef } : nil,

@@ -13321,7 +13321,10 @@ final class SyncService: ObservableObject {
   func fetchWorkListProjection() async -> (
     sessions: [TerminalSessionSummary],
     lanes: [LaneSummary],
-    pullRequests: [PullRequestListItem]
+    pullRequests: [PullRequestListItem],
+    /// Archived lanes: Work files their kept chats under the lane's name
+    /// instead of listing them as orphaned.
+    archivedLanes: [LaneSummary]
   ) {
     let database = self.database
     let read = {
@@ -13329,7 +13332,8 @@ final class SyncService: ObservableObject {
         (
           sessions: database.fetchSessions(),
           lanes: database.fetchLanes(includeArchived: false),
-          pullRequests: database.fetchPullRequestListItems()
+          pullRequests: database.fetchPullRequestListItems(),
+          archivedLanes: database.fetchLanes(includeArchived: true).filter { $0.archivedAt != nil }
         )
       }.value
     }
@@ -13338,7 +13342,7 @@ final class SyncService: ObservableObject {
     // An account change during the read reset the replica: these rows are
     // the former account's. Read the new replica instead.
     if accountGeneration != accountDataGeneration { rows = await read() }
-    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests)
+    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests, rows.archivedLanes)
   }
 
   func fetchSession(id sessionId: String) async throws -> TerminalSessionSummary? {

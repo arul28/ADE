@@ -1119,6 +1119,48 @@ func workSessionGroupsByStatus(
   return groups
 }
 
+/// Where Work files a row whose lane is not in the lane list.
+///
+/// The phone keeps chat rows in its own copy of the project, and a lane can
+/// go while its rows stay: archived (its chats are kept on purpose), deleted
+/// on a computer, or listed only by a computer this phone no longer focuses.
+/// Such rows stood at the top of Work as "Orphaned sessions: <lane id>" with a
+/// warning that no refresh could clear.
+///
+/// - A row in an archived lane is filed under that lane, by name: the lane is
+///   added to the returned lanes.
+/// - A row in a lane being deleted keeps its place ("Updating lane…").
+/// - Any other row with no lane is left out once the focused computer's live
+///   roster has loaded: no computer lists its lane, so there is nothing to
+///   file it under and nowhere to open it. Until then it stays, so a slow
+///   first load never hides real work. Nothing is deleted, and a row whose
+///   lane comes back shows again.
+func workFileSessionsWithoutLane(
+  sessions: [TerminalSessionSummary],
+  lanes: [LaneSummary],
+  archivedLanes: [LaneSummary],
+  deletingLaneIds: Set<String>,
+  focusedRosterLoaded: Bool
+) -> (sessions: [TerminalSessionSummary], lanes: [LaneSummary]) {
+  let knownLaneIds = Set(lanes.map(\.id))
+  let archivedById = Dictionary(archivedLanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  var filedArchivedLanes: [LaneSummary] = []
+  var filedArchivedLaneIds = Set<String>()
+  var kept: [TerminalSessionSummary] = []
+  kept.reserveCapacity(sessions.count)
+  for session in sessions {
+    if knownLaneIds.contains(session.laneId) || deletingLaneIds.contains(session.laneId) {
+      kept.append(session)
+    } else if let archived = archivedById[session.laneId] {
+      if filedArchivedLaneIds.insert(archived.id).inserted { filedArchivedLanes.append(archived) }
+      kept.append(session)
+    } else if !focusedRosterLoaded {
+      kept.append(session)
+    }
+  }
+  return (kept, filedArchivedLanes.isEmpty ? lanes : lanes + filedArchivedLanes)
+}
+
 func workSessionGroupsByLane(
   sessions: [TerminalSessionSummary],
   orderedLanes: [LaneSummary],
@@ -1136,7 +1178,7 @@ func workSessionGroupsByLane(
     guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
     groups.append(WorkSessionGroup(
       id: "lane:\(lane.id)",
-      label: lane.displayName,
+      label: lane.archivedAt == nil ? lane.displayName : "\(lane.displayName) · Archived",
       icon: .laneBranch,
       tint: LaneColorPalette.displayColor(forHex: lane.color),
       sessions: list,

@@ -20,6 +20,7 @@ private struct WorkPersistedProjectionLoad {
   let sessions: [TerminalSessionSummary]
   let lanes: [LaneSummary]
   let pullRequests: [PullRequestListItem]
+  let archivedLanes: [LaneSummary]
 }
 
 extension WorkRootListScreen {
@@ -105,7 +106,7 @@ extension WorkRootListScreen {
     )
     // Side chats live inside their main chat: never a row, and the main
     // chat's row wears the side-chat mark while it has one.
-    let sessionsSnapshot = workApplySideChats(
+    let sideChatSessions = workApplySideChats(
       sessions: launchProjection.sessions,
       chatSummaries: knownChatSummaries,
       rosterPointers: workRosterSideChatPointers(activeRoster),
@@ -113,7 +114,18 @@ extension WorkRootListScreen {
       knownSideChatIds: syncService.knownSideChatSessionIds
     )
     let deletingLaneIds = syncService.pendingLaneDeletionIds
-    let lanesSnapshot = launchProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
+    // Rows whose lane no computer has: filed under an archived lane by name,
+    // or left out once the focused computer's live roster says the lane is
+    // gone (see `workFileSessionsWithoutLane`).
+    let laneFiling = workFileSessionsWithoutLane(
+      sessions: sideChatSessions,
+      lanes: launchProjection.lanes,
+      archivedLanes: localProjectionIsCurrent ? archivedLanes : [],
+      deletingLaneIds: deletingLaneIds,
+      focusedRosterLoaded: localProjectionIsCurrent && focusedListed && activeRoster != nil
+    )
+    let sessionsSnapshot = laneFiling.sessions
+    let lanesSnapshot = laneFiling.lanes.filter { !deletingLaneIds.contains($0.id) }
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
@@ -262,6 +274,7 @@ extension WorkRootListScreen {
     loadedProjectionProjectId = nil
     sessions = []
     lanes = []
+    archivedLanes = []
     chatSummaries = [:]
     pullRequests = []
     optimisticSessions = [:]
@@ -393,7 +406,8 @@ extension WorkRootListScreen {
     return WorkPersistedProjectionLoad(
       sessions: rows.sessions,
       lanes: rows.lanes,
-      pullRequests: rows.pullRequests
+      pullRequests: rows.pullRequests,
+      archivedLanes: rows.archivedLanes
     )
   }
 
@@ -417,6 +431,9 @@ extension WorkRootListScreen {
     }
     if pullRequests != projection.pullRequests {
       pullRequests = projection.pullRequests
+    }
+    if archivedLanes != projection.archivedLanes {
+      archivedLanes = projection.archivedLanes
     }
     var nextOptimisticSessions = optimisticSessions
     for session in projection.sessions where nextOptimisticSessions[session.id] != nil {
