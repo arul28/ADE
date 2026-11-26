@@ -83,9 +83,29 @@ enum CtoPreviewData {
         CtoSkillSummary(name: "triage-flaky-test", description: "Find why a test flakes before retrying it", bytes: 318, updatedAt: iso(minutesFromNow: -29)),
       ],
       openWork: [
-        CtoOpenWorkItem(id: "ow-1", text: "Land the login race fix", createdAt: iso(minutesFromNow: -90), doneAt: nil, addedBy: "cto"),
-        CtoOpenWorkItem(id: "ow-2", text: "Watch PR #482 checks", createdAt: iso(minutesFromNow: -40), doneAt: nil, addedBy: "cto"),
-        CtoOpenWorkItem(id: "ow-3", text: "Ship the avatar on iOS", createdAt: iso(minutesFromNow: -300), doneAt: iso(minutesFromNow: -20), addedBy: "user"),
+        CtoOpenWorkItem(
+          id: "ow-4", text: "The release lane needs your Apple sign-in before it can notarize the beta.",
+          createdAt: iso(minutesFromNow: -15), doneAt: nil, addedBy: "cto",
+          title: "Sign in to App Store Connect", owner: "user"
+        ),
+        CtoOpenWorkItem(
+          id: "ow-1", text: "The chat on the desktop is fixing the login race; close this when it lands.",
+          createdAt: iso(minutesFromNow: -90), doneAt: nil, addedBy: "cto",
+          title: "Land the login race fix", owner: "cto",
+          link: CtoOpenWorkLink(kind: "chat", sessionId: "c-1", machineId: "desktop")
+        ),
+        CtoOpenWorkItem(
+          id: "ow-2", text: "Two checks were red after the rebase.",
+          createdAt: iso(minutesFromNow: -40), doneAt: nil, addedBy: "cto",
+          title: "Watch PR #482 checks", owner: "cto",
+          link: CtoOpenWorkLink(kind: "pr", number: 482)
+        ),
+        CtoOpenWorkItem(
+          id: "ow-3", text: "Ship the avatar on iOS", createdAt: iso(minutesFromNow: -300),
+          doneAt: iso(minutesFromNow: -20), addedBy: "user",
+          title: "Ship the avatar on iOS", owner: "cto",
+          link: CtoOpenWorkLink(kind: "pr", number: 479), outcome: "Merged", closedBy: "auto"
+        ),
       ]
     )
   }

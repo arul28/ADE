@@ -7291,8 +7291,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     // Returns the CtoMemorySnapshot the iOS client decodes (every field
-    // defaulted there); the v1-only fields are sent empty.
-    return ctoMemoryService.getSnapshot();
+    // defaulted there); the v1-only fields are sent empty. Linked work that
+    // finished closes first, as on the desktop.
+    return ctoMemoryService.getReconciledSnapshot();
   });
   // Not queueable: a whole-file write replayed later would overwrite whatever
   // the CTO or another device saved in between. `baseHash` refuses that too.
@@ -7310,13 +7311,19 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     const op = payload.op;
     if (op === "add") {
-      ctoMemoryService.updateOpenWork({ op, text: requireString(payload.text, "cto.updateOpenWork add requires text.") });
+      const owner = payload.owner === "user" || payload.owner === "cto" ? payload.owner : undefined;
+      ctoMemoryService.updateOpenWork({
+        op,
+        text: requireString(payload.text, "cto.updateOpenWork add requires text."),
+        ...(owner ? { owner } : {}),
+      });
     } else if (op === "complete" || op === "reopen" || op === "remove") {
       ctoMemoryService.updateOpenWork({ op, id: requireString(payload.id, `cto.updateOpenWork ${op} requires id.`) });
     } else {
       throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
     }
-    return ctoMemoryService.getSnapshot();
+    // The phone replaces its list with this, so it is reconciled like a read.
+    return ctoMemoryService.getReconciledSnapshot();
   });
   register("cto.getSkill", { viewerAllowed: true }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");

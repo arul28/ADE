@@ -73441,6 +73441,8 @@ export function createAgentChatService(args: {
       ...(crossMachineBatchApproval ? { crossMachineBatchApproval } : {}),
       sessionProfile: liveSession?.sessionProfile ?? persisted?.sessionProfile,
       title: row.title ?? null,
+      // The agent's own glanceable status line (`ade chat note`), already on the row.
+      ...(row.statusNote?.trim() ? { statusNote: row.statusNote.trim() } : {}),
       goal: row.goal ?? null,
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
       // Effective, not stored: an account that forbids Fast reports Standard

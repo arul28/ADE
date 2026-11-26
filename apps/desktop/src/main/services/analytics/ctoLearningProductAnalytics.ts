@@ -28,3 +28,19 @@ export function reportCtoLearning(
     minimumIntervalMs: CTO_LEARNING_ANALYTICS_DEDUPE_MS,
   });
 }
+
+/**
+ * A CTO open-work item closed itself because the chat or PR it was linked to
+ * finished: `cto_work_auto_closed` `completed`, unattended. The question is
+ * whether linked work closes on its own. Never the item, its title, the chat,
+ * the PR, or how many closed at once.
+ */
+export function reportCtoWorkAutoClosed(analytics: FeatureAnalytics | null | undefined): void {
+  analytics?.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    properties: { feature: "cto", action: "cto_work_auto_closed", outcome: "completed", mode: "automatic" },
+    dedupeKey: "cto_work_auto_closed:completed",
+    minimumIntervalMs: CTO_LEARNING_ANALYTICS_DEDUPE_MS,
+  });
+}

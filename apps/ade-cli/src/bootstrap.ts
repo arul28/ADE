@@ -138,6 +138,7 @@ import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoSt
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import { createCtoAccountCopyService, type CtoAccountCopyService } from "../../desktop/src/main/services/cto/ctoAccountCopyService";
 import { reportCtoHomeMove, reportCtoMessageReaction } from "../../desktop/src/main/services/analytics/ctoHomeProductAnalytics";
+import { reportCtoWorkAutoClosed } from "../../desktop/src/main/services/analytics/ctoLearningProductAnalytics";
 import { accountRepoScopeKey } from "../../desktop/src/shared/accountSettingsScope";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -324,6 +325,8 @@ import {
   type DevServerRecord,
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
+import { isTerminalSessionDone, sessionRestedAt } from "../../desktop/src/shared/types/sessions";
+import { getSessionWithChatProjection } from "../../desktop/src/main/services/sessions/chatSessionProjection";
 import {
   brainLogPath,
   installedAdeHomes,
@@ -2291,6 +2294,7 @@ export async function createAdeRuntime(args: {
       // Edits made while no turn runs (Settings, the side panel, another
       // device) reach the account copy too, not only at a turn's end.
       onChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
+      onLinkedWorkClosed: () => reportCtoWorkAutoClosed(productAnalyticsService),
     });
     // The CTO archive's SQLite handle; it opens on first use. `close` never throws.
     teardown.push(() => ctoMemoryService.close());
@@ -2321,6 +2325,7 @@ export async function createAdeRuntime(args: {
         logger,
         getLocalActionCaller: getCtoLocalActionCaller,
         getAccess: () => ctoStateService.getCrossMachineAccess(),
+        getLinkedRemoteChats: () => ctoMemoryService.listLinkedRemoteChats(),
       });
       return ctoCrossMachine;
     };
@@ -2342,9 +2347,10 @@ export async function createAdeRuntime(args: {
           prService: headlessLinearServices.prService,
           automationService: automationServiceRef,
           listChats: chat.listSessions,
-          // Only a bridge the CTO's tools already built: the live-state block
-          // must not be what starts reading the account directory.
-          crossMachine: ctoCrossMachine,
+          // Building the bridge reads nothing. The block's other-machine rows
+          // read in the background at most once a minute, per CTO turn, and
+          // nothing while the switch in Settings › CTO is off.
+          crossMachine: getCtoCrossMachine(),
         };
       },
     });
@@ -4233,6 +4239,8 @@ export async function createAdeRuntime(args: {
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
         accountLanesRef.note?.();
+        // Closes work linked to a PR that merged or closed. Never rejects.
+        void ctoMemoryService.reconcileLinkedWork();
       }
       if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
         const notification: PushPrNotification = {
@@ -4869,6 +4877,20 @@ export async function createAdeRuntime(args: {
       }));
     });
     accountLanesRef.note();
+    // A work item linked to a PR or a chat closes itself when that PR merges
+    // or closes or that chat settles as done. Checked on every read of the
+    // list (each CTO turn, the side panel) and whenever PRs change.
+    ctoMemoryService.setLinkedWorkResolver({
+      prState: (prNumber) => headlessLinearServices.prService?.getRepoPullRequestState(prNumber) ?? null,
+      chatState: async (link) => {
+        if (link.machineId) return ctoCrossMachine?.peekRemoteChat?.(link.machineId, link.sessionId) ?? null;
+        // The row with its chat's live state: a stored chat row reads "running"
+        // between turns, so only the projection can say it came to rest.
+        const row = await getSessionWithChatProjection({ sessionService, ptyService, agentChatService, logger }, link.sessionId);
+        if (!row) return null;
+        return { done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: row.statusNote?.trim() || null };
+      },
+    });
     headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
       emitPrEvent,
       (event) => {

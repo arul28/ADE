@@ -14466,7 +14466,7 @@ export function registerIpc({
   handle(IPC.ctoGetMemory, async (_event, _arg: CtoGetMemoryArgs = {}): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    return ctx.ctoMemoryService.getSnapshot();
+    return ctx.ctoMemoryService.getReconciledSnapshot();
   });
 
   handle(IPC.ctoUpdateNotes, async (_event, arg: CtoUpdateNotesArgs): Promise<CtoMemorySnapshot> => {

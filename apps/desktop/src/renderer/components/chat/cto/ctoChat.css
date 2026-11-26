@@ -281,6 +281,11 @@ button.ade-cto-working-line:focus-visible {
   opacity: 0;
   transition: opacity 160ms ease;
 }
+/* Unseen until hover, so it gives back the turn-end line's own margins: the
+   row gap alone separates it from the reply and the event rows after it. */
+.ade-cto-turnend > .group\/turnend {
+  margin-block: 0;
+}
 .ade-cto-turnend:hover,
 .ade-cto-turnend:focus-within,
 [data-chat-row-key]:hover .ade-cto-turnend {
@@ -296,93 +301,108 @@ button.ade-cto-working-line:focus-visible {
   --learned-accent: var(--cto-accent, var(--chat-accent, var(--color-accent)));
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  min-width: 0;
   max-width: var(--chat-content-width, 52rem);
-  padding: 8px 10px 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--learned-accent) 16%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--learned-accent) 5%, transparent);
   font-family: var(--font-sans);
   font-size: calc(var(--chat-font-size, 14px) * 11.5 / 14);
-  color: color-mix(in srgb, var(--color-fg) 72%, transparent);
+  line-height: 20px;
+  color: color-mix(in srgb, var(--color-fg) 52%, transparent);
 }
 
-.ade-cto-learned-head {
+/* One line: icon, verb, the note clipped, Undo at the end. */
+.ade-cto-learned-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ade-cto-learned-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: calc(var(--chat-font-size, 14px) * 10.5 / 14);
-  font-weight: 560;
-  color: color-mix(in srgb, var(--color-fg) 58%, transparent);
-}
-
-.ade-cto-learned-icon {
-  color: color-mix(in srgb, var(--learned-accent) 85%, var(--color-fg));
-}
-
-.ade-cto-learned-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.ade-cto-learned-item {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
   min-width: 0;
-  padding: 2px 0;
-}
-
-.ade-cto-learned-area {
-  flex-shrink: 0;
-  width: 5.5em;
-  font-weight: 560;
-  color: color-mix(in srgb, var(--color-fg) 82%, transparent);
-}
-
-.ade-cto-learned-text {
-  flex: 1;
-  min-width: 0;
-  line-height: 1.45;
-}
-
-.ade-cto-learned-op,
-.ade-cto-learned-detail {
-  color: color-mix(in srgb, var(--color-fg) 45%, transparent);
-}
-
-.ade-cto-learned-item[data-op="removed"] .ade-cto-learned-line {
-  text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--color-fg) 35%, transparent);
-}
-
-.ade-cto-learned-item[data-undone="true"] .ade-cto-learned-text {
-  opacity: 0.5;
-}
-
-.ade-cto-learned-undo,
-.ade-cto-learned-undone {
-  flex-shrink: 0;
-  font-size: calc(var(--chat-font-size, 14px) * 10.5 / 14);
-}
-
-.ade-cto-learned-undo {
-  padding: 1px 8px;
-  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
-  border-radius: 999px;
+  max-width: 100%;
+  padding: 0 4px;
+  margin-left: -4px;
+  border: 0;
+  border-radius: 6px;
   background: transparent;
-  color: color-mix(in srgb, var(--color-fg) 66%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
 }
 
+.ade-cto-learned-toggle:hover {
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: color-mix(in srgb, var(--color-fg) 70%, transparent);
+}
+
+.ade-cto-learned-toggle:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--learned-accent) 55%, transparent);
+  outline-offset: 1px;
+}
+
+.ade-cto-learned-icon {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--learned-accent) 80%, var(--color-fg));
+}
+
+.ade-cto-learned-verb {
+  flex-shrink: 0;
+  font-weight: 560;
+  color: color-mix(in srgb, var(--color-fg) 68%, transparent);
+}
+
+.ade-cto-learned-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-cto-learned-text[data-op="removed"],
+.ade-cto-learned-item[data-op="removed"] .ade-cto-learned-full {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+
+.ade-cto-learned-more {
+  flex-shrink: 0;
+  color: color-mix(in srgb, var(--color-fg) 38%, transparent);
+}
+
+.ade-cto-learned-line[data-undone="true"] .ade-cto-learned-toggle {
+  opacity: 0.55;
+}
+
+/* Undo is a word, not a button shape: the row stays a line. */
+.ade-cto-learned-undo,
+.ade-cto-learned-undone {
+  flex-shrink: 0;
+  font-size: calc(var(--chat-font-size, 14px) * 11 / 14);
+}
+
+.ade-cto-learned-undo {
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-fg) 42%, transparent);
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
 .ade-cto-learned-undo:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
   color: var(--color-fg);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ade-cto-learned-undo:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--learned-accent) 55%, transparent);
 }
 
 .ade-cto-learned-undo:disabled {
@@ -391,7 +411,52 @@ button.ade-cto-working-line:focus-visible {
 }
 
 .ade-cto-learned-undone {
-  color: color-mix(in srgb, var(--color-fg) 40%, transparent);
+  color: color-mix(in srgb, var(--color-fg) 36%, transparent);
+}
+
+/* Opened: the whole text, hung under the line's text. */
+.ade-cto-learned-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px 18px;
+  padding: 0 0 0 10px;
+  border-left: 1px solid color-mix(in srgb, var(--learned-accent) 22%, transparent);
+  list-style: none;
+}
+
+.ade-cto-learned-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ade-cto-learned-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.45;
+}
+
+.ade-cto-learned-area {
+  font-size: calc(var(--chat-font-size, 14px) * 10.5 / 14);
+  color: color-mix(in srgb, var(--color-fg) 42%, transparent);
+}
+
+.ade-cto-learned-full {
+  color: color-mix(in srgb, var(--color-fg) 72%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.ade-cto-learned-aside {
+  color: color-mix(in srgb, var(--color-fg) 42%, transparent);
+  overflow-wrap: anywhere;
+}
+
+.ade-cto-learned-item[data-undone="true"] .ade-cto-learned-body {
+  opacity: 0.5;
 }
 
 /* ── Spawn rows: "Started a new task" and the background tasks group ── */

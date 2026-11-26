@@ -1,18 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import {
-  CTO_OPEN_WORK_MAX_DONE,
-  CTO_OPEN_WORK_MAX_OPEN,
   CTO_PROJECT_NOTES_MAX_BYTES,
   CTO_RULES_MAX_BYTES,
   CTO_USER_NOTES_MAX_BYTES,
   type CtoMemorySnapshot,
   type CtoNotesFile,
   type CtoNotesScope,
-  type CtoOpenWorkItem,
-  type CtoUpdateOpenWorkArgs,
 } from "../../../shared/types/cto";
+import { createCtoOpenWork } from "./ctoOpenWork";
+
+export type { CtoLinkedWorkResolver, CtoOpenWorkResult } from "./ctoOpenWork";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
@@ -54,6 +52,8 @@ type CtoMemoryServiceArgs = {
   logger?: Logger | null;
   /** After notes or open work change, e.g. so the account copy is saved again. */
   onChanged?: (() => void) | null;
+  /** Linked work items closed themselves (their chat or PR finished). */
+  onLinkedWorkClosed?: ((count: number) => void) | null;
   /** The archive store; defaults to `.ade/cto/archive.db` (`ctoMemoryArchive.ts`). */
   archive?: CtoMemoryArchive | null;
 };
@@ -83,10 +83,6 @@ type CtoMemoryServiceArgs = {
  */
 
 const NOTE_MAX_CHARS = 400;
-const OPEN_WORK_TEXT_MAX_CHARS = 300;
-const OPEN_WORK_OUTCOME_MAX_CHARS = 120;
-/** Done items shown in the injected list, newest first. */
-const OPEN_WORK_INJECTED_DONE = 5;
 /** A new note this close to an existing one is the same note said again. */
 const NEAR_DUPLICATE_SIMILARITY = 0.8;
 /** How many candidate lines an ambiguous `replaces`/`forget` lists back. */
@@ -165,28 +161,6 @@ function notesFullMessage(bytes: number, limit: number): string {
   return `Notes are full (${bytes} of ${limit} bytes). Merge or forget notes first.`;
 }
 
-function newWorkId(): string {
-  return `w-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-}
-
-function normalizeOpenWorkItem(value: unknown): CtoOpenWorkItem | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  const id = typeof record.id === "string" ? record.id.trim() : "";
-  const text = typeof record.text === "string" ? record.text.trim() : "";
-  if (!id || !text) return null;
-  const createdAt = typeof record.createdAt === "string" && record.createdAt.trim() ? record.createdAt : nowIso();
-  const doneAt = typeof record.doneAt === "string" && record.doneAt.trim() ? record.doneAt : null;
-  return { id, text, createdAt, doneAt, addedBy: record.addedBy === "user" ? "user" : "cto" };
-}
-
-/** Open items oldest first (a checklist), then finished ones newest first. */
-function orderOpenWork(items: readonly CtoOpenWorkItem[]): CtoOpenWorkItem[] {
-  const open = items.filter((item) => !item.doneAt).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const done = items.filter((item) => item.doneAt).sort((a, b) => (b.doneAt ?? "").localeCompare(a.doneAt ?? ""));
-  return [...open, ...done];
-}
-
 /** A move that never loses the source: an existing target gets a stamped name. */
 function moveAside(source: string, targetDir: string): void {
   if (!fs.existsSync(source)) return;
@@ -222,10 +196,6 @@ export type CtoRememberResult =
 export type CtoForgetResult =
   | { ok: true; forgotten: string; scope: CtoNotesScope }
   | { ok: false; error: string; candidates?: string[] };
-
-export type CtoOpenWorkResult =
-  | { ok: true; item: CtoOpenWorkItem }
-  | { ok: false; error: string };
 
 /** A write that needed the archive to keep a note, when the archive write failed. */
 const NOT_ARCHIVED_ERROR = "Couldn't save to the archive, so the notes did not change. Try again.";
@@ -264,6 +234,14 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       error: error instanceof Error ? error.message : String(error),
     });
   };
+
+  const openWork = createCtoOpenWork({
+    path: openWorkPath,
+    logger,
+    onChanged: () => args.onChanged?.(),
+    onLinkedWorkClosed: (count) => args.onLinkedWorkClosed?.(count),
+  });
+  const { readOpenWork } = openWork;
 
   const notesPath = (scope: CtoNotesScope): string => (scope === "user" ? userNotesPath() : memoryPath);
   const notesLimit = (scope: CtoNotesScope): number =>
@@ -459,59 +437,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     return { ok: true, forgotten, scope };
   };
 
-  /* ── Open work ── */
-
-  const readOpenWork = (): CtoOpenWorkItem[] => {
-    const raw = readFileOrEmpty(openWorkPath);
-    if (!raw.trim()) return [];
-    try {
-      const parsed = JSON.parse(raw) as { items?: unknown };
-      const items = Array.isArray(parsed?.items) ? parsed.items : [];
-      return orderOpenWork(items.map(normalizeOpenWorkItem).filter((item): item is CtoOpenWorkItem => item != null));
-    } catch (error) {
-      // Moved aside, not left to be overwritten: the next write would replace
-      // the only copy of the list, and a hand edit gone wrong is worth reading.
-      const asidePath = `${openWorkPath}.corrupt-${Date.now()}`;
-      try {
-        fs.renameSync(openWorkPath, asidePath);
-        warn("cto_memory.open_work_unreadable", error, { movedTo: asidePath });
-      } catch (renameError) {
-        warn("cto_memory.open_work_unreadable", error, {
-          moveFailed: renameError instanceof Error ? renameError.message : String(renameError),
-        });
-      }
-      return [];
-    }
-  };
-
-  const writeOpenWork = (items: readonly CtoOpenWorkItem[]): void => {
-    const ordered = orderOpenWork(items);
-    // Finished items past the cap go oldest first; open ones are never dropped.
-    const open = ordered.filter((item) => !item.doneAt);
-    const done = ordered.filter((item) => item.doneAt).slice(0, CTO_OPEN_WORK_MAX_DONE);
-    writeTextAtomic(openWorkPath, `${JSON.stringify({ version: 1, items: [...open, ...done] }, null, 2)}\n`);
-    args.onChanged?.();
-  };
-
-  /** The open-work file as it is on disk, for the account copy; null when there is none. */
-  const readOpenWorkText = (): string | null => {
-    try {
-      return fs.readFileSync(openWorkPath, "utf8");
-    } catch {
-      return null;
-    }
-  };
-
-  /** Puts a copy's open-work file in place; null removes this machine's list. */
-  const replaceOpenWorkText = (text: string | null): void => {
-    if (text == null) {
-      fs.rmSync(openWorkPath, { force: true });
-      return;
-    }
-    fs.mkdirSync(path.dirname(openWorkPath), { recursive: true });
-    writeTextAtomic(openWorkPath, text);
-  };
-
   /**
    * The story so far (`ctoStory.ts`): a summary of the conversation older
    * than what a fresh thread carries word for word. Null when there is none.
@@ -583,74 +508,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       if (versions.length) archive?.addMany(versions);
     }
     args.onChanged?.();
-  };
-
-  const trackWork = (text: string, addedBy: CtoOpenWorkItem["addedBy"] = "cto"): CtoOpenWorkResult => {
-    const normalized = clipText(redactSecrets(text.replace(/\s+/g, " ").trim()), OPEN_WORK_TEXT_MAX_CHARS);
-    if (!normalized.length) return { ok: false, error: "Say what the work is." };
-    const items = readOpenWork();
-    if (items.filter((item) => !item.doneAt).length >= CTO_OPEN_WORK_MAX_OPEN) {
-      return { ok: false, error: `Open work is full (${CTO_OPEN_WORK_MAX_OPEN} items). Finish or remove one first.` };
-    }
-    const existingIds = new Set(items.map((item) => item.id));
-    let id = newWorkId();
-    while (existingIds.has(id)) id = newWorkId();
-    const item: CtoOpenWorkItem = { id, text: normalized, createdAt: nowIso(), doneAt: null, addedBy };
-    writeOpenWork([...items, item]);
-    return { ok: true, item };
-  };
-
-  const updateItem = (
-    id: string,
-    change: (item: CtoOpenWorkItem) => CtoOpenWorkItem | null,
-  ): CtoOpenWorkResult => {
-    const key = id.trim();
-    const items = readOpenWork();
-    const current = items.find((item) => item.id === key);
-    if (!current) return { ok: false, error: `No open-work item has id "${key}".` };
-    const updated = change(current);
-    if (!updated) return { ok: false, error: `Item "${key}" cannot change that way.` };
-    writeOpenWork(items.map((item) => (item.id === key ? updated : item)));
-    return { ok: true, item: updated };
-  };
-
-  const finishWork = (id: string, outcome?: string | null): CtoOpenWorkResult =>
-    updateItem(id, (item) => {
-      if (item.doneAt) return item;
-      const note = outcome?.replace(/\s+/g, " ").trim();
-      return {
-        ...item,
-        text: note ? `${item.text} (${clipText(redactSecrets(note), OPEN_WORK_OUTCOME_MAX_CHARS)})` : item.text,
-        doneAt: nowIso(),
-      };
-    });
-
-  const reopenWork = (id: string): CtoOpenWorkResult => {
-    if (readOpenWork().filter((item) => !item.doneAt).length >= CTO_OPEN_WORK_MAX_OPEN) {
-      return { ok: false, error: `Open work is full (${CTO_OPEN_WORK_MAX_OPEN} items). Finish or remove one first.` };
-    }
-    return updateItem(id, (item) => ({ ...item, doneAt: null }));
-  };
-
-  const removeWork = (id: string): CtoOpenWorkResult => {
-    const key = id.trim();
-    const items = readOpenWork();
-    const current = items.find((item) => item.id === key);
-    if (!current) return { ok: false, error: `No open-work item has id "${key}".` };
-    writeOpenWork(items.filter((item) => item.id !== key));
-    return { ok: true, item: current };
-  };
-
-  /** The settings and panel path: the person's own edits to the list. */
-  const updateOpenWork = (change: CtoUpdateOpenWorkArgs): void => {
-    const result = change.op === "add"
-      ? trackWork(change.text, "user")
-      : change.op === "complete"
-        ? finishWork(change.id)
-        : change.op === "reopen"
-          ? reopenWork(change.id)
-          : removeWork(change.id);
-    if (!result.ok) throw new AdeExpectedError(result.error, "user");
   };
 
   /* ── Discoveries ── */
@@ -876,6 +733,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     };
   };
 
+  /** The snapshot a reader shows: linked items whose chat or PR closed are closed first. */
+  const getReconciledSnapshot = async (): Promise<CtoMemorySnapshot> => {
+    await openWork.reconcileLinkedWork();
+    return getSnapshot();
+  };
+
   /**
    * The memory half of the CTO's per-turn context: project notes, notes about
    * the person, and open work. Rebuilt on every turn; each title carries the
@@ -884,13 +747,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const buildMemoryContextSections = (): Array<{ title: string; body: string }> => {
     const project = readNotes("project").trim();
     const user = readNotes("user").trim();
-    const items = readOpenWork();
-    const open = items.filter((item) => !item.doneAt);
-    const done = items.filter((item) => item.doneAt).slice(0, OPEN_WORK_INJECTED_DONE);
-    const workLines = [
-      ...open.map((item) => `- [ ] ${item.id}: ${item.text}`),
-      ...done.map((item) => `- [x] ${item.id}: ${item.text} (done)`),
-    ];
+    const workLines = openWork.contextLines();
     return [
       ...learning.buildContextSections(),
       {
@@ -949,16 +806,20 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     remember,
     forget,
     readOpenWork,
-    readOpenWorkText,
-    replaceOpenWorkText,
+    readOpenWorkText: openWork.readOpenWorkText,
+    replaceOpenWorkText: openWork.replaceOpenWorkText,
     readStory,
     writeStory,
-    trackWork,
-    finishWork,
-    updateOpenWork,
+    trackWork: openWork.trackWork,
+    finishWork: openWork.finishWork,
+    updateOpenWork: openWork.updateOpenWork,
+    reconcileLinkedWork: openWork.reconcileLinkedWork,
+    setLinkedWorkResolver: openWork.setLinkedWorkResolver,
+    listLinkedRemoteChats: openWork.listLinkedRemoteChats,
     recordDiscovery,
     readNewDiscoveries,
     getSnapshot,
+    getReconciledSnapshot,
     buildMemoryContextSections,
     readRules: learning.readRules,
     readUndone: learning.readUndone,

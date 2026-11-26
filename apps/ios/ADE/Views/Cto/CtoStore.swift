@@ -695,22 +695,23 @@ final class CtoStore: ObservableObject {
   // MARK: Open work
 
   @discardableResult
-  func addOpenWork(_ text: String) async -> Bool {
+  /// `owner` is "user" for "Waiting on you", "cto" for "I'm tracking".
+  func addOpenWork(_ text: String, owner: String = "cto") async -> Bool {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return false }
     if isFixture {
       var items = memory?.openWork ?? []
-      items.insert(CtoOpenWorkItem(id: UUID().uuidString, text: trimmed, createdAt: nil, doneAt: nil, addedBy: "user"), at: 0)
+      items.insert(CtoOpenWorkItem(id: UUID().uuidString, text: trimmed, createdAt: nil, doneAt: nil, addedBy: "user", owner: owner), at: 0)
       memory?.openWork = items
       return true
     }
-    return await writeOpenWork(key: "__add__") { try await $0.updateCtoOpenWork(op: "add", text: trimmed) }
+    return await writeOpenWork(key: "__add__") { try await $0.updateCtoOpenWork(op: "add", text: trimmed, owner: owner) }
   }
 
   func toggleOpenWork(_ item: CtoOpenWorkItem) async {
     if isFixture {
       guard var items = memory?.openWork, let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-      items[index].doneAt = item.isDone ? nil : "2026-11-14T09:00:00Z"
+      items[index].doneAt = item.isDone ? nil : ISO8601DateFormatter().string(from: Date())
       memory?.openWork = items
       return
     }

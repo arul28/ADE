@@ -67,7 +67,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     updateOpenWork: {
       description: "Add, complete, reopen or remove one open-work item on the CTO's list. CTO-only.",
-      input: "object { op: \"add\", text: string } | { op: \"complete\" | \"reopen\" | \"remove\", id: string }",
+      input: "object { op: \"add\", text: string, owner?: \"user\" | \"cto\" } | { op: \"complete\" | \"reopen\" | \"remove\", id: string }",
       example: "ade --role cto actions run cto_memory.updateOpenWork --input-json '{\"op\":\"add\",\"text\":\"Land the login fix\"}' --json",
     },
     getSkill: {

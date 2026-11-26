@@ -1,17 +1,20 @@
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useId, useState } from "react";
 import { Lightbulb } from "@phosphor-icons/react";
 import {
   CTO_LEARNED_AREA_LABEL,
+  type CtoLearnedArea,
   type CtoLearnedChange,
 } from "../../../../shared/types/chat";
 import { showToast } from "../../app/toast/toastStore";
 import { useChatRuntimeScope } from "../ChatRuntimeScope";
 import "./ctoChat.css";
 
-const OP_WORD: Record<CtoLearnedChange["op"], string | null> = {
-  added: null,
-  changed: "Sharpened",
-  removed: "Removed",
+/** The verb a change reads as, by what it changed and how. */
+const VERB: Record<CtoLearnedArea, Record<CtoLearnedChange["op"], string>> = {
+  project_notes: { added: "Remembered", changed: "Updated a note", removed: "Forgot" },
+  user_notes: { added: "Noted about you", changed: "Updated a note about you", removed: "Forgot about you" },
+  rules: { added: "New rule", changed: "Sharpened a rule", removed: "Dropped a rule" },
+  skill: { added: "Saved a skill", changed: "Updated a skill", removed: "Deleted a skill" },
 };
 
 function changeTitle(change: CtoLearnedChange): string {
@@ -22,15 +25,19 @@ function changeTitle(change: CtoLearnedChange): string {
 }
 
 /**
- * What one CTO turn changed in its rules, skills and notes, with an Undo per
- * change. Undo goes to the chat's machine (its pin); the host draws the row
- * again with the change marked undone, so this row keeps no undone state of
- * its own beyond the call in flight.
+ * What one CTO turn changed in its rules, skills and notes: one quiet line
+ * ("Remembered · <the note>"), the whole text on hover and on click. A single
+ * change has its Undo on the line; several list their own Undo when opened.
+ * Undo goes to the chat's machine (its pin); the host draws the row again
+ * with the change marked undone, so this row keeps no undone state of its own
+ * beyond the call in flight.
  */
 export function CtoLearnedRow({ learnId, changes }: { learnId: string; changes: readonly CtoLearnedChange[] }) {
   const { pin } = useChatRuntimeScope();
   const [pending, setPending] = useState<string | null>(null);
-  const undo = window.ade?.cto?.undoLearned;
+  const [open, setOpen] = useState(false);
+  const detailId = useId();
+  const canUndo = Boolean(window.ade?.cto?.undoLearned && pin);
 
   const runUndo = useCallback(async (changeId: string) => {
     const call = window.ade?.cto?.undoLearned;
@@ -51,46 +58,64 @@ export function CtoLearnedRow({ learnId, changes }: { learnId: string; changes: 
     }
   }, [learnId, pin]);
 
+  const first = changes[0];
+  if (!first) return null;
+  const single = changes.length === 1;
+  const allUndone = changes.every((change) => change.undone);
+  const more = changes.length - 1;
+
+  const undoControl = (change: CtoLearnedChange) => (change.undone ? (
+    <span className="ade-cto-learned-undone">Undone</span>
+  ) : canUndo ? (
+    <button
+      type="button"
+      className="ade-cto-learned-undo"
+      disabled={pending != null}
+      onClick={() => { void runUndo(change.id); }}
+      aria-label={`Undo: ${change.text}`}
+    >
+      {pending === change.id ? "Undoing…" : "Undo"}
+    </button>
+  ) : null);
+
   return (
-    <div className="ade-cto-learned" data-testid="cto-learned-row">
-      <div className="ade-cto-learned-head">
-        <Lightbulb size={12} weight="regular" className="ade-cto-learned-icon" aria-hidden />
-        <span>Learned</span>
+    <div className="ade-cto-learned" data-testid="cto-learned-row" data-open={open ? "true" : undefined}>
+      <div className="ade-cto-learned-line" data-undone={allUndone ? "true" : undefined}>
+        <button
+          type="button"
+          className="ade-cto-learned-toggle"
+          aria-expanded={open}
+          aria-controls={detailId}
+          title={changes.map(changeTitle).join("\n\n")}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <Lightbulb size={12} weight="regular" className="ade-cto-learned-icon" aria-hidden />
+          <span className="ade-cto-learned-verb">{VERB[first.area][first.op]}</span>
+          <span className="ade-cto-learned-text" data-op={first.op}>{first.text}</span>
+          {more > 0 ? <span className="ade-cto-learned-more">+{more} more</span> : null}
+        </button>
+        {single ? undoControl(first) : null}
       </div>
-      <ul className="ade-cto-learned-list">
-        {changes.map((change) => {
-          const opWord = OP_WORD[change.op];
-          return (
+      {open ? (
+        <ul id={detailId} className="ade-cto-learned-list">
+          {changes.map((change) => (
             <li
               key={change.id}
               className="ade-cto-learned-item"
               data-undone={change.undone ? "true" : undefined}
               data-op={change.op}
-              title={changeTitle(change)}
             >
-              <span className="ade-cto-learned-area">{CTO_LEARNED_AREA_LABEL[change.area]}</span>
-              <span className="ade-cto-learned-text">
-                {opWord ? <span className="ade-cto-learned-op">{opWord} · </span> : null}
-                <span className="ade-cto-learned-line">{change.text}</span>
-                {change.detail ? <span className="ade-cto-learned-detail"> · {change.detail}</span> : null}
+              <span className="ade-cto-learned-body">
+                <span className="ade-cto-learned-area">{single ? CTO_LEARNED_AREA_LABEL[change.area] : VERB[change.area][change.op]}</span>
+                <span className="ade-cto-learned-full">{change.text}</span>
+                {change.detail ? <span className="ade-cto-learned-aside">{change.detail}</span> : null}
+                {change.previous ? <span className="ade-cto-learned-aside">Was: {change.previous}</span> : null}
               </span>
-              {change.undone ? (
-                <span className="ade-cto-learned-undone">Undone</span>
-              ) : undo && pin ? (
-                <button
-                  type="button"
-                  className="ade-cto-learned-undo"
-                  disabled={pending != null}
-                  onClick={() => { void runUndo(change.id); }}
-                  aria-label={`Undo: ${change.text}`}
-                >
-                  {pending === change.id ? "Undoing…" : "Undo"}
-                </button>
-              ) : null}
+              {single ? null : undoControl(change)}
             </li>
-          );
-        })}
-      </ul>
+          ))}
+        </ul>
+      ) : null}
     </div>
   );
 }

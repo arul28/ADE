@@ -413,6 +413,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // (`cto_learned_undo`, `completed`). Never the rule, skill, note or chat.
   "cto_learned",
   "cto_learned_undo",
+  // A CTO open-work item closed itself when its linked chat or PR finished
+  // (`cto_work_auto_closed`, `completed`, automatic). Never the item or link.
+  "cto_work_auto_closed",
   // What became of a handoff's transcript replay. Cross-provider handoffs carry
   // the conversation as text, and the only product question is whether it
   // arrives: whole, in part, not at all, or only after ADE re-sent the message

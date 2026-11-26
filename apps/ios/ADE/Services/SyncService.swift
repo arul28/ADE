@@ -12960,11 +12960,13 @@ final class SyncService: ObservableObject {
   }
 
   /// `op`: add (with `text`), complete, reopen or remove (with `id`).
-  func updateCtoOpenWork(op: String, text: String? = nil, id: String? = nil) async throws -> CtoMemory {
+  /// `owner` ("user" or "cto") on an add; an older host ignores it and files the item as the CTO's.
+  func updateCtoOpenWork(op: String, text: String? = nil, id: String? = nil, owner: String? = nil) async throws -> CtoMemory {
     let target = try ctoCommandTarget()
     var args: [String: Any] = ["op": op]
     if let text { args["text"] = text }
     if let id { args["id"] = id }
+    if let owner { args["owner"] = owner }
     return try await sendDecodableCommand(
       action: "cto.updateOpenWork",
       args: args,

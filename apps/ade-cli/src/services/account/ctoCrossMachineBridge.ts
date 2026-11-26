@@ -26,9 +26,11 @@
  * own dispatcher under the same identity (`createCtoActionCaller`), so both
  * paths apply one policy.
  *
- * Cost: nothing here reads the account directory until a cross-machine tool
- * runs. After that the live-state roster refreshes in the background at most
- * every few minutes, and never while signed out or turned off.
+ * Cost: the roster reads nothing on its own. A CTO turn's live-state read
+ * (`peekRemoteWork`) reads the account's machines and each online machine's
+ * lanes and working chats in the background, at most once a minute and only
+ * while CTO turns happen: never on a timer, never while signed out or turned
+ * off, and never waking an asleep machine.
  *
  * The user's switch (Settings › CTO, "Let the CTO reach my other machines")
  * turns all of it off.
@@ -42,6 +44,8 @@ import {
   ctoCallerInitializeParams,
 } from "../../../../desktop/src/shared/runtimeClientNames";
 import type { AdeAccountMachine } from "../../../../desktop/src/shared/types/account";
+import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
+import { isTerminalSessionDone, isTrackedAgentCliToolType, sessionRestedAt } from "../../../../desktop/src/shared/types/sessions";
 import {
   CTO_CROSS_MACHINE_DISABLED_MESSAGE,
   type CtoCrossMachineDeps,
@@ -50,6 +54,8 @@ import {
   type CtoMachineActionInfo,
   type CtoMachineTarget,
   type CtoRemoteActionCall,
+  type CtoRemoteChat,
+  type CtoRemoteMachineWork,
 } from "../../../../desktop/src/main/services/ai/tools/ctoCrossMachine";
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import type { CtoActionCaller } from "../../adeRpcServer";
@@ -75,6 +81,18 @@ const ROSTER_REFRESH_MS = 5 * 60_000;
 const LIST_PER_MACHINE_BUDGET_MS = 20_000;
 /** The live-state roster is a glance, not a directory dump. */
 const ROSTER_MAX_MACHINES = 12;
+/** How often a CTO turn may re-read the other machines' lanes and chats. */
+const REMOTE_WORK_REFRESH_MS = 60_000;
+/** One slow machine must not hold the others' rows back. */
+const REMOTE_WORK_PER_MACHINE_BUDGET_MS = 12_000;
+/** Working chats kept per machine; the rest are a count. */
+const REMOTE_WORK_MAX_CHATS = 8;
+/** Lanes kept per machine, for matching open PRs to the lane that opened them. */
+const REMOTE_WORK_MAX_LANES = 200;
+/** Linked chats looked up by id per machine read, beyond its chat list. */
+const REMOTE_WORK_MAX_LINKED_LOOKUPS = 10;
+/** How long a machine found without this project is left out of work reads. */
+const REMOTE_WORK_NO_PROJECT_RECHECK_MS = 10 * 60_000;
 /** An all-domain action listing names actions only; one domain also carries inputs. */
 const ACTION_LIST_MAX_ROWS = 600;
 
@@ -114,6 +132,12 @@ export type CtoCrossMachineBridgeOptions = {
   getLocalActionCaller?: () => Promise<CtoActionCaller> | null;
   /** Read on every call; absent means on. */
   getAccess?: () => CtoCrossMachineAccess;
+  /**
+   * Chats on other machines that open work items link to. Each machine's work
+   * read looks these up by id when its chat list does not carry them (archived,
+   * or settled long ago), so the item still learns the chat is done.
+   */
+  getLinkedRemoteChats?: () => Array<{ machineId: string; sessionId: string }>;
   logger?: {
     info(event: string, meta?: Record<string, unknown>): void;
     warn(event: string, meta?: Record<string, unknown>): void;
@@ -363,6 +387,149 @@ export function createCtoCrossMachineBridge(
     }
   };
 
+  /** A session row as a linked work item needs it, or null for a row without an id. */
+  const knownChat = (row: Record<string, unknown>): NonNullable<CtoRemoteMachineWork["known"]>[number] | null => {
+    const sessionId = typeof row.id === "string" ? row.id : "";
+    if (!sessionId) return null;
+    const statusLine = typeof row.statusNote === "string" ? row.statusNote.trim() : "";
+    return { sessionId, done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: statusLine || null };
+  };
+
+  /** When each machine was last found without this project (work reads skip it for a while). */
+  const noProjectSeenAt = new Map<string, number>();
+
+  /**
+   * One machine's lanes and working chats, or null when it has no checkout of
+   * this project. Two light reads: lane rows without git status, and session
+   * rows (title, lane, runtime state, status line) rather than chat summaries.
+   */
+  const readMachineWork = async (machine: AdeAccountMachine): Promise<CtoRemoteMachineWork | null> => {
+    const startedAt = Date.now();
+    const base = { machineId: machine.machineKey, name: machineName(machine), readAt: new Date().toISOString() };
+    // The switch may have been turned off while this read waited its turn.
+    if (!access().enabled) return null;
+    try {
+      const [lanes, sessions] = await Promise.all([
+        callOnMachine(machine, {
+          domain: "lane",
+          action: "list",
+          args: { includeArchived: false, includeStatus: false },
+          timeoutMs: 10_000,
+        }),
+        callOnMachine(machine, {
+          domain: "session",
+          action: "list",
+          // The newest 80 unsettled chats and 30 settled ones: enough for the
+          // working list (8 shown). A linked chat outside them is read by id
+          // below.
+          args: { includeArchived: false, limit: 80, settledLimit: 30 },
+          timeoutMs: 10_000,
+        }),
+      ]);
+      const laneRows = Array.isArray(lanes) ? lanes.filter(isRecord) : [];
+      const laneNameById = new Map<string, string>();
+      const laneList: CtoRemoteMachineWork["lanes"] = [];
+      for (const lane of laneRows) {
+        const id = typeof lane.id === "string" ? lane.id : "";
+        const name = typeof lane.name === "string" ? lane.name : "";
+        const branch = typeof lane.branchRef === "string" ? lane.branchRef.replace(/^refs\/heads\//, "") : "";
+        if (id && name) laneNameById.set(id, name);
+        if (name && branch && laneList.length < REMOTE_WORK_MAX_LANES) laneList.push({ name, branch });
+      }
+      const working: CtoRemoteChat[] = [];
+      const known: NonNullable<CtoRemoteMachineWork["known"]> = [];
+      for (const row of Array.isArray(sessions) ? sessions.filter(isRecord) : []) {
+        const toolType = typeof row.toolType === "string" ? row.toolType : null;
+        if (!isChatToolType(toolType) && !isTrackedAgentCliToolType(toolType as never)) continue;
+        const entry = knownChat(row);
+        if (!entry) continue;
+        known.push(entry);
+        if (entry.done || row.status !== "running") continue;
+        const runtimeState = row.runtimeState;
+        if (runtimeState !== "running" && runtimeState !== "waiting-input") continue;
+        const laneId = typeof row.laneId === "string" ? row.laneId : "";
+        working.push({
+          sessionId: entry.sessionId,
+          title: (typeof row.title === "string" ? row.title.trim() : "") || "Untitled chat",
+          laneName: laneNameById.get(laneId) ?? (typeof row.laneName === "string" ? row.laneName : null),
+          state: runtimeState === "waiting-input" ? "needs input" : "working",
+          statusLine: entry.statusLine,
+        });
+      }
+      // Linked chats the list left out (archived, or settled long ago): by id,
+      // in what is left of this machine's budget, so a slow lookup never costs
+      // the lists already read.
+      const listed = new Set(known.map((entry) => entry.sessionId));
+      const missing = (options.getLinkedRemoteChats?.() ?? [])
+        .filter((link) => link.machineId === machine.machineKey && !listed.has(link.sessionId))
+        .slice(0, REMOTE_WORK_MAX_LINKED_LOOKUPS);
+      const lookupBudgetMs = REMOTE_WORK_PER_MACHINE_BUDGET_MS - (Date.now() - startedAt) - 1_000;
+      const lookedUp = lookupBudgetMs < 1_000 ? [] : await Promise.all(missing.map((link) => callOnMachine(machine, {
+        domain: "session",
+        action: "get",
+        args: { sessionId: link.sessionId },
+        timeoutMs: Math.min(10_000, lookupBudgetMs),
+      }).then((row) => (isRecord(row) ? knownChat(row) : null), (error: unknown) => {
+        // The machine answered its lists, so this one read failing is news.
+        logger?.warn("cto_cross_machine.linked_chat_read_failed", { error: errorMessage(error) });
+        return null;
+      })));
+      for (const entry of lookedUp) if (entry) known.push(entry);
+      noProjectSeenAt.delete(machine.machineKey);
+      return {
+        ...base,
+        lanes: laneList,
+        chats: working.slice(0, REMOTE_WORK_MAX_CHATS),
+        chatsTotal: working.length,
+        known,
+      };
+    } catch (error) {
+      // `connectToProject` recorded a machine without this project; leave it
+      // out, and look again in a while (it may open the project later).
+      if (hasProjectByMachine.get(machine.machineKey) === false) {
+        noProjectSeenAt.set(machine.machineKey, Date.now());
+        return null;
+      }
+      return { ...base, lanes: [], chats: [], chatsTotal: 0, error: errorMessage(error) };
+    }
+  };
+
+  let remoteWork: { machines: CtoRemoteMachineWork[] } | null = null;
+  let remoteWorkAttemptAt = 0;
+  let remoteWorkRefresh: Promise<void> | null = null;
+  const refreshRemoteWork = async (): Promise<void> => {
+    const machines = await listAccountMachines();
+    if (!access().enabled) {
+      remoteWork = null;
+      return;
+    }
+    const targets = machines
+      .filter((machine) => !isThisMachine(machine)
+        && machine.online
+        // A machine that said it is going to sleep is left asleep.
+        && accountMachinePresence(machine) !== "asleep"
+        && (hasProjectByMachine.get(machine.machineKey) !== false
+          || Date.now() - (noProjectSeenAt.get(machine.machineKey) ?? 0) >= REMOTE_WORK_NO_PROJECT_RECHECK_MS))
+      .slice(0, ROSTER_MAX_MACHINES);
+    const read = await Promise.all(targets.map((machine) => withTimeout(
+      readMachineWork(machine),
+      REMOTE_WORK_PER_MACHINE_BUDGET_MS,
+      `${machineName(machine)} did not answer in time.`,
+    ).catch((error): CtoRemoteMachineWork => ({
+      machineId: machine.machineKey,
+      name: machineName(machine),
+      readAt: new Date().toISOString(),
+      lanes: [],
+      chats: [],
+      chatsTotal: 0,
+      error: errorMessage(error),
+    }))));
+    // Turned off mid-read: keep nothing it learned.
+    remoteWork = access().enabled
+      ? { machines: read.filter((entry): entry is CtoRemoteMachineWork => entry != null) }
+      : null;
+  };
+
   const homeMachine = (): CtoMachineTarget => {
     const local = thisMachine();
     const listed = pool.peekDirectory()?.machines.find(isThisMachine) ?? null;
@@ -455,6 +622,31 @@ export function createCtoCrossMachineBridge(
           hasProject: local ? true : hasProjectByMachine.get(machine.machineKey) ?? null,
         };
       });
+    },
+
+    peekRemoteWork() {
+      if (!access().enabled || !isSignedIn()) {
+        remoteWork = null;
+        return null;
+      }
+      // Spaced by attempt, not success: a failing directory read is retried a
+      // minute later, not on every turn.
+      if (!remoteWorkRefresh && Date.now() - remoteWorkAttemptAt >= REMOTE_WORK_REFRESH_MS) {
+        remoteWorkAttemptAt = Date.now();
+        remoteWorkRefresh = refreshRemoteWork()
+          .catch((error) => {
+            logger?.info("cto_cross_machine.remote_work_read_failed", { error: errorMessage(error) });
+          })
+          .finally(() => { remoteWorkRefresh = null; });
+      }
+      return remoteWork?.machines ?? null;
+    },
+
+    peekRemoteChat(machineId, sessionId) {
+      if (!access().enabled || !isSignedIn()) return null;
+      const machine = remoteWork?.machines.find((entry) => entry.machineId === machineId);
+      const seen = machine?.known?.find((entry) => entry.sessionId === sessionId);
+      return seen ? { done: seen.done, restedAt: seen.restedAt, statusLine: seen.statusLine } : null;
     },
   };
 }
