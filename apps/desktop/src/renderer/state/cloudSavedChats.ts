@@ -293,8 +293,8 @@ export function clearQueuedChatPicks(chatId: string): void {
 const sentChatPicks = new Map<string, Array<{ picks: QueuedChatPicks; sentAtMs: number }>>();
 /** A computer that never saved a newer row: its sent picks stop showing after a day. */
 const SENT_PICKS_MAX_MS = 24 * 60 * 60 * 1000;
-/** The sends kept per chat; an older one's picks are long applied or long gone. */
-const SENT_PICKS_MAX_SENDS = 8;
+/** The sends kept apart per chat: as many as a chat's queue holds open (`CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT`). */
+const SENT_PICKS_MAX_SENDS = 20;
 
 /**
  * The account's queue took a send that carries the picks: drop them, but
@@ -306,8 +306,15 @@ export function noteQueuedChatPicksSent(chatId: string): void {
   queuedChatPicks.delete(chatId);
   if (!picks) return;
   const nowMs = Date.now();
-  const kept = (sentChatPicks.get(chatId) ?? []).filter((sent) => nowMs - sent.sentAtMs < SENT_PICKS_MAX_MS);
-  sentChatPicks.set(chatId, [...kept, { picks, sentAtMs: nowMs }].slice(-SENT_PICKS_MAX_SENDS));
+  const sends = (sentChatPicks.get(chatId) ?? []).filter((sent) => nowMs - sent.sentAtMs < SENT_PICKS_MAX_MS);
+  sends.push({ picks, sentAtMs: nowMs });
+  // Past the cap, the oldest send folds into the next one, so each field keeps its latest choice.
+  while (sends.length > SENT_PICKS_MAX_SENDS) {
+    const oldest = sends.shift();
+    const next = sends[0];
+    if (oldest && next) next.picks = { ...oldest.picks, ...next.picks };
+  }
+  sentChatPicks.set(chatId, sends);
 }
 
 /** This chat's picks, once (a direct send applies them); null when none. */
