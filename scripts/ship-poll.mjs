@@ -70,6 +70,7 @@ const isBot = (login) => /\[bot\]$/.test(login ?? "");
  * @param {object} input
  * @param {{state:string,isDraft:boolean,mergeStateStatus:string,headRefOid:string,baseRefName:string}} input.pr
  * @param {Array<{name:string,state:string,bucket?:string,link?:string}>} input.checks
+ * @param {Array<{name:string,status:string}>} [input.workflowRuns] The head commit's Actions runs.
  * @param {Array} input.issueComments  GitHub issue comments on the PR.
  * @param {Array} input.reviews        GitHub PR reviews.
  * @param {Array} input.threads        GraphQL reviewThreads nodes.
@@ -77,7 +78,7 @@ const isBot = (login) => /\[bot\]$/.test(login ?? "");
  * @param {boolean} input.localAhead   Local HEAD has commits the remote head lacks.
  * @param {object} input.state         Ship state file contents (may be empty).
  */
-export function summarizePoll({ pr, checks, issueComments, reviews, threads, behindBy, localAhead, state }) {
+export function summarizePoll({ pr, checks, workflowRuns = [], issueComments, reviews, threads, behindBy, localAhead, state }) {
   const addressedComments = new Set((state?.addressedCommentIds ?? []).map(Number));
   const addressedFindings = new Set(state?.addressedReviewFindings ?? []);
   const lastPushAt = state?.lastPushAt ?? null;
@@ -86,7 +87,12 @@ export function summarizePoll({ pr, checks, issueComments, reviews, threads, beh
   const botChecks = checks.filter((check) => REVIEW_BOT_CHECK.test(check.name));
   const pending = (check) => PENDING_CHECK_STATES.has(String(check.state).toUpperCase()) || check.bucket === "pending";
   const failed = (check) => check.bucket === "fail" || /^(FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED)$/i.test(check.state);
-  const ciRunning = ciChecks.filter(pending).map((check) => check.name);
+  // A run GitHub queued has no checks until a runner takes its first job, and
+  // `gh pr checks` lists none of it: a busy queue would read as "CI done".
+  const ciRunning = [
+    ...ciChecks.filter(pending).map((check) => check.name),
+    ...workflowRuns.filter((run) => run.status !== "completed").map((run) => `${run.name} (${run.status})`),
+  ];
   const ciFailed = ciChecks.filter(failed).map((check) => ({ name: check.name, link: check.link ?? null }));
   const pendingReviewBots = botChecks.filter(pending).map((check) => check.name);
 
@@ -258,6 +264,10 @@ function main() {
     if (!checksJson) throw error;
   }
   const checks = JSON.parse(checksJson || "[]");
+  const workflowRuns = JSON.parse(run("gh", [
+    "api", `repos/${owner}/${repo}/actions/runs?head_sha=${pr.headRefOid}&per_page=100`,
+    "-q", "[.workflow_runs[] | {name, status}]",
+  ]) || "[]");
   const slurp = (endpoint) => JSON.parse(run("gh", ["api", "--paginate", "--slurp", endpoint])).flat();
   const issueComments = slurp(`repos/${owner}/${repo}/issues/${pr.number}/comments`);
   const reviews = slurp(`repos/${owner}/${repo}/pulls/${pr.number}/reviews`);
@@ -276,7 +286,7 @@ function main() {
     }
   }
   const summary = summarizePoll({
-    pr, checks, issueComments, reviews, threads, behindBy, localAhead, state: readState(statePath),
+    pr, checks, workflowRuns, issueComments, reviews, threads, behindBy, localAhead, state: readState(statePath),
   });
   process.stdout.write(options.text ? `${formatText(summary)}\n` : `${JSON.stringify(summary, null, 2)}\n`);
 }
