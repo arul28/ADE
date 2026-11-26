@@ -22,6 +22,7 @@ import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 /**
@@ -228,13 +229,11 @@ export function SessionInfoPopover({
   const shell = (
     <div
       ref={ref}
-      className="ade-liquid-glass ade-liquid-glass-menu fixed z-[2000] max-h-[min(80dvh,720px)] w-[min(100vw-1rem,22.5rem)] overflow-hidden rounded-2xl border border-fg/[0.08] shadow-2xl"
-      /* `position` inline, not from the `fixed` utility above: this element also
-         carries `.ade-liquid-glass`, which declares `position: relative` at the
-         same specificity as Tailwind's `.fixed` and wins on source order. The
-         hover card hit exactly this and laid out hundreds of pixels below the
-         fold before it was caught. Inline beats both. */
-      style={{ position: "fixed", left, top, width: popoverWidth }}
+      className="ade-liquid-glass ade-liquid-glass-menu max-h-[min(80dvh,720px)] w-[min(100vw-1rem,22.5rem)] overflow-hidden rounded-2xl border border-fg/[0.08] shadow-2xl"
+      /* The host is a viewport-sized fixed layer, so `left`/`top` are viewport
+         coordinates. `position` is inline because `.ade-liquid-glass` declares
+         `position: relative`, which a utility class would lose to. */
+      style={{ position: "absolute", pointerEvents: "auto", left, top, width: popoverWidth }}
     >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-fg/[0.06] bg-[color:color-mix(in_srgb,var(--color-card)_88%,transparent)] px-3 py-2.5 backdrop-blur-md">
         <span className="min-w-0 text-[13px] font-semibold leading-tight text-fg/90">
@@ -410,7 +409,8 @@ export function SessionInfoPopover({
     </div>
   );
 
+  const layer = <ViewportOverlayHost layer="tooltip">{shell}</ViewportOverlayHost>;
   return typeof document !== "undefined" && document.body
-    ? createPortal(shell, document.body)
-    : shell;
+    ? createPortal(layer, document.body)
+    : layer;
 }

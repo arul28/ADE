@@ -269,7 +269,7 @@ export function matchesThreadWorkFacets(
   const filingBucket = effectiveFilingBuckets?.get(entry.session.id)
     ?? sessionFilingBucket(entry.session);
   if (!matchesWorkSearchFilters(parsed.filters, {
-    lane: [entry.laneName],
+    lane: [entry.laneName, entry.session.laneName ?? ""],
     provider: [entry.provider, entry.toolTypeLower],
     status: [
       filingBucket,
