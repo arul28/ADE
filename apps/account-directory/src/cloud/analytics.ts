@@ -219,10 +219,15 @@ export function captureCloudReferral(env: CloudEnv, waitUntil: CloudWaitUntil, u
  * - `github_claimed`: this account's GitHub account now holds its free plan.
  * - `card_unlock_started`: the person opened the card page (no charge) for a too-new GitHub account.
  * - `card_unlocked`: a card saved with no charge unlocked a too-new GitHub account.
+ * Free's Small with sponsored cards (`sponsoredSmall.ts`), counted only when a Small computer's rate moved:
+ * - `small_lapsed`: no US look for 7 days, so the tick put its Small computers on credits.
+ * - `small_restored`: a US look made them free again after a lapse.
+ * Never the answer to the cards, a country or a network.
  */
 export type CloudFreePlanStep =
   | "claimed" | "restored" | "refused" | "id_unreadable" | "unclaimed_use"
-  | "github_missing" | "github_too_new" | "github_used" | "github_check_failed" | "github_released" | "github_claimed" | "card_unlock_started" | "card_unlocked";
+  | "github_missing" | "github_too_new" | "github_used" | "github_check_failed" | "github_released" | "github_claimed" | "card_unlock_started" | "card_unlocked"
+  | "small_lapsed" | "small_restored";
 
 /** One `ade_cloud_free_plan` per account, step and day. The computer's id is never sent. */
 export function captureCloudFreePlan(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string, step: CloudFreePlanStep, platform: string | null, now: number): void {
@@ -302,12 +307,13 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
  * - `rate_limited`: too many new computers or launches in an hour.
  * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
  * - `signup_burst`: sign-ups from one address reached the hourly alarm.
+ * - `small_cloud_look`: a US look that keeps Free's Small free came from the network of the account's own ADE Cloud computers (`sponsoredSmall.ts`; once a week per account).
  */
 export type CloudSafetyStep =
   | "first_chat"
   | "free_cap_50" | "free_cap_80" | "free_cap_100" | "free_cap_refused"
   | "blocked" | "unblocked" | "card_reused" | "blocked_returned"
-  | "rate_limited" | "creates_paused" | "signup_burst";
+  | "rate_limited" | "creates_paused" | "signup_burst" | "small_cloud_look";
 
 /** The distinct id for an owner-wide event that belongs to no account (a cap threshold). */
 const SERVER_DISTINCT_ID = "ade-cloud-server";

@@ -140,6 +140,8 @@ export type ComputerRow = {
   last_awake_at: number | null;
   created_at: number;
   deleted_at: number | null;
+  /** The network (AS number) its brain calls ADE's server from (`sponsoredSmall.ts`, Free Small's tripwire). */
+  net_asn?: number | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
   /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */

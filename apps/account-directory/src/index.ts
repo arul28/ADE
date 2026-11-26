@@ -235,7 +235,7 @@ export default Sentry.withSentry(sentryOptions, {
         //   none is wrong.
         settle("cloud_account", async () => {
           await settle("cloud_account_tests", () => expireAccountTests(env, event.scheduledTime));
-          await settle("cloud_small_rates", () => syncAllSmallRates(env, Date.now()));
+          await settle("cloud_small_rates", () => syncAllSmallRates(env, Date.now(), { waitUntil: (promise) => ctx.waitUntil(promise) }));
           await runCloudMinuteCron(env, { waitUntil: (promise) => ctx.waitUntil(promise) });
         }),
         // ADE Cloud extra hours: reports whole hours to the Stripe meter. One

@@ -36,6 +36,7 @@ import {
   gpcOverrides,
   readConsent,
   shownAnswer,
+  requestNetwork,
   sponsoredRequester,
   startsOnFor,
   startsOnNow,
@@ -45,6 +46,7 @@ import {
   type SponsoredRequester,
 } from "./sponsoredConsent";
 import { noteSmallLook, smallFreeFrom, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import type { CloudWaitUntil } from "./analytics";
 import { gravitySwitches, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
 import {
   loadAccount,
@@ -594,9 +596,9 @@ async function inlineFavicon(url: string): Promise<string | null> {
 /* ---- Routes ---- */
 
 /** `/cloud/sponsored/*`, or null for any other path. */
-export async function routeSponsored(request: Request, path: string, env: GravityEnv, userId: string, now: number): Promise<Response | null> {
+export async function routeSponsored(request: Request, path: string, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   if (path === CLOUD_PATHS.sponsoredConsent) return request.method === "PUT" ? handleConsent(request, env, userId, now) : notFound();
-  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now, waitUntil) : notFound();
   if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredIndex) return request.method === "POST" ? handleIndex(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredHide) return request.method === "POST" ? handleHide(request, env, userId, now) : notFound();
@@ -691,7 +693,7 @@ async function ownCloudComputer(env: GravityEnv, userId: string, value: unknown)
  * an account that may see cards and said yes: it is the address and device
  * the Index sends with an agent's search, and the proof someone watches.
  */
-async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+async function handleSeen(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const device = readDevice(body.device);
@@ -721,8 +723,8 @@ async function handleSeen(request: Request, env: GravityEnv, userId: string, now
       os = excluded.os, os_version = excluded.os_version, tracking = excluded.tracking, country = excluded.country,
       region = excluded.region, seen_at = excluded.seen_at
   `).bind(userId, computer.instance_id, clientIp(request), clientUa(request, device), device.type, device.os, device.osVersion ?? null, device.tracking ?? null, country, who.region, now, userId).run();
-  // From the US, the look keeps Free's Small free (`sponsoredSmall.ts`).
-  await noteSmallLook(env, account, consent, country, now);
+  // From the US, the look keeps Free's Small free (`sponsoredSmall.ts`); its network feeds the tripwire.
+  await noteSmallLook(env, account, consent, country, requestNetwork(request), now, waitUntil);
   return json({ ok: true });
 }
 

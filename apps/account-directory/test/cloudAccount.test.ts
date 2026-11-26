@@ -8,7 +8,7 @@ import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
 import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/gravity";
-import { syncAllSmallRates } from "../src/cloud/sponsoredSmall";
+import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
 import { expireAccountTests } from "../src/cloud/ownerAccounts";
 import { sweepStaleBackupUploads } from "../src/cloud/laneBackups";
 import { runIdleCleanup } from "../src/cloud/idleCleanup";
@@ -5507,6 +5507,28 @@ describe("sponsored cards", () => {
     expect(computer(harness).multiplier_milli).toBe(0);
     const onTrip = ((await (await fromCanada("GET", "/cloud/account")).json()) as CloudAccountState).sponsored;
     expect([onTrip?.smallOutsideUS, onTrip?.smallNeedsCards, onTrip?.smallNeedsLook]).toEqual([undefined, true, undefined]);
+    // The tripwire: a US look from the network the account's own cloud computer calls from (a script on
+    // it) still counts, but the owner hears of it once a week (an email, an abuse row, Sentry) and the
+    // daily report names the account until a look from a phone's network moves on.
+    const DATACENTER = 24940;
+    const fromComputer = fromWhere({ country: "US", regionCode: "VA", asn: DATACENTER });
+    expect((await fromComputer("POST", `/cloud/instances/${INSTANCE}/activity`, { busy: false, idleSince: clock - 60_000, sleepsAt: clock + 60_000, runningAgents: 0, reportedAt: clock })).status).toBe(200);
+    const tripped = () => [
+      harness.rows("select 1 from cloud_owner_alerts where kind = 'small_cloud_look' and sent_at is not null").length,
+      harness.rows("select 1 from cloud_abuse_events where kind = 'small_cloud_look'").length,
+    ];
+    clock += HOUR;
+    expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });
+    expect(tripped()).toEqual([0, 0]);
+    clock += HOUR;
+    expect(await look(fromComputer)).toEqual({ ok: true });
+    clock += HOUR;
+    expect(await look(fromComputer)).toEqual({ ok: true });
+    expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 1, 1]);
+    expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
+    clock += HOUR;
+    expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });
+    expect(await smallCloudLookAlarms(harness.env as never, clock)).toEqual([]);
 
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);
