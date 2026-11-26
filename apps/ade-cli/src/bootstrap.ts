@@ -3552,6 +3552,9 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     if (agentChatService) {
+      // A restored deleted lane takes back the chats its delete kept.
+      const restoreChats = agentChatService;
+      laneService.setOnDeletedLaneRestored((args) => restoreChats.reopenDeletedChatsWithLane(args));
       // ADE MCP Events read a chat's name and final reply only when an app asks.
       const chats = agentChatService;
       teardown.push(registerMcpChatSource(mcpProjectId, {

@@ -22,6 +22,7 @@ import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { describeLanePrIssues } from "./shared/lanePrWarnings";
+import { plainErrorText } from "../../lib/plainError";
 
 export type CreatePrModalInitialValues = {
   sourceLaneId?: string | null;
@@ -325,7 +326,7 @@ export function CreatePrModal({
       .catch((err: unknown) => {
         console.error("[CreatePrModal] listBranches failed", { laneId: primaryLane.id, err });
         if (!cancelled) {
-          setBranchLoadError(err instanceof Error ? err.message : String(err));
+          setBranchLoadError(plainErrorText(err, "ADE couldn't read the branches."));
         }
       });
     return () => { cancelled = true; };
@@ -567,9 +568,7 @@ export function CreatePrModal({
       await onCreated?.([pr]);
       setNumericStep(3);
     } catch (err: unknown) {
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      const msg = rawMsg.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
-      setExecError(msg);
+      setExecError(plainErrorText(err, "ADE couldn't create the pull request."));
       // Stay on current step so user can see the error and retry
     } finally {
       setBusy(false);

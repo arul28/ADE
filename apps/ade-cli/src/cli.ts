@@ -4944,7 +4944,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
-  volume's free space, like Settings → Project → Storage & cleanup on the
+  volume's free space, like Settings → Project → Disk space on the
   desktop. The snapshot is read-only; compression is lossless and safe.
   Maintenance runs the policy-driven ledger sweep (prune/compress/vacuum).
   Target-scoped cleanup (which deletes files) is left to the action bridge.
@@ -8470,7 +8470,7 @@ function buildLanePlan(args: string[]): CliPlan {
     };
   }
   if (sub === "deleted") {
-    // Lanes whose unsaved work a delete kept (Settings › Storage › Recently deleted).
+    // Lanes whose unsaved work a delete kept (Settings › Deleted & Archived › Recently deleted).
     const verb = firstPositional(args) ?? "list";
     if (verb === "list" || verb === "ls") {
       return {
@@ -8495,7 +8495,7 @@ function buildLanePlan(args: string[]): CliPlan {
     }
     if (verb === "remove" || verb === "rm" || verb === "delete") {
       throw new CliUsageError(
-        "Drop a deleted lane's saved work in ADE: Settings › Storage › Recently deleted. The command line can list and restore them.",
+        "Drop a deleted lane's saved work in ADE: Settings › Deleted & Archived › Recently deleted. The command line can list and restore them.",
       );
     }
     throw new CliUsageError("lanes deleted supports list or restore <id>.");
@@ -12596,7 +12596,7 @@ function buildChatDeletedPlan(args: string[]): CliPlan {
   }
   if (verb === "remove" || verb === "rm" || verb === "delete") {
     throw new CliUsageError(
-      "Remove chats from the list in ADE: Settings › Storage › Recently deleted. The command line can list and reopen them.",
+      "Remove chats from the list in ADE: Settings › Deleted & Archived › Recently deleted. The command line can list and reopen them.",
     );
   }
   throw new CliUsageError("chat deleted supports list [--query <text>] or reopen <id> [--lane <lane-id>].");
@@ -21745,7 +21745,7 @@ function buildArchivePlan(args: string[]): CliPlan {
     // The runtime cannot tell this terminal from an agent's (both are `ade`
     // clients), and only the person may delete from the archive.
     throw new CliUsageError(
-      "Delete archived items in ADE: Project → Storage & cleanup → Archive (desktop or web). The command line can list and restore them.",
+      "Delete archived items in ADE: Project → Deleted & Archived → Archive (desktop or web). The command line can list and restore them.",
     );
   }
   throw new CliUsageError("archive supports list, summary, or restore.");
@@ -29528,7 +29528,7 @@ async function verifyMachinePublished(
       };
     }
     const { describeUnpublishedMachine } = await import("./commands/setup");
-    const described = describeUnpublishedMachine(state, asString(directory?.skipReason));
+    const described = describeUnpublishedMachine(state, asString(directory?.skipReason), directory?.failedLeg);
     return { ok: false, ...described };
   } catch {
     return {
@@ -33507,6 +33507,7 @@ async function runServe(
             lastLegDurations: { ...publishHealth.lastLegDurations },
             lastHttpStatus: publishHealth.lastHttpStatus,
             lastHttpReason: publishHealth.lastHttpReason,
+            failedLeg: publishHealth.failedLeg ?? null,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
           lastUnplannedRestart: brainUnplannedRestart(),

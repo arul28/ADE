@@ -9,29 +9,33 @@ import type {
 import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../shared/types/archive";
 import { archiveKindCountParts, archiveKindPlural, emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 import type { TerminalToolType } from "../../../shared/types/sessions";
-import { relativeWhen } from "../../lib/format";
+import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { useStorageBytes } from "./storage/useStorageBytes";
 import { confirmDialog } from "../ui/dialog";
-import { showToast } from "../app/toast/toastStore";
-import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
+import { LaneChip } from "../terminals/LaneChip";
 import { ToolLogo } from "../terminals/ToolLogos";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useLaneReclaim } from "./lanes/useLaneReclaim";
 import { SettingsColumn } from "./primitives";
-import { Banner } from "../ui/notice";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
-import { requirePin } from "../../state/repositoryScope";
+import { groupByMachine } from "../../state/repositoryScope";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { useEveryCopyRead } from "../../state/everyCopyRead";
+import { CopyReadErrors, CopyReadsPending, KindFilterSearchBar, LaneColorMark, machineHint } from "./EveryCopyList";
+import { MetaLine } from "./MetaLine";
+import { NoProjectCopyNotice } from "./ProjectCopyScope";
 
 /**
- * Settings → Archive: every lane, chat and shell you archived, in one place.
+ * Settings → Deleted & Archived → Archive: every lane, chat and shell you
+ * archived, on every computer, in one place.
  *
  * Archive only hides a thing; it stays on disk until you free up its space or
- * delete it here, or a rule under Storage → Rules does. The weekly reminder
- * banner points back to this page. The list splits at the same line the
- * reminder uses (the "Free up space after" setting, two weeks by default), so
- * "Older" is exactly what the banner was asking about, with one button to
- * clear it.
+ * delete it here, or a rule under Disk space → Rules does. The weekly reminder
+ * banner points back to this page. Each row splits at the line its machine's
+ * reminder uses (that machine's "Free up space after" setting, two weeks by
+ * default), so "Older" is exactly what the banner was asking about, with one
+ * button to clear it.
  *
  * A lane's Free up space is Archive & reclaim's own confirm and flow: the
  * folder goes, the branch and chats stay, and Restore recreates the folder
@@ -70,20 +74,7 @@ function totalBytes(items: ArchivedItem[]): number {
 
 /** The square mark at the start of a row: the lane's own colour, or the agent's logo. */
 function ItemMark({ item }: { item: ArchivedItem }) {
-  if (item.kind === "lane") {
-    const color = laneDisplayColor(item.laneColor);
-    return (
-      <span
-        className="ade-ar-mark"
-        style={{
-          background: `color-mix(in srgb, ${color} 16%, transparent)`,
-          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 28%, transparent)`,
-        }}
-      >
-        <LaneLogoMark color={color} size={15} />
-      </span>
-    );
-  }
+  if (item.kind === "lane") return <LaneColorMark color={item.laneColor} />;
   return (
     <span className="ade-ar-mark">
       <ToolLogo toolType={(item.toolType ?? "shell") as TerminalToolType} size={15} />
@@ -157,6 +148,7 @@ function IconAction({
 
 function ArchiveRow({
   item,
+  machineHint,
   selected,
   selecting,
   busy,
@@ -166,6 +158,8 @@ function ArchiveRow({
   onDelete,
 }: {
   item: ArchivedItem;
+  /** "On <machine>" on hover, when the list holds more than one machine. */
+  machineHint?: string;
   selected: boolean;
   selecting: boolean;
   busy: boolean;
@@ -192,15 +186,12 @@ function ArchiveRow({
       data-testid="archive-row"
       className="ade-ar-row"
       data-selected={selected || undefined}
+      title={machineHint}
     >
       <MarkOrSelect item={item} checked={selected} selecting={selecting} onToggle={onToggle} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="ade-ar-title">{item.title}</div>
-        <div className="ade-ar-meta">
-          {where}
-          {where ? <span aria-hidden style={{ opacity: 0.5 }}>·</span> : null}
-          <span style={{ flex: "none", fontVariantNumeric: "tabular-nums" }}>{meta.join(" · ")}</span>
-        </div>
+        <MetaLine items={[where, ...meta.map((part) => <span className="kit-num">{part}</span>)]} />
       </div>
       {/* While selecting, the selection bar is the only place to act: the
           row's own actions leave the tab order too, not just the screen. */}
@@ -239,6 +230,7 @@ function GroupHeader({ title, items, action }: { title: string; items: ArchivedI
   );
 }
 
+
 /**
  * A lane delete can take a couple of minutes (worktree removal, services
  * teardown) and one request has a 15-minute budget, so lanes go at most
@@ -248,7 +240,7 @@ const LANES_PER_DELETE = 5;
 
 async function deleteInBatches(
   refs: ArchiveItemRef[],
-  pin: Parameters<typeof window.ade.archive.delete>[1],
+  pin: OpenProjectBinding,
   force = false,
 ): Promise<ArchiveActionResult> {
   const lanes = refs.filter((ref) => ref.kind === "lane");
@@ -264,62 +256,145 @@ async function deleteInBatches(
   return total;
 }
 
+/** One archived thing, and the machine it is archived on. */
+type Row = {
+  key: string;
+  pin: OpenProjectBinding;
+  machineName: string;
+  item: ArchivedItem;
+};
+
+type MachineArchive = { items: ArchivedItem[]; staleAfterDays: number | null };
+
+const ARCHIVE_READ_TIMEOUT_MS = 15_000;
+
+async function readArchive(pin: OpenProjectBinding, timed: <R>(call: Promise<R>) => Promise<R>): Promise<MachineArchive> {
+  const result = await timed(window.ade.archive.list({}, pin));
+  return { items: result.items, staleAfterDays: result.staleAfterDays ?? null };
+}
+
+function rowKey(pin: OpenProjectBinding, ref: ArchiveItemRef): string {
+  return `${pin.key}\n${refKey(ref)}`;
+}
+
+/** An archive action's answer from several machines: each item keeps the machine (`pinKey`) it is on. */
+type MachinesResult = {
+  done: Array<ArchiveItemRef & { pinKey: string }>;
+  failed: Array<ArchiveActionResult["failed"][number] & { pinKey: string }>;
+};
+
+/** The key of an item on its machine: two machines can hold the same id. */
+function pinnedKey(item: ArchiveItemRef & { pinKey: string }): string {
+  return `${item.pinKey}\n${refKey(item)}`;
+}
+
+/** Runs one archive action on each machine its rows are on, and adds the answers up. */
+async function onEachMachine(
+  rows: readonly Row[],
+  run: (pin: OpenProjectBinding, refs: ArchiveItemRef[]) => Promise<ArchiveActionResult>,
+): Promise<MachinesResult> {
+  const total: MachinesResult = { done: [], failed: [] };
+  const { groups } = groupByMachine(rows, (row) => row.pin);
+  const answers = await Promise.all(groups.map(async (group) => {
+    const refs = group.items.map((row) => toRef(row.item));
+    let answer: ArchiveActionResult;
+    try {
+      answer = await run(group.pin, refs);
+    } catch (error) {
+      const message = ipcErrorMessage(error) || "Something went wrong.";
+      answer = { done: [], failed: refs.map((ref) => ({ ...ref, error: message })) };
+    }
+    const pinKey = group.pin.key;
+    return {
+      done: answer.done.map((item) => ({ ...item, pinKey })),
+      failed: answer.failed.map((item) => ({ ...item, pinKey })),
+    };
+  }));
+  for (const answer of answers) {
+    total.done.push(...answer.done);
+    total.failed.push(...answer.failed);
+  }
+  return total;
+}
+
+/**
+ * Settings → Deleted & Archived → Archive, from every computer with a copy of
+ * the project at once. Each row keeps the machine it is on; Restore, Free up
+ * space and Delete go there, and a selection that spans machines is split.
+ */
 export function ArchiveSection() {
-  const { pin } = useSettingsMachineScope();
-  const { bytes: storageBytes } = useStorageBytes();
-  const [items, setItems] = React.useState<ArchivedItem[] | null>(null);
-  // The host's line between recent and old: its "Free up space after" setting.
-  const [staleDays, setStaleDays] = React.useState(DEFAULT_ARCHIVE_STALE_DAYS);
-  const [error, setError] = React.useState<string | null>(null);
+  const { machines, noCopy, reload } = useEveryCopyRead(readArchive, ARCHIVE_READ_TIMEOUT_MS);
   const [filter, setFilter] = React.useState<KindFilter>("all");
+  const [query, setQuery] = React.useState("");
   const [selected, setSelected] = React.useState<Set<string>>(() => new Set());
   const [busy, setBusy] = React.useState(false);
 
-  const load = React.useCallback(async () => {
-    try {
-      const result = await window.ade.archive.list({}, requirePin(pin));
-      setItems(result.items);
-      setStaleDays(result.staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS);
-      setError(null);
-      const live = new Set(result.items.map(refKey));
-      setSelected((prev) => new Set([...prev].filter((key) => live.has(key))));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not read the archive.");
+  const rows = React.useMemo(() => {
+    const out: Row[] = [];
+    for (const machine of machines) {
+      for (const item of machine.value?.items ?? []) {
+        out.push({ key: rowKey(machine.pin, toRef(item)), pin: machine.pin, machineName: machine.machineName, item });
+      }
     }
-  }, [pin]);
+    return out.sort((a, b) => Date.parse(b.item.archivedAt) - Date.parse(a.item.archivedAt));
+  }, [machines]);
+  const loaded = machines.some((machine) => machine.done);
+  const allDone = machines.every((machine) => machine.done);
+  // The line between recent and old is each machine's own "Free up space
+  // after" setting, the one its reminder uses.
+  const staleDaysByPin = React.useMemo(() => new Map(machines.map((machine) => [
+    machine.pin.key,
+    machine.value?.staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS,
+  ])), [machines]);
 
+  // A selection keeps only rows still listed.
   React.useEffect(() => {
-    // A new machine starts empty: its list replaces the old one or the error
-    // shows, and the old machine's refs can never be sent to the new pin.
-    setItems(null);
-    setSelected(new Set());
-    void load();
-  }, [load]);
+    const live = new Set(rows.map((row) => row.key));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((key) => live.has(key)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [rows]);
 
-  // Free up space on `pin`'s machine, where the lane's folder is.
-  const reclaim = useLaneReclaim(pin, () => void load(), { alreadyArchived: true });
+  const reloadRows = React.useCallback((touched: readonly Row[]) => {
+    for (const key of new Set(touched.map((row) => row.pin.key))) reload(key);
+  }, [reload]);
+
+  // Free up space on the row's machine, where the lane's folder is.
+  const reclaim = useLaneReclaim(null, (pin) => {
+    if (pin) reload(pin.key);
+  }, { alreadyArchived: true });
 
   const counts = React.useMemo(() => {
     const byKind = emptyArchiveCounts();
-    for (const item of items ?? []) byKind[item.kind] += 1;
+    for (const row of rows) byKind[row.item.kind] += 1;
     return byKind;
-  }, [items]);
+  }, [rows]);
 
-  const visible = React.useMemo(
-    () => (items ?? []).filter((item) => filter === "all" || item.kind === filter),
-    [filter, items],
-  );
+  const visible = React.useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return rows.filter((row) => {
+      if (filter !== "all" && row.item.kind !== filter) return false;
+      if (words.length === 0) return true;
+      const text = [row.item.title, row.item.laneName, row.item.toolLabel].filter(Boolean).join(" ").toLowerCase();
+      return words.every((word) => text.includes(word));
+    });
+  }, [filter, query, rows]);
 
-  const { recent, older } = React.useMemo(() => {
+  const { recent, older, staleDays } = React.useMemo(() => {
     const nowMs = Date.now();
-    const groups = { recent: [] as ArchivedItem[], older: [] as ArchivedItem[] };
-    for (const item of visible) {
-      (isArchiveStale(item.archivedAt, staleDays, nowMs) ? groups.older : groups.recent).push(item);
+    const groups = { recent: [] as Row[], older: [] as Row[] };
+    const lines = new Set<number>();
+    for (const row of visible) {
+      const days = staleDaysByPin.get(row.pin.key) ?? DEFAULT_ARCHIVE_STALE_DAYS;
+      lines.add(days);
+      (isArchiveStale(row.item.archivedAt, days, nowMs) ? groups.older : groups.recent).push(row);
     }
-    return groups;
-  }, [staleDays, visible]);
+    // One line for every row shown names its days; machines that differ do not.
+    return { ...groups, staleDays: lines.size === 1 ? [...lines][0]! : null };
+  }, [staleDaysByPin, visible]);
 
-  const report = React.useCallback((verb: "Restored" | "Deleted", result: ArchiveActionResult) => {
+  const report = React.useCallback((verb: "Restored" | "Deleted", result: MachinesResult) => {
     const [firstFailure] = result.failed;
     if (result.done.length > 0) {
       showToast({
@@ -330,7 +405,7 @@ export function ArchiveSection() {
               message: `${result.failed.length} couldn't be ${verb.toLowerCase()} — ${firstFailure.error}`,
               tone: "warning" as const,
               // A partial result is worth reading (docs/design/notices.md).
-              durationMs: 18_000,
+              durationMs: READABLE_TOAST_DURATION_MS,
             }
           : { tone: "success" as const }),
       });
@@ -339,21 +414,20 @@ export function ArchiveSection() {
     }
   }, []);
 
-  const restore = React.useCallback(async (refs: ArchiveItemRef[]) => {
-    if (refs.length === 0) return;
+  const restore = React.useCallback(async (targets: Row[]) => {
+    if (targets.length === 0) return;
     setBusy(true);
     try {
-      report("Restored", await window.ade.archive.restore({ items: refs }, requirePin(pin)));
-    } catch (err) {
-      showToast({ id: ARCHIVE_TOAST_ID, title: err instanceof Error ? err.message : "Couldn't restore.", tone: "error" });
+      report("Restored", await onEachMachine(targets, (pin, refs) => window.ade.archive.restore({ items: refs }, pin)));
     } finally {
       setBusy(false);
-      void load();
+      reloadRows(targets);
     }
-  }, [load, pin, report]);
+  }, [reloadRows, report]);
 
-  const remove = React.useCallback(async (refs: ArchiveItemRef[]) => {
-    if (refs.length === 0) return;
+  const remove = React.useCallback(async (targets: Row[]) => {
+    if (targets.length === 0) return;
+    const refs = targets.map((row) => toRef(row.item));
     const hasLane = refs.some((ref) => ref.kind === "lane");
     const ok = await confirmDialog({
       title: `Delete ${describeRefs(refs)}?`,
@@ -366,7 +440,7 @@ export function ArchiveSection() {
     if (!ok) return;
     setBusy(true);
     try {
-      let result = await deleteInBatches(refs, requirePin(pin));
+      let result = await onEachMachine(targets, (pin, items) => deleteInBatches(items, pin));
       // A lane with unsaved work (uncommitted files, or submodule commits no
       // remote has) is refused unless forced. Ask once, by name, instead of
       // silently discarding someone's unfinished work. Match the refusal's
@@ -375,10 +449,10 @@ export function ArchiveSection() {
       const dirtyLanes = result.failed.filter(
         (item) => item.kind === "lane" && /enable force delete/i.test(item.error),
       );
-      if (dirtyLanes.length > 0) {
-        const names = dirtyLanes
-          .map((ref) => items?.find((item) => item.kind === "lane" && item.id === ref.id)?.title ?? ref.id)
-          .join(", ");
+      const dirtyKeys = new Set(dirtyLanes.map(pinnedKey));
+      const dirtyRows = targets.filter((row) => dirtyKeys.has(pinnedKey({ ...toRef(row.item), pinKey: row.pin.key })));
+      if (dirtyRows.length > 0) {
+        const names = dirtyRows.map((row) => row.item.title).join(", ");
         const force = await confirmDialog({
           title: `${names} has unsaved work`,
           // A submodule commit lives in the lane's folder, not on the branch.
@@ -389,28 +463,25 @@ export function ArchiveSection() {
           destructive: true,
         });
         if (force) {
-          const retry = await deleteInBatches(dirtyLanes.map(({ kind, id }) => ({ kind, id })), requirePin(pin), true);
-          const retried = new Set(dirtyLanes.map(refKey));
+          const retry = await onEachMachine(dirtyRows, (pin, items) => deleteInBatches(items, pin, true));
           result = {
             done: [...result.done, ...retry.done],
-            failed: [...result.failed.filter((item) => !retried.has(refKey(item))), ...retry.failed],
+            failed: [...result.failed.filter((item) => !dirtyKeys.has(pinnedKey(item))), ...retry.failed],
           };
         }
       }
       report("Deleted", result);
-    } catch (err) {
-      showToast({ id: ARCHIVE_TOAST_ID, title: err instanceof Error ? err.message : "Couldn't delete.", tone: "error" });
     } finally {
       setBusy(false);
-      void load();
+      reloadRows(targets);
     }
-  }, [items, load, pin, report]);
+  }, [reloadRows, report]);
 
-  const selectedRefs = React.useMemo(
-    () => visible.filter((item) => selected.has(refKey(item))).map(toRef),
+  const selectedRows = React.useMemo(
+    () => visible.filter((row) => selected.has(row.key)),
     [selected, visible],
   );
-  const selecting = selectedRefs.length > 0;
+  const selecting = selectedRows.length > 0;
 
   const toggle = (key: string) => setSelected((prev) => {
     const next = new Set(prev);
@@ -419,48 +490,35 @@ export function ArchiveSection() {
     return next;
   });
 
-  const renderRows = (list: ArchivedItem[]) =>
-    list.map((item) => (
+  const renderRows = (list: Row[]) =>
+    list.map((row) => (
       <ArchiveRow
-        key={refKey(item)}
-        item={item}
-        selected={selected.has(refKey(item))}
+        key={row.key}
+        item={row.item}
+        machineHint={machineHint(machines.length, row.machineName)}
+        selected={selected.has(row.key)}
         selecting={selecting}
         busy={busy}
-        onToggle={() => toggle(refKey(item))}
-        onRestore={() => void restore([toRef(item)])}
-        onFreeUp={() => void reclaim.open(item.id)}
-        onDelete={() => void remove([toRef(item)])}
+        onToggle={() => toggle(row.key)}
+        onRestore={() => void restore([row])}
+        onFreeUp={() => void reclaim.open(row.item.id, row.pin)}
+        onDelete={() => void remove([row])}
       />
     ));
 
-  const all = items ?? [];
-  const allBytes = totalBytes(all);
-  const staleAll = React.useMemo(() => {
-    const nowMs = Date.now();
-    return all.filter((item) => isArchiveStale(item.archivedAt, staleDays, nowMs));
-  }, [all, staleDays]);
-  const staleBytes = totalBytes(staleAll);
-
   const filterBar = (
-    <div role="radiogroup" aria-label="Show" className="kit-seg" data-case="sentence">
-      {FILTERS.map((option) => {
-        const count = option.value === "all" ? items?.length ?? 0 : counts[option.value];
-        const active = filter === option.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            onClick={() => setFilter(option.value)}
-          >
-            {option.label}
-            <span className="kit-num" style={{ marginLeft: 6, opacity: 0.6, fontSize: 10.5 }}>{count}</span>
-          </button>
-        );
-      })}
-    </div>
+    <KindFilterSearchBar
+      options={FILTERS.map((option) => ({
+        ...option,
+        count: option.value === "all" ? rows.length : counts[option.value],
+      }))}
+      value={filter}
+      onChange={setFilter}
+      query={query}
+      onQueryChange={setQuery}
+      placeholder="Search the archive"
+      searchLabel="Search archived lanes, chats and shells"
+    />
   );
 
   const selectionBar = (
@@ -473,12 +531,12 @@ export function ArchiveSection() {
       >
         <X size={13} />
       </button>
-      <span className="ade-ar-title" style={{ fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{selectedRefs.length} selected</span>
+      <span className="ade-ar-title kit-num" style={{ fontSize: 12.5 }}>{selectedRows.length} selected</span>
       <span style={{ flex: 1 }} />
       <button
         type="button"
         disabled={busy}
-        onClick={() => void restore(selectedRefs)}
+        onClick={() => void restore(selectedRows)}
         className="ade-modern-btn"
         data-size="sm"
       >
@@ -487,7 +545,7 @@ export function ArchiveSection() {
       <button
         type="button"
         disabled={busy}
-        onClick={() => void remove(selectedRefs)}
+        onClick={() => void remove(selectedRows)}
         className="ade-modern-btn"
         data-size="sm"
         data-tone="danger"
@@ -499,99 +557,57 @@ export function ArchiveSection() {
 
   return (
     <SettingsColumn wide>
-      <section id={ARCHIVE_SETTINGS_ANCHOR} data-settings-anchor={ARCHIVE_SETTINGS_ANCHOR} className="ade-modern-page">
+      <section id={ARCHIVE_SETTINGS_ANCHOR} data-settings-anchor={ARCHIVE_SETTINGS_ANCHOR} className="ade-modern-page" aria-label="Archive">
         <div className="ade-ap-section">
-          <header className="ade-ap-head">
-            <div style={{ minWidth: 0 }}>
-              <h2>On this machine</h2>
-              <p>Archive only hides a thing. It stays on disk until you free up its space or delete it here, or a rule in Rules does it for you.</p>
-            </div>
-          </header>
-          <div className="ade-modern-stats">
-            {(["lane", "chat", "shell"] as const).map((kind) => (
-              <div key={kind} className="ade-modern-stat">
-                <span className="kit-eyebrow">{archiveKindPlural(kind)}</span>
-                <span className="ade-modern-stat-value">
-                  <span className="kit-stat kit-num">{items ? counts[kind] : "–"}</span>
-                </span>
-                <span className="ade-modern-stat-sub">
-                  {items ? (() => {
-                    const bytes = totalBytes(all.filter((item) => item.kind === kind));
-                    return bytes > 0 ? `${storageBytes(bytes)} on disk` : "Archived";
-                  })() : "Loading…"}
-                </span>
-              </div>
-            ))}
-            <div className="ade-modern-stat">
-              <span className="kit-eyebrow">On disk</span>
-              <span className="ade-modern-stat-value">
-                <span className="kit-stat kit-num">{items ? storageBytes(allBytes) : "–"}</span>
-              </span>
-              <div className="kit-meter" data-level={staleBytes > 0 ? "warn" : undefined} aria-hidden>
-                <span style={{ width: `${allBytes > 0 ? Math.max(2, (staleBytes / allBytes) * 100) : 0}%` }} />
-              </div>
-              <span className="ade-modern-stat-sub">
-                {staleAll.length > 0
-                  ? `${storageBytes(staleBytes)} older than ${staleDays} days`
-                  : `Nothing older than ${staleDays} days`}
-              </span>
-            </div>
-          </div>
-        </div>
+          {/* A selection takes the toolbar's place, so the list never jumps. */}
+          {selecting ? (
+            <div className="ade-ar-toolbar">{selectionBar}</div>
+          ) : rows.length > 0 ? filterBar : null}
 
-        <div className="ade-ap-section">
-          <header className="ade-ap-head" style={{ alignItems: "center", minHeight: 30 }}>
-            {selecting ? selectionBar : (
-              <>
-                <div style={{ minWidth: 0 }}>
-                  <h2>Archived</h2>
-                </div>
-                {filterBar}
-              </>
-            )}
-          </header>
+          <CopyReadErrors
+            machines={machines}
+            reload={reload}
+            idPrefix="archive-load-error"
+            surface="archive_load"
+            title={(name) => `Couldn't open ${name}'s archive`}
+          />
 
-          {error && !items ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "archive-load-error",
-                tone: "error",
-                title: "Couldn't open the archive",
-                actions: [{ label: "Try again", onClick: () => void load() }],
-                detail: error,
-                report: { surface: "archive_load", technicalDetail: error },
-              }}
-            />
-          ) : items && visible.length === 0 ? (
+          {noCopy ? (
+            <NoProjectCopyNotice />
+          ) : !loaded ? (
+            <p className="ade-modern-muted">Loading the archive…</p>
+          ) : visible.length === 0 && query.trim() ? (
+            <p className="ade-modern-muted">Nothing archived matches “{query.trim()}”.</p>
+          ) : visible.length === 0 && allDone ? (
             <div className="ade-ar-empty">
               <ArchiveIcon size={22} weight="light" />
               <div className="ade-ap-rowtitle">{filter === "all" ? "Nothing archived" : `No archived ${archiveKindPlural(filter)}`}</div>
-              <p className="ade-modern-muted">Archived lanes, chats, and shells show up here.</p>
+              <p className="ade-modern-muted">Archive hides a lane, chat or shell without deleting it. Archived ones show up here.</p>
             </div>
-          ) : items ? (
+          ) : (
             <div role="table" aria-label="Archived items" className="ade-ar-table">
               {recent.length > 0 ? (
                 <div className="ade-ar-block">
-                  <GroupHeader title={`Last ${staleDays} days`} items={recent} />
+                  <GroupHeader title={staleDays != null ? `Last ${staleDays} days` : "Recent"} items={recent.map((row) => row.item)} />
                   <div className="ade-modern-rows ade-ar-list">{renderRows(recent)}</div>
                 </div>
               ) : null}
               {older.length > 0 ? (
                 <div className="ade-ar-block">
                   <GroupHeader
-                    title={`Older than ${staleDays} days`}
-                    items={older}
+                    title={staleDays != null ? `Older than ${staleDays} days` : "Older"}
+                    items={older.map((row) => row.item)}
                     action={
                       <button
                         type="button"
                         disabled={busy || selecting}
-                        onClick={() => void remove(older.map(toRef))}
+                        onClick={() => void remove(older)}
                         className="ade-modern-btn"
                         data-size="sm"
                         data-tone="danger"
                       >
-                        <Trash size={12} /> Delete all
+                        {/* A search or filter narrows "all" to the rows shown. */}
+                        <Trash size={12} /> {filter === "all" && !query.trim() ? "Delete all" : `Delete ${older.length}`}
                       </button>
                     }
                   />
@@ -599,9 +615,8 @@ export function ArchiveSection() {
                 </div>
               ) : null}
             </div>
-          ) : (
-            <p className="ade-modern-muted">Loading the archive…</p>
           )}
+          <CopyReadsPending machines={machines} />
         </div>
       </section>
       {reclaim.dialog}

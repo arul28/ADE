@@ -139,6 +139,7 @@ import {
 } from "../../state/crossMachineLanes";
 import { writeClientLayout } from "../ui/clientLayoutStore";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 
@@ -852,7 +853,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           showDeletedChatToast(session, label, null, false);
         } catch (err) {
           console.error("[TerminalsPage] cancel launch for delete failed", { sessionId: session.id, err });
-          setSessionActionError(`Delete failed: ${err instanceof Error ? err.message : String(err)}`);
+          setSessionActionError(`Delete failed: ${plainErrorText(err, "the session did not answer.")}`);
         } finally {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         }

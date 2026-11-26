@@ -222,18 +222,20 @@ export function createLinearClient(args: LinearClientArgs) {
   const getConnectionIdentity = async (): Promise<{
     viewerId: string | null;
     viewerName: string | null;
+    /** Whether the signed-in person is a workspace admin; null when Linear did not say. */
+    viewerIsAdmin: boolean | null;
     organizationId: string | null;
     organizationName: string | null;
     organizationUrlKey: string | null;
     organizationLogoUrl: string | null;
   }> => {
     const data = await request<{
-      viewer?: { id?: string; name?: string; displayName?: string };
+      viewer?: { id?: string; name?: string; displayName?: string; admin?: boolean };
       organization?: { id?: string; name?: string; urlKey?: string | null; logoUrl?: string | null };
     }>({
       query: `
         query LinearConnectionIdentity {
-          viewer { id name displayName }
+          viewer { id name displayName admin }
           organization { id name urlKey logoUrl }
         }
       `,
@@ -242,6 +244,7 @@ export function createLinearClient(args: LinearClientArgs) {
     return {
       viewerId: asString(data.viewer?.id),
       viewerName: asString(data.viewer?.displayName) ?? asString(data.viewer?.name),
+      viewerIsAdmin: typeof data.viewer?.admin === "boolean" ? data.viewer.admin : null,
       organizationId: asString(data.organization?.id),
       organizationName: asString(data.organization?.name),
       organizationUrlKey: asString(data.organization?.urlKey),

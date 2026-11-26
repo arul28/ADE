@@ -1,3 +1,4 @@
+import { plainErrorText } from "../../lib/plainError";
 import React, { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { GitBranch, Warning } from "@phosphor-icons/react";
 
@@ -212,7 +213,7 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (isActiveWorkRefusal(message)) setActiveWorkPrompt(true);
-      else toastSwitchFailure(laneId, message);
+      else toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."));
     } finally {
       setPending(false);
     }
@@ -391,8 +392,9 @@ export function LaneBranchComposerChip({
       // lane list uses for its own branch switch.
       if (isActiveWorkRefusal(message)) {
         setActiveWorkPrompt({ laneId, pinKey: pin.key, headBranchRef: drift.headBranchRef, resolution });
+      } else {
+        toastSwitchFailure(laneId, plainErrorText(err, "ADE couldn't switch the branch."), resolution === "keep-head" ? "keep" : "switch");
       }
-      else toastSwitchFailure(laneId, message, resolution === "keep-head" ? "keep" : "switch");
     } finally {
       setPending(null);
     }

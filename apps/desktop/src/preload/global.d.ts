@@ -1454,6 +1454,8 @@ declare global {
         openSystemSettingsPane: (
           paneId: SystemSettingsPaneId,
         ) => Promise<AppOpenSystemSettingsPaneResult>;
+        /** Open the Tailscale app on this computer. Absent on the web client. */
+        openTailscale?: () => Promise<{ opened: boolean; message?: string }>;
         revealPath: (path: string, pin?: OpenProjectBinding | null) => Promise<void>;
         openPath: (path: string, pin?: OpenProjectBinding | null) => Promise<void>;
         writeClipboardText: (text: string) => Promise<void>;
@@ -1494,7 +1496,7 @@ declare global {
         reportRendererMemory?: (snapshot: RendererMemorySnapshot) => void;
       };
       /**
-       * One copy's storage (Settings › Storage & cleanup): `pin` names the
+       * One copy's storage (Settings › Disk space): `pin` names the
        * copy, and it is required. `getPressure` is this computer's disk.
        */
       storage: {

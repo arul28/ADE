@@ -44,6 +44,8 @@ import {
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
 import { showToast } from "../app/toast/toastStore";
+import { Banner } from "../ui/notice";
+import { THIS_COMPUTER_OFFLINE_HINT } from "../../lib/thisComputerOffline";
 import {
   accountMachineForTarget as findAccountMachineForTarget,
   assignMachineSections,
@@ -101,6 +103,11 @@ type RemoteTargetListProps = {
   thisComputerCode?: ReactNode;
   /** Opens Settings › Integrations › the provider (a refused key is fixed there). */
   onOpenCloudSettings?: (() => void) | null;
+  /**
+   * This computer is offline (`deriveThisComputerOffline`): the rows stop
+   * blaming each machine and the list says why once.
+   */
+  thisComputerOffline?: boolean;
 };
 
 
@@ -202,6 +209,7 @@ export function RemoteTargetList({
   accountEmail = null,
   thisComputerCode = null,
   onOpenCloudSettings = null,
+  thisComputerOffline = false,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -1336,6 +1344,7 @@ export function RemoteTargetList({
           sessionLimit={sessionLimit}
           accountOnline={pairAgainMachine ? accountMachinePresence(pairAgainMachine) === "online" : null}
           accountLastSeenAt={pairAgainMachine?.lastSeenAt ?? null}
+          thisComputerOffline={thisComputerOffline}
         />
       );
     }
@@ -1444,6 +1453,17 @@ export function RemoteTargetList({
           {SECTION_LABELS[section]}
           <span className="ade-cx-count">{rows.length}</span>
         </div>
+        {thisComputerOffline && section === "available" ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "machines-this-computer-offline",
+              tone: "info",
+              title: "This computer is offline",
+              detail: `ADE reconnects to these computers on its own when the internet is back. ${THIS_COMPUTER_OFFLINE_HINT}`,
+            }}
+          />
+        ) : null}
         <div className="ade-cx-list">
         {rows.map((row) => renderRow(row, section))}
         </div>

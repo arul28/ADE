@@ -155,6 +155,7 @@ import {
   type CloudLaneRowNote,
 } from "../cloudLane/cloudLanesWithoutComputer";
 import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
+import { plainErrorText } from "../../lib/plainError";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -1049,7 +1050,7 @@ function reportSettleFailures(
   });
   showToast({
     title: `${action} failed on ${failed.map((group) => group.machineName).join(", ")}`,
-    message: firstError instanceof Error ? firstError.message : String(firstError),
+    message: plainErrorText(firstError, "ADE couldn't finish that."),
     tone: "error",
   });
 }

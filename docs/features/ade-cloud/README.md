@@ -190,7 +190,8 @@ that stops (see Sleep and busy rules).
   (`cloud.read`). With none online, or a brain too old, the web reads
   `GET /cloud/account` and `GET /cloud/instances` with the browser's own token
   (`webclient/adapter/cloud.ts`); a failed list shows the plan and marks the
-  computers unread (`computersUnread`). Billing goes straight to the server
+  computers unread (`computersUnread`), and the lane list says so with Try
+  again (a server read, no wake). Billing goes straight to the server
   (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`).
   Stripe opens in the same tab with `returnTo: "web"` and comes back to the
   web Settings › ADE Cloud. The website's plan buttons link to
@@ -1560,6 +1561,21 @@ account, never a pin.
   lane that can't be read, or a fetch that fails, reads `failed`, never
   `clean`, and the computer is kept. `ade cloud work-state` runs the same
   check.
+  - **When GitHub stopped it.** A `failed` lane carries `reason` when git's
+    error says GitHub stopped the fetch or the push (`classifyGitPushFailure`):
+    `github_refused` (repository not found, a sign-in or a permission
+    refused; trying again won't help) or `github_unreachable` (no answer in
+    time). The server's free, the desktop's, the web's and the phone's delete
+    check then say what GitHub did (`pushWorkGithubProblem`,
+    `pushWorkGithubMessage` in `computerCommands.ts`) instead of "open the
+    lane". A refusal is the person's to fix, so the free logs it and sends no
+    Sentry event. An older ADE on the computer sends no `reason`, and the
+    older sentences stay.
+  - **A lane that isn't on the computer.** A launch that failed before it
+    made the lane (a provider refused its key) leaves a computer with only its
+    main checkout. A free there finds no lane in the tally and no branch, so
+    it says there is no lane to keep and to delete the computer instead
+    (`LANE_NOT_ON_COMPUTER_MESSAGE`).
   - **No wake for a saved computer.** When the computer is not running and
     the server says it saved its lanes at rest (`backups.saved`; any start
     clears it), the check reads the lanes' backups instead
@@ -2066,6 +2082,16 @@ One busy list, `decideCloudBusy` in
   All of this applies only to a machine the desktop knows as a cloud computer
   (`knowsBox` in `cloudMachines.ts`; an unknown key gets one read, a laptop
   key is not asked again for 10 minutes).
+- **Saved rows give way to live rows.** The saved copy redacts and cuts
+  what it stores, so a row read from it (`savedCopy` on the envelope, set in
+  `cloudSavedChats.ts`) and the same event read from the computer are two
+  payloads. Once the computer answers again, each saved row is replaced by its
+  live row: the history read, the live merge and older pages pair them by
+  chat, time, kind and sequence, equal except where the saved copy wrote
+  `[REDACTED]` or `[truncated]` (`reconcileAgentChatSavedCopies` in
+  `shared/chatHistoryMerge.ts`). Only a saved row gives way, so live text is
+  never replaced, and a live row that differs anywhere else stays its own
+  event. iOS keys its rows by `sequence`, so it needs no pairing.
 - **Waking.** A send from a saved chat wakes its computer (15–30 s). The pane
   shows "Waking the computer…" and the Work row "Waking"
   (`markCloudWakeForSend`, display only). Once the chat's connection is up
@@ -2100,7 +2126,11 @@ One busy list, `decideCloudBusy` in
   (an account read, kept 15 s) and the computer's saved chats, lanes and open
   PRs from its Work slice (`chatMentionClientRows.ts`). While the computer is
   awake, its own answer comes first, and the account's machines fill the
-  menu only when that answer has no machine rows.
+  menu only when that answer has no machine rows. The phone builds the same
+  menu for a chat with no live link to its computer
+  (`restingCloudChatMentionRows`): the saved chats and lanes Work lists for
+  it, and the account's machines. It has no copy of the computer's PRs, so
+  PRs are left out there, and it lists no files.
 - **A deleted computer's chat** shows no running turn: nothing runs there.
 - **Comments wait on the device.** A thread comment written in a chat whose
   computer rests stays on the device that wrote it (desktop and ADE Web,

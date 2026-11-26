@@ -1,6 +1,8 @@
-import type {
-  SyncAccountDirectoryLegDurations,
-  SyncAccountDirectoryState,
+import {
+  SYNC_ACCOUNT_DIRECTORY_FAILED_LEGS,
+  type SyncAccountDirectoryFailedLeg,
+  type SyncAccountDirectoryLegDurations,
+  type SyncAccountDirectoryState,
 } from "./types/sync";
 
 /**
@@ -27,6 +29,8 @@ export type RuntimePublishHealth = {
   lastHttpReason?: string;
   revokedAt?: string;
   recoveryGaveUpAt?: number;
+  /** The step the current failure happened on, when the brain sent it. */
+  failedLeg?: SyncAccountDirectoryFailedLeg;
 };
 
 export type RuntimeLastWedge = {
@@ -76,6 +80,9 @@ export function parseRuntimePublishHealth(raw: unknown): RuntimePublishHealth | 
     ...(asTrimmedString(raw.revokedAt) ? { revokedAt: asTrimmedString(raw.revokedAt)! } : {}),
     ...(typeof raw.recoveryGaveUpAt === "number" && Number.isFinite(raw.recoveryGaveUpAt)
       ? { recoveryGaveUpAt: raw.recoveryGaveUpAt }
+      : {}),
+    ...(SYNC_ACCOUNT_DIRECTORY_FAILED_LEGS.includes(raw.failedLeg as SyncAccountDirectoryFailedLeg)
+      ? { failedLeg: raw.failedLeg as SyncAccountDirectoryFailedLeg }
       : {}),
   };
 }

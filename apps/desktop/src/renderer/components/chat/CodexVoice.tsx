@@ -6,6 +6,7 @@ import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { microphonePermissionGuidance } from "./microphonePermissionGuidance";
 import { withChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * Voice conversations: talk with any chat, carried by Codex voice.
@@ -75,8 +76,8 @@ function rms(analyser: AnalyserNode | null, buffer: Float32Array<ArrayBuffer>): 
 }
 
 function cleanError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "").trim();
+  // Read after "Voice could not start:", so the fallback is a reason, not a second "couldn't".
+  return plainErrorText(error, "voice isn't available right now.");
 }
 
 /**

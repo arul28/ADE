@@ -18,6 +18,7 @@ import type { PinnedFilesApi } from "./pinnedFilesApi";
 import { DiffViewer } from "./viewers/DiffViewer";
 import type { EditorApi, EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
+import { plainErrorText } from "../../../lib/plainError";
 
 export type EditorGroupProps = {
   /** Files API bound to the machine that owns these tabs. */
@@ -132,7 +133,7 @@ export function EditorGroup(props: EditorGroupProps) {
     const api = editorApis.current.get(activeTab.id);
     if (api) {
       void api.save().catch((err) => {
-        onError(err instanceof Error ? err.message : String(err));
+        onError(plainErrorText(err, "ADE couldn't save the file."));
       });
       return;
     }
@@ -155,7 +156,7 @@ export function EditorGroup(props: EditorGroupProps) {
         onDirtyChange(activeTab.id, false);
       })
       .catch((err) => {
-        onError(err instanceof Error ? err.message : String(err));
+        onError(plainErrorText(err, "ADE couldn't save the file."));
       });
   }, [activeContext, activeTab, onDirtyChange, onError, props.files, registry]);
 

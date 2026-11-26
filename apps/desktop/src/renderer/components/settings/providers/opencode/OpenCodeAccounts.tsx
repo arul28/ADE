@@ -34,6 +34,7 @@ import { Banner } from "../../../ui/notice/Banner";
 import { showToast } from "../../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../../lib/launchPromptClipboard";
 import "./openCodeAccounts.css";
+import { plainErrorText } from "../../../../lib/plainError";
 
 /** Labels OpenCode gives a login when nobody named it; they say nothing about which login it is. */
 const GENERIC_LABELS = new Set(["oauth", "api key", "manually enter api key", "credential"]);
@@ -103,7 +104,7 @@ export function useOpenCodeAccounts(providerId: string, pin: OpenProjectBinding 
       setError(null);
     } catch (err) {
       if (request !== requestRef.current) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't read the OpenCode accounts."));
     } finally {
       if (request === requestRef.current) setLoading(false);
     }
@@ -269,7 +270,7 @@ export function OpenCodeAccountsSection({
         await reload();
         onChanged();
       } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
+        setActionError(plainErrorText(err, "That account change didn't go through."));
       } finally {
         setBusyId(null);
       }
@@ -423,7 +424,7 @@ function CloudLoginForm({
       }
       onAdded(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't add that login."));
     } finally {
       setBusy(false);
     }

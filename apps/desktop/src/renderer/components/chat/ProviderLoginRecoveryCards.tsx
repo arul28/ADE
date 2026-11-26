@@ -10,6 +10,7 @@
  *   another account started, so the card offers a new thread with the
  *   history, or the old account again.
  */
+import { plainErrorText } from "../../lib/plainError";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { SpinnerGap, X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
@@ -206,7 +207,7 @@ export function AccountSwitchRecoveryCard({
   const run = useCallback(async (which: "new" | "back", action: () => Promise<string | null>) => {
     setBusy(which);
     setError(null);
-    const failure = await action().catch((err: unknown) => (err instanceof Error ? err.message : String(err)));
+    const failure = await action().catch((err: unknown) => plainErrorText(err, "ADE couldn't continue the chat."));
     setBusy(null);
     if (failure) setError(failure);
   }, []);

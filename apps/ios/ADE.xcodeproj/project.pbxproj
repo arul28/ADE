@@ -29,7 +29,9 @@
 		C15C00000000000000B00001 /* CloudSponsored.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00001 /* CloudSponsored.swift */; };
 		C15C00000000000000B00002 /* WorkSponsoredCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00002 /* WorkSponsoredCards.swift */; };
 		C15C00000000000000B00003 /* WorkSponsoredPickCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */; };
+		C15C00000000000000B00099 /* WorkCloudTierRequestCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */; };
 		C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00001 /* CloudServerClient.swift */; };
+		C1AE00000000000000B0000A /* CloudPushWorkTally.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A0000A /* CloudPushWorkTally.swift */; };
 		C1AD000000000000000B0003 /* SettingsCloudAccountProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */; };
 		C1AD000000000000000B0001 /* AccountCloudLaunches.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0001 /* AccountCloudLaunches.swift */; };
 		DV1000000000000000000001 /* LiveInspectModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000001 /* LiveInspectModels.swift */; };
@@ -465,6 +467,15 @@
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
 		E20000000000000000000F2D /* LaneRecentlyDeleted.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F2D /* LaneRecentlyDeleted.swift */; };
+		E2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift */; };
+		E2000000000000000000DE22 /* SettingsArchiveSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE22 /* SettingsArchiveSection.swift */; };
+		E2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift */; };
+		E2000000000000000000DE24 /* RecentlyDeletedModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE24 /* RecentlyDeletedModel.swift */; };
+		E2000000000000000000DE25 /* RecentlyDeletedStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE25 /* RecentlyDeletedStore.swift */; };
+		E2000000000000000000DE26 /* RecentlyDeletedRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE26 /* RecentlyDeletedRows.swift */; };
+		E2000000000000000000DE27 /* ADEMetaLine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE27 /* ADEMetaLine.swift */; };
+		E2000000000000000000DE28 /* EveryMachineReads.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE28 /* EveryMachineReads.swift */; };
+		E2000000000000000000DE29 /* SettingsDeletedArchivedPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000DE29 /* SettingsDeletedArchivedPreviews.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B1000000000000000000001A /* ADEHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* ADEHaptics.swift */; };
 		B1000000000000000000001B /* LaneConnectionPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001B /* LaneConnectionPresentation.swift */; };
@@ -625,7 +636,9 @@
 		C15C00000000000000A00001 /* CloudSponsored.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSponsored.swift; path = ADE/Services/CloudSponsored.swift; sourceTree = "<group>"; };
 		C15C00000000000000A00002 /* WorkSponsoredCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSponsoredCards.swift; path = ADE/Views/Work/WorkSponsoredCards.swift; sourceTree = "<group>"; };
 		C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSponsoredPickCard.swift; path = ADE/Views/Work/WorkSponsoredPickCard.swift; sourceTree = "<group>"; };
+		C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCloudTierRequestCard.swift; path = ADE/Views/Work/WorkCloudTierRequestCard.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00001 /* CloudServerClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudServerClient.swift; path = ADE/Services/CloudServerClient.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A0000A /* CloudPushWorkTally.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPushWorkTally.swift; path = ADE/Services/CloudPushWorkTally.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsCloudAccountProviders.swift; path = ADE/Views/Settings/SettingsCloudAccountProviders.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0001 /* AccountCloudLaunches.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountCloudLaunches.swift; path = ADE/Services/AccountCloudLaunches.swift; sourceTree = "<group>"; };
 		DV0000000000000000000001 /* LiveInspectModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectModels.swift; path = ADE/Views/Duo/LiveInspectModels.swift; sourceTree = "<group>"; };
@@ -1083,6 +1096,15 @@
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
 		D20000000000000000000F2D /* LaneRecentlyDeleted.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRecentlyDeleted.swift; path = ADE/Views/Lanes/LaneRecentlyDeleted.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDeletedArchivedPage.swift; path = ADE/Views/Settings/SettingsDeletedArchivedPage.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE22 /* SettingsArchiveSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsArchiveSection.swift; path = ADE/Views/Settings/SettingsArchiveSection.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecentlyDeletedChatSheet.swift; path = ADE/Views/Lanes/RecentlyDeletedChatSheet.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE24 /* RecentlyDeletedModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecentlyDeletedModel.swift; path = ADE/Views/Lanes/RecentlyDeletedModel.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE25 /* RecentlyDeletedStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecentlyDeletedStore.swift; path = ADE/Views/Lanes/RecentlyDeletedStore.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE26 /* RecentlyDeletedRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecentlyDeletedRows.swift; path = ADE/Views/Lanes/RecentlyDeletedRows.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE27 /* ADEMetaLine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEMetaLine.swift; path = ADE/Views/Components/ADEMetaLine.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE28 /* EveryMachineReads.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EveryMachineReads.swift; path = ADE/Views/Components/EveryMachineReads.swift; sourceTree = "<group>"; };
+		D2000000000000000000DE29 /* SettingsDeletedArchivedPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDeletedArchivedPreviews.swift; path = ADE/Views/Settings/SettingsDeletedArchivedPreviews.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A1000000000000000000001A /* ADEHaptics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEHaptics.swift; path = ADE/Views/Components/ADEHaptics.swift; sourceTree = "<group>"; };
 		A1000000000000000000001B /* LaneConnectionPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneConnectionPresentation.swift; path = ADE/Views/Lanes/LaneConnectionPresentation.swift; sourceTree = "<group>"; };
@@ -1300,6 +1322,8 @@
 			children = (
 				C10000000000000000000012 /* ADECodeRenderingCache.swift */,
 				4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */,
+				D2000000000000000000DE27 /* ADEMetaLine.swift */,
+				D2000000000000000000DE28 /* EveryMachineReads.swift */,
 				F2000000000000000000000A /* ADEUsageDesign.swift */,
 				F20000000000000000000A01 /* ADEResetCreditRows.swift */,
 				F20000000000000000000B51 /* ADEGlassComposer.swift */,
@@ -1350,6 +1374,10 @@
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
 				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
 				D20000000000000000000F2D /* LaneRecentlyDeleted.swift */,
+				D2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift */,
+				D2000000000000000000DE24 /* RecentlyDeletedModel.swift */,
+				D2000000000000000000DE25 /* RecentlyDeletedStore.swift */,
+				D2000000000000000000DE26 /* RecentlyDeletedRows.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
 				A10000000000000000000107 /* LaneEnvInitProgressView.swift */,
 				A10000000000000000000109 /* LaneBranchPickerSheet.swift */,
@@ -1547,6 +1575,7 @@
 				C1AE00000000000000A00003 /* WorkCloudMachine.swift */,
 				C15C00000000000000A00002 /* WorkSponsoredCards.swift */,
 				C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */,
+				C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */,
 				C1AE00000000000000A00031 /* WorkCloudLaunchViews.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
 				D30000000000000000005C01 /* WorkUsageSkyline.swift */,
@@ -1703,6 +1732,9 @@
 				C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */,
 				5E77000000000000000A0005 /* SettingsIntegrationsPage.swift */,
 				5E77000000000000000A0006 /* SettingsLanesPage.swift */,
+				D2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift */,
+				D2000000000000000000DE22 /* SettingsArchiveSection.swift */,
+				D2000000000000000000DE29 /* SettingsDeletedArchivedPreviews.swift */,
 				F20000000000000000000009 /* SettingsUsageChart.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
@@ -1753,6 +1785,7 @@
 				C1AE00000000000000A00002 /* AccountCloudStore.swift */,
 				C15C00000000000000A00001 /* CloudSponsored.swift */,
 				C1AE00000000000000A00001 /* CloudServerClient.swift */,
+				C1AE00000000000000A0000A /* CloudPushWorkTally.swift */,
 				C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */,
 				A37A0000000000000000A003 /* SyncService+CloudPhone.swift */,
 				5E77000000000000000A0007 /* SyncService+SettingsPages.swift */,
@@ -2442,6 +2475,7 @@
 				C1AE00000000000000B00002 /* AccountCloudStore.swift in Sources */,
 				C15C00000000000000B00001 /* CloudSponsored.swift in Sources */,
 				C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */,
+				C1AE00000000000000B0000A /* CloudPushWorkTally.swift in Sources */,
 				A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */,
 				A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */,
 				C1AE00000000000000B00010 /* CloudAtRestPreviews.swift in Sources */,
@@ -2605,6 +2639,15 @@
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
 				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
 				E20000000000000000000F2D /* LaneRecentlyDeleted.swift in Sources */,
+				E2000000000000000000DE23 /* SettingsDeletedArchivedPage.swift in Sources */,
+				E2000000000000000000DE22 /* SettingsArchiveSection.swift in Sources */,
+				E2000000000000000000DE21 /* RecentlyDeletedChatSheet.swift in Sources */,
+				E2000000000000000000DE24 /* RecentlyDeletedModel.swift in Sources */,
+				E2000000000000000000DE25 /* RecentlyDeletedStore.swift in Sources */,
+				E2000000000000000000DE26 /* RecentlyDeletedRows.swift in Sources */,
+				E2000000000000000000DE27 /* ADEMetaLine.swift in Sources */,
+				E2000000000000000000DE28 /* EveryMachineReads.swift in Sources */,
+				E2000000000000000000DE29 /* SettingsDeletedArchivedPreviews.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,
 				E20000000000000000000F30 /* ADEFlat.swift in Sources */,
@@ -2649,6 +2692,7 @@
 				C1AE00000000000000B00003 /* WorkCloudMachine.swift in Sources */,
 				C15C00000000000000B00002 /* WorkSponsoredCards.swift in Sources */,
 				C15C00000000000000B00003 /* WorkSponsoredPickCard.swift in Sources */,
+				C15C00000000000000B00099 /* WorkCloudTierRequestCard.swift in Sources */,
 				C1AE00000000000000B00031 /* WorkCloudLaunchViews.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
 				E30000000000000000005C01 /* WorkUsageSkyline.swift in Sources */,

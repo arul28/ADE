@@ -600,7 +600,7 @@ ade storage actions --text                           # raw storage service actio
 ade archive list --text                              # archived lanes, chats, and shells, newest first (archived rows are hidden from chat/terminal lists unless --include-archived)
 ade archive list --kind chat --older-than 14 --text  # archived chats from 14+ days ago
 ade archive summary --text                           # counts per kind and what is 14+ days old
-ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Project → Storage & cleanup → Archive
+ade --role cto archive restore chat:<id> lane:<id>   # unarchive items (CTO); deleting lives in Project → Deleted & Archived → Archive
 ade chat list --include-archived --text              # archived chats too
 ade terminal list --chat-session <session-id> --include-archived --text  # archived shells too
 ade actions list --domain chat --text

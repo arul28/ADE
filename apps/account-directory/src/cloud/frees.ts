@@ -1,4 +1,14 @@
-import { KEEP_AWAKE_STATE_COMMAND, keepAwakeOf, keepAwakeWrittenAt, pushWorkCommand, readPushWorkTally, type PushWorkLane } from "./computerCommands";
+import {
+  KEEP_AWAKE_STATE_COMMAND,
+  LANE_NOT_ON_COMPUTER_MESSAGE,
+  keepAwakeOf,
+  keepAwakeWrittenAt,
+  pushWorkCommand,
+  pushWorkGithubMessage,
+  pushWorkGithubProblem,
+  readPushWorkTally,
+  type PushWorkLane,
+} from "./computerCommands";
 import type { CloudFreeRecord, CloudFreeState } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, fail, json, readJson } from "./http";
 import { JOB_RECORD_TTL_MS, nudgeJob, readJob, registerJobKind, runJob, type CloudJobDeps, type JobContext, type JobRow, type StepResult } from "./jobs";
@@ -75,6 +85,17 @@ const laneNamesOf = (lanes: readonly PushWorkLane[]): string => {
   const names = lanes.map((lane) => (lane.primary ? "main checkout" : lane.laneName || lane.branchRef)).filter(Boolean);
   return names.length ? ` (${names.join(", ")})` : "";
 };
+/**
+ * A lane GitHub stopped: what the person can do differs from a lane ADE
+ * couldn't read. A refusal is theirs to fix (a moved repository, GitHub
+ * access), so it is refused, not a Sentry event; no answer is ADE's to report.
+ */
+function githubFailure(lanes: readonly PushWorkLane[]): StepResult | null {
+  const problem = pushWorkGithubProblem(lanes);
+  if (problem === "refused") return { kind: "fail", error: pushWorkGithubMessage(problem, "kept"), refused: true };
+  if (problem === "unreachable") return { kind: "fail", error: pushWorkGithubMessage(problem, "kept"), code: "github_unreachable" };
+  return null;
+}
 const withoutStop = (text: string): string => text.trim().replace(/[.!?…]+$/, "");
 
 export function freeRecordOf(job: JobRow): CloudFreeRecord {
@@ -179,6 +200,8 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   logCloud("cloud.free_pushed", { jobId: job.job_id, pushed: tally.pushed, failed: tally.failed, skipped: tally.skipped });
   const left = (tally.lanes ?? []).filter((lane) => lane.state === "unpushed" || lane.state === "failed");
   if (tally.failed > 0 || left.length > 0 || (!tally.lanes && tally.skipped > 0)) {
+    const github = githubFailure(left);
+    if (github) return github;
     // A lane it couldn't read (nothing seen to push, the read itself failed)
     // is not a lane to open and fix: say that, apart from work that didn't push.
     // Unknown (an older ADE) counts as work.
@@ -196,7 +219,10 @@ async function push(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<StepRe
   const facts = factsOf(job);
   const own = tally.lanes?.find((lane) => lane.laneId === facts.laneId) ?? tally.lanes?.find((lane) => !lane.primary) ?? null;
   const branchRef = own?.branchRef?.trim() || facts.branchRef || null;
-  if (!branchRef) return { kind: "fail", error: "ADE couldn't tell which branch this lane is on, so the computer stays." };
+  if (!branchRef) {
+    if (tally.lanes && !own) return { kind: "fail", error: LANE_NOT_ON_COMPUTER_MESSAGE, refused: true };
+    return { kind: "fail", error: "ADE couldn't tell which branch this lane is on, so the computer stays." };
+  }
   return { kind: "next", step: "recheck", patch: { facts_json: withFacts(job, { branchRef }), message: "Checking that everything is on GitHub…" } };
 }
 
@@ -209,6 +235,8 @@ async function recheck(env: CloudEnv, job: JobRow, ctx: JobContext): Promise<Ste
   const ran = await tryExec(ctx, computer.instance_id, pushWorkCommand(true, { afterPush: true }), CHECK_EXEC_MS);
   const tally = ran && ran.exitCode === 0 ? readPushWorkTally(ran.stdout) : null;
   if (!tally || !tally.lanes) return { kind: "fail", error: "ADE couldn't confirm all work is on GitHub, so the computer stays. Try again." };
+  const github = githubFailure(tally.lanes);
+  if (github) return github;
   if (tally.failed > 0) return { kind: "fail", error: "ADE couldn't read every project on this computer, so it stays. Try again." };
   const left = tally.lanes.filter((lane) => lane.state === "unpushed" || lane.state === "failed");
   if (left.length > 0) return { kind: "fail", error: `Work changed on this computer while ADE pushed it${laneNamesOf(left)}, so it stays. Try again.` };

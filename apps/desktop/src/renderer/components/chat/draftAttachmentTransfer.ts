@@ -24,6 +24,7 @@ import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { draftAttachmentSource, rememberDraftAttachmentSource } from "./draftAttachmentSources";
 import { readAttachmentStagingMode } from "./chatAttachmentStaging";
 import type { ChatNoticeAction } from "./chatNotice";
+import { plainErrorText } from "../../lib/plainError";
 
 
 export type DraftAttachmentMachineScope = {
@@ -373,7 +374,7 @@ export function useDraftAttachmentTransfer(args: {
         `Couldn't move ${attachmentNoun(movableAttachments)} `
         + `to ${currentMachine.name}. Switch back to ${previousMachine.name} or remove `
         + `${movableAttachments.length === 1 ? "it" : "them"} before sending: `
-        + `${transferError instanceof Error ? transferError.message : String(transferError)}`;
+        + `${plainErrorText(transferError, "the copy did not finish.")}`;
       setBlockedReason(message);
       setError(message);
     });

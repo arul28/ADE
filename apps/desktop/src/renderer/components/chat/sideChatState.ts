@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
 import { withChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * Which side chat each main chat has, as this window last heard it.
@@ -156,7 +157,7 @@ export async function confirmSideChatToolClose(args: {
     showToast({
       tone: "error",
       title: "Couldn't end the side chat",
-      message: error instanceof Error ? error.message : String(error),
+      message: plainErrorText(error, "ADE couldn't end the side chat."),
     });
   }
   return true;

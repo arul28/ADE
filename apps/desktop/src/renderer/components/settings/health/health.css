@@ -173,7 +173,7 @@
 .ade-health-run-total { margin-left: auto; color: var(--color-fg); font-size: 12px; }
 .ade-health-run-sub { display: flex; flex-wrap: wrap; gap: 3px 14px; font-size: 11.5px; color: var(--kit-text-3); }
 
-/* ── Cleanup rules (Storage & cleanup → Rules) ─────────────────────────────
+/* ── Cleanup rules (Disk space → Rules) ────────────────────────────────────
    One section read as a lane's life: small group headings over row panels.
    A group or a set of rows carries its settings anchor, so a search shows
    only the rows it matched. */

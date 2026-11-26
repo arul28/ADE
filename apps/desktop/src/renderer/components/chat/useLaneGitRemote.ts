@@ -1,6 +1,6 @@
+import { plainErrorText } from "../../lib/plainError";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { withChatPin } from "./chatMachinePin";
 
@@ -115,9 +115,8 @@ export function useLaneGitRemote(
         })
         .catch((caught: unknown) => {
           if (cancelled) return;
-          const raw = caught instanceof Error ? caught.message : String(caught);
           lastGoodRemoteByLane.delete(cacheKey);
-          setError(stripElectronErrorWrapper(raw) || "The git remote read failed.");
+          setError(plainErrorText(caught, "The git remote read failed."));
           setStatus("error");
           const delay = LANE_GIT_REMOTE_RETRY_DELAYS_MS[attempt];
           if (delay == null) return;

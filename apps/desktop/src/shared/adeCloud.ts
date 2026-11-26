@@ -91,6 +91,7 @@ export {
 export type { CloudComputerLimitDetail, CloudComputerLimitLane, CloudDiskRefusalReason, CloudNextPlan };
 /** The idle cleanup's shared sentences (the server's emails say the same). */
 export {
+  CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   CLOUD_IGNORED_FILES_MAX_PATHS,
   idleCleanupHeldNext,
   idleCleanupSaveSentence,
@@ -1061,9 +1062,10 @@ export type CloudMachinesResult = {
   /** A plain sentence for `access_refused` and `unreachable`. */
   message: string | null;
   /**
-   * The web app with none of the account's computers online: the plan and
-   * hours came straight from the account server, and `machines` is empty
-   * because listing them needs a computer, not because there are none.
+   * The web app with none of the account's computers online read the plan
+   * and hours from the account server, but its list of computers
+   * (`GET /cloud/instances`) failed: `machines` is empty because the list
+   * wasn't read, not because there are none.
    */
   computersUnread?: boolean;
 };

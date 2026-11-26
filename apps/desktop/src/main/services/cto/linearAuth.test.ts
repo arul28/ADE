@@ -1563,7 +1563,7 @@ describe("linearClient", () => {
       return new Response(
         JSON.stringify({
           data: {
-            viewer: { id: "viewer-1", displayName: "Alex" },
+            viewer: { id: "viewer-1", displayName: "Alex", admin: true },
             organization: {
               id: "org-1",
               name: "Acme Workspace",
@@ -1588,6 +1588,7 @@ describe("linearClient", () => {
     await expect(client.getConnectionIdentity()).resolves.toEqual({
       viewerId: "viewer-1",
       viewerName: "Alex",
+      viewerIsAdmin: true,
       organizationId: "org-1",
       organizationName: "Acme Workspace",
       organizationUrlKey: "acme",

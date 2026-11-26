@@ -62,7 +62,35 @@ extension View {
     adeNavigationGlass()
       .navigationTitle(title)
       .navigationBarTitleDisplayMode(.large)
+      .modifier(ADESettingsWrappingLargeTitle(title: title))
       .settingsPageClose()
+  }
+}
+
+/// At the accessibility text sizes the bar's large title cuts a long name to
+/// "Deleted & arc…". There the page draws its own large title, which wraps;
+/// the bar keeps `navigationTitle` for the collapsed title and VoiceOver.
+private struct ADESettingsWrappingLargeTitle: ViewModifier {
+  let title: String
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  func body(content: Content) -> some View {
+    if dynamicTypeSize.isAccessibilitySize {
+      content.toolbar {
+        ToolbarItem(placement: .largeTitle) {
+          Text(title)
+            .font(.largeTitle.weight(.bold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(3)
+            .minimumScaleFactor(0.75)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
+        }
+      }
+    } else {
+      content
+    }
   }
 }
 

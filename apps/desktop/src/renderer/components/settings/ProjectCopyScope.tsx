@@ -1,9 +1,9 @@
 import React, { useMemo } from "react";
-import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { isMachineScopePin } from "../../../shared/machineScope";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { ProjectMachine } from "../../state/projectMachines";
-import { useActiveRepositoryCopies, useCopyPick, useOnlineCopyPins, useTabCopyPin, type CopyPick } from "../../state/repositoryScope";
+import { copyMachineName, useActiveRepositoryCopies, useCopyPick, useOnlineCopyPins, useTabCopyPin, type CopyPick } from "../../state/repositoryScope";
 import { Banner } from "../ui/notice";
 import { MachinePicker } from "./ProvidersMachinePicker";
 import { settingsMachineScope, SettingsMachineScopeProvider, useSettingsMachineScope } from "./SettingsMachineScope";
@@ -161,8 +161,7 @@ export function useProjectCopyPage(scope: string, active = true): ProjectCopyPag
     const isThisMachine = copy?.isThisMachine ?? pin.kind === "local";
     return copyPageFor(pin, machineForPin(machines, pin), {
       machineId: copy?.machineId ?? (pin.kind === "remote" ? pin.targetId : THIS_MACHINE_ID),
-      machineName: copy?.machineName
-        ?? (pin.kind === "remote" ? pin.runtimeName || pin.hostname || pin.displayName : thisMachineName ?? THIS_MACHINE_NAME),
+      machineName: copyMachineName(pin, copy?.machineName, thisMachineName),
       isThisMachine,
     }, tabPinKey);
   }, [copies, machines, pick.pin, tabPinKey, thisMachineName]);
