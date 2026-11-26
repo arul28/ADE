@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatCircleDots, Terminal } from "@phosphor-icons/react";
-import type { OpenProjectBinding, TerminalSessionSummary } from "../../../../shared/types";
+import type { LaneBranchActiveWorkItem, OpenProjectBinding, TerminalSessionSummary, TerminalToolType } from "../../../../shared/types";
 import { sessionActiveKind, type SessionActiveKind } from "../../../../shared/sessionSpawnNesting";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { canonicalInputFromSummary, sessionCanonicalUiState, sessionIsMidFlight } from "../../../lib/terminalAttention";
@@ -14,26 +14,59 @@ import { COLORS, SANS_FONT } from "../laneDesignTokens";
 
 /** What one open session in the lane is doing, for the dialog. */
 export type LaneActiveWorkRow = {
-  session: TerminalSessionSummary;
+  id: string;
+  title: string;
+  toolType: string | null;
   kind: SessionActiveKind;
-  /** `running`: will change on its own. `needs_you`: waiting on the person. `open`: at rest. */
+  ptyId: string | null;
+  /**
+   * `running`: a chat turn or its background jobs are working; it will change
+   * on its own. `needs_you`: waiting on the person. `open`: nothing ADE can
+   * see is working. A terminal ADE cannot see into reads `open` too.
+   */
   state: "running" | "needs_you" | "open";
 };
 
-/** Open sessions in a lane, classified the way the Work tab reads them. */
-export function classifyLaneActiveWork(sessions: readonly TerminalSessionSummary[]): LaneActiveWorkRow[] {
-  const rank = { running: 0, needs_you: 1, open: 2 } as const;
-  return sessions
-    .filter((session) => !session.archivedAt && !session.endedAt)
-    .map((session): LaneActiveWorkRow => {
-      const input = canonicalInputFromSummary(session);
-      const state = sessionIsMidFlight(input)
-        ? "running"
-        : sessionCanonicalUiState(input).phase === "needs_you" ? "needs_you" : "open";
-      return { session, kind: sessionActiveKind(session.toolType), state };
-    })
-    .sort((a, b) => rank[a.state] - rank[b.state]);
+function sessionIsWorking(session: TerminalSessionSummary): boolean {
+  const input = canonicalInputFromSummary(session);
+  if (sessionIsMidFlight(input)) return true;
+  // Background jobs keep using the worktree after the turn ends.
+  const state = sessionCanonicalUiState(input);
+  return state.phase === "running" && state.liveness === "background";
 }
+
+/**
+ * Open sessions in a lane, classified the way the Work tab reads them, plus
+ * any the host reported that the Work roster does not list (a side chat).
+ */
+export function classifyLaneActiveWork(
+  sessions: readonly TerminalSessionSummary[],
+  reported: readonly LaneBranchActiveWorkItem[] = [],
+): LaneActiveWorkRow[] {
+  const rank = { running: 0, needs_you: 1, open: 2 } as const;
+  const rows = sessions
+    .filter((session) => !session.archivedAt && !session.endedAt)
+    .map((session): LaneActiveWorkRow => ({
+      id: session.id,
+      title: primarySessionLabel(session),
+      toolType: session.toolType ?? null,
+      kind: sessionActiveKind(session.toolType),
+      ptyId: session.ptyId ?? null,
+      state: sessionIsWorking(session)
+        ? "running"
+        : sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "needs_you" ? "needs_you" : "open",
+    }));
+  const listed = new Set(rows.map((row) => row.id));
+  for (const item of reported) {
+    if (listed.has(item.id)) continue;
+    rows.push({ id: item.id, title: item.title, toolType: item.toolType ?? null, kind: item.kind, ptyId: null, state: "open" });
+  }
+  return rows.sort((a, b) => rank[a.state] - rank[b.state]);
+}
+
+/** How long "Stop and switch" waits for the stopped work to actually end. */
+const STOP_CONFIRM_TIMEOUT_MS = 8_000;
+const STOP_CONFIRM_POLL_MS = 400;
 
 /** How often "Wait, then switch" re-reads the lane when no change event arrives. */
 const WAIT_BACKSTOP_MS = 4_000;
@@ -43,6 +76,8 @@ const STATE_LABEL: Record<LaneActiveWorkRow["state"], string> = {
   needs_you: "Waiting for you",
   open: "Open",
 };
+
+const EMPTY_REPORTED_WORK: readonly LaneBranchActiveWorkItem[] = [];
 
 function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
@@ -61,6 +96,7 @@ export function LaneActiveWorkDialog({
   laneName,
   pin,
   targetLabel,
+  reportedWork = EMPTY_REPORTED_WORK,
   onContinue,
   onCancel,
 }: {
@@ -72,6 +108,8 @@ export function LaneActiveWorkDialog({
   pin: OpenProjectBinding;
   /** What happens next, e.g. the branch name: "Switch to {targetLabel}". */
   targetLabel: string;
+  /** What the host said is open, when the caller has it; rows the Work list leaves out still show. */
+  reportedWork?: readonly LaneBranchActiveWorkItem[];
   /** Run the switch with active work acknowledged. */
   onContinue: () => void;
   onCancel: () => void;
@@ -96,19 +134,27 @@ export function LaneActiveWorkDialog({
   const aliveRef = useRef(false);
   // Reads can answer out of order; only the newest one counts.
   const readSeqRef = useRef(0);
+  const reportedRef = useRef(reportedWork);
+  reportedRef.current = reportedWork;
+
+  /** Every open session in the lane, from its machine. No page limit: an old running chat must not hide behind newer ones. */
+  const readRows = useCallback(async (): Promise<LaneActiveWorkRow[]> => {
+    const sessions = await window.ade.sessions.list({ laneId, limit: null, includeArchived: false }, pinRef.current);
+    return classifyLaneActiveWork(sessions.filter((session) => session.laneId === laneId), reportedRef.current);
+  }, [laneId]);
 
   const load = useCallback(async () => {
     const seq = ++readSeqRef.current;
     try {
-      const sessions = await window.ade.sessions.list({ laneId, limit: 200, includeArchived: false }, pinRef.current);
+      const next = await readRows();
       if (seq !== readSeqRef.current) return;
-      setRows(classifyLaneActiveWork(sessions.filter((session) => session.laneId === laneId)));
+      setRows(next);
       setLoadError(null);
     } catch (error) {
       if (seq !== readSeqRef.current) return;
       setLoadError(extractError(error));
     }
-  }, [laneId]);
+  }, [readRows]);
 
   // Read the lane while open, and again whenever a session on its machine
   // changes, so "Waiting" sees work finish without polling.
@@ -156,21 +202,41 @@ export function LaneActiveWorkDialog({
 
   const stopAndContinue = useCallback(async () => {
     setMode("stopping");
+    const targets = running;
     const errors = new Map<string, string>();
-    await Promise.all(running.map(async ({ session, kind }) => {
+    await Promise.all(targets.map(async ({ id, kind, ptyId }) => {
       try {
         if (kind === "chat") {
-          await window.ade.agentChat.interrupt({ sessionId: session.id }, pinRef.current);
-        } else if (session.ptyId) {
-          const result = await window.ade.pty.dispose({ ptyId: session.ptyId, sessionId: session.id }, pinRef.current);
+          await window.ade.agentChat.interrupt({ sessionId: id }, pinRef.current);
+        } else if (ptyId) {
+          const result = await window.ade.pty.dispose({ ptyId, sessionId: id }, pinRef.current);
           if (result?.disposed === false && (result.reason === "owned-by-peer" || result.reason === "session-mismatch")) {
-            errors.set(session.id, "Another window owns this terminal.");
+            errors.set(id, "Another window owns this terminal.");
           }
         }
       } catch (error) {
-        errors.set(session.id, extractError(error));
+        errors.set(id, extractError(error));
       }
     }));
+    // A stop request returning is not the work stopping: a terminal's
+    // processes exit a moment later, and a provider can drop an interrupt.
+    // Switch only once the lane's machine shows each one stopped.
+    const stopping = new Set(targets.filter(({ id }) => !errors.has(id)).map(({ id }) => id));
+    const deadline = Date.now() + STOP_CONFIRM_TIMEOUT_MS;
+    while (stopping.size > 0 && aliveRef.current) {
+      try {
+        const latest = await readRows();
+        const stillGoing = new Set(latest.filter((row) => row.state === "running" || (row.kind !== "chat" && row.ptyId)).map((row) => row.id));
+        for (const id of [...stopping]) if (!stillGoing.has(id)) stopping.delete(id);
+        if (aliveRef.current) setRows(latest);
+      } catch {
+        // A failed read proves nothing; keep waiting until the deadline.
+      }
+      if (stopping.size === 0 || Date.now() >= deadline) break;
+      await new Promise((resolve) => window.setTimeout(resolve, STOP_CONFIRM_POLL_MS));
+    }
+    for (const id of stopping) errors.set(id, "Still running after Stop.");
+    if (!aliveRef.current) return;
     if (errors.size > 0) {
       setStopErrors(errors);
       setMode("choose");
@@ -178,35 +244,47 @@ export function LaneActiveWorkDialog({
       return;
     }
     proceed();
-  }, [load, proceed, running]);
+  }, [load, proceed, readRows, running]);
 
   const chats = rows?.filter((row) => row.kind === "chat") ?? [];
   const terminals = rows?.filter((row) => row.kind !== "chat") ?? [];
   const busy = mode !== "choose";
 
+  // ADE cannot see whether a command is still running in a terminal, so it
+  // never says "nothing is running" while one is open.
+  const openTerminals = rows?.filter((row) => row.kind !== "chat" && row.state !== "running").length ?? 0;
+  const terminalCaveat = openTerminals > 0
+    ? ` ADE can't tell whether a command in ${openTerminals === 1 ? "the open terminal" : "an open terminal"} is still running.`
+    : "";
+  const where = machineName ? ` on ${machineName}` : "";
   const description = loadError && rows == null
-    ? `ADE could not read what is open in this lane${machineName ? ` on ${machineName}` : ""}. You can still switch; open chats and terminals stay attached.`
+    ? `ADE could not read what is open in this lane${where}. You can still switch; open chats and terminals stay attached.`
     : rows == null
     ? "Checking what is running…"
     : running.length > 0
-      ? `${plural(running.length, "session")} ${running.length === 1 ? "is" : "are"} still working${machineName ? ` on ${machineName}` : ""}. Open chats and terminals stay attached and see the new branch.`
-      : `Nothing is running${machineName ? ` on ${machineName}` : ""}. Open chats and terminals stay attached and see the new branch.`;
+      ? `${plural(running.length, "session")} ${running.length === 1 ? "is" : "are"} still working${where}. Open chats and terminals stay attached and see the new branch.${terminalCaveat}`
+      : `No chat is working${where}. Open chats and terminals stay attached and see the new branch.${terminalCaveat}`;
 
   const actions = mode === "waiting"
     ? [
         { label: `Waiting for ${plural(running.length, "session")}…`, busy: true, variant: "solid" as const, onClick: () => undefined },
         { label: "Stop waiting", variant: "secondary" as const, onClick: () => setMode("choose") },
       ]
-    : running.length > 0
+    : mode === "stopping"
       ? [
-          { label: "Wait, then switch", variant: "solid" as const, autoFocus: true, disabled: busy, title: "Switch as soon as the running work finishes", onClick: () => setMode("waiting") },
-          { label: mode === "stopping" ? "Stopping…" : "Stop and switch", busy: mode === "stopping", disabled: busy, variant: "secondary" as const, title: "Stops the running chats' turns and closes running terminals and agent CLIs, then switches", onClick: () => { void stopAndContinue(); } },
-          { label: "Cancel", variant: "secondary" as const, disabled: busy, onClick: onCancel },
+          { label: "Stopping…", busy: true, disabled: true, variant: "solid" as const, onClick: () => undefined },
+          { label: "Cancel", variant: "secondary" as const, disabled: true, onClick: onCancel },
         ]
-      : [
-          { label: `Switch to ${targetLabel}`, variant: "solid" as const, autoFocus: true, disabled: rows == null && !loadError, onClick: proceed },
-          { label: "Cancel", variant: "secondary" as const, onClick: onCancel },
-        ];
+      : running.length > 0
+        ? [
+            { label: "Wait, then switch", variant: "solid" as const, autoFocus: true, title: "Switch as soon as the running work finishes", onClick: () => setMode("waiting") },
+            { label: "Stop and switch", variant: "secondary" as const, title: "Stops the running chats' turns and closes running terminals and agent CLIs, then switches", onClick: () => { void stopAndContinue(); } },
+            { label: "Cancel", variant: "secondary" as const, onClick: onCancel },
+          ]
+        : [
+            { label: `Switch to ${targetLabel}`, variant: "solid" as const, autoFocus: true, disabled: rows == null && !loadError, onClick: proceed },
+            { label: "Cancel", variant: "secondary" as const, onClick: onCancel },
+          ];
 
   return (
     <Dialog
@@ -234,7 +312,12 @@ export function LaneActiveWorkDialog({
       ) : undefined}
     >
       {loadError ? (
-        <InlineErrorNotice id="lane-active-work-read" message={loadError} label="Could not read this lane's sessions" style={{ marginBottom: 8 }} />
+        <div className="mb-2 flex items-center gap-2">
+          <InlineErrorNotice id="lane-active-work-read" message={loadError} label="Could not read this lane's sessions" />
+          <button type="button" className="text-[11px] underline-offset-2 hover:underline" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} onClick={() => { void load(); }}>
+            Read again
+          </button>
+        </div>
       ) : null}
       <div className="flex flex-col gap-3">
         <ActiveWorkGroup label="Chats" icon={<ChatCircleDots size={12} />} rows={chats} stopErrors={stopErrors} />
@@ -264,18 +347,18 @@ function ActiveWorkGroup({
         <span style={{ color: COLORS.textDim, fontWeight: 400 }}>{rows.length}</span>
       </div>
       <ul className="flex flex-col gap-0.5">
-        {rows.map(({ session, state }) => {
-          const error = stopErrors.get(session.id);
+        {rows.map(({ id, title, toolType, state }) => {
+          const error = stopErrors.get(id);
           return (
             <li
-              key={session.id}
+              key={id}
               className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1"
               style={{ background: state === "running" ? "color-mix(in srgb, var(--color-fg) 4%, transparent)" : undefined }}
               data-state={state}
             >
-              <span className="flex w-4 shrink-0 justify-center"><ToolLogo toolType={session.toolType} size={13} /></span>
+              <span className="flex w-4 shrink-0 justify-center"><ToolLogo toolType={toolType as TerminalToolType | null} size={13} /></span>
               <span className="min-w-0 flex-1 truncate" style={{ fontSize: 12, color: state === "open" ? COLORS.textSecondary : COLORS.textPrimary }}>
-                {primarySessionLabel(session)}
+                {title}
               </span>
               {error ? (
                 <span className="shrink-0 truncate" style={{ fontSize: 11, color: COLORS.danger, maxWidth: 200 }} title={error}>{error}</span>

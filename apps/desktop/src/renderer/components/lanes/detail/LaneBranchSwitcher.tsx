@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, Check, MagnifyingGlass, Plus } from "@phosphor-icons/react";
-import type { LaneSummary, OpenProjectBinding } from "../../../../shared/types";
+import type { LaneBranchActiveWorkItem, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
@@ -24,6 +24,7 @@ type PendingBranchSwitch = {
   branchName: string;
   mode: "existing" | "create";
   startPoint?: string;
+  activeWork: LaneBranchActiveWorkItem[];
 };
 
 const fieldStyle: React.CSSProperties = {
@@ -205,7 +206,7 @@ export function LaneBranchSwitcher({
         if (preview.activeWork.length > 0) {
           // The dialog says what is running and asks; the menu steps aside.
           setOpen(false);
-          setPendingSwitch({ branchName, mode, startPoint: request.startPoint });
+          setPendingSwitch({ branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
           return;
         }
       }
@@ -486,11 +487,12 @@ export function LaneBranchSwitcher({
           laneName={laneDisplayName(lane)}
           pin={pin}
           targetLabel={branchNameFromLaneRef(pendingSwitch.branchName)}
+          reportedWork={pendingSwitch.activeWork}
           onCancel={() => setPendingSwitch(null)}
           onContinue={() => {
             const next = pendingSwitch;
             setPendingSwitch(null);
-            void checkout({ ...next, acknowledgeActiveWork: true });
+            void checkout({ branchName: next.branchName, mode: next.mode, startPoint: next.startPoint, acknowledgeActiveWork: true });
           }}
         />
       ) : null}

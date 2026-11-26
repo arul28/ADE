@@ -2826,6 +2826,7 @@ export function createLaneService({
       ...terminalRows.map((row) => ({
         id: row.id,
         kind: sessionActiveKind(row.tool_type),
+        toolType: row.tool_type ?? null,
         title: row.title || row.id,
         status: row.status,
       })),

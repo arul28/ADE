@@ -217,6 +217,7 @@ function SwatchHalf({
       className="ade-swatch-half"
       data-side={side}
       onClick={onPick}
+      {...themeHoverPreviewProps(theme.id)}
       style={{ background: `linear-gradient(${isLight ? "160deg" : "340deg"}, ${p.surface}, ${p.bg})` }}
     >
       {/* A hint of the UI: an accent control and a line of text. */}
@@ -276,7 +277,7 @@ function FamilyTile({
   const lightAccent = useMemo(() => resolveTheme(family.light).palette.accent, [family]);
   const darkAccent = useMemo(() => resolveTheme(family.dark).palette.accent, [family]);
   return (
-    <div className="ade-swatch-tile" data-active={active} data-theme-family={family.id} {...themeHoverPreviewProps(previewThemeId)}>
+    <div className="ade-swatch-tile" data-active={active} data-theme-family={family.id}>
       <div className="ade-swatch">
         <SwatchHalf theme={family.light} side="light" active={active && effectiveId === family.light.id} onPick={() => onPickVariant(family.light)} />
         <SwatchHalf theme={family.dark} side="dark" active={active && effectiveId === family.dark.id} onPick={() => onPickVariant(family.dark)} />
@@ -287,6 +288,7 @@ function FamilyTile({
         aria-label={`Use the ${family.name} theme`}
         className="ade-swatch-name"
         onClick={onSelect}
+        {...themeHoverPreviewProps(previewThemeId)}
       >
         <span>{family.name}</span>
         <span aria-hidden style={{ display: "inline-flex", gap: 3, marginLeft: "auto" }}>

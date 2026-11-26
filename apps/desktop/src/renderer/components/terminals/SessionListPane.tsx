@@ -3401,6 +3401,14 @@ export const SessionListPane = React.memo(function SessionListPane({
   ) : null;
 
   // Pinned chats lead the flat views, from every machine, in their status order.
+  // A section's Settle acts on the rows it shows. Pinned rows sit in Pinned.
+  const quietlyAwaitingUnpinned = flatLists.pinned.length > 0
+    ? quietlyAwaitingSessions.filter((session) => !session.pinned)
+    : quietlyAwaitingSessions;
+  const endedUnpinned = flatLists.pinned.length > 0
+    ? endedFiltered.filter((session) => !session.pinned)
+    : endedFiltered;
+
   const pinnedStatusSection = flatLists.pinned.length > 0 ? (
     <StickyGroupHeader
       sectionId="status:pinned"
@@ -3438,13 +3446,13 @@ export const SessionListPane = React.memo(function SessionListPane({
         count={flatLists.awaiting.length}
         collapsed={workCollapsedSectionIds.includes("status:awaiting")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:awaiting")}
-        headerAction={quietlyAwaitingSessions.length > 0 ? (
+        headerAction={quietlyAwaitingUnpinned.length > 0 ? (
           <button
             type="button"
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(quietlyAwaitingSessions);
+              void settleSessions(quietlyAwaitingUnpinned);
             }}
           >
             {flatLists.rows.size ? "Settle local" : "Settle all"}
@@ -3460,13 +3468,13 @@ export const SessionListPane = React.memo(function SessionListPane({
         count={flatLists.ended.length}
         collapsed={workCollapsedSectionIds.includes("status:ended")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:ended")}
-        headerAction={endedFiltered.length > 0 ? (
+        headerAction={endedUnpinned.length > 0 ? (
           <button
             type="button"
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-fg/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(endedFiltered);
+              void settleSessions(endedUnpinned);
             }}
           >
             {flatLists.rows.size ? "Settle local" : "Settle all"}
