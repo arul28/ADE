@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useRef, useState } from "react";
 import { CaretRight, ChatCircle, CheckCircle, Circle, GitPullRequest, Plus, X } from "@phosphor-icons/react";
 import {
   CTO_OPEN_WORK_MAX_OPEN,
@@ -58,16 +58,16 @@ export function CtoOpenWorkList({ items, onChange, compact = false }: CtoOpenWor
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const groups = useMemo(() => {
-    const open = items.filter((item) => !item.doneAt);
-    const done = items.filter((item) => item.doneAt);
-    return {
-      waiting: open.filter((item) => ownerOf(item) === "user"),
-      tracking: open.filter((item) => ownerOf(item) === "cto"),
-      open,
-      done: compact ? done.filter((item) => isToday(item.doneAt)) : done,
-    };
-  }, [compact, items]);
+  // Not memoized: "today" moves at midnight while `items` stays the same, and
+  // the list is a few dozen rows.
+  const open = items.filter((item) => !item.doneAt);
+  const done = items.filter((item) => item.doneAt);
+  const groups = {
+    waiting: open.filter((item) => ownerOf(item) === "user"),
+    tracking: open.filter((item) => ownerOf(item) === "cto"),
+    open,
+    done: compact ? done.filter((item) => isToday(item.doneAt)) : done,
+  };
   const full = groups.open.length >= CTO_OPEN_WORK_MAX_OPEN;
 
   const run = async (key: string, args: CtoUpdateOpenWorkArgs) => {

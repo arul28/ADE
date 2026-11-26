@@ -291,6 +291,8 @@ type PrAutoLinkIgnoreRow = {
 
 /** One open PR on the repo, lane-linked or not (`listOpenRepoPullRequests`). */
 export type OpenRepoPullRequest = {
+  repoOwner: string;
+  repoName: string;
   number: number;
   title: string;
   isDraft: boolean;
@@ -10833,6 +10835,8 @@ export function createPrService({
         `,
         [projectId, ...repo.params, Math.max(1, Math.min(1000, Math.floor(limit)))],
       ).map((row) => ({
+        repoOwner: row.repo_owner,
+        repoName: row.repo_name,
         number: Number(row.github_pr_number),
         title: row.title || `PR #${row.github_pr_number}`,
         isDraft: Number(row.is_draft ?? 0) !== 0 || row.state === "draft",

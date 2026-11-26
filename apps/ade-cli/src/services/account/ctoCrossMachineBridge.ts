@@ -405,6 +405,8 @@ export function createCtoCrossMachineBridge(
    */
   const readMachineWork = async (machine: AdeAccountMachine): Promise<CtoRemoteMachineWork | null> => {
     const base = { machineId: machine.machineKey, name: machineName(machine), readAt: new Date().toISOString() };
+    // The switch may have been turned off while this read waited its turn.
+    if (!access().enabled) return null;
     try {
       const [lanes, sessions] = await Promise.all([
         callOnMachine(machine, {
@@ -416,8 +418,9 @@ export function createCtoCrossMachineBridge(
         callOnMachine(machine, {
           domain: "session",
           action: "list",
-          // Every unsettled chat, plus the newest settled ones: a work item
-          // linked to a chat here closes when it sees that chat settled.
+          // The newest 80 unsettled chats and 30 settled ones: enough for the
+          // working list (8 shown). A linked chat outside them is read by id
+          // below.
           args: { includeArchived: false, limit: 80, settledLimit: 30 },
           timeoutMs: 10_000,
         }),
@@ -488,6 +491,10 @@ export function createCtoCrossMachineBridge(
   let remoteWorkRefresh: Promise<void> | null = null;
   const refreshRemoteWork = async (): Promise<void> => {
     const machines = await listAccountMachines();
+    if (!access().enabled) {
+      remoteWork = null;
+      return;
+    }
     const targets = machines
       .filter((machine) => !isThisMachine(machine)
         && machine.online
@@ -507,7 +514,10 @@ export function createCtoCrossMachineBridge(
       chatsTotal: 0,
       error: errorMessage(error),
     }))));
-    remoteWork = { machines: read.filter((entry): entry is CtoRemoteMachineWork => entry != null) };
+    // Turned off mid-read: keep nothing it learned.
+    remoteWork = access().enabled
+      ? { machines: read.filter((entry): entry is CtoRemoteMachineWork => entry != null) }
+      : null;
   };
 
   const homeMachine = (): CtoMachineTarget => {
@@ -623,6 +633,7 @@ export function createCtoCrossMachineBridge(
     },
 
     peekRemoteChat(machineId, sessionId) {
+      if (!access().enabled || !isSignedIn()) return null;
       const machine = remoteWork?.machines.find((entry) => entry.machineId === machineId);
       const seen = machine?.known?.find((entry) => entry.sessionId === sessionId);
       return seen ? { done: seen.done, restedAt: seen.restedAt, statusLine: seen.statusLine } : null;

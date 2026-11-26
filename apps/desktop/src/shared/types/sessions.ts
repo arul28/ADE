@@ -638,9 +638,11 @@ export function isTerminalSessionDone(
 
 /**
  * When a live session came to rest after a clean turn (the Work row's "Done"),
- * or null while it works, waits on someone, or its last turn failed. A chat
- * rests between turns, so a caller that wants "finished the work it was given"
- * compares this with when it handed the work over.
+ * or null while it works, waits on someone, still runs background work or a
+ * PR watch, or its last turn failed. Prefers the chat's own "idle since" (the
+ * end of its last turn); else its last activity. A chat rests between turns,
+ * so a caller that wants "finished the work it was given" compares this with
+ * when it handed the work over.
  */
 export function sessionRestedAt(row: {
   status?: unknown;
@@ -648,11 +650,19 @@ export function sessionRestedAt(row: {
   pendingInputItemId?: unknown;
   attentionRequestedAt?: unknown;
   lastTurnFailedAt?: unknown;
+  activeBackgroundTaskCount?: unknown;
+  turnOpenWorkCount?: unknown;
+  activePrWatch?: unknown;
+  chatIdleSinceAt?: unknown;
   lastActivityAt?: unknown;
 }): string | null {
   if (row.status !== "running" || row.runtimeState !== "idle") return null;
   if (row.pendingInputItemId || row.attentionRequestedAt || row.lastTurnFailedAt) return null;
-  return typeof row.lastActivityAt === "string" && row.lastActivityAt ? row.lastActivityAt : null;
+  if (Number(row.activeBackgroundTaskCount ?? 0) > 0 || Number(row.turnOpenWorkCount ?? 0) > 0 || row.activePrWatch) return null;
+  for (const at of [row.chatIdleSinceAt, row.lastActivityAt]) {
+    if (typeof at === "string" && at) return at;
+  }
+  return null;
 }
 
 export type TerminalSessionDetail = TerminalSessionSummary & {

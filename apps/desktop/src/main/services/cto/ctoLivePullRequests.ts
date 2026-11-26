@@ -20,9 +20,14 @@ export type CtoLivePullRequest = {
   review: string | null;
 };
 
-/** A branch name as GitHub and a lane both spell it. */
+/** A branch name as GitHub and a lane both spell it (branch names are case-sensitive). */
 function plainBranch(ref: string | null | undefined): string {
-  return (ref ?? "").trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "").toLowerCase();
+  return (ref ?? "").trim().replace(/^refs\/heads\//, "");
+}
+
+/** One PR's identity across repos: a lane may link a same-numbered PR on another repo. */
+function prKey(owner: string | null | undefined, name: string | null | undefined, number: number): string {
+  return `${(owner ?? "").trim().toLowerCase()}/${(name ?? "").trim().toLowerCase()}#${number}`;
 }
 
 /**
@@ -37,8 +42,9 @@ export function collectLivePullRequests(
   remoteWork: readonly Pick<CtoRemoteMachineWork, "name" | "lanes">[] | null,
   laneNames: ReadonlyMap<string, string>,
 ): CtoLivePullRequest[] {
-  const linked = prService.listAll().filter((pr) => pr.state === "open" || pr.state === "draft");
-  const linkedByNumber = new Map(linked.map((pr) => [pr.githubPrNumber, pr]));
+  // A detached row is history: its lane was deleted or moved off the branch.
+  const linked = prService.listAll().filter((pr) => !pr.detached && (pr.state === "open" || pr.state === "draft"));
+  const linkedByKey = new Map(linked.map((pr) => [prKey(pr.repoOwner, pr.repoName, pr.githubPrNumber), pr]));
   const remoteLaneByBranch = new Map<string, { machine: string; lane: string }>();
   for (const machine of remoteWork ?? []) {
     for (const lane of machine.lanes) {
@@ -59,12 +65,13 @@ export function collectLivePullRequests(
     checks: pr.checksStatus,
     review: pr.reviewStatus,
   });
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const rows: Array<{ pr: CtoLivePullRequest; updatedAt: string }> = [];
   for (const repoPr of prService.listOpenRepoPullRequests?.() ?? []) {
-    if (seen.has(repoPr.number)) continue;
-    seen.add(repoPr.number);
-    const own = linkedByNumber.get(repoPr.number);
+    const key = prKey(repoPr.repoOwner, repoPr.repoName, repoPr.number);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const own = linkedByKey.get(key);
     if (own) {
       rows.push({ pr: { ...fromLane(own), isDraft: repoPr.isDraft || own.state === "draft" }, updatedAt: repoPr.updatedAt });
       continue;
@@ -89,8 +96,9 @@ export function collectLivePullRequests(
   }
   // A lane's PR the repo list has not caught up with yet still counts.
   for (const pr of linked) {
-    if (seen.has(pr.githubPrNumber)) continue;
-    seen.add(pr.githubPrNumber);
+    const key = prKey(pr.repoOwner, pr.repoName, pr.githubPrNumber);
+    if (seen.has(key)) continue;
+    seen.add(key);
     rows.push({ pr: fromLane(pr), updatedAt: pr.updatedAt });
   }
   const originRank = (pr: CtoLivePullRequest) => (pr.origin === "this-machine" ? 0 : 1);

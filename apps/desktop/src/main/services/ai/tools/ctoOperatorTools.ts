@@ -1511,8 +1511,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       "List pull requests so the CTO can inspect active review state. Lists open and draft PRs by "
       + "default, newest first; pass state 'merged', 'closed' or 'all' for the history. 'prs' are the PRs a lane "
       + "here owns (with checks and review); for open PRs, 'otherOpenPrs' are the rest of the repo's open PRs, each "
-      + "with origin 'other-machine' (a lane on another machine, matched by branch) or 'not-in-ade'. 'count' is the "
-      + "total of 'prs' that matched, 'truncated' says that list was cut at limit.",
+      + "with origin 'other-machine' (a lane on another machine, matched by branch) or 'not-in-ade', with 'otherOpenCount' and "
+      + "'otherOpenTruncated' for that list. 'count' is the total of 'prs' that matched, 'truncated' says that "
+      + "list was cut at limit.",
     inputSchema: z.object({
       refresh: z.boolean().optional().default(true),
       state: z.enum(["open", "merged", "closed", "all"]).optional().default("open"),
@@ -1541,18 +1542,20 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             repoListNote = `The repo's open PR list could not be refreshed (${getErrorMessage(error)}); otherOpenPrs is from the last read.`;
           });
         }
-        const otherOpenPrs = wantsOpen
+        const otherOpen = wantsOpen
           ? collectLivePullRequests(deps.prService, deps.crossMachine?.peekRemoteWork?.() ?? null, new Map())
             .filter((pr) => pr.origin !== "this-machine")
-            .slice(0, limit)
           : [];
+        const otherOpenPrs = otherOpen.slice(0, limit);
         return {
           success: true,
           state,
           count: matched.length,
           truncated: matched.length > prs.length,
           prs,
-          ...(otherOpenPrs.length ? { otherOpenPrs } : {}),
+          ...(otherOpenPrs.length
+            ? { otherOpenPrs, otherOpenCount: otherOpen.length, otherOpenTruncated: otherOpen.length > otherOpenPrs.length }
+            : {}),
           ...(repoListNote ? { note: repoListNote } : {}),
         };
       } catch (error) {
