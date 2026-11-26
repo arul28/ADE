@@ -1694,11 +1694,14 @@ export type AgentChatEvent =
       /**
        * CTO only: an emoji the person put on one of the CTO's messages.
        * `targetKey` is `assistantMessageReactionKey` of that message; the
-       * person's newer reaction on the same key replaces the older one.
+       * person's newer reaction on the same key replaces the older one. It
+       * starts no turn; the CTO reads it in its next turn's context.
        */
       type: "assistant_message_reaction";
       targetKey: string;
       emoji: ChatReactionEmoji;
+      /** Never set: a reaction belongs to no turn. Here so turn readers type-check. */
+      turnId?: string;
     }
   | {
       type: "text";
@@ -6246,10 +6249,10 @@ export function isChatReactionEmoji(value: unknown): value is ChatReactionEmoji 
  */
 export function normalizeChatReactionEmoji(value: unknown): ChatReactionEmoji | null {
   if (typeof value !== "string") return null;
-  const bare = value.trim().replace(/️/g, "");
+  const bare = value.trim().replace(/\uFE0F/g, "");
   if (!bare) return null;
   return (Object.keys(CHAT_REACTION_MEANINGS) as ChatReactionEmoji[])
-    .find((emoji) => emoji.replace(/️/g, "") === bare) ?? null;
+    .find((emoji) => emoji.replace(/\uFE0F/g, "") === bare) ?? null;
 }
 
 /**

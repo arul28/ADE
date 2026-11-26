@@ -508,6 +508,9 @@ struct WorkChatMessageBubble: View, Equatable {
   /// Pretty model label ("Claude Sonnet 5"), injected by the session view
   /// so each bubble doesn't have to recompute the same string.
   @Environment(\.workChatModelLabel) private var sessionModelLabel
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  /// The CTO thread: picks the person's reaction on an answer. Nil elsewhere.
+  @Environment(\.workAssistantReactions) private var assistantReactions
 
   var body: some View {
     if message.role == "assistant" {
@@ -605,8 +608,11 @@ struct WorkChatMessageBubble: View, Equatable {
     .workAssistantMessageContextMenu(
       onCopy: { UIPasteboard.general.string = message.markdown },
       onOpenFullOutput: onOpenFullOutput,
-      linkTexts: [preview.text]
+      linkTexts: [preview.text],
+      reaction: assistantReactionInfo,
+      onReact: assistantReactions?.picker(for: assistantReactionInfo)
     )
+    .workAssistantReactionFooter(assistantReactionInfo, onReact: assistantReactions?.picker(for: assistantReactionInfo))
     .accessibilityElement(children: .contain)
     .adeInspectable(
       "Work.Chat.MessageBubble.Assistant",
@@ -686,22 +692,24 @@ struct WorkChatMessageBubble: View, Equatable {
               .padding(.top, -shape.extensionAbove)
               .padding(.bottom, -shape.extensionBelow)
           }
-          .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
-          .fixedSize(horizontal: false, vertical: true)
           .accessibilityElement(children: .combine)
           .accessibilityLabel(userMessageAccessibilityLabel)
           // One accessibility element per message: the first piece speaks it.
           .accessibilityHidden(segment.map { !$0.isFirst } ?? false)
-        }
-        // The CTO's reaction tucks under the bubble's bottom trailing corner,
-        // overlapping it a little (desktop `UserMessageReaction`).
-        if isLastPiece, hasText || hasAttachments, let reaction = message.ctoReaction {
-          WorkUserMessageReactionBadge(emoji: reaction)
-            // A new emoji is a new badge, so it pops in again.
-            .id(reaction)
-            .padding(.top, -14)
-            .padding(.trailing, 12)
-            .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
+          // The CTO's reaction sits on the bubble's top leading corner like an
+          // iMessage tapback, taking no layout room (desktop `UserMessageReaction`).
+          .overlay(alignment: .topLeading) {
+            if segment?.isFirst ?? true, let reaction = message.ctoReaction {
+              WorkUserMessageReactionBadge(emoji: reaction)
+                // A new emoji is a new badge, so it pops in again.
+                .id(reaction)
+                .offset(x: -20, y: -10)
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.5).combined(with: .opacity))
+            }
+          }
+          .animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: message.ctoReaction)
+          .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
+          .fixedSize(horizontal: false, vertical: true)
         }
         // The CTO answers mid-task input on its own, so its thread shows no
         // delivery receipts; only a send that actually failed is worth a word.
@@ -740,6 +748,10 @@ struct WorkChatMessageBubble: View, Equatable {
         "itemId": message.itemId ?? ""
       ]
     )
+  }
+
+  private var assistantReactionInfo: WorkAssistantReactionInfo {
+    WorkAssistantReactionInfo(key: message.assistantReactionKey, emoji: message.assistantReaction)
   }
 
   /// Always the preview the transcript computed for this message. Re-slicing it
@@ -2405,9 +2417,15 @@ extension View {
   func workAssistantMessageContextMenu(
     onCopy: @escaping () -> Void,
     onOpenFullOutput: @escaping () -> Void,
-    linkTexts: [String] = []
+    linkTexts: [String] = [],
+    reaction: WorkAssistantReactionInfo? = nil,
+    onReact: (@MainActor (String) -> Void)? = nil
   ) -> some View {
     contextMenu {
+      // The CTO thread: the long press that copies also reacts.
+      if let onReact {
+        WorkAssistantReactionPicker(current: reaction?.emoji, onPick: onReact)
+      }
       Button(action: onCopy) {
         Label("Copy message", systemImage: "doc.on.doc")
       }
@@ -2421,27 +2439,152 @@ extension View {
   }
 }
 
-/// The CTO's emoji on the person's message: a small round badge on a raised
-/// surface with a hairline edge, popping in when it lands or changes
-/// (desktop `UserMessageReaction`).
+/// The CTO's emoji on the person's message, as an iMessage tapback: a round
+/// badge in the page colour with a hairline edge, ringed in the page colour so
+/// it reads as cut out of the bubble's corner (desktop `UserMessageReaction`).
 struct WorkUserMessageReactionBadge: View {
   let emoji: String
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var appeared = false
+  @Environment(\.workCtoDisplayName) private var ctoName
 
   var body: some View {
     Text(emoji)
-      .font(.system(size: 13))
-      .frame(width: 24, height: 24)
-      .background(ADEColor.raisedBackground, in: Circle())
-      .overlay(Circle().stroke(ADEColor.glassBorder, lineWidth: 0.75))
-      .scaleEffect(appeared || reduceMotion ? 1 : 0.4)
-      .opacity(appeared ? 1 : 0)
-      .onAppear {
-        withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) { appeared = true }
-      }
+      .font(.system(size: 15))
+      .frame(width: 28, height: 28)
+      .background(workChatCanvasBackground, in: Circle())
+      .overlay(Circle().strokeBorder(ADEColor.border, lineWidth: 1))
+      .padding(3)
+      .background(workChatCanvasBackground, in: Circle())
       .accessibilityElement(children: .ignore)
-      .accessibilityLabel("Reacted \(ctoReactionMeanings[emoji] ?? emoji)")
+      .accessibilityLabel("\(ctoName ?? "CTO") reacted: \(ctoReactionMeanings[emoji] ?? emoji)")
+  }
+}
+
+/// The CTO thread's reaction actions, injected into its transcript cells. Nil
+/// on every other chat and on an archived CTO chat.
+struct WorkAssistantReactionContext {
+  /// The message's key, the emoji it shows now, and the person's pick.
+  let react: @MainActor (_ targetKey: String, _ current: String?, _ emoji: String) -> Void
+
+  /// The pick handler for one answer, or nil when it has no key to name it by.
+  func picker(for info: WorkAssistantReactionInfo) -> (@MainActor (String) -> Void)? {
+    guard let key = info.key else { return nil }
+    let current = info.emoji
+    let react = react
+    return { emoji in react(key, current, emoji) }
+  }
+}
+
+private struct WorkAssistantReactionsKey: EnvironmentKey {
+  static let defaultValue: WorkAssistantReactionContext? = nil
+}
+
+private struct WorkCtoDisplayNameKey: EnvironmentKey {
+  static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+  var workAssistantReactions: WorkAssistantReactionContext? {
+    get { self[WorkAssistantReactionsKey.self] }
+    set { self[WorkAssistantReactionsKey.self] = newValue }
+  }
+
+  /// The CTO's name on the CTO thread, for its reaction's spoken label.
+  var workCtoDisplayName: String? {
+    get { self[WorkCtoDisplayNameKey.self] }
+    set { self[WorkCtoDisplayNameKey.self] = newValue }
+  }
+}
+
+/// The person's eight reactions as one palette row, in desktop order. Used
+/// in an answer's long-press menu and in its pill's menu.
+struct WorkAssistantReactionPicker: View {
+  let current: String?
+  let onPick: @MainActor (String) -> Void
+
+  var body: some View {
+    ControlGroup {
+      ForEach(chatReactionEmojis, id: \.self) { emoji in
+        Button {
+          onPick(emoji)
+        } label: {
+          Text(emoji)
+        }
+        // A palette row keeps its menu open by default; a pick is the whole
+        // answer, so close the menu like Messages does.
+        .menuActionDismissBehavior(.enabled)
+        .accessibilityLabel(chatReactionMeanings[emoji] ?? emoji)
+      }
+    }
+    .controlGroupStyle(.palette)
+  }
+}
+
+extension View {
+  /// The person's reaction under the last row of a CTO answer: a Slack-style
+  /// pill. Tapping it opens the same picker as the long press.
+  func workAssistantReactionFooter(_ info: WorkAssistantReactionInfo, onReact: (@MainActor (String) -> Void)?) -> some View {
+    modifier(WorkAssistantReactionFooter(info: info, onReact: onReact))
+  }
+}
+
+/// Always the same stack, so the answer above keeps its identity when a pill
+/// arrives; only the pill pops in.
+private struct WorkAssistantReactionFooter: ViewModifier {
+  let info: WorkAssistantReactionInfo
+  let onReact: (@MainActor (String) -> Void)?
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  func body(content: Content) -> some View {
+    let emoji = info.isLastRow ? info.emoji : nil
+    VStack(alignment: .leading, spacing: 6) {
+      content
+      if let emoji {
+        WorkAssistantReactionPill(emoji: emoji, onReact: onReact)
+          // A new emoji is a new pill, so it pops in again.
+          .id(emoji)
+          .transition(reduceMotion ? .opacity : .scale(scale: 0.5, anchor: .leading).combined(with: .opacity))
+      }
+    }
+    .animation(ADEMotion.emphasis(reduceMotion: reduceMotion), value: emoji)
+  }
+}
+
+struct WorkAssistantReactionPill: View {
+  let emoji: String
+  let onReact: (@MainActor (String) -> Void)?
+
+  var body: some View {
+    Group {
+      if let onReact {
+        Menu {
+          WorkAssistantReactionPicker(current: emoji, onPick: onReact)
+        } label: {
+          label
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .accessibilityHint("Changes your reaction")
+      } else {
+        label
+      }
+    }
+    .accessibilityLabel("You reacted: \(chatReactionMeanings[emoji] ?? emoji)")
+  }
+
+  private var label: some View {
+    HStack(spacing: 4) {
+      Text(emoji)
+        .font(.system(size: 12))
+      Text("1")
+        .font(.caption2.weight(.semibold))
+        .monospacedDigit()
+        .foregroundStyle(ADEColor.accent)
+    }
+    .padding(.horizontal, 8)
+    .frame(height: 20)
+    .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+    .overlay(Capsule(style: .continuous).strokeBorder(ADEColor.accent.opacity(0.4), lineWidth: 1))
+    .contentShape(Capsule(style: .continuous))
   }
 }
 

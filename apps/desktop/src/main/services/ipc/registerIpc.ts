@@ -107,7 +107,7 @@ import {
   findRecentProjectForRepo,
   type RepoProjectCopyOnMachine,
 } from "../projects/repoProjectResolver";
-import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
+import { isAgentChatTurnRecoveryAction, normalizeChatReactionEmoji } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
   convertImageBufferToJpeg,
@@ -539,7 +539,6 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
-  AgentChatReactToMessageArgs,
   AgentChatReactToMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
@@ -9880,11 +9879,16 @@ export function registerIpc({
   ): Promise<AgentChatReactToMessageResult> => {
     const ctx = ensureAgentChatContext();
     const record = requireRecord(arg, "Agent chat reaction request");
-    // The service checks the emoji against the set and the target against the transcript.
+    const emoji = normalizeChatReactionEmoji(record.emoji);
+    if (!emoji) throw new Error("Pick a reaction from the set.");
+    // A message key carries a provider's own id (`message:msg_01…`), so it
+    // gets a length check here; the service checks it against the transcript.
+    const targetKey = typeof record.targetKey === "string" ? record.targetKey.trim() : "";
+    if (!targetKey || targetKey.length > 512) throw new Error("A reaction needs the message it is on.");
     return await ctx.agentChatService.reactToMessage({
       sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
-      targetKey: parseAgentChatRecoveryIdentifier(record.targetKey, "targetKey"),
-      emoji: String(record.emoji ?? "") as AgentChatReactToMessageArgs["emoji"],
+      targetKey,
+      emoji,
     });
   });
 

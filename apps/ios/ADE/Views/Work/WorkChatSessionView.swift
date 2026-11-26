@@ -701,6 +701,30 @@ struct WorkChatTranscriptRowInputs: Equatable {
   /// overrides for ids it draws (see `workTimelineEntryExpansionSignature`),
   /// so opening one card re-measures that card's row and nothing else.
   var cardExpansion = WorkCardExpansionState()
+  /// The person's reactions not yet in the transcript, by reaction key. Each
+  /// row folds in only the one for its own answer.
+  var assistantReactionOverrides: [String: String] = [:]
+}
+
+/// The optimistic reaction a row draws for its answer, if there is one.
+private func workAssistantReactionOverride(
+  _ entry: WorkTimelineRenderEntry,
+  overrides: [String: String]
+) -> String? {
+  guard !overrides.isEmpty else { return nil }
+  let key: String?
+  switch entry.payload {
+  case .assistantMarkdownBlock(let model): key = model.reaction.key
+  case .assistantMonospaced(let model): key = model.reaction.key
+  case .entry(let timelineEntry):
+    if case .message(let message) = timelineEntry.payload, message.role == "assistant" {
+      key = message.assistantReactionKey
+    } else {
+      key = nil
+    }
+  case .userSegment: key = nil
+  }
+  return key.flatMap { overrides[$0] }
 }
 
 /// The part of the reader's expansion overrides that one timeline entry
@@ -762,13 +786,21 @@ func workChatTranscriptRowRevision(
   base: Int,
   inputs: WorkChatTranscriptRowInputs
 ) -> Int {
+  var hasher = Hasher()
+  var touched = false
+  if let reaction = workAssistantReactionOverride(entry, overrides: inputs.assistantReactionOverrides) {
+    // A pick not yet in the transcript adds the pill under its answer.
+    hasher.combine("reaction")
+    hasher.combine(reaction)
+    touched = true
+  }
   guard case .entry(let timelineEntry) = entry.payload else {
     // Assistant markdown/monospace rows carry their own streaming flag in the
     // model, which is already in `base`.
-    return base
+    guard touched else { return base }
+    hasher.combine(base)
+    return hasher.finalize()
   }
-  var hasher = Hasher()
-  var touched = false
   if let expansion = workTimelineEntryExpansionSignature(timelineEntry, expansion: inputs.cardExpansion) {
     hasher.combine("expansion")
     hasher.combine(expansion)
@@ -1085,6 +1117,15 @@ struct WorkChatSessionView: View {
   /// changes instead of the turn-end line, one working line while it runs.
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
+  /// Set on the CTO thread only, while its chat takes reactions (not
+  /// archived, and its machine knows `chat.reactToMessage`): sends the
+  /// person's emoji for one answer, by its reaction key. Nil elsewhere.
+  var onReactToAssistantMessage: (@MainActor (_ targetKey: String, _ emoji: String) async throws -> Void)? = nil
+  /// The person's reactions shown before their machine's event arrives, by
+  /// reaction key. Pruned once the transcript shows the same emoji.
+  @State var assistantReactionOverrides: [String: String] = [:]
+  /// A refused reaction says why here.
+  @State var reactionToast: ADEToastMessage?
   /// Messages ADE Cloud holds for this chat while its computer is asleep:
   /// drawn after the transcript as the person's own messages, with the
   /// working line while the server moves them. Nil for any other chat.
@@ -2135,6 +2176,8 @@ struct WorkChatSessionView: View {
     hasher.combine(isLive)
     hasher.combine(hostUnreachable)
     hasher.combine(actionInFlight)
+    // Whether an answer's long press and pill can react.
+    hasher.combine(onReactToAssistantMessage != nil)
     return hasher.finalize()
   }
 
@@ -2147,7 +2190,8 @@ struct WorkChatSessionView: View {
       latestReasoningCardId: frame?.latestReasoningCardId,
       latestTurnEndTurnId: timelineSnapshot.latestTurnEndTurnId,
       viewportHeightBucket: Int(transcriptVisibleHeight.rounded()),
-      cardExpansion: cardExpansionSnapshot
+      cardExpansion: cardExpansionSnapshot,
+      assistantReactionOverrides: assistantReactionOverrides
     )
   }
 
@@ -2896,6 +2940,8 @@ struct WorkChatSessionView: View {
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
             .environment(\.workChatAccentHexOverride, ctoLive.map { CtoResolvedLook($0.look).hex })
+            .environment(\.workCtoDisplayName, ctoLive?.name)
+            .environment(\.workAssistantReactions, assistantReactionContext)
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -3473,6 +3519,9 @@ struct WorkChatSessionView: View {
           WorkOutputViewerScreen(request: request)
         }
         .environment(\.workSkillInstructions, skillInstructions)
+        .adeToast($reactionToast)
+        .onChange(of: timelinePresentation.signature) { _, _ in pruneAssistantReactionOverrides() }
+        .onChange(of: session.id) { _, _ in assistantReactionOverrides = [:] }
         .onAppear { bindSkillInstructions() }
         .onChange(of: session.id) { _, _ in bindSkillInstructions() }
         .sheet(item: $skillInstructions.request) { request in

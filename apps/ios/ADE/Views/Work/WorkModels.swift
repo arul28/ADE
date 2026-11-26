@@ -198,6 +198,12 @@ struct WorkChatMessage: Identifiable, Equatable {
   var unprocessedResolution: WorkUserMessageResolution? = nil
   /// The CTO's newest reaction on this user message (one of `ctoReactionMeanings`).
   var ctoReaction: String? = nil
+  /// The key a person's reaction names this assistant message by: its first
+  /// fragment's `workAssistantMessageReactionKey`. Nil for user messages.
+  var assistantReactionKey: String? = nil
+  /// The person's newest reaction on this assistant message (one of
+  /// `chatReactionMeanings`). CTO only.
+  var assistantReaction: String? = nil
   /// Monotonic content revision for the incremental streaming path. The
   /// off-main snapshot fold stamps `markdownDigest` once, but live deltas
   /// mutate the same message on the main actor and must invalidate preview
@@ -1419,6 +1425,8 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
   /// The one block still receiving deltas. Its renders are throwaway, so they
   /// are kept out of the shared inline-markdown cache.
   var isStreamingTail = false
+  /// The person's reaction on the source message (`WorkAssistantReactionInfo`).
+  var reaction = WorkAssistantReactionInfo()
 
   static func == (lhs: WorkAssistantMarkdownBlockRenderModel, rhs: WorkAssistantMarkdownBlockRenderModel) -> Bool {
     lhs.id == rhs.id
@@ -1426,6 +1434,7 @@ struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
       && lhs.isStreamingTail == rhs.isStreamingTail
+      && lhs.reaction == rhs.reaction
       && lhs.block == rhs.block
   }
 }
@@ -1440,6 +1449,8 @@ struct WorkAssistantMonospacedRenderModel: Identifiable, Equatable {
   /// Digest of the source message. Lets change detection separate two slices of
   /// two different messages without hashing either slice.
   var sourceDigest: String = ""
+  /// The person's reaction on the source message (`WorkAssistantReactionInfo`).
+  var reaction = WorkAssistantReactionInfo()
 
   static func == (lhs: WorkAssistantMonospacedRenderModel, rhs: WorkAssistantMonospacedRenderModel) -> Bool {
     lhs.id == rhs.id
@@ -1447,9 +1458,19 @@ struct WorkAssistantMonospacedRenderModel: Identifiable, Equatable {
       && lhs.turnId == rhs.turnId
       && lhs.itemId == rhs.itemId
       && lhs.sourceDigest == rhs.sourceDigest
+      && lhs.reaction == rhs.reaction
       && lhs.text == rhs.text
       && lhs.accessibilityLabel == rhs.accessibilityLabel
   }
+}
+
+/// What one row of an assistant answer needs for the person's reaction: the
+/// message's reaction key and emoji, and whether this row is the answer's last
+/// (the pill draws under it).
+struct WorkAssistantReactionInfo: Equatable, Hashable {
+  var key: String? = nil
+  var emoji: String? = nil
+  var isLastRow = true
 }
 
 enum WorkTimelineRenderPayload: Equatable {
@@ -2412,6 +2433,9 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// The key a CTO reaction names this user message by
   /// (`AgentChatEventEnvelope.userMessageReactionKey`).
   var userMessageReactionKey: String? = nil
+  /// The key a person's reaction names this CTO `text` event by
+  /// (`workAssistantMessageReactionKey`); nil for any other event.
+  var assistantMessageReactionKey: String? = nil
   /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
   /// event keeps `detail` as text; this is the part the self-healed-failure fold
   /// and the quiet reconnect lines read.
@@ -2526,6 +2550,10 @@ enum WorkChatEvent: Equatable {
   /// CTO only: an emoji on the person's message (`AgentChatEvent.userMessageReaction`).
   /// Folded onto the bubble by `buildWorkChatMessages`; draws no row.
   case userMessageReaction(targetKey: String, emoji: String, turnId: String?)
+  /// CTO only: the person's emoji on a CTO message
+  /// (`AgentChatEvent.assistantMessageReaction`). Folded onto that message by
+  /// `buildWorkChatMessages`; draws no row and belongs to no turn.
+  case assistantMessageReaction(targetKey: String, emoji: String)
   case assistantText(text: String, turnId: String?, itemId: String?)
   case toolCall(tool: String, argsText: String, itemId: String, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
@@ -2594,6 +2622,7 @@ enum WorkChatEvent: Equatable {
     case .userMessage: return "user_message"
     case .userMessageResolution: return "user_message_resolution"
     case .userMessageReaction: return "user_message_reaction"
+    case .assistantMessageReaction: return "assistant_message_reaction"
     case .assistantText: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"

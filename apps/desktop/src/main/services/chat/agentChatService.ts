@@ -934,11 +934,8 @@ import {
   CTO_INTERIM_REPLY_ID_PREFIX,
   CTO_REACTION_EMOJIS,
   CHAT_REACTION_EMOJIS,
-  CHAT_REACTION_MEANINGS,
-  assistantMessageReactionKey,
   isCtoReactionEmoji,
   normalizeChatReactionEmoji,
-  type ChatReactionEmoji,
   type CtoReactionEmoji,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -1099,7 +1096,16 @@ import {
   selectCrossMachineReturnSuffix,
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
-import { ctoLookingReactTarget, ctoUserReactionPrompt, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import {
+  addCtoReactionFeedback,
+  ctoLookingReactTarget,
+  ctoReactableMessage,
+  ctoReactionFeedbackSection,
+  ctoReactionFeedbackSinceLastTurn,
+  stepCtoQuietTurn,
+  type CtoQuietTurnState,
+  type CtoReactionFeedback,
+} from "./ctoQuietTurn";
 import {
   CrossMachineHandoffReturnRefusedError,
   createCrossMachineHandoffDestination,
@@ -5540,7 +5546,7 @@ async function resolveClaudeDaemonControlSocket(): Promise<string | null> {
 }
 
 /** Which staged section a span of the rendered turn prefix belongs to. */
-type ReconstructionSectionId = "static" | "tail";
+type ReconstructionSectionId = "static" | "tail" | "reactions";
 
 /** Where one attributable section starts in the rendered turn prefix. */
 type ReconstructionSectionSpan = {
@@ -5996,6 +6002,15 @@ type ManagedChatSession = {
   ctoMidTaskReplies?: { granted: number; posted: number } | null;
   /** CTO only: `noReply` / `react` state, stepped by every committed event (`stepCtoQuietTurn`). */
   ctoTurn?: CtoQuietTurnState;
+  /**
+   * CTO only: the person's reactions on CTO messages that no turn has been
+   * told about yet. Each rides the next turn's context and clears once a send
+   * delivers it. Undefined until first read; after a restart it is rebuilt
+   * from the transcript (`ctoReactionFeedbackSinceLastTurn`).
+   */
+  ctoReactionFeedback?: CtoReactionFeedback[];
+  /** The items the pending turn context holds, so a send clears only what it told. */
+  ctoReactionFeedbackStaged?: readonly CtoReactionFeedback[] | null;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -18714,6 +18729,17 @@ export function createAgentChatService(args: {
     resetStagedSection(managed.ctoStaticContext);
   };
 
+  /** The CTO's not-yet-told reactions, rebuilt from the transcript on first read. */
+  const ctoReactionFeedbackFor = (
+    managed: ManagedChatSession,
+    events?: readonly AgentChatEvent[],
+  ): CtoReactionFeedback[] => {
+    managed.ctoReactionFeedback ??= ctoReactionFeedbackSinceLastTurn(
+      events ?? readRecentTranscriptEnvelopes(managed).map((entry) => entry.event),
+    );
+    return managed.ctoReactionFeedback;
+  };
+
   const refreshReconstructionContext = (managed: ManagedChatSession): void => {
     // Sections carry an id so the send path can say which ones a truncated
     // prefix actually delivered. Only the two once-per-thread sections need an
@@ -18781,6 +18807,11 @@ export function createAgentChatService(args: {
       } catch {
         // An unreadable zone leaves the line out rather than guessing.
       }
+      // After the other volatile lines: a tight budget cuts from the front.
+      const staged = ctoReactionFeedbackFor(managed).slice();
+      managed.ctoReactionFeedbackStaged = staged.length ? staged : null;
+      const reactions = ctoReactionFeedbackSection(staged);
+      if (reactions) sections.push({ id: "reactions", text: reactions });
     }
 
     // The conversation tail is re-orientation, not context: a live provider
@@ -19041,6 +19072,12 @@ export function createAgentChatService(args: {
     }
     if (delivered.has("tail")) managed.conversationTail.pending = false;
     if (delivered.has("static")) managed.ctoStaticContext.pending = false;
+    if (delivered.has("reactions") && managed.ctoReactionFeedbackStaged) {
+      // A reaction that came in after the context was built waits for the next send.
+      const told = new Set(managed.ctoReactionFeedbackStaged);
+      managed.ctoReactionFeedback = (managed.ctoReactionFeedback ?? []).filter((item) => !told.has(item));
+    }
+    if (hadReconstruction) managed.ctoReactionFeedbackStaged = null;
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -68082,7 +68119,8 @@ export function createAgentChatService(args: {
 
   /**
    * `react`: the CTO answers the person's newest message with an emoji
-   * instead of words, and the turn ends with no written reply. A newer
+   * instead of words, and the turn ends with no written reply (except 👀,
+   * which the look's findings may follow). A newer
    * reaction on the same message replaces the older one (clients keep the
    * newest `user_message_reaction` per key).
    */
@@ -68115,21 +68153,22 @@ export function createAgentChatService(args: {
       emoji: args.emoji,
       ...(turn.turnId ? { turnId: turn.turnId } : {}),
     });
-    endCtoTurnWithoutText(turn.managed, turn.turnId);
+    // 👀 promises an answer, so the turn goes on: what the look finds may
+    // follow in words. Every other reaction is the whole answer.
+    if (args.emoji !== "👀") endCtoTurnWithoutText(turn.managed, turn.turnId);
     return { reacted: true };
   };
 
   /**
    * The person's emoji on one of the CTO's messages. Logged as a badge on that
-   * message, replacing their earlier one there, then told to the CTO as a
-   * hidden wake (`cto_user_reaction`, which draws nothing), so it can take it
-   * as feedback and answer or stay quiet.
+   * message, replacing their earlier one there. It starts no turn: the CTO
+   * reads it as feedback in its next turn's context (`ctoReactionFeedback`).
    */
   const reactToMessage = async (args: AgentChatReactToMessageArgs): Promise<AgentChatReactToMessageResult> => {
     const emoji = normalizeChatReactionEmoji(args.emoji);
     if (!emoji) throw new Error(`Pick one of ${CHAT_REACTION_EMOJIS.join(" ")}.`);
-    const sessionId = args.sessionId?.trim();
-    const targetKey = args.targetKey?.trim();
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    const targetKey = typeof args.targetKey === "string" ? args.targetKey.trim() : "";
     if (!sessionId || !targetKey) throw new Error("A reaction needs a chat and a message.");
     const managed = ensureManagedSession(sessionId);
     if (managed.deleted || managed.session.identityKey !== "cto") {
@@ -68137,29 +68176,13 @@ export function createAgentChatService(args: {
     }
     if (managed.session.archivedAt) throw new Error("This chat is archived.");
     const events = readRecentTranscriptEnvelopes(managed).map((entry) => entry.event);
-    const retracted = new Set<string>();
-    let reacted = "";
-    let previous: ChatReactionEmoji | null = null;
-    for (const event of events) {
-      if (event.type === "transcript_retraction") {
-        for (const id of event.messageIds) retracted.add(`message:${id.trim()}`);
-      } else if (event.type === "text" && assistantMessageReactionKey(event) === targetKey) {
-        reacted += event.text;
-      } else if (event.type === "assistant_message_reaction" && event.targetKey === targetKey) {
-        previous = event.emoji;
-      }
-    }
-    if (!reacted.trim() || retracted.has(targetKey)) {
-      throw new Error("That message is no longer in this chat.");
-    }
-    if (previous === emoji) return { targetKey, emoji, changed: false };
+    const message = ctoReactableMessage(events, targetKey);
+    if (!message) throw new Error("That message is no longer in this chat.");
+    if (message.current === emoji) return { targetKey, emoji, changed: false };
+    // Seeded before the new event lands, so a restart's rebuild cannot count it twice.
+    const pending = ctoReactionFeedbackFor(managed, events);
     emitChatEvent(managed, { type: "assistant_message_reaction", targetKey, emoji });
-    await messageSession({
-      sessionId,
-      kind: "wake",
-      text: ctoUserReactionPrompt(emoji, CHAT_REACTION_MEANINGS[emoji], reacted),
-      metadata: { hostContinuation: { reason: "cto_user_reaction" } },
-    });
+    addCtoReactionFeedback(pending, { targetKey, emoji, quote: message.quote });
     return { targetKey, emoji, changed: true };
   };
 

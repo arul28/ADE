@@ -270,6 +270,9 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(targetKey)
     hasher.combine(emoji)
     combineOptional(turnId, into: &hasher)
+  case .assistantMessageReaction(let targetKey, let emoji):
+    hasher.combine(targetKey)
+    hasher.combine(emoji)
   case .assistantText(let text, let turnId, let itemId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -4304,7 +4307,7 @@ struct WorkReasoningTimingFold: Equatable {
 private func workReasoningRunEndsAt(_ event: WorkChatEvent) -> Bool {
   switch event {
   case .reasoning, .activity, .sources, .tokens, .pendingInputResolved, .turnDiagnostics,
-       .userMessageResolution, .userMessageReaction, .queueReordered, .unknown:
+       .userMessageResolution, .userMessageReaction, .assistantMessageReaction, .queueReordered, .unknown:
     return false
   case .status(let turnStatus, let message, _):
     let status = turnStatus.lowercased()
@@ -4854,8 +4857,8 @@ func eventCard(
       // redundant rows under each tool group. Live streaming hints come from
       // WorkActivityIndicator, not the persisted timeline.
       return nil
-    case .userMessageResolution, .userMessageReaction:
-      // Folded into the originating user bubble by `buildWorkChatMessages`.
+    case .userMessageResolution, .userMessageReaction, .assistantMessageReaction:
+      // Folded into the message it names by `buildWorkChatMessages`.
       return nil
     case .plan:
       // Non-proposal plan events feed the chat's single task-list card below.
@@ -5826,7 +5829,8 @@ func workTurnId(for event: WorkChatEvent) -> String? {
     return turnId
   case .adeCard(let card):
     return card.turnId
-  case .queueReordered, .unknown:
+  case .assistantMessageReaction, .queueReordered, .unknown:
+    // A person's reaction belongs to no turn.
     return nil
   }
 }

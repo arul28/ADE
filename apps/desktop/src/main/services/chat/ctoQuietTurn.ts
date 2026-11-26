@@ -1,4 +1,11 @@
-import { userMessageReactionKey, type AgentChatEvent, type AgentChatProvider } from "../../../shared/types/chat";
+import {
+  CHAT_REACTION_MEANINGS,
+  assistantMessageReactionKey,
+  userMessageReactionKey,
+  type AgentChatEvent,
+  type AgentChatProvider,
+  type ChatReactionEmoji,
+} from "../../../shared/types/chat";
 import { isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
 
 /**
@@ -6,7 +13,7 @@ import { isPersonAuthoredUserMessage } from "./crossMachineHandoffSource";
  * each committed event does to it.
  */
 export type CtoQuietTurnState = {
-  /** Set by `noReply` or `react`: this turn's later text is dropped. */
+  /** Set by `noReply` or `react` (not 👀): this turn's later text is dropped. */
   quiet: { turnId: string | null } | null;
   /**
    * The `userMessageReactionKey` of the person's newest message the running
@@ -92,18 +99,87 @@ export function ctoLookingReactTarget(events: readonly AgentChatEvent[], provide
 /** How much of a reacted-to message the CTO is shown, so it knows which one. */
 const REACTION_QUOTE_CAP = 280;
 
-/** The hidden prompt that tells the CTO the person reacted to one of its messages. */
-export function ctoUserReactionPrompt(emoji: string, meaning: string, reacted: string): string {
-  const flat = reacted.split(/\s+/).filter(Boolean).join(" ");
-  const chars = Array.from(flat);
-  const quote = chars.length > REACTION_QUOTE_CAP ? `${chars.slice(0, REACTION_QUOTE_CAP).join("")}…` : flat;
+/** One reaction of the person's on a CTO message that the CTO has not been told about yet. */
+export type CtoReactionFeedback = {
+  targetKey: string;
+  emoji: ChatReactionEmoji;
+  /** The start of the message it is on, flattened to one line. */
+  quote: string;
+};
+
+function quoteForFeedback(text: string): string {
+  const chars = Array.from(text.split(/\s+/).filter(Boolean).join(" "));
+  return chars.length > REACTION_QUOTE_CAP ? `${chars.slice(0, REACTION_QUOTE_CAP).join("")}…` : chars.join("");
+}
+
+/**
+ * The CTO message a person's reaction names, read from the transcript: its
+ * text (the fragments of one reply share a key) and the person's reaction on
+ * it now. Null when no text has that key, or ADE took the message back.
+ */
+export function ctoReactableMessage(
+  events: readonly AgentChatEvent[],
+  targetKey: string,
+): { quote: string; current: ChatReactionEmoji | null } | null {
+  const retracted = new Set<string>();
+  let text = "";
+  let current: ChatReactionEmoji | null = null;
+  for (const event of events) {
+    if (event.type === "transcript_retraction") {
+      for (const id of event.messageIds) retracted.add(`message:${id.trim()}`);
+    } else if (event.type === "text" && assistantMessageReactionKey(event) === targetKey) {
+      text += event.text;
+    } else if (event.type === "assistant_message_reaction" && event.targetKey === targetKey) {
+      current = event.emoji;
+    }
+  }
+  if (!text.trim() || retracted.has(targetKey)) return null;
+  return { quote: quoteForFeedback(text), current };
+}
+
+/**
+ * Adds a reaction to the not-yet-told list, in place. A newer reaction on the
+ * same message replaces the older one and moves to the end.
+ */
+export function addCtoReactionFeedback(list: CtoReactionFeedback[], item: CtoReactionFeedback): void {
+  const index = list.findIndex((entry) => entry.targetKey === item.targetKey);
+  if (index >= 0) list.splice(index, 1);
+  list.push(item);
+}
+
+/**
+ * The reactions the CTO has not been told about, rebuilt from the transcript
+ * when the brain has no list in memory (after a restart): every reaction
+ * logged after the CTO's last finished turn, the newest on each message.
+ */
+export function ctoReactionFeedbackSinceLastTurn(events: readonly AgentChatEvent[]): CtoReactionFeedback[] {
+  let lastDone = -1;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]!.type === "done") {
+      lastDone = index;
+      break;
+    }
+  }
+  const list: CtoReactionFeedback[] = [];
+  for (let index = lastDone + 1; index < events.length; index += 1) {
+    const event = events[index]!;
+    if (event.type !== "assistant_message_reaction") continue;
+    const message = ctoReactableMessage(events, event.targetKey);
+    if (message) addCtoReactionFeedback(list, { targetKey: event.targetKey, emoji: event.emoji, quote: message.quote });
+  }
+  return list;
+}
+
+/**
+ * The turn-context lines that tell the CTO how the person reacted to its
+ * messages since its last turn. A reaction costs no turn of its own; it is
+ * feedback the CTO reads at the start of the next one.
+ */
+export function ctoReactionFeedbackSection(list: readonly CtoReactionFeedback[]): string {
+  if (!list.length) return "";
   return [
-    `The person reacted ${emoji} (${meaning}) to your message:`,
-    "",
-    `> ${quote}`,
-    "",
-    "A reaction, not a typed message. Answer only what it calls for, as you would a short message. "
-    + "Most reactions need nothing back: end with noReply. "
-    + "A 👎 means that message missed: say in a line what you will change, or ask what they wanted.",
+    "Reactions since your last turn. The person reacted to your messages; take each as feedback, not as a new message:",
+    ...list.map((item) => `- ${item.emoji} (${CHAT_REACTION_MEANINGS[item.emoji]}) on: "${item.quote}"`),
+    "Most need nothing back. After a 👎, change what that message got wrong, and ask in a line if you cannot tell what it was.",
   ].join("\n");
 }

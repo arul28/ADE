@@ -205,6 +205,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     )
   case .userMessageReaction(let targetKey, let emoji, let turnId):
     return .userMessageReaction(targetKey: targetKey, emoji: emoji, turnId: turnId)
+  case .assistantMessageReaction(let targetKey, let emoji):
+    return .assistantMessageReaction(targetKey: targetKey, emoji: emoji)
   case .text(let text, let messageId, let turnId, let itemId, _):
     return .assistantText(
       text: text,
