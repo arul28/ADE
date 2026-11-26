@@ -51,6 +51,12 @@ const CONTACT_SHEET_BASE_TIMEOUT_MS = 30_000;
 const CONTACT_SHEET_PER_TIME_MS = 2_000;
 /** After SIGTERM, how long `ade-media` gets to delete its partial file before SIGKILL. */
 const KILL_GRACE_MS = 3_000;
+/**
+ * After SIGKILL, how long to wait for the exit before giving the caller its
+ * answer anyway. A process stuck inside the kernel (a drive that stopped
+ * answering mid-write) cannot die until that call returns, and it may never.
+ */
+const UNKILLABLE_GRACE_MS = 10_000;
 /** The analysis of a five-minute 60 fps file is well under a megabyte. */
 const MAX_STDOUT_BYTES = 64 * 1024 * 1024;
 const STDERR_TAIL_LINES = 20;
@@ -269,7 +275,20 @@ function runAdeMedia(args: {
       stopReason = reason;
       child.kill("SIGTERM");
       killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill("SIGKILL");
+        // Still no exit: the process is stuck in the kernel and cannot die
+        // yet. Answer the caller and let go of it; nothing more can be done
+        // from here, and waiting would hold the caller as long as the drive.
+        killTimer = setTimeout(() => {
+          if (settled) return;
+          logger?.warn("demo_video.swift_unkillable", { label, pid: child.pid ?? null });
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.unref();
+          finish(reason);
+        }, UNKILLABLE_GRACE_MS);
+        killTimer.unref?.();
       }, KILL_GRACE_MS);
       killTimer.unref?.();
     };

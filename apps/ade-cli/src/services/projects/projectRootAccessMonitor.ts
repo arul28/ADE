@@ -155,6 +155,28 @@ function endWait(state: RootState, outcome: string): boolean {
   return true;
 }
 
+/**
+ * A drive that stops answering stops answering for every folder on it, not
+ * only the open projects this monitor already knows. Mark the drive itself
+ * too, so a synchronous call anywhere under it fails fast: a project that is
+ * not open yet, or one the registry reads at startup. Without this a brain
+ * restarted after a wedge on one project froze on the next project of the
+ * same drive, and the next brain on the one after that (Mac Studio,
+ * 2026-11-26: seven hours of restarts alternating between two projects on a
+ * hung external drive). Cleared with the rest when the drive answers.
+ */
+function markVolumeNotAnswering(volume: string): void {
+  // Only a drive that can stall: never the system drive, whose folders hold
+  // ADE's own data, and never a folder that is not a drive of its own.
+  if (volumeOf(volume) !== volume || !isStallCapablePath(volume)) return;
+  // Built here rather than by `stateFor`: normalizing a drive root drops its
+  // separator (`Q:\` becomes `Q:`), whose own drive would then read as `Q:`,
+  // not this one, and the drive's verdicts would pass it by.
+  const key = normalizeRoot(volume);
+  if (!roots.has(key)) roots.set(key, { root: key, volume, openCount: 0, wait: null });
+  if (!volumes.has(volume)) volumes.set(volume, { probeInFlight: false, probePath: null });
+}
+
 /** Applies one verdict to every project folder on the drive, then tells listeners once. */
 function settleVolume(volume: string, apply: (state: RootState) => boolean): void {
   let changed = false;
@@ -173,6 +195,7 @@ function probe(volume: string): void {
   const timeout = setTimeout(() => {
     if (settled) return;
     const waitedMs = Date.now() - startedAt;
+    markVolumeNotAnswering(volume);
     settleVolume(volume, (state) => startWait(state, "not_answering", "probe", { waitedMs }));
   }, PROJECT_ROOT_PROBE_TIMEOUT_MS);
   timeout.unref?.();
@@ -279,6 +302,7 @@ export function reportProjectRootNotAnswering(
 ): void {
   const state = stateFor(root);
   if (typeof extra.path === "string" && extra.path) volumes.get(state.volume)!.probePath = extra.path;
+  markVolumeNotAnswering(state.volume);
   settleVolume(state.volume, (member) => startWait(member, "not_answering", source, extra));
   ensureTimer();
   probe(state.volume);

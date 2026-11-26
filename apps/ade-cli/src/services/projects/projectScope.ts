@@ -14,6 +14,7 @@ import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 import { createPhaseClock, type PhaseClock } from "../../../../desktop/src/shared/phaseClock";
+import { unansweringRootOf } from "../../../../desktop/src/main/services/state/unansweringRoots";
 import { resolveBrainLoopWatchdogThresholdMs, trackBrainLoopWatchdogProjectOpen } from "../runtime/brainLoopWatchdog";
 import { logSlowProjectOpen } from "./projectFilesystemKind";
 import { QUEUED_OPEN_PHASE, type ProjectOpenStrikes } from "./projectOpenStrikes";
@@ -985,6 +986,11 @@ export class ProjectScopeRegistry {
       })
       .find((candidate) => {
         if (this.isOpenBlocked(candidate.projectId)) return false;
+        // On a drive that is not answering, the open fails fast and the
+        // startup loop would retry it forever, with nothing hosting sync and
+        // the machine off the account. The probe clears the drive when it
+        // answers, and the next start can choose the project again.
+        if (unansweringRootOf(candidate.rootPath) !== null) return false;
         if (!this.projectRegistry.isProjectDataMissing(candidate)) return true;
         onSkippedMissingProject?.(candidate);
         return false;

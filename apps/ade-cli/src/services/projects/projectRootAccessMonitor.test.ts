@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { openReadOnlyDatabase } from "../../../../desktop/src/main/services/projects/readOnlySqlite";
+import { unansweringRootOf } from "../../../../desktop/src/main/services/state/unansweringRoots";
 import {
   onProjectRootStorageWaitChange,
   readProjectRootStorageWait,
@@ -65,4 +66,35 @@ describe("projectRootAccessMonitor", () => {
       }
     },
   );
+
+  // Mac Studio, 2026-11-26: a hung external drive held two projects. Each
+  // restarted brain marked only the project the last one died on, froze on the
+  // other, and was killed: seven hours of restarts. The whole drive is marked.
+  it("marks the whole drive, so a sibling project on it fails fast too, until the drive answers", async () => {
+    const id = `ade-drive-wait-${process.pid}-${Date.now()}`;
+    // A drive that can stall on each platform, which no machine running this has.
+    const systemDrive = (process.env.SystemDrive ?? "C:").charAt(0).toUpperCase();
+    const drive = process.platform === "darwin"
+      ? `/Volumes/${id}`
+      : process.platform === "win32"
+        ? `${systemDrive === "Q" ? "R" : "Q"}:\\`
+        : `/mnt/${id}`;
+    const hungProject = path.join(drive, id, "hung-project");
+    const siblingProject = path.join(drive, id, "sibling-project");
+    // The drive does not exist, so the probe's open fails at once and clears
+    // the wait: the guard is read before that, synchronously.
+    const cleared = nextChange().then(() => nextChange());
+    reportProjectRootNotAnswering(hungProject, "previous_brain_wedge", {
+      path: path.join(hungProject, ".git", "config"),
+    });
+
+    expect(unansweringRootOf(path.join(siblingProject, ".git", "config"))).not.toBeNull();
+    expect(() => openReadOnlyDatabase(path.join(siblingProject, ".ade", "ade.db"))).toThrow(
+      expect.objectContaining({ code: "storage_read_failed" }),
+    );
+
+    await cleared;
+    expect(unansweringRootOf(path.join(siblingProject, ".git", "config"))).toBeNull();
+    expect(readProjectRootStorageWait()).toBeNull();
+  });
 });
