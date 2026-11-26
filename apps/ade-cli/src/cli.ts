@@ -31103,7 +31103,16 @@ async function runServe(
   const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
     ? async () => {
         if (cloudProjectsOpened) await cloudProjectsOpened;
-        const sources = { projectRegistry, scopeRegistry };
+        // Only scopes whose boot is done: one still booting past that wait
+        // (a hung folder) must not hold every check back. A booting scope runs
+        // no agent work yet; the next check reads it once it is up.
+        const readyScopes: Pick<InstanceType<typeof ProjectScopeRegistry>, "getIfBooted"> = {
+          getIfBooted: (projectId) => {
+            const scope = scopeRegistry.getIfReady(projectId);
+            return scope ? Promise.resolve(scope) : null;
+          },
+        };
+        const sources = { projectRegistry, scopeRegistry: readyScopes };
         const [facts, nextWakeAt] = await Promise.all([
           readMachineBusyFacts({ ...sources, personalChatScope }),
           readMachineNextScheduledWakeAt({ ...sources, personalChatScope }),
