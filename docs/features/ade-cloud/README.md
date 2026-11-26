@@ -190,7 +190,8 @@ that stops (see Sleep and busy rules).
   (`cloud.read`). With none online, or a brain too old, the web reads
   `GET /cloud/account` and `GET /cloud/instances` with the browser's own token
   (`webclient/adapter/cloud.ts`); a failed list shows the plan and marks the
-  computers unread (`computersUnread`). Billing goes straight to the server
+  computers unread (`computersUnread`), and the lane list says so with Try
+  again (a server read, no wake). Billing goes straight to the server
   (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`).
   Stripe opens in the same tab with `returnTo: "web"` and comes back to the
   web Settings › ADE Cloud. The website's plan buttons link to

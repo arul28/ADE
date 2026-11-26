@@ -21,7 +21,8 @@
  *    (79.1 free hours left): the "You're on Plus" confirmation shows once.
  *  - `emptyplus`: Plus with nothing made yet and no use this period.
  * On `free`, Get Plus lands the plan a moment later, as a checkout coming back does.
- * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
+ * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state); `&mockCloudUnread=1` answers
+ * the plan with the computer list unread (the web app's failed `GET /cloud/instances`).
  * Every account answers in credits (one balance the iPhone draws from too);
  * `&mockPhone=on` gives a Free account the ADE Cloud iPhone; and
  * `&mockPhoneProvider=auto|nomac|revyl` makes the account a tester with that pick.
@@ -127,11 +128,13 @@ function rateOf(tier: LaneSpec["tier"]): number {
  * The lane a mock computer holds. checkout-redesign is the lane
  * `?mockCloudLaneMachine=1` pairs (`browserMock.ts`). `?mockCloudChatLane=awake`
  * (or `asleep`) puts the demo's selected chat lane (`lane-auth`) on an awake (or
- * asleep) computer, so its chat header shows the cloud button and its menu.
+ * asleep) computer, so its chat header shows the cloud button and its menu;
+ * `idle` puts it on the `idle`/`idleheld` scenarios' computer the idle cleanup
+ * warned about, so the chat shows its "deleting soon" band.
  */
 function mockLaneIdOf(spec: LaneSpec): string {
   const chatLane = param("mockCloudChatLane");
-  if ((chatLane === "awake" && spec.id === "k3j9x0a1") || (chatLane === "asleep" && spec.id === "m2q8w1b2")) return "lane-auth";
+  if ((chatLane === "awake" && spec.id === "k3j9x0a1") || (chatLane === "asleep" && spec.id === "m2q8w1b2") || (chatLane === "idle" && spec.id === "i9d1l2e3")) return "lane-auth";
   return spec.id === "k3j9x0a1" ? "cloud-lane-checkout" : `lane-${spec.id}`;
 }
 
@@ -694,9 +697,12 @@ export function applyBrowserMockCloud(ade: any): void {
     mockBackup({ laneId: "lane-docs-search", laneName: "docs-search", branchRef: "ade/docs-search", projectKey: "github.com/acme/docs", commits: 4, files: 0, savedAt: now - 5 * DAY }),
   ] : [];
   const statusListeners = new Set<() => void>();
+  // `&mockCloudUnread=1`: the web app's computer list failed (`computersUnread`), the plan still read.
+  const unread = param("mockCloudUnread") === "1";
   const result = (): CloudMachinesResult => ({
     state: "ok",
-    machines,
+    machines: unread ? [] : machines,
+    ...(unread ? { computersUnread: true } : {}),
     instanceCount: machines.length,
     runningCount: machines.filter((box) => box.state === "running").length,
     account: state,
