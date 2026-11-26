@@ -1,5 +1,6 @@
 import { launchModelRequiredMessage } from "../../../../shared/launchModelRule";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import { isCredentialKey, normalizeConfigKey } from "../../../../shared/credentialKeys";
 import { type ExecutableTool as Tool } from "./executableTool";
@@ -19,6 +20,13 @@ import {
   withSpawnWarnings,
 } from "./ctoCrossMachineTools";
 import { DEFAULT_ADE_TOOL_BUDGET_MS, REMOTE_CALL_ALLOWANCE_MS } from "./toolDeadline";
+import {
+  CTO_PROOF_SHOW_LIMIT,
+  importRemoteChatProof,
+  shareChatProofWithCto,
+  showFileAsCtoProof,
+  type CtoProofBroker,
+} from "../../cto/ctoProofShare";
 import { CLOUD_TIER_IDS, type CloudTierId } from "../../../../shared/cloudTiers";
 import type { ArmChatWaitArgs, ChatWaiter } from "../../../../shared/chatWait";
 import { z } from "zod";
@@ -159,7 +167,14 @@ export interface CtoOperatorToolDeps {
   computerUseArtifactBrokerService?: {
     listArtifacts: (args?: any) => any[];
     updateArtifactReview: (args: any) => any;
+    /** `showMedia` / `getChatProof`. Absent on an older broker; those tools then say so. */
+    linkArtifactsToChat?: CtoProofBroker["linkArtifactsToChat"];
+    ingestAsync?: CtoProofBroker["ingestAsync"];
+    resolveArtifactFilePath?: CtoProofBroker["resolveArtifactFilePath"];
+    assertImportableSource?: CtoProofBroker["assertImportableSource"];
   } | null;
+  /** Where `showMedia` and `getChatProof` write converted or pulled files before filing them. */
+  proofScratchDir?: string | null;
   issueTracker?: IssueTracker | null;
   ctoMemoryService?: Pick<
     CtoMemoryService,
@@ -1223,6 +1238,100 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const session = await deps.getChatStatus(sessionId);
       if (!session) return { success: false, error: `Chat not found: ${sessionId}` };
       return { success: true, session, lifecycle: readSessionLifecycle(deps, sessionId) };
+    },
+  }));
+
+  // ── Showing pictures and videos in the reply ──────────────────────────────
+
+  const proofBroker = (): CtoProofBroker | null => {
+    const broker = deps.computerUseArtifactBrokerService;
+    if (!broker?.linkArtifactsToChat || !broker.ingestAsync || !broker.resolveArtifactFilePath || !broker.assertImportableSource) return null;
+    return broker as CtoProofBroker;
+  };
+  const proofScratchDir = (): string => deps.proofScratchDir?.trim() || path.join(os.tmpdir(), "ade-cto-proof");
+
+  defineLazyTool(tools, "showMedia", () => core({
+    description:
+      "Put a picture or a video in your reply. Files the file at `path` on your machine (a screenshot or recording you or "
+      + "a helper made) as proof in this chat and returns `cite`, a markdown line: write it in your reply where it belongs "
+      + "and it shows inline on desktop, web and the phone. A video that is not MP4 is converted. For proof a chat already "
+      + "filed, use getChatProof instead.",
+    inputSchema: z.object({
+      path: z.string().trim().min(1).describe("Absolute path to a picture (png, jpg, gif, webp, heic) or a video (mp4, mov, webm, mkv)."),
+      caption: z.string().trim().min(1).max(200).describe("What it shows, in a short sentence."),
+    }),
+    budgetMs: () => 6 * 60_000,
+    execute: async ({ path: sourcePath, caption }) => {
+      const broker = proofBroker();
+      if (!broker) return unavailable("Showing media");
+      if (!path.isAbsolute(sourcePath)) return { success: false, error: "path must be absolute." };
+      try {
+        const item = await showFileAsCtoProof({
+          broker,
+          ctoSessionId: deps.currentSessionId,
+          sourcePath,
+          caption,
+          scratchDir: proofScratchDir(),
+        });
+        return { success: true, ...item };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "getChatProof", () => core({
+    description:
+      "The screenshots and videos a chat filed as proof, ready to show: each comes back with `cite`, a markdown line to put "
+      + "in your reply so it shows inline on desktop, web and the phone. By default the chat's latest turn that filed any; "
+      + "turnId picks one turn, all: true takes every turn. At most " + CTO_PROOF_SHOW_LIMIT + " come back; `more` counts the rest "
+      + "and skip passes over that many newest ones to reach them. Pass machine for a chat on another "
+      + "machine or an ADE Cloud lane: its files are copied here once, so they stay viewable after that machine sleeps. "
+      + "`skipped` names proof that could not be shown and why (a deleted file, a machine that is offline).",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1),
+      machine: machineArgSchema,
+      turnId: z.string().trim().min(1).optional(),
+      all: z.boolean().optional(),
+      skip: z.number().int().min(0).optional().describe("How many of the newest to pass over, to reach proof past the first page."),
+    }),
+    budgetMs: ({ machine }) => (machine ? 15 * 60_000 : 6 * 60_000),
+    execute: async ({ sessionId, machine, turnId, all, skip }) => {
+      const broker = proofBroker();
+      if (!broker) return unavailable("Showing proof");
+      const selection = turnId ? { turnId } : all ? "all" as const : "latest" as const;
+      try {
+        const target = await remoteMachine(machine);
+        const result = target
+          ? await importRemoteChatProof({
+              broker,
+              runAction: runRemote,
+              machine: target,
+              chatSessionId: sessionId,
+              ctoSessionId: deps.currentSessionId,
+              selection,
+              skip,
+              scratchDir: proofScratchDir(),
+            })
+          : await shareChatProofWithCto({
+              broker,
+              chatSessionId: sessionId,
+              ctoSessionId: deps.currentSessionId,
+              selection,
+              skip,
+              scratchDir: proofScratchDir(),
+            });
+        return {
+          success: true,
+          ...(target ? onMachine(target) : {}),
+          ...result,
+          ...(result.shown.length || result.skipped.length
+            ? {}
+            : { note: "This chat filed no screenshot or video. If its work was UI, say what was not shown, or ask it for proof." }),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
     },
   }));
 

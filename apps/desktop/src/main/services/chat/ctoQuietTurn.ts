@@ -31,11 +31,22 @@ export function ctoTurnReadsPersonMessage(
   event: Extract<AgentChatEvent, { type: "user_message" }>,
   provider: AgentChatProvider,
 ): boolean {
+  return ctoTurnReadsNewMessage(event, provider) && isPersonAuthoredUserMessage(event.metadata);
+}
+
+/**
+ * Whether the running turn read a new message from anyone: the person, or a
+ * wake such as a child's report arriving while the turn still runs. Either
+ * one is news the CTO may answer, so it reopens a turn `noReply` closed.
+ */
+function ctoTurnReadsNewMessage(
+  event: Extract<AgentChatEvent, { type: "user_message" }>,
+  provider: AgentChatProvider,
+): boolean {
   return event.deliveryState !== "queued"
     && event.deliveryState !== "failed"
     && event.deliveryState !== "unprocessed"
     && (event.deliveryState !== "accepted" || provider === "codex")
-    && isPersonAuthoredUserMessage(event.metadata)
     && !event.metadata?.boardMove
     && !event.metadata?.ctoResend;
 }
@@ -54,12 +65,13 @@ export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent
     const key = userMessageReactionKey(event);
     if (ctoTurnReadsPersonMessage(event, provider)) {
       state.reactTarget = key;
-      // The person wrote and the turn read it: what comes next may answer them.
-      state.quiet = null;
     } else if (key && key === state.reactTarget) {
       // The target steer turned out unread (the turn ended first, or it failed).
       state.reactTarget = null;
     }
+    // The turn read something new (the person, or a child reporting with its
+    // proof mid-turn): what comes next may answer it.
+    if (ctoTurnReadsNewMessage(event, provider)) state.quiet = null;
     return false;
   }
   if (event.type === "text" && state.quiet) {

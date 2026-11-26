@@ -1235,6 +1235,7 @@ import {
   readChildPullRequestNumber,
   truncateTailToLineBoundary,
 } from "./ctoTurnContext";
+import { formatProofForWake, shareChatProofWithCto } from "../cto/ctoProofShare";
 import {
   applyCtoToolPackVisibility,
   createCtoOperatorTools,
@@ -2090,6 +2091,8 @@ const CLAUDE_REQUEST_WITHDRAWN_MESSAGE = "Claude withdrew this request.";
 const SCHEDULED_WORK_CLAIM_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 /** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
 const PI_WORKER_EXIT_WAIT_MS = 5_000;
+/** How long a child report's wake waits for its proof to be linked or converted. */
+const CTO_CHILD_PROOF_WAKE_WAIT_MS = 45_000;
 const CLAUDE_INTERNAL_EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
@@ -14380,6 +14383,7 @@ export function createAgentChatService(args: {
   let computerUseArtifactBrokerRef = computerUseArtifactBrokerService ?? null;
 
   const layout = resolveAdeLayout(projectRoot);
+  const ctoProofScratchDir = path.join(layout.tmpDir, "cto-proof");
   const chatSessionsDir = layout.chatSessionsDir;
   const chatTranscriptsDir = layout.chatTranscriptsDir;
   fs.mkdirSync(chatSessionsDir, { recursive: true });
@@ -16252,6 +16256,7 @@ export function createAgentChatService(args: {
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
+        proofScratchDir: ctoProofScratchDir,
         // These were `undefined`, so the CTO was advertised four tools that
         // could only ever answer "not available" — the same defect this whole
         // change set exists to remove.
@@ -52304,6 +52309,92 @@ export function createAgentChatService(args: {
   });
 
   /**
+   * What the CTO's wake says about the proof a child filed in the turn it
+   * reports. A child here: the proof is linked into the CTO chat (an MP4 copy
+   * for a video that needs one) and the wake carries the cite lines, so the
+   * CTO shows it without a tool call. A child on another machine: the wake
+   * says how to bring it here. Never throws; no proof is no line.
+   */
+  const ctoChildProofForWake = async (args: {
+    parentSessionId: string;
+    childSessionId: string;
+    spawnCompletion: AgentChatSpawnCompletion;
+  }): Promise<string | null> => {
+    const machineName = args.spawnCompletion.childMachineName?.trim();
+    if (machineName) {
+      // This machine cannot tell a chat (proof stamped by turn) from a CLI
+      // there, so a real turn id is named with a way out.
+      const reportTurn = args.spawnCompletion.childTurnId?.trim();
+      const byTurn = reportTurn && !/^event-\d+$/.test(reportTurn) ? `, turnId: ${JSON.stringify(reportTurn)}` : "";
+      return `It ran on ${machineName}. If its work shows on screen, getChatProof({ sessionId: "${args.childSessionId}", machine: ${JSON.stringify(machineName)}${byTurn} }) brings this report's screenshots and videos here to show${byTurn ? "; if that finds none, call it without turnId" : ""}.`;
+    }
+    const broker = computerUseArtifactBrokerRef;
+    if (!broker) return null;
+    // A chat stamps each proof with its turn; a tracked CLI does not, and one
+    // report covers its whole run.
+    const turnId = args.spawnCompletion.childTurnId?.trim();
+    const selection = turnId && managedSessions.has(args.childSessionId) ? { turnId } : "latest" as const;
+    // `event-N` is the report's fallback id, which no proof is stamped with.
+    const unstampedTurn = !turnId || /^event-\d+$/.test(turnId);
+    try {
+      const share = (picked: typeof selection, onlyUnshared: boolean) => shareChatProofWithCto({
+        broker,
+        chatSessionId: args.childSessionId,
+        ctoSessionId: args.parentSessionId,
+        selection: picked,
+        scratchDir: ctoProofScratchDir,
+        onlyUnshared,
+        logger,
+      });
+      let shared = await share(selection, selection === "latest");
+      // A report whose turn id no proof carries shows the newest proof the
+      // CTO has not been shown yet. A real turn that filed none shows none.
+      if (selection !== "latest" && unstampedTurn && !shared.shown.length && !shared.skipped.length) {
+        shared = await share("latest", true);
+      }
+      logger.info("cto.child_proof_shared", {
+        parentSessionId: args.parentSessionId,
+        childSessionId: args.childSessionId,
+        shown: shared.shown.length,
+        skipped: shared.skipped.length,
+      });
+      return formatProofForWake(shared);
+    } catch (error) {
+      logger.warn("cto.child_proof_share_failed", {
+        parentSessionId: args.parentSessionId,
+        childSessionId: args.childSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  /**
+   * The proof lines, or, when copying takes longer than a wake should wait
+   * (a long video to convert), a line telling the CTO to fetch them. The copy
+   * keeps going, and getChatProof joins it rather than starting another.
+   */
+  const ctoChildProofForWakeBounded = async (args: Parameters<typeof ctoChildProofForWake>[0]): Promise<string | null> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // Name the report's turn, as the copy in progress selects it; a report
+    // with no real turn id (a CLI run, an `event-N` fallback) takes the latest.
+    const turnId = args.spawnCompletion.childTurnId?.trim();
+    const byTurn = turnId && !/^event-\d+$/.test(turnId) && managedSessions.has(args.childSessionId)
+      ? `, turnId: ${JSON.stringify(turnId)}`
+      : "";
+    const slow = new Promise<string>((resolve) => {
+      timer = setTimeout(() => resolve(
+        `Its proof is still being copied. Call getChatProof({ sessionId: "${args.childSessionId}"${byTurn} }) shortly to show it.`,
+      ), CTO_CHILD_PROOF_WAKE_WAIT_MS);
+    });
+    try {
+      return await Promise.race([ctoChildProofForWake(args), slow]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  /**
    * Route one child completion into its parent: the `subagent_result` that
    * closes the parent's card, then a wake (subagent), nothing more for a chat
    * that does not report back (`peer`), or the one-line CTO report. Shared by chat children (per finished turn) and
@@ -52418,6 +52509,9 @@ export function createAgentChatService(args: {
     spawnCompletionDeliveriesInFlight.add(deliveryKey);
     void (async () => {
       let lastError: unknown = null;
+      // Worked out once per delivery, bounded (a long video to convert),
+      // and reused by a retry.
+      let ctoProofLines: string | null | undefined;
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
           const parent = ensureManagedSession(parentSessionId);
@@ -52475,10 +52569,14 @@ export function createAgentChatService(args: {
               // to drain the worker discovery log: the CTO is being woken
               // anyway, and the findings are usually about the work that just
               // finished.
+              if (ctoProofLines === undefined) {
+                ctoProofLines = await ctoChildProofForWakeBounded({ parentSessionId, childSessionId, spawnCompletion });
+              }
               const discoveries = ctoMemoryService?.readNewDiscoveries() ?? null;
               const wakeText = [
                 ctoReportLine,
                 delivery.wakeText,
+                ...(ctoProofLines ? [ctoProofLines] : []),
                 ...(discoveries?.text.length
                   ? [`New worker discoveries (unreviewed — save what is durable):\n${discoveries.text}`]
                   : []),

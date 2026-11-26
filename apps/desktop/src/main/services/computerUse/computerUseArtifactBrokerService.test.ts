@@ -268,6 +268,18 @@ describe("computerUseArtifactBrokerService", () => {
       });
     try {
       expect(attempt).toThrow(/outside allowed import roots/);
+      // A caller that converts the file first (showMedia's MP4 copy) checks
+      // the source the same way, and the secrets folder stays refused even
+      // though it sits inside an allowed root.
+      expect(() => broker.assertImportableSource(blockedPath)).toThrow(/outside allowed import roots/);
+      const secretsDir = path.join(projectRoot, ".ade", "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      const secretMovie = path.join(secretsDir, "key.mov");
+      fs.writeFileSync(secretMovie, "secret");
+      expect(() => broker.assertImportableSource(secretMovie)).toThrow(/not allowed as a proof source/);
+      const projectMovie = path.join(projectRoot, "demo.mov");
+      fs.writeFileSync(projectMovie, "movie");
+      expect(() => broker.assertImportableSource(projectMovie)).not.toThrow();
 
       // The message has to name the legal roots: an agent that hands us
       // `/tmp/proof.png` on macOS cannot otherwise tell that the OS temp dir
