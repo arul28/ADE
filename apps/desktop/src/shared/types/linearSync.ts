@@ -257,6 +257,12 @@ export type LinearConnectionStatus = {
   connected: boolean;
   viewerId: string | null;
   viewerName: string | null;
+  /**
+   * Whether the signed-in person is a Linear workspace admin. Linear lets only
+   * admins add the ADE agent and create webhooks, so Settings asks first.
+   * Null or missing when Linear did not say (or an older ADE answered).
+   */
+  viewerIsAdmin?: boolean | null;
   organizationId?: string | null;
   organizationName?: string | null;
   organizationUrlKey?: string | null;

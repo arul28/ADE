@@ -169,6 +169,7 @@ export type IssueTracker = {
     connected: boolean;
     viewerId: string | null;
     viewerName: string | null;
+    viewerIsAdmin?: boolean | null;
     organizationId?: string | null;
     organizationName?: string | null;
     organizationUrlKey?: string | null;

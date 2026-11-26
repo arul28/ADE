@@ -711,6 +711,47 @@
 
 /* MCP servers: a dense grid of logo tiles. */
 .ade-ix-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+/* Quick-setup filters (Popular, All, a category) and the folded tiles. A
+   folded tile stays mounted for Settings search, which un-folds it while a
+   search is on (`data-settings-searching` on the Settings content). */
+.ade-ix-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.ade-ix-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--kit-card-edge, var(--color-border));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kit-text-2, var(--color-fg));
+  font-size: 12px;
+  cursor: pointer;
+}
+.ade-ix-filter:hover { background: var(--kit-card-bg, var(--color-surface)); }
+.ade-ix-filter[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-fg);
+}
+.ade-ix-filter:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.ade-ix-filter-count { font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); font-variant-numeric: tabular-nums; }
+.ade-ix-grid > .ade-ix-tile[data-folded="true"] { display: none; }
+[data-settings-searching] .ade-ix-grid > .ade-ix-tile[data-folded="true"] { display: flex; }
+[data-settings-searching] .ade-ix-filters,
+[data-settings-searching] .ade-ix-show-all { display: none; }
+.ade-ix-show-all {
+  align-self: flex-start;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.ade-ix-show-all:hover { text-decoration: underline; }
+.ade-ix-show-all:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 @container integrationhome (max-width: 720px) { .ade-ix-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @container integrationhome (max-width: 460px) { .ade-ix-grid { grid-template-columns: minmax(0, 1fr); } }
 .ade-ix-tile {
