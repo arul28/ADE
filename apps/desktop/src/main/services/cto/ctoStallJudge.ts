@@ -476,7 +476,10 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
       if (ms > nowMs && (nextCheckMs === null || ms < nextCheckMs)) nextCheckMs = ms;
     };
     for (const child of children) {
-      const stall = judgeCtoChildStall(child, nowMs, needFor(child.sessionId) ?? null);
+      // The baseline pass judges a card by its last move, not by when this
+      // brain first saw it (just now): an old card belongs to the baseline.
+      const judged = baselinePending ? { ...child, pendingSeenAt: null } : child;
+      const stall = judgeCtoChildStall(judged, nowMs, needFor(child.sessionId) ?? null);
       if (!stall) {
         // Not stuck yet: look again when it could be.
         const dueMs = ctoChildStallDueMs(child);

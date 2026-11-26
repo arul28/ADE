@@ -188,6 +188,14 @@ describe("createCtoStallJudge", () => {
     expect(h.wakes[0].text).not.toContain("child-1");
   });
 
+  it("puts a card that was already waiting into the first-run baseline, though this brain just saw it", async () => {
+    const h = harness(new Map(), false);
+    h.put(child({ awaitingInput: true, pendingKind: "question", pendingKey: "card-1", pendingSeenAt: at(30 * MIN) }));
+    await pass(h, T0 + 30 * MIN);
+    await pass(h, T0 + 40 * MIN);
+    expect(h.wakes).toHaveLength(0);
+  });
+
   it("keeps its first-run baseline until a pass could read every CTO", async () => {
     const h = harness(new Map(), false);
     h.put(child());
