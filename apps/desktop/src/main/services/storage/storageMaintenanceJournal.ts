@@ -107,7 +107,16 @@ export function appendMaintenanceJournal(
     : [report, ...existing]
   ).slice(0, MAINTENANCE_JOURNAL_MAX_RUNS);
   try {
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+    // Only the journal's own folder, never its parents. A project deleted
+    // while it was open must stay deleted: a recursive mkdir brought its folder
+    // back, so the dead copy kept being offered to the account's other
+    // computers, and every read of it failed. The write fails with ENOENT
+    // instead, and the warning below records it.
+    try {
+      fs.mkdirSync(path.dirname(journalPath));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
     // Write to a sibling temp file then rename over the target so a crash mid-
     // write can never leave a truncated/corrupt journal in place.
     const tmpPath = `${journalPath}.tmp`;
