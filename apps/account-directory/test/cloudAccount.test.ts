@@ -1315,6 +1315,10 @@ describe("ADE Cloud account", () => {
   it("the free-use cap counts each provider's own bill: Agent 37's day less its disk, and Revyl's builds", async () => {
     seedAccount(harness, OWNER);
     seedStopped([4]);
+    // 4 GB of disk counted on 2026-11-09; the disk grew to 32 GB after midnight, so only those 4 GB come off that day's bill.
+    harness.insert("cloud_disk_days", { user_id: OWNER, day: "2026-11-09", peak_gb: 4, plan_gb: 0, billable: 4, free: 1 });
+    harness.exec("update cloud_computers set disk_gb = 32 where instance_id = ?", INSTANCE);
+    harness.net.instances.get(INSTANCE)!.resources = { cpu: 2, memory: 4, disk: 32 };
     harness.insert("cloud_settings", { key: "last_daily_day", value: "2026-11-09", updated_at: NOW });
     harness.env.REVYL_PARTNER_API_KEY = "rvl_test";
     harness.insert("cloud_phone_revyl", { user_id: OWNER, external_id: `ade-${OWNER}`, app_id: null, created_at: NOW, updated_at: NOW });
@@ -1327,7 +1331,8 @@ describe("ADE Cloud account", () => {
       if (url === "https://backend.revyl.ai/api/v1/partner/usage") return reply({ meters: [{ meter: "ios_simulator_seconds", unit_price_usd: 0.001 }, { meter: "ios_build_seconds", unit_price_usd: 0.001 }] });
       // The phone's own time is counted per phone; only the 100 build seconds are the day's other cost.
       if (url.startsWith(`https://backend.revyl.ai/api/v1/partner/connections/ade-${OWNER}/usage?`)) {
-        return reply({ usage: [{ feature: "ios_simulator_seconds", seconds: 600 }, { feature: "ios_build_seconds", seconds: 100 }] });
+        const builds = url.includes("from=2026-11-09") ? 100 : 0;
+        return reply({ usage: [{ feature: "ios_simulator_seconds", seconds: 600 }, { feature: "ios_build_seconds", seconds: builds }] });
       }
       return network(input, init);
     });

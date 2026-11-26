@@ -449,6 +449,13 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     }
     rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start });
   }
+  // Cost with no live account (deleted, its rows re-keyed to a hash): counted, with no income.
+  const counted = new Set(rows.map((row) => row.userId));
+  for (const userId of new Set([...compute.keys(), ...disk.keys(), ...phones.keys()])) {
+    if (counted.has(userId)) continue;
+    const cost = (compute.get(userId) ?? 0) + (disk.get(userId)?.peak_gb ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (phones.get(userId) ?? 0);
+    if (cost > 0) rows.push({ userId, planId: "free", costMicros: cost, incomeMicros: 0, extraReportedMilli: 0, periodStart: null });
+  }
   if (rows.length) {
     await env.DB.batch(rows.map((row) => env.DB.prepare(`
       insert into cloud_account_days (user_id, day, plan_id, cost_micros, income_micros, extra_reported_milli, period_start)

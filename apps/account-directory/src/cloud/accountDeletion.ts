@@ -104,6 +104,14 @@ export async function deleteCloudAccount(
     // (`deleteAccountPhone` stopped them at NoMac above, or does on the retry).
     // Until NoMac's cleanup succeeded they stay under the account, so Clerk's retry still finds them.
     env.DB.prepare("update cloud_phones set user_id = ?, state = 'ended', stop_at = null, ended_at = coalesce(ended_at, ?) where user_id = ? and ? = 0").bind(gone, Date.now(), userId, phoneFailure ? 1 : 0),
+    // Revyl's build charges (`recordRevylDayCosts`, read once more before the workspace was disconnected) stay for the
+    // cost report under the hash; a day the hash already has (a retried deletion) keeps the higher read.
+    env.DB.prepare(`
+      insert into cloud_revyl_days (user_id, day, cost_micros, free, read_at)
+      select ?, day, cost_micros, free, read_at from cloud_revyl_days where user_id = ?
+      on conflict (user_id, day) do update set cost_micros = max(cloud_revyl_days.cost_micros, excluded.cost_micros), read_at = excluded.read_at
+    `).bind(gone, userId),
+    env.DB.prepare("delete from cloud_revyl_days where user_id = ?").bind(userId),
     env.DB.prepare("update cloud_abuse_events set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("update cloud_owner_alerts set user_id = ? where user_id = ?").bind(gone, userId),
     env.DB.prepare("delete from cloud_cpu_reports where user_id = ?").bind(userId),
