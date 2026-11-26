@@ -276,6 +276,9 @@ export type ExternalParentWake = {
   ctoPrNumber?: number;
 };
 
+/** A wake without its routing: what travels to the scope or machine that holds the parent. */
+export type ExternalParentWakePayload = Omit<ExternalParentWake, "childProjectRoot" | "parentSessionId">;
+
 /** The key one child turn's delivery to one parent is deduped under. */
 export function spawnDeliveryKey(parentSessionId: string, childSessionId: string, childTurnId: string | null | undefined): string {
   return `${parentSessionId}:${childSessionId}:${childTurnId ?? ""}`;

@@ -10,6 +10,25 @@ export const CHILD_REPORT_MAX_CHARS = 3_500;
 const FENCE_LINE = /^\s*(```|~~~)/;
 
 /**
+ * What a woken parent reads for one child turn: who finished, why it hears
+ * from this chat when the child was relinked, then the report. The one place
+ * this text is built, so a relink never edits a finished string.
+ */
+export function composeChildWakeText(args: {
+  childTitle: string;
+  childSessionId: string;
+  relinkNote?: string | null;
+  summary: string;
+}): string {
+  return [
+    `Your subagent "${args.childTitle}" (${args.childSessionId}) finished a turn.`,
+    ...(args.relinkNote ? [args.relinkNote] : []),
+    "",
+    args.summary,
+  ].join("\n");
+}
+
+/**
  * The end of a child's final message, newlines kept. A reply longer than
  * `maxChars` keeps its last lines (the closing summary lives there) behind a
  * line saying the start was cut and how to read it all. A cut that lands

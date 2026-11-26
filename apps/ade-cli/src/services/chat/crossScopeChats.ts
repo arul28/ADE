@@ -38,6 +38,7 @@ import {
   type ExternalChatScope,
   type ExternalParentRouter,
   type ExternalParentWake,
+  type ExternalParentWakePayload,
   type ExternalWakeDeliveryResult,
 } from "../../../../desktop/src/main/services/chat/externalChats";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
@@ -54,7 +55,7 @@ export type RemoteWakePayload = {
   parentChatSessionId: string;
   /** The token the receiving machine handed over when it started the child. */
   wakeToken: string;
-  wake: Omit<ExternalParentWake, "parentSessionId" | "childProjectRoot">;
+  wake: ExternalParentWakePayload;
 };
 
 type ProjectRecordLike = { projectId: string; rootPath: string };
@@ -157,7 +158,7 @@ function readOutboxEntry(value: unknown): OutboxEntry | null {
   if (target.kind === "local") {
     const scope = readExternalChatScope(target.scope);
     const owner = typeof target.owner === "string" && target.owner ? target.owner : null;
-    outboxTarget = scope ? { kind: "local", scope, ...(owner ? { owner } : {}) } : { kind: "local" };
+    outboxTarget = { kind: "local", ...(scope ? { scope } : {}), ...(owner ? { owner } : {}) };
   } else if (target.kind === "remote" && typeof target.machineKey === "string" && typeof target.parentChatSessionId === "string") {
     outboxTarget = { kind: "remote", machineKey: target.machineKey, parentChatSessionId: target.parentChatSessionId };
   } else {
@@ -210,9 +211,17 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
   const childrenPath = path.join(deps.stateDir, "remote-children.json");
   const ownerId = deps.ownerId?.trim() || null;
   const readOutboxFile = (): OutboxEntry[] => readJsonArray(outboxPath).flatMap((entry) => readOutboxEntry(entry) ?? []);
-  /** Another brain on this home queued it for a chat that brain runs. */
+  /**
+   * Another brain on this home queued it for a chat that brain runs. Past the
+   * give-up age it is anyone's: its brain never came back (a dev brain on its
+   * own socket, a renamed endpoint), so this one tries it once more and then
+   * gives up on it with the usual note, instead of leaving it forever.
+   */
   const ownedElsewhere = (entry: OutboxEntry): boolean =>
-    entry.target.kind === "local" && Boolean(entry.target.owner) && entry.target.owner !== ownerId;
+    entry.target.kind === "local"
+    && Boolean(entry.target.owner)
+    && entry.target.owner !== ownerId
+    && now() - entry.firstQueuedAt < GIVE_UP_AFTER_MS;
   let outbox: OutboxEntry[] = readOutboxFile().filter((entry) => !ownedElsewhere(entry));
   /**
    * Keys this brain delivered or dropped, so a save does not bring them back
@@ -358,7 +367,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
 
   const deliverLocally = async (
     parentSessionId: string,
-    wake: Omit<ExternalParentWake, "childProjectRoot" | "parentSessionId">,
+    wake: ExternalParentWakePayload,
     hint: ExternalChatScope | null,
   ): Promise<ExternalWakeDeliveryResult> => {
     const located = await locateChat(parentSessionId, { boot: true, hint });
@@ -407,7 +416,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
   const deliverInScope = async (
     scope: ExternalChatScope,
     parentSessionId: string,
-    wake: Omit<ExternalParentWake, "childProjectRoot" | "parentSessionId">,
+    wake: ExternalParentWakePayload,
   ): Promise<ExternalWakeDeliveryResult> => {
     let runtime: AdeRuntime | null = null;
     try {
@@ -421,8 +430,16 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
       return "failed";
     }
     if (!runtime?.agentChatService) return "failed";
-    if (!hasChat(runtime, parentSessionId)) return "parent_gone";
-    return await runtime.agentChatService.deliverExternalChildCompletion({ ...wake, parentSessionId });
+    if (hasChat(runtime, parentSessionId)) {
+      return await runtime.agentChatService.deliverExternalChildCompletion({ ...wake, parentSessionId });
+    }
+    // Not in the pinned scope. The pin came from a path match against the
+    // project registry, which can miss (a project re-registered under another
+    // path); look in every open scope before calling the parent gone, or a
+    // live parent would lose its child to an ancestor.
+    const located = await locateChat(parentSessionId, { boot: false, hint: scope });
+    if (!located?.runtime.agentChatService) return "parent_gone";
+    return await located.runtime.agentChatService.deliverExternalChildCompletion({ ...wake, parentSessionId });
   };
 
   const noteOnChild = async (entry: OutboxEntry, reason: "parent_gone" | "gave_up" | "refused"): Promise<void> => {
