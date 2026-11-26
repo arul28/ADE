@@ -161,7 +161,7 @@ import {
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
 import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
-import { isTrackedAgentCliToolType } from "../../../shared/types";
+import { isCtoNotesFile, isTrackedAgentCliToolType } from "../../../shared/types";
 import {
   claimDraft,
   createDraft,
@@ -1814,7 +1814,7 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
     updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
-      if (args?.scope !== "project" && args?.scope !== "user" && args?.scope !== "rules") {
+      if (!args || !isCtoNotesFile(args.scope)) {
         throw new Error("updateNotes requires `scope`: \"project\", \"user\" or \"rules\".");
       }
       if (typeof args.text !== "string") throw new Error("updateNotes requires a string `text` field.");
@@ -1858,7 +1858,7 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
     },
     deleteSkill: (args?: Partial<CtoDeleteSkillArgs>): CtoMemorySnapshot => {
       if (typeof args?.name !== "string" || !args.name.trim()) throw new Error("deleteSkill requires `name`.");
-      const result = ctoMemoryService.deleteSkill(args.name, { by: "person" });
+      const result = ctoMemoryService.deleteSkillAsPerson(args.name);
       if (!result.ok) throw new Error(result.error);
       return ctoMemoryService.getSnapshot();
     },

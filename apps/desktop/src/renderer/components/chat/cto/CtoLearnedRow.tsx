@@ -4,6 +4,7 @@ import {
   CTO_LEARNED_AREA_LABEL,
   type CtoLearnedChange,
 } from "../../../../shared/types/chat";
+import { showToast } from "../../app/toast/toastStore";
 import { useChatRuntimeScope } from "../ChatRuntimeScope";
 import "./ctoChat.css";
 
@@ -29,19 +30,22 @@ function changeTitle(change: CtoLearnedChange): string {
 export function CtoLearnedRow({ learnId, changes }: { learnId: string; changes: readonly CtoLearnedChange[] }) {
   const { pin } = useChatRuntimeScope();
   const [pending, setPending] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const undo = window.ade?.cto?.undoLearned;
 
   const runUndo = useCallback(async (changeId: string) => {
     const call = window.ade?.cto?.undoLearned;
     if (!call || !pin) return;
     setPending(changeId);
-    setNote(null);
     try {
       const result = await call({ learnId, changeId }, pin);
-      if (!result.undone || result.note) setNote(result.note ?? "Couldn't undo that.");
+      if (!result.undone) showToast({ tone: "warning", title: "Couldn't undo that", message: result.note });
+      else if (result.note) showToast({ tone: "info", title: "Undone", message: result.note });
     } catch (error) {
-      setNote(error instanceof Error && error.message ? error.message : "Couldn't undo that.");
+      showToast({
+        tone: "error",
+        title: "Couldn't undo that",
+        message: error instanceof Error && error.message ? error.message : undefined,
+      });
     } finally {
       setPending(null);
     }
@@ -87,7 +91,6 @@ export function CtoLearnedRow({ learnId, changes }: { learnId: string; changes: 
           );
         })}
       </ul>
-      {note ? <div className="ade-cto-learned-note" role="status">{note}</div> : null}
     </div>
   );
 }

@@ -3176,7 +3176,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const memory = deps.ctoMemoryService;
       if (!memory) return { success: false, error: "Skills are not available on this runtime." };
       try {
-        const result = memory.deleteSkill(name, { by: "cto", ...(personAskedAgain ? { personAskedAgain } : {}) });
+        const result = memory.deleteSkill(name, personAskedAgain ? { personAskedAgain } : undefined);
         if (!result.ok) return { success: false, error: result.error };
         return { success: true, deleted: result.name };
       } catch (error) {

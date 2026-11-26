@@ -8,6 +8,7 @@ import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../..
 import { parseLaneLinearIssueValue } from "../../../../desktop/src/shared/laneLinearIssue";
 import { pickKeptLaneRestoreArgs } from "../../../../desktop/src/shared/cloudKeptLaneRestore";
 import { cloudDomainEnabled } from "../../../../desktop/src/shared/adeCloud";
+import { isCtoNotesFile } from "../../../../desktop/src/shared/types/cto";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
 import { normalizeGitHubPrListFilters } from "../../../../desktop/src/shared/githubPrSearch";
 import type { JiraIssueListState, LaneJiraIssue } from "../../../../desktop/src/shared/types/jira";
@@ -7275,7 +7276,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   // the CTO or another device saved in between. `baseHash` refuses that too.
   register("cto.updateNotes", { viewerAllowed: true, queueable: false }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
-    const scope = payload.scope === "user" || payload.scope === "project" || payload.scope === "rules" ? payload.scope : null;
+    const scope = isCtoNotesFile(payload.scope) ? payload.scope : null;
     if (!scope) throw new Error("cto.updateNotes requires scope: project, user or rules.");
     if (typeof payload.text !== "string") throw new Error("cto.updateNotes requires text.");
     ctoMemoryService.writeNotes(scope, payload.text, {
@@ -7313,7 +7314,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   register("cto.deleteSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
-    const result = ctoMemoryService.deleteSkill(requireString(payload.name, "cto.deleteSkill requires name."), { by: "person" });
+    const result = ctoMemoryService.deleteSkillAsPerson(requireString(payload.name, "cto.deleteSkill requires name."));
     if (!result.ok) throw new Error(result.error);
     return ctoMemoryService.getSnapshot();
   });

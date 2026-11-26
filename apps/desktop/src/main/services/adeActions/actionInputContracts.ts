@@ -49,9 +49,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   cto_memory: {
     updateNotes: {
       description:
-        "Replace one notes file: scope \"project\" (.ade/cto/MEMORY.md, 4096 bytes, one note per line), \"user\" (the person, every project on this machine, 2048 bytes) or \"rules\" (.ade/cto/RULES.md, 4096 bytes, kept as written). Over the cap is refused. Pass the snapshot's memoryHash/userNotesHash/rulesHash as baseHash to refuse the write when the file changed since it was read. CTO-only.",
+        "Replace one notes file: scope \"project\" (.ade/cto/MEMORY.md, 4096 bytes, one note per line), \"user\" (the person, every project on this machine, 2048 bytes) or \"rules\" (.ade/cto/RULES.md, 4096 bytes, kept as written). Over the cap is refused. Pass the snapshot's memoryHash/userNotesHash/rulesHash as baseHash to refuse the write when the file changed since it was read. Person-only: the CTO saves notes and rules with its own tools, so each shows in its Learned row with Undo.",
       input: "object { scope: \"project\" | \"user\" | \"rules\", text: string, baseHash?: string }",
-      example: "ade --role cto actions run cto_memory.updateNotes --input-json '{\"scope\":\"project\",\"text\":\"- Deploys go through the release lane\"}' --json",
+      example: "ade actions run cto_memory.updateNotes --input-json '{\"scope\":\"project\",\"text\":\"- Deploys go through the release lane\"}' --json",
     },
     updateOpenWork: {
       description: "Add, complete, reopen or remove one open-work item on the CTO's list. CTO-only.",
@@ -64,14 +64,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade --role cto actions run cto_memory.getSkill --input-json '{\"name\":\"release-desktop\"}' --json",
     },
     writeSkill: {
-      description: "Replace one CTO skill's whole SKILL.md (frontmatter name and description, then the how-to). Pass getSkill's hash as baseHash to refuse a write over a newer file. CTO-only.",
+      description: "Replace one CTO skill's whole SKILL.md (frontmatter name and description, then the how-to). Pass getSkill's hash as baseHash to refuse a write over a newer file. Person-only (the CTO uses its saveSkill tool).",
       input: "object { name: string, text: string, baseHash?: string }",
-      example: "ade --role cto actions run cto_memory.writeSkill --input-json '{\"name\":\"release-desktop\",\"text\":\"---\\nname: release-desktop\\ndescription: Ship a desktop release\\n---\\n\\n1. ...\"}' --json",
+      example: "ade actions run cto_memory.writeSkill --input-json '{\"name\":\"release-desktop\",\"text\":\"---\\nname: release-desktop\\ndescription: Ship a desktop release\\n---\\n\\n1. ...\"}' --json",
     },
     deleteSkill: {
-      description: "Delete one CTO skill. CTO-only.",
+      description: "Delete one CTO skill. Person-only (the CTO uses its deleteSkill tool).",
       input: "object { name: string }",
-      example: "ade --role cto actions run cto_memory.deleteSkill --input-json '{\"name\":\"release-desktop\"}' --json",
+      example: "ade actions run cto_memory.deleteSkill --input-json '{\"name\":\"release-desktop\"}' --json",
     },
     undoLearned: {
       description: "Undo one change a CTO turn's Learned row lists; the CTO is refused the same change again. Person-only.",

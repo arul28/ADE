@@ -138,6 +138,10 @@ export type CtoNotesScope = "project" | "user";
  */
 export type CtoNotesFile = CtoNotesScope | "rules";
 
+export function isCtoNotesFile(value: unknown): value is CtoNotesFile {
+  return value === "project" || value === "user" || value === "rules";
+}
+
 /** Hard cap on `.ade/cto/RULES.md`, in UTF-8 bytes: it rides every turn. */
 export const CTO_RULES_MAX_BYTES = 4096;
 /** Skills the CTO keeps at once (`.ade/cto/skills/<name>/SKILL.md`). */
@@ -146,6 +150,17 @@ export const CTO_SKILLS_MAX = 40;
 export const CTO_SKILL_MAX_BYTES = 8192;
 /** A skill's one-line description, shown to the CTO on every turn. */
 export const CTO_SKILL_DESCRIPTION_MAX_CHARS = 240;
+/** A skill's folder name: lowercase words joined by `-`. */
+export const CTO_SKILL_NAME_MAX_CHARS = 48;
+
+/** `Release a lane` → `release-a-lane`; "" when nothing usable is left. */
+export function ctoSkillSlug(raw: string): string {
+  return raw.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, CTO_SKILL_NAME_MAX_CHARS)
+    .replace(/-+$/g, "");
+}
 
 /** One skill as the index shows it: the how-to itself is read on demand. */
 export type CtoSkillSummary = {

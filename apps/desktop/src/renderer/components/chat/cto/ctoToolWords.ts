@@ -78,13 +78,13 @@ function providerFromModelId(modelId: unknown): string | null {
   return humanizeProvider(known[prefix] ?? prefix);
 }
 
-export type CtoChipKind = "scheduled" | "cancelled" | "paused" | "resumed" | "remembered" | "forgot" | "tracking" | "done";
+export type CtoChipKind = "scheduled" | "cancelled" | "paused" | "resumed" | "tracking" | "done";
 
 export type CtoToolChip = {
   /** The entry it came from; stable key for the row. */
   id: string;
   kind: CtoChipKind;
-  /** "Scheduled", "Saved note", … */
+  /** "Scheduled", "Tracking", … */
   verb: string;
   /** What it was about, already clipped. Null when the call named nothing readable. */
   text: string | null;
@@ -128,8 +128,6 @@ const FAILED_VERB: Record<CtoChipKind, string> = {
   cancelled: "Couldn't cancel",
   paused: "Couldn't pause",
   resumed: "Couldn't resume",
-  remembered: "Couldn't save note",
-  forgot: "Couldn't drop note",
   tracking: "Couldn't track",
   done: "Couldn't finish",
 };
@@ -168,14 +166,6 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
       text = str(payload?.title) ?? (args.scheduleId ? null : "every routine on that chat");
       break;
     }
-    case "remember":
-      kind = "remembered";
-      text = str(args.note);
-      break;
-    case "forget":
-      kind = "forgot";
-      text = str(args.note);
-      break;
     case "trackWork":
       kind = "tracking";
       text = str(args.text) ?? str(payload?.text);
@@ -192,8 +182,6 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
     cancelled: "Cancelled",
     paused: "Paused",
     resumed: "Resumed",
-    remembered: "Saved note",
-    forgot: "Dropped note",
     tracking: "Tracking",
     done: "Done",
   };

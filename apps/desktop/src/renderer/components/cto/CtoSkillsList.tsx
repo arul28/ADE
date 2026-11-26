@@ -1,8 +1,9 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, CaretDown, CaretRight, Plus, Trash } from "@phosphor-icons/react";
 import {
   CTO_SKILL_MAX_BYTES,
   CTO_SKILLS_MAX,
+  ctoSkillSlug,
   type CtoSkillFile,
   type CtoSkillSummary,
   type OpenProjectBinding,
@@ -39,21 +40,24 @@ export function CtoSkillsList({
   const [busy, setBusy] = useState(false);
   const full = skills.length >= CTO_SKILLS_MAX;
 
+  // Read through a ref so a rebuilt pin for the same machine reloads nothing.
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin.key;
+
   const load = useCallback(async (name: string) => {
     try {
-      setFile(await window.ade.cto!.getSkill({ name }, pin));
+      setFile(await window.ade.cto!.getSkill({ name }, pinRef.current));
       setError(null);
     } catch (err) {
       setError(ipcErrorMessage(err) || "Couldn't read the skill.");
     }
-  }, [pin]);
+  }, []);
 
   useEffect(() => {
     if (openName) void load(openName);
     else setFile(null);
-    // Keyed on the pin's key: a rebuilt pin for the same machine reloads nothing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openName, pin.key, load]);
+  }, [openName, pinKey, load]);
 
   const save = useCallback(async (name: string, text: string, baseHash?: string) => {
     await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pin);
@@ -76,9 +80,15 @@ export function CtoSkillsList({
   };
 
   const create = async () => {
-    const name = (draftName ?? "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    const name = ctoSkillSlug(draftName ?? "");
     if (!name) {
       setDraftName(null);
+      return;
+    }
+    // A name that already exists opens that skill; a template never replaces it.
+    if (skills.some((skill) => skill.name === name)) {
+      setDraftName(null);
+      setOpenName(name);
       return;
     }
     setBusy(true);

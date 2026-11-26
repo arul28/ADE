@@ -78,26 +78,32 @@ export function CtoMemoryPanel({
     return <p className="ade-modern-muted">{loading ? "Loading…" : "Home machine unreachable"}</p>;
   }
 
+  // An older home machine sends no rules or skills and refuses their writes.
+  const hostHasRules = memory.rules !== undefined || memory.rulesHash !== undefined;
+  const hostHasSkills = memory.skills !== undefined;
+
   return (
     <div className="ade-modern-sections">
-      <ModernSection
-        group={CTO_SETTINGS_GROUP}
-        anchor="cto.memory.rules"
-        title="Rules"
-        hint="Yours and the CTO's, followed every turn"
-      >
-        <AutosaveTextArea
-          ariaLabel="Rules"
-          value={memory.rules ?? ""}
-          hash={memory.rulesHash}
-          limit={memory.rulesLimitBytes ?? CTO_RULES_MAX_BYTES}
-          rows={8}
-          placeholder={"- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default."}
-          onSave={saveRules}
-        />
-      </ModernSection>
+      {hostHasRules ? (
+        <ModernSection
+          group={CTO_SETTINGS_GROUP}
+          anchor="cto.memory.rules"
+          title="Rules"
+          hint="Yours and the CTO's, followed every turn"
+        >
+          <AutosaveTextArea
+            ariaLabel="Rules"
+            value={memory.rules ?? ""}
+            hash={memory.rulesHash}
+            limit={memory.rulesLimitBytes ?? CTO_RULES_MAX_BYTES}
+            rows={8}
+            placeholder={"- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default."}
+            onSave={saveRules}
+          />
+        </ModernSection>
+      ) : null}
 
-      {pin ? (
+      {pin && hostHasSkills ? (
         <ModernSection
           group={CTO_SETTINGS_GROUP}
           anchor="cto.memory.skills"

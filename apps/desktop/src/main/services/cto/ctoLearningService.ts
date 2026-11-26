@@ -1,19 +1,31 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
-  CTO_NOTES_CHANGED_ERROR,
+  CTO_PROJECT_NOTES_MAX_BYTES,
   CTO_RULES_MAX_BYTES,
   CTO_SKILL_DESCRIPTION_MAX_CHARS,
   CTO_SKILL_MAX_BYTES,
   CTO_SKILLS_MAX,
+  CTO_USER_NOTES_MAX_BYTES,
+  ctoSkillSlug,
   type CtoSkillFile,
   type CtoSkillSummary,
 } from "../../../shared/types/cto";
 import { CTO_LEARNED_AREA_LABEL, type CtoLearnedArea, type CtoLearnedChange } from "../../../shared/types/chat";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
-import { noteSimilarity, parseNoteLines } from "./ctoNoteText";
+import {
+  assertBaseHash,
+  matchLines,
+  noteSimilarity,
+  oneNoteLine,
+  parseNoteLines,
+  readFileOrEmpty,
+  stripBullet,
+  textHash,
+  utf8Bytes,
+} from "./ctoNoteText";
 
 /*
  * How the CTO learns, beside its notes (`ctoMemoryService`):
@@ -57,7 +69,6 @@ const RULE_MAX_CHARS = 300;
 const RULE_WHY_MAX_CHARS = 200;
 /** "Rule — why": the separator between a rule and its reason. */
 const RULE_WHY_SEPARATOR = " — ";
-const SKILL_NAME_MAX_CHARS = 48;
 /** Learned turns kept for Undo, newest first. */
 const LEARNED_TURNS_KEPT = 60;
 const UNDONE_KEPT = 100;
@@ -66,6 +77,12 @@ const UNDONE_INJECTED = 8;
 const MATCH_CANDIDATES_SHOWN = 8;
 
 type LineArea = Exclude<CtoLearnedArea, "skill">;
+
+const LINE_AREA_LIMIT: Record<LineArea, { bytes: number; name: string }> = {
+  rules: { bytes: CTO_RULES_MAX_BYTES, name: "Rules" },
+  project_notes: { bytes: CTO_PROJECT_NOTES_MAX_BYTES, name: "Project notes" },
+  user_notes: { bytes: CTO_USER_NOTES_MAX_BYTES, name: "Notes about you" },
+};
 
 type LearnState = {
   rules: string;
@@ -121,43 +138,10 @@ export type CtoUndoLearnedOutcome =
 
 /* ── Text helpers ── */
 
-function readFileOrEmpty(filePath: string): string {
-  try {
-    return fs.readFileSync(filePath, "utf8");
-  } catch {
-    return "";
-  }
-}
-
-function utf8Bytes(text: string): number {
-  return Buffer.byteLength(text, "utf8");
-}
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-/** One line, no bullet, secret-scrubbed, clipped. */
-function oneLine(raw: string, max: number): string {
-  const single = raw.replace(/\s+/g, " ").trim().replace(/^(?:[-*•]\s+)+/, "").trim();
-  return clipText(redactSecrets(single), max);
-}
-
-function stripBullet(raw: string): string {
-  return raw.trim().replace(/^(?:[-*•]\s+)+/, "").trim();
-}
-
 /** The rule part of a "rule — why" line, for comparing two rules. */
 function rulePart(line: string): string {
   const at = line.indexOf(RULE_WHY_SEPARATOR);
   return at > 0 ? line.slice(0, at) : line;
-}
-
-/** Lines whose text is `needle` exactly, else lines that contain it. */
-function matchItems(items: readonly string[], needle: string): number[] {
-  const exact = items.findIndex((line) => line === needle);
-  if (exact >= 0) return [exact];
-  return items.flatMap((line, index) => (line.includes(needle) ? [index] : []));
 }
 
 function withTrailingNewline(text: string): string {
@@ -186,6 +170,21 @@ function appendLine(content: string, text: string): string {
   const base = content.replace(/\n+$/, "");
   return `${base.length ? `${base}\n` : ""}- ${text}\n`;
 }
+
+/** The content with one line change taken back; null when it already is. */
+function revertLineChange(content: string, change: CtoLearnedChange): string | null {
+  if (change.op === "added") return dropLine(content, change.text);
+  if (change.op === "removed") return parseNoteLines(content).includes(change.text) ? null : appendLine(content, change.text);
+  const previous = change.previous ?? "";
+  return swapLine(content, change.text, previous)
+    ?? (previous && !parseNoteLines(content).includes(previous) ? appendLine(content, previous) : null);
+}
+
+const ALREADY_REVERTED_NOTE: Record<CtoLearnedChange["op"], string> = {
+  added: "It was already gone.",
+  removed: "It was already back.",
+  changed: "The earlier version is already there.",
+};
 
 /**
  * What changed between two versions of a line file. A removed line and an
@@ -237,13 +236,30 @@ export function diffLineItems(
 
 /* ── Skills ── */
 
-/** `Release a lane` → `release-a-lane`; "" when nothing usable is left. */
-export function ctoSkillSlug(raw: string): string {
-  return raw.toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, SKILL_NAME_MAX_CHARS)
-    .replace(/-+$/g, "");
+/** Which skills changed between two states, with each one's text before and after (null: absent). */
+function diffSkills(start: ReadonlyMap<string, string>, end: ReadonlyMap<string, string>): {
+  changes: Array<Omit<CtoLearnedChange, "id">>;
+  before: Record<string, string | null>;
+  after: Record<string, string | null>;
+} {
+  const changes: Array<Omit<CtoLearnedChange, "id">> = [];
+  const before: Record<string, string | null> = {};
+  const after: Record<string, string | null> = {};
+  for (const name of [...new Set([...start.keys(), ...end.keys()])].sort()) {
+    const was = start.get(name) ?? null;
+    const now = end.get(name) ?? null;
+    if (was === now) continue;
+    before[name] = was;
+    after[name] = now;
+    const description = parseSkillText(now ?? was ?? "").description;
+    changes.push({
+      area: "skill",
+      op: was == null ? "added" : now == null ? "removed" : "changed",
+      text: name,
+      ...(description ? { detail: description } : {}),
+    });
+  }
+  return { changes, before, after };
 }
 
 type ParsedSkill = { name: string | null; description: string; body: string; hasFrontmatter: boolean };
@@ -372,12 +388,12 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     replaces?: string | null;
     personAskedAgain?: boolean;
   }): CtoAddRuleResult => {
-    let rule = oneLine(input.rule, RULE_MAX_CHARS).replace(/[\s.;,]+$/, "");
+    let rule = oneNoteLine(input.rule, RULE_MAX_CHARS).replace(/[\s.;,]+$/, "");
     // A model that writes "rule — why" in `rule` too: keep the rule part, so the reason is said once.
     const embeddedAt = rule.indexOf(RULE_WHY_SEPARATOR);
     const embeddedWhy = embeddedAt > 0 ? rule.slice(embeddedAt + RULE_WHY_SEPARATOR.length).trim() : "";
     if (embeddedAt > 0) rule = rule.slice(0, embeddedAt).trim();
-    const why = oneLine(input.why?.trim() ? input.why : embeddedWhy, RULE_WHY_MAX_CHARS)
+    const why = oneNoteLine(input.why?.trim() ? input.why : embeddedWhy, RULE_WHY_MAX_CHARS)
       .replace(/^(?:because|why:)\s*/i, "")
       .replace(/[\s.;,]+$/, "")
       // A clause after the dash: "— the user wants…", but "— CI runs…" keeps its acronym.
@@ -391,7 +407,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     let next: string;
     let replaced: string | undefined;
     if (replaces) {
-      const matches = matchItems(items, replaces);
+      const matches = matchLines(items, replaces);
       if (matches.length !== 1) {
         return {
           ok: false,
@@ -431,7 +447,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     if (!needle.length) return { ok: false, error: "Say which rule to remove." };
     const content = readRules();
     const items = parseNoteLines(content);
-    const matches = matchItems(items, needle);
+    const matches = matchLines(items, needle);
     if (matches.length !== 1) {
       return {
         ok: false,
@@ -457,10 +473,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
    * file that changed since the editor loaded it.
    */
   const writeRulesText = (text: string, options?: { baseHash?: string | null }): void => {
-    const baseHash = options?.baseHash?.trim().toLowerCase();
-    if (baseHash && sha256(readRules()) !== baseHash) {
-      throw new AdeExpectedError(`${CTO_NOTES_CHANGED_ERROR} Reload to see the new version, then save again.`, "user");
-    }
+    assertBaseHash(readRules(), options?.baseHash);
     const content = withTrailingNewline(redactSecrets(text).replace(/\r\n/g, "\n").replace(/\n+$/, ""));
     const bytes = utf8Bytes(content);
     if (bytes > CTO_RULES_MAX_BYTES) throw new AdeExpectedError(rulesFullMessage(bytes), "user");
@@ -508,7 +521,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     } catch {
       return null;
     }
-    return { ...summarize(name, text), text, hash: sha256(text) };
+    return { ...summarize(name, text), text, hash: textHash(text) };
   };
 
   const writeSkillFile = (name: string, text: string): void => {
@@ -529,7 +542,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   }): CtoSaveSkillResult => {
     const name = ctoSkillSlug(input.name);
     if (!name) return { ok: false, error: "Name the skill with letters or digits, e.g. \"release-a-lane\"." };
-    const description = oneLine(input.description, CTO_SKILL_DESCRIPTION_MAX_CHARS);
+    const description = oneNoteLine(input.description, CTO_SKILL_DESCRIPTION_MAX_CHARS);
     if (!description) return { ok: false, error: "Say in one line which tasks the skill is for." };
     const body = redactSecrets(input.body).trim();
     if (!body) return { ok: false, error: "The skill is empty: write the steps." };
@@ -556,10 +569,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     const name = ctoSkillSlug(input.name);
     if (!name) throw new AdeExpectedError("Name the skill with letters or digits.", "user");
     const current = readFileOrEmpty(skillPath(name));
-    const baseHash = input.baseHash?.trim().toLowerCase();
-    if (baseHash && sha256(current) !== baseHash) {
-      throw new AdeExpectedError(`${CTO_NOTES_CHANGED_ERROR} Reload to see the new version, then save again.`, "user");
-    }
+    assertBaseHash(current, input.baseHash);
     if (!current && readSkillNames().length >= CTO_SKILLS_MAX) {
       throw new AdeExpectedError(`Skills are full (${CTO_SKILLS_MAX}). Delete one first.`, "user");
     }
@@ -579,18 +589,27 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     return readSkill(name)!;
   };
 
-  const deleteSkill = (
-    rawName: string,
-    options: { by: "cto" | "person"; personAskedAgain?: boolean },
-  ): { ok: true; name: string } | { ok: false; error: string } => {
+  type DeleteSkillResult = { ok: true; name: string } | { ok: false; error: string };
+
+  /** The CTO deletes a skill: refused when the person undid that delete, unless they asked again. */
+  const deleteSkill = (rawName: string, options?: { personAskedAgain?: boolean }): DeleteSkillResult => {
     const name = ctoSkillSlug(rawName);
     if (!name || !fs.existsSync(skillPath(name))) return { ok: false, error: `No skill is named "${rawName}".` };
-    if (options.by === "cto" && !options.personAskedAgain) {
+    if (!options?.personAskedAgain) {
       const refusal = undoneRefusal("skill", "remove", name);
       if (refusal) return { ok: false, error: refusal };
     }
     removeSkillDir(name);
-    if (options.by === "person") personWroteSkill(name);
+    changed();
+    return { ok: true, name };
+  };
+
+  /** The person deletes a skill (Settings, another device, an account copy): never something the CTO learned. */
+  const deleteSkillAsPerson = (rawName: string): DeleteSkillResult => {
+    const name = ctoSkillSlug(rawName);
+    if (!name || !fs.existsSync(skillPath(name))) return { ok: false, error: `No skill is named "${rawName}".` };
+    removeSkillDir(name);
+    personWroteSkill(name);
     changed();
     return { ok: true, name };
   };
@@ -768,37 +787,23 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     const changes: Array<Omit<CtoLearnedChange, "id">> = [];
     const before: LearnedRecord["before"] = {};
     const after: NonNullable<LearnedRecord["after"]> = {};
-    for (const area of ["rules", "skill", "project_notes", "user_notes"] as const) {
-      if (area === "skill") {
-        const skills: Record<string, string | null> = {};
-        const skillsAfter: Record<string, string | null> = {};
-        const names = new Set([...start.skills.keys(), ...end.skills.keys()]);
-        for (const name of [...names].sort()) {
-          const was = start.skills.get(name) ?? null;
-          const now = end.skills.get(name) ?? null;
-          if (was === now) continue;
-          skills[name] = was;
-          skillsAfter[name] = now;
-          const description = parseSkillText(now ?? was ?? "").description;
-          changes.push({
-            area,
-            op: was == null ? "added" : now == null ? "removed" : "changed",
-            text: name,
-            ...(description ? { detail: description } : {}),
-          });
-        }
-        if (Object.keys(skills).length) {
-          before.skills = skills;
-          after.skills = skillsAfter;
-        }
-        continue;
-      }
-      if (start[area] === end[area]) continue;
+    const diffLines = (area: LineArea): void => {
+      if (start[area] === end[area]) return;
       const lineChanges = diffLineItems(area, start[area], end[area]);
-      if (!lineChanges.length) continue;
+      if (!lineChanges.length) return;
       before[area] = start[area];
       changes.push(...lineChanges);
+    };
+    // The row lists rules first, then skills, then notes.
+    diffLines("rules");
+    const skills = diffSkills(start.skills, end.skills);
+    if (skills.changes.length) {
+      changes.push(...skills.changes);
+      before.skills = skills.before;
+      after.skills = skills.after;
     }
+    diffLines("project_notes");
+    diffLines("user_notes");
     if (!changes.length) return null;
     const record: LearnedRecord = {
       v: 1,
@@ -839,6 +844,8 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     if (change.undone) return { ok: true, payload: payload() };
     let note: string | undefined;
     if (change.area === "skill") {
+      // The name comes from a file on disk: never let it point outside skills/.
+      if (ctoSkillSlug(change.text) !== change.text) return { ok: false, error: "That change can't be undone here. Edit it in Settings › Memory." };
       const left = record.after?.skills;
       if (left && Object.hasOwn(left, change.text) && (readFileOrEmpty(skillPath(change.text)) || null) !== left[change.text]) {
         // Someone edited it after that turn; putting the old file back would drop their edit.
@@ -853,22 +860,19 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       }
     } else {
       const area = change.area;
-      const content = readLineFile(area);
-      let next: string | null = null;
-      if (change.op === "added") {
-        next = dropLine(content, change.text);
-        if (next == null) note = "It was already gone.";
-      } else if (change.op === "removed") {
-        next = parseNoteLines(content).includes(change.text) ? null : appendLine(content, change.text);
-        if (next == null) note = "It was already back.";
+      const next = revertLineChange(readLineFile(area), change);
+      if (next == null) {
+        note = ALREADY_REVERTED_NOTE[change.op];
       } else {
-        const previous = change.previous ?? "";
-        next = swapLine(content, change.text, previous)
-          ?? (previous && !parseNoteLines(content).includes(previous) ? appendLine(content, previous) : null);
-        if (next == null) note = "The earlier version is already there.";
+        const limit = LINE_AREA_LIMIT[area];
+        if (utf8Bytes(next) > limit.bytes) {
+          return { ok: false, error: `${limit.name} are full (${limit.bytes} bytes). Make room in Settings › Memory, then undo.` };
+        }
+        writeLineFile(area, next);
       }
-      if (next != null) writeLineFile(area, next);
-      if (baseline) baseline[area] = readLineFile(area);
+      // The same edit on the open turn's baseline, so what that turn wrote
+      // meanwhile still shows in its own row.
+      if (baseline) baseline[area] = revertLineChange(baseline[area], change) ?? baseline[area];
     }
     if (baseline) saveBaseline(baseline);
     change.undone = true;
@@ -885,7 +889,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
 
   return {
     readRules,
-    rulesHash: () => sha256(readRules()),
+    rulesHash: () => textHash(readRules()),
     addRule,
     removeRule,
     writeRulesText,
@@ -894,6 +898,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     saveSkill,
     writeSkillText,
     deleteSkill,
+    deleteSkillAsPerson,
     buildContextSections,
     undoneRefusal,
     personWrote,

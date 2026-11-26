@@ -1,8 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
-  CTO_NOTES_CHANGED_ERROR,
   CTO_OPEN_WORK_MAX_DONE,
   CTO_OPEN_WORK_MAX_OPEN,
   CTO_PROJECT_NOTES_MAX_BYTES,
@@ -20,9 +19,16 @@ import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
 import type { CtoStoryRecord } from "./ctoStory";
 import { createCtoLearningService } from "./ctoLearningService";
 import {
+  assertBaseHash,
   CTO_MEMORY_TAG_KEYS,
+  matchLines,
   noteSimilarity,
+  oneNoteLine,
   parseNoteLines,
+  readFileOrEmpty,
+  stripBullet,
+  textHash,
+  utf8Bytes,
   type CtoMemoryTags,
 } from "./ctoNoteText";
 
@@ -125,14 +131,6 @@ export class CtoStoryUnreadableError extends Error {
 
 /* ── Helpers ── */
 
-function readFileOrEmpty(filePath: string): string {
-  try {
-    return fs.readFileSync(filePath, "utf8");
-  } catch {
-    return "";
-  }
-}
-
 function statMtimeIso(filePath: string): string | null {
   try {
     return new Date(fs.statSync(filePath).mtimeMs).toISOString();
@@ -141,14 +139,9 @@ function statMtimeIso(filePath: string): string | null {
   }
 }
 
-function utf8Bytes(text: string): number {
-  return Buffer.byteLength(text, "utf8");
-}
-
 /** One note's text: one line, no bullet, secret-scrubbed, clipped. */
 function normalizeNote(raw: string): string {
-  const single = raw.replace(/\s+/g, " ").trim().replace(/^(?:[-*•]\s+)+/, "").trim();
-  return clipText(redactSecrets(single), NOTE_MAX_CHARS);
+  return oneNoteLine(raw, NOTE_MAX_CHARS);
 }
 
 function renderNotes(lines: readonly string[]): string {
@@ -211,11 +204,6 @@ export type CtoOpenWorkResult =
   | { ok: true; item: CtoOpenWorkItem }
   | { ok: false; error: string };
 
-/** sha256 hex of a notes text: the `baseHash` a notes editor sends back. */
-function notesHash(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
 export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const logger = args.logger ?? null;
   const ctoDir = path.join(args.adeDir, "cto");
@@ -276,10 +264,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       learning.writeRulesText(text, options);
       return;
     }
-    const baseHash = options?.baseHash?.trim().toLowerCase();
-    if (baseHash && notesHash(readNotes(scope)) !== baseHash) {
-      throw new AdeExpectedError(`${CTO_NOTES_CHANGED_ERROR} Reload to see the new version, then save again.`, "user");
-    }
+    assertBaseHash(readNotes(scope), options?.baseHash);
     const lines = parseNoteLines(text).map(normalizeNote).filter((line) => line.length > 0);
     const bytes = utf8Bytes(renderNotes(lines));
     const limit = notesLimit(scope);
@@ -287,13 +272,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     writeNoteLines(scope, lines);
     // The person's (or an account copy's) version: never something the CTO learned.
     learning.personWrote(notesArea(scope));
-  };
-
-  /** Lines that contain `needle` exactly (case-sensitive). An exact line wins over a substring. */
-  const matchLines = (lines: readonly string[], needle: string): number[] => {
-    const exact = lines.findIndex((line) => line === needle);
-    if (exact >= 0) return [exact];
-    return lines.flatMap((line, index) => (line.includes(needle) ? [index] : []));
   };
 
   const remember = (input: {
@@ -307,7 +285,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const note = normalizeNote(input.note);
     if (!note.length) return { ok: false, error: "The note is empty." };
     const lines = readNoteLines(scope);
-    const replaces = input.replaces?.trim() ? input.replaces.trim().replace(/^(?:[-*•]\s+)+/, "") : null;
+    const replaces = input.replaces?.trim() ? stripBullet(input.replaces) : null;
     let next: string[];
     let replaced: string | undefined;
     if (replaces) {
@@ -347,7 +325,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   const forget = (input: { note: string; scope?: CtoNotesScope; personAskedAgain?: boolean }): CtoForgetResult => {
     const scope = input.scope ?? "project";
-    const needle = input.note.trim().replace(/^(?:[-*•]\s+)+/, "");
+    const needle = stripBullet(input.note);
     if (!needle.length) return { ok: false, error: "Say which note to forget." };
     const lines = readNoteLines(scope);
     const matches = matchLines(lines, needle);
@@ -730,8 +708,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       userNotes,
       userNotesBytes: utf8Bytes(userNotes),
       userNotesLimitBytes: CTO_USER_NOTES_MAX_BYTES,
-      memoryHash: notesHash(memory),
-      userNotesHash: notesHash(userNotes),
+      memoryHash: textHash(memory),
+      userNotesHash: textHash(userNotes),
       openWork: readOpenWork(),
       rules: learning.readRules(),
       rulesBytes: utf8Bytes(learning.readRules()),
@@ -833,6 +811,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     saveSkill: learning.saveSkill,
     writeSkillText: learning.writeSkillText,
     deleteSkill: learning.deleteSkill,
+    deleteSkillAsPerson: learning.deleteSkillAsPerson,
     beginLearningTurn: learning.beginTurn,
     finishLearningTurn: learning.finishTurn,
     undoLearned: learning.undo,

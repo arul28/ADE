@@ -1094,7 +1094,8 @@ import {
   selectCrossMachineReturnSuffix,
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
-import { buildCtoReviewPrompt, CTO_REVIEW_REASON, startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { newCtoQuietTurnState, startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { createCtoReviewTurns, ctoLearnedEvent } from "./ctoLearningLoop";
 import {
   CrossMachineHandoffReturnRefusedError,
   createCrossMachineHandoffDestination,
@@ -5576,8 +5577,6 @@ const CTO_NO_HANDOFF_MESSAGE =
 const CTO_LIVE_STATE_SEND_WAIT_MS = 350;
 /** Quick replies one CTO turn may post, however many mid-task messages arrive. */
 const CTO_MID_TASK_REPLY_MAX = 3;
-/** At most one hidden review turn after a correction per CTO thread in this window. */
-const CTO_REVIEW_MIN_INTERVAL_MS = 5 * 60_000;
 const CTO_INTERIM_REPLY_MAX_CHARS = 600;
 
 type ManagedChatSession = {
@@ -23669,50 +23668,35 @@ export function createAgentChatService(args: {
     if (managed.restartAfterTurn) runRestartAfterTurn(managed);
     if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
     // Likewise a reaction target: a later wake turn must not react to a
-    // message an earlier turn read.
-    if (managed.ctoTurn) managed.ctoTurn.reactTarget = null;
+    // message an earlier turn read. And a review message whose turn never
+    // started (a failed dispatch) must not silence the next turn.
+    if (managed.ctoTurn) {
+      managed.ctoTurn.reactTarget = null;
+      managed.ctoTurn.reviewPending = false;
+    }
     if (managed.session.identityKey === "cto") {
       const learned = emitCtoLearnedRow(managed);
       maybeStartCtoReview(managed, learned);
     }
   };
 
-  /** When each CTO thread last got a hidden review turn (in memory: a restart may allow one more). */
-  const ctoReviewLastAtBySession = new Map<string, number>();
+  const ctoReviewTurns = createCtoReviewTurns({
+    logger,
+    readiness: (sessionId) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed || managed.deleted) return "gone";
+      if (managed.session.status !== "idle") return "busy";
+      return runtimeMidTurn(managed) ? "runtime_mid_turn" : "ready";
+    },
+    sendWake: (sessionId, text, metadata) => messageSession({ sessionId, kind: "wake", text, metadata }),
+  });
 
-  /**
-   * The person corrected the CTO this turn and the turn saved no lesson: ADE
-   * asks the CTO, in a hidden turn, to fix the cause (a rule, a skill, a
-   * note). At most one per thread every 5 minutes. Its text is dropped
-   * (`stepCtoQuietTurn`) and its message draws nothing; a lesson it saves
-   * shows as the usual Learned row with Undo.
-   */
+  /** The turn's correction goes to the review scheduler once, whatever it decides. */
   const maybeStartCtoReview = (managed: ManagedChatSession, learnedThisTurn: boolean): void => {
-    const state = managed.ctoTurn;
-    const correction = state?.correction ?? null;
-    if (state) state.correction = null;
-    if (!correction || learnedThisTurn || managed.deleted) return;
-    const sessionId = managed.session.id;
-    const now = Date.now();
-    if (now - (ctoReviewLastAtBySession.get(sessionId) ?? 0) < CTO_REVIEW_MIN_INTERVAL_MS) {
-      logger.info("agent_chat.cto_review_skipped", { sessionId, reason: "rate_limited" });
-      return;
-    }
-    setTimeout(() => {
-      // Only into a quiet thread: when the person already wrote again, their
-      // turn comes first and this review is dropped.
-      if (managed.deleted || managed.session.status !== "idle") return;
-      ctoReviewLastAtBySession.set(sessionId, Date.now());
-      logger.info("agent_chat.cto_review_started", { sessionId });
-      void messageSession({
-        sessionId,
-        kind: "wake",
-        text: buildCtoReviewPrompt(correction),
-        metadata: { hostContinuation: { reason: CTO_REVIEW_REASON } },
-      }).catch((error) => {
-        logger.warn("agent_chat.cto_review_failed", { sessionId, error: getErrorMessage(error) });
-      });
-    }, 0);
+    const correction = managed.ctoTurn?.correction ?? null;
+    if (managed.ctoTurn) managed.ctoTurn.correction = null;
+    if (managed.deleted) return;
+    ctoReviewTurns.maybeStart(managed.session.id, correction, learnedThisTurn);
   };
 
   /**
@@ -23731,12 +23715,7 @@ export function createAgentChatService(args: {
       logger.warn("agent_chat.cto_learned_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
     }
     if (!learned) return false;
-    const event: AgentChatEvent = {
-      type: "cto_learned",
-      learnId: learned.learnId,
-      changes: learned.changes,
-      ...(learned.turnId ? { turnId: learned.turnId } : {}),
-    };
+    const event = ctoLearnedEvent(learned);
     setTimeout(() => {
       if (managed.deleted) return;
       emitChatEvent(managed, event);
@@ -25389,7 +25368,7 @@ export function createAgentChatService(args: {
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
     if (managed.session.identityKey === "cto") {
-      managed.ctoTurn ??= { quiet: null, reactTarget: null };
+      managed.ctoTurn ??= newCtoQuietTurnState();
       if (stepCtoQuietTurn(managed.ctoTurn, decoratedEvent, managed.session.provider)) return;
     }
     if (decoratedEvent.type === "user_message" && isPersonAuthoredUserMessage(decoratedEvent.metadata)) {
@@ -68147,7 +68126,7 @@ export function createAgentChatService(args: {
   const endCtoTurnWithoutText = (managed: ManagedChatSession, turnId: string | null): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed, "interleave");
-    managed.ctoTurn ??= { quiet: null, reactTarget: null };
+    managed.ctoTurn ??= newCtoQuietTurnState();
     // A hidden review turn stays hidden, reasoning too, after its noReply.
     managed.ctoTurn.quiet = { turnId, ...(managed.ctoTurn.quiet?.review ? { review: true as const } : {}) };
   };
@@ -75519,12 +75498,7 @@ export function createAgentChatService(args: {
       logger.warn("agent_chat.cto_learned_undo_redraw_failed", { sessionId, error: getErrorMessage(error) });
     }
     if (managed && !managed.deleted) {
-      emitChatEvent(managed, {
-        type: "cto_learned",
-        learnId: outcome.payload.learnId,
-        changes: outcome.payload.changes,
-        ...(outcome.payload.turnId ? { turnId: outcome.payload.turnId } : {}),
-      });
+      emitChatEvent(managed, ctoLearnedEvent(outcome.payload));
       persistChatState(managed);
     }
     return { undone: true, ...(outcome.note ? { note: outcome.note } : {}) };

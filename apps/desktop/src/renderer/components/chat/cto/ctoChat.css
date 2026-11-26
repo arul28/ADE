@@ -394,7 +394,3 @@ button.ade-cto-working-line:focus-visible {
   color: color-mix(in srgb, var(--color-fg) 40%, transparent);
 }
 
-.ade-cto-learned-note {
-  font-size: calc(var(--chat-font-size, 14px) * 10.5 / 14);
-  color: color-mix(in srgb, var(--color-fg) 50%, transparent);
-}

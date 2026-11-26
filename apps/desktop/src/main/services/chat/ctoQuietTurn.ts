@@ -22,10 +22,14 @@ export type CtoQuietTurnState = {
    * The turn's end takes it: when the turn learned nothing, ADE starts a hidden
    * review turn (`CTO_REVIEW_REASON`).
    */
-  correction?: string | null;
+  correction: string | null;
   /** A review turn's message is in: that turn writes no text, whenever it starts. */
-  reviewPending?: boolean;
+  reviewPending: boolean;
 };
+
+export function newCtoQuietTurnState(): CtoQuietTurnState {
+  return { quiet: null, reactTarget: null, correction: null, reviewPending: false };
+}
 
 /** The host-continuation reason of the hidden review turn after a correction. */
 export const CTO_REVIEW_REASON = "cto_review";
@@ -85,7 +89,7 @@ export function ctoTurnReadsPersonMessage(
 /** A CTO turn starts: a quiet ending never outlives its turn, unless this is the hidden review turn. */
 export function startCtoQuietTurn(state: CtoQuietTurnState): void {
   state.quiet = state.reviewPending ? { turnId: null, review: true } : null;
-  if (state.reviewPending) state.reviewPending = false;
+  state.reviewPending = false;
 }
 
 /**
@@ -96,7 +100,9 @@ export function startCtoQuietTurn(state: CtoQuietTurnState): void {
 export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent, provider: AgentChatProvider): boolean {
   if (event.type === "done") {
     state.reactTarget = null;
-    if (state.reviewPending) state.reviewPending = false;
+    state.reviewPending = false;
+    // A turn the person stopped starts no hidden review.
+    if (event.status === "interrupted") state.correction = null;
     if (state.quiet && (!state.quiet.turnId || event.turnId === state.quiet.turnId)) state.quiet = null;
     return false;
   }
@@ -106,7 +112,7 @@ export function stepCtoQuietTurn(state: CtoQuietTurnState, event: AgentChatEvent
       state.reactTarget = key;
       // The person wrote and the turn read it: what comes next may answer them.
       state.quiet = null;
-      if (state.reviewPending) state.reviewPending = false;
+      state.reviewPending = false;
       const correction = ctoCorrectionExcerpt(event.text);
       if (correction) state.correction = correction;
     } else if (event.metadata?.hostContinuation?.reason === CTO_REVIEW_REASON) {

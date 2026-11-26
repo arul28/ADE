@@ -97,8 +97,11 @@ export type CtoAccountCopyServiceArgs = {
     getIdentity: () => CtoIdentity;
     updateIdentity: (patch: Partial<Omit<CtoIdentity, "version" | "updatedAt">>) => unknown;
   };
-  ctoMemory: Pick<CtoMemoryService, "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText">
-    & Partial<Pick<CtoMemoryService, "readStory" | "writeStory" | "readRules" | "listSkills" | "readSkill" | "writeSkillText" | "deleteSkill">>;
+  ctoMemory: Pick<
+    CtoMemoryService,
+    "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText"
+    | "readRules" | "listSkills" | "readSkill" | "writeSkillText" | "deleteSkillAsPerson"
+  > & Partial<Pick<CtoMemoryService, "readStory" | "writeStory">>;
   /** The CTO thread's tail and routines, read when a copy is written. */
   readSources: () => Promise<CtoAccountCopySources>;
   /** Re-creates routines on this machine's CTO thread, replacing the ones it had. Null: the thread doesn't exist yet. */
@@ -332,15 +335,11 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       projectNotes: args.ctoMemory.readNotes("project"),
       userNotes: args.ctoMemory.readNotes("user"),
       openWork: args.ctoMemory.readOpenWorkText(),
-      ...(args.ctoMemory.readRules ? { rules: args.ctoMemory.readRules() } : {}),
-      ...(args.ctoMemory.listSkills && args.ctoMemory.readSkill
-        ? {
-          skills: args.ctoMemory.listSkills().flatMap((summary) => {
-            const skill = args.ctoMemory.readSkill?.(summary.name);
-            return skill ? [{ name: skill.name, text: skill.text }] : [];
-          }),
-        }
-        : {}),
+      rules: args.ctoMemory.readRules(),
+      skills: args.ctoMemory.listSkills().flatMap((summary) => {
+        const skill = args.ctoMemory.readSkill(summary.name);
+        return skill ? [{ name: skill.name, text: skill.text }] : [];
+      }),
       // Routines a move brought that have no CTO thread to land on yet.
       routines: readJson<{ routines?: CtoAccountCopyRoutine[] }>(carriedRoutinesPath)?.routines ?? sources.routines,
       tail,
@@ -531,10 +530,10 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       // neither, and this machine's stay as they are.
       ["rules", () => { if (copy.rules !== undefined) args.ctoMemory.writeNotes("rules", copy.rules); }],
       ["skills", () => {
-        if (!copy.skills || !args.ctoMemory.writeSkillText || !args.ctoMemory.listSkills || !args.ctoMemory.deleteSkill) return;
+        if (!copy.skills) return;
         const keep = new Set(copy.skills.map((skill) => skill.name));
         for (const local of args.ctoMemory.listSkills()) {
-          if (!keep.has(local.name)) args.ctoMemory.deleteSkill(local.name, { by: "person" });
+          if (!keep.has(local.name)) args.ctoMemory.deleteSkillAsPerson(local.name);
         }
         for (const skill of copy.skills) args.ctoMemory.writeSkillText({ name: skill.name, text: skill.text });
       }],

@@ -1,3 +1,9 @@
+import fs from "node:fs";
+import { createHash } from "node:crypto";
+import { CTO_NOTES_CHANGED_ERROR } from "../../../shared/types/cto";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { clipText, redactSecrets } from "../shared/utils";
+
 /*
  * Plain-text helpers shared by the CTO's notes (`ctoMemoryService`) and its
  * rules and learning journal (`ctoLearningService`): what a note line is, and
@@ -55,4 +61,49 @@ export function parseNoteLines(content: string): string[] {
     .filter((line) => line.length > 0 && !line.startsWith("#"))
     .map((line) => line.replace(/^(?:[-*•]\s+)+/, "").trim())
     .filter((line) => line.length > 0);
+}
+
+/* ── Files ── */
+
+export function readFileOrEmpty(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+export function utf8Bytes(text: string): number {
+  return Buffer.byteLength(text, "utf8");
+}
+
+/** sha256 hex of a file's text: the `baseHash` an editor sends back. */
+export function textHash(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** Refuses a whole-file write when the file changed since the editor read it (`baseHash`). */
+export function assertBaseHash(current: string, baseHash: string | null | undefined): void {
+  const expected = baseHash?.trim().toLowerCase();
+  if (expected && textHash(current) !== expected) {
+    throw new AdeExpectedError(`${CTO_NOTES_CHANGED_ERROR} Reload to see the new version, then save again.`, "user");
+  }
+}
+
+/* ── Lines ── */
+
+export function stripBullet(raw: string): string {
+  return raw.trim().replace(/^(?:[-*•]\s+)+/, "").trim();
+}
+
+/** One line, no bullet, secret-scrubbed, clipped. */
+export function oneNoteLine(raw: string, max: number): string {
+  return clipText(redactSecrets(stripBullet(raw.replace(/\s+/g, " "))), max);
+}
+
+/** Lines whose text is `needle` exactly, else lines that contain it (case-sensitive). */
+export function matchLines(lines: readonly string[], needle: string): number[] {
+  const exact = lines.findIndex((line) => line === needle);
+  if (exact >= 0) return [exact];
+  return lines.flatMap((line, index) => (line.includes(needle) ? [index] : []));
 }

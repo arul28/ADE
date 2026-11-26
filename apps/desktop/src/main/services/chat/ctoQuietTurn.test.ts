@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEvent, AgentChatProvider } from "../../../shared/types/chat";
-import { startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { newCtoQuietTurnState, startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
 
 const said = (text: string, turnId?: string): AgentChatEvent => ({ type: "text", text, ...(turnId ? { turnId } : {}) });
 const done = (turnId: string): AgentChatEvent => ({ type: "done", turnId, status: "completed" });
@@ -10,8 +10,8 @@ const person = (
 ): AgentChatEvent => ({ type: "user_message", text: "hi", messageId, ...extra });
 
 /** Steps every event; returns the text the chat would show and the end state. */
-function run(start: CtoQuietTurnState, events: AgentChatEvent[], provider: AgentChatProvider = "claude") {
-  const state = { ...start };
+function run(start: Partial<CtoQuietTurnState>, events: AgentChatEvent[], provider: AgentChatProvider = "claude") {
+  const state: CtoQuietTurnState = { ...newCtoQuietTurnState(), ...start };
   const shown = events.flatMap((event) => (
     !stepCtoQuietTurn(state, event, provider) && (event.type === "text" || event.type === "reasoning") ? [event.text] : []
   ));
@@ -20,10 +20,18 @@ function run(start: CtoQuietTurnState, events: AgentChatEvent[], provider: Agent
 
 const review = person("m-review", { metadata: { hostContinuation: { reason: "cto_review" } } });
 
-const quietIn = (turnId: string | null): CtoQuietTurnState => ({ quiet: { turnId }, reactTarget: null });
+const quietIn = (turnId: string | null): Partial<CtoQuietTurnState> => ({ quiet: { turnId } });
+
+type Case = {
+  name: string;
+  start: Partial<CtoQuietTurnState>;
+  events: AgentChatEvent[];
+  shown: string[];
+  end: Partial<CtoQuietTurnState>;
+};
 
 describe("stepCtoQuietTurn", () => {
-  it.each([
+  it.each<Case>([
     {
       name: "drops the quiet turn's text, untagged text too, and keeps another turn's",
       start: quietIn("t-1"),
@@ -99,7 +107,7 @@ describe("stepCtoQuietTurn", () => {
   ])("$name", ({ start, events, shown, end }) => {
     const result = run(start, events);
     expect(result.shown).toEqual(shown);
-    expect(result.state).toEqual(end);
+    expect(result.state).toEqual({ ...newCtoQuietTurnState(), ...end });
   });
 
   it.each([
@@ -116,7 +124,7 @@ describe("stepCtoQuietTurn", () => {
   });
 
   it("a review message committed before its turn starts still silences that turn", () => {
-    const state: CtoQuietTurnState = { quiet: null, reactTarget: null };
+    const state = newCtoQuietTurnState();
     stepCtoQuietTurn(state, review, "opencode");
     startCtoQuietTurn(state);
     expect(stepCtoQuietTurn(state, said("Nothing to save.", "t-2"), "opencode")).toBe(true);

@@ -117,7 +117,7 @@ import {
 } from "../chat/imageAttachmentConverter";
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import { isAdeUsageRangePreset, isAdeUsageScope, isCtoNotesFile } from "../../../shared/types";
 import { isProviderLoginAction } from "../../../shared/types/providerLogins";
 import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
@@ -14396,7 +14396,7 @@ export function registerIpc({
   handle(IPC.ctoUpdateNotes, async (_event, arg: CtoUpdateNotesArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    if (arg?.scope !== "project" && arg?.scope !== "user" && arg?.scope !== "rules") throw new Error("updateNotes requires a scope.");
+    if (!arg || !isCtoNotesFile(arg.scope)) throw new Error("updateNotes requires a scope.");
     if (typeof arg.text !== "string") throw new Error("updateNotes requires a string `text` field.");
     ctx.ctoMemoryService.writeNotes(arg.scope, arg.text, {
       baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
@@ -14434,7 +14434,7 @@ export function registerIpc({
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     if (typeof arg?.name !== "string") throw new Error("deleteSkill requires a name.");
-    const result = ctx.ctoMemoryService.deleteSkill(arg.name, { by: "person" });
+    const result = ctx.ctoMemoryService.deleteSkillAsPerson(arg.name);
     if (!result.ok) throw new Error(result.error);
     return ctx.ctoMemoryService.getSnapshot();
   });
