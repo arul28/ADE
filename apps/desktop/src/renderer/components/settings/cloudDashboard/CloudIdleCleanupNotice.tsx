@@ -41,11 +41,16 @@ function idleSubject(entry: CloudIdleCleanupEntry): string {
  * reason opens with "ADE couldn't save this lane's work." and names each lane
  * ("pricing-page: …"); a computer holds one lane, the one the notice names.
  */
-export function idleHeldReason(entry: Pick<CloudIdleCleanupEntry, "laneName"> & { held: { reason: string } }): string {
-  let reason = entry.held.reason.trim();
+function idleHeldReason(laneName: string | null | undefined, held: { reason: string }): string {
+  let reason = held.reason.trim();
   if (reason.startsWith(CLOUD_BACKUP_NOT_SAVED_SENTENCE)) reason = reason.slice(CLOUD_BACKUP_NOT_SAVED_SENTENCE.length).trim();
-  if (entry.laneName && reason.startsWith(`${entry.laneName}: `)) reason = reason.slice(entry.laneName.length + 2);
+  if (laneName && reason.startsWith(`${laneName}: `)) reason = reason.slice(laneName.length + 2);
   return reason;
+}
+
+/** A computer kept after a failed save: why, then what to do and when ADE checks again (Settings and the lane's chat say the same). */
+export function idleHeldDetail(entry: Pick<CloudIdleCleanupEntry, "laneName" | "deletesAt"> & { held: NonNullable<CloudIdleCleanupEntry["held"]> }, now: number): string {
+  return [idleHeldReason(entry.laneName, entry.held), idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)].filter(Boolean).join(" ");
 }
 
 /** What happens before the delete and what is lost, in two short sentences. */
@@ -115,7 +120,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
                 title: `${idleSubject(entry)} wasn't deleted: ADE couldn't save its work`,
-                detail: [idleHeldReason({ laneName: entry.laneName, held: entry.held }), idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)].filter(Boolean).join(" ") + ignoredDetail(entry),
+                detail: `${idleHeldDetail({ ...entry, held: entry.held }, now)}${ignoredDetail(entry)}`,
                 actions: [action],
                 report: false,
               }}

@@ -693,8 +693,10 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
   /* Name, state and the ⋯ column only, so a name and its mark both fit. */
   .adecd-tr { grid-template-columns: minmax(0, 1fr) 104px 28px; }
   .adecd-tr > :nth-child(2), .adecd-tr > :nth-child(4) { display: none; }
-  /* A mark that doesn't fit beside the name goes under it, so neither is cut. */
+  /* The name fills its line beside the icon (16px + 8px gap); a mark goes under it, so the name is never pushed out. */
   .adecd-name { flex-wrap: wrap; row-gap: 3px; padding: 6px 0; }
+  .adecd-name-text { flex: 1 1 calc(100% - 24px); }
+  .adecd-name .kit-tag { display: block; max-width: 100%; overflow: hidden; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
   .adecd-row-actions { padding-left: 16px; }
 }
 

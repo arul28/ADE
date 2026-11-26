@@ -2,9 +2,8 @@ import { useState, type CSSProperties } from "react";
 import { Clock } from "@phosphor-icons/react";
 import { useCloudAccount } from "../../state/cloudAccountStore";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
-import { idleCleanupHeldNext } from "../../../shared/adeCloud";
 import { Banner } from "../ui/notice";
-import { idleHeldReason } from "../settings/cloudDashboard/CloudIdleCleanupNotice";
+import { idleHeldDetail } from "../settings/cloudDashboard/CloudIdleCleanupNotice";
 import { keepLaneComputer } from "./CloudLaneHeaderButton";
 import { cloudQueueSizeLabel } from "./cloudLanesWithoutComputer";
 
@@ -16,7 +15,7 @@ const DAY_MS = 24 * 60 * 60_000;
  * and the size is the one a message after the delete starts its new computer
  * at (`cloudQueueSizeLabel`).
  */
-export function deletingSoonWords(deletesAt: number, now: number, sizeLabel: string): { title: string; detail: string } {
+function deletingSoonWords(deletesAt: number, now: number, sizeLabel: string): { title: string; detail: string } {
   const days = Math.max(1, Math.ceil((deletesAt - now) / DAY_MS));
   return {
     title: `This lane's cloud computer is deleted in ${days} ${days === 1 ? "day" : "days"}`,
@@ -49,8 +48,7 @@ export function CloudLaneDeletingSoonBand({ laneId, style }: { laneId: string | 
   const words = due.held
     ? {
       title: "This lane's computer wasn't deleted: ADE couldn't save its work",
-      // Why, and what to do: the same words as Settings › ADE Cloud's notice.
-      detail: [idleHeldReason({ laneName: due.laneName ?? null, held: due.held }), idleCleanupHeldNext(due.held.retryAt ?? due.deletesAt, now)].filter(Boolean).join(" "),
+      detail: idleHeldDetail({ ...due, held: due.held }, now),
     }
     : deletingSoonWords(due.deletesAt, now, cloudQueueSizeLabel(account));
   return (
