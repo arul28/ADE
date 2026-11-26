@@ -1676,7 +1676,7 @@ What the chat shows:
 - **Delivered.** The `user_message` carries the send's `clientSendId` (the row's `messageId`); the row goes when it arrives. From a host that writes no id, a row goes when a same-text id-less user message arrives after it showed. One arrival removes one row, the oldest. A live-typed message with an id never clears a queued row.
 - **Failed messages** keep the server's sentence until acted on: **Put back** adds the text to the box (after typed words) and drops the row; **Dismiss** drops it (kept in `ade.cloudQueue.dismissedFailed.v1`).
 - **The new computer's setup** (`CloudQueueSendCard.tsx`): waking, setting up, sign-in (code, link or paste field), confirm, running, and failed with **Put back**. It reads `cloud.serverLaunchStatus` on open, on `cloud.onStatusChanged` and on focus.
-- **Deleting soon** (`cloudLane/CloudLaneDeletingSoonBand.tsx`): the server's sentence and **Keep it**.
+- **Deleting soon** (`cloudLane/CloudLaneDeletingSoonBand.tsx`): when the computer goes, that its work not on GitHub is saved in ADE Cloud first (ADE never pushes), the size the next message starts at, and **Keep it**. A computer kept after a failed save says why and what to do, in the words of Settings › ADE Cloud's notice (`idleHeldDetail`).
 - **Refusals** show the server's sentence. A blocked account can still read and export saved chats.
 
 ### Launch defaults follow the account
