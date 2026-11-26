@@ -31147,11 +31147,16 @@ async function runServe(
         };
       }
     : null;
-  // Slow remote work held awake (`cloudRemoteWorkHold.ts`). A grow asked from
-  // inside one held request does not take that request for other work.
-  // `holdCloudWork` is read at call time: it is made further down.
+  // Remote work another machine sent (`cloudRemoteWorkHold.ts`). A restart
+  // reads it in memory from its first moment, not from its hold file, which
+  // only comes after a wait and only for the sleep; and never the request
+  // the grow is asked from. `holdCloudWork` is read at call time: it is made
+  // further down.
   const remoteWorkHold = createCloudRemoteWorkHold({ hold: () => holdCloudWork });
-  const notOwnRemoteHold = (reason: string): boolean => reason !== REMOTE_WORK_HOLD_REASON || remoteWorkHold.otherHeld();
+  const restartWouldCut = (reasons: string[]): string[] => [
+    ...reasons.filter((reason) => reason !== REMOTE_WORK_HOLD_REASON),
+    ...(remoteWorkHold.otherRunning() ? [REMOTE_WORK_HOLD_REASON] : []),
+  ];
   // A lane launch's setup filled the disk: grow it now, while nothing else
   // runs, and the launch's setup runs again after the restart. The launch
   // itself still reads as `lane_setup` while it waits, so that one setup
@@ -31160,7 +31165,7 @@ async function runServe(
   const laneSetupOnlyRuns = async (): Promise<boolean> => {
     if (!readCloudBusy) return false;
     const busy = await readCloudBusy();
-    const others = busy.reasons.filter((reason) => reason !== "lane_setup" && notOwnRemoteHold(reason));
+    const others = restartWouldCut(busy.reasons).filter((reason) => reason !== "lane_setup");
     if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
       headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
         reasons: others,
@@ -31205,7 +31210,7 @@ async function runServe(
     if (!readCloudBusy) return false;
     const busy = await readCloudBusy();
     // What continues after the restart (chats, ADE's agent CLIs), and the `ade` command that asked for the grow.
-    const cut = busy.reasons.filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command" && notOwnRemoteHold(reason));
+    const cut = restartWouldCut(busy.reasons).filter((reason) => reason !== "chat" && reason !== "agent_cli" && reason !== "disk_grow_command");
     if (cut.length || busy.waitingOnPerson) {
       headlessProjectLogger.info("cloud.disk_grow_to_fit_busy", { reasons: cut, waitingOnPerson: Boolean(busy.waitingOnPerson) });
       return false;
@@ -33263,7 +33268,7 @@ async function runServe(
         const refusal = await cloudRest?.noteRemoteWork();
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
-      // Work still running after a short wait is held awake until it answers (a push with a slow hook).
+      // Counted for a grow's restart now; held awake once it outlasts a short wait (a push with a slow hook).
       return remoteWork ? await remoteWorkHold.run(() => handler(request)) : await handler(request);
     }, handler);
   };

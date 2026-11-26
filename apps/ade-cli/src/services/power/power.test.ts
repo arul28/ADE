@@ -1084,34 +1084,44 @@ describe("cloud remote work hold", () => {
     }
   });
 
-  it("lets a grow asked inside a held request skip that request's hold, never another's", async () => {
+  it("counts remote work for a grow's restart from its first moment, except the request the grow is asked from", async () => {
     const remote = createCloudRemoteWorkHold({ hold: () => async (_reason, _ttlMs, run) => await run(), holdAfterMs: 10_000 });
     vi.useFakeTimers();
-    const androidStart = deferred<void>();
-    const start = remote.run(async () => {
-      await androidStart.promise;
-      return remote.otherHeld();
-    });
-    await vi.advanceTimersByTimeAsync(11_000);
-    // An agent's own grow command runs in no request: the held start is other work.
-    expect(remote.otherHeld()).toBe(true);
-    androidStart.resolve();
-    await expect(start).resolves.toBe(false);
-    expect(remote.otherHeld()).toBe(false);
-
+    // A push that just started, long before its hold file: an agent's grow (in no request) must wait.
     const push = deferred<void>();
     const pushed = remote.run(() => push.promise);
-    const laterStart = deferred<void>();
-    const secondStart = remote.run(async () => {
-      await laterStart.promise;
-      return remote.otherHeld();
-    });
-    await vi.advanceTimersByTimeAsync(11_000);
-    laterStart.resolve();
-    await expect(secondStart).resolves.toBe(true);
+    expect(remote.otherRunning()).toBe(true);
     push.resolve();
     await pushed;
-    expect(remote.otherHeld()).toBe(false);
+    expect(remote.otherRunning()).toBe(false);
+
+    // An Android start that asks for a grow, before and after its wait: never blocked by itself.
+    const androidStart = deferred<void>();
+    const seen: boolean[] = [];
+    const start = remote.run(async () => {
+      seen.push(remote.otherRunning());
+      await androidStart.promise;
+      seen.push(remote.otherRunning());
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    androidStart.resolve();
+    await start;
+    expect(seen).toEqual([false, false]);
+
+    // A setup a remote launch started in the background asks for a grow while a push runs:
+    // the launch that started it already answered, so the push counts.
+    const secondPush = deferred<void>();
+    const setupAsks = deferred<void>();
+    let setupCheck: Promise<boolean> | null = null;
+    await remote.run(async () => {
+      setupCheck = setupAsks.promise.then(() => remote.otherRunning());
+    });
+    const secondPushed = remote.run(() => secondPush.promise);
+    setupAsks.resolve();
+    await expect(setupCheck).resolves.toBe(true);
+    secondPush.resolve();
+    await secondPushed;
+    expect(remote.otherRunning()).toBe(false);
   });
 });
 

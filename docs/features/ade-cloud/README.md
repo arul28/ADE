@@ -1957,8 +1957,9 @@ One busy list, `decideCloudBusy` in
   use when it comes. Work still running after 10 seconds (a push with a slow
   hook, a big copy) is also held as `remote_action` until it answers
   (`cloudRemoteWorkHold.ts`), so a key typed in a terminal writes no hold. A
-  disk grow asked from inside one held request (an Android first start)
-  skips that request's own hold and waits for every other held request.
+  disk grow's restart waits for every remote request that runs, from its
+  first moment, except the one the grow is asked from (an Android first
+  start).
 - **Idle:** a shell at its prompt, an agent CLI at its prompt or asking
   (`waiting-input`), a chat that waits on approval, and a command or turn with
   no output and no touch for 60 minutes. A shell's prompt state comes from
