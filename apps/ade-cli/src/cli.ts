@@ -33216,33 +33216,50 @@ async function runServe(
   // Work another machine does here (a command, a chat or CLI send, a file
   // copied in) keeps a cloud machine awake (cloudKeepAwake). Reads, lists
   // and status polls do not: an idle window polling one must not bill it all month.
-  // "work" is held awake until it answers (a push with a slow hook, a big
-  // copy); a "touch" (watching, typing) only counts as use when it comes.
-  const remoteWorkKind = (params: unknown): "work" | "touch" | null => {
-    if (!isRecord(params) || !isRecord(params.arguments)) return null;
-    if (params.name === "work_copy_file") return "work";
-    if (params.name !== "run_ade_action") return null;
+  const isRemoteWork = (params: unknown): boolean => {
+    if (!isRecord(params) || !isRecord(params.arguments)) return false;
+    if (params.name === "work_copy_file") return true;
+    if (params.name !== "run_ade_action") return false;
     const domain = asString(params.arguments.domain);
     const action = asString(params.arguments.action);
     // A person watching a tool (Linux Desktop, a preview): a read, so it never
     // wakes a sleeping computer, but it does keep an awake one awake.
-    if (domain === "work_tools" && action === "noteWatching") return "touch";
+    if (domain === "work_tools" && action === "noteWatching") return true;
     // Someone typing warms the chat's model: a draft's first keystroke
     // (`prewarmDraft`) or a keystroke in an open chat (`warmupModel` with
     // `sdkOnly`). Background writes (BACKGROUND_WRITES), so typing never wakes
     // a sleeping computer, but an awake one stays awake while the person is
     // about to send. Any other warmup (Cursor's, when its tile is only viewed)
     // is not use.
-    if (domain === "chat" && action === "prewarmDraft") return "touch";
-    if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true ? "touch" : null;
-    return domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action) ? "work" : null;
+    if (domain === "chat" && action === "prewarmDraft") return true;
+    if (domain === "chat" && action === "warmupModel") return isRecord(params.arguments.args) && params.arguments.args.sdkOnly === true;
+    return Boolean(domain && action && adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action));
+  };
+  // A push with a slow hook or a big copy outlasts the use noted when it came:
+  // the idle step would ask the server to sleep this computer about 3 minutes
+  // later, in its middle. Work still running after this wait is held awake
+  // until it answers; a fast one (a key typed in a terminal) writes no hold.
+  const REMOTE_WORK_HOLD_AFTER_MS = 10_000;
+  const holdIfSlow = async <T>(work: Promise<T>): Promise<T> => {
+    if (!holdCloudWork) return await work;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slow = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), REMOTE_WORK_HOLD_AFTER_MS);
+      timer.unref?.();
+    });
+    try {
+      const stillRunning = await Promise.race([work.then(() => false, () => false), slow]);
+      return stillRunning ? await holdCloudWork("remote_action", 30 * 60_000, () => work) : await work;
+    } finally {
+      clearTimeout(timer);
+    }
   };
   const withRemoteUseNoted = <H extends JsonRpcHandler>(peerDeviceId: string | null, handler: H): H => {
     if (!peerDeviceId || !cloudKeepAwake) return handler;
     const keepAwake = cloudKeepAwake;
     return Object.assign(async (request: Parameters<JsonRpcHandler>[0]) => {
-      const kind = request.method === "ade/actions/call" ? remoteWorkKind(request.params) : null;
-      if (kind) {
+      const remoteWork = request.method === "ade/actions/call" && isRemoteWork(request.params);
+      if (remoteWork) {
         // The server deletes this computer next (`cloudDeleteFreeze.ts`): work that came now would be lost with it.
         const frozen = cloudDeleteFreezeRefusal();
         if (frozen) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, frozen);
@@ -33259,11 +33276,7 @@ async function runServe(
         const refusal = await cloudRest?.noteRemoteWork();
         if (refusal) throw new JsonRpcError(JsonRpcErrorCode.policyDenied, refusal);
       }
-      // Use is noted when the work comes; the idle step would otherwise ask
-      // the server to sleep this computer about 3 minutes later, in the middle
-      // of a push with a slow hook or a big file copy.
-      if (kind === "work" && holdCloudWork) return await holdCloudWork("remote_action", 30 * 60_000, () => handler(request));
-      return await handler(request);
+      return remoteWork ? await holdIfSlow(handler(request)) : await handler(request);
     }, handler);
   };
   const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
