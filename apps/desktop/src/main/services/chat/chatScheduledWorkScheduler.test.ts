@@ -1553,6 +1553,35 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
+  it("keeps a cron running when it is rewritten as scheduled during its delivery", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const cron = wakeup({ id: "cron-plain", kind: "cron", cron: "* * * * *", durable: true });
+    let state: ChatScheduledWorkState | null = storedState([cron]);
+    let scheduler: ReturnType<typeof createChatScheduledWorkScheduler> | null = null;
+    const fire = createFireMock();
+    fire.mockImplementationOnce(async () => {
+      await scheduler?.upsert({ ...cron, status: "scheduled", fireAt: START + 120_000, prompt: "Rewritten prompt" });
+      return undefined;
+    });
+    scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(fire).toHaveBeenCalledTimes(2);
+    expect(fire.mock.calls[1]?.[0]).toEqual(expect.objectContaining({ prompt: "Rewritten prompt" }));
+    scheduler.dispose();
+  });
+
   it("refuses Run now on a chat that is taking a timer wake", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);

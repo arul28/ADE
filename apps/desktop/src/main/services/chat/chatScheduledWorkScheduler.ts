@@ -533,7 +533,11 @@ export function createChatScheduledWorkScheduler(
    * occurrence the old delivery used, otherwise its deadline stays.
    */
   const settleReplacement = async (current: ChatScheduledWorkRecord, moveDue: boolean): Promise<void> => {
-    if (current.status !== "fired") return;
+    // Its upsert could not arm it while the old copy was in flight; arm it now.
+    if (current.status !== "fired") {
+      arm(current);
+      return;
+    }
     current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
     if (moveDue && current.kind === "cron" && current.fireAt != null && current.fireAt <= now()) {
       current.fireAt = nextCronOccurrence(current, now());
@@ -728,8 +732,8 @@ export function createChatScheduledWorkScheduler(
         // Replaced: nothing went out, so the occurrence goes back and the new row runs on its own terms.
         inFlight.delete(scheduleId);
         options.releaseFire?.(cloneSchedule(schedule));
-        if (afterPersist?.status === "fired") {
-          undoUndeliveredOn(afterPersist);
+        if (afterPersist) {
+          if (afterPersist.status === "fired") undoUndeliveredOn(afterPersist);
           await settleReplacement(afterPersist, false);
         }
         return;
