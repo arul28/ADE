@@ -2265,7 +2265,9 @@ when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
 move there; a Retry that fixes a failure counts the failure, then the
 completion. `cloud_lane_freed`: Keep the lane and free its computer, `completed` or
 `failed`. `cloud_lane_deleted`: a person deleted a lane and its computer:
-`completed` (its saved chats went too), `kept` (they ticked "Keep its chats"),
+`completed` (its saved chats went too), `kept` (they ticked "Keep its chats"
+in the desktop's Delete dialog; an agent's delete card has no such choice, so
+`cloudLaneVerbs.ts` never sends it),
 `partial` (ADE couldn't delete all its chats or saved work) or `failed`; it
 tells whether deleting the chats is the right default. Both come from the
 desktop's buttons (surface `desktop`) and from `ade cloud lanes delete` and

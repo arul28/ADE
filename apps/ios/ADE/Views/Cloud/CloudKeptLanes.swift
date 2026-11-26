@@ -309,9 +309,8 @@ enum KeptCloudLane {
     return launch.startError == nil && launch.record?.failed != true
   }
 
-  static func deleteLabel(chatCount: Int) -> String {
-    chatCount == 0 ? "Delete lane" : "Delete lane and chats"
-  }
+  /// One label in every case, as on the desktop: the confirm says what goes.
+  static let deleteLabel = "Delete lane"
 
   static func deleteMessage(chatCount: Int) -> String {
     let what = chatCount == 0 ? "any saved chats it has" : chatCount == 1 ? "its chat" : "its \(chatCount) chats"
@@ -550,7 +549,7 @@ struct CloudKeptLaneRow: View {
   var body: some View {
     let problem = cloudKeptLaneRestartProblem(lane)
     let savedChats = chats
-    let deleteLabel = KeptCloudLane.deleteLabel(chatCount: savedChats.count)
+    let deleteLabel = KeptCloudLane.deleteLabel
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 10) {
         VStack(alignment: .leading, spacing: 3) {
@@ -742,7 +741,7 @@ struct CloudKeptLaneActionsCard: View {
     let holds = KeptCloudLane.launchHolds(launch)
     let problem = cloudKeptLaneRestartProblem(lane)
     let chats = KeptCloudLane.savedChats(lane, sync: syncService)
-    let deleteLabel = KeptCloudLane.deleteLabel(chatCount: chats.count)
+    let deleteLabel = KeptCloudLane.deleteLabel
     VStack(alignment: .leading, spacing: 12) {
       if chats.isEmpty {
         newComputerButton(problem: problem, holds: holds)
