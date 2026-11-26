@@ -2258,6 +2258,10 @@ directory wakes it (routes in `apps/account-directory/README.md`):
     a disk grow) leaves the project closed, the new brain sends "no timer",
     the server drops the wake, and the check runs at the next message,
     hours late.
+  - The keep-awake's busy read waits for those opens, for at most a minute
+    (`cloud.project_open_at_start_slow`). Its first check can sleep a
+    computer that woke only for an update, so that check must already send
+    the timer.
 - **Event wakes.** The computer lists the topics that wake it
   (`PUT /cloud/instances/:id/event-wakes`): a Linear organization, a Linear
   agent account, or the account's custom webhooks. The webhook relay reports

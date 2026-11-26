@@ -31080,8 +31080,29 @@ async function runServe(
   // (`cloudActivityReporter.ts`): its agents from each busy read, its idle
   // clock from the keep-awake's checks; made once the account client exists below.
   let cloudActivityReporter: import("./services/account/cloudActivityReporter").CloudActivityReporter | null = null;
+  // The projects this brain opens at start (`cloud.project_open_at_start`)
+  // hold its chats' timers. The busy read waits for them, once and for at most
+  // a minute. The keep-awake's first check runs before they open, and after a
+  // wake only for an update that check may sleep the computer: read too
+  // early, it would tell the server "no timer" first.
+  const cloudProjectsOpenWaitMs = 60_000;
+  let markCloudProjectsOpened: () => void = () => {};
+  const cloudProjectsOpened = !embedded && cloudInstanceId
+    ? new Promise<void>((resolve) => {
+        const cap = setTimeout(() => {
+          headlessProjectLogger.warn("cloud.project_open_at_start_slow", { waitedMs: cloudProjectsOpenWaitMs });
+          resolve();
+        }, cloudProjectsOpenWaitMs);
+        cap.unref?.();
+        markCloudProjectsOpened = () => {
+          clearTimeout(cap);
+          resolve();
+        };
+      })
+    : null;
   const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
     ? async () => {
+        if (cloudProjectsOpened) await cloudProjectsOpened;
         const sources = { projectRegistry, scopeRegistry };
         const [facts, nextWakeAt] = await Promise.all([
           readMachineBusyFacts({ ...sources, personalChatScope }),
@@ -32799,10 +32820,10 @@ async function runServe(
   // (`readMachineNextScheduledWakeAt`), only while it is open. After a
   // restart (an update at idle, a disk grow) nothing else opened it before
   // the computer slept: the new brain told the server it had no timer, and a
-  // check due in 20 minutes ran hours later, at the next message. A fresh
-  // brain has three minutes before it may sleep, and opening a project takes
-  // seconds. A lane launch's setup that waited through a grow's restart
-  // (`roomMark`) goes on the same way, with nobody watching.
+  // check due in 20 minutes ran hours later, at the next message. The busy
+  // read waits for these opens (`cloudProjectsOpened`), so the first check
+  // sends the timer. A lane launch's setup that waited through a grow's
+  // restart (`roomMark`) goes on the same way, with nobody watching.
   if (!embedded && cloudInstanceId) {
     void (async () => {
       for (const project of projectRegistry.list()) {
@@ -32815,7 +32836,7 @@ async function runServe(
       }
     })().catch((error: unknown) => {
       headlessProjectLogger.warn("cloud.project_open_at_start_scan_failed", { error: error instanceof Error ? error.message : String(error) });
-    });
+    }).finally(() => markCloudProjectsOpened());
   }
 
   // A server launch (C6): ADE's server made this computer for a caller with
