@@ -343,7 +343,7 @@ export function createLinearIssueSearch(args: {
   const countCache = new Map<string, { value: CtoLinearIssueCount | null; at: number }>();
   const countInFlight = new Map<string, Promise<CtoLinearIssueCount | null>>();
 
-  const countIssues = async (params: IssueTrackerIssueCountQuery = {}): Promise<CtoCountLinearIssuesResult> => {
+  const countIssues = async (params: IssueTrackerIssueCountQuery = { queries: {} }): Promise<CtoCountLinearIssuesResult> => {
     const cap = Math.min(MAX_COUNT_CAP, Math.max(1, Math.floor(params.cap ?? DEFAULT_COUNT_CAP)));
     const entries = Object.entries(isRecord(params.queries) ? params.queries : {}).slice(0, MAX_COUNT_KEYS);
     const counts: CtoCountLinearIssuesResult["counts"] = {};
