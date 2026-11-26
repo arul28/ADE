@@ -76,6 +76,22 @@
   letter-spacing: 0;
   background: color-mix(in srgb, var(--color-fg) 8%, transparent);
 }
+/* Show / Hide on a section of computers that are not connected. */
+.ade-cx-section-toggle {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 550;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+}
+.ade-cx-section-toggle:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
 .ade-cx-list {
   border-radius: 12px;
   border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);

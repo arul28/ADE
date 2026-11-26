@@ -9,6 +9,7 @@ import { formatProofDuration, proofIdleCutLabel } from "../../../../shared/proof
 import { createDemoEngineSet, type DemoEngineSet } from "../../demoVideo/demoEngines";
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../../demoVideo/demoRecordingGuard";
 import { DemoRecordingUnusableError, demoLengths, produceDemoVideo } from "../../demoVideo/demoRenderService";
+import { isStuckMediaProcessError } from "../../demoVideo/demoChildStop";
 import { demoRecordingKey, demoTrackRegistry } from "../../demoVideo/demoTrackRegistry";
 import { demoTypingPace } from "../../demoVideo/demoPacing";
 import type { Logger } from "../../logging/logger";
@@ -814,6 +815,9 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       const track = demoTrackRegistry.end(demoKey, { durationSeconds: wallMs / 1000, atMs: stoppedAtMs });
       let filedPath = entry.record.path;
       let demo: DemoArtifactMetadata | null = null;
+      // The recording's drive stopped answering mid-render: no synchronous
+      // call may touch it again, or this whole process freezes with it.
+      let driveStuck = false;
       if (fs.existsSync(entry.rawPath)) {
         try {
           const produced = await produceDemoVideo({
@@ -833,12 +837,13 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
             return dropUnusable({ ...entry.record, endedAt: new Date().toISOString(), stopReason: options.reason }, entry.rawPath, error);
           }
           filedPath = entry.rawPath;
+          driveStuck = isStuckMediaProcessError(error);
         }
       }
 
       // The demo's size when one was made; else the helper's own count, and
       // the file on disk only when the helper gave none.
-      if (bytes === null) {
+      if (bytes === null && !driveStuck) {
         try {
           bytes = fs.statSync(filedPath).size;
         } catch {
@@ -860,6 +865,13 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       // because nothing on screen said the file existed. Filing it here means
       // the drawer is the one place recordings live, and the row below the
       // viewport is a receipt rather than a call to action.
+      if (driveStuck) {
+        // Filing copies the movie and writes its sidecar on the same drive,
+        // which would freeze this process. The raw recording stays in place.
+        warn("apple.recording.drive_stuck_not_filed", { laneId });
+        // lastError keeps every later filing (Pin to proof) off that drive.
+        return { ...finished, lastError: finished.lastError ?? "The recording's drive stopped answering, so the video was not filed." };
+      }
       const filed = options.fileProof === false ? finished : fileAsProof(finished);
       writeSidecar(filed);
       return filed;
@@ -1106,6 +1118,14 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           return dropped;
         }
         record = { ...record, path: moviePathFromHelper };
+        if (isStuckMediaProcessError(error)) {
+          // The drive stopped answering: filing writes to it and would freeze
+          // this process. The raw recording stays where it is.
+          warn("apple.recording.drive_stuck_not_filed", { laneId: record.laneId });
+          const stuck = { ...record, lastError: record.lastError ?? "The recording's drive stopped answering, so the video was not filed." };
+          notify(stuck.laneId, "stopped", stuck);
+          return stuck;
+        }
       }
     }
     const filed = fileAsProof(record);

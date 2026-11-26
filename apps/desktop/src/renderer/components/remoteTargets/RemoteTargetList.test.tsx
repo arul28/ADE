@@ -412,6 +412,9 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
+    // A failure the person did not cause by pressing Connect opens from ···.
+    await screen.findByRole("button", { name: "Actions for Mac Studio" });
+    fireEvent.click(menuAction("Why offline?"));
     expect(
       await screen.findByText(
         'SSH authentication failed for user(s) "ade" using key /Users/ade/.ssh/id_ed25519.',
@@ -527,6 +530,8 @@ describe("RemoteTargetList", () => {
     installAdeMock();
 
     render(<RemoteTargetList />);
+    // Two computers that are not connected fold to one line until opened.
+    fireEvent.click(await screen.findByRole("button", { name: "Show not connected computers" }));
     await screen.findByText("Alpha");
     const enabledConnects = () =>
       screen
@@ -1275,6 +1280,8 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
+    await screen.findByRole("button", { name: "Actions for Mac Studio" });
+    fireEvent.click(menuAction("Why offline?"));
     expect(
       await screen.findByText("The remote machine is out of disk space."),
     ).toBeTruthy();
@@ -1351,6 +1358,8 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
+    await screen.findByRole("button", { name: "Actions for Mac Studio" });
+    fireEvent.click(menuAction("Why offline?"));
     fireEvent.click(await screen.findByText("Details"));
     expect(screen.getByText("studio.local:8787 · 250ms · Failed — timed out")).toBeTruthy();
     expect(screen.getByText("relay.example · 81ms · Failed — no answer")).toBeTruthy();
@@ -1553,6 +1562,8 @@ describe("RemoteTargetList", () => {
   it("offers one explicit Pair again when a machine rejects the saved pairing", async () => {
     renderAccountPairingFailure("pairing");
 
+    await screen.findByRole("button", { name: "Actions for Cloud Studio" });
+    fireEvent.click(menuAction("Test"));
     const pairAgain = await screen.findByRole("button", { name: "Pair again" });
     // The headline is one plain sentence; the addresses live behind a
     // collapsed Details, never in the line the user reads first.
@@ -1575,6 +1586,8 @@ describe("RemoteTargetList", () => {
   it("does not offer Pair again when the machine was simply unreachable", async () => {
     renderAccountPairingFailure("unreachable");
 
+    await screen.findByRole("button", { name: "Actions for Cloud Studio" });
+    fireEvent.click(menuAction("Test"));
     await screen.findByText("Details");
     // Re-pairing cannot wake a sleeping Mac, so the action is not offered.
     expect(screen.queryByRole("button", { name: "Pair again" })).toBeNull();
@@ -1966,7 +1979,7 @@ describe("RemoteTargetList", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "How to connect" }));
+    fireEvent.click(menuAction("How to connect"));
     expect(onToggleDetail).toHaveBeenCalledWith("account:studio");
 
     rerender(

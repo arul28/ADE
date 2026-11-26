@@ -63,11 +63,11 @@ import {
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { ffmpegContactSheet } from "./ffmpegContactSheet";
+import { isStuckMediaProcessError, stopMediaChild } from "./demoChildStop";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm"]);
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
 const RENDER_MIN_TIMEOUT_MS = 60_000;
-const KILL_GRACE_MS = 3_000;
 const STDERR_TAIL_LINES = 20;
 /** Frames of one click ring's animation. */
 const RING_FRAMES = 10;
@@ -272,6 +272,8 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
       const tools = await deps.resolveTools();
       const startedAt = Date.now();
       const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-ffmpeg-demo-"));
+      // Stuck on a drive that stopped answering: no cleanup may wait on it.
+      let stuck = false;
       const partial = path.join(path.dirname(request.output), `.${path.basename(request.output)}.${process.pid}.partial.mp4`);
       try {
         // drawtext's `text_align` (each wrapped line centered) arrived after ffmpeg 6.
@@ -330,10 +332,13 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
         });
         return { bytes: size, durationSeconds: plan.durationSeconds, frames } satisfies DemoRenderResult;
       } catch (error) {
-        await fs.promises.rm(partial, { force: true }).catch(() => undefined);
+        // A process stuck on the output's drive: removing beside it would wait on it too.
+        stuck = isStuckMediaProcessError(error);
+        if (!stuck) await fs.promises.rm(partial, { force: true }).catch(() => undefined);
         throw error;
       } finally {
-        await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+        // The temp folder can share that drive.
+        if (!stuck) await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
       }
     },
 
@@ -906,11 +911,16 @@ export function runFfmpeg(args: {
     const stop = (reason: Error): void => {
       if (stopReason || settled) return;
       stopReason = reason;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => {
-        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-      }, KILL_GRACE_MS);
-      killTimer.unref?.();
+      stopMediaChild({
+        child,
+        reason,
+        label,
+        stuckEvent: "demo_video.ffmpeg_unkillable",
+        logger,
+        isSettled: () => settled,
+        settle: finish,
+        onTimer: (timer) => { killTimer = timer; },
+      });
     };
     const onAbort = (): void => stop(abortError(label));
     signal?.addEventListener("abort", onAbort, { once: true });

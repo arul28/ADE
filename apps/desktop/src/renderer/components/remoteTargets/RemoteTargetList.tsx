@@ -77,6 +77,7 @@ import {
 } from "./remoteTargetListStyles";
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
+import { machineSectionFold, type MachineFoldContext } from "./machineSectionFold";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -103,11 +104,22 @@ type RemoteTargetListProps = {
   thisComputerCode?: ReactNode;
   /** Opens Settings › Integrations › the provider (a refused key is fixed there). */
   onOpenCloudSettings?: (() => void) | null;
+  /** A machine a caller asked to show (an account machine key or a saved target id): its section opens. */
+  focusMachineKey?: string | null;
   /**
    * This computer is offline (`deriveThisComputerOffline`): the rows stop
    * blaming each machine and the list says why once.
    */
   thisComputerOffline?: boolean;
+  /**
+   * The person's Show/Hide per folded section, owned by the panel so a
+   * switch to another Connections tab and back keeps it. Without it the list
+   * keeps its own, for as long as it is mounted.
+   */
+  sectionOverrides?: {
+    value: Partial<Record<MachineSection, boolean>>;
+    set: (update: (current: Partial<Record<MachineSection, boolean>>) => Partial<Record<MachineSection, boolean>>) => void;
+  } | null;
 };
 
 
@@ -196,6 +208,13 @@ const SECTION_LABELS: Record<MachineSection, string> = {
 
 const NO_RELAYS: readonly string[] = [];
 
+function removeKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
+}
+
 export function RemoteTargetList({
   onConnected,
   onDisconnectRequested,
@@ -209,7 +228,9 @@ export function RemoteTargetList({
   accountEmail = null,
   thisComputerCode = null,
   onOpenCloudSettings = null,
+  focusMachineKey = null,
   thisComputerOffline = false,
+  sectionOverrides = null,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -280,17 +301,49 @@ export function RemoteTargetList({
   const accountConnectionToastTimers = useRef<
     Map<string, number>
   >(new Map());
+  // Saved machines the person pressed Connect, Retry or Reconnect on in this
+  // window, until it connects or they dismiss the failure. Only these rows
+  // show a failure as a card; the rest say it in their one state line.
+  const [userAttemptIds, setUserAttemptIds] = useState<ReadonlySet<string>>(() => new Set());
+  const markUserAttempt = useCallback((targetId: string) => {
+    setUserAttemptIds((current) => (current.has(targetId) ? current : new Set(current).add(targetId)));
+  }, []);
+  const clearUserAttempt = useCallback((targetId: string) => {
+    setUserAttemptIds((current) => {
+      if (!current.has(targetId)) return current;
+      const next = new Set(current);
+      next.delete(targetId);
+      return next;
+    });
+  }, []);
+  // A person's open/close of a folded section wins over the automatic choice
+  // for as long as this list is open.
+  const [ownSectionOpenOverride, setOwnSectionOpenOverride] = useState<Partial<Record<MachineSection, boolean>>>({});
+  const sectionOpenOverride = sectionOverrides?.value ?? ownSectionOpenOverride;
+  const setSectionOpenOverride = sectionOverrides?.set ?? setOwnSectionOpenOverride;
+  // Account rows with a rename form open; their section stays open meanwhile.
+  const [renamingMachineKeys, setRenamingMachineKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const renamingChangeHandlers = useRef(new Map<string, (renaming: boolean) => void>());
+  const onRenamingChangeFor = useCallback((machineKey: string) => {
+    let handler = renamingChangeHandlers.current.get(machineKey);
+    if (!handler) {
+      handler = (renaming: boolean) => setRenamingMachineKeys((current) => {
+        if (current.has(machineKey) === renaming) return current;
+        const next = new Set(current);
+        if (renaming) next.add(machineKey);
+        else next.delete(machineKey);
+        return next;
+      });
+      renamingChangeHandlers.current.set(machineKey, handler);
+    }
+    return handler;
+  }, []);
 
   const clearAccountConnectionToast = useCallback((machineKey: string) => {
     const timer = accountConnectionToastTimers.current.get(machineKey);
     if (timer != null) window.clearTimeout(timer);
     accountConnectionToastTimers.current.delete(machineKey);
-    setAccountConnectionToasts((current) => {
-      if (!(machineKey in current)) return current;
-      const next = { ...current };
-      delete next[machineKey];
-      return next;
-    });
+    setAccountConnectionToasts((current) => removeKey(current, machineKey));
   }, []);
 
   const showAccountConnectionToast = useCallback(
@@ -304,12 +357,7 @@ export function RemoteTargetList({
       }));
       const timer = window.setTimeout(() => {
         accountConnectionToastTimers.current.delete(machineKey);
-        setAccountConnectionToasts((current) => {
-          if (!(machineKey in current)) return current;
-          const next = { ...current };
-          delete next[machineKey];
-          return next;
-        });
+        setAccountConnectionToasts((current) => removeKey(current, machineKey));
       }, ACCOUNT_CONNECTION_TOAST_MS);
       accountConnectionToastTimers.current.set(machineKey, timer);
     },
@@ -327,12 +375,7 @@ export function RemoteTargetList({
   );
 
   const clearAccountRowStage = useCallback((machineKey: string) => {
-    setAccountRowStages((current) => {
-      if (!(machineKey in current)) return current;
-      const next = { ...current };
-      delete next[machineKey];
-      return next;
-    });
+    setAccountRowStages((current) => removeKey(current, machineKey));
   }, []);
 
   // Never surface THIS Mac in its own account list. Match on the stable
@@ -420,6 +463,14 @@ export function RemoteTargetList({
       unavailable: assigned.unavailable.filter((row) => !restarting(row)),
     };
   }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey, relayBaseUrls]);
+
+  // A machine that came online answers the attempt: nothing is left to show.
+  useEffect(() => {
+    if (userAttemptIds.size === 0) return;
+    for (const targetId of userAttemptIds) {
+      if (statusById.get(targetId)?.state === "connected") clearUserAttempt(targetId);
+    }
+  }, [clearUserAttempt, statusById, userAttemptIds]);
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -618,6 +669,9 @@ export function RemoteTargetList({
     async (targetId: string, options: ConnectTargetOptions = {}) => {
       const attempt = beginConnectAttempt(targetId);
       const stillWanted = () => isConnectAttemptCurrent(targetId, attempt);
+      // Every caller is a person's press (a row, a form, a pairing, a trusted
+      // host key): its failure shows as a card and keeps the section open.
+      markUserAttempt(targetId);
       setSelectedId(targetId);
       try {
         if (!options.skipHostKeyTrustCheck) {
@@ -691,6 +745,8 @@ export function RemoteTargetList({
         setHostKeyTrust(null);
         setError(null);
         setTestingId(null);
+        clearUserAttempt(targetId);
+        clearUserAttempt(result.target.id);
         onConnected?.(result);
         return result;
       } catch (err) {
@@ -718,8 +774,10 @@ export function RemoteTargetList({
     [
       beginConnectAttempt,
       blockingHostKeyTrust,
+      clearUserAttempt,
       endConnectAttempt,
       isConnectAttemptCurrent,
+      markUserAttempt,
       nextLocalConnectionSnapshotUpdatedAt,
       onConnected,
       targets,
@@ -863,12 +921,7 @@ export function RemoteTargetList({
       // A cancelled pairing still running in main would race a second one.
       if (isPairingInFlight(rowKey)) return;
       clearAccountConnectionToast(machineKey);
-      setAccountRowErrors((current) => {
-        if (!(machineKey in current)) return current;
-        const next = { ...current };
-        delete next[machineKey];
-        return next;
-      });
+      setAccountRowErrors((current) => removeKey(current, machineKey));
       clearAccountRowStage(machineKey);
       const attempt = beginConnectAttempt(rowKey);
       const stillWanted = () => isConnectAttemptCurrent(rowKey, attempt);
@@ -1180,6 +1233,27 @@ export function RemoteTargetList({
     [visibleAccountMachines],
   );
 
+  // Read by the saved rows (a failure shows as a card) and by the section fold.
+  const foldContext: MachineFoldContext = {
+    busyById,
+    accountRowErrors,
+    accountRowStages,
+    connectedIds,
+    checkingIds: machineUpdates.checkingIds,
+    updatingIds: machineUpdates.updatingIds,
+    testingId,
+    formTargetId: formPrefill?.targetId ?? null,
+    hostKeyTargetId: hostKeyTrust?.targetId ?? null,
+    renamingMachineKeys,
+    focusMachineKey,
+    accountMachineForTarget,
+    savedRowUserAttempted: (target) => {
+      const machineKey = target.pairedMachine?.machineKey ?? null;
+      return userAttemptIds.has(target.id)
+        || (machineKey != null && accountRowErrors[machineKey] != null);
+    },
+  };
+
   const accountToastByTargetId = useMemo(() => {
     const labels = new Map<string, string>();
     for (const toast of Object.values(accountConnectionToasts)) {
@@ -1263,6 +1337,12 @@ export function RemoteTargetList({
           saving={saving}
           formPrefill={formPrefill}
           testOpen={testingId === row.target.id}
+          userAttempted={foldContext.savedRowUserAttempted(row.target)}
+          onDismissError={() => {
+            clearUserAttempt(row.target.id);
+            if (pairedMachineKey) setAccountRowErrors((current) => removeKey(current, pairedMachineKey));
+            if (selectedId === row.target.id) setError(null);
+          }}
           error={
             (row.target.pairedMachine?.machineKey
               ? accountRowErrors[
@@ -1305,15 +1385,9 @@ export function RemoteTargetList({
           }
           trustingHostKey={trustingHostKey}
           onConnect={(targetId) => {
+            markUserAttempt(targetId);
             const machineKey = row.target.pairedMachine?.machineKey;
-            if (machineKey) {
-              setAccountRowErrors((current) => {
-                if (!(machineKey in current)) return current;
-                const next = { ...current };
-                delete next[machineKey];
-                return next;
-              });
-            }
+            if (machineKey) setAccountRowErrors((current) => removeKey(current, machineKey));
             void connectTarget(targetId);
           }}
           onDisconnect={(targetId) => void disconnectTarget(targetId)}
@@ -1360,6 +1434,8 @@ export function RemoteTargetList({
           }
           connected={isMachineConnected(row.machine, connectedIds)}
           error={accountRowErrors[row.machine.machineKey] ?? null}
+          onDismissError={() => setAccountRowErrors((current) => removeKey(current, row.machine.machineKey))}
+          onRenamingChange={onRenamingChangeFor(row.machine.machineKey)}
           errorInfo={
             row.matchedTargetId
               ? statusById.get(row.matchedTargetId)?.lastErrorInfo ?? null
@@ -1376,14 +1452,7 @@ export function RemoteTargetList({
                     row.machine.machineKey,
                   );
                   if (!machine) return;
-                  setAccountRowErrors((current) => {
-                    if (!(row.machine.machineKey in current)) {
-                      return current;
-                    }
-                    const next = { ...current };
-                    delete next[row.machine.machineKey];
-                    return next;
-                  });
+                  setAccountRowErrors((current) => removeKey(current, row.machine.machineKey));
                   openNearbyPairing(machine);
                 }
               : null
@@ -1419,6 +1488,8 @@ export function RemoteTargetList({
   function renderSection(section: MachineSection) {
     const rows = listedSections[section];
     if (rows.length === 0) return null;
+    const { foldable, open } = machineSectionFold(section, rows, sectionOpenOverride[section], foldContext);
+    const listId = `machine-section-${section}`;
     // Connected machines behind the newest ADE this computer knows on their track.
     const behindMachines = section === "connected"
       ? machinesBehindOnTheirTrack(
@@ -1452,6 +1523,18 @@ export function RemoteTargetList({
         <div className="ade-cx-section-head">
           {SECTION_LABELS[section]}
           <span className="ade-cx-count">{rows.length}</span>
+          {foldable ? (
+            <button
+              type="button"
+              className="ade-cx-section-toggle"
+              aria-expanded={open}
+              aria-controls={listId}
+              aria-label={`${open ? "Hide" : "Show"} ${SECTION_LABELS[section].toLowerCase()} computers`}
+              onClick={() => setSectionOpenOverride((current) => ({ ...current, [section]: !open }))}
+            >
+              {open ? "Hide" : "Show"}
+            </button>
+          ) : null}
         </div>
         {thisComputerOffline && section === "available" ? (
           <Banner
@@ -1464,9 +1547,11 @@ export function RemoteTargetList({
             }}
           />
         ) : null}
-        <div className="ade-cx-list">
-        {rows.map((row) => renderRow(row, section))}
-        </div>
+        {open ? (
+          <div id={listId} className="ade-cx-list">
+          {rows.map((row) => renderRow(row, section))}
+          </div>
+        ) : null}
       </div>
     );
   }

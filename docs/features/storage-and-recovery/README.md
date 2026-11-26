@@ -626,15 +626,23 @@ running:
   or more logs `brain.sync_fs_call_slow`.
 - **The project-root monitor** (`projectRootAccessMonitor.ts`) lists one
   project folder per such drive every 5 s with an async call (a pool thread,
-  never the loop). A listing over 3 s marks the drive's project folders as not
-  answering (`main/services/state/unansweringRoots.ts`). Sync `fs` calls under
-  a marked folder then fail with `storage_read_failed` (`existsSync` answers
+  never the loop). A listing over 3 s marks the drive's project folders, and
+  the drive itself, as not answering (`main/services/state/unansweringRoots.ts`):
+  a drive that stops answering stops for every folder on it, including
+  projects not open yet that the registry reads at startup. A drive that holds
+  the home folder or `ADE_HOME`, or the system drive, is never marked as a
+  whole (`canMarkDrive`). Sync `fs` calls under a marked folder then fail
+  with `storage_read_failed` (`existsSync` answers
   "exists", so cleanup never acts on a waiting folder), as do the native
   SQLite openers. The brain contains that error from an unguarded timer. A
   refused listing is `denied` and engages nothing. A finished listing clears
   it all.
 - **After a wedge** in such a call, the restarted brain reads `blockedFsCall`,
-  marks the drive's folders first, and probes the file, then the folder.
+  marks the drive (its folders and the drive itself) first, and probes the
+  file, then the folder. Marking only the project it froze on let the next
+  brain freeze on another project of the same drive: one Mac restarted every
+  2 minutes for seven hours, alternating between two projects on a hung
+  external drive. `resolveActiveSyncHost` skips projects on a marked drive.
   `assertProjectRootReadable` timing out marks the folder too.
 
 Every connected device is told where to look (see

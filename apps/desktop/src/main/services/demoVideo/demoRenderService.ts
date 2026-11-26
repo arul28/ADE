@@ -41,6 +41,7 @@ import { linuxHostTags } from "../linuxDesktop/linuxScreenTelemetry";
 import { demoMetadataFor, planDemo, planPlainDemo, refitPlanForSize } from "../../../shared/demoVideo/demoPlanner";
 import type { Logger } from "../logging/logger";
 import { type DemoMp4Inspection, inspectDemoMp4 } from "./demoMp4Source";
+import { isStuckMediaProcessError } from "./demoChildStop";
 
 /** The recording holds nothing to show. The caller must not file it as proof. */
 export class DemoRecordingUnusableError extends Error {}
@@ -197,7 +198,9 @@ export async function produceDemoVideo(args: {
     try {
       analysis = await engine.analyze(rawPath, { signal: args.signal });
     } catch (error) {
-      if (args.signal?.aborted) throw error;
+      // A process stuck on the recording's drive: every other engine, and the
+      // raw-file fallback, would read the same drive and hang the same way.
+      if (args.signal?.aborted || isStuckMediaProcessError(error)) throw error;
       lastReason = `the recording could not be read (${errorText(error)})`;
       failedStage = "analyze";
       logger.warn("demo_video.analyze_failed", { engine: engine.id, error: errorText(error) });
@@ -242,7 +245,10 @@ export async function produceDemoVideo(args: {
         });
         return { path: outputPath, bytes, engine: engine.id, metadata };
       } catch (error) {
-        if (args.signal?.aborted) throw error;
+        // Stuck on the drive: no synchronous removal, no plain retry, no other
+        // engine and no raw fallback there (a synchronous call would freeze
+        // this process with it).
+        if (args.signal?.aborted || isStuckMediaProcessError(error)) throw error;
         lastError = error;
         removeQuietly(outputPath);
         logger.warn("demo_video.render_failed", { engine: engine.id, plain: attempt.plain, error: errorText(error) });
