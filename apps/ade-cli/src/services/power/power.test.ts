@@ -45,6 +45,7 @@ import { cloudCatalogOf } from "../../../../desktop/src/shared/adeCloud";
 import { prepareCloudComputerToStop } from "./cloudPrepareStop";
 import { CLOUD_COMPUTER_REMOVING_SENTENCE, CLOUD_COMPUTER_SLEEPING_SENTENCE, CLOUD_DELETE_FREEZE_MS, CLOUD_SLEEP_FREEZE_AFTER_PREPARE_MS, cloudDeleteFreezeRefusal, liftCloudDeleteFreeze } from "./cloudDeleteFreeze";
 import { cloudChatStoppedForRest } from "../cloudChats/cloudChatUploader";
+import { pushCloudComputerWork } from "./cloudPushWork";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -1430,5 +1431,66 @@ describe("cloud prepare-stop before a delete", () => {
     await expect(prepareCloudComputerToStop({ runtimes: [broken], timeoutMs: 40_000, forDelete: true })).rejects.toThrow("chat service gone");
 
     expect(cloudDeleteFreezeRefusal()).toBeNull();
+  });
+});
+
+describe("cloud push-work tally reasons", () => {
+  // The free and the delete on the server name the cause from `reason`; a lane
+  // with no reason gets "open the lane". Only GitHub's own refusal or silence
+  // earns one.
+  const lanes = [
+    { id: "main", name: "Primary", branchRef: "main", laneType: "primary" },
+    { id: "lane-1", name: "Fix login", branchRef: "ade/fix-login", laneType: "worktree" },
+  ];
+  const project = (fail: { fetch?: Error; commit?: Error; push?: Error }) => async () =>
+    ({
+      laneService: {
+        invalidateListCache() {},
+        list: async () => lanes,
+        readUnsavedWork: async (id: string) => ({ dirty: id === "lane-1", unpushedCommits: 0 }),
+      },
+      gitService: {
+        fetch: async () => { if (fail.fetch) throw fail.fetch; },
+        stageAll: async () => {},
+        commit: async () => { if (fail.commit) throw fail.commit; },
+        push: async () => { if (fail.push) throw fail.push; },
+      },
+    }) as never;
+
+  it.each<[string, { fetch?: Error; commit?: Error; push?: Error }, string[]]>([
+    [
+      "GitHub says the repository is gone at the fetch",
+      { fetch: new Error("remote: Repository not found.\nfatal: repository 'https://x-access-token:t@github.com/o/r.git/' not found") },
+      ["main:failed:github_refused", "lane-1:failed:github_refused"],
+    ],
+    [
+      "GitHub isn't reachable at the fetch",
+      { fetch: new Error("fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com") },
+      ["main:failed:github_unreachable", "lane-1:failed:github_unreachable"],
+    ],
+    [
+      "another remote refuses the fetch",
+      { fetch: new Error("fatal: unable to access 'https://gitlab.com/o/r.git/': The requested URL returned error: 403") },
+      ["main:failed:-", "lane-1:failed:-"],
+    ],
+    [
+      "GitHub refuses the push",
+      { push: new Error("remote: Permission to o/r.git denied to bot.\nfatal: unable to access 'https://github.com/o/r.git/': The requested URL returned error: 403") },
+      ["main:clean:-", "lane-1:failed:github_refused"],
+    ],
+    [
+      "the commit hook times out on the computer",
+      { commit: Object.assign(new Error("git commit timed out"), { name: "GitTimeoutError" }) },
+      ["main:clean:-", "lane-1:failed:-"],
+    ],
+    [
+      "GitHub rejects a push that is behind",
+      { push: new Error(" ! [rejected] ade/fix-login -> ade/fix-login (fetch first)") },
+      ["main:clean:-", "lane-1:failed:-"],
+    ],
+  ])("%s", async (_label, fail, expected) => {
+    const tally = await pushCloudComputerWork({ projects: [project(fail)] });
+
+    expect(tally.lanes.map((lane) => `${lane.laneId}:${lane.state}:${lane.reason ?? "-"}`)).toEqual(expected);
   });
 });
