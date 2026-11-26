@@ -9,9 +9,9 @@ import { Banner } from "../../ui/notice";
 import { formatBytes, relativeWhen } from "../../../lib/format";
 import { freeSpaceLevel } from "../storage/storageView";
 import { FreeSpaceMeter } from "../health/healthCharts";
-import { healthAgentPrompt, healthVerdict, issuesForPage, reportIgnoredForPage } from "../health/healthModel";
+import { healthAgentPrompt, healthVerdict, issuesForPage } from "../health/healthModel";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
-import { useProjectIgnore } from "../health/ProjectIgnore";
+import { IgnoredList, useProjectIgnore } from "../health/ProjectIgnore";
 import { useHealthData } from "../health/useHealthData";
 import "../health/health.css";
 import "./location.css";
@@ -148,7 +148,7 @@ export function LocationPage() {
             issues={issues}
             fixingId={fix.fixingId}
             onFix={(issue) => void fix.runFix(issue)}
-            ignore={pin ? { choicesFor: ignore.choicesFor, entries: ignore.entriesFor(reportIgnoredForPage(report, "location")), busy: ignore.busy } : undefined}
+            ignore={pin ? ignore.forPage(report, "location") : undefined}
           />
         ) : report ? (
           <>
@@ -156,14 +156,7 @@ export function LocationPage() {
               <CheckCircle size={14} weight="fill" />
               <span>No problems found in this project.</span>
             </div>
-            {pin ? (
-              <ProjectIssueList
-                issues={[]}
-                fixingId={null}
-                onFix={() => undefined}
-                ignore={{ choicesFor: ignore.choicesFor, entries: ignore.entriesFor(reportIgnoredForPage(report, "location")), busy: ignore.busy }}
-              />
-            ) : null}
+            {pin ? <IgnoredList entries={ignore.entriesFor(report, "location")} busy={ignore.busy} /> : null}
           </>
         ) : null}
 

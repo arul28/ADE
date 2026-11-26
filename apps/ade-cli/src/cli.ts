@@ -4926,12 +4926,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade health --text                              Issues, each with its fix id
     $ ade health --refresh --text                    Check again instead of the 30 s cache
     $ ade --role cto health --fix update-paths --text   Run one fix and show the new report
-    $ ade health --ignore dependencies --folder packages/demo --text   Stop checking one folder
-    $ ade health --ignore stale-lanes --text           Hide one line until it changes
-    $ ade health --unignore folder:dependencies:packages/demo --text   Check it again
 
-  Ignoring is the person's choice, as in Settings: agents cannot ignore or
-  unignore, so a warning is never hidden from the person behind their back.
+  The report lists what the person ignored. Ignoring and showing again are the
+  person's, in Settings (General, or Project → Location): agents cannot hide a
+  warning from the person, and the runtime cannot tell this terminal from an
+  agent's.
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -21793,24 +21792,11 @@ function buildHealthPlan(args: string[]): CliPlan {
       exitCodeFromResult: (result) => (isRecord(result) && result.ok === true ? 0 : 1),
     };
   }
-  const ignoreIssue = readValue(args, ["--ignore"]);
-  if (ignoreIssue) {
-    const folder = readValue(args, ["--folder", "--path"]);
-    return {
-      kind: "execute",
-      label: "project health ignore",
-      formatter: "project-health",
-      steps: [actionStep("result", "project_health", "ignore", { issueId: ignoreIssue, ...(folder ? { path: folder } : {}) })],
-    };
-  }
-  const unignoreKey = readValue(args, ["--unignore"]);
-  if (unignoreKey) {
-    return {
-      kind: "execute",
-      label: "project health unignore",
-      formatter: "project-health",
-      steps: [actionStep("result", "project_health", "unignore", { key: unignoreKey })],
-    };
+  if (args.includes("--ignore") || args.includes("--unignore")) {
+    // Person-only at the runtime, which cannot tell this terminal from an agent's.
+    throw new CliUsageError(
+      "Ignore or show a check again in ADE: Settings → General (Needs attention) or Project → Location. The command line lists what is ignored.",
+    );
   }
   const forceRefresh = readFlag(args, ["--refresh", "--force-refresh"]);
   return {
@@ -21837,14 +21823,12 @@ function formatProjectHealth(value: unknown): string {
     for (const item of (issue.items ?? []).slice(0, 12)) lines.push(`  - ${item}`);
     if ((issue.items?.length ?? 0) > 12) lines.push(`  - … ${issue.items!.length - 12} more`);
     if (issue.fix) lines.push(`  fix: ${issue.fix.id} (${issue.fix.label}): ${issue.fix.description}`);
-    const folders = (issue as { ignorablePaths?: string[] }).ignorablePaths ?? [];
-    if (folders.length) lines.push(`  ignore a folder: ade health --ignore ${issue.id} --folder <${folders.join(" | ")}>`);
   }
-  const ignored = (report as { ignored?: Array<{ key: string; kind: string; title: string }> }).ignored ?? [];
+  const ignored = (report as { ignored?: Array<{ kind: string; title: string }> }).ignored ?? [];
   if (ignored.length) {
-    lines.push("", `Ignored (${ignored.length}):`);
+    lines.push("", `Ignored by the person (${ignored.length}; Show again in Settings):`);
     for (const entry of ignored) {
-      lines.push(`  - ${entry.kind === "folder" ? `${entry.title}: not checked` : `${entry.title} (hidden until it changes)`}  [unignore: ${entry.key}]`);
+      lines.push(`  - ${entry.kind === "folder" ? `${entry.title}: not checked` : `${entry.title} (hidden until it changes)`}`);
     }
   }
   return lines.join("\n");

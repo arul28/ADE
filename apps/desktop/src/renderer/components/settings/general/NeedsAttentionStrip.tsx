@@ -6,7 +6,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { AgentLaunchSetup } from "../../shared/AgentLaunchSetup";
 import { useProjectFix } from "../health/ProjectIssues";
-import { IgnoreButton, IgnoredList, useProjectIgnore, type IgnoreChoice, type IgnoredEntry } from "../health/ProjectIgnore";
+import { hideUntilChangedChoice, IgnoreButton, IgnoredList, useProjectIgnore, type IgnoreChoice, type IgnoredEntry } from "../health/ProjectIgnore";
 import type { SettingsTabId } from "../settingsManifest";
 // Read only while rendering, so the import cycle with the tab table is safe.
 import { STANDALONE_TAB_IDS } from "../settingsTabContent";
@@ -140,21 +140,15 @@ export function NeedsAttentionStrip({
     // A project row is ignored in the project, so only with a copy online to save it in.
     if (item.projectIssue) return attention.projectPin ? projectIgnore.choicesFor(item.projectIssue) : [];
     if (!canHideAttention(item)) return [];
-    return [{
-      id: "hide",
-      label: "Hide until it changes",
-      hint: "It comes back if anything about it changes",
-      kind: "hide",
-      run: () => {
-        attention.hide(item);
-        showToast({
-          id: "settings-attention-hide",
-          tone: "success",
-          title: "Hidden until it changes",
-          actions: [{ label: "Undo", onClick: () => attention.unhide(item.id) }],
-        });
-      },
-    }];
+    return [hideUntilChangedChoice(() => {
+      attention.hide(item);
+      showToast({
+        id: "settings-attention-hide",
+        tone: "success",
+        title: "Hidden until it changes",
+        actions: [{ label: "Undo", onClick: () => attention.unhide(item.id) }],
+      });
+    })];
   };
   const notes = items.filter((item) => item.severity === "note");
   const worst = items.some((item) => item.severity === "problem")

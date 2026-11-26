@@ -22,7 +22,7 @@ Most checks matter after a project moves (see
 | `apps/desktop/src/preload/preload.ts` | `window.ade.projectHealth.{getReport,fix,ignore,unignore}`, routed with the Settings machine pin. |
 | `apps/desktop/src/main/services/adeActions/actionPolicy.ts` | Restricts `project_health.fix` to the CTO role, and `ignore` / `unignore` to the person (`ADE_ACTION_USER_ONLY`), at the action bridge. |
 | `apps/desktop/src/renderer/components/settings/health/ProjectIgnore.tsx` | The eye-slash Ignore button and menu, the folded "N ignored items" list with Show again, and `useProjectIgnore` (the calls and their toasts). Used by General, Location and Lanes. |
-| `apps/ade-cli/src/cli.ts` | `ade health [--refresh] [--fix <id>] [--ignore <check> [--folder <path>]] [--unignore <key>]`. |
+| `apps/ade-cli/src/cli.ts` | `ade health [--refresh] [--fix <id>]`; the report lists what the person ignored. `--ignore` / `--unignore` point to Settings: the runtime cannot tell a terminal from an agent. |
 
 ## Checks
 
@@ -48,8 +48,7 @@ Most checks matter after a project moves (see
 
 ## Ignoring a check
 
-A person can stop seeing a line in two ways (the eye-slash on the row, or
-`ade health --ignore`):
+A person can stop seeing a line in two ways, with the eye-slash on the row:
 
 - **Ignore a folder.** A line that names folders lists them in
   `ignorablePaths` (today only `dependencies`, for a folder of the main
@@ -57,11 +56,13 @@ A person can stop seeing a line in two ways (the eye-slash on the row, or
   The check then skips that folder entirely, so Install leaves it alone and
   "the rest of the project has its packages" stays true. It lasts until the
   person shows it again.
-- **Hide until it changes.** Any line but a problem. The report keeps a
-  fingerprint of the line (id, title, items); the line is hidden while it reads
-  the same, and the entry is dropped once it changes, so something new is never
-  hidden. A line that is absent this time keeps its entry (its check may only
-  have failed).
+- **Hide until it changes.** Any line but a problem or a check that couldn't
+  run (`*-failed`). The client sends the line as the person saw it, and the
+  brain refuses when it reads differently now. The stored fingerprint (id,
+  title, items) hides the line while it reads the same; once it changes it
+  shows again, so something new is never hidden. Reading the report never
+  writes: the next ignore drops stale entries, and a line that is absent keeps
+  its entry (its check may only have failed).
 
 Both live in the project database (`kv` row `project_health.ignored`, folders
 relative to the project, at most 200 entries). `kv` syncs, so every copy and

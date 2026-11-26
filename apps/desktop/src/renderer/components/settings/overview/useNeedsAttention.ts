@@ -65,6 +65,12 @@ export type AttentionItem = {
   fix?: { label: string; run: () => Promise<void>; confirm?: string };
   /** The project check behind the row, when it is one. */
   projectIssue?: ProjectHealthIssue;
+  /**
+   * What "it changed" means for hiding, when not the row's words: a row whose
+   * words carry a live number (free space) would otherwise come back with
+   * every tick of it.
+   */
+  hideFingerprint?: string;
 };
 
 export type OverviewSources = {
@@ -99,8 +105,8 @@ const HIDDEN_STORAGE_KEY = "ade.settings.attention.hidden.v1";
 export type HiddenAttention = { id: string; fingerprint: string; title: string; where: string };
 
 /** What "it changed" means for a row: its words and the lines under it. */
-export function attentionFingerprint(item: Pick<AttentionItem, "title" | "detail" | "items">): string {
-  return [item.title, item.detail ?? "", ...(item.items ?? [])].join("\n");
+export function attentionFingerprint(item: Pick<AttentionItem, "title" | "detail" | "items" | "hideFingerprint">): string {
+  return item.hideFingerprint ?? [item.title, item.detail ?? "", ...(item.items ?? [])].join("\n");
 }
 
 /**
@@ -109,7 +115,7 @@ export function attentionFingerprint(item: Pick<AttentionItem, "title" | "detail
  * ignored in the project.
  */
 export function canHideAttention(item: AttentionItem): boolean {
-  return !item.projectIssue && !item.id.startsWith("project-") && item.severity !== "problem" && item.id !== "overview-read-failed";
+  return !item.projectIssue && item.severity !== "problem" && item.id !== "overview-read-failed";
 }
 
 function readHidden(): HiddenAttention[] {
@@ -269,6 +275,8 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
     detail: `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB free.${urgent ? " ADE is pausing heavy work." : ""}`,
     where: THIS_MACHINE_NAME,
     route: settingsRouteFor("storage.usage"),
+    // Hidden while the disk stays in this state, however the free space moves.
+    hideFingerprint: `disk-pressure:${pressure.state}`,
   }];
 }
 

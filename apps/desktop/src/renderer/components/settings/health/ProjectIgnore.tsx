@@ -2,6 +2,8 @@ import React from "react";
 import { CaretRight, EyeSlash, FolderSimpleDashed } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import type { ProjectHealthIgnore, ProjectHealthIssue, ProjectHealthReport } from "../../../../shared/types/projectHealth";
+import { isProjectHealthReadFailure, projectHealthIgnoreKey } from "../../../../shared/types/projectHealth";
+import { projectIssuePage, type ProjectIssuePage } from "./healthModel";
 import { pluralCount } from "../../../../shared/formatting";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { showToast } from "../../app/toast/toastStore";
@@ -46,6 +48,18 @@ export type IgnoredEntry = {
 
 const IGNORE_TOAST_ID = "settings-project-ignore";
 
+/** "Hide until it changes", the one choice every hideable row offers, wherever it is stored. */
+export function hideUntilChangedChoice(run: () => void): IgnoreChoice {
+  return { id: "hide", label: "Hide until it changes", hint: "It comes back if anything about it changes", kind: "hide", run };
+}
+
+/** Ignore for a list of checks: the menu for each line and the list of what was ignored. */
+export type ProjectIssueIgnore = {
+  choicesFor: (issue: ProjectHealthIssue) => IgnoreChoice[];
+  entries: readonly IgnoredEntry[];
+  busy: boolean;
+};
+
 /** The ignore and show-again calls for one project copy, each with its toast. */
 export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (report: ProjectHealthReport) => void) {
   const [busy, setBusy] = React.useState(false);
@@ -66,9 +80,13 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
     if (!pin) return;
     setBusy(true);
     try {
-      const report = await window.ade.projectHealth.ignore({ issueId: issue.id, ...(folder ? { path: folder } : {}) }, pin);
+      const report = await window.ade.projectHealth.ignore({
+        issueId: issue.id,
+        // A folder is ignored by name; a hidden line must still read as it did on screen.
+        ...(folder ? { path: folder } : { seen: { title: issue.title, items: issue.items ?? [] } }),
+      }, pin);
       onReport(report);
-      const key = folder ? `folder:${issue.id}:${folder}` : `issue:${issue.id}`;
+      const key = projectHealthIgnoreKey(issue.id, folder);
       showToast({
         id: IGNORE_TOAST_ID,
         tone: "success",
@@ -85,7 +103,8 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
 
   /**
    * The menu for one project line: a choice per folder it names, then "hide
-   * until it changes". A problem has no "hide": it stays in view until fixed.
+   * until it changes". A problem, or a check that couldn't run, has no
+   * "hide": it stays in view until it is fixed or runs.
    */
   const choicesFor = React.useCallback((issue: ProjectHealthIssue): IgnoreChoice[] => [
     ...(issue.ignorablePaths ?? []).map((folder): IgnoreChoice => ({
@@ -95,26 +114,29 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
       kind: "folder",
       run: () => void ignore(issue, folder),
     })),
-    ...(issue.severity === "problem" ? [] : [{
-      id: "hide",
-      label: "Hide until it changes",
-      hint: "It comes back if anything about it changes",
-      kind: "hide" as const,
-      run: () => void ignore(issue, null),
-    }]),
+    ...(issue.severity === "problem" || isProjectHealthReadFailure(issue.id) ? [] : [hideUntilChangedChoice(() => void ignore(issue, null))]),
   ], [ignore]);
 
-  /** The project's ignores as list entries. */
-  const entriesFor = React.useCallback((report: ProjectHealthReport | null): IgnoredEntry[] => (report?.ignored ?? []).map((entry: ProjectHealthIgnore) => ({
-    key: entry.key,
-    title: entry.title,
-    note: entry.kind === "folder" ? "Not checked for packages" : "Hidden until it changes",
-    kind: entry.kind === "folder" ? "folder" : "hide",
-    where: "Project",
-    showAgain: () => void unignore(entry.key),
-  })), [unignore]);
+  /** The project's ignores as list entries; `page` keeps only the ones a page's checks own. */
+  const entriesFor = React.useCallback((report: ProjectHealthReport | null, page?: ProjectIssuePage): IgnoredEntry[] => (report?.ignored ?? [])
+    .filter((entry) => !page || projectIssuePage({ id: entry.issueId }) === page)
+    .map((entry: ProjectHealthIgnore) => ({
+      key: entry.key,
+      title: entry.title,
+      note: entry.kind === "folder" ? "Not checked for packages" : "Hidden until it changes",
+      kind: entry.kind === "folder" ? "folder" : "hide",
+      where: "Project",
+      showAgain: () => void unignore(entry.key),
+    })), [unignore]);
 
-  return { busy, ignore, unignore, choicesFor, entriesFor };
+  /** Everything one page of checks passes to its list. */
+  const forPage = React.useCallback((report: ProjectHealthReport | null, page: ProjectIssuePage): ProjectIssueIgnore => ({
+    choicesFor,
+    entries: entriesFor(report, page),
+    busy,
+  }), [busy, choicesFor, entriesFor]);
+
+  return { busy, ignore, unignore, choicesFor, entriesFor, forPage };
 }
 
 /**

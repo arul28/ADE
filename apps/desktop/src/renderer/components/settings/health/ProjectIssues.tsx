@@ -5,14 +5,7 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { confirmDialog } from "../../ui/dialog";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { issueDotState } from "./healthModel";
-import { IgnoreButton, IgnoredList, type IgnoreChoice, type IgnoredEntry } from "./ProjectIgnore";
-
-/** Ignore for a list of checks: the menu for each line and the list of what was ignored. */
-export type ProjectIssueIgnore = {
-  choicesFor: (issue: ProjectHealthIssue) => IgnoreChoice[];
-  entries: readonly IgnoredEntry[];
-  busy: boolean;
-};
+import { IgnoreButton, IgnoredList, type IgnoreChoice, type ProjectIssueIgnore } from "./ProjectIgnore";
 
 const FIX_TOAST_ID = "settings-project-fix";
 
@@ -136,7 +129,7 @@ export function ProjectIssueList({
   onFix: (issue: ProjectHealthIssue) => void;
   ignore?: ProjectIssueIgnore;
 }) {
-  if (issues.length === 0) return ignore?.entries.length ? <IgnoredList entries={ignore.entries} busy={ignore.busy} /> : null;
+  if (issues.length === 0) return null;
   // Problems first, then warnings, then notes.
   const order = { problem: 0, warning: 1, info: 2 } as const;
   const sorted = [...issues].sort((left, right) => order[left.severity] - order[right.severity]);

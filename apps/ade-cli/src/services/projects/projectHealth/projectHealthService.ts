@@ -16,6 +16,7 @@ import type {
   ProjectLaneHealth,
   ProjectLaneStaleReason,
 } from "../../../../../desktop/src/shared/types/projectHealth";
+import { isProjectHealthReadFailure, projectHealthIgnoreKey } from "../../../../../desktop/src/shared/types/projectHealth";
 import { formatBytes } from "../../../../../desktop/src/shared/formatting";
 import { staleLaneDays } from "../../../../../desktop/src/shared/laneCleanup";
 import { isChatToolType } from "../../../../../desktop/src/shared/sessionSpawnNesting";
@@ -181,12 +182,14 @@ export function normalizeIgnoredFolder(value: unknown): string | null {
   return parts.join("/");
 }
 
-function parseIgnored(raw: string | null | undefined): ProjectHealthIgnore[] {
+function parseIgnored(raw: string | null | undefined, logger: Pick<Logger, "warn">): ProjectHealthIgnore[] {
   if (!raw) return [];
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
+  } catch (error) {
+    // The next ignore rewrites the row; say so, or the list vanishes without a trace.
+    logger.warn("project_health.ignored_parse_failed", { error: error instanceof Error ? error.message : String(error) });
     return [];
   }
   if (!Array.isArray(parsed)) return [];
@@ -202,12 +205,12 @@ function parseIgnored(raw: string | null | undefined): ProjectHealthIgnore[] {
     if (value.kind === "folder") {
       const folder = normalizeIgnoredFolder(value.path);
       if (!folder) continue;
-      const key = `folder:${issueId}:${folder}`;
+      const key = projectHealthIgnoreKey(issueId, folder);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({ key, kind: "folder", issueId, path: folder, title, ignoredAt });
     } else if (value.kind === "issue" && typeof value.fingerprint === "string" && value.fingerprint) {
-      const key = `issue:${issueId}`;
+      const key = projectHealthIgnoreKey(issueId);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({ key, kind: "issue", issueId, fingerprint: value.fingerprint, title, ignoredAt });
@@ -603,7 +606,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   function readIgnored(): ProjectHealthIgnore[] {
     try {
       const rows = deps.db.all<{ value: string }>("select value from kv where key = ? limit 1", [PROJECT_HEALTH_IGNORED_KV_KEY]);
-      return parseIgnored(rows[0]?.value);
+      return parseIgnored(rows[0]?.value, deps.logger);
     } catch (error) {
       // An unreadable list ignores nothing: every check shows.
       deps.logger.warn("project_health.ignored_read_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -634,6 +637,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
         root: lane.worktreePath,
         primary: lane.laneType === "primary",
       }));
+    // Folders are named relative to the main checkout, the root the check walks.
+    const mainRoot = checkouts.find((checkout) => checkout.primary)?.root ?? projectRoot;
     return {
       projectRoot,
       previousRoots,
@@ -641,9 +646,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       lanes,
       checkouts,
       ignoredFolders: new Set(
-        readIgnored()
-          .filter((entry) => entry.kind === "folder" && entry.path)
-          .map((entry) => pathKey(path.join(projectRoot, ...entry.path!.split("/")))),
+        readIgnored().flatMap((entry) => (entry.kind === "folder" ? [pathKey(path.join(mainRoot, ...entry.path.split("/")))] : [])),
       ),
     };
   }
@@ -828,7 +831,12 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     return { lanes, stuckChats, stuckTerminals };
   }
 
+  /** The report, and every line before hides (for `ignore`'s stale-hide pass). */
   async function buildReport(): Promise<ProjectHealthReport> {
+    return (await buildChecked()).report;
+  }
+
+  async function buildChecked(): Promise<{ report: ProjectHealthReport; allIssues: ProjectHealthIssue[] }> {
     const ctx = await context();
     const issues: ProjectHealthIssue[] = [];
     const checks: ProjectHealthReport["checks"] = [];
@@ -1109,7 +1117,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     issues.sort((a, b) => order[a.severity] - order[b.severity]);
     const { shown, ignored } = applyIgnored(issues);
     const volume = await readMoveVolume(projectRoot).catch(() => null);
-    return {
+    const report: ProjectHealthReport = {
       projectRoot,
       checkedAt: new Date().toISOString(),
       previousRoots: ctx.previousRoots,
@@ -1120,40 +1128,47 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       checks: checks.sort((a, b) => a.label.localeCompare(b.label)),
       ignored,
     };
+    return { report, allIssues: issues };
   }
 
   /**
-   * Hides each line the person hid while it still reads the same, and drops
-   * the entry of a line that changed (it shows again). A line that is absent
-   * keeps its entry: its check may only have failed this time. Folder
+   * Hides each line the person hid while it still reads the same; a line that
+   * changed shows again. Reading never writes: the stale entries of changed
+   * lines are dropped by the next `ignore` (`withoutChangedHides`). Folder
    * ignores were applied by the checks themselves.
    */
   function applyIgnored(issues: ProjectHealthIssue[]): { shown: ProjectHealthIssue[]; ignored: ProjectHealthIgnore[] } {
     const list = readIgnored();
     if (list.length === 0) return { shown: issues, ignored: [] };
-    const byId = new Map(issues.map((issue) => [issue.id, issue]));
-    const changed = new Set<string>();
-    const hidden = new Set<string>();
-    for (const entry of list) {
-      if (entry.kind !== "issue") continue;
-      const issue = byId.get(entry.issueId);
-      if (!issue) continue;
-      if (projectHealthIssueFingerprint(issue) === entry.fingerprint) hidden.add(issue.id);
-      else changed.add(entry.key);
-    }
-    const kept = changed.size > 0 ? list.filter((entry) => !changed.has(entry.key)) : list;
-    if (changed.size > 0) {
-      try {
-        writeIgnored(kept);
-      } catch (error) {
-        deps.logger.warn("project_health.ignored_write_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
+    const hidden = new Set(hiddenIssueIds(list, issues));
     return {
       shown: hidden.size > 0 ? issues.filter((issue) => !hidden.has(issue.id)) : issues,
-      // A hidden line that is absent this time is not listed: there is nothing to show again.
-      ignored: kept.filter((entry) => entry.kind === "folder" || hidden.has(entry.issueId)),
+      // A hidden line that is absent or changed is not listed: there is nothing hidden to show again.
+      ignored: list.filter((entry) => entry.kind === "folder" || hidden.has(entry.issueId)),
     };
+  }
+
+  /** The lines a hide still covers: present and reading the same as when hidden. */
+  function hiddenIssueIds(list: ProjectHealthIgnore[], issues: ProjectHealthIssue[]): string[] {
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    return list.flatMap((entry) => {
+      if (entry.kind !== "issue") return [];
+      const issue = byId.get(entry.issueId);
+      return issue && projectHealthIssueFingerprint(issue) === entry.fingerprint ? [issue.id] : [];
+    });
+  }
+
+  /**
+   * The list without hides whose line is present and now reads differently.
+   * A line that is absent keeps its entry: its check may only have failed.
+   */
+  function withoutChangedHides(list: ProjectHealthIgnore[], issues: ProjectHealthIssue[]): ProjectHealthIgnore[] {
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    return list.filter((entry) => {
+      if (entry.kind !== "issue") return true;
+      const issue = byId.get(entry.issueId);
+      return !issue || projectHealthIssueFingerprint(issue) === entry.fingerprint;
+    });
   }
 
   /**
@@ -1164,14 +1179,16 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   async function ignore(args: ProjectHealthIgnoreArgs): Promise<ProjectHealthReport> {
     const issueId = typeof args?.issueId === "string" ? args.issueId.trim() : "";
     if (!issueId) throw new Error("Name the check to ignore.");
-    const report = await getReport({ forceRefresh: true });
+    const { report, allIssues } = await buildChecked();
+    cached = { at: Date.now(), report: Promise.resolve(report) };
     const issue = report.issues.find((entry) => entry.id === issueId);
-    const list = readIgnored();
+    // Every line, hidden ones included, tells which hides went stale.
+    const list = withoutChangedHides(readIgnored(), allIssues);
     const ignoredAt = new Date().toISOString();
     if (args.path != null) {
       const folder = normalizeIgnoredFolder(args.path);
       if (!folder) throw new Error(`"${String(args.path)}" is not a folder inside this project.`);
-      const key = `folder:${issueId}:${folder}`;
+      const key = projectHealthIgnoreKey(issueId, folder);
       if (!list.some((entry) => entry.key === key)) {
         // Only a folder the check names right now: a typo must not quietly ignore nothing.
         if (!issue?.ignorablePaths?.includes(folder)) throw new Error(`${folder} isn't one of the folders this check names.`);
@@ -1180,7 +1197,12 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     } else {
       if (!issue) throw new Error("That check has nothing to hide right now.");
       if (issue.severity === "problem") throw new Error("A problem stays in view until it is fixed.");
-      const key = `issue:${issueId}`;
+      if (isProjectHealthReadFailure(issueId)) throw new Error("A check that couldn't run stays in view until it runs.");
+      const seen = args.seen;
+      if (seen && (seen.title !== issue.title || (seen.items ?? []).join("\n") !== (issue.items ?? []).join("\n"))) {
+        throw new Error("This line changed since you looked. Check it again, then hide it.");
+      }
+      const key = projectHealthIgnoreKey(issueId);
       writeIgnored([
         ...list.filter((entry) => entry.key !== key),
         { key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), title: issue.title, ignoredAt },

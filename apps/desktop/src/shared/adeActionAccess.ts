@@ -509,7 +509,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getReport",
     ],
     write: [
-      "fix",
+      "fix", "ignore", "unignore",
     ],
   },
   archive: {

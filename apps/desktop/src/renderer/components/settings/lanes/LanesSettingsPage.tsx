@@ -15,7 +15,7 @@ import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
 import { HealthCleanupHistory, HealthCleanupRules } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { useProjectIgnore } from "../health/ProjectIgnore";
-import { issuesForPage, reportIgnoredForPage } from "../health/healthModel";
+import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
 import { formatMeasuredBytes } from "../storage/storageView";
 import { StoragePlatformContext } from "../storage/useStorageBytes";
@@ -211,7 +211,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
               issues={laneIssues}
               fixingId={fix.fixingId}
               onFix={(issue) => void fix.runFix(issue)}
-              ignore={pin ? { choicesFor: ignore.choicesFor, entries: ignore.entriesFor(reportIgnoredForPage(report, "lanes")), busy: ignore.busy } : undefined}
+              ignore={pin ? ignore.forPage(report, "lanes") : undefined}
             />
             {reportLoading && !report ? (
               <div className="ade-lanes-skeleton" aria-busy="true">

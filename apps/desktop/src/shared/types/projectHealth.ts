@@ -51,23 +51,39 @@ export type ProjectHealthIssue = {
  *   items change, it shows again and the entry is dropped.
  */
 export type ProjectHealthIgnore = {
-  /** `folder:<issueId>:<path>` or `issue:<issueId>`; passed back to `unignore`. */
+  /** `projectHealthIgnoreKey(issueId, path)`; passed back to `unignore`. */
   key: string;
-  kind: "folder" | "issue";
   issueId: string;
-  /** For `folder`: the folder, relative to the project, `/`-separated. */
-  path?: string;
-  /** For `issue`: the line's fingerprint when it was hidden. */
-  fingerprint?: string;
   /** What the ignored list shows: the folder, or the line's title. */
   title: string;
   ignoredAt: string;
-};
+} & (
+  /** The folder, relative to the project, `/`-separated. */
+  | { kind: "folder"; path: string }
+  /** The line's fingerprint when it was hidden. */
+  | { kind: "issue"; fingerprint: string }
+);
+
+/** The one spelling of an ignore's key, for the brain that stores it and the client that undoes it. */
+export function projectHealthIgnoreKey(issueId: string, folder?: string | null): string {
+  return folder ? `folder:${issueId}:${folder}` : `issue:${issueId}`;
+}
+
+/** A line whose check could not run says nothing about the project, so it is never hidden. */
+export function isProjectHealthReadFailure(issueId: string): boolean {
+  return issueId.endsWith("-failed");
+}
 
 export type ProjectHealthIgnoreArgs = {
   issueId: string;
   /** One of the issue's `ignorablePaths`. Omitted: hide the whole line until it changes. */
   path?: string | null;
+  /**
+   * The line as the person saw it. Hiding refuses when the line now reads
+   * differently, so a line that grew while the page was open is never
+   * hidden unseen. Omitted by older clients.
+   */
+  seen?: { title: string; items?: string[] } | null;
 };
 
 export type ProjectHealthUnignoreArgs = {
