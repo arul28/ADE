@@ -6,8 +6,8 @@ import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
-import { relativeWhen, sentenceCase } from "../../lib/format";
-import { OUTCOME_STYLES, dotCls, panelCls, rowHoverCls, tagCls, toneTextCls } from "./webhookSurface";
+import { relativeWhen } from "../../lib/format";
+import { dotCls, outcomeStyle, panelCls, rowHoverCls, tagCls, toneTextCls } from "./webhookSurface";
 import { WebhookDeliveries } from "./builder/WebhookDeliveries";
 import { useTabCopyPin } from "../../state/repositoryScope";
 
@@ -107,8 +107,8 @@ export function WebhookOverview({ intro }: { intro?: string }) {
                   <span className="flex shrink-0 items-center gap-2 font-mono text-[10.5px] tabular-nums text-muted-fg">
                     {last ? (
                       <>
-                        <span className={dotCls(OUTCOME_STYLES[last.outcome]?.tone ?? "neutral")} />
-                        {OUTCOME_STYLES[last.outcome]?.label ?? sentenceCase(last.outcome)} · {relativeWhen(last.receivedAt)}
+                        <span className={dotCls(outcomeStyle(last.outcome).tone)} />
+                        {outcomeStyle(last.outcome).label} · {relativeWhen(last.receivedAt)}
                       </>
                     ) : (
                       <>No deliveries yet</>

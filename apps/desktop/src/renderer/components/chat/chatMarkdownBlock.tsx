@@ -51,7 +51,7 @@ const PATH_LINK_BASE =
   + " decoration-1 underline-offset-[3px] transition-colors hover:underline focus-visible:outline-none focus-visible:ring-1";
 const PATH_LINK_TONE = {
   neutral: "bg-(color:--chat-ink)/[0.06] text-(color:--chat-ink)/88 decoration-(color:--chat-ink)/40 hover:bg-(color:--chat-ink)/[0.1] hover:text-(color:--chat-ink) focus-visible:ring-(color:--chat-ink)/30",
-  accent: "bg-sky-400/[0.08] text-sky-200/95 decoration-sky-300/45 hover:bg-sky-400/[0.14] hover:text-sky-100 focus-visible:ring-sky-300/40",
+  accent: "bg-sky-400/[0.08] text-sky-200/95 decoration-sky-300/45 hover:bg-sky-400/[0.14] hover:text-sky-100 focus-visible:ring-sky-300/40 [[data-theme=light]_&]:text-fg [[data-theme=light]_&]:hover:text-fg",
 } as const;
 
 function WorkspacePathLink({

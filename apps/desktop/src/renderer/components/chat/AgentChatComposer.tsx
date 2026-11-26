@@ -9454,13 +9454,13 @@ function AgentChatComposerImpl({
                 />
                 <div className="flex flex-wrap items-center gap-1.5">
                   {isMcpElicitation && mcpElicitationUrl ? (
-                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-sky-300/25 bg-sky-400/[0.08] px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-sky-100/80 transition-colors hover:bg-sky-400/[0.14] disabled:pointer-events-none disabled:opacity-40" onClick={() => openUrlInAdeBrowser(mcpElicitationUrl)}>Open authorization</button>
+                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-sky-300/25 bg-sky-400/[0.08] px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-sky-100/80 transition-colors hover:bg-sky-400/[0.14] disabled:pointer-events-none disabled:opacity-40" onClick={() => openUrlInAdeBrowser(mcpElicitationUrl)}>Open authorization</button>
                   ) : null}
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing..." : isMcpElicitation ? "Allow once" : "Accept"}</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-accent/30 bg-accent/12 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/80 transition-colors hover:bg-accent/20 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept")}>{approvalResponding ? "Processing…" : isMcpElicitation ? "Allow once" : "Accept"}</button>
                   {approvalOffersSessionChoice ? (
-                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>{isMcpElicitation ? "Always allow" : "Accept all"}</button>
+                    <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/50 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("accept_for_session")}>{isMcpElicitation ? "Always allow" : "Accept all"}</button>
                   ) : null}
-                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
+                  <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
                 </div>
                 {pendingInput.subagent && approvalOffersSessionChoice ? (
                   <div className="mt-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
@@ -9486,7 +9486,7 @@ function AgentChatComposerImpl({
                     type="button"
                     disabled={approvalResponding}
                     data-testid="pending-input-fallback-decline"
-                    className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                    className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
                     onClick={() => onApproval("decline")}
                   >
                     Decline

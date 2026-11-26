@@ -1,4 +1,4 @@
-import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { laneDisplayName, PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import React, { useEffect, useRef, useState } from "react";
 import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { requireLanePin } from "./laneMachines";
@@ -286,7 +286,7 @@ function ManageLaneHeaderDetails({
               <BranchIcon size={10} className="shrink-0 text-muted-fg/50" />
               <span className="truncate font-mono text-muted-fg/60">{formatBranchLabel(lane.branchRef)}</span>
               <span className="rounded-md bg-fg/[0.06] px-1.5 py-0.5 text-[10px] font-medium text-muted-fg">
-                {lane.laneType === "primary" ? "Main checkout" : sentenceCase(lane.laneType)}
+                {lane.laneType === "primary" ? PRIMARY_LANE_DISPLAY_NAME : sentenceCase(lane.laneType)}
               </span>
               {lane.status.dirty ? (
                 <span className="whitespace-nowrap rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-400">

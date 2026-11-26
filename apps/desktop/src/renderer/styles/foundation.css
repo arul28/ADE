@@ -361,7 +361,8 @@
   --chat-inline-code-bg: rgba(15, 23, 42, 0.06);
   /* Chat code boxes (code blocks, tool output) on light pages: a paler box
      than the recessed surface and full-strength text, so code reads at
-     4.5 : 1 on every light theme (ADE-290). Read by chatSurfaceTheme.ts. */
+     4.5 : 1 on every light theme (ADE-290). Read by chatSurfaceTheme.ts;
+     codeTheme.ts repeats the 55% mix to lift code colours against it. */
   --chat-code-bg-light: color-mix(in srgb, var(--color-surface-recessed) 55%, var(--color-card) 45%);
   --chat-code-fg-light: var(--color-fg);
   --chat-table-bg: var(--chat-block-bg);

@@ -739,7 +739,7 @@ function LaneGitActionsPaneOnMachine({
       }
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
-        notice: `${actionName} completed`,
+        notice: `${sentenceCase(actionName)} completed`,
         error: null,
       });
       // Global success toast for remote push/sync completion (the inline notice
@@ -2261,7 +2261,7 @@ function LaneGitActionsPaneOnMachine({
             title: error
               ? `Error: ${error}`
               : notice
-                ? sentenceCase(notice)
+                ? notice
                 : `Running ${busyAction ?? ""}…`,
             busy: Boolean(busyAction),
           }}

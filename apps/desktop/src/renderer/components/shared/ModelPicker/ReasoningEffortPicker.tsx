@@ -92,8 +92,7 @@ export function reasoningChipLabel(
   if (lower === "max") return "Max";
   if (lower === "ultra") return "Ultra";
   if (lower === "ultracode") return "Ultra";
-  const short = lower.slice(0, 3);
-  return short.charAt(0).toUpperCase() + short.slice(1);
+  return capitalizeWord(lower.slice(0, 3));
 }
 
 function tierLabel(tier: string, useCodex56Labels = false): string {

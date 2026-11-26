@@ -850,7 +850,7 @@ export function AskQuestionComposer({
           data-testid="ask-question-send"
           onClick={advance}
           className={cn(
-            "rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.11em] transition-colors",
+            "rounded-lg px-3 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
             "bg-[color:color-mix(in_srgb,var(--chat-accent)_92%,black_8%)] text-black",
             "hover:bg-[color:var(--chat-accent)]",
             "disabled:pointer-events-none disabled:bg-fg/[0.055] disabled:text-fg/26",

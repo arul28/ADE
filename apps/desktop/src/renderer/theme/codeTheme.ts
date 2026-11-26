@@ -6,8 +6,9 @@
  * paints its editor and its code blocks the way it paints everything else. The
  * stylesheet themes `dark` and `light` are the exception: they keep the
  * editor and code colours ADE has always shipped, and `usesStockCodeColors`
- * tells the callers to leave them alone. Chat code blocks in stock light are
- * the one exception to that: they use the palette like any light theme.
+ * tells the callers to leave them alone. Chat code blocks are the exception
+ * for stock light (`usesStockChatCodeColors`): they use the palette like any
+ * light theme.
  */
 
 import type * as Monaco from "monaco-editor";
@@ -28,6 +29,15 @@ import {
 /** True for the two themes whose code colours stay as the stylesheet era shipped them. */
 export function usesStockCodeColors(resolved: ResolvedAdeTheme): boolean {
   return resolved.theme.source === "builtin" && STYLESHEET_THEME_IDS.includes(resolved.theme.id);
+}
+
+/**
+ * True when chat code blocks keep Shiki's stock `github-dark-dimmed`: stock
+ * dark only. Its token colours vanish on stock light's pale code box, so stock
+ * light builds its code theme from its palette like any other light theme.
+ */
+export function usesStockChatCodeColors(resolved: ResolvedAdeTheme): boolean {
+  return usesStockCodeColors(resolved) && resolved.theme.baseMode === "dark";
 }
 
 function hex(color: string, fallback = "#000000"): string {
@@ -120,25 +130,38 @@ export function applyMonacoTheme(monaco: typeof Monaco, resolved: ResolvedAdeThe
  * slightly darker card.
  */
 const LIGHT_CODE_MIN_CONTRAST = 4.7;
+const WHITE: Rgb = { r: 255, g: 255, b: 255 };
+const BLACK: Rgb = { r: 0, g: 0, b: 0 };
 
-/** A light theme's chat code box, as `--chat-code-bg-light` mixes it (foundation.css). */
+/** The recessed share of `--chat-code-bg-light` (foundation.css); keep the two in step. */
+const LIGHT_CODE_BOX_RECESSED_SHARE = 0.55;
+
+/** A light theme's chat code box, as `--chat-code-bg-light` mixes it. */
 function chatCodeBackground(resolved: ResolvedAdeTheme): Rgb {
-  const recessed = parseColor(resolved.palette.surfaceRecessed) ?? { r: 234, g: 231, b: 226, a: 1 };
+  const recessed = parseColor(resolved.palette.surfaceRecessed) ?? WHITE;
   const card = parseColor(resolved.palette.card) ?? recessed;
-  return mixColors(recessed, card, 0.55);
+  return mixColors(recessed, card, LIGHT_CODE_BOX_RECESSED_SHARE);
 }
 
-/**
- * Darken a colour, keeping its hue, until it reads on `background`. Light
- * themes state code colours for a white editor, and the chat code box is a
- * shade darker, so even a theme's own comment colour can fall below AA there.
- */
+/** Adjust perceptual lightness until text reads on the chat code box. */
 function readableOn(color: string, background: Rgb): string {
-  let candidate: Rgb = parseColor(color) ?? { r: 0, g: 0, b: 0 };
-  for (let step = 0; step < 40 && contrastRatio(candidate, background) < LIGHT_CODE_MIN_CONTRAST; step += 1) {
-    candidate = shiftLightness(candidate, -0.02);
+  const original = parseColor(hex(color)) ?? BLACK;
+  if (contrastRatio(original, background) >= LIGHT_CODE_MIN_CONTRAST) return toHex(original);
+
+  const blackContrast = contrastRatio(BLACK, background);
+  const whiteContrast = contrastRatio(WHITE, background);
+  const target = Math.min(LIGHT_CODE_MIN_CONTRAST, Math.max(blackContrast, whiteContrast));
+  for (let step = 1; step < 50; step += 1) {
+    if (blackContrast >= target) {
+      const darker = shiftLightness(original, -step * 0.02);
+      if (contrastRatio(darker, background) >= target) return toHex(darker);
+    }
+    if (whiteContrast >= target) {
+      const lighter = shiftLightness(original, step * 0.02);
+      if (contrastRatio(lighter, background) >= target) return toHex(lighter);
+    }
   }
-  return toHex(candidate);
+  return toHex(blackContrast >= whiteContrast ? BLACK : WHITE);
 }
 
 /** The shape Shiki's `loadTheme` accepts, limited to what ADE sets. */
@@ -177,13 +200,14 @@ export function shikiThemeData(resolved: ResolvedAdeTheme): ShikiThemeData {
 
 /**
  * A string that changes whenever a code surface would need repainting: the
- * theme id plus every colour its Shiki definition is made from. The chat
+ * theme id, mode and every colour its Shiki definition is made from. The chat
  * block cache and the Shiki theme name are keyed on it, so editing a custom
  * theme in place highlights fresh instead of reading a stale cached block.
  */
 export function codeThemeFingerprint(resolved: ResolvedAdeTheme): string {
   return [
     resolved.theme.id,
+    resolved.theme.baseMode,
     resolved.palette.fg,
     resolved.palette.card,
     resolved.palette.surfaceRecessed,

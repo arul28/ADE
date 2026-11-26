@@ -94,11 +94,12 @@ enum ADEColor {
   static let warning = adaptiveColor(light: hex(0xd97706), dark: hex(0xf59e0b))
   static let danger = adaptiveColor(light: hex(0xdc2626), dark: hex(0xef4444))
   static let info = adaptiveColor(light: hex(0x2563eb), dark: hex(0x3b82f6))
-  /// `accent` / `success` for small text on light surfaces: the light values
-  /// are deep enough for WCAG AA (≥ 4.5:1 on `pageBackground`); dark is
+  /// Status and action colours for small text on light surfaces. The light values
+  /// are deep enough for WCAG AA (≥ 4.5:1 on `recessedBackground`); dark is
   /// unchanged. The plain tokens stay for fills, glyphs and large type.
-  static let accentText = adaptiveColor(light: hex(0x047857), dark: hex(0xA78BFA))
-  static let successText = adaptiveColor(light: hex(0x15803d), dark: hex(0x22c55e))
+  static let accentText = adaptiveColor(light: hex(0x066549), dark: hex(0xA78BFA))
+  static let successText = adaptiveColor(light: hex(0x166534), dark: hex(0x22c55e))
+  static let dangerText = adaptiveColor(light: hex(0x991b1b), dark: hex(0xef4444))
   static let purpleAccent = Color(red: 167.0 / 255.0, green: 139.0 / 255.0, blue: 250.0 / 255.0)  // #A78BFA
 
   /// Syntax-highlight token colours (chat code blocks, the Files viewer).
@@ -111,6 +112,12 @@ enum ADEColor {
   static let syntaxNumber = adaptiveColor(light: hex(0x9a3412), darkSystem: .orange)   // 5.92:1
   static let syntaxHeading = adaptiveColor(light: hex(0xbe185d), darkSystem: .pink)    // 4.90:1
   static let syntaxLink = adaptiveColor(light: hex(0x115e59), darkSystem: .teal)       // 6.15:1
+
+  // ANSI command output uses the same recessed surface as code.
+  static let outputRed = adaptiveColor(light: hex(0x991b1b), darkSystem: .red)
+  static let outputYellow = adaptiveColor(light: hex(0x854d0e), darkSystem: .yellow)
+  static let outputCyan = adaptiveColor(light: hex(0x155e75), darkSystem: .cyan)
+  static let outputWhite = adaptiveColor(light: hex(0x52525b), darkSystem: .white)
 
   /// Token-cache series. Was `textMuted`, the same grey the merged/GitHub
   /// underlay uses, which made a three-part stacked token bar read as two parts

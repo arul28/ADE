@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
@@ -123,7 +123,7 @@ describe("ReasoningEffortPicker", () => {
   ])("shows %s on the trigger", (_label, modelId, reasoningEffort, remembered, chip) => {
     if (remembered) reasoningByFamilyStore[modelId.split("/")[0]!] = remembered;
     render(<ReasoningEffortPicker modelId={modelId} reasoningEffort={reasoningEffort} onChange={vi.fn()} />);
-    expect(screen.getByRole("button", { name: /Reasoning effort/i }).textContent).toContain(chip);
+    expect(within(screen.getByRole("button", { name: /Reasoning effort/i })).getAllByText(chip, { exact: true }).length).toBeGreaterThan(0);
   });
 
   it("uses cached runtime catalog reasoning tiers for dynamic runtime models", () => {
@@ -175,7 +175,7 @@ describe("ReasoningEffortPicker", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /Reasoning effort/i }).textContent).toContain("Max");
+    expect(within(screen.getByRole("button", { name: /Reasoning effort/i })).getAllByText("Max", { exact: true }).length).toBeGreaterThan(0);
   });
 
   it("renders the GPT-5.6 Ultra tier with a multi-agent usage warning", async () => {
@@ -189,7 +189,7 @@ describe("ReasoningEffortPicker", () => {
     );
 
     const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
-    expect(trigger.textContent).toContain("Ultra");
+    expect(within(trigger).getAllByText("Ultra", { exact: true }).length).toBeGreaterThan(0);
     await user.click(trigger);
 
     const radios = screen.getAllByRole("radio");
@@ -221,7 +221,7 @@ describe("ReasoningEffortPicker", () => {
     );
 
     const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
-    expect(trigger.textContent).toContain("Ultra");
+    expect(within(trigger).getAllByText("Ultra", { exact: true }).length).toBeGreaterThan(0);
     expect(trigger.getAttribute("data-reasoning-ultra")).toBe("true");
     expect(container.querySelector(".ade-reasoning-effort-trigger-ultra")).toBeTruthy();
 
@@ -440,7 +440,7 @@ describe("ReasoningEffortPicker", () => {
       />,
     );
     const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
-    expect(trigger.textContent).toContain("Auto");
+    expect(within(trigger).getAllByText("Auto", { exact: true }).length).toBeGreaterThan(0);
 
     const user = userEvent.setup();
     await user.click(trigger);

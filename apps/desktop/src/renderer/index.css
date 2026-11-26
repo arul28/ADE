@@ -3863,9 +3863,21 @@ button, [role="button"] {
 /* On a light page the black shade made a muddy grey that faded the output
    text (ADE-290): the box is the code box and its text the code text. */
 [data-theme="light"] .ade-chat-recessed {
-  background: var(--chat-code-bg);
+  background: var(--chat-code-bg-light);
   box-shadow: none;
-  color: var(--chat-code-fg);
+  color: var(--chat-code-fg-light);
+}
+
+/* Smaller chat wells (command lines, metric tiles, approval details) shade
+   with translucent black on dark pages; on light pages that is the same muddy
+   grey, so they take the code box too. */
+[data-theme="light"] .ade-chat-well {
+  background: var(--chat-code-bg-light);
+  color: var(--chat-code-fg-light);
+}
+
+[data-theme="light"] .ade-chat-well-label {
+  color: var(--chat-code-fg-light);
 }
 
 /* ═══════════════════════════════════════════════════════════

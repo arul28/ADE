@@ -459,21 +459,21 @@ function ResetCreditNoticeRow({
       className,
     )}>
       {icon}
-      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{sentenceCase(chipLabel)}</span>
-      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+      <span className="text-fg/55">{message}</span>
       {canSpend ? (
         <button
           type="button"
           disabled={spending}
           onClick={() => { void spend(); }}
           data-testid="reset-credit-use"
-          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
         >
           Use reset
         </button>
       ) : null}
       {outcome ? (
-        <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
+        <span className="text-fg/42">{outcome}</span>
       ) : null}
     </div>
   );
@@ -513,19 +513,19 @@ function RootFullAccessNoticeRow({
       className,
     )}>
       {icon}
-      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{sentenceCase(chipLabel)}</span>
-      <span className="normal-case tracking-normal text-fg/55">{message}</span>
+      <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+      <span className="text-fg/55">{message}</span>
       {canAllow ? (
         <button
           type="button"
           disabled={busy}
           onClick={() => { void allow(); }}
-          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium normal-case tracking-normal text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/70 hover:bg-fg/[0.06] disabled:opacity-50"
         >
           Allow on this machine
         </button>
       ) : null}
-      {allowed ? <span className="normal-case tracking-normal text-fg/42">Allowed. The next message runs with Full access.</span> : null}
+      {allowed ? <span className="text-fg/42">Allowed. The next message runs with Full access.</span> : null}
     </div>
   );
 }
@@ -1066,9 +1066,9 @@ function renderNoticeDetail(
           {detail.metrics.map((metric) => (
             <div
               key={`${metric.label}:${metric.value}`}
-              className="rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 [[data-theme=light]_&]:bg-(--chat-code-bg)"
+              className="rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 ade-chat-well"
             >
-              <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55">{metric.label}</div>
+              <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55 ade-chat-well-label">{metric.label}</div>
               <div className={cn("mt-1 text-sm font-medium", metric.tone ? chatChipToneClass(metric.tone) : "text-fg/75")}>
                 {metric.value}
               </div>
@@ -1078,22 +1078,22 @@ function renderNoticeDetail(
       ) : null}
       {detail.sections?.map((section) => (
         <div key={section.title} className="space-y-1.5">
-          <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55">{section.title}</div>
+          <div className="text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-muted-fg/55 ade-chat-well-label">{section.title}</div>
           <div className="space-y-1.5">
             {section.items.map((item, index) => (
               typeof item === "string" ? (
                 <div
                   key={`${section.title}:text:${index}`}
-                  className="whitespace-pre-wrap break-words rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 [[data-theme=light]_&]:bg-(--chat-code-bg)"
+                  className="whitespace-pre-wrap break-words rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 ade-chat-well"
                 >
                   {item}
                 </div>
               ) : (
                 <div
                   key={`${section.title}:${item.label}:${item.value}:${index}`}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 [[data-theme=light]_&]:bg-(--chat-code-bg)"
+                  className="flex items-center justify-between gap-3 rounded-lg border border-border/12 bg-black/10 px-2.5 py-2 ade-chat-well"
                 >
-                  <span className="text-muted-fg/60">{item.label}</span>
+                  <span className="text-muted-fg/60 ade-chat-well-label">{item.label}</span>
                   <span className={cn("text-right font-medium", item.tone ? chatChipToneClass(item.tone) : "text-fg/75")}>
                     {item.value}
                   </span>
@@ -2738,12 +2738,12 @@ function CommandEventCard({
 
   const commandBody = (
     <>
-      <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80 [[data-theme=light]_&]:bg-(--chat-code-bg) [[data-theme=light]_&]:text-(--chat-code-fg)">
+      <div className="rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/80 ade-chat-well">
         <span className="select-none text-amber-500/40">$ </span>
         {redactCommandLine(event.command ?? "")}
       </div>
       {hasOutput ? (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60 [[data-theme=light]_&]:bg-(--chat-code-bg) [[data-theme=light]_&]:text-(--chat-code-fg)">
+        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-fg/[0.06] bg-black/25 px-3.5 py-2.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/60 ade-chat-well">
           {event.output}
         </pre>
       ) : null}
@@ -4324,8 +4324,8 @@ function renderEvent(
     const NoticeIcon = style.icon;
     const hasDetail = hasNoticeDetail(event.detail);
     const chipLabel = event.noticeKind === "rate_limit" && inferredSeverity !== "error"
-      ? "usage"
-      : event.noticeKind.replace("_", " ");
+      ? "Usage"
+      : sentenceCase(event.noticeKind);
 
     // "A reset credit is banked" is the one usage notice with something to DO.
     // A notice that reports a spendable credit and offers no way to spend it is
@@ -4378,8 +4378,8 @@ function renderEvent(
           style.text,
         )}>
           <NoticeIcon size={11} weight="bold" />
-          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{sentenceCase(chipLabel)}</span>
-          <span className="normal-case tracking-normal text-fg/55">{event.message}</span>
+          <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+          <span className="text-fg/55">{event.message}</span>
           {detail ? <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42">{detail}</span> : null}
         </div>
       );
@@ -4408,7 +4408,7 @@ function renderEvent(
             <div className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)]">
               <NoticeIcon size={12} weight="bold" className={style.text} />
               <span className={cn("inline-flex items-center border px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] font-medium", style.border, style.bg, style.text)}>
-                {sentenceCase(chipLabel)}
+                {chipLabel}
               </span>
               <span className="flex-1 truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/55">{event.message}</span>
             </div>
@@ -4426,8 +4426,8 @@ function renderEvent(
         style.text,
       )}>
         <NoticeIcon size={11} weight="bold" />
-        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{sentenceCase(chipLabel)}</span>
-        <span className="normal-case tracking-normal text-fg/45">{event.message}</span>
+        <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium">{chipLabel}</span>
+        <span className="text-fg/45">{event.message}</span>
       </div>
     );
   }
@@ -4658,7 +4658,7 @@ function renderEvent(
       <div className={cn(GLASS_CARD_CLASS, "px-4 py-2.5")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="flex items-center gap-2">
           {requestSource ? (
-            <span className={cn("inline-flex h-5 w-5 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-black/20 [[data-theme=light]_&]:bg-(--chat-code-bg)")}>
+            <span className={cn("inline-flex h-5 w-5 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-black/20 ade-chat-well")}>
               <ProviderLogo family={requestSource} size={11} />
             </span>
           ) : null}
@@ -4688,7 +4688,7 @@ function renderEvent(
           )}
         </div>
         {isPlanApproval && bodyText.trim().length > 0 ? (
-          <div className="mt-2 rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2 [[data-theme=light]_&]:bg-(--chat-code-bg)">
+          <div className="mt-2 rounded-lg border border-fg/[0.06] bg-black/15 px-3 py-2 ade-chat-well">
             <MarkdownBlock markdown={bodyText} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
           </div>
         ) : null}
@@ -4747,7 +4747,7 @@ function renderEvent(
               <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-muted-fg/40 transition-colors hover:text-muted-fg/65">
                 Details
               </summary>
-              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/15 px-3 py-2 [[data-theme=light]_&]:bg-(--chat-code-bg)">
+              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/15 px-3 py-2 ade-chat-well">
                 <div className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55 [[data-theme=light]_&]:text-muted-fg">
                   {errorCopyValue}
                 </div>
@@ -4909,7 +4909,7 @@ function renderEvent(
         <Warning size={11} weight="bold" />
         <span>{sentenceCase(event.turnStatus)}</span>
         {event.message ? (
-          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] normal-case tracking-normal text-fg/55">
+          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55">
             {event.message}
           </span>
         ) : null}
@@ -4937,7 +4937,7 @@ function renderEvent(
         <Warning size={11} weight="bold" />
         <span>{label}</span>
         {detail ? (
-          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] normal-case tracking-normal text-fg/55">
+          <span className="truncate text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55">
             {detail}
           </span>
         ) : null}
@@ -5270,7 +5270,7 @@ function DoneTurnDivider({
         {reasonLabel ? (
           <>
             <span className="opacity-40">·</span>
-            <span className="font-sans normal-case">{reasonLabel}</span>
+            <span className="font-sans">{reasonLabel}</span>
           </>
         ) : null}
     </span>

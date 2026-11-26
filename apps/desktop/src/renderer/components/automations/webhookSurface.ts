@@ -8,6 +8,7 @@
 
 import type { AutomationWebhookDeliveryOutcome } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { sentenceCase } from "../../lib/format";
 
 export type SurfaceTone = "neutral" | "ok" | "warn" | "crit" | "info";
 
@@ -84,3 +85,8 @@ export const OUTCOME_STYLES: Record<AutomationWebhookDeliveryOutcome, OutcomeSty
   too_large: { label: "Too large", tone: "warn" },
   error: { label: "Run failed", tone: "crit" },
 };
+
+/** The style for a delivery outcome; one a newer host sends that this build does not know reads as itself, neutral. */
+export function outcomeStyle(outcome: string): OutcomeStyle {
+  return OUTCOME_STYLES[outcome as AutomationWebhookDeliveryOutcome] ?? { label: sentenceCase(outcome), tone: "neutral" };
+}
