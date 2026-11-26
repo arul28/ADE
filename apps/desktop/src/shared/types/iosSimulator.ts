@@ -191,6 +191,9 @@ export const APPLE_AGENT_ACTIONS = [
   "runtimeList",
   "runtimeInstall",
   "runtimeInstallCancel",
+  /* Xcode's DerivedData folders and their sizes (read only). Deleting them is
+     the person's call (APPLE_USER_ONLY_ACTIONS). */
+  "derivedDataList",
 
   /* Foldables: fold the iPhone Duo and read its pose. A no-op answer
      (`supported: false`) on every other device. */
@@ -329,6 +332,8 @@ export const APPLE_USER_ONLY_ACTIONS = [
   /* Removing a runtime erases or moves every simulator on it. */
   "runtimeDelete",
   "runtimePrune",
+  /* Deletes Xcode build data (DerivedData folders). */
+  "derivedDataDelete",
   /* `xcodebuild -runFirstLaunch` installs system packages. */
   "xcodeRunFirstLaunch",
   /* Files a 3D render the pane drew; agents render through `requestRender`. */
@@ -2069,6 +2074,54 @@ export type AppleXcodeStatus = {
   latest: { version: string; build: string | null; beta: boolean; url: string } | null;
   /** `latest` is newer than `version`. */
   updateAvailable: boolean;
+  /** The developer folder in use (`xcode-select -p`); null when unreadable. Optional: older brains do not send it. */
+  developerDir?: string | null;
+  /** The `.app` that holds `developerDir` (`/Applications/Xcode.app`); null for the Command Line Tools alone. */
+  appPath?: string | null;
+};
+
+/** One folder under Xcode's DerivedData: one project's build data, or the shared module cache. */
+export type XcodeDerivedDataEntry = {
+  /** Absolute. */
+  path: string;
+  /** `ADE-abcdefghijklmnop` / `ModuleCache.noindex`. */
+  folderName: string;
+  /** The workspace's base name without extension, else the folder name minus its `-<hash>`; "Module cache" for the module cache. */
+  name: string;
+  /** `info.plist` WorkspacePath. */
+  workspacePath: string | null;
+  /** `workspacePath` is set and no longer on disk. */
+  workspaceMissing: boolean;
+  /** Allocated bytes; null when not measured. */
+  sizeBytes: number | null;
+  /** ISO: `info.plist` LastAccessedDate, else the folder's mtime. */
+  lastUsedAt: string | null;
+  kind: "project" | "module-cache";
+};
+
+export type XcodeDerivedDataArgs = { measure?: boolean | null; laneId?: string | null };
+
+export type XcodeDerivedDataResult = {
+  /** False off macOS; everything else is empty then. */
+  supported: boolean;
+  /** The DerivedData folder in use. */
+  root: string | null;
+  exists: boolean;
+  /** Newest `lastUsedAt` first. */
+  entries: XcodeDerivedDataEntry[];
+  /** The sum when measured. */
+  totalBytes: number | null;
+  /** Xcode.app or xcodebuild is running. */
+  buildRunning: boolean;
+  measuredAt: string | null;
+};
+
+export type XcodeDerivedDataDeleteArgs = { paths: string[]; confirmedByUser: true; laneId?: string | null };
+
+export type XcodeDerivedDataDeleteResult = {
+  deleted: Array<{ path: string; bytes: number | null }>;
+  errors: Array<{ path: string; message: string }>;
+  freedBytes: number;
 };
 
 /**

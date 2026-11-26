@@ -137,6 +137,10 @@ import type {
   AppleRuntimeInstallState,
   AppleRuntimeInventory,
   AppleRuntimePruneArgs,
+  XcodeDerivedDataArgs,
+  XcodeDerivedDataDeleteArgs,
+  XcodeDerivedDataDeleteResult,
+  XcodeDerivedDataResult,
   AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
@@ -3588,6 +3592,16 @@ declare global {
           args?: AppleRuntimeScope & { confirmedByUser?: boolean },
           pin?: OpenProjectBinding | null,
         ) => Promise<AppleXcodeStatus>;
+        /** Xcode's DerivedData folders on the pinned machine; sizes only with `measure`. */
+        derivedDataList: (
+          args?: XcodeDerivedDataArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<XcodeDerivedDataResult>;
+        /** Delete DerivedData folders the person picked (person-only; refused while a build runs). */
+        derivedDataDelete: (
+          args: XcodeDerivedDataDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<XcodeDerivedDataDeleteResult>;
         frame: (
           args: AppleFrameArgs | undefined,
           pin: OpenProjectBinding,

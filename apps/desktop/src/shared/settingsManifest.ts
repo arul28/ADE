@@ -135,7 +135,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
  * (a machine's own page).
  * Absent means This computer.
  */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "machines"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "apple", "machines"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -157,7 +157,7 @@ export function isProjectSettingsTab(tab: SettingsTabId): boolean {
  * (Behaviour), its simulators (Apple devices), its service (Advanced) and its
  * overview (General). Another machine's own settings are on its Machines page.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "keyboard", "passwords", "advanced"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "keyboard", "passwords", "advanced"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -229,7 +229,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // Apple devices is per computer: each Mac has its own simulators and its own
   // network. Values are filed under this device's account scope so the brain
   // on this computer can read the remote streaming cap (see accountSettingsSync).
-  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "app" },
+  { id: "apple", label: "Apple devices", description: "Xcode, simulators, runtimes and their disk space on each Mac, plus simulator display and recordings.", group: "app" },
   // Android devices follows the picked machine: each machine has its own SDK.
   { id: "android", label: "Android devices", description: "The Android SDK, emulator display, recording overlays, and remote streaming, on each machine.", group: "app" },
   // Keys are read by the window you type into, and each computer has its own
@@ -1099,6 +1099,56 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Apple Development",
   },
   {
+    id: "apple.xcode",
+    label: "Xcode",
+    keywords: ["apple", "xcode", "version", "update", "xcode-select", "developer folder", "command line tools", "first launch"],
+    tab: "apple",
+    anchor: "apple-xcode",
+    scope: "machine",
+    web: "machine",
+    group: "Apple Development",
+  },
+  {
+    id: "apple.disk-space",
+    label: "Simulator and Xcode disk space",
+    keywords: ["apple", "disk", "space", "storage", "cleanup", "free", "simulator", "xcode", "gb"],
+    tab: "apple",
+    anchor: "apple-space",
+    scope: "machine",
+    web: "machine",
+    group: "Apple Development",
+  },
+  {
+    id: "apple.simulators",
+    label: "Simulators",
+    keywords: ["apple", "ios", "iphone", "ipad", "simulator", "simulators", "coresimulator", "delete", "leftover"],
+    tab: "apple",
+    anchor: "apple-simulators",
+    scope: "machine",
+    web: "machine",
+    group: "Apple Development",
+  },
+  {
+    id: "apple.runtimes",
+    label: "Simulator runtimes",
+    keywords: ["apple", "ios", "runtime", "runtimes", "simulator", "remove", "replaced"],
+    tab: "apple",
+    anchor: "apple-runtimes",
+    scope: "machine",
+    web: "machine",
+    group: "Apple Development",
+  },
+  {
+    id: "apple.build-data",
+    label: "Xcode build data",
+    keywords: ["apple", "xcode", "deriveddata", "derived data", "build", "cache", "cleanup", "delete"],
+    tab: "apple",
+    anchor: "apple-build-data",
+    scope: "machine",
+    web: "machine",
+    group: "Apple Development",
+  },
+  {
     id: "android.sdk",
     label: "Android SDK",
     keywords: ["android", "emulator", "avd", "sdk", "install", "licence", "license", "android cli", "adb", "platform-tools", "system image"],
@@ -1106,6 +1156,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "android-sdk",
     scope: "machine",
     // The web client gets Android in P2 (plan §6).
+    web: "hidden",
+    group: "Android devices",
+  },
+  {
+    id: "android.emulators",
+    label: "Emulators",
+    keywords: ["android", "emulator", "emulators", "avd", "disk", "space", "delete", "storage"],
+    tab: "android",
+    anchor: "android-emulators",
+    scope: "machine",
     web: "hidden",
     group: "Android devices",
   },
@@ -1520,6 +1580,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine-repo",
     web: "hidden",
     group: "Cleanups",
+  },
+  {
+    id: "storage.dev-tools",
+    label: "Outside this project",
+    keywords: ["xcode", "deriveddata", "simulator", "runtime", "emulator", "avd", "android", "disk", "space", "developer tools"],
+    tab: "storage",
+    anchor: "storage-dev-tools",
+    scope: "machine-repo",
+    web: "hidden",
+    group: "Storage",
   },
   {
     id: "storage.lane-rules",

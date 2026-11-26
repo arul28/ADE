@@ -1,0 +1,318 @@
+/*
+ * Developer tools on a machine's disk: the Xcode card, the space bar, and the
+ * quiet lists under it (simulators, runtimes, build data, emulators). Drawn in
+ * the Apple devices page's language (`AppleDevicesSection.css`): panel cards,
+ * theme tokens, one bold element (the bar), everything else calm rows.
+ * Category hues are the same muted ones Storage uses for its segments.
+ */
+
+.ade-dev-card {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  min-width: 0;
+  scroll-margin-top: 16px;
+}
+
+/* ── Xcode ───────────────────────────────────────────────────────────── */
+.ade-dev-xcode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 16px 16px 18px;
+}
+.ade-dev-xcode[aria-busy="true"] { min-height: 76px; }
+.ade-dev-xcode-glyph {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  color: #4aa8e0;
+  background: color-mix(in srgb, #4aa8e0 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #4aa8e0 24%, transparent);
+}
+.ade-dev-xcode[data-state="missing"] .ade-dev-xcode-glyph {
+  color: var(--kit-text-3);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 9%, transparent);
+}
+.ade-dev-xcode-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ade-dev-xcode-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+.ade-dev-xcode-build {
+  font-size: 12px;
+  font-weight: 450;
+  color: var(--kit-text-3);
+  font-variant-numeric: tabular-nums;
+}
+.ade-dev-xcode-sub { font-size: 12.5px; line-height: 1.45; color: var(--kit-text-3); }
+.ade-dev-xcode-paths {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
+  font-size: 12px;
+  line-height: 17px;
+}
+.ade-dev-xcode-paths dt { color: var(--kit-text-3); }
+.ade-dev-xcode-paths dd {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--kit-text-2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+/* ── Chips ───────────────────────────────────────────────────────────── */
+.ade-dev-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--kit-text-2);
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  white-space: nowrap;
+  align-self: center;
+}
+.ade-dev-chip[data-tone="ok"] { color: var(--kit-ok); background: color-mix(in srgb, var(--kit-ok) 13%, transparent); }
+.ade-dev-chip[data-tone="warn"] { color: var(--kit-warn); background: color-mix(in srgb, var(--kit-warn) 14%, transparent); }
+.ade-dev-chip[data-tone="info"] { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 13%, transparent); }
+.ade-dev-chip[data-tone="muted"] { color: var(--kit-text-3); background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent); }
+
+/* ── The space bar ───────────────────────────────────────────────────── */
+.ade-dev-space { padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+.ade-dev-space-headline {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--kit-text-2);
+}
+.ade-dev-space-headline strong {
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+  font-variant-numeric: tabular-nums;
+  padding: 0 1px;
+}
+.ade-dev-space-bar {
+  display: flex;
+  gap: 3px;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--kit-track);
+}
+.ade-dev-space-seg {
+  flex-basis: 0;
+  min-width: 6px;
+  background: var(--seg-hue);
+}
+.ade-dev-space-seg[data-measuring="true"] {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--seg-hue) 45%, transparent) 0 4px,
+    color-mix(in srgb, var(--seg-hue) 18%, transparent) 4px 8px
+  );
+}
+.ade-dev-space-seg[data-empty="true"] { background: transparent; }
+.ade-dev-space-legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.ade-dev-space-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 10px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ade-dev-space-key[data-static="true"] { cursor: default; }
+button.ade-dev-space-key:hover { background: var(--kit-hover); color: var(--color-fg); }
+button.ade-dev-space-key:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, transparent); outline-offset: 1px; }
+.ade-dev-space-swatch { width: 9px; height: 9px; border-radius: 3px; background: var(--seg-hue); flex: none; }
+.ade-dev-space-label { color: inherit; }
+.ade-dev-space-size { color: var(--color-fg); font-weight: 550; font-variant-numeric: tabular-nums; }
+.ade-dev-space-foot { font-size: 12px; color: var(--kit-text-3); }
+
+/* ── Lists ───────────────────────────────────────────────────────────── */
+.ade-dev-list {
+  container: devlist / inline-size;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+/* Inside a card the list sits flush under the bar. */
+.ade-dev-card .ade-dev-list-flat {
+  border: 0;
+  border-top: 1px solid var(--kit-rule);
+  border-radius: 0;
+  background: transparent;
+}
+.ade-dev-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 52px;
+  padding: 8px 8px 8px 16px;
+}
+.ade-dev-row + .ade-dev-row { border-top: 1px solid var(--kit-rule); }
+.ade-dev-row-glyph { display: flex; color: var(--kit-text-3); }
+.ade-dev-row-text { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-dev-row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 18px;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+}
+.ade-dev-row-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--kit-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ade-dev-owner { color: var(--kit-text-2); }
+.ade-dev-owner[data-owner="lane"] { color: var(--color-fg); font-weight: 500; }
+.ade-dev-size {
+  min-width: 64px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--color-fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ade-dev-size[data-pending="true"] { font-weight: 450; color: var(--kit-text-3); font-size: 12px; }
+
+.ade-dev-showall {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ade-dev-showall:hover { color: var(--color-fg); background: var(--kit-hover); }
+.ade-dev-showall-caret { transition: transform 140ms ease; }
+.ade-dev-showall[aria-expanded="true"] .ade-dev-showall-caret { transform: rotate(180deg); }
+
+.ade-dev-empty,
+.ade-dev-note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-3);
+}
+.ade-dev-empty {
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 14%, transparent);
+}
+.ade-dev-note { margin-top: 10px; }
+.ade-dev-note[data-tone="warn"] { color: var(--kit-warn); margin: 0 0 10px; }
+
+.ade-dev-shimmer {
+  grid-column: 1 / -1;
+  display: block;
+  height: 14px;
+  width: 60%;
+  border-radius: 7px;
+  background: linear-gradient(90deg, var(--kit-track), color-mix(in srgb, var(--color-fg) 8%, transparent), var(--kit-track));
+  background-size: 200% 100%;
+  animation: ade-dev-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes ade-dev-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+.ade-dev-confirm-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 20px;
+}
+.ade-dev-confirm-list li { display: flex; justify-content: space-between; gap: 12px; }
+.ade-dev-confirm-list span { color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
+
+/* ── Needs a Mac ─────────────────────────────────────────────────────── */
+.ade-dev-needsmac { display: flex; flex-wrap: wrap; gap: 18px; padding: 18px; align-items: flex-start; }
+.ade-dev-needsmac-art {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--kit-text-2);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 9%, transparent);
+}
+.ade-dev-needsmac-text { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ade-dev-needsmac-title { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--color-fg); }
+.ade-dev-needsmac-body { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--kit-text-3); max-width: 60ch; }
+.ade-dev-needsmac-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+
+/* ── Narrow columns ──────────────────────────────────────────────────── */
+@container devlist (max-width: 480px) {
+  .ade-dev-row { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: 4px; }
+  .ade-dev-row > .ade-modern-btn { grid-column: 2 / -1; justify-self: start; margin-left: -8px; }
+}
+.ade-dev-xcode-text { flex-basis: 240px; }
+.ade-dev-needsmac-text { flex: 1 1 260px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-dev-showall-caret { transition: none; }
+  .ade-dev-shimmer { animation: none; }
+}

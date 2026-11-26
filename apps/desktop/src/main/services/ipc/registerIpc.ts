@@ -10953,6 +10953,8 @@ export function registerIpc({
   handle(IPC.iosSimulatorRuntimeInstallCancel, async () => ensureIosSimulator().runtimeInstallCancel());
   handle(IPC.iosSimulatorRuntimeDelete, async (_event, arg) => ensureIosSimulator().runtimeDelete(arg));
   handle(IPC.iosSimulatorRuntimePrune, async (_event, arg) => ensureIosSimulator().runtimePrune(arg));
+  handle(IPC.iosSimulatorDerivedDataList, async (_event, arg = {}) => ensureIosSimulator().derivedDataList(arg));
+  handle(IPC.iosSimulatorDerivedDataDelete, async (_event, arg) => ensureIosSimulator().derivedDataDelete(arg));
   handle(IPC.iosSimulatorXcodeRunFirstLaunch, async (_event, arg = {}) => ensureIosSimulator().xcodeRunFirstLaunch(arg));
   handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));

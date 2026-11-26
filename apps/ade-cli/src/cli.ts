@@ -1039,6 +1039,7 @@ export type FormatterId =
   | "apple-device-detach"
   | "apple-device-delete"
   | "apple-device-promote"
+  | "apple-derived-data"
   | "apple-tests"
   | "apple-lease"
   | "apple-install"
@@ -3732,6 +3733,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple duo-skill --text                 Add Apple's app-resizability skill to the lane
     $ ade apple render --poses closed,open --text  3D renders (needs ADE open on the project), as proof
     $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
+    $ ade apple derived-data --measure --text    Xcode's DerivedData folders and their sizes (read only)
     $ ade apple appearance dark --text           Switch to dark mode
     $ ade apple content-size accessibility-large Set Dynamic Type size
     $ ade apple accessibility reduce-motion on   Set one accessibility option
@@ -18429,6 +18431,17 @@ function buildIosSimulatorPlan(
     throw new CliUsageError(
       `ios-sim ${sub}: unknown action '${verb}'. Use list, install or cancel. Removing a runtime is done from the Apple Development panel.`,
     );
+  }
+  if (sub === "derived-data" || sub === "deriveddata") {
+    // `ade apple derived-data [--measure]`: Xcode's build data folders on the
+    // lane's machine. Read only; deleting them is the person's call, from
+    // Settings. `--measure` walks every file (can take minutes).
+    const measure = args.includes("--measure");
+    if (measure) args.splice(args.indexOf("--measure"), 1);
+    return {
+      ...iosAction("Apple derived data", "derivedDataList", { ...(laneId ? { laneId } : {}), ...(measure ? { measure: true } : {}) }),
+      formatter: "apple-derived-data" as const,
+    };
   }
   if (sub === "rotate" || sub === "orientation") {
     const orientation = readIosSimulatorEnum(args, {
@@ -38798,6 +38811,39 @@ function formatAppleDevicePromote(value: unknown): string {
   ].join("\n");
 }
 
+/** `derived-data`: Xcode's build data folders, newest first, with sizes when measured. */
+function formatAppleDerivedData(value: unknown): string {
+  const unwrapped = unwrapActionEnvelope(value);
+  const result = isRecord(unwrapped) && isRecord(unwrapped.result) ? unwrapActionEnvelope(unwrapped.result) : unwrapped;
+  const data = isRecord(result) ? result : {};
+  if (data.supported === false) return "Xcode build data exists only on a Mac.";
+  const root = asString(data.root) ?? "(unknown)";
+  if (data.exists === false) return `No DerivedData folder at ${root}.`;
+  const entries = Array.isArray(data.entries) ? data.entries.filter(isRecord) : [];
+  const measured = typeof data.measuredAt === "string";
+  const rows = entries.map((entry) => [
+    asString(entry.name) ?? asString(entry.folderName) ?? "",
+    typeof entry.sizeBytes === "number" ? formatBytes(entry.sizeBytes) : "-",
+    asString(entry.lastUsedAt)?.slice(0, 10) ?? "-",
+    entry.kind === "module-cache" ? "shared module cache" : entry.workspaceMissing === true ? "project gone" : "",
+    asString(entry.folderName) ?? "",
+  ]);
+  return [
+    renderKeyValues("ADE Xcode derived data", [
+      ["root", root],
+      ["folders", entries.length],
+      ["total", typeof data.totalBytes === "number" ? formatBytes(data.totalBytes) : null],
+      ["measured at", data.measuredAt],
+      ["build running", data.buildRunning === true ? "yes (Xcode or xcodebuild)" : "no"],
+    ]),
+    "",
+    renderTable(["name", "size", "last used", "note", "folder"], rows, "(no DerivedData folders)", { fullColumns: ["folder"] }),
+    ...(measured ? [] : ["", "Sizes not measured. Re-run with --measure (walks every file; can take a while)."]),
+    "",
+    "Deleting build data is the person's call, from ADE's Settings.",
+  ].join("\n");
+}
+
 function formatApplePosture(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const posture = (isRecord(result.posture) ? result.posture : result) as AppleDevicePosture;
@@ -41281,6 +41327,8 @@ function formatTextOutput(
       return formatAppleWindow(value);
     case "apple-device-promote":
       return formatAppleDevicePromote(value);
+    case "apple-derived-data":
+      return formatAppleDerivedData(value);
     case "ios-sim-snapshot":
       return formatIosSimSnapshot(value);
     case "ios-sim-selection":

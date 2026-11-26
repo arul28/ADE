@@ -217,6 +217,73 @@ const BROWSER_MOCK_SIMULATORS = [
   { udid: "pad13", name: "iPad Air 13-inch (M4)", runtime: "iOS 26.3", state: "Shutdown", isAvailable: true, family: "ipad", deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-13-inch-M4" },
 ] as const;
 
+const BROWSER_MOCK_DERIVED_DATA_ROOT = "/Users/ada/Library/Developer/Xcode/DerivedData";
+const BROWSER_MOCK_DAY_MS = 24 * 60 * 60_000;
+/** Xcode's DerivedData in the preview: what `derivedDataDelete` removes from. */
+let browserMockDerivedData: Array<{
+  folderName: string;
+  name: string;
+  workspacePath: string | null;
+  workspaceMissing: boolean;
+  bytes: number;
+  ageDays: number;
+  kind: "project" | "module-cache";
+}> = [
+  { folderName: "ADE-bqhzkxwvmtnrfdlcaejgsoypui", name: "ADE", workspacePath: "/Users/ada/code/ADE/apps/ios/ADE.xcworkspace", workspaceMissing: false, bytes: 14.2 * 1024 ** 3, ageDays: 0.1, kind: "project" },
+  { folderName: "ADEWidgets-hfmzqpwtkcxrnlvdbjegosayui", name: "ADEWidgets", workspacePath: "/Users/ada/code/ADE/apps/ios/ADEWidgets.xcodeproj", workspaceMissing: false, bytes: 3.6 * 1024 ** 3, ageDays: 2, kind: "project" },
+  { folderName: "ModuleCache.noindex", name: "Module cache", workspacePath: null, workspaceMissing: false, bytes: 2.4 * 1024 ** 3, ageDays: 0.2, kind: "module-cache" },
+  { folderName: "Notes-dkwprzmtxhqlnvbfcejgsoyaiu", name: "Notes", workspacePath: "/Users/ada/Downloads/Notes/Notes.xcodeproj", workspaceMissing: true, bytes: 1.9 * 1024 ** 3, ageDays: 12, kind: "project" },
+  { folderName: "Landmarks-mvqzrkpwtxhnlcbdfejgsoyaiu", name: "Landmarks", workspacePath: "/Users/ada/code/samples/Landmarks/Landmarks.xcodeproj", workspaceMissing: false, bytes: 6.8 * 1024 ** 3, ageDays: 40, kind: "project" },
+  { folderName: "ScrumDinger-pzxqmwkrtvhnlcbdfejgsoyaiu", name: "ScrumDinger", workspacePath: "/Users/ada/code/samples/ScrumDinger/ScrumDinger.xcodeproj", workspaceMissing: false, bytes: 0.3 * 1024 ** 3, ageDays: 95, kind: "project" },
+];
+
+function browserMockDerivedDataList(args?: { measure?: boolean | null }) {
+  const measure = args?.measure === true;
+  const nowMs = Date.now();
+  const entries = browserMockDerivedData
+    .map((entry) => ({
+      path: `${BROWSER_MOCK_DERIVED_DATA_ROOT}/${entry.folderName}`,
+      folderName: entry.folderName,
+      name: entry.name,
+      workspacePath: entry.workspacePath,
+      workspaceMissing: entry.workspaceMissing,
+      sizeBytes: measure ? Math.round(entry.bytes) : null,
+      lastUsedAt: new Date(nowMs - entry.ageDays * BROWSER_MOCK_DAY_MS).toISOString(),
+      kind: entry.kind,
+    }))
+    .sort((a, b) => Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt));
+  return {
+    supported: true,
+    root: BROWSER_MOCK_DERIVED_DATA_ROOT,
+    exists: true,
+    entries,
+    totalBytes: measure ? entries.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0) : null,
+    buildRunning: false,
+    measuredAt: measure ? new Date(nowMs).toISOString() : null,
+  };
+}
+
+function browserMockDerivedDataDelete(args: { paths: string[]; confirmedByUser: true }) {
+  if (args?.confirmedByUser !== true) throw new Error("Deleting Xcode build data needs the person's confirmation.");
+  const deleted: Array<{ path: string; bytes: number | null }> = [];
+  const errors: Array<{ path: string; message: string }> = [];
+  for (const target of args.paths ?? []) {
+    const entry = browserMockDerivedData.find((item) => `${BROWSER_MOCK_DERIVED_DATA_ROOT}/${item.folderName}` === target);
+    if (!entry) {
+      errors.push({ path: target, message: "Already gone." });
+      continue;
+    }
+    browserMockDerivedData = browserMockDerivedData.filter((item) => item !== entry);
+    deleted.push({ path: target, bytes: Math.round(entry.bytes) });
+  }
+  return { deleted, errors, freedBytes: deleted.reduce((sum, entry) => sum + (entry.bytes ?? 0), 0) };
+}
+
+const BROWSER_MOCK_RUNTIME_DEVICE_TYPES = [
+  { identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", name: "iPhone 17 Pro", family: "iphone" },
+  { identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Air-11-inch-M4", name: "iPad Air 11-inch (M4)", family: "ipad" },
+];
+
 const resolved =
   <T>(v: T) =>
   async () =>
@@ -9256,7 +9323,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       // `?mockIosLive`: the lane holds the booted iPhone 17 Pro, which streams
       // the Android mock's test picture and records each tap in
       // `window.__adeMockIosTaps`, so iOS taps can be checked by number.
-      deviceList: async (args?: { laneId?: string | null }) => ({
+      deviceList: async (args?: { laneId?: string | null; disk?: boolean | null }) => ({
         installed: browserMockIosStopped
           ? BROWSER_MOCK_SIMULATORS.map((entry) => (entry.udid === "pro" ? { ...entry, state: "Shutdown" } : entry))
           : BROWSER_MOCK_SIMULATORS,
@@ -9280,6 +9347,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           root: "/mock/devices",
           measuredAt: "2026-09-22T00:00:00.000Z",
         },
+        ownership: args?.disk
+          ? [
+            { udid: "pro", ownership: "lane", markerLaneId: null, looksLikeAde: false },
+            { udid: "e", ownership: "unknown", markerLaneId: null, looksLikeAde: false },
+            { udid: "repro", ownership: "ade-other-project", markerLaneId: "lane-other", looksLikeAde: true },
+            { udid: "pad", ownership: "ade-orphan", markerLaneId: "lane-old", looksLikeAde: true, deletesAfter: "2026-09-22T01:00:00.000Z" },
+            { udid: "pad13", ownership: "unknown", markerLaneId: null, looksLikeAde: false },
+          ]
+          : null,
       }) as any,
       deviceStart: resolvedArg({} as any),
       deviceStop: resolvedArg(undefined as any),
@@ -9290,7 +9366,45 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deviceDeleteInstalled: resolvedArg(undefined as any),
       deviceCleanup: resolvedArg({ deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] } as any),
       runtimeList: resolved({
-        runtimes: [],
+        runtimes: [
+          {
+            id: "6F1C9A52-3B7E-4D21-9A0C-1E5B8F2D7C41",
+            runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-3",
+            name: "iOS 26.3",
+            platform: "iOS",
+            version: "26.3",
+            build: "23D127",
+            sizeBytes: 8_412_217_344,
+            deletable: true,
+            lastUsedAt: "2026-11-25T18:20:00.000Z",
+            newest: true,
+            superseded: false,
+            deviceTypes: BROWSER_MOCK_RUNTIME_DEVICE_TYPES,
+            simulators: BROWSER_MOCK_SIMULATORS.map((entry) => ({
+              udid: entry.udid,
+              name: entry.name,
+              state: entry.state,
+              deviceTypeIdentifier: entry.deviceTypeIdentifier,
+              laneHeld: entry.udid === "pro",
+              ade: entry.udid === "repro",
+            })),
+          },
+          {
+            id: "A2D4E7F0-58C1-4B9E-8D36-7C0F1B3E9A25",
+            runtimeIdentifier: "com.apple.CoreSimulator.SimRuntime.iOS-18-6",
+            name: "iOS 18.6",
+            platform: "iOS",
+            version: "18.6",
+            build: "22G86",
+            sizeBytes: 7_903_481_856,
+            deletable: true,
+            lastUsedAt: "2026-08-02T10:05:00.000Z",
+            newest: false,
+            superseded: true,
+            deviceTypes: BROWSER_MOCK_RUNTIME_DEVICE_TYPES,
+            simulators: [],
+          },
+        ],
         leftovers: [{
           path: "/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/mock.asset",
           name: "iOS 18.6",
@@ -9300,7 +9414,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }],
         missing: null,
         install: null,
-        xcode: { version: null, build: null, firstLaunchPending: false, latest: null, updateAvailable: false },
+        xcode: {
+          version: "26.3",
+          build: "17D5044a",
+          firstLaunchPending: false,
+          latest: null,
+          updateAvailable: false,
+          developerDir: "/Applications/Xcode.app/Contents/Developer",
+          appPath: "/Applications/Xcode.app",
+        },
         freeBytes: null,
       } as any),
       runtimeInstall: resolvedArg(null as any),
@@ -9308,6 +9430,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       runtimeDelete: resolvedArg({ deleted: [], moved: [], erased: [], errors: [] } as any),
       runtimePrune: resolvedArg({ deleted: [], moved: [], erased: [], errors: [] } as any),
       xcodeRunFirstLaunch: resolvedArg(null as any),
+      derivedDataList: async (args?: { measure?: boolean | null }) => browserMockDerivedDataList(args) as any,
+      derivedDataDelete: async (args: { paths: string[]; confirmedByUser: true }) => browserMockDerivedDataDelete(args) as any,
       setPosture: resolvedArg({ applied: false, posture: { supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null, displayOrientation: null } } as any),
       getPosture: resolvedArg({ supported: false, angle: null, orientation: null, tableMode: null, activeScreenId: null, displayOrientation: null } as any),
       getDuoModel: resolved({ base64: null, path: null } as any),

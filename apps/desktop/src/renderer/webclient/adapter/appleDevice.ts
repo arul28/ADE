@@ -165,6 +165,8 @@ export function createAppleDeviceNamespace(
     runtimeDelete: (async (args?: unknown) => invoke("runtimeDelete", args ?? {}, false)) as never,
     runtimePrune: (async (args?: unknown) => invoke("runtimePrune", args ?? {}, false)) as never,
     xcodeRunFirstLaunch: (async (args?: unknown) => invoke("xcodeRunFirstLaunch", args ?? {}, false)) as never,
+    derivedDataList: (async (args?: unknown) => invoke("derivedDataList", args ?? {}, true)) as never,
+    derivedDataDelete: (async (args?: unknown) => invoke("derivedDataDelete", args ?? {}, false)) as never,
 
     recordList: (async (args?: unknown) => call(
       "apple.recordList",

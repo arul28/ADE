@@ -715,6 +715,21 @@ monitor and `storageInsightsService`. Reads fall back to a `.gz` generation
 (`readHistoryFileSync`), and `ptyService.create` reinflates a transcript
 before append.
 
+### Developer tools outside the project
+
+Storage & cleanup › Space ends with **Outside this project**
+(`settings/devices/OutsideProjectStorage.tsx`): one bar and one row each for
+Xcode build data, iOS simulators and simulator runtimes (on a Mac) and Android
+emulators, on the machine the page's project copy is on. Each row's Clean up
+opens Apple devices or Android devices on that machine, where the lists and
+their deletes live (`useDevToolsStorage`). The sizes come from the same calls
+the Apple and Android panes use (`iosSimulator.deviceList` with `disk`,
+`runtimeList`, `derivedDataList` with `measure`, `androidEmulator.listDevices`
+with `measureSizes`); they are read when the view opens and after a change,
+never on a timer. Nothing here deletes in the background: each delete is the
+person's, confirmed with its size, and the brain refuses an unconfirmed one
+or one an agent asks for.
+
 ### Storage categories and cleanup safety
 
 | Category | Contents | Default safety |

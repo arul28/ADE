@@ -50,7 +50,7 @@ function simulatorsLabel(entry: AppleRuntimeEntry): string {
  * runtime that runs its model; it is on by default. ADE's lane devices always
  * move, so the checkbox speaks only for the person's own simulators.
  */
-async function confirmRemoval(input: {
+export async function confirmRemoval(input: {
   title: string;
   entries: AppleRuntimeEntry[];
   /** Every installed runtime, to tell which simulators have somewhere to go. */

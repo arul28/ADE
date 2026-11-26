@@ -15,6 +15,7 @@ import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
 import { HealthCleanupHistory, HealthCleanupRules } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
 import { useProjectIgnore } from "../health/ProjectIgnore";
+import { OutsideProjectStorage } from "../devices/OutsideProjectStorage";
 import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
 import { formatMeasuredBytes } from "../storage/storageView";
@@ -49,7 +50,7 @@ const LANES_VIEWS: readonly View[] = [
 ];
 
 const STORAGE_VIEWS: readonly View[] = [
-  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups", "project"] },
+  { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups", "storage-dev-tools", "project"] },
   { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
     id: "recently-deleted",
@@ -235,6 +236,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
           <>
             <HealthSpace data={data} />
             <HealthCleanupHistory data={data} />
+            <OutsideProjectStorage />
             {isAdeAvailable(window.ade.project?.getSnapshot) ? <ProjectSection /> : null}
           </>
         );

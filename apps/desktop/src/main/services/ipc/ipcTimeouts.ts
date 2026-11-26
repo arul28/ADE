@@ -104,6 +104,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     addDuoSkill: IPC.iosSimulatorAddDuoSkill,
     attachRenderProof: IPC.iosSimulatorAttachRenderProof,
     runtimePrune: IPC.iosSimulatorRuntimePrune,
+    derivedDataList: IPC.iosSimulatorDerivedDataList,
+    derivedDataDelete: IPC.iosSimulatorDerivedDataDelete,
     xcodeRunFirstLaunch: IPC.iosSimulatorXcodeRunFirstLaunch,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
@@ -478,6 +480,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorRuntimeDelete:
     case IPC.iosSimulatorRuntimePrune:
     case IPC.iosSimulatorXcodeRunFirstLaunch:
+    // Measuring DerivedData walks every file (tens of GB); a delete measures first.
+    case IPC.iosSimulatorDerivedDataList:
+    case IPC.iosSimulatorDerivedDataDelete:
       return IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS;
     // UAC, the Windows password dialog, or Windows' sign-in window may be
     // waiting on a person; see WINDOWS_DESKTOP_INTERACTIVE_TIMEOUT_MS.

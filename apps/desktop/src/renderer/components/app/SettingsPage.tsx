@@ -719,7 +719,7 @@ export function SettingsPage({
   const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
   // How the tab reaches a machine (`settingsTabPickerKind`).
   const titlePickerKind = settingsTabPickerKind(section);
-  const titlePicker = (section === "agents" || section === "android") && machinesEnabled && !standalone
+  const titlePicker = (section === "agents" || section === "android" || section === "apple") && machinesEnabled && !standalone
     && (reachableMachines(machines, titlePickerKind).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({

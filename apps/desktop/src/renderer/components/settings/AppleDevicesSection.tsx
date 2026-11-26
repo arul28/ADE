@@ -21,6 +21,7 @@ import {
   TapRingsArt,
 } from "./deviceSettingsCards";
 import { ModernSection } from "./primitives";
+import { AppleMachineSection } from "./devices/AppleMachineSection";
 
 /**
  * Presentation choices for Apple simulators and previews.
@@ -44,11 +45,12 @@ export function AppleDevicesSection() {
 
   return (
     <div className="ade-as">
+      <AppleMachineSection />
       <ModernSection
         group="Apple Development"
         anchor="apple-realistic-body"
-        title="Apple Development"
-        hint="How simulators and previews look in the Apple column."
+        title="Display"
+        hint="How simulators and previews look in the Apple column, in this window."
       >
         <FeatureCard
           on={appleDevice.realisticBody}

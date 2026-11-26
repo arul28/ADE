@@ -32,7 +32,7 @@ export type SettingsMachinesValue = {
   /** What each machine is called in a list (`settingsMachineNames`), by machine id. */
   machineNames: ReadonlyMap<string, string>;
   /** Opens a page about one machine: its Machines page, or Providers on it. */
-  openMachine: (machineId: string, tab?: "machines" | "agents" | "android") => void;
+  openMachine: (machineId: string, tab?: "machines" | "agents" | "android" | "apple") => void;
   /** Opens another Settings page, at a card when `anchor` is given. */
   openTab: (tab: string, anchor?: string) => void;
 };

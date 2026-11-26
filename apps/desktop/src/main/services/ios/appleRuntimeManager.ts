@@ -173,6 +173,19 @@ export function parseIosSimulatorSdkVersion(stdout: string): string | null {
   return best;
 }
 
+/**
+ * The Xcode app that holds a developer folder (`xcode-select -p`):
+ * `/Applications/Xcode-beta.app/Contents/Developer` → `/Applications/Xcode-beta.app`.
+ * Null for the Command Line Tools (`/Library/Developer/CommandLineTools`) or no path.
+ */
+export function xcodeAppPathFromDeveloperDir(developerDir: string | null | undefined): string | null {
+  if (!developerDir || !developerDir.startsWith("/")) return null;
+  const parts = developerDir.split("/");
+  const appIndex = parts.findIndex((part) => part.toLowerCase().endsWith(".app"));
+  if (appIndex <= 0) return null;
+  return parts.slice(0, appIndex + 1).join("/");
+}
+
 /** `xcodebuild -version`: `Xcode 27.1` / `Build version 27A9275`. */
 export function parseXcodeVersionOutput(stdout: string): { version: string | null; build: string | null } {
   const version = /Xcode\s+(\d+(?:\.\d+){0,2})/u.exec(stdout)?.[1] ?? null;
@@ -352,15 +365,20 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
   };
 
   const readXcode = async (): Promise<Omit<AppleXcodeStatus, "latest" | "updateAvailable">> => {
-    const version = await deps.run("xcodebuild", ["-version"], { timeoutMs: 20_000 })
-      .then(({ stdout }) => parseXcodeVersionOutput(stdout))
-      .catch(fallingBack("apple.xcode_version_unreadable", { version: null, build: null }));
+    const [version, developerDir] = await Promise.all([
+      deps.run("xcodebuild", ["-version"], { timeoutMs: 20_000 })
+        .then(({ stdout }) => parseXcodeVersionOutput(stdout))
+        .catch(fallingBack("apple.xcode_version_unreadable", { version: null, build: null })),
+      deps.run("xcode-select", ["-p"], { timeoutMs: 10_000 })
+        .then(({ stdout }) => stdout.trim() || null, () => null),
+    ]);
+    const appPath = xcodeAppPathFromDeveloperDir(developerDir);
     // Exit 0 means nothing is pending; anything else (including a missing
     // Xcode) is reported as pending only when an Xcode version was read.
     const firstLaunchPending = version.version
       ? await deps.run("xcodebuild", ["-checkFirstLaunchStatus"], { timeoutMs: 20_000 }).then(() => false, () => true)
       : false;
-    return { ...version, firstLaunchPending };
+    return { ...version, firstLaunchPending, developerDir, appPath };
   };
 
   /**
