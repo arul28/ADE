@@ -1110,7 +1110,7 @@ import {
 import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
 import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
 import { forgetLocalProjectDatabaseIdentity, ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
-import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
+import { CloudComputerAsleepError, RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
@@ -15002,6 +15002,8 @@ export function registerIpc({
         // Typed, not text-matched: the stage decides whether the user is told
         // to open the project or to check that ADE is running on that machine,
         // and rewording either throw must not flip the instruction.
+        // A sleeping cloud computer is not woken to open an item: its own sentence says so.
+        if (error instanceof CloudComputerAsleepError) throw error;
         const stage = error instanceof RemoteProjectNotFoundError ? "open" : "connect";
         throw describeAttentionOpenFailure(error, stage, args.machineName);
       }

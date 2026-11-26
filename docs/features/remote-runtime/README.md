@@ -387,6 +387,12 @@ Tabs, machines and routing:
   wakes a cloud computer, starts a brain or parks another web connection, and
   is `declined` for a machine the person disconnected. A failed one retries
   after 60 s, at most five times, and on focus.
+- `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — opening a remote
+  project (`remoteRuntime.openProject`, an Activity item) never wakes an ADE
+  Cloud computer: one that is asleep and not connected refuses the open with
+  `CloudComputerAsleepError`, and the top bar binds the tab to its
+  repository's ADE Cloud tab (a tab click, or the tab in front at launch).
+  Connect, a send and any change still wake it.
 - `apps/desktop/src/main/services/machines/machineConnector.ts` —
   `machines.connect`: this computer, a saved connection, or a pairing through
   the account. One flight per machine; a person's connect waits for a

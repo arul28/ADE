@@ -52,7 +52,6 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 // Not from `state/repositoryScope`: that module pulls the app store into the
 // signed-out page.
 import { requirePin } from "../../lib/requirePin";
-import { useProjectOpenWaking } from "../../state/projectOpenWaking";
 import { showToast } from "../../components/app/toast/toastStore";
 
 async function loadFederatedAdapter(
@@ -247,8 +246,6 @@ export function WebClientRoot({
   // The catalog cache is its own store instance: it holds no credentials, so it
   // must not wait behind the sync client's environment/trust bookkeeping.
   const [catalogStore] = useState(() => new WebClientEnvStore());
-  // A restored tab on a sleeping ADE Cloud computer wakes it first: the start screen says so.
-  const projectOpenWaking = useProjectOpenWaking();
   const [sessionManager] = useState(
     () => new WebMachineSessionManager(client, accountClient, undefined, catalogStore),
   );
@@ -1064,7 +1061,7 @@ export function WebClientRoot({
     case "signing-in":
       return <ProgressScreen title="Signing in…" message="Completing secure sign-in…" />;
     case "booting":
-      return <ProgressScreen title={phase.title ?? "Starting ADE"} message={projectOpenWaking ? `Waking ${projectOpenWaking}…` : phase.message} done={phase.done} />;
+      return <ProgressScreen title={phase.title ?? "Starting ADE"} message={phase.message} done={phase.done} />;
     case "error":
       return (
         <ScreenShell title="ADE Web couldn't start" subtitle={phase.message}>
