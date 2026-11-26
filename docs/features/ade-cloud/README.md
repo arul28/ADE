@@ -264,6 +264,20 @@ are in
   `ade cloud prepare-stop` and in `ade cloud save-for-rest`. An unchanged
   copy is not sent again. The text is redacted first. The same save makes
   the lane backups first ([Lane backups at rest](#lane-backups-at-rest)).
+- A chat's copy gets one part when a turn ends. The rest save also sends
+  any chat whose transcript grew after its last part (one file size check per
+  chat): a turn's diff summary lands after `done`, and a notice or card can
+  come while the chat is idle. A diff summary still being worked out counts
+  as busy, so `prepare-stop` waits for it before it saves.
+- A capsule's provider history (the Claude session file and its subagent
+  and tool-result files, the Codex rollout, the OpenCode export) is redacted
+  the same way, string by string, so JSON stays JSON and the provider still
+  resumes from it. Opaque values the provider reads back as they are (a
+  thinking signature, encrypted reasoning, image data) stay as they are, but
+  only under their own field names. Numbers keep their own text. A capsule
+  saved before this redaction is sent again once (its mark lacks
+  `redacted-1`). A move between the person's own computers is not redacted:
+  it goes from computer to computer, and the account server does not keep it.
 - A saved CLI or shell copy opens read-only. The person's own computers that
   are offline are hidden in Work, Lanes and the welcome page.
 

@@ -59,7 +59,14 @@ import { isTrackedAgentCliToolType, type TerminalSessionSummary } from "../../..
 import { readGitOriginUrl } from "../../../../desktop/src/main/services/projects/recentProjectSummary";
 import { redactSecrets } from "../../../../desktop/src/main/services/shared/utils";
 import type { AdeRuntime } from "../../bootstrap";
-import type { CloudChatUploadPendingResult } from "./cloudChatUploader";
+import {
+  CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED,
+  CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED,
+  gunzipFromBase64,
+  gzipToBase64,
+} from "../../../../desktop/src/main/services/chat/crossMachineForkTransport";
+import type { AgentChatCrossMachineForkTransport, AgentChatCrossMachineHandoffCapsule } from "../../../../desktop/src/shared/types/chat";
+import { redactProviderHistoryFile, type CloudChatUploadPendingResult } from "./cloudChatUploader";
 import { parseSavedTranscript, transcriptEndOf, type CapsuleTranscriptEnd } from "./cloudChatRestore";
 import { runLaneBackups, type BackupLane } from "./cloudLaneBackup";
 
@@ -80,6 +87,12 @@ const GIT_TIMEOUT_MS = 15_000;
 /** A capsule's preparation starts only with this much of the save's time left; it never runs past the save's end. */
 const CAPSULE_PREPARE_MIN_MS = 2_000;
 const STATE_FILE = "rest-save.json";
+/**
+ * Leads every capsule mark. A capsule saved under an older mark (before its
+ * history was redacted) is sent again once, so the account keeps no
+ * unredacted copy.
+ */
+const CAPSULE_MARK_VERSION = "redacted-1";
 
 export type CloudRestSaveOptions = {
   /**
@@ -139,6 +152,46 @@ type RestSaveState = {
 const emptyState = (machineKey: string | null): RestSaveState => ({ v: 1, machineKey, sessions: {}, git: {}, capsules: {}, eventWakes: null });
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** One history file, redacted (`redactProviderHistoryFile`) and packed again with its new size. */
+function redactHistoryFile<T extends { contentBase64Gzip: string; uncompressedBytes: number }>(file: T, maxBytes: number): T {
+  const text = gunzipFromBase64(file.contentBase64Gzip, maxBytes).toString("utf8");
+  return { ...file, ...gzipToBase64(redactProviderHistoryFile(text, (value) => redactSecrets(value))) };
+}
+
+/** A fork transport with every file redacted; null when the main file no longer fits its cap. */
+function redactForkTransport(transport: AgentChatCrossMachineForkTransport): AgentChatCrossMachineForkTransport | null {
+  const mainFile = redactHistoryFile(transport.mainFile, CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED);
+  if (mainFile.uncompressedBytes > CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED) return null;
+  const sideFiles = transport.sideFiles?.map((file) => redactHistoryFile(file, CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED));
+  const sideBytes = (sideFiles ?? []).reduce((total, file) => total + file.uncompressedBytes, 0);
+  const { sideFiles: _left, ...rest } = transport;
+  // Side files past their cap are left out, the same as when the source packs them (the resume works without them).
+  return { ...rest, mainFile, ...(sideFiles?.length && sideBytes <= CROSS_MACHINE_FORK_SIDEFILES_MAX_UNCOMPRESSED ? { sideFiles } : {}) };
+}
+
+/**
+ * The capsule a rest save sends to the account server, with the provider's
+ * own history (a chat's `forkTransport`, a CLI's `cli.conversation`) redacted
+ * the same way as the saved transcript of that chat. The rest of the capsule
+ * is redacted when it is made (`portableText`). A move between the person's
+ * own computers is not redacted: it goes from computer to computer and the
+ * account server never keeps it. Null when a redacted file no longer fits.
+ */
+function redactCapsuleHistory<T extends Omit<AgentChatCrossMachineHandoffCapsule, "transcriptEnvelopes">>(capsule: T): T | null {
+  let next = capsule;
+  if (capsule.forkTransport) {
+    const forkTransport = redactForkTransport(capsule.forkTransport);
+    if (!forkTransport) return null;
+    next = { ...next, forkTransport };
+  }
+  if (capsule.cli?.conversation) {
+    const conversation = redactForkTransport(capsule.cli.conversation);
+    if (!conversation) return null;
+    next = { ...next, cli: { ...capsule.cli, conversation } };
+  }
+  return next;
+}
 
 /**
  * Splits a capsule into its parts: each at most `partBytes`, in order, and
@@ -683,11 +736,11 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
                 return;
               }
               modelId = summary.modelId ?? summary.model;
-              mark = `${summary.lastActivityAt ?? ""}|${modelId}`;
+              mark = `${CAPSULE_MARK_VERSION}|${summary.lastActivityAt ?? ""}|${modelId}`;
             } else {
               provider = row.toolType === "codex" ? "codex" : "claude";
               modelId = "";
-              mark = `${row.lastActivityAt ?? row.startedAt}|${row.status}`;
+              mark = `${CAPSULE_MARK_VERSION}|${row.lastActivityAt ?? row.startedAt}|${row.status}`;
             }
             if (state.capsules[row.id] === mark) return;
             // The preparation can't be stopped once it runs, so it starts only with time left, and the
@@ -717,7 +770,15 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
             }
             // The restore reads the FULL saved transcript, so the capsule leaves out its own newest-3-MiB copy.
             // It keeps where that copy ends: a restore never resumes from a capsule older than the transcript.
-            const { transcriptEnvelopes, ...kept } = capsule;
+            const { transcriptEnvelopes, ...raw } = capsule;
+            const kept = redactCapsuleHistory(raw);
+            if (!kept) {
+              // Grew past its cap with the redaction: the restore replays the transcript.
+              logger.warn("cloud.rest_capsule_over_cap", { sessionId: row.id, redacted: true });
+              report.skipped += 1;
+              state.capsules[row.id] = mark;
+              return;
+            }
             const transcriptEnd = isChat ? capsuleTranscriptEnd(transcriptEnvelopes) : null;
             const bytes = gzipSync(Buffer.from(JSON.stringify({ v: 1, capsule: kept, ...(transcriptEnd ? { transcriptEnd } : {}) }), "utf8"));
             const parts = splitCapsule(bytes);
