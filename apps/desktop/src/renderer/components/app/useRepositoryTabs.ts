@@ -18,7 +18,7 @@
  */
 import { useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import { captureError } from "../../../shared/sentry/capture";
-import type { AccountProjectView } from "../../../shared/accountProject";
+import { accountProjectOrigins, type AccountProjectView } from "../../../shared/accountProject";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAppStore } from "../../state/appStore";
@@ -33,6 +33,7 @@ import {
 import { START_ON_LAST_MACHINE_STORAGE_KEY, useAccountProjectList } from "../../state/useRepositoryCopies";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import type { ProjectTabGroup } from "./projectTabGrouping";
+import { WINDOW_STRIP_STORAGE_KEY } from "./windowStripStorage";
 
 export type RepositoryIdentity = {
   /** The repository's current origin for any of its addresses. */
@@ -56,10 +57,7 @@ export function useRepositoryIdentity(): RepositoryIdentity {
     if (list.state === "ready") {
       for (const project of list.projects) {
         projectById.set(project.id, project);
-        for (const key of [project.repoKey, ...project.aliases]) {
-          const origin = normalizeGitRemoteIdentity(originOfRepoKey(key)) ?? originOfRepoKey(key);
-          projectByOrigin.set(origin, project);
-        }
+        for (const origin of accountProjectOrigins(project)) projectByOrigin.set(origin, project);
       }
     }
     return {
@@ -124,9 +122,9 @@ export function renameInTabOrder(
  * local tab roots and the binding in front; before S4 a repository's local
  * copy kept its own tab, so a reload never lost the repository. One tab per
  * repository closes that local copy, so the remote copy must come back too.
- * sessionStorage: one window, until the window closes. No icons (size).
+ * sessionStorage: one window, until the window closes (`windowStripStorage.ts`;
+ * on ADE Web, for one account). No icons (size).
  */
-export const WINDOW_STRIP_STORAGE_KEY = "ade.projectTabs.windowStrip.v1";
 
 export type WindowStripMemory = {
   remoteTabs: RemoteOpenProjectBinding[];

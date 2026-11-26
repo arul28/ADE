@@ -127,6 +127,11 @@ export function parseSavedLaneComputers(raw: unknown): LaneComputer[] {
 }
 
 /** The rows `parseSavedLaneComputers` reads back: everything but the state. */
+export function savedLaneComputers(computers: readonly LaneComputer[]): Array<Omit<LaneComputer, "state">> {
+  return computers.map(({ laneId, laneName, projectOrigin, instanceId, machineKey }) => ({ laneId, laneName, projectOrigin, instanceId, machineKey }));
+}
+
+/** `savedLaneComputers` as stored text. */
 export function savedLaneComputerRows(computers: readonly LaneComputer[]): string {
-  return JSON.stringify(computers.map(({ laneId, laneName, projectOrigin, instanceId, machineKey }) => ({ laneId, laneName, projectOrigin, instanceId, machineKey })));
+  return JSON.stringify(savedLaneComputers(computers));
 }

@@ -8,6 +8,9 @@ import type { WebMachineSessionManager } from "../../workspace/WebMachineSession
 import { createFederatedWebAdapter } from "../federated";
 import { createReconnectHold } from "../reconnectHold";
 import type * as WebCloudMachines from "../../workspace/webCloudMachines";
+import { noteCloudLaneMachines } from "../../../state/adeCloudLaneIndex";
+import type { CloudMachine } from "../../../../shared/adeCloud";
+import { ADE_CLOUD_MACHINE_ID } from "../../../../shared/adeCloud/binding";
 
 const adapters = vi.hoisted(() => new Map<object, {
   ade: Window["ade"];
@@ -17,7 +20,8 @@ const adapters = vi.hoisted(() => new Map<object, {
 }>());
 
 vi.mock("../index", () => ({
-  createAdeWebAdapter: (client: object) => adapters.get(client),
+  // A client no test registered (an account-answered stand-in) gets a fresh fake.
+  createAdeWebAdapter: (client: object) => adapters.get(client) ?? fakeAdapter("account-answered").adapter,
 }));
 
 // The wake goes through a connected computer's sync client; a test holds it open.
@@ -1007,6 +1011,65 @@ describe("createFederatedWebAdapter", () => {
     expect(result.ok).toBe(ok);
     if (!result.ok) expect(result.reason).toBe("declined");
     expect(connectAccountMachine).toHaveBeenCalledTimes(dials);
+  });
+
+  // Reading never wakes an ADE Cloud computer: a reload of a tab whose cloud
+  // computer went to sleep shows the repository from the account instead.
+  it("a reload of a tab on a sleeping ADE Cloud computer opens it from the account and never wakes it", async () => {
+    const actualCloudMachines = await vi.importActual<typeof WebCloudMachines>("../../workspace/webCloudMachines");
+    cloudWake.wake.mockClear();
+    cloudWake.wake.mockImplementation(actualCloudMachines.wakeWebCloudMachine as unknown as () => Promise<void>);
+    try {
+      const fixture = managerFixture();
+      Object.assign(fixture.sessions[0]!.projects[0]!, { repoOwner: "acme", repoName: "app" });
+      // machine-a is the account's ADE Cloud computer; machine-b an own computer that cannot wake it.
+      Object.assign(fixture.manager.getClient("machine-b")!, { getCommandDescriptors: () => [] });
+      noteCloudLaneMachines([{ instanceId: "box-1", machineKey: "cloud-1" } as CloudMachine]);
+      const machine = { deviceId: "dev-cloud", machineKey: "cloud-1", name: "Cloud", online: true, sleepState: "asleep", sleepStateAt: Date.now(), lastSeenAt: Date.now() - 60_000 };
+      const environment = { envId: "machine-a", machineName: "Cloud", hostDeviceId: "dev-cloud", addressCandidates: [] };
+      Object.assign(fixture.manager, {
+        listEnvironments: vi.fn(() => [environment]),
+        findAccountMachineEnvironment: vi.fn(() => environment),
+        acceptUserConnect: vi.fn(),
+        connectAccountMachine: vi.fn(async () => ({ targetId: environment.envId, environment })),
+      });
+      let status = "running";
+      const cloudApi = {
+        listComputers: vi.fn(async () => [{ id: "box-1", status, metadata: { ade_machine_key: "cloud-1" } }]),
+        wake: vi.fn(async () => undefined),
+      };
+      const cloudAccount = {
+        getSnapshot: () => ({ machines: [machine] }),
+        loadMachines: async () => ({ machines: [machine] }),
+        onMachinesChanged: () => () => {},
+        cloudApi: () => cloudApi,
+      } as unknown as BrowserAccountClient;
+      const options = { manager: fixture.manager, accountClient: cloudAccount, accountKey: "sleeping-cloud-restore", fallbackClient: fixture.fallbackClient };
+
+      // The tab was open while the computer was awake.
+      const awake = createFederatedWebAdapter(options);
+      await awake.openProject("machine-a", "project-machine-a");
+      awake.dispose();
+
+      // It went to sleep; the page reloads.
+      status = "sleeping";
+      fixture.sessions[0]!.state = "idle" as "live";
+      fixture.disconnect("machine-a");
+      fixture.manager.openProject = vi.fn(fixture.manager.openProject);
+      const reloaded = createFederatedWebAdapter(options);
+
+      const restored = await reloaded.restore();
+      expect(cloudApi.wake).not.toHaveBeenCalled();
+      expect(cloudWake.wake).not.toHaveBeenCalled();
+      expect(reloaded.takeRestoreFailure()?.message ?? null).toBeNull();
+      expect(restored).toBe("project");
+      expect(fixture.manager.openProject).not.toHaveBeenCalled();
+      expect(reloaded.getActiveBinding()).toMatchObject({ targetId: ADE_CLOUD_MACHINE_ID, gitOriginUrl: "https://github.com/acme/app" });
+      reloaded.dispose();
+    } finally {
+      cloudWake.wake.mockReset();
+      cloudWake.wake.mockImplementation(() => Promise.resolve());
+    }
   });
 });
 

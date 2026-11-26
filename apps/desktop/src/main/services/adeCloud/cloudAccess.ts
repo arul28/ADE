@@ -271,9 +271,18 @@ export async function cloudAccessEnabled(deps: CloudAccessDeps): Promise<boolean
  * `cloudAccessEnabled`: `ready`, `no_access`, `signed_out`, or `unreadable`
  * (the server could not be asked and no earlier yes is cached).
  */
-export async function readCloudAccessState(deps: CloudAccessDeps): Promise<CloudAccess["state"]> {
-  return (await readCloudAccess(deps)).state;
+export async function readCloudAccessState(deps: CloudAccessDeps, options?: CloudAccessReadOptions): Promise<CloudAccess["state"]> {
+  return (await readCloudAccess(deps, options)).state;
 }
+
+export type CloudAccessReadOptions = {
+  /**
+   * How long a failed ask is reused instead of asking again (default 60 s).
+   * Shorter for a caller that holds a turn on the answer, like a cloud
+   * computer's first turn after a start; an ask in flight is still shared.
+   */
+  failureTtlMs?: number;
+};
 
 /** What a window shows for ADE Cloud: on, read-only (blocked) with the server's sentence, signed out, or not known yet. */
 export type CloudAccessView = {
@@ -310,11 +319,16 @@ export function watchCloudAccessForSkills(deps: CloudAccessDeps): void {
 }
 
 /** Yes or no from the server, or null when it couldn't be asked; a cached yes rides out a failure. */
-async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudAccessDeps): Promise<boolean | null> {
+async function readAccessFlag(
+  key: string,
+  provider: CloudProvider,
+  deps: CloudAccessDeps,
+  failureTtlMs = ACCESS_FAILURE_TTL_MS,
+): Promise<boolean | null> {
   const now = Date.now();
   if (accessCache?.key === key && now - accessCache.at < ACCESS_TTL_MS) return accessCache.enabled;
   const cachedYes = () => (accessCache?.key === key && accessCache.enabled ? true : null);
-  if (accessFailure?.key === key && now - accessFailure.at < ACCESS_FAILURE_TTL_MS) return cachedYes();
+  if (accessFailure?.key === key && now - accessFailure.at < failureTtlMs) return cachedYes();
   if (accessAsking?.key === key) return await accessAsking.answer;
   const ask = provider.accessAnswer
     ? provider.accessAnswer()
@@ -342,8 +356,8 @@ async function readAccessFlag(key: string, provider: CloudProvider, deps: CloudA
   }
 }
 
-async function readCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
-  const access = await askCloudAccess(deps);
+async function readCloudAccess(deps: CloudAccessDeps, options?: CloudAccessReadOptions): Promise<CloudAccess> {
+  const access = await askCloudAccess(deps, options);
   // A check that failed is no answer: the skills keep the yes this brain last
   // had for the account, as a cached yes rides out a failure above. Only the
   // skills: every product surface still says the check failed.
@@ -398,7 +412,7 @@ function refreshIphoneSkill(deps: CloudAccessDeps, access: CloudAccess): void {
     });
 }
 
-async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
+async function askCloudAccess(deps: CloudAccessDeps, options?: CloudAccessReadOptions): Promise<CloudAccess> {
   if (!deps.signedIn()) {
     // Not a fact about any account: the next sign-in asks again, even the same one.
     setAccessCache(null);
@@ -408,7 +422,7 @@ async function askCloudAccess(deps: CloudAccessDeps): Promise<CloudAccess> {
   const baseUrl = deps.directoryBaseUrl();
   if (!baseUrl) return { state: "unreadable" };
   const provider = serverProviderFor(deps);
-  const enabled = await readAccessFlag(accessKey(deps), provider, deps);
+  const enabled = await readAccessFlag(accessKey(deps), provider, deps, options?.failureTtlMs);
   if (enabled == null) return { state: "unreadable" };
   return enabled ? { state: "ready", provider } : { state: "no_access" };
 }

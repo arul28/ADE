@@ -56,6 +56,7 @@ import {
 } from "./ProjectWelcomeWebNotices";
 import { MergeWorktreeProjectDialog } from "./MergeWorktreeProjectDialog";
 import type {
+  OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
@@ -76,10 +77,9 @@ function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
 
-/** Whether the tab in front is this remote project (no later choice replaced the open). */
-function isOpenRemoteProject(targetId: string, projectId: string): boolean {
-  const binding = useAppStore.getState().projectBinding;
-  return binding?.kind === "remote" && binding.targetId === targetId && binding.projectId === projectId;
+/** Whether the tab in front is still the binding an open returned (no later choice replaced it). */
+function isOpenBinding(opened: OpenProjectBinding): boolean {
+  return useAppStore.getState().projectBinding?.key === opened.key;
 }
 
 export function ProjectWelcomePage() {
@@ -319,11 +319,13 @@ export function ProjectWelcomePage() {
       if (!machine) {
         // The row of an open tab names that tab's saved machine, which the
         // list does not hold while its computer is asleep or not answering:
-        // open the tab, which wakes a sleeping ADE Cloud computer first.
+        // open the tab (a sleeping ADE Cloud computer opens from ADE Cloud).
         void (async () => {
           try {
-            await switchRemoteProject(machineKey, projectId);
-            if (isOpenRemoteProject(machineKey, projectId)) navigate(workspace.consumePendingProjectPath() ?? "/work");
+            // The open can land on the repository's ADE Cloud tab (a sleeping
+            // ADE Cloud computer): the binding it returned is the one to find.
+            const opened = await switchRemoteProject(machineKey, projectId);
+            if (isOpenBinding(opened)) navigate(workspace.consumePendingProjectPath() ?? "/work");
           } catch (error) {
             if (onUnreachable?.()) return;
             setRowError(error instanceof Error ? error.message : String(error));
@@ -398,7 +400,8 @@ export function ProjectWelcomePage() {
       if (webMode && rp.kind === "remote" && rp.remote) {
         // A tab of this repository is open, or waiting, on a computer this
         // browser cannot reach now (asleep, or not answering): the row opens
-        // that tab, which wakes a sleeping ADE Cloud computer first.
+        // that tab. A sleeping ADE Cloud computer is not woken: the tab opens
+        // as the repository's ADE Cloud tab.
         const origin = normalizeGitRemoteIdentity(rp.gitOriginUrl ?? null);
         const unreachableTab = [...useAppStore.getState().openRemoteProjectTabs, ...webStoppedTabCopies()].find((binding) => (
           (origin ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) === origin : binding.rootPath === rp.rootPath)
@@ -408,9 +411,10 @@ export function ProjectWelcomePage() {
           const rowKey = recentKey(rp);
           setOpeningRowKey(rowKey);
           void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
-            () => {
-              // A later choice can supersede this open while the computer wakes.
-              if (isOpenRemoteProject(unreachableTab.targetId, unreachableTab.projectId)) {
+            (opened) => {
+              // A later choice can supersede this open. The open can land on
+              // the repository's ADE Cloud tab, so it checks what it returned.
+              if (isOpenBinding(opened)) {
                 navigate(workspace?.consumePendingProjectPath() ?? "/work");
               }
             },
@@ -457,11 +461,11 @@ export function ProjectWelcomePage() {
           });
           return;
         }
-        // Offline: establish the SSH connection first, then bind the project.
+        // Offline: the open connects the machine first (it never wakes a
+        // sleeping ADE Cloud computer: that one opens with no machine below).
         setConnectingKeys((prev) => new Set(prev).add(key));
         void (async () => {
           try {
-            await window.ade.remoteRuntime.connect(targetId);
             await switchRemoteProject(targetId, projectId);
           } catch (error) {
             // The machine did not come online: the repository still opens, as

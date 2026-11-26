@@ -12,8 +12,9 @@ export function setWebStoppedTabCopies(stoppedCopies: Iterable<RemoteOpenProject
 
 /**
  * The copies of tabs whose computer stopped (asleep, or not answering). Home
- * opens one of these for its repository: opening it wakes a sleeping ADE
- * Cloud computer, and the ADE Cloud tab gives way to it once it connects.
+ * opens one of these for its repository: a sleeping ADE Cloud computer is
+ * not woken (the tab opens from ADE Cloud), and the ADE Cloud tab gives way
+ * to the copy once its computer connects.
  */
 export function webStoppedTabCopies(): readonly RemoteOpenProjectBinding[] {
   return stopped;

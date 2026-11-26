@@ -1,7 +1,7 @@
 /**
  * The few seams between the sign-in sync (one per brain process) and the
  * services of each project runtime. Kept in a module whose only runtime
- * import is the SDK-free Sentry capture, so the chat service reads the gate without loading the sync
+ * imports are the SDK-free Sentry capture and `withTimeout`, so the chat service reads the gate without loading the sync
  * service, and a process with no sync (the desktop main, a dev brain) pays
  * one null check.
  *
@@ -16,6 +16,7 @@
  */
 
 import { captureError } from "../../../shared/sentry/capture";
+import { withTimeout } from "../shared/withTimeout";
 import type {
   ProviderLoginGateOptions,
   ProviderLoginGateOutcome,
@@ -41,9 +42,45 @@ function reportSeamFailure(seam: string, error: unknown, provider?: string | nul
 /** Checks before a turn for a provider the carry table does not handle (P6: Claude). */
 const beforeTurnChecks = new Map<string, Set<Gate>>();
 
+/** How long a cloud computer's boot holds turns for the sync's gate (its install loads a few modules). */
+export const PROVIDER_LOGIN_GATE_HOLD_MS = 30_000;
+
+/** The boot's hold, until the sync installs its gate or the boot gives up on it. */
+let held: { gate: BaseGate; release: () => void } | null = null;
+
 /** The sync installs the gate on a cloud computer only; everywhere else it stays null. */
 export function installProviderLoginGate(next: BaseGate | null): void {
+  const hold = held;
+  held = null;
   gate = next;
+  hold?.release();
+}
+
+/**
+ * A cloud computer's boot, before the sign-in sync is installed (its install
+ * runs off the boot path): a turn or a CLI start waits for the sync's gate,
+ * at most `limitMs` from now, instead of going on with no sign-in written.
+ * The install (`installProviderLoginGate`) ends the hold; so does a failed
+ * install, which installs null. Never call it where the sync stays off.
+ */
+export function holdProviderLoginGate(limitMs = PROVIDER_LOGIN_GATE_HOLD_MS): void {
+  if (gate) return;
+  let release!: () => void;
+  const installed = new Promise<void>((resolve) => { release = resolve; });
+  // No gate came: later turns pay nothing again.
+  const timer = setTimeout(endProviderLoginGateHold, limitMs);
+  timer.unref?.();
+  const holdGate: BaseGate = async (provider, options) => {
+    await installed;
+    return gate && gate !== holdGate ? await gate(provider, options) : undefined;
+  };
+  held = { gate: holdGate, release: () => { clearTimeout(timer); release(); } };
+  gate = holdGate;
+}
+
+/** The boot gave up on the sync (its install failed): held turns go on, and no gate stays. A gate installed already stays. */
+export function endProviderLoginGateHold(): void {
+  if (held && gate === held.gate) installProviderLoginGate(null);
 }
 
 /**
@@ -71,7 +108,6 @@ export function registerProviderLoginGate(provider: string, beforeTurn: Gate): (
 async function runGate(
   provider: string,
   base: BaseGate,
-  extra: Set<Gate> | undefined,
   options: ProviderLoginGateOptions | undefined,
 ): Promise<ProviderLoginGateOutcome | null> {
   // The turn goes ahead either way; a failed gate is reported, so it does not read as "nothing to do".
@@ -79,7 +115,8 @@ async function runGate(
     reportSeamFailure("gate", error, provider);
     return undefined;
   });
-  for (const check of [...(extra ?? [])]) {
+  // Read after the gate: a check registered while a boot's turn waited runs too.
+  for (const check of [...(beforeTurnChecks.get(provider.trim().toLowerCase()) ?? [])]) {
     await check(provider).catch((error: unknown) => reportSeamFailure("before_turn_check", error, provider));
   }
   return outcome ?? null;
@@ -97,10 +134,36 @@ export const providerLoginGate = Object.assign(
   (provider: string, options?: ProviderLoginGateOptions): Promise<ProviderLoginGateOutcome | null> | null => {
     // No installed gate (every computer but a cloud computer with the sync on): nothing runs, not even a registered check.
     if (!gate) return null;
-    return runGate(provider, gate, beforeTurnChecks.get(provider.trim().toLowerCase()), options);
+    return runGate(provider, gate, options);
   },
   { register: registerProviderLoginGate },
 );
+
+/** The most a CLI start waits for the gate; a phone's request budget is 30 s. */
+export const CLI_PROVIDER_LOGIN_WAIT_MS = 20_000;
+
+/**
+ * The gate before a CLI process starts (a launch, a resume, a reattach):
+ * `providerLoginGate` with a limit of CLI_PROVIDER_LOGIN_WAIT_MS, so a phone's
+ * request does not time out. Past it the CLI starts and the gate keeps
+ * applying the sign-in in the background. A terminal has no card, so the
+ * lines a chat would show are logged as `event`. Null gate: no await.
+ */
+export async function awaitCliProviderLogin(
+  provider: string | null | undefined,
+  log: { event: string; logger?: { info(event: string, data?: Record<string, unknown>): void } | null },
+): Promise<void> {
+  if (!provider || provider === "shell") return;
+  const loginGate = providerLoginGate(provider);
+  if (!loginGate) return;
+  const outcome = await withTimeout(loginGate, CLI_PROVIDER_LOGIN_WAIT_MS);
+  if (outcome && outcome.result === "ok" && !outcome.notices?.length) return;
+  log.logger?.info(log.event, {
+    provider,
+    result: outcome?.result ?? "start_wait_ended",
+    notices: (outcome?.notices ?? []).map((notice) => notice.providerLogin.kind),
+  });
+}
 
 export type ProviderLoginRestartOptions = {
   /**

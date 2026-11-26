@@ -3,8 +3,9 @@
  * fresh vault, then this provider applied. When the copy here is about to
  * expire, the short wait: pull now; while the owner may be renewing (up to
  * 60 s past expiry), pull every 5 s for up to 20 s; then, the owner being
- * off, take the renewal over. The whole gate stays under 45 s;
- * then `owner_off` with the owner's name, and the turn goes ahead.
+ * off, take the renewal over. That part stays under 45 s;
+ * then `owner_off` with the owner's name, and the turn goes ahead. On a
+ * computer that just started, a wait for the account (at most 30 s) comes first.
  */
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
@@ -16,8 +17,11 @@ import type {
 } from "../../../shared/types/providerLogins";
 import { writeAppliedState, type AppliedEntry } from "./providerLoginApply";
 import { PROVIDER_LOGIN_CARRY } from "./providerLoginCarry";
+import { withTimeout } from "../shared/withTimeout";
 import { PROVIDER_LOGIN_VAULT_KIND } from "./providerLoginPayload";
 import {
+  COLD_ACCESS_RETRY_MS,
+  COLD_GATE_LIMIT_MS,
   GATE_LIMIT_MS,
   GATE_MAX_AGE_MS,
   PROVIDER_NAMES,
@@ -45,13 +49,35 @@ export function createGate(s: SyncShared) {
    * `owner_off` with the owner's name, and the turn goes ahead.
    */
   async function gate(provider: string, options: ProviderLoginGateOptions = {}): Promise<ProviderLoginGateOutcome> {
-    // A new cloud computer's first turn can come while the ADE Cloud answer is still being read.
-    if (!ticks.length && s.accessPending) await Promise.race([s.accessPending, new Promise((resolve) => setTimeout(resolve, GATE_LIMIT_MS).unref?.())]);
-    if (!ticks.length) return { result: "ok" };
     const providerId = provider.trim().toLowerCase();
+    // A cloud computer that just started: the turn waits for the account first,
+    // so its sign-in is applied below instead of the provider refusing the turn.
+    const cold = !ticks.length;
+    if (cold) {
+      const waited = await waitForAccount(providerId, options);
+      if (waited !== "joined") return { result: waited };
+    }
+    // The account settings hold which sign-in ADE Cloud uses. Their tick does
+    // not pull when it starts, so the gate pulls them until one pull is ready.
+    const pullSettings = (): Promise<unknown> | undefined => {
+      if (s.settingsReady) return undefined;
+      return deps.settings()?.sync?.()?.then((status) => {
+        if (status === "ready") s.settingsReady = true;
+      });
+    };
+    const pullAccount = (): Promise<unknown> | undefined => {
+      const vaultPull = deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS });
+      const settingsPull = pullSettings();
+      return settingsPull ? Promise.all([vaultPull, settingsPull]) : vaultPull;
+    };
     const gated = PROVIDER_LOGIN_CARRY.some((row) => row.provider === providerId && row.carry === "carried")
       || SAVED_KEYS.some((spec) => spec.provider === providerId);
-    if (!gated) return { result: "ok" };
+    if (!gated) {
+      // Claude's pass check (a registered check, after this gate) reads the vault and settings: fresh after a cold start.
+      const pulled = cold ? pullAccount() : pullSettings();
+      if (pulled) await withTimeout(pulled, GATE_LIMIT_MS);
+      return { result: "ok" };
+    }
     const started = now();
     const limit = <T>(promise: Promise<T> | undefined, budgetMs = GATE_LIMIT_MS): Promise<T | "timeout" | undefined> => {
       if (!promise) return Promise.resolve(undefined);
@@ -64,7 +90,7 @@ export function createGate(s: SyncShared) {
         if (timer) clearTimeout(timer);
       });
     };
-    const synced = await limit(deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS }));
+    const synced = await limit(pullAccount());
     const applied = synced === "timeout" ? "timeout" : await limit(jobs.pass([providerId as ProviderLoginProvider]));
     let outcome: ProviderLoginGateOutcome = synced === "timeout" || applied === "timeout" ? { result: "timeout" } : { result: "ok" };
     // A takeover running here (armed, or a turn's that went on) holds the turn too: its CLI must not renew the same copy.
@@ -95,6 +121,61 @@ export function createGate(s: SyncShared) {
       });
     }
     return outcome;
+  }
+
+  /**
+   * Before the ticks are joined (a cloud computer that just started or woke):
+   * wait for the account's sign-in and its ADE Cloud answer, at most
+   * COLD_GATE_LIMIT_MS. "joined": the ticks run now, and the gate applies this
+   * provider. "ok": an answer that never joins them (no ADE Cloud), nothing to
+   * wait for. "timeout": still no answer; later turns don't wait again until
+   * the next read (`coldWaitSpent`). Turns at the same moment share the reads.
+   */
+  async function waitForAccount(provider: string, options: ProviderLoginGateOptions): Promise<"joined" | "ok" | "timeout"> {
+    if (s.coldWaitSpent) return "ok";
+    const started = now();
+    const deadline = started + COLD_GATE_LIMIT_MS;
+    let askedAt = Number.NEGATIVE_INFINITY;
+    let told = false;
+    while (!ticks.length) {
+      const left = deadline - now();
+      if (left <= 0) break;
+      if (s.accessPending) {
+        await withTimeout(s.accessPending, left);
+        continue;
+      }
+      const last = s.lastAccess;
+      // "ready" with no ticks: no vault here; "no_access": no ADE Cloud. Neither is a wait.
+      if (last !== "signed_out" && last !== "unreadable") return "ok";
+      if (!told) {
+        // This wait can take a while: one line for the chat, as the short wait has.
+        told = true;
+        try {
+          options.onWait?.("Getting this cloud computer's sign-ins from your ADE account…");
+        } catch (error) {
+          // The line is for the person; a caller's failure never holds the turn.
+          deps.logger.warn("provider_login.gate_line_failed", { name: error instanceof Error ? error.name : "unknown" });
+        }
+      }
+      if (last === "unreadable" && now() - askedAt >= COLD_ACCESS_RETRY_MS) {
+        // The network may be back since the last read: ask the server now, not at the 60 s re-check.
+        askedAt = now();
+        void jobs.refreshAccess({ failureTtlMs: COLD_ACCESS_RETRY_MS });
+        continue;
+      }
+      // Signed out: until a read starts (the account's sign-in asks one). Unreadable: until the next ask.
+      const wait = last === "unreadable" ? Math.min(left, askedAt + COLD_ACCESS_RETRY_MS - now()) : left;
+      await withTimeout(jobs.nextAccessRead(), wait);
+    }
+    const waitedMs = now() - started;
+    if (ticks.length) {
+      if (waitedMs >= 100) deps.logger.info("provider_login.gate_cold", { provider, waitedMs, result: "joined" });
+      return "joined";
+    }
+    // A read still in flight is an answer coming: the next turn waits for it.
+    if (!s.accessPending) s.coldWaitSpent = true;
+    deps.logger.warn("provider_login.gate_cold", { provider, waitedMs, result: "timeout", access: s.lastAccess });
+    return "timeout";
   }
 
   /**

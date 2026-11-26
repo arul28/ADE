@@ -1,4 +1,5 @@
 import { accountRepoScopeKey } from "./accountSettingsScope";
+import { normalizeGitRemoteIdentity } from "./crossMachineHandoff";
 import type {
   AccountProjectAddRequest,
   AccountProjectCopyView,
@@ -57,6 +58,18 @@ export type GithubRepoIdentity = {
   /** `repo:<host>/<owner>/<name>`, the key `accountRepoScopeKey` gives. One of the project's aliases. */
   repoKey: string;
 };
+
+/**
+ * The repository origins an account project answers to, normalized as
+ * `normalizeGitRemoteIdentity` gives them (`host/owner/name`): its key and
+ * each alias.
+ */
+export function accountProjectOrigins(project: Pick<AccountProjectView, "repoKey" | "aliases">): string[] {
+  return [project.repoKey, ...project.aliases].map((key) => {
+    const origin = key.startsWith("repo:") ? key.slice("repo:".length) : key;
+    return normalizeGitRemoteIdentity(origin) ?? origin;
+  });
+}
 
 /** A project on the account (the server's view without its aliases and copies). */
 export type AccountProject = Pick<
