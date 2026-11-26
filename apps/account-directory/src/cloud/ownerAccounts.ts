@@ -211,15 +211,16 @@ const safeJson = (text: string): unknown => {
   }
 };
 
-const withoutTest = (account: AccountRow): AccountRow => ({ ...account, test_plan: null, test_computers: null, test_hours_milli: null });
-
 /**
  * What the owner must know about the test in force: it leaves the account out
  * of credits its real plan still has, so the next minute tick stops its
  * computers that use credits, cancels its timed wake-ups and emails it.
  */
-function testWarnings(account: AccountRow, liveUsed: number): string[] {
-  if (!hasAccountTest(account) || !isOutOfHours(account, liveUsed) || isOutOfHours(withoutTest(account), liveUsed)) return [];
+async function testWarnings(env: CloudEnv, account: AccountRow, now: number): Promise<string[]> {
+  if (!hasAccountTest(account)) return [];
+  const liveUsed = (await accountWithUnsettledPhones(env, account.user_id, now)).liveUsedMilli ?? account.used_milli;
+  const real = { ...account, test_plan: null, test_computers: null, test_hours_milli: null };
+  if (!isOutOfHours(account, liveUsed) || isOutOfHours(real, liveUsed)) return [];
   return [`This test leaves the account out of credits (${hoursOf(liveUsed)} used of ${hoursOf(includedMilliOf(account))}) while its real plan still has some. At the next minute tick its computers that use credits stop, its timed wake-ups are cancelled, and it gets the out-of-credits email. Give the test more credits, or reset, to avoid it.`];
 }
 
@@ -337,7 +338,7 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     if (!listed.ok) return listed;
   }
   if (testChanged || phoneChoice !== undefined) account = await loadAccount(env, who.userId, now);
-  const warnings = testWarnings(account, (await accountWithUnsettledPhones(env, who.userId, now)).liveUsedMilli ?? account.used_milli);
+  const warnings = await testWarnings(env, account, now);
   return json({ ok: true, account: await describeAccount(env, account, who.email, now), ...(warnings.length ? { warnings } : {}) });
 }
 
