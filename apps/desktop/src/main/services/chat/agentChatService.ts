@@ -68190,10 +68190,10 @@ export function createAgentChatService(args: {
   /**
    * The CTO reply a reaction names when it is older than the recent window
    * (the person scrolled back to it). Pages back from the end of the
-   * transcript, at most REACTION_LOOKUP_MAX_PAGES pages, and keeps only the
-   * page that holds its text and the page before it (for earlier fragments).
-   * The recent events still say whether ADE took it back or how the person
-   * reacted to it last.
+   * transcript, at most REACTION_LOOKUP_MAX_PAGES pages, to the page before
+   * the one that holds its text (for earlier fragments). From each page it
+   * keeps only what names that reply: its text, the person's reactions on it
+   * and the retractions, so a reaction or a take-back in between still counts.
    */
   const findOlderCtoReactableMessage = async (
     sessionId: string,
@@ -68202,8 +68202,13 @@ export function createAgentChatService(args: {
   ): Promise<ReturnType<typeof ctoReactableMessage>> => {
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
     if (!transcriptPath) return null;
+    const namesTarget = (event: AgentChatEvent): boolean =>
+      event.type === "transcript_retraction"
+      || (event.type === "text" && assistantMessageReactionKey(event) === targetKey)
+      || (event.type === "assistant_message_reaction" && event.targetKey === targetKey);
     let cursor = await readHistoryFileSize(transcriptPath);
-    let hit: AgentChatEvent[] | null = null;
+    let kept: AgentChatEvent[] = [];
+    let found = false;
     for (let pages = 0; cursor > 0 && pages < REACTION_LOOKUP_MAX_PAGES; pages += 1) {
       const page = await readTranscriptHistoryPage({
         transcriptPath,
@@ -68212,16 +68217,12 @@ export function createAgentChatService(args: {
         maxBytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES,
       });
       cursor = page.startOffset;
-      const pageEvents = page.envelopes.map((entry) => entry.event);
-      if (hit) {
-        hit = [...pageEvents, ...hit];
-        break;
-      }
-      if (pageEvents.some((event) => event.type === "text" && assistantMessageReactionKey(event) === targetKey)) {
-        hit = pageEvents;
-      }
+      const pageEvents = page.envelopes.map((entry) => entry.event).filter(namesTarget);
+      kept = [...pageEvents, ...kept];
+      if (found) break;
+      found = pageEvents.some((event) => event.type === "text");
     }
-    return hit ? ctoReactableMessage([...hit, ...recentEvents], targetKey) : null;
+    return found ? ctoReactableMessage([...kept, ...recentEvents], targetKey) : null;
   };
 
   const reactToMessage = async (args: AgentChatReactToMessageArgs): Promise<AgentChatReactToMessageResult> => {
