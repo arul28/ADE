@@ -17489,7 +17489,15 @@ final class SyncService: ObservableObject {
     // the server holds the message, wakes the lane's own computer (or makes
     // a new one that continues this chat), and delivers it once. The phone
     // may close meanwhile. An older server has no queue: wake, then send.
+    // Thread comments skip the queue while the computer still exists, as on
+    // the desktop (`sendThroughAdeCloudQueue`): the host adds them to the
+    // message, and a held message reaches it without them. The computer
+    // wakes and the send goes direct. A deleted computer took its comments
+    // with it, so its chat still queues the text for the new one.
+    let threadCommentsNeedComputer = includeThreadComments
+      && chatThreadKey(for: sessionId)?.machineKey.hasPrefix(ADECloudMachine.savedFleetKeyPrefix) == false
     if (attachments ?? []).isEmpty,
+       !threadCommentsNeedComputer,
        let key = chatThreadKey(for: sessionId),
        let accountKey = savedCloudChatAccountKey(forThreadKey: key) {
       let messageId = (args["clientSendId"] as? String) ?? UUID().uuidString
@@ -17505,8 +17513,17 @@ final class SyncService: ObservableObject {
         if !cloudFiles.isEmpty { throw CloudChatFilesNeedLiveLink() }
       }
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
-      // Files ride a live link only: wake the computer first.
+      // Files and thread comments ride a live link only: wake the computer first.
       await wakeSavedCloudChatComputer(key)
+      // Still no link (a wake ADE Cloud refused, or one that timed out): say
+      // why and keep the draft, never fall into this phone's own queue, which
+      // neither wakes the computer nor carries the comments there.
+      if savedCloudChatAccountKey(forThreadKey: key) != nil {
+        throw NSError(domain: "ADE", code: 47, userInfo: [
+          NSLocalizedDescriptionKey: cloudWakeFailure(fleetKey: key.machineKey)
+            ?? "This chat's ADE Cloud computer didn't wake. Your message is still here; try again.",
+        ])
+      }
     }
     // Files read for the queue, but the computer came back meanwhile: the
     // caller uploads them over the live link instead of sending text alone.
