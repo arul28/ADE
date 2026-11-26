@@ -14,6 +14,8 @@ const lanesApi = {
   getBranchDrift: vi.fn(),
   resolveBranchDrift: vi.fn(),
 };
+const sessionsApi = { list: vi.fn(), onChanged: vi.fn(() => () => undefined) };
+const agentChatApi = { interrupt: vi.fn() };
 let emitLifecycle: (event: LaneLifecycleEvent) => void = () => undefined;
 
 /** The tab's copy: its lanes' branches are read and switched there. */
@@ -32,13 +34,15 @@ beforeAll(() => {
     emitLifecycle = callback;
     return () => undefined;
   });
-  (window as unknown as { ade: unknown }).ade = { lanes: lanesApi };
+  (window as unknown as { ade: unknown }).ade = { lanes: lanesApi, sessions: sessionsApi, agentChat: agentChatApi };
 });
 
 beforeEach(() => {
   lanesApi.switchBranch.mockReset().mockResolvedValue({});
   lanesApi.getBranchDrift.mockReset().mockResolvedValue(null);
   lanesApi.resolveBranchDrift.mockReset().mockResolvedValue({});
+  sessionsApi.list.mockReset().mockResolvedValue([]);
+  agentChatApi.interrupt.mockReset().mockResolvedValue({});
 });
 
 afterEach(() => {
@@ -47,8 +51,20 @@ afterEach(() => {
 });
 
 describe("LaneBranchComposerChip", () => {
-  it("shows where ADE moved the lane after its agent switched branches, and Switch back checks the old branch out", async () => {
+  it("switches back after stopping the background work from a settled chat", async () => {
     seedLane({ branchRef: "ade/follow-up" });
+    lanesApi.switchBranch.mockRejectedValueOnce(new Error("This lane has active sessions. Confirm the branch switch to continue."));
+    sessionsApi.list.mockResolvedValue([{
+      id: "settled-chat",
+      laneId: "lane-1",
+      title: "Settled chat",
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "idle",
+      settledAt: "2026-11-26T15:00:00Z",
+      backgroundWork: { workingCount: 1, monitoringCount: 0 },
+    }]);
+    agentChatApi.interrupt.mockImplementation(async () => { sessionsApi.list.mockResolvedValue([]); });
     render(<LaneBranchComposerChip laneId="lane-1" />);
     expect(screen.queryByTestId("lane-branch-adopted-chip")).toBeNull();
 
@@ -70,6 +86,19 @@ describe("LaneBranchComposerChip", () => {
       laneId: "lane-1",
       branchName: "ade/lane",
       mode: "existing",
+    }, TAB_PIN));
+    const stop = await screen.findByRole("button", { name: "Stop and switch" });
+    expect(lanesApi.switchBranch).toHaveBeenCalledTimes(1);
+    fireEvent.click(stop);
+    await waitFor(() => expect(agentChatApi.interrupt).toHaveBeenCalledWith({
+      sessionId: "settled-chat",
+      mode: "stop_and_clear_and_background",
+    }, TAB_PIN));
+    await waitFor(() => expect(lanesApi.switchBranch).toHaveBeenLastCalledWith({
+      laneId: "lane-1",
+      branchName: "ade/lane",
+      mode: "existing",
+      acknowledgeActiveWork: true,
     }, TAB_PIN));
     await waitFor(() => expect(screen.queryByTestId("lane-branch-adopted-chip")).toBeNull());
   });

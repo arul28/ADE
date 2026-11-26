@@ -30,10 +30,8 @@ export type LaneActiveWorkRow = {
 
 function sessionIsWorking(session: TerminalSessionSummary): boolean {
   const input = canonicalInputFromSummary(session);
-  if (sessionIsMidFlight(input)) return true;
-  // Background jobs keep using the worktree after the turn ends.
-  const state = sessionCanonicalUiState(input);
-  return state.phase === "running" && state.liveness === "background";
+  // Jobs keep using the worktree even after the chat is marked settled.
+  return (input.backgroundWork?.workingCount ?? 0) > 0 || sessionIsMidFlight(input);
 }
 
 /**
