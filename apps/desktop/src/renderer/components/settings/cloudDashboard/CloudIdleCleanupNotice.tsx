@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   formatCloudDate,
   idleCleanupHeldNext,
   idleCleanupWhen,
@@ -33,6 +34,18 @@ export function idleEntryName(entry: CloudIdleCleanupEntry): string {
 /** "pricing-page's computer": the idle cleanup deletes the computer; the lane stays. */
 function idleSubject(entry: CloudIdleCleanupEntry): string {
   return entry.laneName ? `${entry.laneName}'s computer` : idleEntryName(entry);
+}
+
+/**
+ * Why the save failed, without what the title already says. The server's
+ * reason opens with "ADE couldn't save this lane's work." and names each lane
+ * ("pricing-page: …"); a computer holds one lane, the one the notice names.
+ */
+export function idleHeldReason(entry: Pick<CloudIdleCleanupEntry, "laneName"> & { held: { reason: string } }): string {
+  let reason = entry.held.reason.trim();
+  if (reason.startsWith(CLOUD_BACKUP_NOT_SAVED_SENTENCE)) reason = reason.slice(CLOUD_BACKUP_NOT_SAVED_SENTENCE.length).trim();
+  if (entry.laneName && reason.startsWith(`${entry.laneName}: `)) reason = reason.slice(entry.laneName.length + 2);
+  return reason;
 }
 
 /** What happens before the delete and what is lost, in two short sentences. */
@@ -102,7 +115,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
                 title: `${idleSubject(entry)} wasn't deleted: ADE couldn't save its work`,
-                detail: `${entry.held.reason} ${idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)}${ignoredDetail(entry)}`,
+                detail: [idleHeldReason({ laneName: entry.laneName, held: entry.held }), idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)].filter(Boolean).join(" ") + ignoredDetail(entry),
                 actions: [action],
                 report: false,
               }}

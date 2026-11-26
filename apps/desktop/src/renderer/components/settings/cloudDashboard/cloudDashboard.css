@@ -351,7 +351,8 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 /* ───────────────────────── The page (Cloud 5) ───────────────────────── */
 
 .adecd-card { min-width: 0; }
-.adecd-card .kit-card-head { gap: 8px; }
+/* The title stays on one line; the quiet note beside it is what gives way. */
+.adecd-card .kit-card-head { gap: 8px; white-space: nowrap; }
 .adecd-head-note {
   min-width: 0;
   margin-left: 6px;
@@ -673,8 +674,9 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-name > svg { flex: none; }
 .adecd-name-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .adecd-name .kit-tag { flex: none; }
-.adecd-tsize { color: var(--kit-text-2); }
-.adecd-tsize em { margin-left: 6px; font-style: normal; color: var(--kit-text-3); }
+/* The size, then its rate; a rate that doesn't fit goes under the size whole, never cut. */
+.adecd-tr > .adecd-tsize { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; white-space: normal; color: var(--kit-text-2); }
+.adecd-tsize em { font-style: normal; white-space: nowrap; color: var(--kit-text-3); }
 .adecd-when { color: var(--kit-text-3); }
 .adecd-row-actions {
   display: flex;
@@ -685,9 +687,14 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 }
 .adecd-actions-note { flex-basis: 100%; font-size: 11px; color: var(--kit-text-3); }
 
+.adecd-unread { padding: 10px 12px 0; }
+
 @container adecd (max-width: 620px) {
-  .adecd-tr { grid-template-columns: minmax(0, 1fr) 70px 90px 28px; }
-  .adecd-tr > :nth-child(2), .adecd-tr > :nth-child(5) { display: none; }
+  /* Name, state and the ⋯ column only, so a name and its mark both fit. */
+  .adecd-tr { grid-template-columns: minmax(0, 1fr) 104px 28px; }
+  .adecd-tr > :nth-child(2), .adecd-tr > :nth-child(4) { display: none; }
+  /* A mark that doesn't fit beside the name goes under it, so neither is cut. */
+  .adecd-name { flex-wrap: wrap; row-gap: 3px; padding: 6px 0; }
   .adecd-row-actions { padding-left: 16px; }
 }
 

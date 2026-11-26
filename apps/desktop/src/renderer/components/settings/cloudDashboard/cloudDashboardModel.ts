@@ -128,7 +128,8 @@ export function dashLanes(input: {
         name: lane.laneName,
         tier,
         tierRank: tier ? cloudTierRank(tier.id) : 1,
-        rateLabel: rateLabelOf(tier ? tier.multiplierMilli / 1000 : null, words),
+        // No computer, so nothing uses credits: the size is the one its next computer starts at.
+        rateLabel: null,
         diskGb: 0,
         state: "none",
         lastActiveAt: null,
@@ -226,9 +227,10 @@ export function heroCreditsWorth(account: CloudAccountState, words: CloudUnitWor
   const left = Math.max(0, account.hours.leftMilli);
   const medium = cloudTiers(cloudCatalogOf(account)).find((tier) => tier.id === "medium");
   const mediumHours = medium ? cloudTierHoursAt(medium, left).replace(/ h$/, "") : null;
-  const onMedium = mediumHours ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
+  // "About 0 hours" says nothing: with (nearly) nothing left the hero's own notice says what stops.
+  const onMedium = mediumHours && mediumHours !== "0" ? `${mediumHours} ${mediumHours === "1" ? "hour" : "hours"} on a Medium computer` : null;
   const minutes = account.phone?.access === "on" ? Math.floor(left / words.phoneMilliPerMinute) : null;
-  const onPhone = minutes != null ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
+  const onPhone = minutes ? `${minutes.toLocaleString("en-US")} iPhone ${minutes === 1 ? "minute" : "minutes"}` : null;
   if (onPhone && onMedium) return `About ${onPhone}, or ${onMedium}.`;
   if (onMedium) return `About ${onMedium}.`;
   return onPhone ? `About ${onPhone}.` : null;

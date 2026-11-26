@@ -306,6 +306,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           <span className="adecd-head-note">{`${computers.total} of ${computers.limit} computers`} · {account.computers.awake} awake</span>
         </header>
         <div className="kit-card-body" data-flush="true" ref={tableRef}>
+          {computersUnread ? <ComputersUnreadNotice onRetry={refresh} /> : null}
           {inside ? (
             <LookInside lane={inside} now={now} busy={busyKey === inside.key} onBack={() => setInsideKey(null)} onClear={() => void clearCaches(inside)} />
           ) : (
@@ -580,6 +581,29 @@ function statusActions(
 
 const WHEN_CREDITS_RUN_OUT = "When credits run out";
 
+/**
+ * The web app's server list of computers failed (`computersUnread`): the plan
+ * and the lanes kept without a computer still show; Try again reads the list
+ * again, which wakes nothing.
+ */
+function ComputersUnreadNotice({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="adecd-unread">
+      <Banner
+        layout="inline"
+        model={{
+          id: "cloud-computers-unread",
+          tone: "warning",
+          title: "ADE Cloud couldn't list your cloud computers",
+          detail: "Your plan and credits are up to date. Try again to list your computers and their lanes.",
+          actions: [{ label: "Try again", onClick: onRetry }],
+          report: { surface: "cloud_dashboard", code: "cloud_computers_read_failed" },
+        }}
+      />
+    </div>
+  );
+}
+
 /** Every lane and every computer the account pays for, one row each; the selected row opens its actions under it. */
 function LaneTable({
   lanes,
@@ -593,7 +617,7 @@ function LaneTable({
   menuActions,
 }: {
   lanes: readonly DashLane[];
-  /** The computers weren't read (the web app with none online): say so, not "nothing here". */
+  /** The server's computer list failed (the web app): the notice above says so, not "nothing here". */
   computersUnread?: boolean;
   now: number;
   selectedKey: string | null;
@@ -625,11 +649,9 @@ function LaneTable({
     event.preventDefault();
     if (lanes[next]!.key !== selectedKey) onSelect(lanes[next]!.key);
   };
-  if (!lanes.length && computersUnread) {
-    return <p className="adecd-empty">None of your computers is online, so ADE can't list your cloud lanes and computers here. They show when one is.</p>;
-  }
   if (!lanes.length) {
-    return <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
+    // An unread list says so above the table (`ComputersUnreadNotice`): not "nothing here".
+    return computersUnread ? null : <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
   }
   return (
     <div
