@@ -650,8 +650,8 @@ function buildUsageSnapshot() {
   return emptyUsageSnapshot();
 }
 
-function usageRangeForPreset(preset) {
-  const now = new Date();
+/** `now` is taken once, before GitHub is read, so every range ends where the fetched data does. */
+function usageRangeForPreset(preset, now = new Date()) {
   const until = now.toISOString();
   const startOfToday = new Date(now);
   startOfToday.setHours(0, 0, 0, 0);
@@ -741,7 +741,8 @@ function addStatsDaily(points, dateIso, patch) {
 /** One preset's GitHub numbers, sliced from the activity fetched once. */
 function buildGithubStatsForBrowser(range, activity) {
   const daily = makeBrowserDailySkeleton(range);
-  const tooFarBack = activity.coveredSince && (!range.since || Date.parse(range.since) < Date.parse(activity.coveredSince));
+  // Strictly later: rows that share the oldest time seen may sit on a page that never arrived.
+  const tooFarBack = activity.coveredSince && (!range.since || Date.parse(range.since) <= Date.parse(activity.coveredSince));
   const error = activity.error ?? (tooFarBack ? `gh did not finish in ${GITHUB_STATS_DEADLINE_MS / 1000} s; complete only since ${activity.coveredSince.slice(0, 10)}` : null);
   if (error) {
     return {
@@ -878,8 +879,8 @@ function mergeUsageTokensIntoDaily(points, dailyTokens) {
   }
 }
 
-function buildStatsDashboardStats(preset, usageSnapshot, githubActivity) {
-  const range = usageRangeForPreset(preset);
+function buildStatsDashboardStats(preset, usageSnapshot, githubActivity, now) {
+  const range = usageRangeForPreset(preset, now);
   const github = buildGithubStatsForBrowser(range, githubActivity);
   const usage = buildUsageStatsFromSnapshot(usageSnapshot, preset);
   mergeUsageTokensIntoDaily(github.daily, usage.dailyTokens);
@@ -1126,9 +1127,10 @@ const sessions = buildSessions(projectId);
 
 const automations = buildAutomations(projectId);
 const usageSnapshot = buildUsageSnapshot();
+const statsNow = new Date();
 const githubActivity = await fetchGithubActivityForBrowser({ cwd: projectRoot });
 const adeUsageStatsByPreset = Object.fromEntries(
-  ["today", "7d", "30d", "all"].map((preset) => [preset, buildStatsDashboardStats(preset, usageSnapshot, githubActivity)]),
+  ["today", "7d", "30d", "all"].map((preset) => [preset, buildStatsDashboardStats(preset, usageSnapshot, githubActivity, statsNow)]),
 );
 const ctoState = getCtoState(projectId);
 

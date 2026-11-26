@@ -26,7 +26,17 @@ function stopTree(child) {
     if (process.platform === "win32") {
       spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
     } else {
-      child.kill("SIGTERM");
+      // Elsewhere `gh` leads its own process group (see `detached` below), so
+      // the group signal reaches a token helper it started too.
+      const signalGroup = (signal) => {
+        try {
+          process.kill(-child.pid, signal);
+        } catch {
+          // The group is already gone.
+        }
+      };
+      signalGroup("SIGTERM");
+      setTimeout(() => signalGroup("SIGKILL"), 2_000).unref();
     }
   }
   child.stdout?.destroy();
@@ -42,7 +52,13 @@ function stopTree(child) {
 function streamGhLines(args, cwd, signal, onLine) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return resolve(false);
-    const child = spawn("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn("gh", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      // Its own process group on macOS and Linux, so the deadline can stop all of it.
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    });
     let pending = "";
     let stderr = "";
     let settled = false;
@@ -127,9 +143,16 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
     console.warn(`[export-browser-mock-ade] GitHub stats skipped (${reason}); the snapshot shows no GitHub numbers.`);
     return { repo: null, prRows: [], commitDates: [], coveredSince: null, error: reason };
   };
-  let progress = null;
+  let phase = "reading the repository and GitHub user";
+  let listing = false;
+  const prRows = [];
+  const commitDates = [];
+  const progress = setInterval(
+    () => log(listing ? `${prRows.length} pull requests and ${commitDates.length} commits so far (${seconds()})` : `still ${phase} (${seconds()})`),
+    PROGRESS_EVERY_MS,
+  );
   try {
-    log(`reading the repository and GitHub user (gives up after ${deadlineMs / 1000} s)`);
+    log(`${phase} (gives up after ${deadlineMs / 1000} s)`);
     const [repoInfoRaw, viewerRaw] = await Promise.all([
       runGh(["repo", "view", "--json", "owner,name"], cwd, controller.signal),
       runGh(["api", "user", "--cache", "10m"], cwd, controller.signal),
@@ -142,13 +165,12 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
     const viewer = JSON.parse(viewerRaw).login;
     if (typeof viewer !== "string" || !viewer) throw new Error("Unable to resolve GitHub user.");
 
-    log(`reading ${viewer}'s pull requests and commits in ${repo}`);
-    const prRows = [];
-    const commitDates = [];
+    phase = `reading ${viewer}'s pull requests and commits in ${repo}`;
+    log(phase);
+    listing = true;
     let oldestPrUpdate = null;
     // The list follows commit (committer) order; an author date can be older.
     let oldestCommitted = null;
-    progress = setInterval(() => log(`${prRows.length} pull requests and ${commitDates.length} commits so far (${seconds()})`), PROGRESS_EVERY_MS);
     const [prsDone, commitsDone] = await Promise.all([
       streamGhLines([
         "api",
@@ -203,7 +225,7 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
     return failed(error instanceof Error ? error.message.split("\n")[0] : String(error));
   } finally {
     clearTimeout(timer);
-    if (progress) clearInterval(progress);
+    clearInterval(progress);
     // A call still running after another failed must not hold the export.
     controller.abort();
   }
