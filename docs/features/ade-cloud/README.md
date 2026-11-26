@@ -134,7 +134,7 @@ Facts from those docs that ADE's design leans on:
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
 | A lane computer's status menu: the header button and menu, the status hook, the server read, the provider's status webhook (migration `0050`), the brain's activity report | `apps/desktop/src/renderer/components/cloudLane/CloudLaneHeaderButton.tsx`, `CloudLaneComputerPanel.tsx`, `CloudLaneConnectionRow.tsx`, `cloudLaneStatus.ts`, `useCloudComputerStatus.ts`; `registerCloudIpc.ts` (`cloudComputerStatus`); `apps/account-directory/src/cloud/computerStatus.ts`, `apps/account-directory/src/webhookSignature.ts`, `apps/account-directory/scripts/register-agent37-webhook.mjs`; `apps/ade-cli/src/services/account/cloudActivityReporter.ts` |
-| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts`, `apps/ade-cli/src/services/power/cloudRemoteWorkHold.ts` (slow remote work held awake) |
 | Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`saveBeforeDelete`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
 | Lane backups at rest (save, report, restore, download) | `apps/account-directory/src/cloud/laneBackups.ts`, `apps/ade-cli/src/services/cloudChats/cloudLaneBackup.ts`, `apps/desktop/src/main/services/lanes/cloudLaneRestoreHook.ts`, `apps/desktop/src/main/services/adeCloud/cloudLaneBackupIpc.ts`, `apps/desktop/src/renderer/components/cloudLane/CloudLaneSavedWork.tsx`, `apps/ios/ADE/Views/Cloud/CloudMachineScreen.swift` (`CloudSavedWorkRow`) |
 | CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
@@ -173,6 +173,13 @@ that stops (see Sleep and busy rules).
     rest as "System and other", parts on another disk left out. The computer
     measures it at its idle step at most every 6 hours, so the dashboard wakes
     nothing.
+  - The same idle report says whether the lane has work not on GitHub yet
+    (`cloudComputerReports.ts` `readWork`): an uncommitted file, or a commit
+    no remote has (`readUnsavedWork`). A pushed branch is saved, and so is a
+    branch whose merged PR head is the branch, before the merge is fetched
+    too. A lane git can't read counts as not on GitHub. It reads local refs
+    only, so a branch deleted on GitHub before a merge reads as saved until
+    the next fetch; a delete fetches first, so no work is lost.
   - Clear caches runs on that lane's computer (`cloud.clear_caches`). The
     dashboard confirms first; an agent's call asks with a card, and an
     unwatched agent gets no.
@@ -1946,6 +1953,12 @@ One busy list, `decideCloudBusy` in
   (`projects.clone`, `machines.cloneForAgent`) takes the same hold. A second
   clone into a folder whose clone runs joins it (`cloneRepository`); a folder
   that already holds the same repository is the answer, with no clone.
+- Work another machine sends (a write action, a file copied in) counts as
+  use when it comes. Work still running after 10 seconds (a push with a slow
+  hook, a big copy) is also held as `remote_action` until it answers
+  (`cloudRemoteWorkHold.ts`), so a key typed in a terminal writes no hold. A
+  disk grow asked from inside one held request (an Android first start)
+  skips that request's own hold and waits for every other held request.
 - **Idle:** a shell at its prompt, an agent CLI at its prompt or asking
   (`waiting-input`), a chat that waits on approval, and a command or turn with
   no output and no touch for 60 minutes. A shell's prompt state comes from

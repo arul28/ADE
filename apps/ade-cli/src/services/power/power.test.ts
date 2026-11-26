@@ -35,7 +35,8 @@ import {
   type SuspendGapDetector,
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
-import { cloudKeepAwakePaths, createCloudKeepAwake, decideCloudBusy, type CloudBusyTerminal } from "./cloudKeepAwake";
+import { cloudBusyHolds, cloudKeepAwakePaths, createCloudKeepAwake, decideCloudBusy, holdCloudBusy, type CloudBusyTerminal } from "./cloudKeepAwake";
+import { createCloudRemoteWorkHold, type CloudWorkHolder } from "./cloudRemoteWorkHold";
 import { createCloudDiskGrower } from "./cloudDiskGrow";
 import { createCloudSetupUpsizer } from "./cloudSetupUpsize";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
@@ -1023,6 +1024,94 @@ describe("cloud keep awake", () => {
       keepAwake.dispose();
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("cloud remote work hold", () => {
+  // Work another machine sends counts as use when it comes, which keeps the
+  // computer awake for minutes. A push with a slow hook outlasts that: without
+  // a hold the computer sleeps in its middle. A hold per key typed in a
+  // terminal would write a file per key, and a grow that took its own
+  // request's hold for other work would refuse itself forever.
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("holds remote work awake only once it outlasts the wait, until it answers or fails", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-remote-hold-"));
+    const hold: CloudWorkHolder = async (reason, ttlMs, run) => {
+      const release = holdCloudBusy(home, reason, ttlMs);
+      try {
+        return await run();
+      } finally {
+        release();
+      }
+    };
+    const remote = createCloudRemoteWorkHold({ hold: () => hold, holdAfterMs: 10_000 });
+    vi.useFakeTimers();
+    try {
+      await expect(remote.run(async () => "typed")).resolves.toBe("typed");
+      expect(fs.existsSync(path.join(cloudKeepAwakePaths(home).dir, "holds"))).toBe(false);
+
+      const push = deferred<string>();
+      const pushed = remote.run(() => push.promise);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(cloudBusyHolds(home)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(cloudBusyHolds(home)).toEqual(["remote_action"]);
+      push.resolve("pushed");
+      await expect(pushed).resolves.toBe("pushed");
+      expect(cloudBusyHolds(home)).toEqual([]);
+
+      const failing = deferred<string>();
+      const failed = expect(remote.run(() => failing.promise)).rejects.toThrow("hook failed");
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(cloudBusyHolds(home)).toEqual(["remote_action"]);
+      failing.reject(new Error("hook failed"));
+      await failed;
+      expect(cloudBusyHolds(home)).toEqual([]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("lets a grow asked inside a held request skip that request's hold, never another's", async () => {
+    const remote = createCloudRemoteWorkHold({ hold: () => async (_reason, _ttlMs, run) => await run(), holdAfterMs: 10_000 });
+    vi.useFakeTimers();
+    const androidStart = deferred<void>();
+    const start = remote.run(async () => {
+      await androidStart.promise;
+      return remote.otherHeld();
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    // An agent's own grow command runs in no request: the held start is other work.
+    expect(remote.otherHeld()).toBe(true);
+    androidStart.resolve();
+    await expect(start).resolves.toBe(false);
+    expect(remote.otherHeld()).toBe(false);
+
+    const push = deferred<void>();
+    const pushed = remote.run(() => push.promise);
+    const laterStart = deferred<void>();
+    const secondStart = remote.run(async () => {
+      await laterStart.promise;
+      return remote.otherHeld();
+    });
+    await vi.advanceTimersByTimeAsync(11_000);
+    laterStart.resolve();
+    await expect(secondStart).resolves.toBe(true);
+    push.resolve();
+    await pushed;
+    expect(remote.otherHeld()).toBe(false);
   });
 });
 
