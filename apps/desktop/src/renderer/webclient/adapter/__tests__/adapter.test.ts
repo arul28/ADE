@@ -3238,8 +3238,8 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("keeps the live terminal subscription while preview and transcript tail read history", async () => {
-    fake.descriptors = descriptors(["work.listSessions"]);
+  it("keeps the live terminal subscription during history reads and unconfirmed stops", async () => {
+    fake.descriptors = descriptors(["work.listSessions", "work.stopRuntime"]);
     fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1", status: "running" }]);
     fake.terminalHistoryResults.set("session-1", {
       sessionId: "session-1",
@@ -3326,6 +3326,14 @@ describe("createAdeWebAdapter", () => {
       since: 11,
     }, TEST_PIN)).rejects.toMatchObject({ code: "not_connected" });
 
+    const stopArgs = { ptyId: "pty-1", sessionId: "session-1", confirmProcessExit: true };
+    fake.commandErrors.set("work.stopRuntime", new Error("Host disconnected"));
+    await expect(adapter.ade.pty.dispose(stopArgs, TEST_PIN)).rejects.toThrow("Host disconnected");
+    fake.commandErrors.delete("work.stopRuntime");
+    fake.commandResults.set("work.stopRuntime", { disposed: false, reason: "session-mismatch" });
+    await expect(adapter.ade.pty.dispose(stopArgs, TEST_PIN)).resolves.toMatchObject({ disposed: false });
+    expect(fake.terminalUnsubscribeCalls).toEqual([]);
+
     fake.emitTerminalData("session-1", {
       sessionId: "session-1",
       ptyId: "pty-1",
@@ -3339,6 +3347,10 @@ describe("createAdeWebAdapter", () => {
       data: "live\n",
       offset: 26,
     });
+
+    fake.commandResults.set("work.stopRuntime", { disposed: true, processTreeExited: true });
+    await adapter.ade.pty.dispose(stopArgs, TEST_PIN);
+    expect(fake.terminalUnsubscribeCalls).toEqual(["session-1"]);
 
     offData();
     adapter.dispose();

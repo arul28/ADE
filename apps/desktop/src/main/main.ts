@@ -5759,6 +5759,7 @@ app.whenReady().then(async () => {
     });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+      listArchivedWorkingChats: agentChatService.listArchivedWorkingChats,
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
     lateSettle.bind(createSettleWiring({

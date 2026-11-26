@@ -131,6 +131,7 @@ import type {
   LaneDeleteStepName,
   LaneIcon,
   LaneBranchActiveWorkItem,
+  TerminalSessionSummary,
   LaneBranchDrift,
   LaneBranchDriftKind,
   LaneBranchProfile,
@@ -1572,6 +1573,7 @@ export type LaneCreateRuntimeOptions = {
 export type LaneDeleteTeardownDeps = {
   agentChatService?: {
     countActiveForLane: (laneId: string) => number;
+    listArchivedWorkingChats?: (laneId: string) => TerminalSessionSummary[];
     disposeForLane: (laneId: string) => Promise<number>;
     /** The lane's chats' work on other machines is removed there (not awaited). */
     releaseRemoteWorkForLane?: (laneId: string, ended: "archived" | "deleted") => void;
@@ -2824,15 +2826,23 @@ export function createLaneService({
       `,
       [laneId],
     );
+    const archivedWorkingChats = teardownDeps?.agentChatService?.listArchivedWorkingChats?.(laneId) ?? [];
     return [
-      ...terminalRows.map((row) => ({
+      ...archivedWorkingChats.map((row): LaneBranchActiveWorkItem => ({
+        id: row.id,
+        kind: "chat",
+        toolType: row.toolType ?? null,
+        title: row.title || row.id,
+        status: row.status,
+      })),
+      ...terminalRows.map((row): LaneBranchActiveWorkItem => ({
         id: row.id,
         kind: sessionActiveKind(row.tool_type),
         toolType: row.tool_type ?? null,
         title: row.title || row.id,
         status: row.status,
       })),
-    ];
+    ].slice(0, 10);
   };
 
   const findActiveBranchOwner = (branchRef: string, laneId: string): { id: string; name: string } | null => {

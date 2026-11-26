@@ -9,7 +9,7 @@ import { primarySessionLabel } from "../../../lib/sessions";
 import { extractError } from "../../../lib/format";
 import { useMachineEntryForBinding, usePinTargetsTab } from "../../../state/crossMachineLanes";
 import { Dialog } from "../../ui/dialog/Dialog";
-import { InlineErrorNotice } from "../../ui/notice";
+import { Banner, InlineErrorNotice } from "../../ui/notice";
 import { ToolLogo } from "../../terminals/ToolLogos";
 import { COLORS, SANS_FONT } from "../laneDesignTokens";
 
@@ -46,14 +46,14 @@ export function classifyLaneActiveWork(
 ): LaneActiveWorkRow[] {
   const rank = { running: 0, needs_you: 1, open: 2 } as const;
   const rows = sessions
-    .filter((session) => !session.archivedAt && !session.endedAt)
+    .filter((session) => !session.endedAt && (!session.archivedAt || session.runtimeState === "running"))
     .map((session): LaneActiveWorkRow => ({
       id: session.id,
       title: primarySessionLabel(session),
       toolType: session.toolType ?? null,
       kind: sessionActiveKind(session.toolType),
       ptyId: session.ptyId ?? null,
-      state: sessionIsWorking(session)
+      state: session.archivedAt || sessionIsWorking(session)
         ? "running"
         : sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "needs_you" ? "needs_you" : "open",
     }));
@@ -347,9 +347,21 @@ export function LaneActiveWorkDialog({
         </div>
       ) : null}
       {stopErrors.size > 0 ? (
-        <div role="status" className="mb-2 text-xs" style={{ color: COLORS.danger }}>
-          ADE couldn’t verify that all work stopped. Check the affected sessions before switching.
-        </div>
+        <Banner
+          layout="inline"
+          style={{ marginBottom: 8 }}
+          model={{
+            id: "lane-active-work-stop",
+            tone: "error",
+            title: "ADE couldn’t verify that all work stopped",
+            detail: "Check the affected sessions before switching.",
+            report: {
+              surface: "lane_active_work",
+              code: "stop_unconfirmed",
+              technicalDetail: [...new Set(stopErrors.values())].join("\n"),
+            },
+          }}
+        />
       ) : null}
       <div className="flex flex-col gap-3">
         <ActiveWorkGroup label="Chats" icon={<ChatCircleDots size={12} />} rows={chats} stopErrors={stopErrors} />

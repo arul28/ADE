@@ -659,15 +659,20 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     dispose: async (args: unknown, pin?: RuntimePinArg): Promise<PtyDisposeResult> => {
       assertWebRuntimePinRoutable("pty.dispose", pin, infra);
       const record = asRecord(args);
-      const sessionId = stringField(record, "sessionId") || terminalRegistry.sessionForPty(stringField(record, "ptyId"));
-      if (sessionId) unsubscribeSession(sessionId);
+      const ptyId = stringField(record, "ptyId");
+      const sessionId = stringField(record, "sessionId") || terminalRegistry.sessionForPty(ptyId);
       if (record.confirmProcessExit === true) {
-        return await commands.call<PtyDisposeResult>("work.stopRuntime", {
+        const result = await commands.call<PtyDisposeResult>("work.stopRuntime", {
           sessionId,
-          ptyId: stringField(record, "ptyId"),
+          ptyId,
           confirmProcessExit: true,
         }, { ...mutation, authoritative: true });
+        if (result?.processTreeExited === true && sessionId && terminalRegistry.ptyForSession(sessionId) === ptyId) {
+          unsubscribeSession(sessionId);
+        }
+        return result;
       }
+      if (sessionId) unsubscribeSession(sessionId);
       return await commands.call<PtyDisposeResult>("work.stopRuntime", { sessionId }, mutation);
     },
     setDataSubscriptions: async (args: unknown, pin?: RuntimePinArg) => {

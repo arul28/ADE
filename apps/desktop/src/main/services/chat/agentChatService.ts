@@ -76009,6 +76009,20 @@ export function createAgentChatService(args: {
     return count;
   };
 
+  /** Archiving changes the Work roster while a live turn can still use its lane. */
+  const listArchivedWorkingChats = (laneId: string): TerminalSessionSummary[] => {
+    const rows: TerminalSessionSummary[] = [];
+    for (const managed of managedSessions.values()) {
+      if (managed.closed || managed.deleted || managed.session.laneId !== laneId) continue;
+      if (!sessionTurnRunning(managed) && !hasRuntimeActiveWorkload(managed.runtime)) continue;
+      const row = sessionService.get(managed.session.id);
+      if (row?.archivedAt && !row.endedAt && row.laneId === laneId) {
+        rows.push({ ...row, runtimeState: "running" });
+      }
+    }
+    return rows;
+  };
+
   const disposeForLane = async (laneId: string): Promise<number> => {
     const sessionIds = Array.from(new Set(
       [...managedSessions.values()]
@@ -86380,6 +86394,7 @@ ${schedule.prompt}`
       for (const envelope of envelopes) recordChatEventInHistory(envelope);
     },
     countActiveForLane,
+    listArchivedWorkingChats,
     disposeForLane,
     getChatTranscript,
     getChatTranscriptPage,

@@ -29,6 +29,7 @@ type ChatProjectionServices = {
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
     getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
     getSessionSideChatParentId(sessionId: string): Promise<string | null>;
+    listArchivedWorkingChats?(laneId: string): TerminalSessionSummary[];
     /** Each tracked agent CLI row's latest move to another machine (a chat's rides its summary). */
     getCliCrossMachineMoves?(sessionIds: readonly string[]): Map<string, AgentChatCrossMachineHandoffRecord>;
   } | null;
@@ -388,7 +389,12 @@ export async function listSessionsWithChatProjection(
     }
   }
   const projected = projectChatSummariesOntoSessions(sessions, allChats, args.openOnly);
-  return args.openOnly ? projected : withCliCrossMachineMoves(services, projected);
+  if (!args.openOnly) return withCliCrossMachineMoves(services, projected);
+  const archivedWorking = laneId ? services.agentChatService?.listArchivedWorkingChats?.(laneId) ?? [] : [];
+  if (!archivedWorking.length) return projected;
+  // A chat may be archived while the normal roster is being projected.
+  const archivedIds = new Set(archivedWorking.map((session) => session.id));
+  return [...projected.filter((session) => !archivedIds.has(session.id)), ...archivedWorking];
 }
 
 /**
