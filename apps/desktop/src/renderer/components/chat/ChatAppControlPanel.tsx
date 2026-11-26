@@ -1241,7 +1241,7 @@ export function ChatAppControlPanel({
       window.ade.appControl
         .click({ ...laneArgsRef.current, x: point.viewportX, y: point.viewportY, coordinateSpace: "viewport" }, pin)
         .catch((error) => {
-          setMessage({ tone: "error", text: `Click failed: ${plainErrorText(error, "ADE couldn't send the click.")}` });
+          setMessage({ tone: "error", text: `Click failed: ${plainErrorText(error, "the app did not answer.")}` });
         });
       setMessage(null);
     },
@@ -1293,7 +1293,7 @@ export function ChatAppControlPanel({
         try {
           await refreshSnapshot();
         } catch (error) {
-          setMessage({ tone: "info", text: `Typed into focused element. Snapshot refresh failed: ${plainErrorText(error, "ADE couldn't refresh the snapshot.")}` });
+          setMessage({ tone: "info", text: `Typed into focused element. Snapshot refresh failed: ${plainErrorText(error, "the app did not answer.")}` });
           return;
         }
         setMessage({ tone: "info", text: "Typed into focused element." });

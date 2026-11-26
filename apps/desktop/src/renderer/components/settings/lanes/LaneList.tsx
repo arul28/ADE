@@ -140,9 +140,9 @@ export function LaneList({
           }
           const result = await window.ade.lanes.archiveAndReclaim({ laneId: lane.laneId, confirmation: "RECLAIM" }, requirePin(pin));
           freed += result.reclaimedBytes;
-          archived.push(lane.name);
+          archived.push(laneDisplayName(lane));
         } catch (err) {
-          failed.push(`${lane.name}: ${plainErrorText(err, "ADE couldn't archive it.")}`);
+          failed.push(`${laneDisplayName(lane)}: ${plainErrorText(err, "the archive did not finish.")}`);
         }
       }
     } finally {

@@ -416,7 +416,7 @@ export function CrossMachineBatchApprovalBanner({
       showToast({
         tone: "warning",
         title: `Couldn't ${approve ? "approve" : "deny"} the batch move to ${machine}`,
-        message: `${plainErrorText(error, "ADE couldn't reach that computer.", machine)} `
+        message: `${plainErrorText(error, "ADE couldn't reach that computer.", approval.machineName.trim() || null)} `
           + `Check the batch with \`ade chat move --status ${approval.batchId}\`, or try again.`,
       });
     } finally {

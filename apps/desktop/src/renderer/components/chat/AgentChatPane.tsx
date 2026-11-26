@@ -689,6 +689,10 @@ import { repositoryReaderAddress, type StartOnChoice } from "../../../shared/rep
 import { recordStartOnLastMachine } from "./startOnLastMachine";
 import { plainErrorText } from "../../lib/plainError";
 
+/** The reason after a label such as "Delete failed:" when the error says nothing a person can use. */
+const CHAT_NO_ANSWER = "the chat did not answer.";
+const STOP_TASK_FAILED = "ADE couldn't stop the task.";
+
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
  * launches on, or null for the tab's own machine (the unpinned route, and the
@@ -16381,7 +16385,7 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
-        const message = plainErrorText(err, "ADE couldn't delete the chat.");
+        const message = plainErrorText(err, CHAT_NO_ANSWER);
         setError(`Delete failed: ${message}`);
       })
       .finally(() => {
@@ -16401,7 +16405,7 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
-        const message = plainErrorText(err, "ADE couldn't archive the chat.");
+        const message = plainErrorText(err, CHAT_NO_ANSWER);
         setError(`Archive failed: ${message}`);
       });
   }, [invalidateCurrentChatSessionList, refreshSessions, setSelectedSessionId]);
@@ -16427,7 +16431,7 @@ export function AgentChatPane({
         await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
-        const message = plainErrorText(err, "ADE couldn't restore the chat.");
+        const message = plainErrorText(err, CHAT_NO_ANSWER);
         setError(`Restore failed: ${message}`);
       });
   }, [invalidateCurrentChatSessionList, refreshSessions]);
@@ -18324,7 +18328,7 @@ export function AgentChatPane({
   const dispatchSteerSafely = useCallback(
     (args: { sessionId: string; steerId: string; mode: AgentChatDispatchSteerMode }) => {
       void withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.dispatchSteer(args, chatPin)).catch((error: unknown) => {
-        const message = plainErrorText(error, "ADE couldn't reach the chat.");
+        const message = plainErrorText(error, CHAT_NO_ANSWER);
         setError(`Couldn't deliver the message to the running turn: ${message}`);
       });
     },
@@ -20503,7 +20507,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             taskId,
           }, chatPin)).catch((stopError) => {
-            setError(plainErrorText(stopError, "ADE couldn't stop the task."));
+            setError(plainErrorText(stopError, STOP_TASK_FAILED));
           });
         }
       : undefined,
@@ -20770,7 +20774,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             taskId: processId,
           }, chatPin)).catch((stopError) => {
-            setError(plainErrorText(stopError, "ADE couldn't stop the task."));
+            setError(plainErrorText(stopError, STOP_TASK_FAILED));
           });
           return;
         }
@@ -20784,7 +20788,7 @@ export function AgentChatPane({
             sessionId: selectedSessionId,
             taskId,
           }, chatPin)).catch((stopError) => {
-            setError(plainErrorText(stopError, "ADE couldn't stop the task."));
+            setError(plainErrorText(stopError, STOP_TASK_FAILED));
           });
         }
         : undefined}
@@ -22353,7 +22357,7 @@ export function AgentChatPane({
                 void withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current
                   .cancelSteer({ sessionId: selectedSessionId, steerId }, chatPin))
                   .catch((error: unknown) => {
-                    setError(`Couldn't remove the queued message: ${plainErrorText(error, "ADE couldn't reach the chat.")}`);
+                    setError(`Couldn't remove the queued message: ${plainErrorText(error, CHAT_NO_ANSWER)}`);
                   });
               }
             }}
@@ -22423,7 +22427,7 @@ export function AgentChatPane({
                   showToast({ tone: "info", title: "That message is no longer queued." });
                   return;
                 }
-                setError(`Couldn't move the queued message back to the composer: ${plainErrorText(error, "ADE couldn't reach the chat.")}`);
+                setError(`Couldn't move the queued message back to the composer: ${plainErrorText(error, CHAT_NO_ANSWER)}`);
               });
             }}
             onMoveSteer={selectedSessionId && queuedSteersCanReorder(selectedSession?.provider)
@@ -22434,7 +22438,7 @@ export function AgentChatPane({
                   if (isSteerNoLongerQueuedError(error)) {
                     showToast({ tone: "info", title: "That message is no longer queued." });
                   } else {
-                    setError(`Couldn't reorder the queued message: ${plainErrorText(error, "ADE couldn't reach the chat.")}`);
+                    setError(`Couldn't reorder the queued message: ${plainErrorText(error, CHAT_NO_ANSWER)}`);
                   }
                   throw error;
                 }

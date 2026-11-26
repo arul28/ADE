@@ -27,8 +27,8 @@ function isRemoteBinding(
   );
 }
 
-function errorMessage(error: unknown): string {
-  return plainErrorText(error, "ADE couldn't reach that computer's sync service.");
+function errorMessage(error: unknown, fallback = "ADE couldn't read the sync status."): string {
+  return plainErrorText(error, fallback);
 }
 
 export function useSyncConnections() {
@@ -138,7 +138,7 @@ export function useSyncConnections() {
       await work();
       await refresh({ force: true });
     } catch (actionError) {
-      showToast({ tone: "error", title: "That did not work", message: errorMessage(actionError) });
+      showToast({ tone: "error", title: "That did not work", message: errorMessage(actionError, "ADE couldn't reach that computer's sync service.") });
     } finally {
       setBusy(false);
     }

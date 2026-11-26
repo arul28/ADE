@@ -112,9 +112,7 @@ function keepAgentKeys<T extends Partial<Record<HarnessPresetAgentKey, unknown>>
 
 /** One sentence for a save that threw, rather than a form that froze. */
 function saveFailureText(error: unknown): string {
-  const detail = plainErrorText(error, "ADE couldn't save the provider.");
-  return detail.trim()
-    || "The save could not be completed. Try again.";
+  return plainErrorText(error, "ADE couldn't save the provider.");
 }
 
 function normalizeHex(value: string): string {

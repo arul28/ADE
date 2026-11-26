@@ -220,7 +220,7 @@ export function OpenCodeProviderDetailModal({
                   model={{
                     id: "opencode-auth-methods-warning",
                     tone: "warning",
-                    title: `Could not load OpenCode sign-in methods (${authMethodsError}). SuperGrok, ChatGPT, and Copilot OAuth may be unavailable until this succeeds.`,
+                    title: `Couldn't load the OpenCode sign-in methods. ${authMethodsError} SuperGrok, ChatGPT and Copilot sign-in may be unavailable until this works.`,
                     actions: onRetryAuthMethods
                       ? [{ label: "Retry sign-in methods", onClick: onRetryAuthMethods, variant: "secondary" }]
                       : undefined,

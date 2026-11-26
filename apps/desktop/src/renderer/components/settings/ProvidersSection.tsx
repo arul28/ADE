@@ -80,6 +80,8 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
 
+const PROVIDER_STATUS_FAILED = "ADE couldn't read the provider status.";
+
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
 // also reports them, and listing them again under OpenCode read as a second,
@@ -476,7 +478,7 @@ function MachineProvidersSection({
       if (!statusKnownRef.current) setStatusLoadError(null);
     }
     setError(null);
-    const reportError = (err: unknown) => setError(plainErrorText(err, "ADE couldn't read the provider status."));
+    const reportError = (err: unknown) => setError(plainErrorText(err, PROVIDER_STATUS_FAILED));
     // Four separate reads, each shown when it lands: the tiles wait only on
     // the status, never on the config, the key list or Cursor's sign-in.
     const statusRead = window.ade.ai.getStatus({
@@ -490,7 +492,7 @@ function MachineProvidersSection({
         return next as AiSettingsStatus;
       },
       (err: unknown) => {
-        const message = plainErrorText(err, "ADE couldn't read the provider status.");
+        const message = plainErrorText(err, PROVIDER_STATUS_FAILED);
         if (!statusKnownRef.current) setStatusLoadError(message);
         setError(message);
         return null;

@@ -235,11 +235,12 @@ export function useMcpRegistry(): McpRegistryApi {
 
   /** Runs one change, then shows what the brain holds now, whatever the outcome. */
   const mutate = useCallback(async (run: () => Promise<string | null>): Promise<string | null> => {
-    let outcome: string | null;
+    // A returned refusal and a thrown error read the same way.
+    let outcome: unknown;
     try {
       outcome = await run();
     } catch (error) {
-      outcome = plainErrorText(error, "ADE couldn't save the MCP server change.");
+      outcome = error;
     }
     await reload();
     return outcome == null ? null : plainErrorText(outcome, "ADE couldn't save the MCP server change.");

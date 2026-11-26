@@ -374,7 +374,7 @@ export function useDraftAttachmentTransfer(args: {
         `Couldn't move ${attachmentNoun(movableAttachments)} `
         + `to ${currentMachine.name}. Switch back to ${previousMachine.name} or remove `
         + `${movableAttachments.length === 1 ? "it" : "them"} before sending: `
-        + `${plainErrorText(transferError, "ADE couldn't copy the files.")}`;
+        + `${plainErrorText(transferError, "the copy did not finish.")}`;
       setBlockedReason(message);
       setError(message);
     });

@@ -76,8 +76,8 @@ function rms(analyser: AnalyserNode | null, buffer: Float32Array<ArrayBuffer>): 
 }
 
 function cleanError(error: unknown): string {
-  const message = plainErrorText(error, "ADE couldn't start voice.");
-  return message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "").trim();
+  // Read after "Voice could not start:", so the fallback is a reason, not a second "couldn't".
+  return plainErrorText(error, "voice isn't available right now.");
 }
 
 /**

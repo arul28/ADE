@@ -528,7 +528,7 @@ function CursorRailItem(props: RailItemProps) {
       .then(
         (result): CursorSignInOutcome => (result.ok
           ? { ok: true, email: result.email ?? null }
-          : { ok: false, error: result.error || "Cursor sign-in failed." }),
+          : { ok: false, error: plainErrorText(result.error, "Cursor sign-in failed.") }),
         (err: unknown): CursorSignInOutcome => ({ ok: false, error: plainErrorText(err, "ADE couldn't finish the Cursor sign-in.") }),
       )
       .then((result) => {
