@@ -39,6 +39,12 @@ export type ChatLaunchEntry = {
   /** A snapshot for this launch has come from the host at least once. */
   hostSeen: boolean;
   /**
+   * Local time this window first had a host snapshot for the launch. A host
+   * list sent before then may predate the launch, so it cannot drop it
+   * (`hydrateChatLaunches`). Local clock, like `pendingEndedAtMs`.
+   */
+  hostSeenAtMs: number | null;
+  /**
    * `chatLaunch.start` rejected before the host accepted the launch. The card
    * shows the failure; Retry re-sends `start` with the same launch id.
    */
@@ -273,6 +279,7 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         binding,
         snapshot,
         hostSeen: false,
+        hostSeenAtMs: null,
         startError: null,
         pendingEndedAtMs: null,
         unlistedReads: 0,
@@ -307,6 +314,7 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         binding: current?.binding ?? binding,
         snapshot: merged,
         hostSeen: true,
+        hostSeenAtMs: current?.hostSeenAtMs ?? Date.now(),
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
         unlistedReads: current?.unlistedReads ?? 0,
@@ -330,14 +338,26 @@ export function applyChatLaunchEvent(binding: OpenProjectBinding | null, event: 
  * Replace one binding's launches with the host's list. Launches the host has
  * never acknowledged (still starting, or `start` failed) are kept: the host
  * cannot list what it has not seen, and dropping them would lose the card.
+ *
+ * `listSentAtMs` is the local time the list request went out. A launch first
+ * acknowledged at or after it is kept too: the host may have answered the list
+ * before it registered the launch, while the `start` reply arrived first (a
+ * list to another machine that also waits on a cloud read). Dropping it would
+ * take the new chat's row and open pane away until that machine lists the chat.
  */
-export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshots: readonly ChatLaunchSnapshot[]): void {
+export function hydrateChatLaunches(
+  binding: OpenProjectBinding | null,
+  snapshots: readonly ChatLaunchSnapshot[],
+  listSentAtMs?: number,
+): void {
   const bindingKey = chatLaunchBindingKey(binding);
   const cancelled: ChatLaunchSnapshot[] = [];
+  const listMayPredate = (entry: ChatLaunchEntry) => listSentAtMs != null
+    && (entry.hostSeenAtMs == null || entry.hostSeenAtMs >= listSentAtMs);
   setEntries((entries) => {
     const next: Record<string, ChatLaunchEntry> = {};
     for (const entry of Object.values(entries)) {
-      if (entry.bindingKey !== bindingKey || !entry.hostSeen) next[entry.launchId] = entry;
+      if (entry.bindingKey !== bindingKey || !entry.hostSeen || listMayPredate(entry)) next[entry.launchId] = entry;
     }
     for (const snapshot of snapshots) {
       const current = entries[snapshot.launchId];
@@ -349,6 +369,7 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         binding: current?.binding ?? binding,
         snapshot: merged,
         hostSeen: true,
+        hostSeenAtMs: current?.hostSeenAtMs ?? Date.now(),
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
         unlistedReads: current?.unlistedReads ?? 0,
