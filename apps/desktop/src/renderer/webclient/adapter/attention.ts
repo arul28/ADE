@@ -3,6 +3,7 @@ import {
   ATTENTION_EVENT_KINDS,
   ATTENTION_MESSAGE_EVENT_KIND,
   ATTENTION_PHASES,
+  ATTENTION_POLICY_EVENT_KINDS,
   ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
@@ -15,8 +16,10 @@ import {
   type AttentionItem,
   type AttentionMachineRef,
   type AttentionPhase,
+  type AttentionPolicyEventKind,
   type AttentionPreferences,
   type AttentionPreferenceScope,
+  type AttentionScopePatch,
   type AttentionPresence,
   type AttentionProjectRef,
   type AttentionSnapshot,
@@ -358,9 +361,11 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
     required("eventPolicies", (field) => {
       const policies = record(field);
       if (!policies) return false;
+      // Every item event must be in the account's map; the newer events
+      // (messages, goals, the background service) fall back to their default.
       return (partial || ATTENTION_EVENT_KINDS.every((kind) => kind in policies))
         && Object.entries(policies).every(([kind, policy]) =>
-          ATTENTION_EVENT_KINDS.includes(kind as AttentionEventKind)
+          ATTENTION_POLICY_EVENT_KINDS.includes(kind as AttentionPolicyEventKind)
           && ["off", "ambient", "notify"].includes(String(policy)));
     })
     && required("notificationsEnabled", (field) => typeof field === "boolean")
@@ -782,9 +787,13 @@ export function createAttentionNamespace(
         undefined,
         { userInitiated: true },
       ));
-      return result?.preferences === undefined
+      const relayFeatures = Array.isArray(result?.features)
+        ? result.features.filter((feature): feature is string => typeof feature === "string")
+        : [];
+      const preferences = result?.preferences === undefined || result.preferences === null
         ? DEFAULT_ATTENTION_PREFERENCES
         : parseAttentionPreferences(result.preferences);
+      return { ...preferences, relayFeatures };
     },
 
     async putPreferences(
@@ -798,6 +807,8 @@ export function createAttentionNamespace(
       const {
         devices: _deviceOverrides,
         machines: _machineOverrides,
+        projects: _projectOverrides,
+        relayFeatures: _relayFeatures,
         ...accountPreferences
       } = preferences;
       await request(
@@ -818,7 +829,7 @@ export function createAttentionNamespace(
     async putMachinePreferences(
       accountOwnerId: string,
       machineKey: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
@@ -858,7 +869,7 @@ export function createAttentionNamespace(
     async putDevicePreferences(
       accountOwnerId: string,
       deviceId: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
@@ -870,6 +881,27 @@ export function createAttentionNamespace(
         "device preference update",
         "PATCH",
         `/attention/account/preferences/devices/${encodeURIComponent(id)}`,
+        preferences,
+        { userInitiated: true },
+      );
+    },
+
+    /** One project's notification override, on its own atomic relay route. */
+    async putProjectPreferences(
+      accountOwnerId: string,
+      projectId: string,
+      preferences: AttentionScopePatch,
+    ) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before Activity settings could be saved.");
+      }
+      const id = projectId.trim();
+      if (!id) throw new Error("A project is required to change its notifications.");
+      await request(
+        "project preference update",
+        "PATCH",
+        `/attention/account/preferences/projects/${encodeURIComponent(id)}`,
         preferences,
         { userInitiated: true },
       );

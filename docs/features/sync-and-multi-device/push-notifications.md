@@ -299,6 +299,7 @@ GET    /attention/account/preferences
 PUT    /attention/account/preferences
 PATCH  /attention/account/preferences/devices/:deviceId
 PATCH  /attention/account/preferences/machines/:machineKey
+PATCH  /attention/account/preferences/projects/:projectId
 PUT    /attention/account/devices/:deviceId
 DELETE /attention/account/devices/:deviceId
 PUT    /attention/account/devices/:deviceId/activities/:activityId
@@ -637,6 +638,34 @@ category on one phone. Its size is capped like the other scopes:
 
 Registration provides defaults that the account, project, machine, and device
 can override. Turning notifications off at any of those levels stops delivery.
+Event policies merge per event (`resolveScopedDeliveryPreferences` on the relay,
+`resolveAttentionScope` on the desktop): a project, machine or phone that sets
+one event keeps the account's choice for every other event. A project scope is
+keyed by the machine-independent project id (`project.canonicalId`); the relay
+also reads a scope saved under the publisher's own project id.
+
+The three scope routes take the same patch (`AttentionScopePatch`): any scope
+field, plus `eventPolicies` that merges into the scope's map. `null`, for a
+field or one event, removes that override so the scope follows the account
+again; a scope left empty is removed. Unknown events or levels answer 400.
+Settings › Notifications › Events edits them: a scope switcher (Everywhere,
+Project, Computer, Phone) above the matrix, and "Choose events" on each
+computer and phone under Machines. A phone scope is what reaches that phone.
+An older relay answers 404 on the project route; Settings then drops the
+Project choice and says so.
+
+Besides the agent and PR events, three events have a setting:
+`agent_message` (messages from `ade notify`, agents and automations; Notify by
+default, read by the relay for message items and `POST /attention/account/notify`),
+`agent_goal` (a goal reached or blocked; computers only) and `ade_service`
+(the background service fell back or recovered; this computer only, never
+scoped). An account saved before they existed has no entry and uses the default.
+
+Quiet hours hold a push when the account's window or the phone's own window
+covers now, each read in its own `timeZone`. The desktop saves its zone with
+the window (`localAttentionTimeZone`); before, a window set on a computer was
+read in UTC. Desktop notifications follow the same windows
+(`attentionQuietHoursActive`).
 The **Send notifications to** switch in desktop and web settings controls
 account delivery to one iPhone or iPad. The iOS **Notifications on this device**
 switch controls that device's own preference. iOS shows when account settings

@@ -113,6 +113,7 @@ export const IPC = {
   attentionPutMachinePreferences: "ade.attention.putMachinePreferences",
   attentionListDevices: "ade.attention.listDevices",
   attentionPutDevicePreferences: "ade.attention.putDevicePreferences",
+  attentionPutProjectPreferences: "ade.attention.putProjectPreferences",
   attentionSetSessionMuted: "ade.attention.setSessionMuted",
   /** main -> focused window: an agent's message to show as a toast. */
   attentionAlert: "ade.attention.alert",

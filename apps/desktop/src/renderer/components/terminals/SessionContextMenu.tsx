@@ -10,6 +10,7 @@ import {
   ArrowUp,
   Bell,
   BellSlash,
+  GearSix,
   Check,
   CheckCircle,
   ClockCountdown,
@@ -34,6 +35,7 @@ import {
   ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
+import { navigateToAppTarget } from "../../lib/openExternal";
 import type {
   AgentChatSessionMetadataField,
   AutomationRuleSummary,
@@ -837,6 +839,20 @@ function SessionContextMenuPanel({
           >
             <MenuRowIcon icon={notificationMute.muted ? Bell : BellSlash} />
             {notificationMute.muted ? "Unmute notifications" : "Mute notifications"}
+          </button>
+        ) : null}
+        {notificationMute.available ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            title="What each event does, per project, computer and phone"
+            onClick={() => {
+              onClose();
+              navigateToAppTarget({ kind: "settings", tab: "notifications", entryId: "notifications.events" });
+            }}
+          >
+            <MenuRowIcon icon={GearSix} />
+            Notification settings…
           </button>
         ) : null}
 

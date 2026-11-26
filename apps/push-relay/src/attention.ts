@@ -79,6 +79,7 @@ const MAX_ATTENTION_ITEMS = 64;
 const MAX_ATTENTION_TOMBSTONES = 64;
 const MAX_ATTENTION_DEVICES = 32;
 const MAX_ATTENTION_MACHINE_PREFERENCES = 64;
+const MAX_ATTENTION_PROJECT_PREFERENCES = 128;
 /**
  * Account-wide muted chats. Session ids are opaque and a deleted chat never
  * unmutes itself, so the list is bounded by dropping the oldest mute.
@@ -91,6 +92,14 @@ const MAX_ACCOUNT_MUTED_SESSIONS = 500;
  * does not know, which would freeze that machine's Activity.
  */
 const ATTENTION_PUBLISH_FEATURES = ["message"] as const;
+/**
+ * What `GET /attention/account/preferences` tells clients this relay does.
+ * `scope-event-policies`: project, machine and phone event policies merge per
+ * event over the account's, and the projects route exists. Settings offers
+ * per-scope events only when it sees this; an older relay let one scoped event
+ * replace the account's whole map.
+ */
+const ATTENTION_PREFERENCE_FEATURES = ["scope-event-policies"] as const;
 const MAX_ACCOUNT_ATTENTION_ITEMS = 2_000;
 const ATTENTION_DEVICE_LEASE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH = 64;
@@ -179,7 +188,19 @@ const DEFAULT_NOTIFY_EVENTS = new Set([
   "agent_needs_you",
   "agent_failed",
   "pr_checks_failing",
+  // A message is a push the user asked an agent for.
+  "agent_message",
 ]);
+
+/** The delivery levels a saved event policy may hold. */
+const EVENT_POLICIES = new Set(["off", "ambient", "notify"]);
+
+/**
+ * Events with a setting but no item of their own on this relay: a computer
+ * shows them (a goal outcome, the background service). Scope patches may
+ * carry them; delivery never reads them.
+ */
+const COMPUTER_ONLY_POLICY_EVENT_KINDS = new Set(["agent_goal", "ade_service"]);
 
 /**
  * Events that notified by default before policy-defaults version 2. A saved
@@ -926,18 +947,28 @@ async function enforceActivityAccountItemCap(
  * the account, then the project and machine scopes, then an explicit device
  * override. A scope that is absent (a custom notification has no project)
  * contributes nothing.
+ *
+ * Event policies merge per event: a project that sets one event to Notify
+ * keeps the account's choice for every other event. A project is looked up by
+ * its machine-independent id first (what Settings writes), then by the
+ * publishing machine's own id. Mirrors `resolveAttentionScope` in the desktop
+ * shared types.
  */
-function resolveScopedDeliveryPreferences(
-  device: AttentionDeviceRow,
-  scope: { projectId?: string | null; machineKey?: string | null },
+export function resolveScopedDeliveryPreferences(
+  device: Pick<AttentionDeviceRow, "device_id" | "preferences_json">,
+  scope: { projectIds?: readonly (string | null | undefined)[]; machineKey?: string | null },
   preferences: Record<string, unknown>,
 ): Record<string, unknown> {
   const registered = readPreferences(device.preferences_json);
   const account = isRecord(preferences.account) ? preferences.account : {};
   const projects = isRecord(preferences.projects) ? preferences.projects : {};
-  const project = scope.projectId && isRecord(projects[scope.projectId])
-    ? projects[scope.projectId] as Record<string, unknown>
-    : {};
+  const projectLayers: Record<string, unknown>[] = [];
+  const seenProjects = new Set<string>();
+  for (const projectId of scope.projectIds ?? []) {
+    if (!projectId || seenProjects.has(projectId)) continue;
+    seenProjects.add(projectId);
+    if (isRecord(projects[projectId])) projectLayers.push(projects[projectId] as Record<string, unknown>);
+  }
   const machines = isRecord(preferences.machines) ? preferences.machines : {};
   const machine = scope.machineKey && isRecord(machines[scope.machineKey])
     ? machines[scope.machineKey] as Record<string, unknown>
@@ -946,13 +977,18 @@ function resolveScopedDeliveryPreferences(
   const explicitDevice = isRecord(devices[device.device_id])
     ? devices[device.device_id] as Record<string, unknown>
     : {};
-  const merged = { ...registered, ...account, ...project, ...machine, ...explicitDevice };
+  const layers = [registered, account, ...projectLayers, machine, explicitDevice];
+  const merged: Record<string, unknown> = Object.assign({}, ...layers);
+  merged.eventPolicies = Object.assign(
+    {},
+    ...layers.map((layer) => (isRecord(layer.eventPolicies) ? layer.eventPolicies : {})),
+  );
   // Notifications off is a veto, not a default a later scope can undo. Older
   // phone builds write their own switch into the device override on every
   // sync, so with last-wins a phone left on ignored the account's "Phone
   // notifications" switch and every muted machine.
   if (explicitDevice.deviceDeliveryEnabled === false
-    || [registered, account, project, machine, explicitDevice].some((layer) => layer.notificationsEnabled === false)) {
+    || layers.some((layer) => layer.notificationsEnabled === false)) {
     merged.notificationsEnabled = false;
   }
   return merged;
@@ -965,7 +1001,10 @@ function resolveActivityDeliveryPreferences(
 ): Record<string, unknown> {
   return resolveScopedDeliveryPreferences(
     device,
-    { projectId: item.project.projectId, machineKey: item.machine.machineKey },
+    {
+      projectIds: [requiredString(item.project.canonicalId), item.project.projectId],
+      machineKey: item.machine.machineKey,
+    },
     preferences,
   );
 }
@@ -999,18 +1038,25 @@ function resolvedMutedSessionIds(
   return muted;
 }
 
-function quietHoursActive(
+/**
+ * Quiet hours hold a push when the account's window or the device's own window
+ * covers now. A phone writes its own window into its override on every sync,
+ * and reading only that one ignored the account's window on every phone that
+ * had ever synced.
+ */
+export function quietHoursActive(
   device: Record<string, unknown>,
   account: Record<string, unknown>,
   nowMs: number,
 ): boolean {
-  const raw = isRecord(device.quietHours)
-    ? device.quietHours
-    : isRecord(account.quietHours)
-      ? account.quietHours
-      : null;
-  if (!raw) return false;
-  if (raw.enabled === false || device.quietHoursEnabled === false) return false;
+  if (device.quietHoursEnabled !== false && isRecord(device.quietHours) && quietWindowActive(device.quietHours, nowMs)) {
+    return true;
+  }
+  return isRecord(account.quietHours) && quietWindowActive(account.quietHours, nowMs);
+}
+
+function quietWindowActive(raw: Record<string, unknown>, nowMs: number): boolean {
+  if (raw.enabled === false) return false;
 
   let startMinute = Number(raw.startMinute);
   let endMinute = Number(raw.endMinute);
@@ -1282,12 +1328,9 @@ async function deliverAttentionNotifications(
       const eventPolicies = isRecord(override.eventPolicies)
         ? override.eventPolicies
         : {};
-      // A message is a push the user asked an agent for, so it has no event
-      // policy to turn it down; notifications off, quiet hours and mutes
-      // still apply below.
-      const policy = item.kind === "message"
-        ? "notify"
-        : effectiveEventPolicy(item.eventKind, eventPolicies, override);
+      // A message is a push the user asked an agent for, so its event
+      // ("Messages from agents") notifies unless the user turned it down.
+      const policy = effectiveEventPolicy(item.eventKind, eventPolicies, override);
       if (policy !== "notify") continue;
       const notificationsEnabled = preferenceBoolean(
         override,
@@ -3435,6 +3478,7 @@ async function handlePreferences(
       ok: true,
       preferences,
       updatedAt: row?.updated_at ?? null,
+      features: ATTENTION_PREFERENCE_FEATURES,
     });
   }
   let payload: unknown;
@@ -3444,6 +3488,8 @@ async function handlePreferences(
     return json({ ok: false, error: "invalid json" }, { status: 400 });
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid preferences" }, { status: 400 });
+  // What a client was told on read, never stored.
+  delete payload.relayFeatures;
   const preservesDevices = !Object.prototype.hasOwnProperty.call(payload, "devices");
   const preservesMachines = !Object.prototype.hasOwnProperty.call(payload, "machines");
   const preservesProjects = !Object.prototype.hasOwnProperty.call(payload, "projects");
@@ -3509,6 +3555,20 @@ async function mutateAttentionPreferences(
         ),
       };
     }
+    if (
+      preferences.projects != null
+      && (
+        !isRecord(preferences.projects)
+        || Object.keys(preferences.projects).length > MAX_ATTENTION_PROJECT_PREFERENCES
+      )
+    ) {
+      return {
+        response: json(
+          { ok: false, error: "invalid project preferences" },
+          { status: 400 },
+        ),
+      };
+    }
     const serialized = JSON.stringify(preferences);
     if (serialized.length > 32_000) {
       return {
@@ -3544,14 +3604,59 @@ async function mutateAttentionPreferences(
   };
 }
 
-async function handleDevicePreferences(
+/**
+ * Apply one scope patch (a project, machine or phone) to what the scope holds.
+ * `eventPolicies` merges per event, so changing one event keeps the others; a
+ * `null`, for an event or a field, removes the override and the scope inherits
+ * again. Unknown events and levels are refused rather than stored.
+ */
+export function applyAttentionScopePatch(
+  existing: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): { scope: Record<string, unknown> } | { error: string } {
+  const next: Record<string, unknown> = { ...existing };
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "eventPolicies") {
+      if (value === null) {
+        delete next.eventPolicies;
+        continue;
+      }
+      if (!isRecord(value)) return { error: "eventPolicies must be an object" };
+      const policies: Record<string, unknown> = isRecord(existing.eventPolicies)
+        ? { ...existing.eventPolicies }
+        : {};
+      for (const [kind, policy] of Object.entries(value)) {
+        if (!EVENT_KINDS.has(kind) && !COMPUTER_ONLY_POLICY_EVENT_KINDS.has(kind)) {
+          return { error: `unknown event ${kind}` };
+        }
+        if (policy === null) delete policies[kind];
+        else if (typeof policy === "string" && EVENT_POLICIES.has(policy)) policies[kind] = policy;
+        else return { error: `invalid policy for ${kind}` };
+      }
+      if (Object.keys(policies).length > 0) next.eventPolicies = policies;
+      else delete next.eventPolicies;
+      continue;
+    }
+    if (value === null) delete next[key];
+    else next[key] = value;
+  }
+  return { scope: next };
+}
+
+/**
+ * `PATCH /attention/account/preferences/{devices|machines|projects}/:id`: one
+ * scope's change, atomic against concurrent saves of the rest of the document.
+ */
+async function handleScopePreferences(
   request: Request,
   env: AttentionRelayEnv,
   userId: string,
-  deviceId: string,
+  collection: "devices" | "machines" | "projects",
+  id: string,
 ): Promise<Response> {
-  if (!requiredString(deviceId, 128)) {
-    return json({ ok: false, error: "invalid device id" }, { status: 400 });
+  const noun = collection === "devices" ? "device" : collection === "machines" ? "machine" : "project";
+  if (!requiredString(id, 128)) {
+    return json({ ok: false, error: `invalid ${noun} ${collection === "machines" ? "key" : "id"}` }, { status: 400 });
   }
   let payload: unknown;
   try {
@@ -3560,21 +3665,22 @@ async function handleDevicePreferences(
     return json({ ok: false, error: "invalid json" }, { status: 400 });
   }
   if (!isRecord(payload)) {
-    return json({ ok: false, error: "invalid device preferences" }, { status: 400 });
+    return json({ ok: false, error: `invalid ${noun} preferences` }, { status: 400 });
   }
+  // Refuse a bad patch before touching the document; against an empty scope
+  // it fails exactly when it would against the stored one.
+  const check = applyAttentionScopePatch({}, payload);
+  if ("error" in check) return json({ ok: false, error: check.error }, { status: 400 });
   const result = await mutateAttentionPreferences(env, userId, (current) => {
-    const devices = isRecord(current.devices) ? current.devices : {};
-    const device = isRecord(devices[deviceId]) ? devices[deviceId] : {};
-    return {
-      ...current,
-      devices: {
-        ...devices,
-        [deviceId]: {
-          ...device,
-          ...payload,
-        },
-      },
-    };
+    const scopes = isRecord(current[collection]) ? current[collection] as Record<string, unknown> : {};
+    const existing = isRecord(scopes[id]) ? scopes[id] as Record<string, unknown> : {};
+    const patched = applyAttentionScopePatch(existing, payload);
+    const next = "scope" in patched ? patched.scope : existing;
+    const nextScopes = { ...scopes };
+    // An empty scope is no override at all: drop it rather than keep `{}`.
+    if (Object.keys(next).length > 0) nextScopes[id] = next;
+    else delete nextScopes[id];
+    return { ...current, [collection]: nextScopes };
   });
   if ("response" in result) return result.response;
   await deliverAccountLiveActivity(env, userId);
@@ -3751,7 +3857,11 @@ async function handleCustomNotification(
       "notificationsEnabled",
       typeof override.enabled === "boolean" ? override.enabled : true,
     );
-    if (!notificationsEnabled || quietHoursActive(override, accountPreferences, nowMs)) {
+    if (
+      !notificationsEnabled
+      || quietHoursActive(override, accountPreferences, nowMs)
+      || effectiveEventPolicy("agent_message", override.eventPolicies as Record<string, unknown>, override) !== "notify"
+    ) {
       skipped += 1;
       continue;
     }
@@ -3847,47 +3957,6 @@ async function handleSessionMutePreference(
     };
   });
   if ("response" in result) return result.response;
-  return json({
-    ok: true,
-    preferences: result.preferences,
-    updatedAt: result.updatedAt,
-  });
-}
-
-async function handleActivityMachinePreferences(
-  request: Request,
-  env: AttentionRelayEnv,
-  userId: string,
-  machineKey: string,
-): Promise<Response> {
-  if (!requiredString(machineKey, 128)) {
-    return json({ ok: false, error: "invalid machine key" }, { status: 400 });
-  }
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return json({ ok: false, error: "invalid json" }, { status: 400 });
-  }
-  if (!isRecord(payload)) {
-    return json({ ok: false, error: "invalid machine preferences" }, { status: 400 });
-  }
-  const result = await mutateAttentionPreferences(env, userId, (current) => {
-    const machines = isRecord(current.machines) ? current.machines : {};
-    const machine = isRecord(machines[machineKey]) ? machines[machineKey] : {};
-    return {
-      ...current,
-      machines: {
-        ...machines,
-        [machineKey]: {
-          ...machine,
-          ...payload,
-        },
-      },
-    };
-  });
-  if ("response" in result) return result.response;
-  await deliverAccountLiveActivity(env, userId);
   return json({
     ok: true,
     preferences: result.preferences,
@@ -4683,12 +4752,7 @@ async function handleAuthorizedAttentionAccountRequest(
   ) {
     const deviceId = decodePathSegment(route[2]);
     if (deviceId === null) return attentionRouteNotFound();
-    return await handleDevicePreferences(
-      request,
-      env,
-      userId,
-      deviceId,
-    );
+    return await handleScopePreferences(request, env, userId, "devices", deviceId);
   }
   if (
     route.length === 3
@@ -4713,12 +4777,17 @@ async function handleAuthorizedAttentionAccountRequest(
   ) {
     const machineKey = decodePathSegment(route[2]);
     if (machineKey === null) return attentionRouteNotFound();
-    return await handleActivityMachinePreferences(
-      request,
-      env,
-      userId,
-      machineKey,
-    );
+    return await handleScopePreferences(request, env, userId, "machines", machineKey);
+  }
+  if (
+    route.length === 3
+    && route[0] === "preferences"
+    && route[1] === "projects"
+    && request.method === "PATCH"
+  ) {
+    const projectId = decodePathSegment(route[2]);
+    if (projectId === null) return attentionRouteNotFound();
+    return await handleScopePreferences(request, env, userId, "projects", projectId);
   }
   if (
     route.length === 2

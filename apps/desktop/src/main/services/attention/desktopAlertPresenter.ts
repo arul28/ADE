@@ -1,6 +1,8 @@
 import {
-  DEFAULT_ATTENTION_PREFERENCES,
-  type AttentionEventKind,
+  attentionEventPolicy,
+  attentionQuietHoursActive,
+  resolveAttentionScope,
+  type AttentionPolicyEventKind,
   type AttentionItem,
   type AttentionPreferences,
   type AttentionDesktopAlert,
@@ -49,9 +51,11 @@ const MAX_REMEMBERED = 256;
  */
 const MAX_WAITING_FOR_PREFERENCES = 16;
 
-const EVENT_BY_KIND: Record<"needs_you" | "failed", AttentionEventKind> = {
+const EVENT_BY_KIND: Record<DesktopAlert["kind"], AttentionPolicyEventKind> = {
   needs_you: "agent_needs_you",
   failed: "agent_failed",
+  goal: "agent_goal",
+  message: "agent_message",
 };
 
 const HIDDEN_DETAIL_TITLE: Record<Exclude<DesktopAlert["kind"], "message">, string> = {
@@ -94,6 +98,7 @@ export function desktopAlertFromItem(item: AttentionItem): DesktopAlert | null {
     accountMachineKey: item.machine.accountMachineKey ?? null,
     machineKey: item.machine.machineKey,
     projectId: item.project.projectId,
+    canonicalProjectId: item.project.canonicalId ?? null,
     alertFingerprint: item.alertFingerprint ?? null,
     item,
   };
@@ -101,9 +106,10 @@ export function desktopAlertFromItem(item: AttentionItem): DesktopAlert | null {
 
 /**
  * Decides which alerts become desktop notifications, and only for alerts the
- * user's Activity settings would push: notifications on, the chat and its
- * machine not muted, the event set to notify. A message has no event setting;
- * the user asked for it.
+ * user's notification settings would push: the event set to Notify in the
+ * alert's project, machine and device scopes, none of those scopes turned off,
+ * the chat not muted, and no quiet hours. A message and a goal outcome have
+ * their own events, which notify by default: the user asked for them.
  *
  * A system notification only while no ADE window is focused. A focused window
  * already shows Needs you on its badge; a message there becomes an in-app
@@ -135,31 +141,24 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
    * machine (by its push identity, which is what "mute this machine" writes),
    * then this device.
    */
-  const resolvedScope = (
-    preferences: AttentionPreferences,
-    alert: DesktopAlert,
-  ): Partial<AttentionPreferences["account"]> => {
-    const deviceId = deps.getDeviceId?.() ?? null;
-    return {
-      ...preferences.account,
-      ...(alert.projectId ? preferences.projects?.[alert.projectId] : undefined),
-      ...(alert.machineKey ? preferences.machines?.[alert.machineKey] : undefined),
-      ...(deviceId ? preferences.devices?.[deviceId] : undefined),
-    };
-  };
+  const resolvedScope = (preferences: AttentionPreferences, alert: DesktopAlert) =>
+    resolveAttentionScope(preferences, {
+      projectIds: [alert.canonicalProjectId, alert.projectId],
+      machineKey: alert.machineKey,
+      deviceId: deps.getDeviceId?.() ?? null,
+    });
 
   const allowedByPreferences = (alert: DesktopAlert): boolean => {
     const preferences = deps.getPreferences();
     if (!preferences) return true;
-    const scope = resolvedScope(preferences, alert);
-    if (scope.notificationsEnabled === false) return false;
+    // The account's own switch is "Phone notifications": it is about the
+    // phone, so this computer does not read it. A project, machine or device
+    // turned off is a veto.
+    const { scope, scopedOff } = resolvedScope(preferences, alert);
+    if (scopedOff) return false;
     if ((preferences.mutedSessionIds ?? []).includes(alert.sessionId)) return false;
-    // A message and a goal outcome are things the user asked to hear about.
-    if (alert.kind === "message" || alert.kind === "goal") return true;
-    const event = EVENT_BY_KIND[alert.kind];
-    const policy = scope.eventPolicies?.[event]
-      ?? DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies[event];
-    return policy === "notify";
+    if (attentionQuietHoursActive(scope.quietHours, now())) return false;
+    return attentionEventPolicy(scope, EVENT_BY_KIND[alert.kind]) === "notify";
   };
 
   /**
@@ -170,7 +169,7 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
    */
   const redactedForSystemNotification = (alert: DesktopAlert): DesktopAlert => {
     const preferences = deps.getPreferences();
-    if (!preferences || resolvedScope(preferences, alert).hideDetails !== true) return alert;
+    if (!preferences || resolvedScope(preferences, alert).scope.hideDetails !== true) return alert;
     if (alert.kind === "message") return { ...alert, body: null };
     return { ...alert, title: `Agent: ${HIDDEN_DETAIL_TITLE[alert.kind]}`, body: null };
   };
@@ -268,6 +267,7 @@ export function readDesktopAlertEvent(payload: unknown): DesktopAlert | null {
     accountMachineKey: text(value.accountMachineKey),
     machineKey: text(value.machineKey),
     projectId: text(value.projectId),
+    canonicalProjectId: text(value.canonicalProjectId),
     alertFingerprint: text(value.alertFingerprint),
   };
 }

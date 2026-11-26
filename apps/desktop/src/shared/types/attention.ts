@@ -55,12 +55,27 @@ export const ATTENTION_EVENT_KINDS = [
 export type AttentionEventKind = (typeof ATTENTION_EVENT_KINDS)[number];
 
 /**
- * The event of a `message` item. Deliberately not in `ATTENTION_EVENT_KINDS`:
- * that list is the event-policy vocabulary every saved preference document must
- * cover, and a message has no policy — the user asked for it.
+ * The event of a `message` item. Not in `ATTENTION_EVENT_KINDS`: that list is
+ * the vocabulary of agent and PR items, which every saved preference document
+ * covers. A message has a delivery setting of its own (see
+ * `ATTENTION_POLICY_EVENT_KINDS`), which defaults to Notify: the user asked for it.
  */
 export const ATTENTION_MESSAGE_EVENT_KIND = "agent_message" as const;
 export type AttentionItemEventKind = AttentionEventKind | typeof ATTENTION_MESSAGE_EVENT_KIND;
+
+/**
+ * Every event with a delivery setting: the item events, messages, and the
+ * notices only a computer shows (a goal outcome, the ADE background service).
+ * A preference document saved before one of these existed has no entry for it;
+ * readers fall back to the catalog default.
+ */
+export const ATTENTION_POLICY_EVENT_KINDS = [
+  ...ATTENTION_EVENT_KINDS,
+  ATTENTION_MESSAGE_EVENT_KIND,
+  "agent_goal",
+  "ade_service",
+] as const;
+export type AttentionPolicyEventKind = (typeof ATTENTION_POLICY_EVENT_KINDS)[number];
 
 export type AttentionDeliveryPolicy = "off" | "ambient" | "notify";
 
@@ -311,6 +326,8 @@ export type AttentionDesktopAlert = {
    */
   machineKey?: string | null;
   projectId?: string | null;
+  /** The project's machine-independent id, which Settings keys project settings by. */
+  canonicalProjectId?: string | null;
   /** The Activity alert identity, so marking it seen cannot clear a newer one. */
   alertFingerprint?: string | null;
   /** Set for alerts read from an account snapshot: opening goes through Activity. */
@@ -341,7 +358,7 @@ export type AttentionPresenceReceipt = {
 };
 
 export type AttentionPreferenceScope = {
-  eventPolicies: Record<AttentionEventKind, AttentionDeliveryPolicy>;
+  eventPolicies: Record<AttentionPolicyEventKind, AttentionDeliveryPolicy>;
   /**
    * Which default event policies `eventPolicies` was saved against. Absent
    * means version 1, when review requests, requested changes and merge-ready
@@ -408,7 +425,15 @@ export type AttentionPreferences = {
   machines: Record<string, Partial<AttentionPreferenceScope>>;
   projects: Record<string, Partial<AttentionPreferenceScope>>;
   mutedSessionIds: string[];
+  /**
+   * What the account service said it supports when these were read
+   * (`features` on the GET). Never saved: every writer strips it.
+   */
+  relayFeatures?: string[];
 };
+
+/** The account service merges scoped event policies per event and has the projects route. */
+export const ATTENTION_SCOPE_EVENT_POLICIES_FEATURE = "scope-event-policies";
 
 /**
  * The most item ids ONE acknowledgment request may carry.
@@ -578,11 +603,11 @@ export async function runAcknowledgmentChunks(
 }
 
 export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
-  AttentionEventKind,
+  AttentionPolicyEventKind,
   AttentionDeliveryPolicy
 > = Object.fromEntries(
   ACTIVITY_EVENT_CATALOG.map(({ kind, defaultPolicy }) => [kind, defaultPolicy]),
-) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
+) as Record<AttentionPolicyEventKind, AttentionDeliveryPolicy>;
 
 /**
  * Version 2: only the urgent events (a question, a failure, red CI) notify by
@@ -660,6 +685,141 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   projects: {},
   mutedSessionIds: [],
 };
+
+/**
+ * A change to one project, machine or phone scope (relay
+ * `PATCH /attention/account/preferences/{projects|machines|devices}/:id`).
+ * `eventPolicies` merges into the scope's map; a `null` value, for an event or
+ * a field, removes the override so the scope inherits again.
+ */
+export type AttentionScopePatch = {
+  [K in Exclude<keyof AttentionPreferenceScope, "eventPolicies">]?: AttentionPreferenceScope[K] | null;
+} & {
+  eventPolicies?: Partial<Record<AttentionPolicyEventKind, AttentionDeliveryPolicy | null>> | null;
+};
+
+/** The scopes one notification is about: its project, its machine, the device showing it. */
+export type AttentionScopeTarget = {
+  /** Every id the project goes by (the machine-independent id first). */
+  projectIds?: readonly (string | null | undefined)[];
+  machineKey?: string | null;
+  deviceId?: string | null;
+};
+
+/**
+ * The settings that apply to one notification: the account, then its project,
+ * then its machine, then the device. Event policies merge per event, so a
+ * scope that changes one event keeps the account's choice for the rest.
+ * "Notifications off" in any scope below the account is a veto. The account's
+ * own switch is "Phone notifications" and stays the caller's to read.
+ *
+ * The push relay resolves a phone's settings the same way
+ * (`resolveScopedDeliveryPreferences` in `apps/push-relay/src/attention.ts`).
+ */
+export function resolveAttentionScope(
+  preferences: AttentionPreferences,
+  target: AttentionScopeTarget,
+): { scope: AttentionPreferenceScope; scopedOff: boolean } {
+  const layers: Partial<AttentionPreferenceScope>[] = [];
+  const seenProjects = new Set<string>();
+  for (const projectId of target.projectIds ?? []) {
+    const id = projectId?.trim();
+    if (!id || seenProjects.has(id)) continue;
+    seenProjects.add(id);
+    const layer = preferences.projects?.[id];
+    if (layer) layers.push(layer);
+  }
+  const machine = target.machineKey ? preferences.machines?.[target.machineKey] : undefined;
+  if (machine) layers.push(machine);
+  const device = target.deviceId ? preferences.devices?.[target.deviceId] : undefined;
+  if (device) layers.push(device);
+  const account = preferences.account ?? DEFAULT_ATTENTION_PREFERENCES.account;
+  const scope: AttentionPreferenceScope = Object.assign(
+    {},
+    DEFAULT_ATTENTION_PREFERENCES.account,
+    account,
+    ...layers,
+  );
+  scope.eventPolicies = Object.assign(
+    {},
+    DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
+    account.eventPolicies,
+    ...layers.map((layer) => layer.eventPolicies ?? {}),
+  );
+  // The account's quiet hours stay the account's; a scope adds its own window
+  // on top (see `attentionQuietHoursActive`), it never clears the account's.
+  scope.quietHours = account.quietHours ?? DEFAULT_ATTENTION_PREFERENCES.account.quietHours;
+  scope.notificationsEnabled = account.notificationsEnabled !== false;
+  const scopedOff = layers.some((layer) =>
+    layer.notificationsEnabled === false || layer.deviceDeliveryEnabled === false);
+  return { scope, scopedOff };
+}
+
+/** This event's delivery level in a resolved scope, or its catalog default. */
+export function attentionEventPolicy(
+  scope: Pick<AttentionPreferenceScope, "eventPolicies">,
+  kind: AttentionPolicyEventKind,
+): AttentionDeliveryPolicy {
+  return scope.eventPolicies?.[kind] ?? BALANCED_ATTENTION_EVENT_POLICIES[kind] ?? "ambient";
+}
+
+/**
+ * Whether a quiet-hours window covers `nowMs`, read in the window's own time
+ * zone (UTC when it names none). The push
+ * relay reads phone windows with the same rule (`quietHoursActive`), including
+ * staying quiet-free when the zone is unknown.
+ */
+export function attentionQuietHoursActive(
+  quietHours: Partial<AttentionPreferenceScope["quietHours"]> | null | undefined,
+  nowMs: number,
+): boolean {
+  if (!quietHours || quietHours.enabled !== true) return false;
+  const startMinute = Number(quietHours.startMinute);
+  const endMinute = Number(quietHours.endMinute);
+  if (
+    !Number.isInteger(startMinute)
+    || !Number.isInteger(endMinute)
+    || startMinute < 0
+    || startMinute >= 24 * 60
+    || endMinute < 0
+    || endMinute >= 24 * 60
+    || startMinute === endMinute
+  ) {
+    return false;
+  }
+  const minuteIn = (timeZone: string): number | null => {
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).formatToParts(new Date(nowMs));
+      const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0) % 24;
+      const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+      return hour * 60 + minute;
+    } catch {
+      return null;
+    }
+  };
+  const current = minuteIn(quietHours.timeZone?.trim() || "UTC");
+  if (current == null) return false;
+  return startMinute < endMinute
+    ? current >= startMinute && current < endMinute
+    : current >= startMinute || current < endMinute;
+}
+
+/**
+ * This computer's time zone, for the quiet-hours window it saves. Quiet hours
+ * are read in the zone they were set in; without one the relay reads UTC.
+ */
+export function localAttentionTimeZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
 
 export const ATTENTION_PHASE_PRIORITY: Readonly<Record<AttentionPhase, number>> = {
   needs_you: 0,

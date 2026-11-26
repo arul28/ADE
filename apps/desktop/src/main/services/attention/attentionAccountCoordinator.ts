@@ -11,7 +11,7 @@ import {
   unreachedOutcomeFields,
   type AttentionAccountDevice,
   type AttentionAcknowledgmentOutcome,
-  type AttentionPreferenceScope,
+  type AttentionScopePatch,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionPresenceReceipt,
@@ -35,6 +35,7 @@ type AccountAttentionClient = Pick<
   | "setAttentionSessionMuted"
   | "listAttentionDevices"
   | "putAttentionDevicePreferences"
+  | "putAttentionProjectPreferences"
 >> & {
   /**
    * Purge every Activity row a removed machine published (relay
@@ -814,9 +815,12 @@ export class AttentionAccountCoordinator {
     }
     const accountOwnerId = this.requireCurrentAccountOwner(request.accountOwnerId);
     if (this.options.accountAttentionClient) {
-      await this.options.accountAttentionClient.putAttentionPreferences(
+      this.noteSavedPreferences(
         accountOwnerId,
-        request.preferences as AttentionPreferences,
+        await this.options.accountAttentionClient.putAttentionPreferences(
+          accountOwnerId,
+          request.preferences as AttentionPreferences,
+        ),
       );
       return;
     }
@@ -860,11 +864,61 @@ export class AttentionAccountCoordinator {
     ) {
       throw accountActivityNotReadyError();
     }
-    await this.options.accountAttentionClient.putActivityMachinePreferences(
+    this.noteSavedPreferences(
       accountOwnerId,
-      normalizedMachineKey,
-      partial as Partial<AttentionPreferenceScope>,
+      await this.options.accountAttentionClient.putActivityMachinePreferences(
+        accountOwnerId,
+        normalizedMachineKey,
+        partial as AttentionScopePatch,
+      ),
     );
+  }
+
+  /**
+   * One project's notification override (`preferences.projects[projectId]`,
+   * keyed by the machine-independent project id). Account data on the relay,
+   * so no pin.
+   */
+  async putProjectPreferences(
+    projectId: unknown,
+    partial: unknown,
+    expectedAccountOwnerId: unknown,
+  ): Promise<void> {
+    const normalizedProjectId = typeof projectId === "string" ? projectId.trim() : "";
+    if (!normalizedProjectId || !isRecord(partial)) {
+      throw new Error("A valid project notification update is required.");
+    }
+    const accountOwnerId = this.requireCurrentAccountOwner(expectedAccountOwnerId);
+    if (!this.options.accountAttentionClient?.putAttentionProjectPreferences) {
+      throw accountActivityNotReadyError();
+    }
+    this.noteSavedPreferences(
+      accountOwnerId,
+      await this.options.accountAttentionClient.putAttentionProjectPreferences(
+        accountOwnerId,
+        normalizedProjectId,
+        partial as AttentionScopePatch,
+      ),
+    );
+  }
+
+  /**
+   * A save answers with the document the relay now holds. Hand it to the
+   * desktop's notification check at once, so a change made in Settings
+   * applies to the next alert instead of the next time a window loads them.
+   */
+  private noteSavedPreferences(
+    accountOwnerId: string,
+    preferences: AttentionPreferences | null | undefined,
+  ): void {
+    if (!preferences || !isRecord(preferences)) return;
+    try {
+      this.options.onPreferences?.(accountOwnerId, preferences);
+    } catch (error) {
+      this.options.getLogger().warn("attention.saved_preferences_observer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   /**
@@ -896,10 +950,13 @@ export class AttentionAccountCoordinator {
     if (!this.options.accountAttentionClient?.putAttentionDevicePreferences) {
       throw accountActivityNotReadyError();
     }
-    await this.options.accountAttentionClient.putAttentionDevicePreferences(
+    this.noteSavedPreferences(
       accountOwnerId,
-      normalizedDeviceId,
-      partial as Partial<AttentionPreferenceScope>,
+      await this.options.accountAttentionClient.putAttentionDevicePreferences(
+        accountOwnerId,
+        normalizedDeviceId,
+        partial as AttentionScopePatch,
+      ),
     );
   }
 

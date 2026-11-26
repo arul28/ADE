@@ -10,7 +10,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import type {
   AttentionAccountDevice,
   AttentionItem,
-  AttentionPreferenceScope,
+  AttentionScopePatch,
   AttentionPreferences,
   AttentionPresence,
   AttentionSnapshot,
@@ -18,6 +18,7 @@ import type {
 } from "../../../../desktop/src/shared/types/attention";
 import {
   ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+  DEFAULT_ATTENTION_PREFERENCES,
   parseAttentionAccountDevices,
 } from "../../../../desktop/src/shared/types/attention";
 import type { PushDeviceRegistration } from "../../../../desktop/src/shared/types/push";
@@ -1030,18 +1031,29 @@ export function createPushRelayClient(args: {
         return null;
       }
       const body = requireOk("getAttentionPreferences", response);
-      return (body.preferences ?? null) as AttentionPreferences | null;
+      const preferences = (body.preferences ?? null) as AttentionPreferences | null;
+      const features = Array.isArray(body.features)
+        ? body.features.filter((feature): feature is string => typeof feature === "string")
+        : [];
+      // An account that never saved has no document; the features still count.
+      if (!preferences) return features.length > 0 ? { ...DEFAULT_ATTENTION_PREFERENCES, relayFeatures: features } : null;
+      return { ...preferences, relayFeatures: features };
     },
 
+    /** Returns the document as the relay stored it, or null when it sent none. */
     async putAttentionPreferences(
       expectedAccountUserId: string,
       preferences: AttentionPreferences,
-    ): Promise<void> {
-      // Desktop edits account/project policy only. Omitting device and machine
-      // overrides lets the relay preserve concurrent scope-owned settings.
+    ): Promise<AttentionPreferences | null> {
+      // Desktop edits the account scope here. Omitting the device, machine and
+      // project overrides lets the relay keep them: each has its own PATCH
+      // route, and a whole-document save would put back the copy this window
+      // loaded over a change made since.
       const {
         devices: _deviceOverrides,
         machines: _machineOverrides,
+        projects: _projectOverrides,
+        relayFeatures: _relayFeatures,
         ...accountPreferences
       } = preferences;
       const response = await request("PUT", "/attention/account/preferences", {
@@ -1050,8 +1062,9 @@ export function createPushRelayClient(args: {
         deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         expectedAccountUserId,
       });
-      if (response.status === 401 && response.body?.error === "ADE account is not signed in") return;
-      requireOk("putAttentionPreferences", response);
+      if (response.status === 401 && response.body?.error === "ADE account is not signed in") return null;
+      const body = requireOk("putAttentionPreferences", response);
+      return (body.preferences ?? null) as AttentionPreferences | null;
     },
 
     /**
@@ -1095,8 +1108,8 @@ export function createPushRelayClient(args: {
     async putActivityMachinePreferences(
       expectedAccountUserId: string,
       machineKey: string,
-      partial: Partial<AttentionPreferenceScope>,
-    ): Promise<void> {
+      partial: AttentionScopePatch,
+    ): Promise<AttentionPreferences | null> {
       const response = await request(
         "PATCH",
         `/attention/account/preferences/machines/${encodeURIComponent(machineKey)}`,
@@ -1108,9 +1121,10 @@ export function createPushRelayClient(args: {
         },
       );
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
-        return;
+        return null;
       }
-      requireOk("putActivityMachinePreferences", response);
+      const body = requireOk("putActivityMachinePreferences", response);
+      return (body.preferences ?? null) as AttentionPreferences | null;
     },
 
     /** The account's phones and tablets (display fields only, never tokens). */
@@ -1129,8 +1143,8 @@ export function createPushRelayClient(args: {
     async putAttentionDevicePreferences(
       expectedAccountUserId: string,
       deviceId: string,
-      partial: Partial<AttentionPreferenceScope>,
-    ): Promise<void> {
+      partial: AttentionScopePatch,
+    ): Promise<AttentionPreferences | null> {
       const response = await request(
         "PATCH",
         `/attention/account/preferences/devices/${encodeURIComponent(deviceId)}`,
@@ -1141,7 +1155,32 @@ export function createPushRelayClient(args: {
           deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         },
       );
-      requireOk("putAttentionDevicePreferences", response);
+      const body = requireOk("putAttentionDevicePreferences", response);
+      return (body.preferences ?? null) as AttentionPreferences | null;
+    },
+
+    /**
+     * One project's override, merged by the relay into
+     * `preferences.projects[projectId]` (keyed by the machine-independent id).
+     * An older relay has no route and answers 404; that surfaces as an error.
+     */
+    async putAttentionProjectPreferences(
+      expectedAccountUserId: string,
+      projectId: string,
+      partial: AttentionScopePatch,
+    ): Promise<AttentionPreferences | null> {
+      const response = await request(
+        "PATCH",
+        `/attention/account/preferences/projects/${encodeURIComponent(projectId)}`,
+        {
+          body: partial,
+          accountAuthorized: true,
+          expectedAccountUserId,
+          deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
+        },
+      );
+      const body = requireOk("putAttentionProjectPreferences", response);
+      return (body.preferences ?? null) as AttentionPreferences | null;
     },
 
     /**

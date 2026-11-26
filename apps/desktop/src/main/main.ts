@@ -365,6 +365,11 @@ import type {
   UpdateInstallImpact,
   UpdateInterruptedChat,
 } from "../shared/types";
+import {
+  attentionEventPolicy,
+  attentionQuietHoursActive,
+  resolveAttentionScope,
+} from "../shared/types/attention";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -2804,6 +2809,23 @@ app.whenReady().then(async () => {
     lastReadableAccountOwnerId = null;
     return null;
   };
+  /** The last account notification settings any window loaded, for this computer's alerts. */
+  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
+  /**
+   * A notice about this computer itself (no project, no chat): shown unless
+   * the account set its event to Off or quiet hours are on. Unknown settings
+   * (signed out, not loaded yet) allow it.
+   */
+  const computerNoticeAllowed = (kind: "ade_service" | "agent_goal"): boolean => {
+    const ownerId = readAccountOwnerId();
+    const preferences = ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
+      ? attentionPreferencesForAlerts.preferences
+      : null;
+    if (!preferences) return true;
+    const { scope } = resolveAttentionScope(preferences, {});
+    return attentionEventPolicy(scope, kind) === "notify"
+      && !attentionQuietHoursActive(scope.quietHours, Date.now());
+  };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   // As Sentry decides it: a package that did not come from a release workflow is `development`.
   const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: reportsAsPackagedRelease(app.isPackaged), version: app.getVersion() });
@@ -2889,7 +2911,7 @@ app.whenReady().then(async () => {
     },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
-      if (!Notification.isSupported()) return;
+      if (!Notification.isSupported() || !computerNoticeAllowed("ade_service")) return;
       try {
         const notification = mode === "isolated"
           ? new Notification({
@@ -5675,6 +5697,7 @@ app.whenReady().then(async () => {
         });
       },
       onGoalEnded: ({ sessionId, title, objective, outcome }) => {
+        if (!computerNoticeAllowed("agent_goal")) return;
         showChatOsNotification({
           sessionId,
           title: outcome === "reached" ? "Goal reached" : "Goal blocked",
@@ -7668,7 +7691,6 @@ app.whenReady().then(async () => {
    * the machine event bridge) and by the account snapshots windows poll (for
    * chats on other machines). See `desktopAlertPresenter.ts`.
    */
-  let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
   /** Electron drops a click on a notification nothing references any more. */
   const liveDesktopAlertNotifications = new Set<Notification>();
   let desktopAlertClickOwner: string | null | undefined;

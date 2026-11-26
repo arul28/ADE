@@ -401,6 +401,11 @@ export type PushDesktopAlert = {
   machineKey: string;
   /** The project (scope) the chat belongs to, which keys project settings. */
   projectId: string | null;
+  /**
+   * The project's machine-independent id (`deriveProjectId(rootPath)`), which
+   * is what Settings keys a project's notification settings by.
+   */
+  canonicalProjectId?: string | null;
   /** The Activity alert this is, when published; fences the click's "seen". */
   alertFingerprint?: string | null;
 };
@@ -1115,12 +1120,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       alert.desktopAnnounced = true;
       const copy = alert.render();
       const itemId = `agent:${machineKey}:${alert.sessionId}`;
+      const scopeKey = (runs.get(alert.sessionId) ?? recentRuns.get(alert.sessionId))?.scopeKey ?? null;
       emitDesktopAlert({
         itemId,
         alertFingerprint: kind === "goal" ? null : lastAlertFingerprintById.get(itemId) ?? null,
         kind,
         sessionId: alert.sessionId,
-        projectId: (runs.get(alert.sessionId) ?? recentRuns.get(alert.sessionId))?.scopeKey ?? null,
+        projectId: scopeKey,
+        canonicalProjectId: scopeKey ? canonicalProjectId(scopes.get(scopeKey)?.projectRoot) : null,
         title: copy.title,
         body: copy.body,
         at: new Date(nowMs).toISOString(),
@@ -3317,6 +3324,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         kind: "message",
         sessionId,
         projectId: scopeKey,
+        canonicalProjectId: canonicalProjectId(scope.projectRoot),
         title,
         body,
         at: message.sentAt,

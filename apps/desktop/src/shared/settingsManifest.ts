@@ -1857,9 +1857,11 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "notifications.events",
     label: "Events",
-    keywords: ["activity", "policy", 
+    keywords: ["activity", "policy",
       "notification", "alert", "turn complete", "question", "ci", "check",
       "review", "conflict", "desktop", "phone", "push", "silent", "matrix",
+      "per project", "per machine", "per phone", "project", "computer", "iphone",
+      "message", "ade notify", "automation", "goal", "background service",
     ],
     tab: "notifications",
     anchor: "notification-events",
