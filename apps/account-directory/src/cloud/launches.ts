@@ -41,6 +41,8 @@ import {
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { WAKE_PORT, cloudSizeForTier, type CloudSize } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
+import { requestNetwork } from "./sponsoredConsent";
+import { noteComputerJoin } from "./sponsoredSmall";
 import {
   LAUNCH_COMPUTER_DELETED,
   deleteComputer,
@@ -1597,6 +1599,10 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
       .bind(row.join_used_at, row.join_user_code, rejoinCount, launchId, now).run();
     return fail(link.error, MINT_FAILED[link.error] ?? MINT_UNAVAILABLE, link.status);
   }
+  // The network the computer joined from is ADE Cloud's own (Free Small's tripwire, `sponsoredSmall.ts`). Never fails the join.
+  await noteComputerJoin(env, instanceId, requestNetwork(request)).catch((error: unknown) => {
+    reportCloudFailure("cloud.computer_join_network_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
   logCloud("cloud.launch_joined", { launchId, userId: row.user_id, rejoin });
   return json({ url: link.url, joinExpiresAt });
 }

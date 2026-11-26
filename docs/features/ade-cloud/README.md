@@ -789,8 +789,10 @@ move keeps the old disk.
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`;
 who is told, asked and how a no holds in `sponsoredConsent.ts`; the ad switches in
-`sponsoredSwitch.ts`; what Free's Small costs in `sponsoredSmall.ts`;
-migrations `0054`, `0055`, `0056`, `0062`, `0064`, `0065`). The account server decides everything and holds the partner
+`sponsoredSwitch.ts`; what Free's Small costs, and its tripwire, in `sponsoredSmall.ts`;
+Gravity's answer read into a card in `gravityAd.ts`; the clean-up, the A/B scoreboard and
+the daily report's lines in `sponsoredReport.ts`;
+migrations `0054`, `0055`, `0056`, `0062`, `0064`, `0065`, `0066`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
 under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
@@ -891,6 +893,26 @@ card, whatever the plan.
   account's catalog shows Small at that rate). A no is asked again two weeks
   later (`SPONSORED_REASK_MS`), and at once when it came before the ad switch
   last changed; until answered it still counts as a no.
+- **Small look tripwire** (watches, never refuses): a person-approved cloud
+  computer holds a real session, so a look sent from it keeps Small free like
+  one from a phone, and so does a yes from the US. Each computer's activity
+  report saves its network (`cloud_computers.net_asn`, Cloudflare's `cf.asn`)
+  and each look or US yes that moves `looked_at` saves its network
+  (`cloud_sponsored_consent.looked_asn`, migration `0066`; a no clears it with
+  `looked_at`; kept only for Free, and never a privacy relay's network such
+  as Cloudflare's, Akamai's or Fastly's). Each computer's launch join also
+  saves its network once (`cloud_computers.join_asn`): the join is the
+  computer's own, made during setup with a one-time code no person holds. ADE
+  Cloud's network is the account's own computers' (activity reports use the
+  account's own sign-in, so they name only that account's computers), or one an
+  ADE Cloud computer joined from in the last 30 days (`JOINED_NETWORK_MS`), so
+  an account rewriting its own computers' network hides nothing and no account
+  can make someone's home network count. A look or yes from it, while the account has a live Small,
+  sends the owner one alert per account per week (`small_cloud_look`: an
+  email, a Sentry `cloud.abuse` issue, a `cloud_abuse_events` row and the
+  `ade_cloud_safety` step) and adds a line to the daily report while that look
+  is what keeps Small free (`smallCloudLookAlarms`). It sees only computers
+  that send activity reports, and only the latest look's network.
 - **Start on in the US:** in `GRAVITY_DEFAULT_ON_COUNTRIES` (default `US`,
   empty asks everywhere; California, `ASK_FIRST_REGIONS` by Cloudflare's
   `regionCode`, is asked, and so is an unknown US state) the state carries
