@@ -9321,7 +9321,7 @@ function AgentChatComposerImpl({
       onClose={closeCommandMenu}
       onNoMatches={dismissCommandMenuNoMatch}
     />
-  ), [closeCommandMenu, commandMenuAnchor, commandMenuSlashCommands, commandMenuTrigger, dismissCommandMenu, handleCommandMenuSelectLatest, modelMentionOptions, modelMentionsLoading, modelRecents, onSearchAttachments, onSearchMentions, onSearchPullRequests]);
+  ), [closeCommandMenu, commandMenuAnchor, commandMenuSlashCommands, commandMenuTrigger, dismissCommandMenuNoMatch, handleCommandMenuSelectLatest, modelMentionOptions, modelMentionsLoading, modelRecents, onSearchAttachments, onSearchMentions, onSearchPullRequests]);
   const attachmentPreviewDialog = useMemo(() => (
     <ChatAttachmentPreviewDialog
       target={attachmentChipPreview}
