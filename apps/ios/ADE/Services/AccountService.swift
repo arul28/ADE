@@ -1476,7 +1476,7 @@ final class AccountService: ObservableObject {
     lastError = nil
     do {
       let result = try await signInStep {
-        try await Self.acceptLegalTermsIfMissing(try await Clerk.shared.auth.signInWithOAuth(provider: provider))
+        try await Self.finishSignUp(in: try await Clerk.shared.auth.signInWithOAuth(provider: provider))
       }
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
@@ -1497,7 +1497,7 @@ final class AccountService: ObservableObject {
     lastError = nil
     do {
       let result = try await signInStep {
-        try await Self.acceptLegalTermsIfMissing(try await Clerk.shared.auth.signInWithApple())
+        try await Self.finishSignUp(in: try await Clerk.shared.auth.signInWithApple())
       }
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
@@ -2600,25 +2600,29 @@ final class AccountService: ObservableObject {
         guard let signUp = Clerk.shared.auth.currentSignUp else {
           throw AccountError.message("Start the email verification again.")
         }
-        let verified = try await signUp.verifyEmailCode(code)
-        try await Self.acceptLegalTermsIfMissing(verified)
+        try await Self.finishSignUp(try await signUp.verifyEmailCode(code))
       }
     )
   }
 
-  /// A Google, GitHub or Apple sign-up that Clerk holds back only for the
-  /// legal acceptance (ClerkKit's transfer flow does not send it). The sheet
-  /// already showed the agreement, so accept it and let Clerk finish.
-  @discardableResult
-  private static func acceptLegalTermsIfMissing(_ result: TransferFlowResult) async throws -> TransferFlowResult {
-    guard case .signUp(let signUp) = result else { return result }
-    try await acceptLegalTermsIfMissing(signUp)
-    return result
+  /// Finishes a sign-up Clerk holds back only for the legal acceptance
+  /// (ClerkKit's Google, GitHub and Apple transfer flow does not send it; the
+  /// sheet already showed the agreement). A sign-up still short of an account
+  /// after that throws, so it is recorded as a failed sign-in instead of
+  /// leaving the sheet signed out with no word.
+  private static func finishSignUp(_ signUp: SignUp) async throws {
+    var signUp = signUp
+    if signUp.status == .missingRequirements, signUp.missingFields.contains(.legalAccepted) {
+      signUp = try await signUp.update(legalAccepted: true)
+    }
+    guard signUp.status == .complete else {
+      throw AccountError.message("Your account needs another step. Try again, or use another way to sign in.")
+    }
   }
 
-  private static func acceptLegalTermsIfMissing(_ signUp: SignUp) async throws {
-    guard signUp.status == .missingRequirements, signUp.missingFields.contains(.legalAccepted) else { return }
-    _ = try await signUp.update(legalAccepted: true)
+  private static func finishSignUp(in result: TransferFlowResult) async throws -> TransferFlowResult {
+    if case .signUp(let signUp) = result { try await finishSignUp(signUp) }
+    return result
   }
 
   private static func outcome(from result: TransferFlowResult) -> AccountAuthenticationOutcome {
