@@ -733,6 +733,19 @@ least 30 days old, one free plan per GitHub account).
   day. At the cap, free accounts get no new computer, copy or disk grow (503,
   no reason given); paid accounts are never refused. The backfill `update`s at
   the end of `migrations/0037_cloud_safety.sql` are safe to run again.
+- **What the costs are.** Each provider's own bill where it gives one: the
+  daily reconcile sets a computer-day to what Agent 37's `/v1/usage` charged
+  for it, less that day's disk (`cloud_disk_days` counts disk), and to its
+  public price only when Agent 37 gives no amount; NoMac and Revyl phones carry
+  the cost the provider reports per phone; Revyl's other charges (app builds,
+  mostly) are read per workspace each day from its partner usage into
+  `cloud_revyl_days` (`recordRevylDayCosts`). All of it counts toward the cap
+  and the daily report. The report also has an all-costs line: Cloudflare's
+  newest invoice (secret `CLOUDFLARE_BILLING_TOKEN`, a read-only token with
+  billing read) and the owner's fixed monthly costs, a JSON object of dollars by
+  name in `cloud_settings.owner_fixed_costs_usd`
+  (`{"Clerk": 25}`), spread over the month. Neither fixed cost counts toward
+  the cap, since refusing free accounts lowers neither.
 - **Owner alerts, at once** (`sendOwnerAlert` to `CLOUD_ALERT_EMAIL`).
   `cloud_owner_alerts` keys each event, so one event sends one email (a failed
   send gives the key back). Each names the account, plan, ages, GitHub login,

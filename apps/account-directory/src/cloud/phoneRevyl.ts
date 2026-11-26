@@ -20,7 +20,7 @@ import { CLOUD_PHONE_IDLE_SECONDS } from "../../../desktop/src/shared/cloudPhone
 import { CLOUD_PATHS, withoutPhoneProviderNames, type CloudPhoneDevice } from "./contract";
 import { fail, json } from "./http";
 import { LIVE_STATES, TOKEN_MINUTES, VIEW_MINUTES, stopRefused, type PhoneProviderServer, type PhoneRead, type PhoneWhere } from "./phoneProvider";
-import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
+import { accountRules, logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
 /** What Revyl bills ADE: the second, at $3.60 an hour, which is 1,000 micro-dollars a second. */
 export const REVYL_MICROS_PER_SECOND = 1_000;
@@ -372,6 +372,107 @@ async function revylViewUrl(env: CloudEnv, userId: string, ref: string, origin: 
   return { url: `${origin}${CLOUD_PATHS.phoneViewer}#${fragment.toString()}`, points };
 }
 
+/** Revyl's phone time: `cloud_phones.cost_micros` already counts it, so a day's other costs leave it out. */
+const PHONE_METER = "ios_simulator_seconds";
+
+type CostWorkspace = WorkspaceRow & { plan: string | null; stripe_status: string | null };
+type RevylCostEnv = Pick<CloudEnv, "DB" | "REVYL_PARTNER_API_KEY">;
+
+/** Revyl's price for each meter (`GET /partner/usage`), or null when it can't be read (reported). */
+async function revylPrices(env: RevylCostEnv): Promise<Map<string, number> | null> {
+  const priced = await partner(env, "GET", "/partner/usage");
+  const meters = Array.isArray(priced.body?.meters) ? priced.body.meters as Array<Record<string, unknown>> : null;
+  if (priced.status !== 200 || !meters) {
+    reportCloudFailure("cloud.revyl_day_prices_failed", { status: priced.status, code: revylErrorOf(priced).code });
+    return null;
+  }
+  return new Map(meters.flatMap((meter) => typeof meter.meter === "string" && Number.isFinite(Number(meter.unit_price_usd))
+    ? [[meter.meter, Number(meter.unit_price_usd)] as const] : []));
+}
+
+/**
+ * Each workspace's charges on each of `days` (UTC) beyond its phones' time,
+ * written to `cloud_revyl_days` (a day read again gets the new amount and
+ * keeps its first `free`, so a later plan change never moves past use). `free`
+ * is the plan the account's Revyl phones that day started on, or its plan at
+ * the first read on a day it ran none (a build with no phone). Answers how many
+ * workspace-days could not be read.
+ */
+async function writeWorkspaceDays(env: RevylCostEnv, prices: Map<string, number>, workspaces: CostWorkspace[], days: string[], now: number): Promise<number> {
+  const statements: D1PreparedStatement[] = [];
+  let unread = 0;
+  for (const day of days) {
+    const from = Date.parse(`${day}T00:00:00Z`);
+    const phoneFree = new Map(((await env.DB.prepare(`
+      select user_id, max(free) as free from cloud_phones where provider = 'revyl' and created_at >= ? and created_at < ? group by user_id
+    `).bind(from, from + 86_400_000).all<{ user_id: string; free: number }>()).results ?? []).map((row) => [row.user_id, row.free]));
+    const range = new URLSearchParams({ from: `${day}T00:00:00Z`, to: new Date(from + 86_400_000).toISOString().replace(".000Z", "Z") });
+    for (const workspace of workspaces) {
+      const answer = await partner(env, "GET", `/partner/connections/${encodeURIComponent(workspace.external_id)}/usage?${range.toString()}`);
+      const rows = Array.isArray(answer.body?.usage) ? answer.body.usage as Array<Record<string, unknown>> : null;
+      if (answer.status !== 200 || !rows) {
+        unread += 1;
+        continue;
+      }
+      let usd = 0;
+      for (const row of rows) {
+        const feature = typeof row.feature === "string" ? row.feature : "";
+        const price = feature !== PHONE_METER ? prices.get(feature) : undefined;
+        if (price == null) continue;
+        // A meter counts seconds or, for AI use, millicents; Revyl's price is per that unit.
+        const amount = Number(feature.endsWith("_millicents") ? row.millicents : row.seconds);
+        if (Number.isFinite(amount) && amount > 0) usd += amount * price;
+      }
+      const free = phoneFree.get(workspace.user_id)
+        ?? (accountRules({ plan: workspace.plan === "paid" ? "paid" : "free", stripe_status: workspace.stripe_status }) === "free" ? 1 : 0);
+      statements.push(env.DB.prepare(`
+        insert into cloud_revyl_days (user_id, day, cost_micros, free, read_at) values (?, ?, ?, ?, ?)
+        on conflict (user_id, day) do update set cost_micros = excluded.cost_micros, read_at = excluded.read_at
+      `).bind(workspace.user_id, day, Math.round(usd * 1_000_000), free, now));
+    }
+  }
+  if (statements.length) await env.DB.batch(statements);
+  return unread;
+}
+
+const COST_WORKSPACES_SQL = `
+  select r.user_id, r.external_id, r.app_id, a.plan, a.stripe_status
+  from cloud_phone_revyl r left join cloud_accounts a on a.user_id = r.user_id`;
+
+/**
+ * What Revyl charged each account's workspace on `days` (UTC) beyond its
+ * phones' own time, app builds mostly, at Revyl's own prices, kept in
+ * `cloud_revyl_days` for the free-use cap and the owner's report. The daily
+ * job passes the last few days, so a day that failed to read (or that Revyl
+ * filled in late) is read again the next run; a workspace that can't be read
+ * is reported.
+ */
+export async function recordRevylDayCosts(env: CloudEnv, days: string[], now: number): Promise<void> {
+  if (!revylConfigured(env)) return;
+  const workspaces = (await env.DB.prepare(COST_WORKSPACES_SQL).all<CostWorkspace>()).results ?? [];
+  if (workspaces.length === 0) return;
+  const prices = await revylPrices(env);
+  if (!prices) return;
+  const unread = await writeWorkspaceDays(env, prices, workspaces, days, now);
+  if (unread) reportCloudFailure("cloud.revyl_day_usage_failed", { days: days.length, unread });
+  logCloud("cloud.revyl_day_costs", { days: days.length, workspaces: workspaces.length, unread });
+}
+
+/** The days a deleted account's workspace is read for before it is disconnected: the daily job's window and today. */
+export const REVYL_COST_DAYS_BACK = 3;
+
+/** A workspace's charges for the daily job's days and today, read before its account's deletion disconnects it. */
+async function finalRevylCosts(env: RevylCostEnv, userId: string, now: number): Promise<void> {
+  const workspace = await env.DB.prepare(`${COST_WORKSPACES_SQL} where r.user_id = ?`).bind(userId).first<CostWorkspace>();
+  if (!workspace) return;
+  const prices = await revylPrices(env);
+  if (!prices) return;
+  const today = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T00:00:00Z`);
+  const days = Array.from({ length: REVYL_COST_DAYS_BACK + 1 }, (_, index) => new Date(today - (REVYL_COST_DAYS_BACK - index) * 86_400_000).toISOString().slice(0, 10));
+  const unread = await writeWorkspaceDays(env, prices, [workspace], days, now);
+  if (unread) reportCloudFailure("cloud.revyl_final_costs_unread", { unread });
+}
+
 /**
  * An account's deletion: its workspace is disconnected (Revyl stops its live
  * phones and revokes its credentials) and its row goes. Throws while Revyl
@@ -381,6 +482,11 @@ export async function forgetRevylAccount(env: Pick<CloudEnv, "DB" | "REVYL_PARTN
   const workspace = await knownWorkspace(env, userId);
   if (!workspace) return;
   if (!revylConfigured(env)) throw new Error("phone_cleanup_no_revyl_key");
+  // Its last charges first: once disconnected they can't be read, and the daily job reads only connected workspaces.
+  // Best effort: a failed read never keeps the account from being deleted.
+  await finalRevylCosts(env, userId, Date.now()).catch((error: unknown) => {
+    reportCloudFailure("cloud.revyl_final_costs_failed", { message: error instanceof Error ? error.message : "unknown" });
+  });
   const answer = await partner(env, "DELETE", `/partner/connections/${encodeURIComponent(workspace.external_id)}`);
   if (answer.status >= 400 && answer.status !== 404) throw new Error(`phone_revyl_disconnect_${revylErrorOf(answer).code}`);
   sessionKeys.delete(workspace.external_id);

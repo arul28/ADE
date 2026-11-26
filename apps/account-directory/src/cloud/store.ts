@@ -48,6 +48,8 @@ export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   NOMAC_WEBHOOK_SECRET?: string;
   /** Secret. ADE's Revyl partner key for the ADE Cloud iPhone on Revyl (`phoneRevyl.ts`). Unset: no phone starts on Revyl. */
   REVYL_PARTNER_API_KEY?: string;
+  /** Read-only Cloudflare token with billing read: the daily report's Cloudflare invoice line (`costReport.ts`). */
+  CLOUDFLARE_BILLING_TOKEN?: string;
   /** The owner's switch for Revyl: `on` lets new phones start there (with the key set). Unset or anything else: NoMac only (`revylEnabled`). */
   CLOUD_PHONE_REVYL?: string;
   /** Who may use the ADE Cloud iPhone: `beta` (default, the owner's list), `all`, or `off` (`phones.ts`). */

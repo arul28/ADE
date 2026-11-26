@@ -5,6 +5,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
+import { REVYL_COST_DAYS_BACK } from "./phoneRevyl";
 import { sponsoredReportLines } from "./sponsoredReport";
 import {
   CLOUD_PLANS,
@@ -76,6 +77,13 @@ const FREE_DISK_ALARM_GB = CLOUD_PLANS.free.computerLimit * SMALL_DISK_MAX_GB;
 const DAY_JUMP_FACTOR = 2;
 const DAY_JUMP_FLOOR_MICROS = 5_000_000;
 const WORST_ACCOUNTS = 10;
+/**
+ * The owner's fixed monthly costs outside ADE Cloud's use, in dollars by name
+ * (`{"Clerk": 25, "Domains": 2}`), for the report's all-costs line. Set with
+ * `update cloud_settings set value = '<json>' where key = 'owner_fixed_costs_usd'`
+ * (insert the row first). Cloudflare's own invoice is read from its API instead.
+ */
+export const FIXED_COSTS_KEY = "owner_fixed_costs_usd";
 
 const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 
@@ -95,17 +103,19 @@ function daysInMonthOf(day: string): number {
  * read is reported and answers none, so the email it feeds still goes.
  */
 async function topAccountsThisMonth(env: CloudEnv, monthStart: string, limit: number, use: "all" | "free"): Promise<Array<{ user_id: string; cost: number }>> {
-  // The ADE Cloud iPhone's NoMac cost counts as in the month's estimate (`refreshCostEstimate`).
+  // The ADE Cloud iPhone's cost, and Revyl's builds, count as in the month's estimate (`refreshCostEstimate`).
   const sql = use === "free"
     ? `select user_id, free_cost_micros as cost from cloud_computer_days where day >= ? and free_cost_micros > 0
       union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1
-      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ? and free = 1`
+      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ? and free = 1
+      union all select user_id, cost_micros as cost from cloud_revyl_days where day >= ? and free = 1`
     : `select user_id, cost_micros as cost from cloud_computer_days where day >= ?
       union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
-      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ?`;
+      union all select user_id, cost_micros as cost from cloud_phones where created_at >= ?
+      union all select user_id, cost_micros as cost from cloud_revyl_days where day >= ?`;
   try {
     const rows = await env.DB.prepare(`select user_id, sum(cost) as cost from (${sql}) group by user_id order by cost desc limit ?`)
-      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, Date.parse(`${monthStart}T00:00:00Z`), limit).all<{ user_id: string; cost: number }>();
+      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, Date.parse(`${monthStart}T00:00:00Z`), monthStart, limit).all<{ user_id: string; cost: number }>();
     return rows.results ?? [];
   } catch (error) {
     reportCloudFailure(use === "free" ? "cloud.free_cap_top_accounts_failed" : "cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
@@ -159,11 +169,13 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
       (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ?) as gb_days,
       (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day >= ? and free = 1) as free_gb_days,
       (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ?) as phones,
-      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ? and free = 1) as free_phones
-  `).bind(monthStart, monthStart, monthStart, monthStart, monthStartMs, monthStartMs).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number; phones: number; free_phones: number }>();
-  // The ADE Cloud iPhone's NoMac cost counts too, and free-plan phones toward the free-use cap.
-  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.phones ?? 0);
-  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.free_phones ?? 0);
+      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ? and free = 1) as free_phones,
+      (select coalesce(sum(cost_micros), 0) from cloud_revyl_days where day >= ?) as revyl,
+      (select coalesce(sum(cost_micros), 0) from cloud_revyl_days where day >= ? and free = 1) as free_revyl
+  `).bind(monthStart, monthStart, monthStart, monthStart, monthStartMs, monthStartMs, monthStart, monthStart).first<{ compute: number; free_compute: number; gb_days: number; free_gb_days: number; phones: number; free_phones: number; revyl: number; free_revyl: number }>();
+  // The ADE Cloud iPhone's cost counts too (Revyl's builds with it), and free-plan use toward the free-use cap.
+  let micros = (row?.compute ?? 0) + (row?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.phones ?? 0) + (row?.revyl ?? 0);
+  let freeMicros = (row?.free_compute ?? 0) + (row?.free_gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (row?.free_phones ?? 0) + (row?.free_revyl ?? 0);
   // The stretches running now count as free unless their account is on paid rules now.
   const running = awake.filter((computer) => computer.awake_since != null && computer.awake_since <= now);
   const paid = running.length
@@ -292,6 +304,8 @@ type DayAccount = {
   incomeMicros: number;
   extraReportedMilli: number;
   periodStart: number | null;
+  /** The iPhone part of `costMicros` (`cloud_account_days.phone_micros`). */
+  phoneMicros: number;
 };
 
 /**
@@ -310,17 +324,81 @@ async function paidPhoneReportLine(env: CloudEnv, monthStartMs: number, dayEndMs
     select provider, coalesce(sum((billed_seconds + 59) / 60), 0) as minutes, coalesce(sum(cost_micros), 0) as cost
     from cloud_phones where created_at >= ? and created_at < ? and free = 0 group by provider
   `).bind(monthStartMs, dayEndMs).all<{ provider: string | null; minutes: number; cost: number }>();
+  const lastDay = new Date(dayEndMs - 1).toISOString().slice(0, 10);
+  const builds = await env.DB.prepare("select coalesce(sum(cost_micros), 0) as cost from cloud_revyl_days where day >= ? and day <= ? and free = 0")
+    .bind(new Date(monthStartMs).toISOString().slice(0, 10), lastDay).first<{ cost: number }>();
   const all = rows.results ?? [];
   const minutes = all.reduce((sum, row) => sum + row.minutes, 0);
   if (minutes === 0) return null;
   const revyl = all.find((row) => row.provider === "revyl") ?? { minutes: 0, cost: 0 };
   const cost = all.reduce((sum, row) => sum + row.cost, 0);
-  return `Paid iPhone this month through ${new Date(dayEndMs - 1).toISOString().slice(0, 10)}: ${minutes} minutes, ${usd(cost)}; Revyl ${revyl.minutes} minutes (${Math.round((revyl.minutes / minutes) * 100)}%), ${usd(revyl.cost)}.`;
+  const buildWords = builds?.cost ? `, plus ${usd(builds.cost)} of Revyl builds` : "";
+  return `Paid iPhone this month through ${lastDay}: ${minutes} minutes, ${usd(cost)}; Revyl ${revyl.minutes} minutes (${Math.round((revyl.minutes / minutes) * 100)}%), ${usd(revyl.cost)}${buildWords}.`;
+}
+
+/** Cloudflare's newest invoice, or null with no token or no answer (reported). */
+async function cloudflareLastInvoice(env: CloudEnv): Promise<{ usd: number; day: string } | null> {
+  const token = env.CLOUDFLARE_BILLING_TOKEN?.trim();
+  if (!token) return null;
+  const response = await fetch("https://api.cloudflare.com/client/v4/user/billing/history?per_page=6", {
+    headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    signal: AbortSignal.timeout(10_000),
+  });
+  const body = await response.json().catch(() => null) as { result?: Array<{ type?: unknown; amount?: unknown; occurred_at?: unknown }> } | null;
+  if (!response.ok || !Array.isArray(body?.result)) {
+    reportCloudFailure("cloud.cloudflare_invoice_read_failed", { status: response.status });
+    return null;
+  }
+  const invoices = body.result
+    .filter((entry) => entry.type === "invoice" && typeof entry.occurred_at === "string" && Number.isFinite(Number(entry.amount)))
+    .sort((a, b) => String(b.occurred_at).localeCompare(String(a.occurred_at)));
+  return invoices[0] ? { usd: Number(invoices[0].amount), day: String(invoices[0].occurred_at).slice(0, 10) } : null;
+}
+
+/** The owner's fixed monthly costs (`FIXED_COSTS_KEY`), dollars by name; none when unset or unreadable (reported). */
+async function fixedCostsUsd(env: CloudEnv): Promise<Array<{ name: string; usd: number }>> {
+  const value = await readSetting(env, FIXED_COSTS_KEY);
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    return Object.entries(parsed as Record<string, unknown>)
+      .filter(([, amount]) => Number.isFinite(Number(amount)) && Number(amount) >= 0)
+      .map(([name, amount]) => ({ name, usd: Number(amount) }));
+  } catch (error) {
+    reportCloudFailure("cloud.fixed_costs_unreadable", { message: error instanceof Error ? error.message : "unknown" });
+    return [];
+  }
+}
+
+/**
+ * Every cost the owner has, against income: this month's ADE Cloud use (as
+ * the report counts it) plus the fixed monthly costs (Cloudflare's newest
+ * invoice and the owner's own list), those spread over the month to `day`.
+ */
+async function allCostsLines(env: CloudEnv, day: string, monthCostMicros: number, monthIncomeMicros: number): Promise<string[]> {
+  const [cloudflare, fixed] = await Promise.all([
+    cloudflareLastInvoice(env).catch((error: unknown) => {
+      reportCloudFailure("cloud.cloudflare_invoice_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+      return null;
+    }),
+    fixedCostsUsd(env),
+  ]);
+  const items = [...(cloudflare ? [{ name: `Cloudflare (invoice of ${cloudflare.day})`, usd: cloudflare.usd }] : []), ...fixed];
+  const monthlyMicros = Math.round(items.reduce((sum, item) => sum + item.usd, 0) * 1_000_000);
+  const toDateMicros = Math.round((monthlyMicros * Number(day.slice(8, 10))) / daysInMonthOf(day));
+  const allMicros = monthCostMicros + toDateMicros;
+  const gaps = [...(cloudflare ? [] : ["Cloudflare's invoice can't be read (CLOUDFLARE_BILLING_TOKEN)"]), ...(fixed.length ? [] : [`no fixed costs set (${FIXED_COSTS_KEY})`])];
+  return [
+    `Fixed costs a month: ${items.length ? `${items.map((item) => `${item.name} $${item.usd.toFixed(2)}`).join(", ")} = ${usd(monthlyMicros)}` : "none known"}${gaps.length ? `; ${gaps.join("; ")}` : ""}.`,
+    `All costs this month so far: ${usd(allMicros)} (ADE Cloud use ${usd(monthCostMicros)}, fixed costs to date ${usd(toDateMicros)}), income ${usd(monthIncomeMicros)}, margin ${monthIncomeMicros > 0 ? `${Math.round(((monthIncomeMicros - allMicros) / monthIncomeMicros) * 100)}%` : "none"}.`,
+  ];
 }
 
 export async function runDailyCostReport(env: CloudEnv, day: string): Promise<void> {
   const previousDay = utcDay(Date.parse(`${day}T00:00:00Z`) - 86_400_000);
-  const [computeRows, diskRows, accountRows, previousRows] = await Promise.all([
+  const dayStart = Date.parse(`${day}T00:00:00Z`);
+  const [computeRows, diskRows, accountRows, previousRows, phoneRows] = await Promise.all([
     env.DB.prepare("select user_id, coalesce(sum(cost_micros), 0) as cost from cloud_computer_days where day = ? group by user_id")
       .bind(day).all<{ user_id: string; cost: number }>(),
     env.DB.prepare("select user_id, peak_gb from cloud_disk_days where day = ?")
@@ -328,10 +406,19 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     env.DB.prepare(`
       select * from cloud_accounts where deleted_at is null and (plan = 'paid'
         or user_id in (select user_id from cloud_computer_days where day = ?)
-        or user_id in (select user_id from cloud_disk_days where day = ?))
-    `).bind(day, day).all<AccountRow>(),
+        or user_id in (select user_id from cloud_disk_days where day = ?)
+        or user_id in (select user_id from cloud_phones where created_at >= ? and created_at < ?)
+        or user_id in (select user_id from cloud_revyl_days where day = ?))
+    `).bind(day, day, dayStart, dayStart + 86_400_000, day).all<AccountRow>(),
     env.DB.prepare("select user_id, extra_reported_milli, period_start from cloud_account_days where day = ?")
       .bind(previousDay).all<{ user_id: string; extra_reported_milli: number; period_start: number | null }>(),
+    // The iPhone: phones started that day (as the month's estimate counts them), and Revyl's builds.
+    env.DB.prepare(`
+      select user_id, sum(cost) as cost from (
+        select user_id, cost_micros as cost from cloud_phones where created_at >= ? and created_at < ?
+        union all select user_id, cost_micros as cost from cloud_revyl_days where day = ?
+      ) group by user_id
+    `).bind(dayStart, dayStart + 86_400_000, day).all<{ user_id: string; cost: number }>(),
   ]);
   // Unusual disk on the free plan: no account-wide disk limits it since Pricing v2
   // (each size has its own maximum), and disk bills asleep too. Owner-only.
@@ -344,7 +431,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
   const compute = new Map((computeRows.results ?? []).map((row) => [row.user_id, row.cost]));
   const disk = new Map((diskRows.results ?? []).map((row) => [row.user_id, row]));
   const previous = new Map((previousRows.results ?? []).map((row) => [row.user_id, row]));
-  const dayStart = Date.parse(`${day}T00:00:00Z`);
+  const phones = new Map((phoneRows.results ?? []).map((row) => [row.user_id, row.cost]));
   const monthDays = daysInMonthOf(day);
 
   const rows: DayAccount[] = [];
@@ -352,7 +439,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     const planId = planIdOf(account);
     const paying = planId !== "free";
     const diskRow = disk.get(account.user_id);
-    const cost = (compute.get(account.user_id) ?? 0) + (diskRow?.peak_gb ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+    const cost = (compute.get(account.user_id) ?? 0) + (diskRow?.peak_gb ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (phones.get(account.user_id) ?? 0);
     let income = paying ? Math.round((CLOUD_PLANS[planId].priceUsd * 1_000_000) / monthDays) : 0;
     // Extra hours: what was reported since yesterday's row in the same period.
     // With no row yesterday, the baseline is unknown, so the day counts none.
@@ -363,16 +450,40 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     } else if (planId !== "free" && !before && account.period_start >= dayStart) {
       income += extraHoursIncomeMicros(planId, 0, account.extra_reported_milli);
     }
-    rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start });
+    rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start, phoneMicros: phones.get(account.user_id) ?? 0 });
+  }
+  // Cost with no live account (deleted, its rows re-keyed to a hash): counted, with no income.
+  const counted = new Set(rows.map((row) => row.userId));
+  for (const userId of new Set([...compute.keys(), ...disk.keys(), ...phones.keys()])) {
+    if (counted.has(userId)) continue;
+    const cost = (compute.get(userId) ?? 0) + (disk.get(userId)?.peak_gb ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (phones.get(userId) ?? 0);
+    if (cost > 0) rows.push({ userId, planId: "free", costMicros: cost, incomeMicros: 0, extraReportedMilli: 0, periodStart: null, phoneMicros: phones.get(userId) ?? 0 });
   }
   if (rows.length) {
     await env.DB.batch(rows.map((row) => env.DB.prepare(`
-      insert into cloud_account_days (user_id, day, plan_id, cost_micros, income_micros, extra_reported_milli, period_start)
-      values (?, ?, ?, ?, ?, ?, ?)
+      insert into cloud_account_days (user_id, day, plan_id, cost_micros, income_micros, extra_reported_milli, period_start, phone_micros)
+      values (?, ?, ?, ?, ?, ?, ?, ?)
       on conflict (user_id, day) do update set plan_id = excluded.plan_id, cost_micros = excluded.cost_micros,
-        income_micros = excluded.income_micros, extra_reported_milli = excluded.extra_reported_milli, period_start = excluded.period_start
-    `).bind(row.userId, day, row.planId, row.costMicros, row.incomeMicros, row.extraReportedMilli, row.periodStart)));
+        income_micros = excluded.income_micros, extra_reported_milli = excluded.extra_reported_milli, period_start = excluded.period_start,
+        phone_micros = excluded.phone_micros
+    `).bind(row.userId, day, row.planId, row.costMicros, row.incomeMicros, row.extraReportedMilli, row.periodStart, row.phoneMicros)));
   }
+  // The days before it: their phones' costs settle as the phones end, and Revyl's charges come in on later reads
+  // (`recordRevylDayCosts` reads the last few days), so each saved day's iPhone part is brought up to date. Income stays.
+  await env.DB.batch(Array.from({ length: REVYL_COST_DAYS_BACK - 1 }, (_, index) => {
+    const earlier = utcDay(dayStart - (index + 1) * 86_400_000);
+    const from = Date.parse(`${earlier}T00:00:00Z`);
+    return env.DB.prepare(`
+      update cloud_account_days set cost_micros = cost_micros - phone_micros + new_phone, phone_micros = new_phone
+      from (
+        select a.user_id as uid,
+          (select coalesce(sum(p.cost_micros), 0) from cloud_phones p where p.user_id = a.user_id and p.created_at >= ? and p.created_at < ?)
+            + (select coalesce(sum(r.cost_micros), 0) from cloud_revyl_days r where r.user_id = a.user_id and r.day = ?) as new_phone
+        from cloud_account_days a where a.day = ?
+      ) fresh
+      where cloud_account_days.day = ? and cloud_account_days.user_id = fresh.uid and cloud_account_days.phone_micros <> fresh.new_phone
+    `).bind(from, from + 86_400_000, earlier, earlier, earlier);
+  }));
 
   const monthStart = monthStartDay(dayStart);
   const weekStart = utcDay(dayStart - 7 * 86_400_000);
@@ -435,12 +546,14 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
   // A failed read never costs the report: the comparison then says the cost is unknown.
   const freeDay = await env.DB.prepare(`
     select (select coalesce(sum(free_cost_micros), 0) from cloud_computer_days where day = ?) as compute,
-      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day = ? and free = 1) as gb_days
-  `).bind(day, day).first<{ compute: number; gb_days: number }>().catch((error: unknown) => {
+      (select coalesce(sum(peak_gb), 0) from cloud_disk_days where day = ? and free = 1) as gb_days,
+      (select coalesce(sum(cost_micros), 0) from cloud_phones where created_at >= ? and created_at < ? and free = 1)
+        + (select coalesce(sum(cost_micros), 0) from cloud_revyl_days where day = ? and free = 1) as phones
+  `).bind(day, day, dayStart, dayStart + 86_400_000, day).first<{ compute: number; gb_days: number; phones: number }>().catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored_free_cost_failed", { message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
-  const freeDayCost = freeDay === undefined ? null : (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY;
+  const freeDayCost = freeDay === undefined ? null : (freeDay?.compute ?? 0) + (freeDay?.gb_days ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (freeDay?.phones ?? 0);
   const sponsored = await sponsoredReportLines(env, day, freeDayCost).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return [] as string[];
@@ -448,6 +561,10 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
   const phoneLine = await paidPhoneReportLine(env, Date.parse(`${monthStart}T00:00:00Z`), dayStart + 86_400_000).catch((error: unknown) => {
     reportCloudFailure("cloud.paid_phone_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return null;
+  });
+  const allCosts = await allCostsLines(env, day, monthCost, monthIncome).catch((error: unknown) => {
+    reportCloudFailure("cloud.all_costs_report_failed", { message: error instanceof Error ? error.message : "unknown" });
+    return [] as string[];
   });
   logCloud("cloud.daily_cost_report", { day, accounts: rows.length, dayCostMicros: dayCost, dayIncomeMicros: dayIncome, alarms: alarms.length });
   if (rows.length === 0 && alarms.length === 0 && !safety.active && sponsored.length === 0) return;
@@ -457,6 +574,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
   const lines = [
     `${day}: cost ${usd(dayCost)}, income ${usd(dayIncome)}, margin ${margin(dayCost, dayIncome)}, ${rows.length} accounts.`,
     `This month so far: cost ${usd(monthCost)}, income ${usd(monthIncome)}, margin ${margin(monthCost, monthIncome)}.`,
+    ...allCosts,
     `Estimated cost this month: ${usd(owner.costMtdMicros)}, of which free use ${usd(owner.freeCostMtdMicros)} and paid use ${usd(Math.max(0, owner.costMtdMicros - owner.freeCostMtdMicros))}.`,
     owner.limitUsd == null
       ? "Free-use cap: not set, so nothing is refused."
@@ -472,7 +590,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     "Accounts that cost the most against what they pay (day):",
     ...worst.map((row) => `${row.userId} (${row.planId}): cost ${usd(row.costMicros)}, income ${usd(row.incomeMicros)}`),
     "",
-    "Estimates at public prices, before Stripe's fees and taxes.",
+    "ADE Cloud use is each provider's own bill where it gives one (Agent 37 after its daily reconcile, NoMac and Revyl per phone, Revyl's builds) and public prices otherwise, before Stripe's fees and taxes.",
   ];
   await sendCloudEmail(env, {
     owner: true,
