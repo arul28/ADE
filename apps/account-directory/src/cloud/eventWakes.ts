@@ -5,6 +5,7 @@ import {
   type CloudEventWakeInternalResult,
   type CloudEventWakesResult,
 } from "./contract";
+import { accountRepoScopeKey } from "../../../desktop/src/shared/accountSettingsScope";
 import type { RelayEnv } from "./accountVault";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { linearOrganizationOf } from "./integrations";
@@ -23,7 +24,7 @@ import { logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type Comput
  * `hooks-account:<user>`), never event text. An account topic must name the
  * caller's own account, so no computer is woken by another account's events.
  * A `linear-org` topic must name the workspace of the computer's own lane's
- * Linear connection, as Linear answers for it (kept a week per account in
+ * Linear connection, as Linear answers for it (kept a week per project in
  * `cloud_linear_orgs`), so no account listens to another team's workspace. A
  * delivery wakes every account's newest listeners first, so one account's
  * many rows can't keep another account's computers out of the 20.
@@ -62,29 +63,38 @@ export function eventWakeTopicsOf(raw: unknown, userId: string): string[] | stri
 
 /**
  * The topics a computer may listen to: its `linear-org` topics only for the
- * workspace of its lane's own Linear connection, others as they are.
- * `unavailable` when that can't be checked now (the vault or Linear didn't
- * answer, or the OAuth token waits for its owner to renew it): the computer
- * keeps its earlier list and sends this one again at its next rest.
+ * workspace of its own lane's project's Linear connection (kept a week per
+ * project), others as they are. `settled` is false when a workspace was left
+ * out: the computer sends the list again at its next rest, so one that is
+ * connected later, or couldn't be checked now (the vault or Linear didn't
+ * answer, or the OAuth token waits for its owner to renew it), is added then.
+ * Until a check runs, a workspace this computer already listens to stays.
  */
-async function topicsInOwnWorkspace(env: RelayEnv, request: Request, computer: ComputerRow, topics: string[], now: number): Promise<string[] | "unavailable"> {
+async function topicsInOwnWorkspace(env: RelayEnv, request: Request, computer: ComputerRow, topics: string[], now: number): Promise<{ topics: string[]; settled: boolean }> {
   const orgIds = topics.filter((topic) => topic.startsWith(LINEAR_ORG_PREFIX)).map((topic) => topic.slice(LINEAR_ORG_PREFIX.length));
-  if (!orgIds.length) return topics;
-  const known = (await env.DB.prepare("select org_id from cloud_linear_orgs where user_id = ? and checked_at > ?")
-    .bind(computer.user_id, now - LINEAR_ORG_CHECK_TTL_MS).all<{ org_id: string }>()).results ?? [];
+  if (!orgIds.length) return { topics, settled: true };
+  const scope = accountRepoScopeKey(computer.lane_project_origin ?? null);
+  const known = scope
+    ? (await env.DB.prepare("select org_id from cloud_linear_orgs where user_id = ? and scope = ? and checked_at > ?")
+      .bind(computer.user_id, scope, now - LINEAR_ORG_CHECK_TTL_MS).all<{ org_id: string }>()).results ?? []
+    : [];
   const own = new Set(known.map((row) => row.org_id));
   if (orgIds.some((id) => !own.has(id))) {
-    const org = await linearOrganizationOf(env, request.headers.get("authorization") ?? "", computer.lane_project_origin ?? null, now);
-    if (org === "unavailable") return "unavailable";
-    if (org) {
+    const org = await linearOrganizationOf(env, request.headers.get("authorization") ?? "", scope, now);
+    if (org === "unavailable") {
+      const listening = (await env.DB.prepare("select topic from cloud_event_wakes where instance_id = ? and topic like 'linear-org:%'")
+        .bind(computer.instance_id).all<{ topic: string }>()).results ?? [];
+      for (const row of listening) own.add(row.topic.slice(LINEAR_ORG_PREFIX.length));
+    } else if (org && scope) {
       own.add(org);
       await env.DB.prepare(`
-        insert into cloud_linear_orgs (user_id, org_id, checked_at) values (?, ?, ?)
-        on conflict (user_id, org_id) do update set checked_at = excluded.checked_at
-      `).bind(computer.user_id, org, now).run();
+        insert into cloud_linear_orgs (user_id, scope, org_id, checked_at) values (?, ?, ?, ?)
+        on conflict (user_id, scope, org_id) do update set checked_at = excluded.checked_at
+      `).bind(computer.user_id, scope, org, now).run();
     }
   }
-  return topics.filter((topic) => !topic.startsWith(LINEAR_ORG_PREFIX) || own.has(topic.slice(LINEAR_ORG_PREFIX.length)));
+  const kept = topics.filter((topic) => !topic.startsWith(LINEAR_ORG_PREFIX) || own.has(topic.slice(LINEAR_ORG_PREFIX.length)));
+  return { topics: kept, settled: kept.length === topics.length };
 }
 
 /** `PUT /cloud/instances/:id/event-wakes {topics}`: the computer's whole list, replaced. An empty list removes it. */
@@ -96,14 +106,15 @@ export async function routeEventWakeSubscription(request: Request, env: RelayEnv
   if (!body) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const asked = eventWakeTopicsOf(body.topics, userId);
   if (typeof asked === "string") return fail("bad_request", asked, 400);
-  const topics = await topicsInOwnWorkspace(env, request, computer, asked, now);
-  if (topics === "unavailable") return fail("unavailable", "ADE can't check this computer's Linear workspace right now. Try again soon.", 503);
+  const { topics, settled } = await topicsInOwnWorkspace(env, request, computer, asked, now);
   await env.DB.batch([
     env.DB.prepare("delete from cloud_event_wakes where instance_id = ?").bind(instanceId),
     ...topics.map((topic) => env.DB.prepare("insert into cloud_event_wakes (instance_id, topic, user_id, updated_at) values (?, ?, ?, ?)")
       .bind(instanceId, topic, userId, now)),
   ]);
-  logCloud("cloud.event_wakes_set", { instanceId, topics: topics.length, ...(topics.length < asked.length ? { notOwnWorkspace: asked.length - topics.length } : {}) });
+  logCloud("cloud.event_wakes_set", { instanceId, topics: topics.length, ...(settled ? {} : { leftOut: asked.length - topics.length }) });
+  // Not a success, so the computer doesn't record the list as sent and sends it again at its next rest.
+  if (!settled) return fail("linear_workspace_unchecked", "ADE couldn't match a Linear workspace to this lane's Linear connection yet. It checks again next time.", 409);
   return json({ topics } satisfies CloudEventWakesResult);
 }
 

@@ -1036,8 +1036,10 @@ Account directory (`apps/account-directory/src/cloud/`, Worker logs):
   (status), `cloud.linear_renewal_publish_failed`. Sentry:
   `cloud.linear_renewal_failed`, `cloud.linear_lease_claim_failed`,
   `cloud.linear_renewal_seal_failed`, `cloud.linear_renewal_cron_failed`.
-- Event wakes: `cloud.event_wakes_set` (instanceId, count), `cloud.event_wake`
-  (userId, instanceId, topicKind, outcome). Sentry: `cloud.event_wake_failed`.
+- Event wakes: `cloud.event_wakes_set` (instanceId, count, leftOut),
+  `cloud.event_wake` (userId, instanceId, topicKind, outcome),
+  `cloud.linear_org_check_refused` (status, authMode),
+  `cloud.linear_org_check_failed`. Sentry: `cloud.event_wake_failed`.
 
 Webhook relay (`apps/webhook-relay/`): `cloud_event_wake_sent`,
 `cloud_event_wake_refused`, `cloud_event_wake_failed`; forwarded custom

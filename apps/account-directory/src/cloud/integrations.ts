@@ -226,13 +226,13 @@ export function linearToken(raw: string | null, now: number): LinearToken | "not
 
 /**
  * The Linear workspace (organization id) of a project's own Linear
- * connection, for an event-wake topic (`eventWakes.ts`). `null`: the project
- * has no working connection (none stored, or Linear refused its API key).
+ * connection (its vault `scope`), for an event-wake topic (`eventWakes.ts`).
+ * `null`: the project has no working connection (none stored, or Linear
+ * refused its API key).
  * `unavailable`: the vault or Linear can't answer now, or the OAuth token is
  * due for renewal, which its owner does; the caller asks again later.
  */
-export async function linearOrganizationOf(env: RelayEnv, authorization: string, origin: string | null, now: number): Promise<string | null | "unavailable"> {
-  const scope = accountRepoScopeKey(origin);
+export async function linearOrganizationOf(env: RelayEnv, authorization: string, scope: string | null, now: number): Promise<string | null | "unavailable"> {
   if (!scope || !authorization) return null;
   const stored = await readConnection(env, authorization, scope, "linear");
   if (stored === undefined) return "unavailable";

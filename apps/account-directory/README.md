@@ -419,11 +419,14 @@ minutes early.
   (else 400). `[]` clears it. Another account's computer answers 404.
 - A `linear-org:<id>` topic is kept only for the workspace of the lane's own
   Linear connection: the project's vault item (`repo:<lane origin>`), read
-  with the caller's bearer and asked Linear for `organization { id }`. Any
-  other workspace is left out of the list. A workspace that matched is kept
-  for 7 days in `cloud_linear_orgs`, so a rest save does not ask Linear
-  again. When the vault or Linear can't answer, the request answers 503 and
-  changes nothing; the computer sends the list again at its next rest.
+  with the caller's bearer and asked Linear for `organization { id }`. A
+  workspace that matched is kept for 7 days per project in
+  `cloud_linear_orgs`, so a rest save does not ask Linear again. Any other
+  workspace is left out, and so is one that can't be checked now (the vault
+  or Linear didn't answer), except one this computer already listens to. The
+  rest of the list is stored, and the request answers 409
+  `linear_workspace_unchecked`, so the computer sends the list again at its
+  next rest instead of recording it as sent.
 - `POST /cloud/internal/event-wake {topic}` comes from the webhook relay with
   `x-ade-event-wake-secret` (`CLOUD_EVENT_WAKE_SECRET`, constant-time, before
   auth; unset 503, wrong 404). It reads at most 20 listeners: each account's
