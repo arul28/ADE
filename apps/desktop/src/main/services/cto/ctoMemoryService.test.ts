@@ -289,6 +289,8 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     // The person writes it back themselves: the CTO may manage it again.
     service.writeNotes("rules", "- Use pnpm — the lockfile is pnpm's.\n- Run the linter before review — CI fails on lint.\n");
     expect(service.removeRule({ rule: "Run the linter" }).ok).toBe(true);
+    // And may add it again: the person's write cleared the refusal too.
+    expect(service.addRule({ rule: "Run the linter before review", why: "CI fails on lint" }).ok).toBe(true);
 
     // Notes about the person are shared across projects: a line another project's CTO
     // writes during this turn is not this turn's to show or undo; the line this CTO writes is.

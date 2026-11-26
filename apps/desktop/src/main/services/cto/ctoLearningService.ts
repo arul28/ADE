@@ -858,10 +858,14 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
           const now = new Set(parseNoteLines(content));
           const settled = new Set<string>();
           for (const line of parseNoteLines(before)) {
-            const previous = now.has(line) ? undefined : links.get(line);
-            if (previous == null) continue;
-            settled.add(stripBullet(previous));
-            links.delete(line);
+            if (now.has(line)) continue;
+            // Back along the chain (A → B → C) to the line the turn started with.
+            let next = line;
+            for (let previous = links.get(next); previous != null && !settled.has(stripBullet(previous)); previous = links.get(next)) {
+              links.delete(next);
+              next = previous;
+              settled.add(stripBullet(previous));
+            }
           }
           if (settled.size) {
             baseline[area] = baseline[area].split("\n").filter((line) => !settled.has(stripBullet(line))).join("\n");
@@ -975,9 +979,11 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
         changes.push(...mine);
       }
     }
-    userNoteLinesThisTurn.clear();
-    replacedThisTurn.clear();
-    if (!changes.length) return null;
+    if (!changes.length) {
+      userNoteLinesThisTurn.clear();
+      replacedThisTurn.clear();
+      return null;
+    }
     const record: LearnedRecord = {
       v: 1,
       learnId: `learn-${randomUUID().replace(/-/g, "").slice(0, 12)}`,
@@ -990,10 +996,25 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     };
     try {
       writeRecord(record);
+    } catch (error) {
+      // No row without its record, or its Undo would have nothing to undo
+      // from. The turn's baseline stays open, so the next turn's row lists
+      // these changes too.
+      logger?.warn("cto_learning.record_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      baseline = start;
+      try {
+        saveBaseline(start);
+      } catch {
+        // Kept in memory for this process at least.
+      }
+      return null;
+    }
+    userNoteLinesThisTurn.clear();
+    replacedThisTurn.clear();
+    try {
       pruneRecords();
     } catch (error) {
-      // The row still shows; its Undo answers that the change can't be found.
-      logger?.warn("cto_learning.record_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger?.warn("cto_learning.record_prune_failed", { error: error instanceof Error ? error.message : String(error) });
     }
     return { learnId: record.learnId, sessionId: record.sessionId, turnId: record.turnId, changes: record.changes };
   };
@@ -1022,7 +1043,8 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       const left = record.after?.skills;
       let current: string | null;
       try {
-        current = fs.readFileSync(skillPath(change.text), "utf8") || null;
+        // An empty file is a file: only a missing one reads as absent.
+        current = fs.readFileSync(skillPath(change.text), "utf8");
       } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
           logger?.warn("cto_learning.undo_skill_unreadable", { error: error instanceof Error ? error.message : String(error) });

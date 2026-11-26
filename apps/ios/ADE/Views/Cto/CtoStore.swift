@@ -286,6 +286,8 @@ final class CtoStore: ObservableObject {
   private var needsLoaded = false
   /// Bumps when the CTO or its home changes: a read started before is dropped.
   private var needsGeneration = 0
+  /// Bumps with the home too: a skill save's answer from the old home is dropped.
+  private var homeGeneration = 0
 
   private var sync: SyncService? { isFixture ? nil : SyncService.shared }
 
@@ -326,6 +328,7 @@ final class CtoStore: ObservableObject {
     // Another CTO or home: the old home's lines are not this one's.
     if changed, !isFixture {
       needsGeneration += 1
+      homeGeneration += 1
       needsTask = nil
       lastNeedsFetchAt = nil
       needsLoaded = false
@@ -863,7 +866,10 @@ final class CtoStore: ObservableObject {
     }
     guard let sync else { return .failed("Not connected") }
     do {
+      let generation = homeGeneration
       let written = try await sync.writeCtoSkill(name: name, text: text, baseHash: baseHash)
+      // The old home's answer never lands on the store bound to the new one.
+      guard generation == homeGeneration else { return .failed("The CTO moved; reopen the skill") }
       memory = written.memory
       writtenSkills[name] = written.skill
       return .saved

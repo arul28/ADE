@@ -7219,6 +7219,10 @@ function parseLinearIssueSearchPayload(payload: Record<string, unknown>) {
 }
 
 function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  // The person's own CTO memory edits (Settings, Undo): an interactive
+  // controller (the phone, the browser) only, never a paired viewer. The CTO
+  // writes through its own tools, which keep the Learned row and Undo.
+  const ctoPersonWrite = { viewerAllowed: false, controllerAllowed: true, queueable: false } as const;
   register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const laneId = await resolvePrimaryLaneIdOnlyForSync(args);
@@ -7285,7 +7289,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   // Not queueable: a whole-file write replayed later would overwrite whatever
   // the CTO or another device saved in between. `baseHash` refuses that too.
-  register("cto.updateNotes", { viewerAllowed: true, queueable: false }, async (payload) => {
+  register("cto.updateNotes", ctoPersonWrite, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     const scope = isCtoNotesFile(payload.scope) ? payload.scope : null;
     if (!scope) throw new Error("cto.updateNotes requires scope: project, user or rules.");
@@ -7313,7 +7317,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   // Not queueable, like cto.updateNotes: a whole-file write replayed later
   // would land over a newer skill. `baseHash` refuses that too.
-  register("cto.writeSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
+  register("cto.writeSkill", ctoPersonWrite, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     if (typeof payload.text !== "string") throw new Error("cto.writeSkill requires text.");
     const skill = ctoMemoryService.writeSkillText({
@@ -7323,7 +7327,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     });
     return { ...ctoMemoryService.getSnapshot(), skill };
   });
-  register("cto.deleteSkill", { viewerAllowed: true, queueable: false }, async (payload) => {
+  register("cto.deleteSkill", ctoPersonWrite, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     const result = ctoMemoryService.deleteSkillAsPerson(requireString(payload.name, "cto.deleteSkill requires name."));
     if (!result.ok) throw new Error(result.error);
@@ -7331,7 +7335,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   // Undo on a CTO "Learned" row; the row redraws on every client from the
   // `cto_learned` event the host emits again. Returns CtoUndoLearnedResult.
-  register("cto.undoLearned", { viewerAllowed: true, queueable: false }, async (payload) => {
+  register("cto.undoLearned", ctoPersonWrite, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     return agentChatService.undoCtoLearned({
       learnId: requireString(payload.learnId, "cto.undoLearned requires learnId."),
@@ -7344,7 +7348,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     return ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(payload));
   });
   // Not queueable: replayed later, a recall could push out notes written since.
-  register("cto.recallArchivedNote", { viewerAllowed: true, queueable: false }, async (payload) => {
+  register("cto.recallArchivedNote", ctoPersonWrite, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(payload));
     return ctoMemoryService.getSnapshot();

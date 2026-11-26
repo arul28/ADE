@@ -189,6 +189,8 @@ struct CtoSkillsList: View {
 
   @State private var adding = false
   @State private var draft = ""
+  /// A create in flight: the field is locked so a later name isn't cleared by it.
+  @State private var creating = false
   @State private var openName: CtoSkillEditorTarget? = nil
   @State private var confirmingDelete: CtoSkillSummary? = nil
   @FocusState private var fieldFocused: Bool
@@ -217,6 +219,7 @@ struct CtoSkillsList: View {
               .autocorrectionDisabled()
               .focused($fieldFocused)
               .submitLabel(.done)
+              .disabled(creating)
               .onSubmit { create() }
               .accessibilityLabel("New skill name")
           }
@@ -319,6 +322,7 @@ struct CtoSkillsList: View {
   }
 
   private func create() {
+    guard !creating else { return }
     let name = ctoSkillSlug(draft)
     guard !name.isEmpty else {
       adding = false
@@ -332,7 +336,9 @@ struct CtoSkillsList: View {
       openName = CtoSkillEditorTarget(name: name)
       return
     }
+    creating = true
     Task {
+      defer { creating = false }
       switch await store.saveSkill(name, text: ctoNewSkillText(name), baseHash: nil) {
       case .saved:
         draft = ""

@@ -378,7 +378,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       projectNotes: args.ctoMemory.readNotes("project"),
       userNotes: args.ctoMemory.readNotes("user"),
       openWork: args.ctoMemory.readOpenWorkText(),
-      rules: args.ctoMemory.readRules(),
+      rules: readRulesForCopy(),
       skills: readAllSkills(),
       undone: args.ctoMemory.readUndone(),
       // Routines a move brought that have no CTO thread to land on yet.
@@ -392,7 +392,30 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
    * Every skill, or none: a restore deletes the skills a copy leaves out, so a
    * skill that could not be read leaves the whole set out of this copy.
    */
+  /**
+   * Where a read fails, the copy leaves that part out: a restore keeps the
+   * next home's own rules or skills then, where an empty value would wipe
+   * them. Only a file or folder that is not there reads as empty.
+   */
+  const readableOrMissing = (target: string, read: () => unknown): boolean => {
+    try {
+      read();
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return true;
+      logger.warn("cto.account_copy_unreadable", { part: path.basename(target), error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+
+  const readRulesForCopy = (): string | undefined => {
+    const rulesPath = path.join(ctoDir, "RULES.md");
+    return readableOrMissing(rulesPath, () => fs.readFileSync(rulesPath)) ? args.ctoMemory.readRules() : undefined;
+  };
+
   const readAllSkills = (): Array<{ name: string; text: string }> | undefined => {
+    const skillsDir = path.join(ctoDir, "skills");
+    if (!readableOrMissing(skillsDir, () => fs.readdirSync(skillsDir))) return undefined;
     const skills: Array<{ name: string; text: string }> = [];
     for (const summary of args.ctoMemory.listSkills()) {
       const skill = args.ctoMemory.readSkill(summary.name);

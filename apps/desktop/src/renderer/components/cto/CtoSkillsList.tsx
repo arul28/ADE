@@ -35,6 +35,9 @@ export function CtoSkillsList({
   onChanged: () => Promise<void>;
 }) {
   const [openName, setOpenName] = useState<string | null>(null);
+  // A save that finishes after another skill was opened must not touch it.
+  const openNameRef = useRef(openName);
+  openNameRef.current = openName;
   const [file, setFile] = useState<CtoSkillFile | null>(null);
   const [draftName, setDraftName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,17 +75,20 @@ export function CtoSkillsList({
 
   const save = useCallback(async (name: string, text: string, baseHash?: string): Promise<AutosaveHostAnswer | void> => {
     let written: CtoSkillFile | undefined;
+    const stillOpen = () => openNameRef.current === name;
     try {
       written = (await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pinRef.current)).skill;
     } catch (err) {
       // Changed elsewhere: read the newer file, so the editor's Reload takes it.
-      if (isCtoNotesChangedError(err)) await load(name);
+      if (isCtoNotesChangedError(err) && stillOpen()) await load(name);
       throw err;
     }
     // The file as written carries the hash of this save. A read afterwards
     // could return another device's newer write, and its hash would let the
     // next save overwrite that write. Older hosts send no file: read it.
-    if (written) {
+    if (!stillOpen()) {
+      // Another skill is open now; this save only refreshes the list.
+    } else if (written) {
       loadSeq.current += 1; // a read started before this save is older than it
       setFile(written);
       setError(null);

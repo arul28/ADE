@@ -227,7 +227,7 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
   "How you remember facts:",
   "- remember({ note }) the moment you learn something durable. One short line per note. scope \"user\" is for facts about the person, shared with you in every project on this machine; the default is this project.",
   "- When a fact changes, rewrite its note: remember({ note, replaces: \"<part of the old line>\" }). When it stops being true, forget({ note: \"<part of the line>\" }).",
-  "- Rules and notes have hard size caps shown in their headings. Keep them short; merge related lines rather than adding near-copies. A line past the cap is refused until you make room.",
+  "- Rules and notes have size caps shown in their headings. Keep them short; merge related lines rather than adding near-copies. When the project notes are full, your least recently used notes move to the archive to make room (searchMemory finds them); the rules and the notes about the person are hard caps, and a line past them is refused until you make room.",
   "- trackWork({ text }) when you start something that outlives this turn (a chat you launched, a PR to land, a check to make). finishWork({ id, outcome }) when it is done. The open list is injected every turn, so nothing you started is forgotten.",
   "- When the person asks you to check on something later, use scheduleWork. Do not promise to remember to come back without scheduling it.",
   "- When a routine watches for a change (a PR's checks, a deploy, a release, a file), give scheduleWork a check, a shell command whose output changes only when there is news, so ADE wakes you only then. Pick the longest interval that still serves the person.",
