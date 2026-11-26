@@ -20,7 +20,7 @@ type ChatProjectionServices = {
   ptyService?: {
     enrichSessions(sessions: TerminalSessionSummary[]): TerminalSessionSummary[];
     ensureResumeTargets?(sessionIds: string[]): Promise<void>;
-    listDetachedLiveSessionsForLane?(laneId: string): TerminalSessionSummary[];
+    listAdditionalLiveSessionsForLane?(laneId: string): TerminalSessionSummary[];
   } | null;
   agentChatService?: {
     listSessions(
@@ -328,7 +328,10 @@ export async function listSessionsWithChatProjection(
   services: ChatProjectionServices,
   args: ListSessionsArgs = {},
 ): Promise<TerminalSessionSummary[]> {
-  let listedSessions = services.sessionService.list(args);
+  const filterLiveStatus = Boolean(args.openOnly && args.status);
+  let listedSessions = services.sessionService.list(filterLiveStatus
+    ? { ...args, status: undefined, limit: null }
+    : args);
   const missingResumeTargetIds = listedSessions
     .filter(sessionNeedsResumeTargetHydration)
     .slice(0, 10)
@@ -391,21 +394,18 @@ export async function listSessionsWithChatProjection(
   }
   const projected = projectChatSummariesOntoSessions(sessions, allChats, args.openOnly);
   if (!args.openOnly) return withCliCrossMachineMoves(services, projected);
-  if (!laneId) return projected;
   const matches = (row: TerminalSessionSummary) =>
     (!args.status || row.status === args.status)
     && (!args.toolTypes?.length || (row.toolType != null && args.toolTypes.includes(row.toolType)))
     && (!args.chatSessionId?.trim() || row.chatSessionId === args.chatSessionId.trim());
-  const detached = services.ptyService?.listDetachedLiveSessionsForLane?.(laneId)?.filter(matches) ?? [];
-  const archived = services.agentChatService?.listArchivedWorkingChats?.(laneId)?.filter(matches) ?? [];
-  if (!detached.length && !archived.length) return projected;
-  const live = [
-    ...(services.ptyService?.enrichSessions(detached) ?? []),
-    ...archived,
-  ];
+  const live = laneId ? [
+    ...(services.ptyService?.listAdditionalLiveSessionsForLane?.(laneId) ?? []),
+    ...(services.agentChatService?.listArchivedWorkingChats?.(laneId) ?? []),
+  ] : [];
+  if (!live.length && !filterLiveStatus) return projected;
   // A chat may be archived or a PTY detached while the roster is being projected.
   const liveIds = new Set(live.map((session) => session.id));
-  const combined = [...projected.filter((session) => !liveIds.has(session.id)), ...live];
+  const combined = [...projected.filter((session) => !liveIds.has(session.id)), ...live].filter(matches);
   const limit = args.limit === null ? -1 : args.limit ?? 200;
   if (limit < 0) return combined;
   return combined.sort((left, right) => Date.parse(right.startedAt) - Date.parse(left.startedAt)).slice(0, limit);

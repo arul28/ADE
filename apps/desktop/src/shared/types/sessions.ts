@@ -397,6 +397,8 @@ export type TerminalSessionSummary = {
   currentTurnStartedAt?: string | null;
   summary: string | null;
   runtimeState: TerminalRuntimeState;
+  /** Open-work reads include closing terminals until their process tree exits. */
+  ptyExitPending?: boolean;
   pendingInputItemId?: string | null;
   /** Live-only Codex steering pip. Never persisted. */
   steeringInput?: boolean;

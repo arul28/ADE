@@ -29,6 +29,7 @@ export type LaneActiveWorkRow = {
 };
 
 function sessionIsWorking(session: TerminalSessionSummary): boolean {
+  if (session.ptyExitPending) return true;
   const input = canonicalInputFromSummary(session);
   // Jobs keep using the worktree even after the chat is marked settled.
   return (input.backgroundWork?.workingCount ?? 0) > 0 || sessionIsMidFlight(input);

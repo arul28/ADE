@@ -463,10 +463,19 @@ type PtyTreeProcessScan = {
   succeeded: boolean;
 };
 
+type StoppingPty = {
+  laneId: string;
+  sessionId: string;
+  row: TerminalSessionSummary | null;
+  confirmation: Promise<boolean>;
+  hasExited?: () => boolean;
+};
+
 function parsePtyTreeProcesses(
   stdout: string,
   rootPid: number,
   knownProcessGroupIds: ReadonlySet<number> = new Set(),
+  knownPids: ReadonlySet<number> = new Set(),
 ): PtyTreeProcess[] {
   const rows = stdout.split(/\r?\n/).flatMap((line) => {
     const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s*$/);
@@ -482,7 +491,11 @@ function parsePtyTreeProcesses(
   );
   const selectedProcessGroups = new Set<number>(knownProcessGroupIds);
   for (const row of rows) {
-    if (knownProcessGroupIds.has(row.processGroupId)) selectedPids.add(row.pid);
+    if (
+      knownPids.has(row.pid)
+      || knownProcessGroupIds.has(row.processGroupId)
+      || knownProcessGroupIds.has(row.foregroundProcessGroupId)
+    ) selectedPids.add(row.pid);
   }
   let added = true;
   while (added) {
@@ -517,6 +530,7 @@ function parsePtyTreeProcesses(
 function collectPtyTreeProcesses(
   rootPid: number,
   knownProcessGroupIds: ReadonlySet<number> = new Set(),
+  knownPids?: ReadonlySet<number>,
 ): Promise<PtyTreeProcessScan> {
   if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) {
     return Promise.resolve({ processes: [], succeeded: false });
@@ -536,7 +550,7 @@ function collectPtyTreeProcesses(
           resolve(error
             ? { processes: [], succeeded: false }
             : {
-                processes: parsePtyTreeProcesses(String(stdout ?? ""), rootPid, knownProcessGroupIds),
+                processes: parsePtyTreeProcesses(String(stdout ?? ""), rootPid, knownProcessGroupIds, knownPids),
                 succeeded: true,
               });
         },
@@ -1053,6 +1067,7 @@ function terminatePtyProcessTree(
   entry: Pick<PtyEntry, "pty" | "sessionId" | "toolTypeHint">,
   signal: NodeJS.Signals,
   logger: Logger,
+  onScansComplete?: (scannedTree: PtyTreeProcess[] | null) => void,
 ): void {
   const rootPid = typeof entry.pty.pid === "number" && Number.isFinite(entry.pty.pid)
     ? Math.trunc(entry.pty.pid)
@@ -1063,6 +1078,7 @@ function terminatePtyProcessTree(
     } catch {
       // No numeric PID is available for a direct fallback.
     }
+    onScansComplete?.(null);
     return;
   }
   if (process.platform === "win32") {
@@ -1125,7 +1141,7 @@ function terminatePtyProcessTree(
     return;
   }
 
-  let initialProcesses: PtyTreeProcess[] = [];
+  let initialScan: PtyTreeProcessScan = { processes: [], succeeded: false };
   let initialSignalDispatched = false;
   const dispatchInitialSignal = (processes: readonly PtyTreeProcess[]) => {
     if (initialSignalDispatched) return;
@@ -1143,20 +1159,23 @@ function terminatePtyProcessTree(
     dispatchInitialSignal([]);
   }, PTY_PROCESS_SCAN_SIGNAL_DELAY_MS);
   signalFallbackTimer.unref?.();
-  void initialProcessScan.then(({ processes }) => {
-    initialProcesses = processes;
+  void initialProcessScan.then((scan) => {
+    initialScan = scan;
     clearTimeout(signalFallbackTimer);
     const signalAlreadyDispatched = initialSignalDispatched;
-    dispatchInitialSignal(processes);
-    if (signalAlreadyDispatched) signalPtyTreeProcesses(processes, signal);
+    dispatchInitialSignal(scan.processes);
+    if (signalAlreadyDispatched) signalPtyTreeProcesses(scan.processes, signal);
   });
   if (signal === "SIGKILL") return;
   const timer = setTimeout(() => {
+    const initialProcesses = initialScan.processes;
     const knownProcessGroupIds = new Set(initialProcesses.flatMap((process) => [
       process.processGroupId,
       process.foregroundProcessGroupId,
     ]).filter((processGroupId) => processGroupId > 1));
-    void collectPtyTreeProcesses(rootPid, knownProcessGroupIds).then(({ processes: currentProcesses, succeeded }) => {
+    const knownPids = new Set(initialProcesses.map(({ pid }) => pid));
+    void collectPtyTreeProcesses(rootPid, knownProcessGroupIds, knownPids).then(({ processes: currentProcesses, succeeded }) => {
+      onScansComplete?.(initialScan.succeeded && succeeded ? [...initialProcesses, ...currentProcesses] : null);
       if (!succeeded) {
         // A saturated host can time out the fallback `ps` scan precisely when
         // cleanup matters most. Do not interpret an unavailable scan as proof
@@ -2886,7 +2905,62 @@ export function createPtyService({
   disposePtyBackend?: () => void;
 }) {
   const ptys = new Map<string, PtyEntry>();
-  const stoppedWindowsTrees = new WeakSet<PtyEntry>();
+  const stoppingPtys = new Map<string, StoppingPty>();
+
+  function stopPtyAndTrackExit(ptyId: string, entry: PtyEntry): void {
+    const pid = entry.pty.pid;
+    const windows = process.platform === "win32";
+    // On Windows, wait for taskkill's tree result before using node-pty's
+    // fallback. Closing the ConPTY first can reparent its children.
+    const scan = windows
+      ? killWindowsProcessTreeAsync(pid, () => {
+          logger.warn("pty.dispose_exit_receipt_tree_kill_failed", { sessionId: entry.sessionId });
+        }).then((killed) => {
+          if (!killed) terminatePtyProcessTree(entry, "SIGTERM", logger);
+          return killed ? [] : null;
+        })
+      : new Promise<PtyTreeProcess[] | null>((resolve) => {
+          terminatePtyProcessTree(entry, "SIGTERM", logger, resolve);
+        });
+    const stopping: StoppingPty = {
+      laneId: entry.laneId,
+      sessionId: entry.sessionId,
+      row: sessionService.get(entry.sessionId),
+      confirmation: scan.then(async (tree) => {
+        if (!tree || !pid) {
+          logger.warn("pty.dispose_exit_receipt_unavailable", { sessionId: entry.sessionId });
+          return false;
+        }
+        const ids = new Set([pid]);
+        if (!windows && pid > 1) ids.add(-pid);
+        for (const child of tree) {
+          ids.add(child.pid);
+          if (child.processGroupId > 1) ids.add(-child.processGroupId);
+          if (child.foregroundProcessGroupId > 1) ids.add(-child.foregroundProcessGroupId);
+        }
+        stopping.hasExited = () => {
+          for (const id of ids) {
+            try {
+              process.kill(id, 0);
+              return false;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
+            }
+          }
+          return true;
+        };
+        const deadline = Date.now() + 5_000;
+        while (!stopping.hasExited() && Date.now() < deadline) await delay(100);
+        if (stopping.hasExited()) {
+          stoppingPtys.delete(ptyId);
+          return true;
+        }
+        logger.warn("pty.dispose_exit_receipt_timed_out", { sessionId: stopping.sessionId });
+        return false;
+      }),
+    };
+    stoppingPtys.set(ptyId, stopping);
+  }
   /**
    * The account a new CLI session starts on when it names none, the same pick
    * a new chat makes. Set once the chat service exists, which is created after
@@ -10635,46 +10709,18 @@ export function createPtyService({
     },
 
     async disposeWithExitReceipt({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> {
-      const entry = ptys.get(ptyId);
-      const pid = entry?.pty.pid;
-      if (!entry || entry.disposed || !pid || (sessionId && entry.sessionId !== sessionId)) {
-        return { ...service.dispose({ ptyId, sessionId }), processTreeExited: false };
+      const existing = stoppingPtys.get(ptyId);
+      if (existing && sessionId && existing.sessionId !== sessionId) {
+        return { disposed: false, reason: "session-mismatch", processTreeExited: false };
       }
-
-      // Capture descendants while the PTY still owns them. Disposing first can
-      // reparent them, so closing the row or observing the leader exit is insufficient.
-      const windows = process.platform === "win32";
-      const scan = windows ? null : await collectPtyTreeProcesses(pid);
-      if (ptys.get(ptyId) !== entry || entry.disposed) {
-        return { disposed: false, reason: "already-disposed", processTreeExited: false };
-      }
-      const windowsTreeKilled = windows && await killWindowsProcessTreeAsync(pid, () => {
-        logger.warn("pty.dispose_exit_receipt_tree_kill_failed", { sessionId: entry.sessionId });
-      });
-      if (windowsTreeKilled) stoppedWindowsTrees.add(entry);
-      const result = service.dispose({ ptyId, sessionId });
-      if (windows ? !windowsTreeKilled : !scan?.succeeded) {
-        return { ...result, processTreeExited: false };
-      }
-
-      const pids = new Set([pid, ...(scan?.processes.map((child) => child.pid) ?? [])]);
-      const groups = windows ? [] : [...new Set([pid, ...(scan?.processes.flatMap((child) => [
-        child.processGroupId,
-        child.foregroundProcessGroupId,
-      ]) ?? [])])].filter((group) => group > 1);
-      const isAlive = (id: number) => {
-        try {
-          process.kill(id, 0);
-          return true;
-        } catch (error) {
-          return (error as NodeJS.ErrnoException).code !== "ESRCH";
-        }
-      };
-      const treeIsAlive = () => [...pids].some(isAlive) || groups.some((group) => isAlive(-group));
-      const deadline = Date.now() + 5_000;
-      while (treeIsAlive() && Date.now() < deadline) await delay(100);
-      const processTreeExited = !treeIsAlive();
-      if (!processTreeExited) logger.warn("pty.dispose_exit_receipt_timed_out", { sessionId: entry.sessionId });
+      const result: PtyDisposeResult = existing
+        ? { disposed: true, reason: "disposed" }
+        : service.dispose({ ptyId, sessionId });
+      const stopping = existing ?? stoppingPtys.get(ptyId);
+      const processTreeExited = stopping
+        ? (await stopping.confirmation) || stopping.hasExited?.() === true
+        : false;
+      if (processTreeExited) stoppingPtys.delete(ptyId);
       return { ...result, processTreeExited };
     },
 
@@ -10788,7 +10834,7 @@ export function createPtyService({
       cleanupEntryPaths(entry);
       // Release the live-tail buffer; see closeEntry for rationale.
       entry.recentOutputTail = "";
-      if (!stoppedWindowsTrees.has(entry)) terminatePtyProcessTree(entry, "SIGTERM", logger);
+      stopPtyAndTrackExit(ptyId, entry);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
       flushFinalTerminalSnapshot(entry);
@@ -10891,15 +10937,33 @@ export function createPtyService({
       return count;
     },
 
-    /** Reconciliation can mark a row detached before the owning PTY exits. */
-    listDetachedLiveSessionsForLane(laneId: string): TerminalSessionSummary[] {
+    /** Live PTYs whose saved row no longer appears in the open-work read. */
+    listAdditionalLiveSessionsForLane(laneId: string): TerminalSessionSummary[] {
       const rows: TerminalSessionSummary[] = [];
       for (const entry of ptys.values()) {
         if (entry.disposed || entry.laneId !== laneId) continue;
         const row = sessionService.get(entry.sessionId);
         if (row?.status === "detached" && row.endedAt && !row.archivedAt && row.laneId === laneId) rows.push(row);
       }
-      return rows;
+      const live = service.enrichSessions(rows);
+      for (const [ptyId, stopping] of stoppingPtys) {
+        if (stopping.laneId !== laneId) continue;
+        if (stopping.hasExited?.()) {
+          stoppingPtys.delete(ptyId);
+          continue;
+        }
+        const row = stopping.row;
+        if (row?.laneId !== laneId) continue;
+        live.push({
+          ...row,
+          ptyId,
+          status: "running",
+          runtimeState: "running",
+          endedAt: null,
+          ptyExitPending: true,
+        });
+      }
+      return live;
     },
 
     // Used by project-context rebalancing to decide whether a project still

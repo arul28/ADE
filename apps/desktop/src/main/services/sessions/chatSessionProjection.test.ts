@@ -49,12 +49,18 @@ function chat(overrides: Partial<AgentChatSessionSummary> = {}): AgentChatSessio
 }
 
 describe("chatSessionProjection", () => {
-  it("keeps live archived chats within the open-work read's status and page size", async () => {
+  it("filters and limits open work using live terminal and chat status", async () => {
     const archived = {
       ...session(),
       id: "archived-chat",
       archivedAt: "2026-08-01T11:00:00Z",
       startedAt: "2026-08-01T10:30:00Z",
+    };
+    const liveTerminal = {
+      ...session(),
+      id: "live-terminal",
+      toolType: "shell" as const,
+      startedAt: "2026-08-01T10:45:00Z",
     };
     const normal = session();
     const services = {
@@ -69,14 +75,18 @@ describe("chatSessionProjection", () => {
         getSessionSideChatParentId: async () => null,
         listArchivedWorkingChats: () => [archived],
       },
+      ptyService: {
+        enrichSessions: <T extends ReturnType<typeof session>>(rows: T[]) => rows,
+        listAdditionalLiveSessionsForLane: () => [liveTerminal],
+      },
       logger: { warn: () => undefined },
     };
     const args = { laneId: "lane-1", openOnly: true, includeArchived: false } as const;
 
     expect((await listSessionsWithChatProjection(services, { ...args, limit: null })).map(({ id }) => id))
-      .toEqual([normal.id, archived.id]);
-    expect((await listSessionsWithChatProjection(services, { ...args, status: "running", limit: 1 })).map(({ id }) => id))
-      .toEqual([archived.id]);
+      .toEqual([normal.id, liveTerminal.id, archived.id]);
+    expect((await listSessionsWithChatProjection(services, { ...args, status: "running", limit: 2 })).map(({ id }) => id))
+      .toEqual([liveTerminal.id, archived.id]);
     expect(await listSessionsWithChatProjection(services, { ...args, status: "detached", limit: 1 })).toEqual([]);
   });
 

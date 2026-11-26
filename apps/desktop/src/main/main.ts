@@ -5345,7 +5345,7 @@ app.whenReady().then(async () => {
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
-      listDetachedLiveSessionsForLane: ptyService.listDetachedLiveSessionsForLane,
+      listAdditionalLiveSessionsForLane: ptyService.listAdditionalLiveSessionsForLane,
     };
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => fileService.countActiveWatchersForWorkspace(id),

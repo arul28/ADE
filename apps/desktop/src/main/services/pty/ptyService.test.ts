@@ -7052,37 +7052,72 @@ describe("ptyService", () => {
   });
 
   describe("dispose", () => {
-    it("confirms exit only after the terminal's foreground job leaves its process group", async () => {
+    it("keeps disposed terminals in open work until the last process seen during shutdown exits", async () => {
       vi.useFakeTimers();
       setPlatform("darwin");
       let jobAlive = true;
       const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-        if (signal !== 0 || (jobAlive && (pid === 45678 || pid === -45678))) return true;
+        if (signal !== 0 || (jobAlive && (pid === 56789 || pid === -56789))) return true;
         throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
       });
+      let scanned = false;
       mocks.execFile.mockImplementation((...args: unknown[]) => {
         const callback = args.at(-1);
-        if (typeof callback === "function") callback(null, "12345 1 12345 45678\n45678 12345 45678 45678\n", "");
+        const rows = scanned ? "56789 1 56789 45678\n" : "12345 1 12345 45678\n45678 12345 45678 45678\n";
+        scanned = true;
+        if (typeof callback === "function") callback(null, rows, "");
         return { kill: vi.fn() };
       });
       try {
         const { service, sessionService } = createHarness();
         const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24 });
+        expect(service.dispose({ ptyId, sessionId }).disposed).toBe(true);
         const onReceipt = vi.fn();
         const confirmation = service.disposeWithExitReceipt({ ptyId, sessionId }).then(onReceipt);
 
-        await vi.advanceTimersByTimeAsync(100);
+        await vi.advanceTimersByTimeAsync(1_500);
         expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({ sessionId, status: "disposed" }));
+        expect(service.listAdditionalLiveSessionsForLane("lane-1")).toEqual([
+          expect.objectContaining({ id: sessionId, ptyId, ptyExitPending: true, endedAt: null }),
+        ]);
         expect(onReceipt).not.toHaveBeenCalled();
 
         jobAlive = false;
         await vi.advanceTimersByTimeAsync(100);
         await confirmation;
         expect(onReceipt).toHaveBeenCalledWith({ disposed: true, reason: "disposed", processTreeExited: true });
+        expect(service.listAdditionalLiveSessionsForLane("lane-1")).toEqual([]);
       } finally {
         kill.mockRestore();
         setPlatform(originalPlatform);
         vi.useRealTimers();
+      }
+    });
+
+    it("keeps a closed Windows terminal in open work while taskkill is in flight", async () => {
+      setPlatform("win32");
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
+      });
+      try {
+        const { service, mockPty } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24 });
+        mocks.execFile.mockImplementationOnce(() => ({ kill: vi.fn() }));
+        service.dispose({ ptyId });
+        const confirmation = service.disposeWithExitReceipt({ ptyId, sessionId });
+        expect(service.listAdditionalLiveSessionsForLane("lane-1")).toEqual([
+          expect.objectContaining({ id: sessionId, ptyExitPending: true }),
+        ]);
+        expect(mockPty.kill).not.toHaveBeenCalled();
+
+        const taskkill = mocks.execFile.mock.calls.find(([command]) => command === "taskkill.exe");
+        const complete = taskkill?.at(-1) as (error: null, stdout: string, stderr: string) => void;
+        complete(null, "", "");
+        await expect(confirmation).resolves.toMatchObject({ processTreeExited: true });
+        expect(service.listAdditionalLiveSessionsForLane("lane-1")).toEqual([]);
+      } finally {
+        kill.mockRestore();
+        setPlatform(originalPlatform);
       }
     });
 
@@ -7319,14 +7354,14 @@ describe("ptyService", () => {
         endedAt: "2026-03-17T00:01:00.000Z",
       });
 
-      const branchWork = service.enrichSessions(service.listDetachedLiveSessionsForLane("lane-1"));
+      const branchWork = service.listAdditionalLiveSessionsForLane("lane-1");
       expect(branchWork).toEqual([expect.objectContaining({
         id: sessionId,
         status: "running",
         ptyId,
         endedAt: null,
       })]);
-      expect(service.listDetachedLiveSessionsForLane("another-lane")).toEqual([]);
+      expect(service.listAdditionalLiveSessionsForLane("another-lane")).toEqual([]);
 
       mockPty._emitter.emit("data", "still running\n");
 
