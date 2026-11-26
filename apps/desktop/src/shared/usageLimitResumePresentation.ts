@@ -328,8 +328,9 @@ export function usageLimitTurnFooterLabel(
 
 /**
  * A reset instant as people read it: `3:40 PM`, or `Dec 1, 3:40 PM` when it
- * is not today. The viewer's zone; `timeZoneName` adds the zone's label
- * (`3:40 PM ET`) for text written once and read in every zone.
+ * is not today. The zone of the machine that formats it: the viewer's for the
+ * footer, the host's for a transcript notice, where `timeZoneName` adds the
+ * zone's label (`3:40 PM ET`) because every client reads the text as written.
  */
 export function formatUsageLimitInstant(
   atMs: number,
@@ -370,7 +371,9 @@ export function usageLimitTextIdentity(text: string): string {
  * Does the text say a plan window ran out? `You've hit your 5-hour limit`,
  * `You've reached your Fable limit`, `5-hour limit reached`, `weekly limit
  * reached`. The one owner of that wording: the arm, the row colour and
- * Claude's quota check all read it from here. Never applied to agent prose.
+ * Claude's quota check all read it from here. Only what arms a resume needs
+ * the text to be the provider's (an error event or a result frame); the row
+ * colour also reads a failed turn's last text, where a near-miss costs a hue.
  */
 export function namesPlanLimitWindow(text: string | null | undefined): boolean {
   if (!text) return false;
@@ -404,6 +407,8 @@ export function isUsageLimitFailureText(text: string | null | undefined): boolea
   // The wording a provider's own terminal turn leaves behind: "You've hit your
   // session limit" / "…your weekly limit". Found in the wild as the last
   // assistant text of a turn that stopped at the limit.
+  // Wider than `namesPlanLimitWindow` on purpose: any distance between the
+  // two, as a failed turn's last text is long ("…hit your weekly limit for…").
   if (identity.includes("hityour") && identity.includes("limit")) return true;
   if (namesPlanLimitWindow(text)) return true;
   if (!identity.includes("429")) return false;

@@ -11812,10 +11812,13 @@ export function AgentChatPane({
   // turn footer on the first paint instead of flashing a red FAILED line until
   // the session list arrives.
   const usageLimitResume = renderedSession?.usageLimitResume ?? null;
+  // A limit ADE is waiting out ("Paused"); one with no reset or with
+  // auto-resume off reads "Usage limit" and is not live here.
+  const usageLimitLive = usageLimitResume != null
+    && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused");
   // The paused turn's footer quotes when the limit resets; parsed once here.
   const usageLimitPausedResetAtMs = (() => {
-    if (!usageLimitResume?.resetAt) return null;
-    if (usageLimitResume.state !== "armed" && usageLimitResume.state !== "resuming" && usageLimitResume.state !== "paused") return null;
+    if (!usageLimitLive || !usageLimitResume?.resetAt) return null;
     const parsed = Date.parse(usageLimitResume.resetAt);
     return Number.isFinite(parsed) ? parsed : null;
   })();
@@ -16847,7 +16850,7 @@ export function AgentChatPane({
    * The session update a model pick kept local needs: the model (or preset),
    * and the fast, thinking and native controls that came with it. Send applies
    * it right before it sends; a chat stopped at a usage limit applies it as
-   * soon as the pick renders (`usageLimitSwitchSessionRef`).
+   * soon as the pick renders (`usageLimitSwitch`).
    */
   const buildDeferredSessionUpdate = useCallback((sessionId: string) => {
     // A pick can move the chat onto a preset or off one, which the model id
@@ -21959,13 +21962,13 @@ export function AgentChatPane({
    * state to render before it is applied. The switch is what moves the chat
    * off the limit and sends its queue to the new model (ADE-289), and there
    * may be nothing left to type, so it does not wait for Send. Same update and
-   * pin as Send's.
+   * pin as Send's. State, not a ref: the pick renders once and runs this once.
    */
-  const usageLimitSwitchSessionRef = useRef<string | null>(null);
+  const [usageLimitSwitch, setUsageLimitSwitch] = useState<{ sessionId: string } | null>(null);
   useEffect(() => {
-    const sessionId = usageLimitSwitchSessionRef.current;
-    if (!sessionId) return;
-    usageLimitSwitchSessionRef.current = null;
+    if (!usageLimitSwitch) return;
+    const { sessionId } = usageLimitSwitch;
+    setUsageLimitSwitch(null);
     if (sessionId !== selectedSessionId || turnActive) return;
     const { modelChanged, update } = buildDeferredSessionUpdate(sessionId);
     if (!modelChanged) return;
@@ -21975,12 +21978,15 @@ export function AgentChatPane({
     )
       .then(() => {
         if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
-        setSessionRoutePick(null);
+        // Only this chat's pick: another chat may have one waiting for its Send.
+        setSessionRoutePick((current) => current?.sessionId === sessionId ? null : current);
         void refreshSessions().catch(() => {});
       })
       // Still deferred, so the next send applies the pick as usual.
       .catch((switchError: unknown) => setError(errorMessage(switchError)));
-  }, [buildDeferredSessionUpdate, refreshSessions, selectedSessionId, turnActive]);
+    // Runs per pick: `usageLimitSwitch` is the trigger; the rest is read at that render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usageLimitSwitch]);
 
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection): boolean => {
     // A Custom pick is validated by the picker against what its
@@ -22093,10 +22099,12 @@ export function AgentChatPane({
     }
 
     // A chat stopped at a usage limit applies the pick at once (see
-    // `usageLimitSwitchSessionRef`): the switch is what moves it off the
+    // `usageLimitSwitch`): the switch is what moves it off the
     // limit and sends its queue to the new model (ADE-289).
+    // Every limit state holds the queue, "no reset" and "auto-resume off" too,
+    // so any of them switches now.
     if (usageLimitResume && renderedSessionId === selectedSessionId) {
-      usageLimitSwitchSessionRef.current = selectedSessionId;
+      setUsageLimitSwitch({ sessionId: selectedSessionId });
     }
 
     // Keep the selection local until submit(). Submit applies the
@@ -23274,12 +23282,7 @@ export function AgentChatPane({
                           ? cloudQueueWait.label
                           : chatConnectionMark ? `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…` : null}
                         usageLimitResumeActive={usageLimitResume != null}
-                        // Only a limit ADE is waiting out reads "Paused"; one with no
-                        // reset or with auto-resume off reads "Usage limit".
-                        usageLimitResumeTurnId={usageLimitResume
-                          && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
-                          ? usageLimitResume.turnId ?? null
-                          : null}
+                        usageLimitResumeTurnId={usageLimitLive ? usageLimitResume?.turnId ?? null : null}
                         usageLimitResumeResetAtMs={usageLimitPausedResetAtMs}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only

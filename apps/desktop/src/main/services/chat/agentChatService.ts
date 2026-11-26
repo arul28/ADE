@@ -24836,10 +24836,9 @@ export function createAgentChatService(args: {
     if (!usageLimitHoldsQueue(managed)) return;
     if (!runtime || !runtime.pendingSteers.length) return;
     const lifted = runtime.pendingSteers.splice(0);
-    // Claude tracks the messages it was handed; these were not.
-    if ("knownQueuedMessages" in runtime && runtime.knownQueuedMessages instanceof Map) {
-      for (const steer of lifted) runtime.knownQueuedMessages.delete(steer.uuid);
-    }
+    // Claude's live runtime tracks the messages on its queue; these left it.
+    const claude = managed.runtime === runtime && managed.runtime.kind === "claude" ? managed.runtime : null;
+    for (const steer of claude ? lifted : []) claude?.knownQueuedMessages.delete(steer.uuid);
     managed.usageLimitHeldSteers = [...(managed.usageLimitHeldSteers ?? []), ...lifted];
     persistChatState(managed);
   };
@@ -24851,7 +24850,7 @@ export function createAgentChatService(args: {
   const sendUsageLimitHeldSteer = async (
     managed: ManagedChatSession,
     steer: QueuedSteer,
-    options: { behindRunningTurn: boolean },
+    options: { behindRunningTurn: boolean; unsentAfter?: QueuedSteer[] },
   ): Promise<void> => {
     claimSteerSettlement(managed, steer.steerId);
     emitChatEvent(managed, {
@@ -24874,9 +24873,18 @@ export function createAgentChatService(args: {
       if (options.behindRunningTurn) await sendMessage(sendArgs, { awaitDispatch: true, routeActiveToSteer: true });
       else await sendMessage(sendArgs, { awaitDispatch: true });
     } catch (error) {
-      // Never lost: back on the held queue, its row queued again.
+      // Never lost: this one and the rest not yet sent are queued again, in
+      // order. Behind a turn that already took the held queue, that turn's
+      // queue sends them; otherwise they wait on the session for the next one.
       reopenSteerSettlement(managed, steer.steerId);
-      managed.usageLimitHeldSteers = [steer, ...(managed.usageLimitHeldSteers ?? [])];
+      const unsent = [steer, ...(options.unsentAfter ?? [])];
+      const runtime = managed.runtime;
+      if (runtime && runtimeMidTurn(managed) && !usageLimitHoldsQueue(managed) && drainsOwnQueue(runtime)) {
+        runtime.pendingSteers.unshift(...unsent);
+        rememberClaudeHeldSteers(runtime, unsent);
+      } else {
+        managed.usageLimitHeldSteers = [...unsent, ...(managed.usageLimitHeldSteers ?? [])];
+      }
       emitSteerUserRow(managed, steer, "queued", undefined);
       persistChatState(managed);
       throw error;
@@ -24907,16 +24915,38 @@ export function createAgentChatService(args: {
     const held = takeStartableHeldSteers(managed);
     persistChatState(managed);
     if (!held.length) return;
-    if (runtime.kind !== "opencode") {
+    if (drainsOwnQueue(runtime)) {
       runtime.pendingSteers.unshift(...held);
+      rememberClaudeHeldSteers(runtime, held);
       persistChatState(managed);
       return;
     }
     void (async () => {
-      for (const steer of held) await sendUsageLimitHeldSteer(managed, steer, { behindRunningTurn: true });
+      for (const [index, steer] of held.entries()) {
+        await sendUsageLimitHeldSteer(managed, steer, { behindRunningTurn: true, unsentAfter: held.slice(index + 1) });
+      }
     })().catch((error) => {
       logger.warn("agent_chat.usage_limit_held_send_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
     });
+  };
+
+  /**
+   * Whether this runtime's turn end sends its `pendingSteers`. OpenCode's inbox
+   * and Copilot's SDK own their queues, so ADE hands them messages as sends.
+   */
+  const drainsOwnQueue = (runtime: ChatRuntime): runtime is Exclude<ChatRuntime, OpenCodeRuntime | CopilotRuntime> =>
+    runtime.kind !== "opencode" && runtime.kind !== "copilot";
+
+  /** Claude tracks the messages on its queue (interrupt receipts read it). */
+  const rememberClaudeHeldSteers = (runtime: ChatRuntime, steers: QueuedSteer[]): void => {
+    if (runtime.kind !== "claude") return;
+    for (const steer of steers) {
+      rememberClaudeKnownQueuedMessage(runtime.knownQueuedMessages, steer.uuid, {
+        preview: claudeQueuedMessagePreview(steer.displayText ?? steer.text),
+        steerId: steer.steerId,
+        steer: { ...steer },
+      });
+    }
   };
 
   /** How long a switch waits for the user's own send before it starts the chat itself. */
@@ -24948,7 +24978,11 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     await clearUsageLimitHold(managed, args.reason);
     if (!managed.usageLimitHeldSteers?.length && !args.continueText) return;
+    // A turn that starts in the wait (and may already have ended) is the
+    // user's own send; nothing else goes after it.
+    const turnBeforeKick = lastTurnIdBySession.get(managed.session.id) ?? null;
     const kick = setTimeout(() => {
+      if ((lastTurnIdBySession.get(managed.session.id) ?? null) !== turnBeforeKick) return;
       void kickUsageLimitRelease(managed, args.continueText).catch((error) => {
         logger.warn("agent_chat.usage_limit_release_failed", {
           sessionId: managed.session.id,
@@ -25118,9 +25152,14 @@ export function createAgentChatService(args: {
     });
     if (provider === "claude") dismissClaudeSessionQuota(managed);
     // A queue the limit held runs on the new account in place of the continue.
-    await releaseUsageLimitQueue(managed, {
-      reason: "usage_limit_account_handoff",
-      continueText: compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
+    if (managed.usageLimitHeldSteers?.length) {
+      await releaseUsageLimitQueue(managed, { reason: "usage_limit_account_handoff", continueText: null });
+      return { ok: true };
+    }
+    await clearUsageLimitHold(managed, "usage_limit_account_handoff");
+    await sendMessage({
+      sessionId: managed.session.id,
+      text: compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
     });
     return { ok: true };
   };
@@ -31985,6 +32024,9 @@ export function createAgentChatService(args: {
       delete managed.session.fastMode;
       delete managed.session.fastTier;
     }
+    // Before the first save below, or that save would drop the held queue.
+    const heldAtLoad = hydratePersistedPendingSteers(persisted?.usageLimitHeldSteers, managed);
+    if (heldAtLoad.length) managed.usageLimitHeldSteers = heldAtLoad;
     managedSessions.set(sessionId, managed);
     if (fastModeClampedOnLoad) persistChatState(managed);
     // Deferred until the scheduler has read its durable rows back: before that,
@@ -32006,10 +32048,6 @@ export function createAgentChatService(args: {
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
     managed.awaitingInputAtLoad = persisted?.awaitingInput === true;
-    if (persisted?.usageLimitHeldSteers?.length) {
-      const held = hydratePersistedPendingSteers({ ...persisted, pendingSteers: persisted.usageLimitHeldSteers }, managed);
-      if (held.length) managed.usageLimitHeldSteers = held;
-    }
     if (row.status === "detached") {
       runRestartRecoveryIfPending(managed, {
         reason: "load",
@@ -50476,11 +50514,12 @@ export function createAgentChatService(args: {
     runtime.preserveQueuedSteersOnInterrupt = false;
     if (reason === "interrupted" && preserveQueuedSteers) return;
     // A usage limit keeps the queue for the resume or a switch (ADE-289).
-    if (reason !== "disposed" && usageLimitHoldsQueue(managed)) {
+    // A usage limit keeps the queue for the resume or a switch (ADE-289),
+    // through any runtime teardown; closing the chat cancels it (`disposeSession`).
+    if (usageLimitHoldsQueue(managed)) {
       liftUsageLimitHeldSteers(managed, runtime);
       return;
     }
-    if (reason === "disposed") cancelUsageLimitHeldSteers(managed, reason);
     // A failed Compact first turn keeps the messages it was compacting for.
     if (managed.compactFirstHold === "holding") {
       if (reason === "failed") {
@@ -50494,8 +50533,10 @@ export function createAgentChatService(args: {
 
   /**
    * A failure that is a usage limit holds the queue before its own cancel
-   * runs. Cursor, Droid and OpenCode cancel first and report the error after,
-   * so the arm that the error event triggers would come too late.
+   * runs. Cursor (local and Cloud), Droid and OpenCode cancel first and report
+   * the error after, so the arm the error event triggers would come too late.
+   * Claude, Codex, Copilot, Pi, ACP and Muse report it first: the arm sets the
+   * hold before their cancel.
    */
   const holdQueueIfUsageLimitFailure = (
     managed: ManagedChatSession,
@@ -51576,12 +51617,12 @@ export function createAgentChatService(args: {
   };
 
   const hydratePersistedPendingSteers = (
-    persisted: PersistedChatState | null,
+    rows: PersistedPendingSteer[] | undefined,
     managed: ManagedChatSession,
   ): QueuedSteer[] => {
-    if (!persisted?.pendingSteers?.length) return [];
+    if (!rows?.length) return [];
     const out: QueuedSteer[] = [];
-    for (const entry of persisted.pendingSteers) {
+    for (const entry of rows) {
       const text = entry.text;
       const attachments: AgentChatFileRef[] = Array.isArray(entry.attachments)
         ? entry.attachments.filter((a): a is AgentChatFileRef =>
@@ -51800,7 +51841,7 @@ export function createAgentChatService(args: {
       activeTurnId: null,
       initialInputDispatchGate: null,
       dispatchingSteerIds: new Set(),
-      pendingSteers: hydratePersistedPendingSteers(persisted, managed),
+      pendingSteers: hydratePersistedPendingSteers(persisted?.pendingSteers, managed),
       knownQueuedMessages: new Map(),
       commandLifecycleByUuid: new Map(),
       contextGuardrail: {
@@ -64817,6 +64858,9 @@ export function createAgentChatService(args: {
       const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
       if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
+      if (!runtime.interrupted) {
+        holdQueueIfUsageLimitFailure(managed, classifyCursorSdkChatError(error, { cloud: true }));
+      }
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
 
       if (runtime.interrupted) {
@@ -70847,7 +70891,14 @@ export function createAgentChatService(args: {
     // The row taken off a local queue, so a carried steer whose old inline
     // offer is still awaiting settles instead of reading "Steering..." forever.
     let removedSteer: QueuedSteer | undefined;
-    if (runtime?.kind === "codex") {
+    const heldIndex = managed.usageLimitHeldSteers?.findIndex((steer) => steer.steerId === steerId) ?? -1;
+    if (heldIndex !== -1) {
+      // Held by a usage limit, on the session: no runtime has it.
+      [removedSteer] = managed.usageLimitHeldSteers!.splice(heldIndex, 1);
+      if (!managed.usageLimitHeldSteers!.length) delete managed.usageLimitHeldSteers;
+      removed = true;
+      persistChatState(managed);
+    } else if (runtime?.kind === "codex") {
       const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
         ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
       const threadId = managed.session.threadId;
@@ -70952,6 +71003,25 @@ export function createAgentChatService(args: {
     const trimmed = text.trim();
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
+    const held = managed.usageLimitHeldSteers?.find((steer) => steer.steerId === steerId);
+    if (held) {
+      // Held by a usage limit, on the session. An empty edit removes it.
+      if (!trimmed.length) {
+        await cancelSteerWithoutReview({ sessionId, steerId, requireQueued: true });
+        return;
+      }
+      held.text = trimmed;
+      held.displayText = undefined;
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: trimmed,
+        ...(held.metadata ? { metadata: held.metadata } : {}),
+        steerId,
+        deliveryState: "queued",
+      });
+      persistChatState(managed);
+      return;
+    }
     if (runtime?.kind === "codex") {
       // Same lost-mapping case as cancelSteer: recover from the server queue
       // before deciding the message is gone, or an edit after a restart is a
@@ -71033,6 +71103,17 @@ export function createAgentChatService(args: {
    */
   const moveSteer = async ({ sessionId, steerId, toIndex }: AgentChatMoveSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
+    const held = managed.usageLimitHeldSteers;
+    if (held?.some((steer) => steer.steerId === steerId)) {
+      // Held by a usage limit, on the session, whatever the provider.
+      const nextIds = moveSteerId(held.map((steer) => steer.steerId), steerId, toIndex);
+      if (!nextIds) throw steerNoLongerQueued(managed, steerId);
+      const byId = new Map(held.map((steer) => [steer.steerId, steer] as const));
+      managed.usageLimitHeldSteers = nextIds.map((id) => byId.get(id)!);
+      emitChatEvent(managed, { type: "queue_reordered", steerIds: nextIds });
+      persistChatState(managed);
+      return;
+    }
     if (!queuedSteersCanReorder(managed.session.provider)) {
       throw new Error("This provider keeps its own queue, so its order can't be changed.");
     }
