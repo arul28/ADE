@@ -807,6 +807,17 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   const ctoArchived = (area: LineArea, lines: readonly string[]): void => {
     if (!baseline || !lines.length) return;
     const gone = new Set(lines.map((line) => stripBullet(line)));
+    // A note the CTO wrote this turn as a replacement: the line it replaced
+    // goes too, or the turn would list that one as removed and Undo bring it back.
+    const links = replacedThisTurn.get(area);
+    for (const line of lines) {
+      let next = stripBullet(line);
+      for (let previous = links?.get(next); previous != null && !gone.has(stripBullet(previous)); previous = links?.get(next)) {
+        links!.delete(next);
+        next = stripBullet(previous);
+        gone.add(next);
+      }
+    }
     baseline[area] = baseline[area].split("\n").filter((line) => !gone.has(stripBullet(line))).join("\n");
     saveBaseline(baseline);
   };

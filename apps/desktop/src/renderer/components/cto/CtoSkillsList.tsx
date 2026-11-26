@@ -55,10 +55,13 @@ export function CtoSkillsList({
     }
   }, []);
 
+  // Also on every new snapshot (a CTO turn ended, the window came back): the
+  // open skill may have changed. The editor adopts it only when it holds no
+  // unsaved edit.
   useEffect(() => {
     if (openName) void load(openName);
     else setFile(null);
-  }, [openName, pinKey, load]);
+  }, [openName, pinKey, load, skills]);
 
   const save = useCallback(async (name: string, text: string, baseHash?: string): Promise<AutosaveHostAnswer | void> => {
     let written: CtoSkillFile | undefined;

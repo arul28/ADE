@@ -3,6 +3,7 @@ import {
   CTO_PROJECT_NOTES_MAX_BYTES,
   CTO_RULES_MAX_BYTES,
   CTO_USER_NOTES_MAX_BYTES,
+  type CtoSkillSummary,
   type OpenProjectBinding,
 } from "../../../shared/types";
 import { ModernSection } from "../settings/primitives";
@@ -22,6 +23,9 @@ import { useCtoMemory } from "./useCtoMemory";
  * Below them, the archive: what left the notes, facts from past turns,
  * discoveries and story versions.
  */
+/** One empty list, so a host with no skills doesn't hand the list a new array every render. */
+const NO_SKILLS: CtoSkillSummary[] = [];
+
 export function CtoMemoryPanel({
   pin,
   sessionId,
@@ -129,7 +133,7 @@ export function CtoMemoryPanel({
           hint="One how-to per kind of task"
         >
           <div className="ade-modern-rows" style={{ padding: 8 }}>
-            <CtoSkillsList pin={pin} skills={memory.skills ?? []} onChanged={refresh} />
+            <CtoSkillsList pin={pin} skills={memory.skills ?? NO_SKILLS} onChanged={refresh} />
           </div>
         </ModernSection>
       ) : null}
