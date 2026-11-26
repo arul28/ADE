@@ -33,6 +33,7 @@ import {
 import type { McpFoundServer, McpRegistryContext, McpServerSignIn } from "../../../../shared/types/mcpRegistry";
 import { useAppStore } from "../../../state/appStore";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { plainErrorText } from "../../../lib/plainError";
 
 /** The three places a server can be switched off. */
 export type McpRegistryLevel = "account" | "machine" | "project";
@@ -245,7 +246,7 @@ export function useMcpRegistry(): McpRegistryApi {
       outcome = errorSentence(error);
     }
     await reload();
-    return outcome;
+    return outcome == null ? null : plainErrorText(outcome, "ADE couldn't save the MCP server change.");
   }, [reload]);
 
   const offTarget = useCallback((level: "machine" | "project"): { scope: string; key: string } | null => {

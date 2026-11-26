@@ -16,6 +16,11 @@ Next to it, **typed tools** take named inputs a client can check before
 calling. See [Typed tools](#typed-tools). Tools with a view come back as an
 **MCP App** in hosts that show them; see [MCP Apps](#mcp-apps).
 
+In Settings › ADE MCP, the **Computers** card shows which computers answer.
+If a computer still hasn't received its key after ten minutes, the card
+refreshes and explains the wait. Use **Check again** to read the current
+status at any time.
+
 ## Source file map
 
 | Path | Role |

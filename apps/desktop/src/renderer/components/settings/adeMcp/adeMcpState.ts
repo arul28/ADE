@@ -50,9 +50,8 @@ const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => M
     // `reportedAt` is when it started waiting: the entry is rewritten only
     // when its state changes. A wait far past the usual minute is not
     // "getting ready" any more; say so, and what moves it on.
-    const since = machine.reportedAt ? Date.parse(machine.reportedAt) : Number.NaN;
-    const waitedMs = Number.isFinite(since) ? Date.now() - since : 0;
-    if (waitedMs < STUCK_WAITING_MS) {
+    const deadline = secretWaitEndsAt(machine);
+    if (deadline === null || Date.now() < deadline) {
       return {
         tone: "warn",
         label: "Getting ready",
@@ -74,6 +73,11 @@ const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => M
 
 /** A computer still waiting for ADE MCP's key after this long is stuck, not getting ready. */
 const STUCK_WAITING_MS = 10 * 60_000;
+
+export function secretWaitEndsAt(machine: RemoteMcpMachine): number | null {
+  const reportedAt = Date.parse(machine.reportedAt ?? "");
+  return Number.isFinite(reportedAt) ? reportedAt + STUCK_WAITING_MS : null;
+}
 
 /**
  * Another computer counted as serving only because it never reported its

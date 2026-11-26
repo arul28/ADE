@@ -34,7 +34,7 @@ import {
   type GalleryAppId,
   type TokenSnippetId,
 } from "./adeMcp/adeMcpApps";
-import { agoText, connectionHow, heroPanelNote, isAnswering, isLocalConnection, recentUseEndsAt, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
+import { agoText, connectionHow, heroPanelNote, isAnswering, isLocalConnection, machineState, overallState, recentUseEndsAt, secretWaitEndsAt, vaultFact } from "./adeMcp/adeMcpState";
 import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
@@ -126,6 +126,7 @@ export function AdeMcpPage() {
 
   const load = useCallback(async () => {
     const request = ++loadRequest.current;
+    setLoading(true);
     try {
       const [next, recent] = await Promise.all([
         call<RemoteMcpStatus>("getStatus"),
@@ -151,6 +152,20 @@ export function AdeMcpPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!status || busy || loading) return;
+    const now = Date.now();
+    let nextCheck = Infinity;
+    for (const machine of status.machines) {
+      if (machine.notServingReason !== "waiting_for_account_secret") continue;
+      const deadline = secretWaitEndsAt(machine);
+      if (deadline !== null && deadline > now) nextCheck = Math.min(nextCheck, deadline);
+    }
+    if (!Number.isFinite(nextCheck)) return;
+    const timer = setTimeout(() => void load(), nextCheck - now);
+    return () => clearTimeout(timer);
+  }, [busy, load, loading, status]);
 
   const run = useCallback(async (work: () => Promise<void>, fallback: string) => {
     if (busy) return;
@@ -420,6 +435,11 @@ export function AdeMcpPage() {
           icon={<Desktop size={16} weight="duotone" />}
           title="Computers"
           hint="Apps reach the computers you include. They can ask for one by name, or let ADE pick."
+          actions={(
+            <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy || loading} onClick={() => void load()}>
+              {loading ? "Checking…" : "Check again"}
+            </button>
+          )}
         >
           <div className="ade-ig-rows">
             {machines.length ? machines.map((machine) => {
