@@ -184,6 +184,7 @@ import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
 import { MOCK_STREAM_URL, createMockAndroidEmulator } from "./browserMockAndroid";
 import { applyBrowserMockCloud } from "./browserMockCloud";
 import { applyBrowserMockProviderLogins } from "./browserMockProviderLogins";
+import { browserMockCtoSpawnEvents } from "./browserMockCtoSpawns";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -3102,6 +3103,7 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
     ...browserMockQuestionEvents(sessionId),
     ...browserMockCodexStallEvents(sessionId),
     ...browserMockSponsoredTurnEvents(sessionId),
+    ...browserMockCtoSpawnEvents(sessionId, BROWSER_MOCK_CTO_SPAWNS),
     ...(browserMockSentEvents.get(sessionId) ?? []),
   ];
 }
@@ -3116,6 +3118,7 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
  */
 // Read once: the app routes away from the first URL and drops its query.
 const BROWSER_MOCK_SPONSORED = browserMockParam("mockSponsored");
+const BROWSER_MOCK_CTO_SPAWNS = browserMockParam("mockCtoSpawns");
 function browserMockSponsoredTurnEvents(sessionId: string): any[] {
   if (!BROWSER_MOCK_SPONSORED || !/^(cloud-chat-1|mock-session-codex-1)$/.test(sessionId)) return [];
   const at = (offsetMs: number) => new Date(Date.now() - 60_000 + offsetMs).toISOString();
@@ -9531,6 +9534,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     cto: {
       getAttention: resolved({ status: "idle", awaitingInput: false, since: null }),
+      getNeeds: resolved({ needs: [] }),
       getState: resolvedArg({
         identity: ADE_DB_SNAPSHOT?.ctoState?.identity ?? {
           name: "CTO",

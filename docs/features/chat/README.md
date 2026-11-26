@@ -2003,7 +2003,7 @@ When a spawned chat child completes a turn, `reportChildSpawnEnded` (`agentChatS
 
 ### A CTO parent gets one line
 
-When the parent is the CTO, the `subagent_result` card is suppressed and the completion renders as one `system_notice`. The CTO runs dozens of chats, and a card restating each closing summary would bury the thread.
+When the parent is the CTO, the completion renders as one `system_notice`. The CTO still gets the child's `subagent_result`, once per child turn, so the child's row there settles; the CTO surfaces never draw its summary. The CTO runs dozens of chats, and a card restating each closing summary would bury the thread.
 
 - `formatCtoChildReportLine` (`services/chat/ctoTurnContext.ts`) builds `"<child title>" · <provider> · finished | was stopped | failed`, plus `· PR #<n>` when `readChildPullRequestNumber` finds one (report artifacts first, then the closing summary, since many agents write the number only in prose).
 - The notice is `warning` for a failure, else `info`, and carries the same `spawnCompletion` payload so delivery dedupe anchors on it.

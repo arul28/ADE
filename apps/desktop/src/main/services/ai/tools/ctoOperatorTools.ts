@@ -176,6 +176,8 @@ export interface CtoOperatorToolDeps {
   endTurnQuietly?: () => Promise<{ quiet: boolean; note?: string }>;
   /** `react`: an emoji on the person's newest message, in place of a reply. */
   reactToMessage?: (args: { emoji: CtoReactionEmoji }) => Promise<{ reacted: boolean; note?: string }>;
+  /** `setNeed`: the CTO's "Waiting on you" line for one of its chats; null clears it. */
+  setNeed?: (args: { childSessionId: string; line: string | null }) => Promise<{ set: boolean; line: string | null }>;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   /** Durable wait: wake this thread when other chats reach a state. */
@@ -1083,6 +1085,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         }
         const session = await deps.createChat({
           laneId: executionLaneId,
+          // Named at creation, so the parent's "Started a new task" row reads the title, not "Claude chat".
+          ...(title?.trim() ? { title: title.trim() } : {}),
           provider: resolved.provider,
           model: resolved.model,
           ...(selectedModelId ? { modelId: selectedModelId } : {}),
@@ -3171,6 +3175,27 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         const result = await deps.reactToMessage({ emoji });
         return result.reacted ? { success: true, reacted: true } : { success: false, error: result.note ?? "Not done." };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "setNeed", () => core({
+    description:
+      "Put one line on the person's \"Waiting on you\" card for a chat you started that needs them: a merge to "
+      + "approve, a product call, a sign-in, something to test. The line clears by itself when that chat moves. "
+      + "Pass line null to clear it now. Only for what is truly the person's call; fix everything else by steering the chat.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1).describe("The chat you started (its session id)."),
+      line: z.string().trim().min(1).max(400).nullable()
+        .describe("What the person must do, in one short line (\"Approve the merge of PR #12\"). Null clears it."),
+    }),
+    execute: async ({ sessionId, line }) => {
+      if (!deps.setNeed) return { success: false, error: "\"Waiting on you\" lines are not available on this runtime." };
+      try {
+        const result = await deps.setNeed({ childSessionId: sessionId, line });
+        return { success: true, sessionId, ...result };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

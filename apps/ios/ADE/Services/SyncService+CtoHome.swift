@@ -102,6 +102,18 @@ extension SyncService {
     return connection
   }
 
+  /// Whether the CTO's home machine runs `action`: that machine's commands when
+  /// the home is another machine, else the focused one's. Nil while the home
+  /// is not connected (unknown, not "no").
+  func ctoHomeSupportsAction(_ action: String) -> Bool? {
+    guard ctoHomeProjectId == activeProjectId,
+          let key = ctoHomeMachineKey,
+          key != focusedMachineKey
+    else { return supportsRemoteAction(action) }
+    guard let connection = machineFleet?.connection(for: key), connection.phase == .live else { return nil }
+    return connection.supportsAction(action)
+  }
+
   func ctoCommandTarget() throws -> (projectId: String?, rootPath: String?, repo: WorkRemoteMachineRepo?) {
     guard !ctoHomeNeedsChoice else {
       throw NSError(domain: "ADE", code: 14, userInfo: [

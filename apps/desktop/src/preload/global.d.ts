@@ -656,6 +656,7 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
@@ -5773,6 +5774,8 @@ declare global {
         ) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: (pin: OpenProjectBinding) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin: OpenProjectBinding) => Promise<CtoAttentionState>;
+        /** The CTO's "Waiting on you" lines, read on its home machine. */
+        getNeeds: (pin: OpenProjectBinding) => Promise<CtoNeedsSnapshot>;
       };
       /**
        * The owner's lane sharing (`lane_share` runtime actions, user-only).

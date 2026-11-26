@@ -11,6 +11,8 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 - `ctoStory.ts` — the story so far and the history block a fresh thread gets (see [The story so far](#the-story-so-far)). Pure: choosing the tail, planning a fold, the helper's prompt, and cleaning and accepting its answer.
 - `ctoStoryUpdater.ts` — runs the story updates: one at a time per chat, batches, the failure wait, the supersede check. `agentChatService` hands it the chat (transcript, helper model, prompt runner).
 - `ctoAccountCopyService.ts` — the CTO's account copy (vault kind `cto_copy`): identity, both notes files, open work, routines, the conversation tail and the story so far, gzip-encoded, written by the home machine only and restored by the next home (see [The home machine and the account copy](#the-home-machine-and-the-account-copy)). Also `homeGate`, which refuses a CTO turn on a machine that is not the home.
+- `ctoStallJudge.ts` — the stall judge: which child is stuck and since when (`judgeCtoChildStall`, one stall clock for the verdict and the next look), the nudge text, the told-once keys, the gap, the first-run baseline and the "Waiting on you" lines (kv `cto:stall-nudges:v1`, `cto:stall-last-nudge:v1`, `cto:needs:v1`). Pure over the facts it is given (see [Stuck children and "Waiting on you"](#stuck-children-and-waiting-on-you)).
+- `ctoStallJudgeHost.ts` — the chat service's side of the judge: reads the CTO's children (loaded chats, saved rows, summaries, the PR cache) as the judge's facts, keeps the one-time CTO and child lists, and answers `setNeed` and `getNeeds`.
 - `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool operating rules and the tool-pack list injected into the prompt, plus the opening turn (`CTO_INTRO_PROMPT`, `CTO_INTRO_ONBOARDING_STEP`).
 - `linearClient.ts`, `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` — Linear plumbing the CTO tools call. The canonical description is [Linear integration](../linear-integration/README.md); this doc covers only what the CTO itself uses.
 
@@ -39,17 +41,19 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 - `CtoLibrary.tsx` — what the CTO's work produced, filtered by All / PRs / Proof / Lanes.
 - `CtoRoutineRows.tsx` — routine rows for the panel and settings: title, human schedule, per-row switch, Run now / Cancel menu.
 - `CtoOpenWorkList.tsx` — the open-work checklist, shared by the panel and Settings › Memory.
+- `CtoWaitingOnYou.tsx` — the **Waiting on you** card above the composer (rows, "+N more", the couldn't-load banner).
 - `CtoWelcome.tsx` — the asleep avatar and model picker shown before a model is picked.
 - `CtoAccountCopyView.tsx` — the account copy, read-only, while the home is asleep, gone or away (`GET /cloud/cto?origin=`): where things stand, open work, the lanes it names, the last turns, notes and routines. `ctoCopyName` gives the saved name.
 - `CtoSettingsPage.tsx` — the five-section settings page; `ctoSettingsUi.tsx` holds its shared pieces (`CTO_SETTINGS_GROUP`, `ByteMeter`, `AutosaveTextArea`).
 - `CtoMemoryPanel.tsx` — Settings › Memory: project notes, notes about the person, open work. `CtoPromptPreview.tsx` renders the assembled prompt in Instructions.
 - `apps/desktop/src/renderer/components/cto/avatar/CtoAvatar.tsx` — the character, with `apps/desktop/src/renderer/components/cto/avatar/ctoAvatarState.ts` (state derivation and the 1.4 s blips), `ctoAvatarLook.ts` (swatches, eye ink), `ctoAvatarShapes.ts` (the seven bodies) and `ctoAvatar.css` (all motion).
-- Hooks and helpers: `useCtoMemory.ts` (notes and open work on the home machine), `useCtoActivityData.ts` (children, PRs, proof), `useCtoLiveState.ts` (turn status and the live step), `useCtoModelOptions.ts` (eligible models and `CTO_ELIGIBLE_PROVIDERS_COPY`), `ctoSessionViewState.ts` (status phrase, panel memory, dock width), `ctoNavigation.ts` (opening a chat, PR or proof), `ctoLook.tsx` (the look outside the page), `ctoPage.css`.
+- Hooks and helpers: `useCtoMemory.ts` (notes and open work on the home machine), `useCtoActivityData.ts` (children, the "Waiting on you" lines, PRs, proof), `useCtoLiveState.ts` (turn status and the live step), `useCtoModelOptions.ts` (eligible models and `CTO_ELIGIBLE_PROVIDERS_COPY`), `ctoSessionViewState.ts` (status phrase, panel memory, dock width), `ctoNavigation.ts` (opening a chat, PR or proof), `ctoLook.tsx` (the look outside the page), `ctoPage.css`.
 
 ### Calm chat (`apps/desktop/src/renderer/components/chat/cto/`)
 
 - `CtoWorkingLine.tsx` — the live turn as one line: 16 px working avatar, latest step, elapsed time, expandable steps and raw tool calls.
 - `CtoToolChips.tsx` — the quiet state-change chips, and `CtoFreshContextDivider`, the hairline the `cto_context_refreshed` notice becomes.
+- `CtoSpawnRows.tsx`, `ctoSpawnRules.ts` — the spawn rows: "Started a new task" per child chat and the "N background tasks" group, and which spawns are tasks or helpers.
 - `ctoToolWords.ts` — the pure words: which tools draw chips, the chip verbs (including their failure forms), and the step phrases the working line and panel use (`ctoStepWords`, `ctoLatestStepWords`, `ctoStepList`).
 - `ctoChat.css` — their styles.
 - `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` — chooses the calm rendering when the session's `presentation.profile` is `persistent_identity`.
@@ -295,6 +299,30 @@ A new home takes the copy when it moves in (`adopt`): the notes, open work and i
 
 The CTO session is pinned to the project's primary lane (the main checkout), and its own work never runs there. `spawnChat` without a `laneId` creates a fresh lane for the work, in-process and over the MCP bridge alike (`createCtoExecutionLaneResolver`); an explicit `laneId` is honoured when the person named an existing lane. A local spawn onto the main checkout is refused unless `permissionMode` is `plan`, so only a read-only helper runs there. On another machine, `machine` names where the lane and its chat live, and a one-time check-in wakes the CTO when that child should report. A finished child comes back as one line — its title, provider, outcome and PR if there is one — never a pasted transcript.
 
+### Stuck children and "Waiting on you"
+
+The CTO wakes on its own for a person's message, a child's finished turn and a schedule. A child that then sits still reaches nobody, so the brain runs a stall judge over the CTO's children (`services/cto/ctoStallJudge.ts`; `services/cto/ctoStallJudgeHost.ts` reads the children out of `agentChatService` and answers `setNeed` and `getNeeds`). It reads each child's summary, its pending card and its lane's PR row (`prService.getForLane`, the cached row, never a GitHub call), and calls a child stuck when it has been:
+
+| Stuck on | After |
+| --- | --- |
+| a question or a permission prompt | 2 min |
+| idle after its turn, with a PR that has conflicts, failing checks, requested changes or is behind its base | 3 min |
+| idle with a PR ready to merge or test | 3 min |
+| idle with no PR | 3 min |
+| mid-turn with no output (a hung turn) | 20 min |
+
+"Moved" means the child's last output (`terminal_sessions.last_output_at`, else its start), the start of the turn it runs now, or its last failed turn, whichever is latest; a turn that starts after a long pause is not hung, and a retried turn that fails before any output is still a move. A card that came up with no output since waits from when the judge first saw it.
+
+A child that is quiet on purpose is left alone: settled, snoozed, archived, parked at a usage limit, waiting on its own background work, a schedule or a PR watch. So is a stall that began more than a day ago.
+
+The CTO then gets one wake that opens with `Stall nudge:`, names each stuck chat, what it waits on and for how long, and quotes its last message. It carries `hostContinuation.reason: "cto_stall_nudge"`, so it does not clear the CTO's own "Needs you". Each stall is told once: its key is the child, what it waits on (for a card, the card's saved `pendingInputItemId`, so a restart or loading the chat reads the same key) and when it last moved, kept in `cto:stall-nudges:v1` across restarts. A child that moves and stalls again is a new stall. Nudges to one CTO are at least 5 minutes apart (the last one's time is kept in `cto:stall-last-nudge:v1`, so a restart keeps the gap), at most 5 stalls each; the rest ride the next one. A nudge waits while the CTO is mid-turn or waiting on the person; a nudge the CTO refused is offered again after the gap. On the first run after an upgrade the judge records what is already stuck and tells no one, and that baseline holds until a pass could list every CTO and its children. The CTO list is read once and joined with the loaded CTO chats, so a pass never summarizes the whole chat list. A CTO that another live brain runs is that brain's to judge.
+
+The doctrine says what to do with a nudge: fix what is not the person's call by steering the chat, answer from what the person already said, or else `setNeed(sessionId, line)`. That line is a row on the **Waiting on you** card at the foot of the CTO chat, above the composer, on desktop, the hosted web client and iOS. A row opens its chat on the CTO's machine. A need holds while it is newer than the child's last move, so it clears itself when the child moves; a need set while the child waited on a card also clears once that card is answered. `line: null` clears it at once. A need whose child cannot be read stays (with the title saved when it was set) and is dropped only once a read says the chat is gone, archived or moved. A child with a live need is not nudged again for that stall. Clients read the card with `cto.getNeeds`, which needs no slot of its own: desktop and web read it with the side panel's child roster (chat events for the CTO and its children, plus the 60 s safety read), and iOS on appear, foreground, CTO events and every 60 s while the CTO chat is on screen. The card shows 3 rows, then "+N more", which opens the rest in place in a list that scrolls past a few rows. It hides while the CTO is asleep. A read that fails before any succeeded shows "Couldn't load what's waiting on you" with Retry (desktop: the inline `Banner`, with the error in its report); known lines stay on a later failure. On the web client a host that has `cto.getNeeds` answers authoritatively, so a failed read is a failure, not an empty card; only an older host reads empty. iOS asks the CTO's home machine whether it has `cto.getNeeds` and clears the lines when the CTO or its home changes.
+
+The brain reports two coarse facts (`docs/logging.md`, "The CTO's stall judge"): a nudge sent or refused, and a line set.
+
+Scope: children on the CTO's own machine. A chat the CTO starts on another machine has no parent link there and keeps its one-time check-in.
+
 ## The page
 
 `/cto` is one thread, not a tab bar.
@@ -324,6 +352,7 @@ The CTO thread is drawn differently from every other chat, keyed on `presentatio
 
 - **One working line.** During a live turn, the tool and work rows collapse into `CtoWorkingLine`: a 16 px working avatar, the latest step in plain words ("Checking PR #12", "Reading a chat", "Starting a chat on Codex"), and the elapsed time. Click it to see every step; a second click shows the raw tool calls. When the turn ends, the normal turn fold takes over.
 - **Quiet chips.** A finished call to a state-changing tool draws a chip instead of a tool row: Scheduled · `<title>`, Cancelled · `<title>`, Paused / Resumed · `<title>`, Remembered · `<note>`, Forgot · `<note>`, Tracking · `<text>`, Done · `<text>`. A failed call says "Couldn't schedule" and so on. A call still running draws nothing here, because the working line names it.
+- **Spawn rows.** What the CTO starts draws as quiet rows, not subagent cards (`CtoSpawnRows.tsx`, `ctoSpawnRules.ts`; iOS `CtoSpawnRowsView`). A child chat for real work is one row per spawn, "Started a new task", the child's provider avatar and its current title; clicking it opens that chat in the Work tab, on its machine. A chat started on another machine draws the same row from the `spawnChat` result, with "on <machine>"; a chat on ADE Cloud always says "on ADE Cloud", never the name of its own computer. Both open through the Work list, which knows that machine's chats; on iOS a chat the phone does not list yet says so instead of opening on the wrong machine. A spawn that failed draws a "Couldn't start · <title>" chip. A read-only helper chat (`spawnChat` with `permissionMode "plan"`, flagged `readOnly` on its `subagent_started`) and a provider's native subagent (Claude `Agent`/`Task`, Codex `spawn_agent`, OpenCode and Cursor `task`, Cursor `subagent`; never an MCP tool of the same name) join one "N background tasks" row per run of spawns, with a running / failed / stopped / done summary; it opens to list each helper. A helper chat opens from there; a native subagent opens its transcript (desktop) or its result in Chat Info (iOS), and a running one has a Stop button. A run of stopped children stays spawn rows, not a stopped-group card. The spawn calls themselves leave the turn's tool list once they finish. A chat child's `subagent_result` lands in the CTO thread too, and a later turn of that child sends a resumed `subagent_started`, so its row reads running again and then settles; its summary is never drawn, only the one `spawn_completed` report line. When a child's first start is in an older page, desktop draws no row for its later turn (the report line stands for it); iOS turns that report into the result, so its row says "Finished", "Failed", "Stopped" or "Working on" instead of "Started a new task".
 - **Reactions and quiet turns.** A `react` draws a small emoji badge on the person's bubble (`UserMessageReaction` in `AgentChatMessageList.tsx`; iOS `WorkUserMessageReactionBadge`), folded in by `attachUserMessageReaction` in `chatTranscriptRows.ts` (iOS `WorkChatMessageFold`). A turn ended with `noReply` or `react` shows only its footer.
 - **Fresh context.** The `cto_context_refreshed` notice is a hairline divider labelled "Fresh context", not a card.
 
@@ -347,7 +376,7 @@ A project with no model picked shows `CtoWelcome` instead of the thread: the big
 
 Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached as `window.ade.cto.*`. Every call that acts on the CTO takes a `pin` and routes to the CTO's home machine.
 
-- Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
+- Thread and identity: `ctoGetState`, `ctoGetAttention`, `ctoGetNeeds`, `ctoEnsureSession`, `ctoUpdateIdentity`, `ctoPreviewSystemPrompt`, `ctoRefreshContext`, `ctoRunProjectScan`.
 - Memory: `ctoGetMemory`, `ctoUpdateNotes`, `ctoUpdateOpenWork`.
 - Onboarding markers: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`.
 - Linear reads, credentials and OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoGetLinearIssue`, `ctoCreateLinearIssue`, `ctoCreateLinearIssueComment`, `ctoCountLinearIssues`, `ctoGetLinearCustomViews`, `ctoGetLinearIssueCreateOptions`, `ctoListLinearProjectMilestones`, `ctoUploadLinearFile`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
@@ -363,6 +392,7 @@ Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syn
 - `cto.ensureSession`, `cto.getState`, `cto.updateIdentity`.
 - `cto.getHomeMachine`, `cto.setHomeMachine` — which machine owns this project's CTO.
 - `cto.getAttention` — the mobile attention probe. Read-only: it delegates to `getCtoAttention()` and never materializes a session.
+- `cto.getNeeds` — the "Waiting on you" lines (`CtoNeedsSnapshot`). Read-only and optional: an older brain has none, and clients show no card.
 - `cto.getMemory` — the `CtoMemorySnapshot`.
 - `cto.updateNotes` — the notes write, with optional `baseHash`; not queueable. `cto.updateOpenWork` — the queueable open-work write. Both are used by the hosted web client.
 - `cto.refreshContext` — the hosted web client's "Refresh context".

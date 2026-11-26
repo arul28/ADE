@@ -926,6 +926,14 @@ struct WorkChatSessionView: View {
   /// `chat.continueUsageLimitOnAlternate` — starts the task on another account.
   var onContinueUsageLimitOnAlternate: (@MainActor () async -> Void)? = nil
   var onStopSubagentTask: (@MainActor (String) async -> Void)? = nil
+  /// Opens a spawned child chat on its machine; the CTO thread's spawn rows use it.
+  var onSelectSubagent: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Opens a chat the CTO started on another machine or ADE Cloud.
+  var onOpenRemoteSpawnedChat: (@MainActor (CtoRemoteSpawn) -> Void)? = nil
+  /// Opens Chat Info on a native subagent's detail (its result); the CTO's background-tasks row uses it.
+  var onOpenSubagentDetail: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// A spawned child chat's current title (renamed or auto-titled), when a list knows it.
+  var childChatTitle: (@MainActor (String) -> String?)? = nil
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   /// Approve a Codex plan and implement it in a chat of its own. Nil when this
   /// screen's host cannot offer it; the plan card then shows Approve alone.
@@ -1085,6 +1093,9 @@ struct WorkChatSessionView: View {
   /// changes instead of the turn-end line, one working line while it runs.
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
+  /// The CTO thread's "Waiting on you" card shows (it stands above the pill
+  /// row, so the jump-to-latest button keeps a row of its own).
+  @State var ctoNeedsShown = false
   /// Messages ADE Cloud holds for this chat while its computer is asleep:
   /// drawn after the transcript as the person's own messages, with the
   /// working line while the server moves them. Nil for any other chat.
@@ -2642,6 +2653,11 @@ struct WorkChatSessionView: View {
         .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
+      if ctoLive != nil {
+        // The CTO's children that need the person ("Waiting on you").
+        CtoWaitingOnYouSlot()
+      }
+
       if pillRow.shown {
         composerPillRow(noticeInline: pillRow.noticeInline)
           .transition(.opacity)
@@ -2792,6 +2808,13 @@ struct WorkChatSessionView: View {
       }
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
+    // CTO thread only (no-op elsewhere): keeps "Waiting on you" fresh.
+    .ctoNeedsFeed(
+      sessionId: session.id,
+      turnActive: isStreamingTurn,
+      eventToken: transcript.count,
+      shown: $ctoNeedsShown
+    )
     // Whether the sign-in card stands in for the composer before a send.
     .task(id: providerSignInStatusKey) {
       await refreshProviderSignedOutBeforeSend()
@@ -3145,6 +3168,7 @@ struct WorkChatSessionView: View {
   /// Something stands between the thread and the pill row.
   func composerHasBanners(queueRecovery: WorkQueueRecoveryModel?) -> Bool {
     if composerGoal != nil || !pendingSteers.isEmpty || primaryPendingInput != nil { return true }
+    if ctoNeedsShown { return true }
     if queueRecovery != nil && onRestoreCancelledQueue != nil { return true }
     let context = chatSummaryContext
     if context.usageLimitResume != nil { return true }

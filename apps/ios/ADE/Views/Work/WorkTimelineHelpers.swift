@@ -175,6 +175,7 @@ struct WorkTimelineSignatureFold {
     combineOptional(envelope.subagentProvider, into: &hasher)
     combineOptional(envelope.subagentCommand, into: &hasher)
     combineOptional(envelope.subagentSpawnKind.map { String(describing: $0) }, into: &hasher)
+    hasher.combine(envelope.subagentReadOnly == true)
     combineOptional(envelope.subagentParentAgentId, into: &hasher)
     hasher.combine(envelope.subagentSpawnDepth ?? Int.min)
     hasher.combine(envelope.subagentResourceLinks)
@@ -1038,13 +1039,15 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        readOnly: envelope.subagentReadOnly == true || existing?.readOnly == true,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
         stopSource: resumed ? nil : existing?.stopSource,
         stopReason: resumed ? nil : existing?.stopReason,
         resultLanded: resumed ? false : existing?.resultLanded ?? false,
-        lastActivity: resumed ? nil : existing?.lastActivity
+        lastActivity: resumed ? nil : existing?.lastActivity,
+        startNotLoaded: existing?.startNotLoaded ?? resumed
       ), order: resolved.order)
     case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
@@ -1071,13 +1074,15 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        readOnly: envelope.subagentReadOnly == true || existing?.readOnly == true,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
         stopSource: existing?.stopSource,
         stopReason: existing?.stopReason,
         resultLanded: existing?.resultLanded ?? false,
-        lastActivity: preferredWorkSubagentSummary(existing?.lastActivity, incoming: summary)
+        lastActivity: preferredWorkSubagentSummary(existing?.lastActivity, incoming: summary),
+        startNotLoaded: existing?.startNotLoaded ?? true
       ), order: resolved.order)
     case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
       let normalized = workSubagentStatus(from: status)
@@ -1105,13 +1110,15 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
         spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind,
+        readOnly: envelope.subagentReadOnly == true || existing?.readOnly == true,
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
         stopSource: trimmedWorkSubagentText(envelope.stopSource) ?? existing?.stopSource,
         stopReason: trimmedWorkSubagentText(envelope.stopReason) ?? existing?.stopReason,
         resultLanded: resultLanded,
-        lastActivity: filteredWorkSubagentLastActivity(existing?.lastActivity, description: description)
+        lastActivity: filteredWorkSubagentLastActivity(existing?.lastActivity, description: description),
+        startNotLoaded: existing?.startNotLoaded ?? true
       ), order: resolved.order)
     default:
       break

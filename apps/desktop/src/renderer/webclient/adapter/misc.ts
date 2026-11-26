@@ -12,6 +12,7 @@ import {
   type CloudAgentOpenResult,
   type CloudAgentRef,
   type CtoAttentionState,
+  type CtoNeedsSnapshot,
   type CtoSnapshot,
   type CtoMemorySnapshot,
   type CtoPreviewSystemPromptArgs,
@@ -1106,7 +1107,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
-    cto: createCtoNamespace(call, infra),
+    cto: createCtoNamespace(call, infra, commands),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -1258,6 +1259,7 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getLinearOAuthSession: 1,
   runProjectScan: 0,
   getAttention: 0,
+  getNeeds: 0,
   adoptAccountCopy: 1,
   getAccountCopyStatus: 0,
 };
@@ -1265,6 +1267,7 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
 function createCtoNamespace(
   call: MiscCall,
   scope: RuntimePinScope,
+  commands: AdapterInfra["commands"],
 ): NonNullable<Window["ade"]["cto"]> {
   return guardPinnedMembers<NonNullable<Window["ade"]["cto"]>>({
     getState: () => call<CtoSnapshot>(
@@ -1288,6 +1291,12 @@ function createCtoNamespace(
       {},
       { status: "unknown", awaitingInput: false, since: null },
     ),
+    // An older host has no needs: no card, never an error. A host that has
+    // them and cannot answer rejects, so the card keeps its lines or says it
+    // couldn't load instead of showing nothing waiting.
+    getNeeds: async () => (commands.hasAction("cto.getNeeds")
+      ? await commands.call<CtoNeedsSnapshot>("cto.getNeeds", {}, { fallback: { needs: [] }, authoritative: true })
+      : { needs: [] }),
     getMemory: () => call<CtoMemorySnapshot>(
       "cto.getMemory",
       {},

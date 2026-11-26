@@ -788,8 +788,9 @@ move keeps the old disk.
 ### Sponsored cards and the Index (Free, behind a switch)
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`;
-who is told, asked and how a no holds in `sponsoredConsent.ts`;
-migrations `0054`, `0055`, `0056`, `0062`, `0064`). The account server decides everything and holds the partner
+who is told, asked and how a no holds in `sponsoredConsent.ts`; the ad switches in
+`sponsoredSwitch.ts`; what Free's Small costs in `sponsoredSmall.ts`;
+migrations `0054`, `0055`, `0056`, `0062`, `0064`, `0065`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
 under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard
@@ -871,7 +872,21 @@ card, whatever the plan.
   still asks for the card without it. Desktop and web always send it.
 - **Small needs cards on Free** (part of the ad switch, no switch of its
   own): a Free account the ad switch reaches runs Small without hours only
-  while it said yes. A no or no answer runs Small at half a Medium-hour an hour
+  in the US (`SMALL_FREE_COUNTRY`): while it said yes and someone opened one
+  of its ADE Cloud chats or terminals from the US in the last 7 days
+  (`src/cloud/sponsoredSmall.ts`: `SMALL_FREE_LOOK_MS`, plus the hour
+  `looked_at` may trail the last look; `cloud_sponsored_consent.looked_at`,
+  set by a yes from the US and refreshed by `/cloud/sponsored/seen` from the
+  US at most hourly, never moved back, migration `0065`). A yes from
+  elsewhere keeps the US look the row holds. Cards still show in Gravity's
+  other countries, but Small uses credits there once the week since the
+  last US look is over. Past the week (away, or a yes given once through a
+  VPN) Small uses credits until the next such look; the minute tick re-rates
+  the lapse, and the apps read the account again after an answer or a look
+  that may have moved Small's rate. The account state, read from where the
+  person is, says `smallNeedsLook` (in the US) or `smallOutsideUS`
+  (elsewhere, once no US look keeps Small free; sent instead of
+  `smallNeedsCards`, so the question offers no free Small there). A no or no answer runs Small at half a Medium-hour an hour
   (`SMALL_NO_CARDS_RATE_MILLI`, set on the computer row by `syncSmallRates`; the
   account's catalog shows Small at that rate). A no is asked again two weeks
   later (`SPONSORED_REASK_MS`), and at once when it came before the ad switch

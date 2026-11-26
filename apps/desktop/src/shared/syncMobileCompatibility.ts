@@ -120,6 +120,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // it must ask. Optional so a phone on a newer build simply never lights the
   // dot against an older brain.
   "cto.getAttention",
+  // The CTO's "Waiting on you" lines. Optional: an older brain has none, and
+  // the phone then shows no card.
+  "cto.getNeeds",
   // "Update & restart" for this machine, the phone's twin of the desktop's
   // button (`machineUpdateRemoteCommands.ts`). Optional: a phone keeps
   // "Update ADE on that computer" against a brain that predates them.

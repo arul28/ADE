@@ -177,10 +177,21 @@ final class CtoStore: ObservableObject {
   @Published var ctoSession: AgentChatSessionSummary?
   /// Bumps on every successful settings write, for the quiet "Saved".
   @Published var savedTick = 0
+  /// Chats the CTO started that need the person, oldest first
+  /// (`cto.getNeeds`). Empty on an older brain.
+  @Published var needs: [CtoNeed] = []
+  /// The needs read failed and none has succeeded for this CTO yet: the card
+  /// says it couldn't load, rather than showing nothing waiting.
+  @Published var needsFailed = false
 
   let isFixture: Bool
   private(set) var sessionId: String?
   private var homeMachineKey: String?
+  private var needsTask: Task<Void, Never>?
+  private var lastNeedsFetchAt: Date?
+  private var needsLoaded = false
+  /// Bumps when the CTO or its home changes: a read started before is dropped.
+  private var needsGeneration = 0
 
   private var sync: SyncService? { isFixture ? nil : SyncService.shared }
 
@@ -193,7 +204,8 @@ final class CtoStore: ObservableObject {
     fixtureMemory: CtoMemory?,
     routines: [AgentChatScheduledWorkItem] = [],
     children: [CtoChildRow] = [],
-    library: [CtoLibraryItem] = []
+    library: [CtoLibraryItem] = [],
+    needs: [CtoNeed] = []
   ) {
     isFixture = true
     snapshot = fixtureSnapshot
@@ -204,12 +216,23 @@ final class CtoStore: ObservableObject {
     self.children = children
     self.library = library
     libraryLoaded = true
+    self.needs = needs
     sessionId = "fixture-cto"
   }
 
   func bind(sessionId: String?, homeMachineKey: String?) {
+    let changed = sessionId != self.sessionId || homeMachineKey != self.homeMachineKey
     self.sessionId = sessionId
     self.homeMachineKey = homeMachineKey
+    // Another CTO or home: the old home's lines are not this one's.
+    if changed, !isFixture {
+      needsGeneration += 1
+      needsTask = nil
+      lastNeedsFetchAt = nil
+      needsLoaded = false
+      if !needs.isEmpty { needs = [] }
+      if needsFailed { needsFailed = false }
+    }
   }
 
   // MARK: Capabilities (an older host hides the control)
@@ -376,6 +399,68 @@ final class CtoStore: ObservableObject {
     }
     library = items.sorted { $0.at > $1.at }
     libraryLoaded = true
+  }
+
+  /// Reads what the CTO's children need from the person. Coalesced: one read
+  /// at a time, and at most one every few seconds unless `force`. A failure
+  /// keeps the last answer; an older brain clears it and shows no card.
+  func loadNeeds(force: Bool = false) async {
+    guard let sync else { return }
+    // Asked of the CTO's home machine, which answers the read; unknown while
+    // that machine is away, so the last answer stays.
+    switch sync.ctoHomeSupportsAction("cto.getNeeds") {
+    case .none: return
+    case .some(false):
+      if !needs.isEmpty { needs = [] }
+      if needsFailed { needsFailed = false }
+      return
+    case .some(true): break
+    }
+    if let joined = needsTask {
+      await joined.value
+      // A forced read wants an answer from after its cause (a turn that just
+      // ended); the read it joined may have started before that. A newer read
+      // another caller started since is fresh enough.
+      guard force else { return }
+      if let newer = needsTask, newer != joined {
+        await newer.value
+        return
+      }
+    }
+    if !force, let last = lastNeedsFetchAt, Date().timeIntervalSince(last) < 5 { return }
+    lastNeedsFetchAt = Date()
+    let generation = needsGeneration
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      let next = try? await sync.fetchCtoNeeds()
+      // Started for another CTO or home: drop it.
+      guard generation == self.needsGeneration else { return }
+      guard let next else {
+        // Known lines stay on a failed read; only a card that never loaded says so.
+        if !self.needsLoaded, !self.needsFailed { self.needsFailed = true }
+        return
+      }
+      self.needsLoaded = true
+      if self.needsFailed { self.needsFailed = false }
+      // Published only when the answer changed.
+      if next.needs != self.needs { self.needs = next.needs }
+    }
+    needsTask = task
+    await task.value
+    if needsTask == task { needsTask = nil }
+  }
+
+  /// Opens the child chat a need is about, the way the profile's child rows
+  /// do: on the CTO's home machine.
+  func openNeed(_ need: CtoNeed) {
+    guard let sync else { return }
+    var laneId = need.laneId
+    // A home on another machine lists its lanes under namespaced ids, which
+    // is what the profile's child rows carry.
+    if let raw = laneId, !isWorkRemoteLaneId(raw), let repo = try? sync.ctoCommandTarget().repo {
+      laneId = workRemoteLaneId(machineKey: repo.machineKey, laneId: raw)
+    }
+    openChat(need.childSessionId, laneId: laneId)
   }
 
   // MARK: Routines
@@ -559,7 +644,7 @@ final class CtoStore: ObservableObject {
 
   // MARK: Navigation (on the CTO's home machine)
 
-  func openChat(_ sessionId: String, laneId: String) {
+  func openChat(_ sessionId: String, laneId: String?) {
     guard let sync else { return }
     sync.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
       sessionId: sessionId,

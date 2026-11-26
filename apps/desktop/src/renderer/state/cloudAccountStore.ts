@@ -77,30 +77,34 @@ export function noteCloudSponsoredState(next: CloudSponsoredState | null | undef
  * Saves the account's answer on the server, then every surface here sees it. Throws when it couldn't save.
  * `confirmed`: a yes the person confirmed a second time (`turnOnSponsoredCards`).
  */
+/** Reads the account again, for a rate the server just moved. (Lazy: the shared list's module imports this one.) */
+export function refreshCloudAccount(): void {
+  void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
+}
+
 export async function setCloudSponsoredConsent(consent: CloudSponsoredChoice, confirmed = false, since = generation): Promise<void> {
   const set = window.ade?.cloud?.setSponsoredConsent;
   if (!set) throw new Error("ADE can't save that here.");
   // Asked of an account signed out since (a confirm stayed open meanwhile): not this account's answer.
   if (since !== generation) return;
   const current = generation;
-  const refresh = () => void import("../components/remoteTargets/useCloudMachines").then(({ refreshCloudMachines }) => refreshCloudMachines());
   let next: Awaited<ReturnType<typeof set>>;
   try {
     next = await set(consent, confirmed);
   } catch (error) {
     // A refusal often means this copy is stale (the answer changed on another device, or a yes
     // now needs the second confirm): read the account again so the next try asks right.
-    if (current === generation) refresh();
+    if (current === generation) refreshCloudAccount();
     throw error;
   }
   if (!next) throw new Error("ADE couldn't reach your account. Try again in a moment.");
   // Another account signed in meanwhile: this answer was the old account's.
   if (current !== generation) return;
   noteCloudSponsoredState(next);
-  // While Free's Small needs cards, the answer also moved Small's rate in the
-  // account's catalog: read the account again so Small's hours show it. (Lazy:
-  // the shared list's module imports this one.)
-  if (next.smallNeedsCards) refresh();
+  // Where Free's Small rule reaches the account, the answer may also have moved
+  // Small's rate in the account's catalog (here, or abroad within a week of a
+  // US look): read the account again so Small's hours show it.
+  if (next.smallNeedsCards || next.smallOutsideUS) refreshCloudAccount();
 }
 
 let noticeSave: Promise<void> | null = null;

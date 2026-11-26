@@ -4505,6 +4505,7 @@ export function AgentChatPane({
   emptyStateAccessory = null,
   emptyStateHero = null,
   emptyTranscript = null,
+  aboveComposer = null,
   ambientTurnContext,
 }: {
   laneId: string | null;
@@ -4638,6 +4639,8 @@ export function AgentChatPane({
   emptyStateHero?: React.ReactNode;
   /** Shown in an open chat that has no messages yet (the CTO says hi there). */
   emptyTranscript?: React.ReactNode;
+  /** A host's card above the composer, under ADE's own (the CTO's "Waiting on you"). */
+  aboveComposer?: React.ReactNode;
   ambientTurnContext?: () => string | null;
 }) {
   // The chat API this pane talks to. A ref so every callback below reads the
@@ -20175,16 +20178,17 @@ export function AgentChatPane({
     const tierRequests = selectedSessionId && cloudTierRequestCards.length > 0
       ? <CloudTierRequestsAboveComposer cards={cloudTierRequestCards} sessionId={selectedSessionId} />
       : null;
-    if (!cloudTray && !laneStatus && !tierRequests) return providerSignInSlot;
+    if (!cloudTray && !laneStatus && !tierRequests && !aboveComposer) return providerSignInSlot;
     return (
       <>
         {providerSignInSlot}
         {tierRequests}
         {cloudTray}
         {laneStatus}
+        {aboveComposer}
       </>
     );
-  }, [adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
+  }, [aboveComposer, adeCloudNotice, chatLaneJob, cloudTierRequestCards, openAdeCloudSettings, providerSignInSlot, selectedSessionId]);
   // Layout effect, not effect: this publishes the machine the model memos above
   // read from, so running it after paint would show one frame of the previous
   // machine's model list when the composer switches machines. Setting the same

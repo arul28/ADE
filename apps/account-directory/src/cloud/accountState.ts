@@ -1,5 +1,6 @@
 import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
-import { smallUsesNoHours, sponsoredAccountState } from "./gravity";
+import { sponsoredAccountState } from "./gravity";
+import { smallUsesNoHours } from "./sponsoredSmall";
 import { sponsoredRequester } from "./sponsoredConsent";
 import { timedWakesCancelledOf } from "./accountNotices";
 import type { CloudAccountState } from "./contract";

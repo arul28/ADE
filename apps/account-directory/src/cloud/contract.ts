@@ -3333,11 +3333,28 @@ export type CloudSponsoredState = {
   /** Gravity's test ads: nothing is paid or counted. True until go-live. */
   test: boolean;
   /**
-   * Free's Small computers are unlimited only while sponsored cards are on:
-   * a no (or no answer) has them use hours, at half a Medium-hour an hour.
-   * Absent while that rule is off. The question and Settings say so.
+   * Free's Small computers are unlimited only while sponsored cards are on,
+   * in the US: here a no (or no answer) has them use hours, at half a
+   * Medium-hour an hour. Also sent abroad while a US look in the last week
+   * still keeps Small free. Absent while that rule is off, on a paid plan,
+   * and otherwise outside the US (`smallOutsideUS`). The question and
+   * Settings say so.
    */
   smallNeedsCards?: boolean;
+  /**
+   * The account said yes, but neither that yes nor a look at one of its ADE
+   * Cloud chats (or terminals) came from the US in the last 7 days (plus
+   * the hour a look's save may lag; away, or a yes given from
+   * elsewhere): Small uses credits until the next such chat. Read in the US
+   * only. Settings says so. Absent otherwise.
+   */
+  smallNeedsLook?: boolean;
+  /**
+   * Free, read from outside the US, with Small not free now: cards keep
+   * Small free only in the US, so here it uses hours, cards or not. Settings
+   * says so; the question doesn't offer free Small. Absent otherwise.
+   */
+  smallOutsideUS?: boolean;
   /**
    * Where this account's cards show (`CloudSponsoredFormat`), as the server
    * assigns it. Absent (an older server): under the reply.

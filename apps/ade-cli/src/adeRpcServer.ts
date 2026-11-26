@@ -1576,6 +1576,19 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "setNeed",
+    description: "Put one line on the person's \"Waiting on you\" card for a chat you started that needs them (a merge to approve, a product call, a sign-in). It clears when that chat moves; line null clears it now.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId", "line"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        line: { anyOf: [{ type: "string", minLength: 1, maxLength: 400 }, { type: "null" }] }
+      }
+    }
+  },
+  {
     name: "listChats",
     description: "List ADE Work chat sessions available to the CTO.",
     inputSchema: {
@@ -1851,6 +1864,7 @@ const MUTATION_TOOLS = new Set([
   "replyNow",
   "noReply",
   "react",
+  "setNeed",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
   // A chat on another machine whose turn ended letting go of the devices it holds here.
@@ -5993,6 +6007,8 @@ async function runCtoOperatorBridgeTool(
     postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({ sessionId: ctoChatSessionId, text }),
     endTurnQuietly: async () => agentChatService.endCtoTurnQuietly({ sessionId: ctoChatSessionId }),
     reactToMessage: async ({ emoji }) => agentChatService.reactToCtoMessage({ sessionId: ctoChatSessionId, emoji }),
+    // Same caller as `replyNow`: the service refuses a chat this CTO did not start.
+    setNeed: ({ childSessionId, line }) => agentChatService.setCtoNeed({ ctoSessionId: ctoChatSessionId, childSessionId, line }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,

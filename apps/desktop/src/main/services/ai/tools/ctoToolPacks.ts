@@ -35,7 +35,7 @@ export type CtoToolPack = (typeof CTO_TOOL_PACK_NAMES)[number];
 
 /** One line per pack, reused verbatim by the capability manifest. */
 export const CTO_TOOL_PACK_SCOPES: Record<CtoToolPack, string> = {
-  core: "account machines and any ADE action on them, lanes, chats (on any machine), steering, session lifecycle, git, PRs, automations, handoff, memory, events, quick replies while you work (replyNow), ending a turn quietly (noReply) or with a reaction (react)",
+  core: "account machines and any ADE action on them, lanes, chats (on any machine), steering, session lifecycle, git, PRs, automations, handoff, memory, events, quick replies while you work (replyNow), ending a turn quietly (noReply) or with a reaction (react), the person's \"Waiting on you\" lines (setNeed)",
   linear: "Linear issues: read, comment, state, assignee, labels",
   files: "lane file workspaces: tree, read, text search, ADE source search",
   tests: "ADE test suites: list, run, stop, logs",
