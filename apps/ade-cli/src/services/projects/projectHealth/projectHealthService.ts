@@ -160,12 +160,22 @@ export const PROJECT_HEALTH_IGNORED_KV_KEY = "project_health.ignored";
 /** A list that only grows with clicks; the cap keeps a runaway caller from bloating the row. */
 const MAX_IGNORED = 200;
 
-/** A line's identity for "hide until it changes": its id, title and items. */
-export function projectHealthIssueFingerprint(issue: Pick<ProjectHealthIssue, "id" | "title" | "items">): string {
+/**
+ * A line's identity for "hide until it changes": its id, title, items and
+ * the folders it names (a title can say "3 folders" while one of them is
+ * swapped for another). Separators are `/` on every OS, so a Mac copy and a
+ * Windows copy of one project agree on the same line.
+ */
+export function projectHealthIssueFingerprint(issue: Pick<ProjectHealthIssue, "id" | "title" | "items" | "ignorablePaths">): string {
   return createHash("sha256")
-    .update([issue.id, issue.title, ...(issue.items ?? [])].join("\n"))
+    .update(projectHealthIssueText(issue))
     .digest("hex")
     .slice(0, 16);
+}
+
+/** The words a hide compares: the fingerprint's input, and the line the person saw. */
+function projectHealthIssueText(issue: Pick<ProjectHealthIssue, "id" | "title" | "items" | "ignorablePaths">): string {
+  return [issue.id, issue.title, ...(issue.items ?? []), "--", ...(issue.ignorablePaths ?? [])].join("\n").replace(/\\/g, "/");
 }
 
 /**
@@ -1199,7 +1209,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       if (issue.severity === "problem") throw new Error("A problem stays in view until it is fixed.");
       if (isProjectHealthReadFailure(issueId)) throw new Error("A check that couldn't run stays in view until it runs.");
       const seen = args.seen;
-      if (seen && (seen.title !== issue.title || (seen.items ?? []).join("\n") !== (issue.items ?? []).join("\n"))) {
+      if (seen && projectHealthIssueText({ id: issue.id, title: seen.title, items: seen.items, ignorablePaths: seen.ignorablePaths }) !== projectHealthIssueText(issue)) {
         throw new Error("This line changed since you looked. Check it again, then hide it.");
       }
       const key = projectHealthIgnoreKey(issueId);

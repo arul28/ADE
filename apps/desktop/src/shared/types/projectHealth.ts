@@ -83,7 +83,7 @@ export type ProjectHealthIgnoreArgs = {
    * differently, so a line that grew while the page was open is never
    * hidden unseen. Omitted by older clients.
    */
-  seen?: { title: string; items?: string[] } | null;
+  seen?: { title: string; items?: string[]; ignorablePaths?: string[] } | null;
 };
 
 export type ProjectHealthUnignoreArgs = {

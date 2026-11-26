@@ -10,7 +10,7 @@ import { hideUntilChangedChoice, IgnoreButton, IgnoredList, useProjectIgnore, ty
 import type { SettingsTabId } from "../settingsManifest";
 // Read only while rendering, so the import cycle with the tab table is safe.
 import { STANDALONE_TAB_IDS } from "../settingsTabContent";
-import { attentionAgentPrompt, attentionLines, canHideAttention, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
+import { attentionAgentPrompt, attentionHideId, attentionLines, canHideAttention, type AttentionItem, type useNeedsAttention } from "../overview/useNeedsAttention";
 import "../health/health.css";
 import "../overview/overview.css";
 
@@ -146,7 +146,7 @@ export function NeedsAttentionStrip({
         id: "settings-attention-hide",
         tone: "success",
         title: "Hidden until it changes",
-        actions: [{ label: "Undo", onClick: () => attention.unhide(item.id) }],
+        actions: [{ label: "Undo", onClick: () => attention.unhide(attentionHideId(item)) }],
       });
     })];
   };

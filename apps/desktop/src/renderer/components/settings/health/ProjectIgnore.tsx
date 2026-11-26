@@ -83,7 +83,7 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
       const report = await window.ade.projectHealth.ignore({
         issueId: issue.id,
         // A folder is ignored by name; a hidden line must still read as it did on screen.
-        ...(folder ? { path: folder } : { seen: { title: issue.title, items: issue.items ?? [] } }),
+        ...(folder ? { path: folder } : { seen: { title: issue.title, items: issue.items ?? [], ignorablePaths: issue.ignorablePaths ?? [] } }),
       }, pin);
       onReport(report);
       const key = projectHealthIgnoreKey(issue.id, folder);
@@ -250,6 +250,10 @@ export function IgnoreButton({ choices, subject, disabled }: { choices: readonly
 export function IgnoredList({ entries, busy, defaultOpen = false }: { entries: readonly IgnoredEntry[]; busy?: boolean; defaultOpen?: boolean }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const listId = React.useId();
+  // Hiding the last row on show leaves only this list: open it, so the way back is in view.
+  React.useEffect(() => {
+    if (defaultOpen) setOpen(true);
+  }, [defaultOpen]);
   if (entries.length === 0) return null;
   return (
     <div className="ade-ignored" data-open={open || undefined}>
