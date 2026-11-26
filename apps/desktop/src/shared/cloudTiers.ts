@@ -120,6 +120,56 @@ export function cloudTierRateLabel(tier: Pick<CloudTier, "multiplierMilli">, wor
   return words.rate(tier.multiplierMilli / 1000);
 }
 
+const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
+
+/**
+ * A size change's rates, now → after, in one line: "4 credits an hour now →
+ * 1 credit an hour on Medium", "No credits now → 1 credit an hour on Medium".
+ * With no size now: "1 credit an hour on Medium"; the size it is already:
+ * "Medium now · 1 credit an hour". The desktop's size card and ADE Web use
+ * it; the phone writes the same (`CloudBalanceWords.changeRates`).
+ */
+export function cloudTierChangeRateText(
+  from: Pick<CloudTier, "id" | "multiplierMilli"> | null,
+  to: Pick<CloudTier, "id" | "label" | "multiplierMilli">,
+  words: CloudUnitWords = CLOUD_CREDIT_WORDS,
+): string {
+  const after = words.hourly(to.multiplierMilli / 1000);
+  if (!from) return capitalized(`${after} on ${to.label}`);
+  if (from.id === to.id) return `${to.label} now · ${after}`;
+  return `${capitalized(words.hourly(from.multiplierMilli / 1000))} now → ${after} on ${to.label}`;
+}
+
+/**
+ * An agent's size request, in its card's size row: "1 credit an hour on
+ * Medium (4 now)", "No credits on Small (1 now)", "1 credit an hour on
+ * Medium (none now)"; with no size now, "1 credit an hour on Medium".
+ */
+export function cloudTierRequestRateText(
+  from: Pick<CloudTier, "multiplierMilli"> | null,
+  to: Pick<CloudTier, "label" | "multiplierMilli">,
+  words: CloudUnitWords = CLOUD_CREDIT_WORDS,
+): string {
+  const after = capitalized(`${words.hourly(to.multiplierMilli / 1000)} on ${to.label}`);
+  if (!from) return after;
+  const now = from.multiplierMilli > 0 ? Number((from.multiplierMilli / 1000).toFixed(2)).toLocaleString("en-US") : "none";
+  return `${after} (${now} now)`;
+}
+
+/**
+ * How long the credits left last at the new size: "418 credits last about
+ * 418 h on Medium."; null on a size that never uses them.
+ */
+export function cloudTierHoursOnText(
+  to: Pick<CloudTier, "label" | "multiplierMilli">,
+  leftMilli: number,
+  words: CloudUnitWords = CLOUD_CREDIT_WORDS,
+): string | null {
+  if (!cloudTierUsesHours(to)) return null;
+  const left = words.milli(leftMilli);
+  return `${left} ${left.endsWith(" credit") ? "lasts" : "last"} about ${cloudTierHoursAt(to, leftMilli)} on ${to.label}.`;
+}
+
 /** Whether this size uses the plan's hours: every size but Small, and Small too when the account's catalog rates it (Free, sponsored cards off). */
 export function cloudTierUsesHours(tier: Pick<CloudTier, "multiplierMilli">): boolean {
   return tier.multiplierMilli > 0;

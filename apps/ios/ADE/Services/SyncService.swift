@@ -3888,6 +3888,32 @@ func syncNormalizedProjectRootScope(_ rootPath: String?) -> String? {
   return root
 }
 
+/// The project a command names to the host. A machine-wide action names
+/// none, unless it is asked to keep a project it names (a chat's card read in
+/// that chat's project), and then only that one, never the active one. Else
+/// `targetProjectId` lets a command act in a NON-active project (mobile hub
+/// composer): the host routes it to that project's scope without switching the
+/// phone's active project. Most callers default to the active project; shell
+/// launches opt out when the selected lane has no trustworthy project scope.
+func syncCommandProjectScope(
+  actionIsRuntimeScoped: Bool,
+  keepsProjectForRuntimeAction: Bool,
+  fallbackToActiveProjectScope: Bool,
+  targetProjectId: String?,
+  targetProjectRootPath: String?,
+  activeProjectId: String?,
+  activeProjectRootPath: String?
+) -> (runtimeScoped: Bool, projectId: String?, rootPath: String?) {
+  let namesProject = syncNormalizedCommandScopeValue(targetProjectId) != nil
+  let runtimeScoped = actionIsRuntimeScoped && !(keepsProjectForRuntimeAction && namesProject)
+  if runtimeScoped { return (true, nil, nil) }
+  guard fallbackToActiveProjectScope else { return (false, targetProjectId, targetProjectRootPath) }
+  // The active project's root only stands in for the active project itself:
+  // another target project with no root sends none.
+  let activeRootFallback = (!namesProject || targetProjectId == activeProjectId) ? activeProjectRootPath : nil
+  return (false, targetProjectId ?? activeProjectId, targetProjectRootPath ?? activeRootFallback)
+}
+
 func syncCommandEnvelopePayload(
   commandId: String,
   action: String,
@@ -25857,6 +25883,7 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
+    keepsProjectForRuntimeAction: Bool = false,
     as type: T.Type
   ) async throws -> T {
     let response = try await sendCommand(
@@ -25866,7 +25893,8 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: timeoutNanoseconds,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
-      fallbackToActiveProjectScope: fallbackToActiveProjectScope
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+      keepsProjectForRuntimeAction: keepsProjectForRuntimeAction
     )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
@@ -26239,7 +26267,8 @@ final class SyncService: ObservableObject {
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath rawTargetProjectRootPath: String? = nil,
-    fallbackToActiveProjectScope: Bool = true
+    fallbackToActiveProjectScope: Bool = true,
+    keepsProjectForRuntimeAction: Bool = false
   ) async throws -> Any {
     // Field diagnostics: one line per host command (name and round trip), so
     // a screen's request fan-out can be counted. No-op unless enabled.
@@ -26266,7 +26295,16 @@ final class SyncService: ObservableObject {
       args = focusedArgs
     }
     try refuseAccountProjectScopeCommand(action: action, targetProjectId: targetProjectId)
-    let runtimeScoped = commandIsRuntimeScoped(action)
+    let scope = syncCommandProjectScope(
+      actionIsRuntimeScoped: commandIsRuntimeScoped(action),
+      keepsProjectForRuntimeAction: keepsProjectForRuntimeAction,
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      activeProjectId: self.activeProjectId,
+      activeProjectRootPath: self.activeProjectRootPath
+    )
+    let runtimeScoped = scope.runtimeScoped
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
@@ -26276,16 +26314,8 @@ final class SyncService: ObservableObject {
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
     ScrollDiagnostics.shared.event("sync.command", ["id": requestId, "action": action])
-    // `targetProjectId` lets a command create-in-place in a NON-active project
-    // (mobile hub composer): the host routes the command to that project's scope
-    // via the command-payload projectId without switching the phone's active
-    // sync project. Most callers default to the active project; shell launches
-    // opt out when the selected lane does not carry trustworthy project scope.
-    let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
-    // The active project's root only stands in for the active project itself:
-    // another target project with no root sends none.
-    let activeRootFallback = (syncNormalizedCommandScopeValue(targetProjectId) == nil || targetProjectId == self.activeProjectId) ? self.activeProjectRootPath : nil
-    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeRootFallback) : targetProjectRootPath)
+    let resolvedProjectId = scope.projectId
+    let resolvedProjectRootPath = scope.rootPath
     // The host already ran this exact request from the hello: wait for that
     // answer (or take it, if it came first) instead of asking again.
     if let pipelinedRequestId = takePipelinedHelloCommand(
@@ -26335,7 +26365,10 @@ final class SyncService: ObservableObject {
     targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
-    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
+    attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely,
+    /// A machine-wide action that still acts in one project of the focused
+    /// machine (an answer read from a chat there): its target project goes along.
+    keepsProjectForRuntimeAction: Bool = false
   ) async throws -> Any {
     let targetProjectId: String?
     let targetProjectRootPath: String?
@@ -26369,7 +26402,8 @@ final class SyncService: ObservableObject {
           timeoutNanoseconds: timeoutNanoseconds,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath,
-          fallbackToActiveProjectScope: fallbackToActiveProjectScope
+          fallbackToActiveProjectScope: fallbackToActiveProjectScope,
+          keepsProjectForRuntimeAction: keepsProjectForRuntimeAction
         )
       } catch {
         let stillLive = canSendLiveRequests()

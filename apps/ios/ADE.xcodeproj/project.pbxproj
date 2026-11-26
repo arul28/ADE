@@ -29,6 +29,7 @@
 		C15C00000000000000B00001 /* CloudSponsored.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00001 /* CloudSponsored.swift */; };
 		C15C00000000000000B00002 /* WorkSponsoredCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00002 /* WorkSponsoredCards.swift */; };
 		C15C00000000000000B00003 /* WorkSponsoredPickCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */; };
+		C15C00000000000000B00099 /* WorkCloudTierRequestCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */; };
 		C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00001 /* CloudServerClient.swift */; };
 		C1AD000000000000000B0003 /* SettingsCloudAccountProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */; };
 		C1AD000000000000000B0001 /* AccountCloudLaunches.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0001 /* AccountCloudLaunches.swift */; };
@@ -625,6 +626,7 @@
 		C15C00000000000000A00001 /* CloudSponsored.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudSponsored.swift; path = ADE/Services/CloudSponsored.swift; sourceTree = "<group>"; };
 		C15C00000000000000A00002 /* WorkSponsoredCards.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSponsoredCards.swift; path = ADE/Views/Work/WorkSponsoredCards.swift; sourceTree = "<group>"; };
 		C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSponsoredPickCard.swift; path = ADE/Views/Work/WorkSponsoredPickCard.swift; sourceTree = "<group>"; };
+		C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCloudTierRequestCard.swift; path = ADE/Views/Work/WorkCloudTierRequestCard.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00001 /* CloudServerClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudServerClient.swift; path = ADE/Services/CloudServerClient.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsCloudAccountProviders.swift; path = ADE/Views/Settings/SettingsCloudAccountProviders.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0001 /* AccountCloudLaunches.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountCloudLaunches.swift; path = ADE/Services/AccountCloudLaunches.swift; sourceTree = "<group>"; };
@@ -1547,6 +1549,7 @@
 				C1AE00000000000000A00003 /* WorkCloudMachine.swift */,
 				C15C00000000000000A00002 /* WorkSponsoredCards.swift */,
 				C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */,
+				C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */,
 				C1AE00000000000000A00031 /* WorkCloudLaunchViews.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
 				D30000000000000000005C01 /* WorkUsageSkyline.swift */,
@@ -2649,6 +2652,7 @@
 				C1AE00000000000000B00003 /* WorkCloudMachine.swift in Sources */,
 				C15C00000000000000B00002 /* WorkSponsoredCards.swift in Sources */,
 				C15C00000000000000B00003 /* WorkSponsoredPickCard.swift in Sources */,
+				C15C00000000000000B00099 /* WorkCloudTierRequestCard.swift in Sources */,
 				C1AE00000000000000B00031 /* WorkCloudLaunchViews.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
 				E30000000000000000005C01 /* WorkUsageSkyline.swift in Sources */,

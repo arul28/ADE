@@ -365,12 +365,18 @@ struct CloudMachineSizeCard: View {
         Button("Cancel", role: .cancel) {}
       } message: { tier in
         if tier.type == current.type {
-          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)).")
+          Text("It restarts on the new size, so running chats and terminals stop. Their chats are saved first. \(rates(current: current, tier: tier))")
         } else {
-          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses \(store.words.unit) on both while it copies. \(tier.label): \(tier.hoursLine(leftMilli: store.hoursLeftMilli, words: store.words)).")
+          Text("ADE copies its files to a new computer and deletes this one. Its lane and chats come along. It takes a few minutes and uses \(store.words.unit) on both while it copies. \(rates(current: current, tier: tier))")
         }
       }
     }
+  }
+
+  /// "4 credits an hour now → 1 credit an hour on Medium. 418 credits last about 418 h on Medium."
+  private func rates(current: CloudPhoneTier, tier: CloudPhoneTier) -> String {
+    let hours = store.hoursLeftMilli.flatMap { store.words.hoursOn(tier, leftMilli: $0) }
+    return "\(store.words.changeRates(from: current, to: tier)).\(hours.map { " \($0)" } ?? "")"
   }
 
   private func confirmTitle(current: CloudPhoneTier) -> String {
