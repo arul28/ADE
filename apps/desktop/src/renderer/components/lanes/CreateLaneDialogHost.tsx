@@ -139,8 +139,8 @@ function pendingMachineId(scope: LaneFlowScope): string | null {
   return scope.pin ? scope.machineId : null;
 }
 
-function errorMessage(error: unknown): string {
-  return plainErrorText(error, "ADE couldn't create the lane.");
+function errorMessage(error: unknown, fallback = "ADE couldn't create the lane."): string {
+  return plainErrorText(error, fallback);
 }
 
 function setupFailureToastId(laneId: string): string {
@@ -192,7 +192,7 @@ async function runLaneSetup(params: DetachedSetupParams): Promise<void> {
       dismissToast(setupFailureToastId(params.laneId));
     }
   } catch (err) {
-    showSetupFailureToast(params, errorMessage(err));
+    showSetupFailureToast(params, errorMessage(err, "ADE couldn't set up the lane."));
   }
 }
 
@@ -665,7 +665,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       defaults: { start: createStart },
     })
       .then(setNewLaneDefaults)
-      .catch((error: unknown) => setCreateError(errorMessage(error)));
+      .catch((error: unknown) => setCreateError(errorMessage(error, "ADE couldn't save the default.")));
   }, [createStart, targetPinRef]);
 
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
