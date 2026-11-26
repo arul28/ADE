@@ -40,6 +40,7 @@ import { OldCopyControls } from "./oldCopyActions";
 // The drive cards are the settings kit's choice cards; the dialog opens from anywhere.
 import "../settings/primitives/settingsModern.css";
 import "./projectMove.css";
+import { plainErrorText } from "../../lib/plainError";
 
 type Stage = "setup" | "moving" | "done" | "failed";
 
@@ -145,7 +146,7 @@ export function MoveProjectDialog({
         .filter((volume) => volume.mountPath !== here?.mountPath)
         .sort((a, b) => b.freeBytes - a.freeBytes)[0] ?? here;
       if (suggestion) setParentFolder(defaultParentOn(suggestion, projectRoot, here));
-    }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+    }).catch((cause) => setError(plainErrorText(cause, "ADE couldn't read the drives.")));
     return () => {
       cancelled = true;
     };
@@ -165,7 +166,7 @@ export function MoveProjectDialog({
     void api.preflight({ projectRoot, destinationRoot }).then((result) => {
       if (request === checkRequest.current) setPreflight(result);
     }).catch((cause) => {
-      if (request === checkRequest.current) setError(cause instanceof Error ? cause.message : String(cause));
+      if (request === checkRequest.current) setError(plainErrorText(cause, "ADE couldn't check that move."));
     }).finally(() => {
       if (request === checkRequest.current) setChecking(false);
     });
@@ -215,7 +216,7 @@ export function MoveProjectDialog({
         runChecks();
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(plainErrorText(cause, "ADE couldn't move the project."));
       setStage("failed");
     }
   };

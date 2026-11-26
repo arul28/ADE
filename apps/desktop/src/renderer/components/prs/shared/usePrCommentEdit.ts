@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { PrComment } from "../../../../shared/types";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { usePrRuntimePin } from "../state/prMachines";
+import { plainErrorText } from "../../../lib/plainError";
 
 export function usePrCommentEdit(args: {
   prId: string;
@@ -55,7 +56,7 @@ export function usePrCommentEdit(args: {
       setEditing(false);
       return true;
     } catch (error) {
-      setEditError(error instanceof Error ? error.message : String(error));
+      setEditError(plainErrorText(error, "ADE couldn't save the comment."));
       return false;
     } finally {
       setEditBusy(false);

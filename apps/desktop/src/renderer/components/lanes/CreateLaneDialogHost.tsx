@@ -1,6 +1,6 @@
+import { plainErrorText } from "../../lib/plainError";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useAppStoreApi } from "../../state/appStore";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
 import { ADE_CLOUD_MACHINE_ID } from "./useAdeCloudLaneTarget";
 import type { CreateLaneAdeCloud } from "./CreateLaneDialog";
@@ -140,7 +140,7 @@ function pendingMachineId(scope: LaneFlowScope): string | null {
 }
 
 function errorMessage(error: unknown): string {
-  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
+  return plainErrorText(error, "ADE couldn't create the lane.");
 }
 
 function setupFailureToastId(laneId: string): string {

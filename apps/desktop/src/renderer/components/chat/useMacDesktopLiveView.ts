@@ -9,6 +9,7 @@ import {
   startMacDesktopLiveStream,
 } from "./macDesktopLiveViewLease";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * The lane display's live view: one H.264 reader, one address, one budget.
@@ -453,7 +454,7 @@ export function useMacDesktopLiveView(args: {
     void run().catch((caught: unknown) => {
       if (cancelled) return;
       setStatus("error");
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(plainErrorText(caught, "ADE couldn't start the live view."));
     });
 
     return () => {

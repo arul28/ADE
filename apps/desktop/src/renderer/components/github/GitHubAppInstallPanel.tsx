@@ -37,6 +37,7 @@ import {
   type GithubAccountAppSignInPhase,
 } from "../../lib/useGithubAccountApp";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { plainErrorText } from "../../lib/plainError";
 
 const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
@@ -148,7 +149,7 @@ export function GitHubAppInstallPanel({
         webhookState: "unknown",
         webhookLastSeenAt: null,
         checkedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
+        error: plainErrorText(error, "ADE couldn't check the GitHub app."),
         // The call itself failed, so nothing was learned about the account.
         appUserAuthFailure: null,
       });
@@ -228,7 +229,7 @@ export function GitHubAppInstallPanel({
         copyFeedbackTimeoutRef.current = null;
       }, 1500);
     } catch (error) {
-      setDeviceMessage(error instanceof Error ? error.message : String(error));
+      setDeviceMessage(plainErrorText(error, "ADE couldn't copy the code."));
     }
   }, [deviceSession]);
 

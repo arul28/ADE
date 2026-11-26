@@ -8,6 +8,7 @@ import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { onlineCopyPin, ProjectCopyBar, ProjectCopyUnavailable, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import { requirePin } from "../../state/repositoryScope";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * Scheduled work: the global pause, then the live job list in the same panel,
@@ -35,13 +36,13 @@ export function AiFeaturesSection() {
           .then((snapshot) => ({ snapshot, error: null as string | null }))
           .catch((error) => ({
             snapshot: null,
-            error: error instanceof Error ? error.message : String(error),
+            error: plainErrorText(error, "ADE couldn't read the project settings."),
           })),
         window.ade.agentChat.listScheduledWork(undefined, pin)
           .then((items) => ({ items, error: null as string | null }))
           .catch((error) => ({
             items: [] as AgentChatScheduledWorkItem[],
-            error: error instanceof Error ? error.message : String(error),
+            error: plainErrorText(error, "ADE couldn't read the scheduled work."),
           })),
       ]);
       setScheduledWork(scheduledWorkResult.items);
@@ -79,7 +80,7 @@ export function AiFeaturesSection() {
       setLocal(!value);
       showToast({
         title: "Couldn't save the setting",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't save the setting."),
         tone: "error",
       });
     } finally {
@@ -102,7 +103,7 @@ export function AiFeaturesSection() {
       await loadStatus();
     } catch (error) {
       console.error("[AiFeaturesSection] scheduled-work cancellation failed:", error);
-      setScheduledWorkError(error instanceof Error ? error.message : String(error));
+      setScheduledWorkError(plainErrorText(error, "ADE couldn't cancel that scheduled work."));
     }
   }, [loadStatus, pin]);
 

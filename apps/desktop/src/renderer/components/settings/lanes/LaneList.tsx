@@ -20,6 +20,7 @@ import {
   type LaneFilter,
 } from "./laneListModel";
 import { requirePin } from "../../../state/repositoryScope";
+import { plainErrorText } from "../../../lib/plainError";
 
 const ARCHIVE_TOAST_ID = "settings-lanes-archive";
 /** Rows shown before "Show N more". */
@@ -141,7 +142,7 @@ export function LaneList({
           freed += result.reclaimedBytes;
           archived.push(lane.name);
         } catch (err) {
-          failed.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
+          failed.push(`${lane.name}: ${plainErrorText(err, "ADE couldn't archive it.")}`);
         }
       }
     } finally {

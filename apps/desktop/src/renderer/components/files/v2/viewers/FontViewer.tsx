@@ -15,6 +15,7 @@ import {
 } from "./fontInfo";
 import type { ViewerProps } from "./types";
 import { runPathActionHere } from "../../pathOnThisComputer";
+import { plainErrorText } from "../../../../lib/plainError";
 
 const MAX_FONT_BYTES = 10 * 1024 * 1024;
 const WATERFALL_SIZES = [12, 16, 20, 24, 32, 48, 64, 96];
@@ -328,7 +329,7 @@ function GlyphButton({ codepoint, family }: { codepoint: number; family: string 
       onClick={() => void copy().catch((error: unknown) => showToast({
         tone: "error",
         title: "Couldn't copy character",
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't copy that."),
       }))}
       title={`${codepointLabel(codepoint)} · click to copy`}
       aria-label={copied ? `${codepointLabel(codepoint)} copied` : `Copy ${codepointLabel(codepoint)}`}
@@ -557,7 +558,7 @@ export function FontViewer({ files, workspaceId, rootPath, pathPin, tab, content
         setFaceReady(true);
         setAxisValues(Object.fromEntries(parsed.axes.map((axis) => [axis.tag, axis.default])));
       } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled) setError(plainErrorText(reason, "ADE couldn't read the font."));
       } finally {
         if (!cancelled) setLoading(false);
       }

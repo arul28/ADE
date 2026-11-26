@@ -9,6 +9,7 @@ import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_C
 import { floatAndroidMiniPlayerForChat } from "./androidMiniPlayerStore";
 import { requestAndroidPicker } from "./androidPickerRequests";
 import type { AndroidLaneDeviceCard } from "./useAndroidLaneDeviceCard";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * The Android Development card's action menu: the twin of `AppleToolCardMenu`.
@@ -69,7 +70,7 @@ export function AndroidToolCardMenu({
       .catch((error: unknown) => {
         showToast({
           title: `${action} failed`,
-          message: error instanceof Error ? error.message : String(error),
+          message: plainErrorText(error, "ADE couldn't finish that."),
           tone: "error",
         });
       })

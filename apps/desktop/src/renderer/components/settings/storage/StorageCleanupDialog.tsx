@@ -13,6 +13,7 @@ import { baseName, cleanupPartsLine, cleanupRunParts, groupRowsByLabel } from ".
 import { useStorageBytes } from "./useStorageBytes";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { mayStillBeRunning } from "../../../../shared/runtimeErrors";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * Optional "safe cleanup" plan. When present the dialog shows what the
@@ -247,7 +248,7 @@ export function StorageCleanupDialog({
       })
       .catch((err: unknown) => {
         if (requestRef.current !== requestId) return;
-        setError(err instanceof Error ? err.message : String(err));
+        setError(plainErrorText(err, "ADE couldn't work out what to clean up."));
         setErrorPhase("checking");
         setStage("error");
       });
@@ -283,7 +284,7 @@ export function StorageCleanupDialog({
         : { removed: [], failed: [], freedBytes: 0 };
     } catch (err) {
       if (requestRef.current !== requestId) return;
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't finish the cleanup."));
       setErrorPhase("removing");
       setStage("error");
       return;

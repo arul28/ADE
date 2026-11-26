@@ -11,6 +11,7 @@ import { cn } from "../ui/cn";
 import { workToolDefinition } from "./workTools";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { requireChatPin } from "../chat/chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 /** `localhost:5173`, the way every surface names a dev server. */
 export function devServerLabel(server: Pick<DevServerRecord, "url" | "port">): string {
@@ -90,7 +91,7 @@ export function SessionDevServerBadge({
       showToast({
         tone: "error",
         title: `Could not stop ${label}`,
-        message: error instanceof Error ? error.message : String(error),
+        message: plainErrorText(error, "ADE couldn't stop it."),
       });
     } finally {
       setStopping((current) => {

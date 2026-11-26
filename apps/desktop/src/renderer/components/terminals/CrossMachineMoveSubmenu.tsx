@@ -1,3 +1,4 @@
+import { plainErrorText } from "../../lib/plainError";
 import { useRef, useState } from "react";
 import {
   ArrowClockwise,
@@ -23,7 +24,6 @@ import {
   isCrossMachineHandoffActive,
   pickNewerCrossMachineHandoffRecord,
 } from "../../../shared/crossMachineHandoff";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { showToast } from "../app/toast/toastStore";
 import { describeTravellingChanges, openChatOnOtherMachine } from "../chat/CrossMachineHandoffBanner";
 import { MENU_ITEM_CLASS, MenuRowIcon, MenuSeparator, MenuSubmenu, MenuSubmenuStatus } from "../ui/MenuSubmenu";
@@ -78,7 +78,7 @@ function targetFromSummary(summary: AgentChatSessionSummary): AgentChatCrossMach
 }
 
 function errorText(error: unknown): string {
-  return stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
+  return plainErrorText(error, "ADE couldn't reach that computer.");
 }
 
 export function CrossMachineMoveSubmenu({

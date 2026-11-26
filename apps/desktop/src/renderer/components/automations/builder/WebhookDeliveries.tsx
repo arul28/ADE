@@ -13,6 +13,7 @@ import { Dialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
 import { eyebrowCls, OUTCOME_STYLES, panelCls, rowHoverCls, ruleCls, tagCls, toneTextCls } from "../webhookSurface";
+import { plainErrorText } from "../../../lib/plainError";
 
 const VIA_LABELS: Record<AutomationWebhookDeliverySummary["via"], string> = {
   relay: "via relay",
@@ -88,7 +89,7 @@ function DeliveryDetail({
         if (!cancelled) setDelivery(value);
       })
       .catch((caught: unknown) => {
-        if (!cancelled) setError(caught instanceof Error ? caught.message : String(caught));
+        if (!cancelled) setError(plainErrorText(caught, "ADE couldn't load that delivery."));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -113,7 +114,7 @@ function DeliveryDetail({
       onReplayed();
       onClose();
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't replay it", message: error instanceof Error ? error.message : String(error) });
+      showToast({ tone: "error", title: "Couldn't replay it", message: plainErrorText(error, "ADE couldn't replay that delivery.") });
     } finally {
       setReplaying(false);
     }

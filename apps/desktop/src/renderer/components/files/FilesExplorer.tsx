@@ -16,6 +16,7 @@ import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon, useFileIconColor } from "./filePresentation";
 import { isImeComposing } from "../../lib/imeComposition";
+import { plainErrorText } from "../../lib/plainError";
 
 const ROW_HEIGHT = 28;
 
@@ -294,7 +295,7 @@ export function FilesExplorer({
       await onRenamePath(renamingPath, destinationPath);
       cancelRename();
     } catch (error) {
-      setRenameError(error instanceof Error ? error.message : String(error));
+      setRenameError(plainErrorText(error, "ADE couldn't rename that."));
     } finally {
       renameSubmittingRef.current = false;
     }

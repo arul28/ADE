@@ -55,6 +55,7 @@ import {
 } from "./useArtifactPreview";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { requireChatPin } from "./chatMachinePin";
+import { plainErrorText } from "../../lib/plainError";
 
 function kindLabel(kind: string): string {
   return kind.replace(/_/g, " ");
@@ -718,7 +719,7 @@ export function ChatComputerUsePanel({
         await run();
         await onRefresh();
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(plainErrorText(cause, "ADE couldn't finish that action."));
       } finally {
         setBusyIds((current) => {
           const next = new Set(current);

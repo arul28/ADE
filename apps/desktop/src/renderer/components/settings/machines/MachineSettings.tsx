@@ -35,6 +35,7 @@ import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineCapabilitiesArea, MachinePreferenceRow } from "./machineSeams";
 import { MachineWorkCopies } from "./MachineWorkCopies";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * Everything Settings knows or can change about one machine, in four groups
@@ -350,7 +351,7 @@ function ContinueRow({ scope, reach }: { scope: SettingsMachinePage; reach: bool
       setValue(await window.ade.ai.setContinueAfterRestart(next, scope.pin));
     } catch (error) {
       setValue({ enabled: !next });
-      showToast({ tone: "error", title: "Couldn't save the setting", message: error instanceof Error ? error.message : String(error) });
+      showToast({ tone: "error", title: "Couldn't save the setting", message: plainErrorText(error, "ADE couldn't save the setting.", scope.machineName) });
     } finally {
       setSaving(false);
     }
@@ -392,7 +393,7 @@ function ShellRow({ scope, reach }: { scope: SettingsMachinePage; reach: boolean
             setSaving(true);
             void window.ade.pty.setDefaultShell({ shellId: next === AUTOMATIC ? null : next }, scope.pin)
               .then((result) => setSettings(result))
-              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change the shell", message: error instanceof Error ? error.message : String(error) }))
+              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change the shell", message: plainErrorText(error, "ADE couldn't change the shell.", scope.machineName) }))
               .finally(() => setSaving(false));
           }}
         />
@@ -439,7 +440,7 @@ function KeepAwakeRow({ scope, reach, needsUpdate, onOpen }: { scope: SettingsMa
               setSaving(true);
               void window.ade.keepAwakeSetLevel(level, scope.pin)
                 .then((next) => setSnapshot(next))
-                .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change keep awake", message: error instanceof Error ? error.message : String(error) }))
+                .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't change keep awake", message: plainErrorText(error, "ADE couldn't change keep awake.", scope.machineName) }))
                 .finally(() => setSaving(false));
             }}
           />

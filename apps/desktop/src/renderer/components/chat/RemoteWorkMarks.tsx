@@ -10,6 +10,7 @@ import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_MIN_WIDTH_CLASS, MENU_SCROLL_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
+import { plainErrorText } from "../../lib/plainError";
 
 /*
  * Where a chat's work on another machine shows (`ade shell start --machine`,
@@ -67,7 +68,7 @@ function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; activ
         setShells(rows);
         setError(null);
       })
-      .catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+      .catch((reason: unknown) => { if (!cancelled) setError(plainErrorText(reason, "ADE couldn't read the commands.")); });
     return () => { cancelled = true; };
     // Keyed on the pin's key and the terminal ids, not the objects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -82,7 +83,7 @@ function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; activ
       .catch((reason: unknown) => showToast({
         tone: "error",
         title: `Couldn't stop the command on ${use.machineName}`,
-        message: reason instanceof Error ? reason.message : String(reason),
+        message: plainErrorText(reason, "ADE couldn't stop the command.", use.machineName),
       }));
   };
 

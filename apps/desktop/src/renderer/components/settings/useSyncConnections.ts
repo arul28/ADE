@@ -5,6 +5,7 @@ import {
   type SyncRoleSnapshot,
 } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
+import { plainErrorText } from "../../lib/plainError";
 import { isDegradedSyncSnapshot, readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 
 export type SyncConnections = ReturnType<typeof useSyncConnections>;
@@ -27,7 +28,7 @@ function isRemoteBinding(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return plainErrorText(error, "ADE couldn't reach that computer's sync service.");
 }
 
 export function useSyncConnections() {

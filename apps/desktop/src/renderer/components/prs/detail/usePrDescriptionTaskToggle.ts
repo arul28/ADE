@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../../shared/types/core";
 import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { showToast } from "../../app/toast/toastStore";
 import { togglePrTaskInBody } from "../shared/prTaskList";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * Checkbox clicks in a PR description: the box changes at once, saves go to
@@ -84,7 +85,7 @@ export function usePrDescriptionTaskToggle(args: {
         setPendingBody(null);
         showToast({
           title: "Couldn't save the checkbox",
-          message: error instanceof Error ? error.message : String(error),
+          message: plainErrorText(error, "ADE couldn't save the checkbox."),
           tone: "error",
         });
         // The clicks saved before this one did land.

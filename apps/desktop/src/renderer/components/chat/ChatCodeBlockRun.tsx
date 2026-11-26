@@ -1,3 +1,4 @@
+import { plainErrorText } from "../../lib/plainError";
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowUp, CheckCircle, Play, Terminal, Warning } from "@phosphor-icons/react";
 import type { OpenProjectBinding, PtyExitEvent, TerminalSerializedSnapshot } from "../../../shared/types";
@@ -233,7 +234,7 @@ async function startRun(args: {
     if (!/worktree is unavailable|Update ADE on this machine/i.test(errorText(error))) {
       captureError(error, { fingerprint: ["chat-code-block-run", "start-failed"], level: "warning", handled: true });
     }
-    updateRun(key, id, { status: "failed", error: errorText(error) });
+    updateRun(key, id, { status: "failed", error: plainErrorText(error, "ADE couldn't run that code.") });
   }
 }
 

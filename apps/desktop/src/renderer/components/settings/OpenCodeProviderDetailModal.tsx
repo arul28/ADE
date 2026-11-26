@@ -14,6 +14,7 @@ import {
   useOpenCodeAccounts,
 } from "./providers/opencode/OpenCodeAccounts";
 import { isImeComposing } from "../../lib/imeComposition";
+import { plainErrorText } from "../../lib/plainError";
 
 export type OpenCodeProviderDetail = {
   id: string;
@@ -182,7 +183,7 @@ export function OpenCodeProviderDetailModal({
       setEditing(false);
       setKeyValue("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't save that key."));
     } finally {
       setBusy(false);
     }
@@ -194,7 +195,7 @@ export function OpenCodeProviderDetailModal({
     try {
       await onDeleteKey();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't remove that key."));
     } finally {
       setBusy(false);
     }

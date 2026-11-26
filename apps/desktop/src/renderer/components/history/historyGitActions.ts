@@ -3,6 +3,7 @@ import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { confirmDialog, promptDialog } from "../ui/dialog/confirm";
 import { trackPendingLaneCreate } from "../../lib/pendingLaneCreates";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
+import { plainErrorText } from "../../lib/plainError";
 
 export type HistoryGitActionId =
   | "checkout"
@@ -448,7 +449,7 @@ export async function runHistoryGitAction(args: {
         return;
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    onError?.(msg.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim());
+    const msg = plainErrorText(err, "ADE couldn't finish that Git action.");
+    onError?.(msg);
   }
 }

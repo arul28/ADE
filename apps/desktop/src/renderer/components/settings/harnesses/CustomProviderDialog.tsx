@@ -52,6 +52,7 @@ import {
 } from "./harnessReach";
 import { routeTestKey, type HarnessReach } from "./useHarnessReach";
 import { FieldError } from "./wizardPrimitives";
+import { plainErrorText } from "../../../lib/plainError";
 
 /**
  * Create or edit a Custom provider, on one page.
@@ -111,7 +112,7 @@ function keepAgentKeys<T extends Partial<Record<HarnessPresetAgentKey, unknown>>
 
 /** One sentence for a save that threw, rather than a form that froze. */
 function saveFailureText(error: unknown): string {
-  const detail = error instanceof Error ? error.message : String(error ?? "");
+  const detail = plainErrorText(error, "ADE couldn't save the provider.");
   return detail.trim()
     || "The save could not be completed. Try again.";
 }

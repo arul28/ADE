@@ -26,6 +26,7 @@ import { useMachineStatsMap } from "../../../state/machineStats";
 import { showToast } from "../../app/toast/toastStore";
 import { SettingsSelect } from "../primitives";
 import { freeSpaceLevel } from "../storage/storageView";
+import { plainErrorText } from "../../../lib/plainError";
 
 /** Amber at 20% left, red at 5%: the one headroom rule every meter uses. */
 export function headroomLevel(percentLeft: number): "warn" | "crit" | undefined {
@@ -236,7 +237,7 @@ export function MachinePreferenceRow({ machineKey, name }: { machineKey: string 
                 // Saved here, but the phone and the other machines still read the old one.
                 if (!synced) showToast({ tone: "warning", title: "Saved on this computer only", message: "Your other machines keep the old setting until you are signed in and online." });
               })
-              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save the setting", message: error instanceof Error ? error.message : String(error) }))
+              .catch((error: unknown) => showToast({ tone: "error", title: "Couldn't save the setting", message: plainErrorText(error, "ADE couldn't save the setting.", name) }))
               .finally(() => setSaving(false));
           }}
         />
