@@ -403,7 +403,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // undoes it. The whole-file writes are the person's Settings editors: the CTO
   // writes through its own tools (remember, addRule, saveSkill), which put each
   // change in its turn's Learned row and check it against what was undone.
-  cto_memory: ["undoLearned", "updateNotes", "writeSkill", "deleteSkill"],
+  // `recallArchived` is the person's pin from Settings; the CTO's is `recallNote`.
+  cto_memory: ["undoLearned", "updateNotes", "writeSkill", "deleteSkill", "recallArchived"],
   // Dropping a deleted lane's saved work means it can no longer be restored.
   lane: ["removeDeletedLane"],
   // A secret's value is the person's to read (Settings, or the desktop's own

@@ -542,7 +542,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
 
     // Undo and whole-file writes are the person's alone: the CTO writes through
     // its own tools, so every change it makes gets a Learned row and respects Undo.
-    for (const action of ["undoLearned", "updateNotes", "writeSkill", "deleteSkill"]) {
+    for (const action of ["undoLearned", "updateNotes", "writeSkill", "deleteSkill", "recallArchived"]) {
       expect(isAllowedAdeAction("cto_memory", action)).toBe(true);
       expect(isUserOnlyAdeAction("cto_memory", action)).toBe(true);
       expect(isAutomationAllowedAdeAction("cto_memory", action)).toBe(false);

@@ -46,11 +46,18 @@ export function CtoSkillsList({
   pinRef.current = pin;
   const pinKey = pin.key;
 
+  // Only the newest read lands: an older one finishing late (another skill
+  // opened since, or an earlier snapshot) would show the wrong file.
+  const loadSeq = useRef(0);
   const load = useCallback(async (name: string) => {
+    const seq = ++loadSeq.current;
     try {
-      setFile(await window.ade.cto!.getSkill({ name }, pinRef.current));
+      const next = await window.ade.cto!.getSkill({ name }, pinRef.current);
+      if (seq !== loadSeq.current) return;
+      setFile(next);
       setError(null);
     } catch (err) {
+      if (seq !== loadSeq.current) return;
       setError(ipcErrorMessage(err) || "Couldn't read the skill.");
     }
   }, []);
@@ -76,6 +83,7 @@ export function CtoSkillsList({
     // could return another device's newer write, and its hash would let the
     // next save overwrite that write. Older hosts send no file: read it.
     if (written) {
+      loadSeq.current += 1; // a read started before this save is older than it
       setFile(written);
       setError(null);
     } else {

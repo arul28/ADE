@@ -61,9 +61,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade --role cto actions run cto_memory.searchArchive --input-json '{\"query\":\"release branch\"}' --json",
     },
     recallArchived: {
-      description: "Pin an archived note, fact or discovery back into the notes by id. A full notes file moves its least recently used notes to the archive. Returns the memory snapshot. CTO-only.",
+      description: "Pin an archived note, fact or discovery back into the notes by id. A full notes file moves its least recently used notes to the archive. Returns the memory snapshot. Person-only (Settings › Memory): the CTO pins through its own recallNote tool, so the pin shows in its Learned row.",
       input: "object { id: number, scope?: \"project\" | \"user\" }",
-      example: "ade --role cto actions run cto_memory.recallArchived --input-json '{\"id\":12}' --json",
+      example: "ade actions run cto_memory.recallArchived --input-json '{\"id\":12}' --json",
     },
     updateOpenWork: {
       description: "Add, complete, reopen or remove one open-work item on the CTO's list. CTO-only.",
