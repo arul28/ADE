@@ -13,7 +13,7 @@ import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { confirmRemoval, XCODE_APP_STORE_URL } from "../../apple/AppleRuntimesSection";
-import { readRuntimesUntilGone, showCleanupResult, showRuntimeRemoval } from "../../apple/appleStorageNotices";
+import { readRuntimesUntilGone, showRuntimeRemoval } from "../../apple/appleStorageNotices";
 import { ModernSection } from "../primitives";
 import { DevToolsSpaceBar, readyTotal, type SpaceSegment } from "./DevToolsSpaceBar";
 import { DevToolRow, DevToolsListSection, LIST_PREVIEW, ListSkeleton, PartError, RowAction, ShowAll, SizeCell, useDevToolHues } from "./devToolsList";
@@ -239,7 +239,7 @@ function SimulatorsBlock({ storage, pin }: { storage: DevToolsStorage; pin: Open
   const cleanUp = async () => {
     const ok = await confirmDialog({
       title: `Clean up ${pluralCount(leftovers.length, "leftover simulator")}?`,
-      message: "ADE made these for lanes that are gone. Deleting them takes their apps and data, and idle ADE simulators are turned off.",
+      message: "ADE made these for lanes that are gone. Deleting them takes their apps and data.",
       children: (
         <ul className="ade-dev-confirm-list">
           {leftovers.map((row) => <li key={row.sim.udid}>{row.sim.name}{row.bytes != null ? <span>{formatMac(row.bytes)}</span> : null}</li>)}
@@ -250,10 +250,27 @@ function SimulatorsBlock({ storage, pin }: { storage: DevToolsStorage; pin: Open
     });
     if (!ok) return;
     setBusy("cleanup");
+    // Exactly the simulators the dialog listed, by udid: one that turned into a leftover while it was open is not touched.
+    let deleted = 0;
+    let freed = 0;
+    const failures: string[] = [];
     try {
-      showCleanupResult(await window.ade.iosSimulator.deviceCleanup({ powerOffIdle: true }, pin), "apple-settings-cleanup");
-    } catch (err) {
-      showToast({ id: "apple-settings-cleanup", tone: "error", title: "Couldn't clean up simulators", message: err instanceof Error ? err.message : String(err) });
+      for (const row of leftovers) {
+        try {
+          await window.ade.iosSimulator.deviceDeleteInstalled({ udid: row.sim.udid, confirmedByUser: true }, pin);
+          deleted += 1;
+          freed += row.bytes ?? 0;
+        } catch (err) {
+          failures.push(`${row.sim.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      captureDevToolsCleanup("simulator_deleted", failures.length ? (deleted ? "partial" : "failed") : "completed", freed);
+      showToast({
+        id: "apple-settings-cleanup",
+        tone: failures.length ? (deleted ? "warning" : "error") : "success",
+        title: deleted ? `Deleted ${pluralCount(deleted, "leftover simulator")}` : "No simulators were deleted",
+        ...(failures.length ? { message: failures[0] } : freed ? { message: `Freed ${formatMac(freed)}.` } : {}),
+      });
     } finally {
       setBusy(null);
       storage.refreshApple();
