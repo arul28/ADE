@@ -173,7 +173,7 @@ export function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
  * saved copy's cursor is this base plus the part number, above every byte
  * offset, so a pane never reads one history at the other's position.
  */
-export const SAVED_COPY_HISTORY_CURSOR_BASE = 2 ** 50;
+const SAVED_COPY_HISTORY_CURSOR_BASE = 2 ** 50;
 
 /** The history cursor that names a saved copy's part. */
 export function savedCopyHistoryCursor(part: number): number {
@@ -185,10 +185,12 @@ export function savedCopyPartOf(cursor: number | null | undefined): number | nul
   return typeof cursor === "number" && cursor > SAVED_COPY_HISTORY_CURSOR_BASE ? cursor - SAVED_COPY_HISTORY_CURSOR_BASE : null;
 }
 
+
 /**
  * `dedupeAll`: drop every event already on screen, not only those at the
- * seam, for a page that can repeat events from anywhere in the list
- * (`readOlderHistoryBatch`'s `crossedHistories`).
+ * seam. A saved copy's page can repeat events from anywhere on screen: the
+ * computer showed its own newest window, and maybe older pages, while it was
+ * awake (`readOlderHistoryBatch`'s `fromSavedCopy`).
  */
 export function prependOlderChatHistoryPage(
   older: AgentChatEventEnvelope[],
@@ -233,14 +235,14 @@ export function resolveSnapshotHistoryCursor(snapshot: {
 
 export function advanceOlderHistoryCursor(
   beforeOffset: number,
-  page: Pick<AgentChatEventHistoryPage, "startOffset" | "hasMore">,
+  page: Pick<AgentChatEventHistoryPage, "startOffset" | "hasMore" | "savedCopy">,
 ): number | null {
   if (!page.hasMore) return 0;
   if (!Number.isFinite(page.startOffset) || page.startOffset <= 0) return null;
-  // A computer's byte cursor read from its saved copy (it went to sleep)
-  // comes back as a part cursor, a number of another history: that one move
-  // is forward. A part cursor never pages the computer.
-  const toSavedCopy = savedCopyPartOf(page.startOffset) != null && savedCopyPartOf(beforeOffset) == null;
+  // A byte cursor that the saved copy answered (the computer went to sleep)
+  // comes back as a part cursor: that one move is forward, whatever the two
+  // numbers are. A part cursor never pages the computer.
+  const toSavedCopy = page.savedCopy === true && savedCopyPartOf(beforeOffset) == null;
   if (!toSavedCopy && page.startOffset >= beforeOffset) return null;
   return page.startOffset;
 }
@@ -260,6 +262,9 @@ function isTurnBoundaryEvent(entry: AgentChatEventEnvelope): boolean {
  * So keep pulling pages until the accumulated span reaches a `user_message` —
  * the start of a turn — and the newly-loaded region always contains at least one
  * whole turn and renders as real content.
+ *
+ * `fromSavedCopy`: a page came from an ADE Cloud chat's saved copy; merge the
+ * batch with `dedupeAll`.
  */
 export async function readOlderHistoryBatch(args: {
   sessionId: string;
@@ -279,11 +284,9 @@ export async function readOlderHistoryBatch(args: {
    * point the reader has plenty of real content and the next scroll continues.
    */
   maxAnchorEvents?: number;
-}): Promise<{ events: AgentChatEventEnvelope[]; nextCursor: number; crossedHistories: boolean } | null> {
+}): Promise<{ events: AgentChatEventEnvelope[]; nextCursor: number; fromSavedCopy: boolean } | null> {
   let currentOffset = args.beforeOffset;
-  // A computer's byte cursor read from its saved copy: that page starts at the
-  // newest part, so it can repeat events from anywhere on screen.
-  let crossedHistories = false;
+  let fromSavedCopy = false;
   let nextCursor = args.beforeOffset;
   const maxPages = args.maxPages ?? 8;
   const maxAnchorEvents = args.maxAnchorEvents ?? 400;
@@ -302,9 +305,9 @@ export async function readOlderHistoryBatch(args: {
       // Pages already pulled in this batch are real transcript content, and
       // `nextCursor: 0` latches "no older history" — dropping them here would
       // lose them until a reload.
-      return { events: collected.flat(), nextCursor: 0, crossedHistories };
+      return { events: collected.flat(), nextCursor: 0, fromSavedCopy };
     }
-    if (page.savedCopy === true && savedCopyPartOf(currentOffset) == null) crossedHistories = true;
+    if (page.savedCopy === true) fromSavedCopy = true;
     const advancedCursor = advanceOlderHistoryCursor(currentOffset, page);
     if (advancedCursor == null) {
       throw new Error("Earlier-message cursor did not advance.");
@@ -324,7 +327,7 @@ export async function readOlderHistoryBatch(args: {
     if (collectedCount >= maxAnchorEvents) break;
     currentOffset = nextCursor;
   }
-  return { events: collected.flat(), nextCursor, crossedHistories };
+  return { events: collected.flat(), nextCursor, fromSavedCopy };
 }
 
 export function resolveMergedSnapshotHistoryCursor(args: {

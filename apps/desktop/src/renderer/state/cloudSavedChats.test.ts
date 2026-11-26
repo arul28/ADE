@@ -128,8 +128,10 @@ describe("a chat's older history while its ADE Cloud computer sleeps and wakes",
     expect(texts(resting.events)).toEqual(["ask 5", "answer 5", "ask 6", "answer 6"]);
     let cursor = resolveSnapshotHistoryCursor(resting);
 
-    // The computer wakes, and the chat reads its history again from it.
+    // The computer wakes: the sidebar's next list read leaves its chats out
+    // (the live list owns them), and the chat reads its history again from it.
     awake = true;
+    replaceSavedChatLocations([]);
     const woke = await api.getEventHistory({ sessionId: "chat-1" }, PIN);
     const onScreen = mergeAgentChatHistorySnapshot(woke.events, resting.events);
     cursor = resolveMergedSnapshotHistoryCursor({

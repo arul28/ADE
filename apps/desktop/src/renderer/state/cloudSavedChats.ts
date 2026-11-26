@@ -119,6 +119,23 @@ export function savedChatLocation(
 }
 
 /**
+ * The saved copy that last answered each chat's history read, by chat id. A
+ * saved copy's history cursor still pages it after the computer wakes, and
+ * the sidebar's list then leaves that chat out (the live list owns an awake
+ * computer), so the list can't be the only place to find it.
+ */
+const answeredSavedCopies = new Map<string, SavedChatLocation>();
+const MAX_ANSWERED_SAVED_COPIES = 200;
+
+function noteSavedCopyAnswered(location: SavedChatLocation): void {
+  answeredSavedCopies.delete(location.chatId);
+  answeredSavedCopies.set(location.chatId, location);
+  if (answeredSavedCopies.size > MAX_ANSWERED_SAVED_COPIES) {
+    answeredSavedCopies.delete(answeredSavedCopies.keys().next().value!);
+  }
+}
+
+/**
  * The saved copy of a chat by its id alone, whatever pin asked. For a read
  * whose pin names a connection this window no longer has ("Remote target was
  * not found"): the chat is the same on any machine that saved it.
@@ -619,6 +636,7 @@ export function withSavedChatReads(
       const saved = async (location: SavedChatLocation) => {
         const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
         if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
+        noteSavedCopyAnswered(location);
         return savedChatSnapshot(page, args.sessionId);
       };
       const location = locate(args.sessionId, pin);
@@ -634,11 +652,18 @@ export function withSavedChatReads(
       const unavailable = { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
       const saved = async (location: SavedChatLocation) => {
         const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId, ...(part != null ? { before: part } : {}) }).catch(logSavedChatReadFailure);
-        return page ? savedChatHistoryPage(page, args.sessionId) : unavailable;
+        if (!page) return unavailable;
+        noteSavedCopyAnswered(location);
+        return savedChatHistoryPage(page, args.sessionId);
       };
       if (part != null) {
-        const location = savedChatLocation(pin, args.sessionId, () => false) ?? savedChatLocationForSession(args.sessionId);
-        return location ? saved(location) : unavailable;
+        const location = savedChatLocation(pin, args.sessionId, () => false)
+          ?? savedChatLocationForSession(args.sessionId)
+          ?? answeredSavedCopies.get(args.sessionId)
+          ?? null;
+        if (location) return saved(location);
+        console.warn("[cloud] no saved copy to page this chat's older history from", { chatId: args.sessionId });
+        return unavailable;
       }
       const location = locate(args.sessionId, pin);
       return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistoryPage(args, pin), saved);
