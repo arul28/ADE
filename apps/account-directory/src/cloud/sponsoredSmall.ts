@@ -6,7 +6,7 @@ import { SMALL_NO_CARDS_RATE_MILLI, SMALL_SHAPE, cloudSizeFor, type CloudSize } 
 import { readCloudSettings, type CloudSettings } from "./settings";
 import { readConsent, type ConsentRow, type SponsoredRequester } from "./sponsoredConsent";
 import { gravitySwitches, switchReaches } from "./sponsoredSwitch";
-import { logCloud, reportCloudFailure, restartStretchStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
+import { boughtPlanIdOf, logCloud, reportCloudFailure, restartStretchStatements, shownPlanIdOf, statusGuard, type AccountRow, type ComputerRow } from "./store";
 
 // Free's Small computers: unlimited with sponsored cards, in the US. Where
 // the ad switch reaches a Free account, its Small computers use no credits
@@ -73,11 +73,14 @@ export function smallStateOf(account: AccountRow, consent: ConsentRow | null, wh
 
 /**
  * Whether the account's Small computers use no hours now. Always, unless the
- * account is on Free (or acts as it, `shownPlanIdOf`) and the ad switch
- * reaches it: then only while it said yes to sponsored cards and opened one
- * of its ADE Cloud chats from the US in the last `SMALL_FREE_LOOK_MS`. One
- * switch is the deal: where ads reach Free, Small is unlimited with cards in
- * the US and uses hours otherwise; ads off is Small unlimited for everyone.
+ * account is on Free and the ad switch reaches it: then only while it said
+ * yes to sponsored cards and opened one of its ADE Cloud chats from the US in
+ * the last `SMALL_FREE_LOOK_MS`. One switch is the deal: where ads reach
+ * Free, Small is unlimited with cards in the US and uses hours otherwise; ads
+ * off is Small unlimited for everyone. A paid account acting as Free (the
+ * account test tool) sees the question and notices (`smallStateOf`), but its
+ * Small stays unlimited: the rate settles into the real meter, and a test
+ * never spends real credits.
  */
 export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, settings?: CloudSettings, now = Date.now()): Promise<boolean> {
   return SMALL_FREE_WHYS.has(await smallRule(env, account, settings, now));
@@ -91,8 +94,15 @@ export async function smallUsesNoHours(env: GravityEnv, account: AccountRow, set
 type SmallWhy = "not_free" | "unreached" | "look" | "lapsed" | "no_yes";
 const SMALL_FREE_WHYS: ReadonlySet<SmallWhy> = new Set(["not_free", "unreached", "look"]);
 
+/**
+ * Whether the Free rule may charge Small: the account is on Free and shows
+ * it. A paid account acting as Free shows the rule (`smallStateOf`) but is
+ * never charged for it; a Free account acting as a paid plan isn't either.
+ */
+const freeRuleCharges = (account: AccountRow): boolean => shownPlanIdOf(account) === "free" && boughtPlanIdOf(account) === "free";
+
 async function smallRule(env: GravityEnv, account: AccountRow, settings: CloudSettings | undefined, now: number): Promise<SmallWhy> {
-  if (shownPlanIdOf(account) !== "free") return "not_free";
+  if (!freeRuleCharges(account)) return "not_free";
   const { mode } = await gravitySwitches(env, settings ?? (await readCloudSettings(env)));
   if (!(await switchReaches(env, account, mode))) return "unreached";
   const consent = await readConsent(env, account.user_id);
@@ -100,8 +110,8 @@ async function smallRule(env: GravityEnv, account: AccountRow, settings: CloudSe
   return consent?.consent === "granted" ? "lapsed" : "no_yes";
 }
 
-/** SQL over `cloud_accounts a`: on Free as the account is shown (a test plan first, `shownPlanIdOf`). */
-const SHOWN_FREE_SQL = "coalesce(case when a.test_plan in ('free', 'plus', 'pro', 'max') then a.test_plan end, case when a.plan = 'paid' then 'paid' else 'free' end) = 'free'";
+/** SQL over `cloud_accounts a`: `freeRuleCharges`. */
+const FREE_RULE_SQL = "(a.plan != 'paid' and coalesce(a.test_plan, 'free') not in ('plus', 'pro', 'max'))";
 /** SQL over `cloud_accounts a`, binding the ad switch's mode twice: the switch reaches the account (`switchReaches`). */
 const SWITCH_REACHES_SQL = "(? = 'all' or (? = 'testers' and exists (select 1 from cloud_sponsored_testers t where t.user_id = a.user_id)))";
 /** SQL over a `cloud_computers` alias, binding `SMALL_SHAPE`'s cpu and memory: a Small computer. */
@@ -134,7 +144,7 @@ export async function noteSmallLook(env: GravityEnv, account: AccountRow, consen
  * The network kept with a US look or yes: only Free's, the one plan the
  * tripwire reads, so a paid account's is never stored.
  */
-export const smallLookNetwork = (account: AccountRow, asn: number | null): number | null => (shownPlanIdOf(account) === "free" ? asn : null);
+export const smallLookNetwork = (account: AccountRow, asn: number | null): number | null => (freeRuleCharges(account) ? asn : null);
 
 /** The owner hears of one account at most once in this long (weeks counted from the Unix epoch, so they start Thursdays 00:00 UTC). */
 const TRIPWIRE_ALERT_MS = 7 * 24 * 60 * 60_000;
@@ -224,7 +234,7 @@ export async function smallCloudLookAlarms(env: GravityEnv, now: number): Promis
   const rows = await env.DB.prepare(`
     select s.user_id, s.looked_asn from cloud_sponsored_consent s join cloud_accounts a on a.user_id = s.user_id
     where s.consent = 'granted' and s.looked_at >= ? and s.looked_asn is not null and a.deleted_at is null
-      and ${SHOWN_FREE_SQL} and ${SWITCH_REACHES_SQL} and ${notBlockedSql("s.user_id")}
+      and ${FREE_RULE_SQL} and ${SWITCH_REACHES_SQL} and ${notBlockedSql("s.user_id")}
       and (exists (select 1 from cloud_computers c where c.user_id = s.user_id and c.deleted_at is null and c.net_asn = s.looked_asn)
         or exists (select 1 from cloud_computers c where c.join_asn = s.looked_asn and c.created_at >= ?))
       and exists (select 1 from cloud_computers c where c.user_id = s.user_id and c.deleted_at is null and ${smallComputerSql("c")})
@@ -306,7 +316,7 @@ export async function syncAllSmallRates(env: GravityEnv, now: number, { force = 
       select distinct c.user_id from cloud_computers c join cloud_accounts a on a.user_id = c.user_id
       where c.deleted_at is null and ${smallComputerSql("c")}
         and c.multiplier_milli != (case when
-          not ${SHOWN_FREE_SQL}
+          not ${FREE_RULE_SQL}
           or not ${SWITCH_REACHES_SQL}
           or exists (select 1 from cloud_sponsored_consent s where s.user_id = a.user_id and s.consent = 'granted' and s.looked_at >= ?)
         then 0 else ? end)

@@ -5520,6 +5520,52 @@ describe("sponsored cards", () => {
     expect(harness.rows("select action from cloud_owner_log where user_id = ? order by id", OWNER).map((row) => row.action)).toEqual(["account_test", "account_test_ended"]);
   });
 
+  it("the account test tool never spends or blocks real credits: a lower test plan keeps the period's credits and Small's free rate, test credits warn, and the warnings start over when the test ends", async () => {
+    harness.env.CLOUD_OWNER_TOKEN = "owner-token-test";
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'pro', included_milli = 600000, used_milli = 300000, stripe_status = 'active' where user_id = ?", OWNER);
+    // No yes to the cards: on a real Free account its Small would use credits (the Free rule).
+    harness.exec("delete from cloud_sponsored_consent");
+    harness.exec("update cloud_computers set multiplier_milli = 0 where instance_id = ?", INSTANCE);
+    seedComputer(harness, { instance_id: SECOND, cpu: 4, memory_gb: 8, multiplier_milli: 1000 });
+    provide(harness).resources = { cpu: 2, memory: 4, disk: 4 };
+    provide(harness, SECOND).resources = { cpu: 4, memory: 8, disk: 4 };
+    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
+    harness.insert("cloud_wakes", { user_id: OWNER, instance_id: SECOND, wake_url: "https://box.agent37.app", wake_at: NOW + 3 * HOUR, updated_at: NOW });
+    const stops = () => providerCalls(harness, new RegExp(`POST .*/instances/${SECOND}/stop$`)).length;
+    const stamps = () => harness.row("select warned_80_at, warned_95_at, warned_zero_at from cloud_accounts where user_id = ?", OWNER);
+
+    // Acting as Free looks like Free (the plan, the cards and their question), but keeps Pro's 600 credits and Small's free rate.
+    const acted = await (await owner("account", { userId: OWNER, plan: "free" })).json() as { account: Row; warnings?: string[] };
+    expect([acted.account.inForce, acted.warnings]).toEqual([expect.objectContaining({ plan: "free", hours: 600, smallUsesHours: false }), undefined]);
+    const acting = await accountState();
+    expect([acting.planId, acting.hours.includedMilli, acting.hours.state, acting.sponsored?.ads, acting.sponsored?.smallNeedsCards]).toEqual(["free", 600_000, "none", true, true]);
+    await harness.tick();
+    clock += 10 * HOUR;
+    await harness.tick();
+    expect([stops(), harness.rows("select 1 from cloud_wakes").length, computer(harness).multiplier_milli, meteredMilli(harness), stamps().warned_zero_at]).toEqual([0, 1, 0, 0, null]);
+
+    // Fewer credits on purpose (`hours`) still test running out, and the answer says what the next tick does.
+    const low = await (await owner("account", { userId: OWNER, hours: 7 })).json() as { warnings?: string[] };
+    expect(low.warnings).toEqual([expect.stringContaining("out of credits")]);
+    await harness.tick();
+    expect([stops(), stamps().warned_zero_at]).toEqual([1, clock]);
+    // Reset: Pro's credits are back, so the real out-of-credits warning can fire again later.
+    harness.exec("update cloud_accounts set warned_80_at = ?, warned_95_at = ? where user_id = ?", clock, clock, OWNER);
+    clock += HOUR;
+    expect(await (await owner("account", { userId: OWNER, reset: true })).json()).not.toHaveProperty("warnings");
+    expect([stamps(), harness.row("select hours_restored_at from cloud_accounts where user_id = ?", OWNER).hours_restored_at]).toEqual([{ warned_80_at: null, warned_95_at: null, warned_zero_at: null }, clock]);
+    // A test that ends by itself does the same; a warning the real plan is still past stays sent.
+    await owner("account", { userId: OWNER, hours: 7, days: 1 });
+    harness.exec("update cloud_accounts set used_milli = 500000, warned_80_at = ?, warned_zero_at = ? where user_id = ?", clock, clock, OWNER);
+    expect(await expireAccountTests(harness.env, clock + 2 * DAY)).toBe(1);
+    expect(stamps()).toEqual({ warned_80_at: clock, warned_95_at: null, warned_zero_at: null });
+
+    // The owner's own case: Plus acting as Max reads Max's credits, as before this rule.
+    harness.exec("update cloud_accounts set paid_plan = 'plus', included_milli = 100000, used_milli = 0 where user_id = ?", OWNER);
+    const max = await (await owner("account", { userId: OWNER, plan: "max" })).json() as { account: Row };
+    expect([max.account.inForce, (await accountState()).hours.includedMilli]).toEqual([expect.objectContaining({ plan: "max", hours: 2000 }), 2_000_000]);
+  });
+
   it("where ads reach Free, a no runs Small at half a Medium-hour, a yes at none, each charged for its own stretch; an older no is asked again; ads off frees Small", async () => {
     harness.env.CLOUD_OWNER_TOKEN = "owner-token-test";
     harness.exec("update cloud_computers set multiplier_milli = 0 where instance_id = ?", INSTANCE);
