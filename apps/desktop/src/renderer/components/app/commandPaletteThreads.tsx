@@ -153,7 +153,8 @@ function makeEntry(args: {
     machineOnline: args.machineOnline,
     binding: args.binding,
     titleLower: (args.session.title ?? "").toLowerCase(),
-    laneNameLower: laneName.toLowerCase(),
+    // Both names, so typing the stored name ("primary") still finds the main checkout's threads.
+    laneNameLower: (args.session.laneName && args.session.laneName !== laneName ? `${laneName} ${args.session.laneName}` : laneName).toLowerCase(),
     branchLower: (branch ?? "").toLowerCase(),
     machineNameLower: args.machineName.toLowerCase(),
     goalLower: (args.session.goal ?? "").toLowerCase(),

@@ -60,6 +60,7 @@ import type { LaneSummary } from "../../../shared/types/lanes";
 import type { PrSummary } from "../../../shared/types/prs";
 import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../shared/types/sessions";
 import type { McpRegistryServer, McpRegistryState } from "../../../shared/mcpRegistry";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 /** Transcript entries pulled for one chat preview. Kept tiny on purpose. */
 const CHAT_PREVIEW_ENTRY_LIMIT = 6;
@@ -218,6 +219,12 @@ type MentionRoster = {
   terminalsError: unknown;
 };
 
+/** A terminal's lane as the UI names it ("Main checkout"); its stored name when the lane list has no row for it. */
+function terminalLaneLabel(terminal: ChatTerminalSession, roster: MentionRoster): string {
+  const lane = roster.lanesById.get(terminal.laneId);
+  return lane ? laneDisplayName(lane) : terminal.laneName;
+}
+
 /** One directory read plus the Activity items that describe each machine's work. */
 type MachineRoster = {
   state: AdeAccountMachinesResult["state"] | "unsupported";
@@ -344,7 +351,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       .filter((session) => session.sessionId !== excludeSessionId)
       .map((session) => {
         const lane = roster.lanesById.get(session.laneId);
-        const parts = [lane?.name, session.provider, session.status].filter(Boolean);
+        const parts = [lane ? laneDisplayName(lane) : null, session.provider, session.status].filter(Boolean);
         return {
           kind: "chat" as const,
           id: session.sessionId,
@@ -368,7 +375,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       kind: "terminal" as const,
       id: terminal.terminalId,
       title: terminalTitle(terminal),
-      subtitle: [terminal.laneName, terminal.active ? "running" : terminal.status]
+      subtitle: [terminalLaneLabel(terminal, roster), terminal.active ? "running" : terminal.status]
         .filter(Boolean)
         .join(" · "),
       // Running terminals sort above ended ones of the same age.
@@ -384,7 +391,10 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     // Local DB rows only: the menu never waits on GitHub.
     const prs = listPrs().filter(isMentionablePr);
     const roster = prs.length ? await loadRoster() : null;
-    return prs.map((pr) => prMentionSuggestion(pr, roster?.lanesById.get(pr.laneId)?.name));
+    return prs.map((pr) => {
+      const lane = roster?.lanesById.get(pr.laneId);
+      return prMentionSuggestion(pr, lane ? laneDisplayName(lane) : null);
+    });
   };
 
   const buildMachineCandidates = async (): Promise<ChatMentionSuggestion[]> => {
