@@ -255,7 +255,7 @@ function SharedAppearanceTranscript({
           <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.65] text-white">
             {SAMPLE_USER_PROMPT}
           </div>
-          <div className="mt-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] text-white/60">12:02</div>
+          <div className="mt-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] text-[color:var(--chat-user-timestamp)]">12:02</div>
         </div>
       </div>
 
@@ -289,7 +289,7 @@ function SharedAppearanceTranscript({
           <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*12/14)] leading-[1.65] text-white">
             {SAMPLE_USER_FOLLOWUP}
           </div>
-          <div className="mt-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] text-white/60">12:06</div>
+          <div className="mt-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] text-[color:var(--chat-user-timestamp)]">12:06</div>
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type DragEventHandler, type ReactNode, type Ref } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type DragEventHandler, type ReactNode, type Ref } from "react";
 import { useAppStore, type ChatChromeTint, type ChatShellGeometry } from "../../state/appStore";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -157,6 +157,7 @@ export function ChatSurfaceShell({
   // A display preference with no per-chat answer, so the shell reads it
   // itself rather than every caller (the chat, the Settings preview) passing it.
   const bubbleFill = useAppStore((s) => s.chatUserBubbleFill);
+  const surfaceVars = useMemo(() => chatSurfaceVars(mode, accentColor, { chromeTint }), [mode, accentColor, chromeTint]);
 
   const geometryAttr =
     shellGeometry !== "default"
@@ -180,7 +181,7 @@ export function ChatSurfaceShell({
           className,
         )}
         style={{
-          ...chatSurfaceVars(mode, accentColor, { chromeTint }),
+          ...surfaceVars,
           background: fill,
           ["--chat-pane-reserve-right" as string]: paneReserveRight,
         } as CSSProperties}

@@ -3415,7 +3415,7 @@ function renderEvent(
             {envelope.timestampSynthetic === true && !event.sentAt
               ? null
               // On the accent bubble: the page's text colour is dark on a light theme.
-              : <RowHoverTimestamp iso={event.sentAt ?? envelope.timestamp} className="mr-0.5 text-white/60" />}
+              : <RowHoverTimestamp iso={event.sentAt ?? envelope.timestamp} className="mr-0.5 text-[color:var(--chat-user-timestamp)]" />}
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"

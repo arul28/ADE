@@ -673,8 +673,9 @@ Open **Search prompt history** from **More composer controls** or press Ctrl+R
 on macOS (Ctrl+Shift+R on Windows and Linux). Enter recalls the selected prompt.
 
 In **Settings → Chat**, **Copy prompts to clipboard** is off by default.
-The **Message bubble** setting offers Gradient and Solid. Solid uses a
-single-color fill for your messages and for the composer background in light mode.
+The **Message bubble** setting offers Gradient and Solid. Solid uses the
+gradient's middle color for your messages, darkened as needed for white text.
+It also gives the light-mode composer a solid background.
 
 ### Drafts and scheduled send
 

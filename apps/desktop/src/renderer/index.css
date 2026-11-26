@@ -3775,6 +3775,7 @@ button, [role="button"] {
   /* The bubble is the accent colour on every theme, so what sits on it keeps
      the dark-page ink and chip backing. */
   --chat-ink: #ffffff;
+  --chat-user-timestamp: rgba(255, 255, 255, 0.6);
   --chat-inline-code-bg: rgba(0, 0, 0, 0.30);
   --chat-table-bg: rgba(10, 9, 14, 0.6);
   /* Kept in sync with CHAT_USER_BUBBLE_GRADIENT_DEFAULT in chatSurfaceTheme.ts. */
@@ -3802,6 +3803,7 @@ button, [role="button"] {
    page's scrim is not needed. */
 [data-chat-bubble-fill="solid"] .ade-chat-message-card-user,
 [data-theme="light"] [data-chat-bubble-fill="solid"] .ade-chat-message-card-user {
+  --chat-user-timestamp: var(--chat-ink);
   background: var(--chat-user-bubble-solid, color-mix(in srgb, var(--chat-accent) 65%, #000000 35%));
 }
 
