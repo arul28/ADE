@@ -10,6 +10,7 @@ import {
   createPersonalChatScope,
   createProviderStatusService,
   decorateProjectListWithIcons,
+  readMachineNextScheduledWakeAt,
   readMachineRuntimeActivitySummary,
   readMachineUpdateImpact,
 } from "./multiProjectRpcServer";
@@ -874,6 +875,48 @@ describe("multi-project RPC server", () => {
       activeAgentTurns: 1,
       activeWorkSessions: 2,
     });
+  });
+
+  it("sends a cloud computer's soonest pending timer across open projects and personal chats, never booting a project", async () => {
+    // What the keep-awake sends the account server as the computer's next
+    // wake (`PUT /cloud/wake`): a dropped timer runs a check hours late, and a
+    // finished one wakes a paid computer for nothing.
+    const runtimeWith = (
+      items: Array<{ status: string; nextRunAt: string | null }>,
+      rules: Array<{ enabled?: boolean; nextRunAt?: string | null }> = [],
+    ) => ({
+      agentChatService: { listScheduledWork: async () => items },
+      automationService: { list: () => rules },
+    });
+    const project = runtimeWith(
+      [
+        { status: "scheduled", nextRunAt: "2026-11-26T10:00:00.000Z" },
+        { status: "paused", nextRunAt: "2026-11-26T08:00:00.000Z" },
+        { status: "scheduled", nextRunAt: null },
+      ],
+      [
+        { enabled: false, nextRunAt: "2026-11-26T08:30:00.000Z" },
+        { enabled: true, nextRunAt: "2026-11-26T09:30:00.000Z" },
+      ],
+    );
+    const personal = runtimeWith([
+      { status: "scheduled", nextRunAt: "2026-11-26T09:00:00.000Z" },
+      { status: "completed", nextRunAt: "2026-11-26T07:00:00.000Z" },
+    ]);
+    const getIfBooted = vi.fn((projectId: string) => (projectId === "project-open" ? Promise.resolve({ runtime: project }) : null));
+    const sources = {
+      projectRegistry: { list: () => [{ projectId: "project-open" }, { projectId: "project-closed" }] } as never,
+      scopeRegistry: { getIfBooted } as never,
+    };
+    const read = (bootedRuntime: () => Promise<unknown>) =>
+      readMachineNextScheduledWakeAt({ ...sources, personalChatScope: { bootedRuntime: bootedRuntime as never } });
+
+    expect(await read(async () => personal)).toBe(Date.parse("2026-11-26T09:00:00.000Z"));
+    // Personal chats not open: the project's enabled automation is sooner than its chat timer.
+    expect(await read(async () => null)).toBe(Date.parse("2026-11-26T09:30:00.000Z"));
+    expect(getIfBooted).toHaveBeenCalledWith("project-closed");
+    getIfBooted.mockImplementation(() => null);
+    expect(await read(async () => null)).toBeNull();
   });
 
   it("keeps the complete inline icon catalog below its hard wire budget", async () => {
