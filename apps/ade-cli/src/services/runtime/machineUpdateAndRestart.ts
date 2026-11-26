@@ -22,7 +22,7 @@ import type {
 } from "../../../../desktop/src/shared/types/remoteRuntime";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
 import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
-import { resolveSelectedUpdateTrack } from "./updateTrackStore";
+import { resolveSelectedUpdateTrack, type PendingTrackSwitch } from "./updateTrackStore";
 import type { TrackSwitchCheckResult } from "../../../../desktop/src/shared/types";
 import type {
   DesktopAppUpdateInstallResult,
@@ -136,10 +136,9 @@ export type MachineTrackSwitchDeps = {
   check: (target: UpdateTrack) => Promise<TrackSwitchCheckResult>;
   /**
    * Save the choice in `update-track.json`, for a machine with no app.
-   * `pendingSwitchFrom` marks a switch whose build is still to install; the
-   * brain's next start settles it (`settlePendingTrackSwitch`).
+   * Record the approved build while the detached installer is running.
    */
-  save: (target: UpdateTrack, options?: { pendingSwitchFrom?: UpdateTrack }) => void;
+  save: (target: UpdateTrack, pending?: PendingTrackSwitch) => void;
   /** Hand the switch to this machine's open app, which owns its update (`requestDesktopAppTrackSwitch`). */
   requestDesktopApp?: (target: UpdateTrack, requestedBy: UpdateRequestedBy | null) => Promise<DesktopAppUpdateRouting>;
 };
@@ -786,7 +785,8 @@ export async function runMachineTrackSwitch(
   }
 
   const runningTrack = updateTrackOfVersion(ownVersion);
-  if (target !== runningTrack && !check.targetVersion) {
+  const targetVersion = check.targetVersion;
+  if (target !== runningTrack && !targetVersion) {
     return refuse(`ADE couldn't find the newest ${label} build to install. Try again later.`);
   }
   // Back to the track the running build is on: saved, nothing to install.
@@ -794,12 +794,14 @@ export async function runMachineTrackSwitch(
   // new build is the one running (`settlePendingTrackSwitch`), so an install
   // that rolls back later does not leave a half-made switch behind.
   try {
-    switcher.save(target, target === runningTrack ? undefined : { pendingSwitchFrom: runningTrack });
+    switcher.save(target, target !== runningTrack && targetVersion
+      ? { pendingSwitchFrom: runningTrack, pendingSwitchVersion: targetVersion }
+      : undefined);
   } catch (error) {
     return refuse(`ADE couldn't save the choice: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (target === runningTrack) return followsTrackAgainResult(label, ownVersion, "standalone", null);
-  const result = await runStandaloneUpdateAndRestart(deps, check.targetVersion, { updateRequested: true, requestedBy, trackSwitch: true });
+  const result = await runStandaloneUpdateAndRestart(deps, targetVersion, { updateRequested: true, requestedBy, trackSwitch: true });
   if (result.updateApplied || result.ok) return result.ok ? { ...result, message: `Switching to ${label}. ${result.message}` } : result;
   // The build never installed: keep following the running build's track, so
   // this machine's next ordinary update is not a half-made switch.

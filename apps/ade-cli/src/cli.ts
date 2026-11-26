@@ -32313,16 +32313,6 @@ async function runServe(
   // embedder's lifecycle — it is the same "never claim machine authority"
   // invariant that forces sync off, so it belongs to the profile rather
   // than to whatever the caller's role default happens to be.
-  // A track switch this brain saved before installing (`machine.switchUpdateTrack`
-  // on a machine with no app) is settled now that a build is running.
-  if (!embedded) {
-    try {
-      const settled = settlePendingTrackSwitch(VERSION);
-      if (settled) headlessProjectLogger.info("brain.track_switch_settled", { outcome: settled, version: VERSION });
-    } catch (error) {
-      headlessProjectLogger.warn("brain.track_switch_settle_failed", { error: String(error) });
-    }
-  }
   const machineUpdateControls = embedded
     ? null
     : createMachineUpdateControls({
@@ -32349,10 +32339,10 @@ async function runServe(
           // its transaction status fences updates until the new brain starts.
           const { readBrainUpdateStatus } = await import("./commands/brainUpdate");
           const update = readBrainUpdateStatus();
-          if (update.updatedAt < saved.updatedAt || update.state === "idle") return false;
-          if (update.state !== "failed") return true;
-          settlePendingTrackSwitch(VERSION);
-          return false;
+          if (update.updatedAt < saved.updatedAt || update.state === "idle"
+            || (saved.pendingSwitchVersion && update.version !== saved.pendingSwitchVersion)) return false;
+          const settled = settlePendingTrackSwitch(VERSION, update);
+          return !settled && update.state !== "failed" && update.state !== "succeeded";
         },
         check: async (target) => {
           // An ADE Cloud computer updates itself from the account's server.
@@ -32368,9 +32358,9 @@ async function runServe(
             throw error;
           }
         },
-        save: (target, options) => {
+        save: (target, pending) => {
           try {
-            writeSavedUpdateTrack(target, process.env, undefined, options);
+            writeSavedUpdateTrack(target, process.env, undefined, pending);
           } catch (error) {
             headlessProjectLogger.warn("brain.track_switch_save_failed", { target, error: String(error) });
             throw error;
@@ -34010,6 +34000,15 @@ async function runServe(
    * when the app quits, which is not a crash.
    */
   const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (writesBrainRun && readSavedUpdateTrack()?.pendingSwitchFrom) {
+    try {
+      const { readBrainUpdateStatus } = await import("./commands/brainUpdate");
+      const settled = settlePendingTrackSwitch(VERSION, readBrainUpdateStatus());
+      if (settled) headlessProjectLogger.info("brain.track_switch_settled", { outcome: settled, version: VERSION });
+    } catch (error) {
+      headlessProjectLogger.warn("brain.track_switch_settle_failed", { error: String(error) });
+    }
+  }
   if (!embedded) {
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";

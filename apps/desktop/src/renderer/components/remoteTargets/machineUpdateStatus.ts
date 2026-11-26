@@ -1,5 +1,5 @@
 import type { RemoteRuntimeConnectionStatus, RemoteRuntimeUpdateBlock } from "../../../shared/types";
-import { isMachineVersionOutdated, type ConnectedMachine } from "./remoteMachineModel";
+import { isMachineVersionCurrent, machineUpdateTrack, type ConnectedMachine } from "./remoteMachineModel";
 import { updateTrackOfVersion } from "../../../shared/updateTrack";
 
 // ---------------------------------------------------------------------------
@@ -103,18 +103,20 @@ export type MachineUpdateStatus = {
  */
 export function describeMachineUpdateAttempt(
   attempt: MachineUpdateAttempt,
-  machine: Pick<ConnectedMachine, "version" | "hostStartedAt" | "hostUpdateBlock"> & { connected: boolean },
+  machine: Pick<ConnectedMachine, "version" | "track" | "appTrack" | "hostStartedAt" | "hostUpdateBlock"> & { connected: boolean },
   nowMs: number,
 ): MachineUpdateStatus {
   const pending = attempt.pendingVersion;
   if (!pending) return { ok: attempt.ok, message: attempt.message, inFlight: false };
+  const pendingTrack = updateTrackOfVersion(pending);
   // Landed: on the pending build's track at that version or newer. A switch
   // from Beta to an older Stable is not landed while the newer Beta still runs.
   if (
     machine.connected
     && machine.version
-    && updateTrackOfVersion(machine.version) === updateTrackOfVersion(pending)
-    && !isMachineVersionOutdated(machine.version, pending)
+    && machineUpdateTrack(machine) === pendingTrack
+    && (machine.appTrack == null || machine.appTrack === pendingTrack)
+    && isMachineVersionCurrent(machine.version, pending)
   ) {
     return { ok: true, message: `Updated to ${machine.version}.`, inFlight: false };
   }

@@ -172,6 +172,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
 
   // The account's phones. A host without the call lists none; a failed read
   // says so under Machines (with Retry), and every other setting still works.
+  const [phoneLoadAttempt, setPhoneLoadAttempt] = useState(0);
   const [phoneRoster, setPhoneRoster] = useState<{
     ownerId: string;
     phones: AttentionAccountDevice[] | null;
@@ -194,9 +195,10 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
         captureError(listError, { tags: { area: "activity_settings", step: "list_phones" }, fingerprint: ["activity_settings", "list_phones"] });
       });
     return () => { cancelled = true; };
-  }, [accountOwnerId, canReadDevices, loadAttempt]);
+  }, [accountOwnerId, canReadDevices, phoneLoadAttempt]);
 
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), []);
+  const retryPhones = useCallback(() => setPhoneLoadAttempt((attempt) => attempt + 1), []);
 
   const flashSaved = useCallback(() => {
     setSaved(true);
@@ -315,6 +317,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     loading,
     loadFailed,
     retryLoad,
+    retryPhones,
     /** Controls are read-only: loading, signed out, or the real values never arrived. */
     busy: loading || !accountOwnerId || loadedOwnerId !== accountOwnerId || loadFailed,
     savingTargets,
@@ -746,7 +749,7 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
             icon={<DeviceMobile size={14} />}
             title="Couldn’t load your phones"
             hint={machines.length > 0 ? "Your computers above still work. Try again in a moment." : "Try again in a moment."}
-            control={<button type="button" className="ade-modern-btn" onClick={model.retryLoad}>Retry</button>}
+            control={<button type="button" className="ade-modern-btn" onClick={model.retryPhones}>Retry</button>}
           />
         ) : null}
       </ModernRows>
