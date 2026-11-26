@@ -3,6 +3,9 @@ import { app, BrowserWindow, powerMonitor, type WebContents } from "electron";
 import { createTrustedIpcHandle } from "./trustedRendererSender";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
+import { normalizeUpdateTrack } from "../../../shared/updateTrack";
+import { failedCheckResult } from "../../../../../ade-cli/src/services/runtime/machineUpdateAndRestart";
+import { isPeerMissingMethodMessage } from "../../../shared/sentry/expectedFailure";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { thisMachineDisplayName } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
@@ -2015,16 +2018,7 @@ export function registerRuntimeBridge({
       // keep running the old ADE, so it says why before anything is sent.
       const blocked = await cloudUpdateBlocker(target);
       if (blocked) {
-        return {
-          ok: false,
-          updateApplied: false,
-          currentVersion: status?.version ?? null,
-          targetVersion,
-          steps: [{ id: "check", status: "failed", detail: blocked }],
-          message: blocked,
-          route: "standalone",
-          pendingVersion: null,
-        };
+        return failedCheckResult(blocked, { currentVersion: status?.version ?? null, targetVersion, route: "standalone" });
       }
       if (status?.state === "connected" && isWindowsSelfInstallBlocked(status.version, status.arch)) {
         return await updateViaRemoteTerminal({
@@ -2060,6 +2054,53 @@ export function registerRuntimeBridge({
           retryOnConnectionError: false,
         },
       );
+    },
+  );
+
+  // "Stable / Beta" on another machine (Settings › Update other machines).
+  // The machine checks its own databases and installs; an older machine
+  // without the method is told so in the result, never as a raw error.
+  handle(
+    IPC.remoteRuntimeSwitchUpdateTrack,
+    async (
+      _event,
+      arg: { id: string; track?: unknown },
+    ): Promise<RemoteRuntimeUpdateAndRestartResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const track = normalizeUpdateTrack(arg?.track);
+      if (!track) throw new Error("Choose Stable or Beta.");
+      const target = requireRemoteTarget(id);
+      const status = remoteConnectionService.snapshot().connections
+        .find((connection) => connection.target.id === target.id);
+      if (isWindowsSelfInstallBlocked(status?.version, status?.arch)) {
+        return failedCheckResult(
+          `Use Update & restart on ${target.name} before switching tracks. Its current Windows build needs that updater.`,
+          { currentVersion: status?.version ?? null, route: "desktop_app" },
+        );
+      }
+      try {
+        return await remoteConnectionService.callMachineMethod<RemoteRuntimeUpdateAndRestartResult>(
+          target.id,
+          "machine.switchUpdateTrack",
+          {
+            track,
+            requestedBy: {
+              machineName: (await thisMachineDisplayName()) ?? undefined,
+              clientKind: "desktop",
+            },
+          },
+          // As `updateAndRestart`: the install and restart drop the connection,
+          // and a silent retry would run the switch a second time.
+          { timeoutMs: REMOTE_MACHINE_UPDATE_TIMEOUT_MS, retryOnConnectionError: false },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isPeerMissingMethodMessage(message)) throw error;
+        return failedCheckResult(
+          `Update ADE on ${target.name} first: its version can't switch tracks from another computer.`,
+          { currentVersion: status?.version ?? null, route: "standalone" },
+        );
+      }
     },
   );
 

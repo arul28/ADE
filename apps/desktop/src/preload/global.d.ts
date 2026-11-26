@@ -668,6 +668,8 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
+  AttentionAccountDevice,
+  AttentionPreferenceScope,
   CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
@@ -1726,6 +1728,16 @@ declare global {
           targetVersion?: string | null,
         ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
         /**
+         * Moves a connected machine to the other update track: the guarded
+         * switch its own Settings › About runs, then the install of that
+         * track's build, reported like `updateAndRestart`. Always
+         * user-initiated; absent on a client that cannot ask.
+         */
+        switchUpdateTrack?: (
+          id: string,
+          track: UpdateTrack,
+        ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
+        /**
          * What "Update & restart" would stop on that machine right now. Never
          * rejects: a machine that cannot answer comes back `checked: false`.
          */
@@ -2316,7 +2328,21 @@ declare global {
         putMachinePreferences?: (
           accountOwnerId: string,
           machineKey: string,
-          preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
+          preferences: Partial<AttentionPreferenceScope>,
+        ) => Promise<void>;
+        /**
+         * The account's phones and tablets, for choosing which get
+         * notifications. Account data on the relay, so no pin. Absent where
+         * the host can't list them; the UI then shows no phone rows.
+         */
+        listDevices?: (
+          accountOwnerId: string,
+        ) => Promise<AttentionAccountDevice[]>;
+        /** One phone's override (`preferences.devices[deviceId]`). Account-scoped, no pin. */
+        putDevicePreferences?: (
+          accountOwnerId: string,
+          deviceId: string,
+          preferences: Partial<AttentionPreferenceScope>,
         ) => Promise<void>;
         /**
          * Mute one chat's notifications on every device. Account-scoped, so it

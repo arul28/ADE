@@ -174,7 +174,7 @@ import { startBrainClientUpdateCheck } from "./services/runtime/brainClientUpdat
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
-import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
+import { readSavedUpdateTrack, resolveSelectedUpdateTrack, settlePendingTrackSwitch, writeSavedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
@@ -32320,6 +32320,10 @@ async function runServe(
     });
   };
 
+  // This machine's desktop app, over the bridge the brain already uses for the built-in browser.
+  const desktopBridgeSocketPath = (): string => process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+    || resolveReachableMachineDesktopBridgeSocketPath();
+
   // "Update & restart" asks this machine's desktop app, when one is running, to
   // install its own update: an app that owns the brain puts its own runtime
   // back over a standalone one. On a Mac or Windows PC whose app runs the
@@ -32331,8 +32335,7 @@ async function runServe(
     const { hostAppPath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
     );
-    const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || resolveReachableMachineDesktopBridgeSocketPath();
+    const socketPath = desktopBridgeSocketPath();
     let routing = await requestDesktopAppUpdate({ socketPath, targetVersion, requestedBy });
     const closedAppPath = routing.attached ? null : hostAppPath();
     if (closedAppPath && !routing.attached) {
@@ -32379,6 +32382,61 @@ async function runServe(
           "../../desktop/src/main/services/native/nativeHelperPaths"
         );
         return readInstalledDesktopApp();
+      },
+      // "Stable / Beta" pressed on another computer (`machine.switchUpdateTrack`).
+      trackSwitch: {
+        isInstalling: async () => {
+          const saved = readSavedUpdateTrack();
+          if (!saved?.pendingSwitchFrom || !saved.updatedAt) return false;
+          // The RPC slot covers staging. Once the detached helper takes over,
+          // its transaction status fences updates until the new brain starts.
+          const { readBrainUpdateStatus } = await import("./commands/brainUpdate");
+          const update = readBrainUpdateStatus();
+          if (update.updatedAt < saved.updatedAt || update.state === "idle"
+            || (saved.pendingSwitchVersion && update.version !== saved.pendingSwitchVersion)) return false;
+          const settled = settlePendingTrackSwitch(VERSION, update);
+          return !settled && update.state !== "failed" && update.state !== "succeeded";
+        },
+        check: async (target) => {
+          // An ADE Cloud computer updates itself from the account's server.
+          if (isAdeCloudComputer()) {
+            return { allowed: false, target, reason: "ADE Cloud updates itself, so its track isn't switched from here." };
+          }
+          const { checkTrackSwitch } = await import("../../desktop/src/main/services/updates/trackSwitchGuard");
+          try {
+            return await checkTrackSwitch({ target, runningVersion: VERSION, logger: headlessProjectLogger });
+          } catch (error) {
+            // The asking machine shows the refusal; this machine's log keeps why.
+            headlessProjectLogger.warn("brain.track_switch_check_failed", { target, error: String(error) });
+            throw error;
+          }
+        },
+        save: (target, pending) => {
+          try {
+            writeSavedUpdateTrack(target, process.env, undefined, pending);
+          } catch (error) {
+            headlessProjectLogger.warn("brain.track_switch_save_failed", { target, error: String(error) });
+            throw error;
+          }
+        },
+        requestDesktopApp: async (target, requestedBy) => {
+          const { hostAppPath, requestDesktopAppTrackSwitch, requestTrackSwitchThroughClosedApp } =
+            await import("./services/runtime/desktopAppUpdateBridge");
+          const socketPath = desktopBridgeSocketPath();
+          let routing = await requestDesktopAppTrackSwitch({ socketPath, track: target, requestedBy });
+          if (!routing.attached) {
+            const { readInstalledDesktopApp } = await import("../../desktop/src/main/services/native/nativeHelperPaths");
+            const installed = readInstalledDesktopApp();
+            const appPath = hostAppPath() ?? (installed?.updatable ? installed.path : null);
+            if (appPath) {
+              routing = await requestTrackSwitchThroughClosedApp({ appPath, socketPath, track: target, requestedBy });
+            }
+          }
+          headlessProjectLogger.info("brain.remote_track_switch_route", routing.attached
+            ? { route: "desktop_app", target, outcome: routing.result.outcome }
+            : { route: "standalone", target, detail: routing.detail });
+          return routing;
+        },
       },
     });
   // The phone's "Update & restart" (sync commands), installed before any
@@ -34001,6 +34059,15 @@ async function runServe(
    * when the app quits, which is not a crash.
    */
   const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (writesBrainRun && readSavedUpdateTrack()?.pendingSwitchFrom) {
+    try {
+      const { readBrainUpdateStatus } = await import("./commands/brainUpdate");
+      const settled = settlePendingTrackSwitch(VERSION, readBrainUpdateStatus());
+      if (settled) headlessProjectLogger.info("brain.track_switch_settled", { outcome: settled, version: VERSION });
+    } catch (error) {
+      headlessProjectLogger.warn("brain.track_switch_settle_failed", { error: String(error) });
+    }
+  }
   if (!embedded) {
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";

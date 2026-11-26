@@ -423,13 +423,19 @@ export function formatThisComputerVersion(args: {
 export function machineVersionFacts(
   status: Pick<RemoteRuntimeConnectionStatus, "version" | "appVersion"> | null | undefined,
   target: Pick<RemoteRuntimeTarget, "runtimeBinaryVersion"> | null | undefined,
-): { version: string | null; versionLabel: string | null } {
+): { version: string | null; versionLabel: string | null; track: UpdateTrack; appTrack?: UpdateTrack } {
   const live = status?.version?.trim() || null;
   const versions = {
     brainVersion: live ?? target?.runtimeBinaryVersion ?? null,
     appVersion: live ? status?.appVersion ?? null : null,
   };
-  return { version: machineComparableVersion(versions), versionLabel: formatMachineVersions(versions) };
+  const version = machineComparableVersion(versions);
+  return {
+    version,
+    versionLabel: formatMachineVersions(versions),
+    track: updateTrackOfVersion(versions.brainVersion ?? version),
+    ...(versions.appVersion ? { appTrack: updateTrackOfVersion(versions.appVersion) } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +678,8 @@ export type SavedMachineRow = {
   version: string | null;
   /** What to show: one version, or both when the brain and app drift. */
   versionLabel: string | null;
+  track?: UpdateTrack;
+  appTrack?: UpdateTrack;
   /** Set only for the unavailable section (offline / unsupported). */
   unavailableReason: string | null;
 };
@@ -739,6 +747,8 @@ export type ConnectedMachine = {
    * not report their saved choice). Absent: the track of `version`.
    */
   track?: UpdateTrack;
+  /** The installed desktop app's track, when the brain reported its version. */
+  appTrack?: UpdateTrack;
   /** What its tile is drawn from (`MachineAvatar`); absent where unknown. */
   colorKey?: string;
   arch?: string | null;
@@ -759,13 +769,10 @@ export function connectedMachinesFromSnapshot(
   return (snapshot?.connections ?? [])
     .filter((connection) => connection.state === "connected")
     .map((connection) => {
-      const facts = machineVersionFacts(connection, connection.target);
-      const brainVersion = connection.version?.trim() || connection.target.runtimeBinaryVersion || facts.version;
       return {
         id: connection.target.id,
         name: connection.target.name,
-        ...facts,
-        track: updateTrackOfVersion(brainVersion),
+        ...machineVersionFacts(connection, connection.target),
         colorKey: machineColorKey(connection.target),
         arch: connection.arch ?? connection.target.lastSeenArch ?? null,
         updateInstallMode: connection.updateInstallMode,

@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { extractError } from "../../lib/format";
+import type { RemoteRuntimeUpdateAndRestartResult } from "../../../shared/types";
+import { ipcErrorMessage } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
-import { confirmMachineUpdates, type MachineWithImpact } from "./MachineUpdateImpact";
+import { confirmMachineTrackSwitch, confirmMachineUpdates, type MachineWithImpact } from "./MachineUpdateImpact";
+import { updateTrackLabel, type UpdateTrack } from "../../../shared/updateTrack";
 import {
   connectedMachinesFromSnapshot,
   isMachineVersionCurrent,
   knownAdeVersions,
   machinesBehindOnTheirTrack,
+  machineUpdateTrack,
   type ConnectedMachine,
   type MachineUpdateTarget,
 } from "./remoteMachineModel";
@@ -76,6 +79,12 @@ function withIds(current: ReadonlySet<string>, ids: readonly string[], present: 
     else next.delete(id);
   }
   return next;
+}
+
+/** Whether this client can move another machine to the other update track. */
+export function canSwitchMachineTracks(): boolean {
+  const remoteRuntime = window.ade?.remoteRuntime as { switchUpdateTrack?: unknown } | undefined;
+  return isAdeAvailable(remoteRuntime?.switchUpdateTrack);
 }
 
 /**
@@ -192,6 +201,19 @@ function alreadyCurrentAttempt(version: string): MachineUpdateAttempt {
 }
 
 async function runMachineUpdate(machine: ConnectedMachine, targetVersion: string | null): Promise<MachineUpdateAttempt> {
+  return await runMachineCall(
+    machine,
+    () => window.ade.remoteRuntime.updateAndRestart(machine.id, targetVersion),
+    `${machine.name} updated — reconnecting…`,
+  );
+}
+
+/** One update-shaped call to a machine, tracked in the store as an update attempt. */
+async function runMachineCall(
+  machine: ConnectedMachine,
+  call: () => Promise<RemoteRuntimeUpdateAndRestartResult>,
+  okMessage: string,
+): Promise<MachineUpdateAttempt> {
   const { [machine.id]: _previous, ...otherAttempts } = state.attempts;
   setState({
     updatingIds: withIds(state.updatingIds, [machine.id], true),
@@ -199,12 +221,13 @@ async function runMachineUpdate(machine: ConnectedMachine, targetVersion: string
   });
   let attempt: MachineUpdateAttempt;
   try {
-    const result = await window.ade.remoteRuntime.updateAndRestart(machine.id, targetVersion);
-    attempt = machineUpdateAttemptFromResult(result, `${machine.name} updated — reconnecting…`, Date.now());
+    const result = await call();
+    attempt = machineUpdateAttemptFromResult(result, okMessage, Date.now());
   } catch (error) {
     attempt = {
       ok: false,
-      message: extractError(error),
+      // Without Electron's "Error invoking remote method" wrapper: the row shows this.
+      message: ipcErrorMessage(error) || `ADE couldn't reach ${machine.name}. Try again.`,
       pendingVersion: null,
       downloading: false,
       startedAtMs: Date.now(),
@@ -265,6 +288,31 @@ export async function requestMachineUpdates(machines: readonly MachineUpdateTarg
     setState({ checkingIds: withIds(state.checkingIds, ids, false) });
   }
   if (confirmed) await runMachineUpdates(idle);
+}
+
+/**
+ * "Stable / Beta" on a machine's row: names what is running there, and on yes
+ * asks that machine to switch (its own database guard, then the install of
+ * that track's build). The outcome shows as the row's update line.
+ */
+export async function requestMachineTrackSwitch(machine: ConnectedMachine, track: UpdateTrack): Promise<void> {
+  if (!canSwitchMachineTracks() || isMachineUpdateBusy(state, machine) || machineUpdateTrack(machine) === track) return;
+  const switchUpdateTrack = window.ade.remoteRuntime.switchUpdateTrack;
+  if (!switchUpdateTrack) return;
+  setState({ checkingIds: withIds(state.checkingIds, [machine.id], true) });
+  let confirmed = false;
+  try {
+    const [withImpact] = await readMachinesUpdateImpact([machine]);
+    confirmed = withImpact ? await confirmMachineTrackSwitch(withImpact, track) : false;
+  } finally {
+    setState({ checkingIds: withIds(state.checkingIds, [machine.id], false) });
+  }
+  if (!confirmed) return;
+  await runMachineCall(
+    machine,
+    () => switchUpdateTrack(machine.id, track),
+    `${machine.name} is switching to ${updateTrackLabel(track)} — reconnecting…`,
+  );
 }
 
 /**

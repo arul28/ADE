@@ -621,6 +621,11 @@ struct AccountAttentionAcknowledgmentResult: Equatable, Sendable {
   let stale: [String]
 }
 
+struct AccountAttentionDeliveryPreferences: Sendable {
+  let mutedSessionIds: [String]
+  let notificationsPaused: Bool
+}
+
 struct AccountAttentionRelayClient {
   enum RelayError: LocalizedError, Equatable {
     case unauthorized
@@ -805,13 +810,13 @@ struct AccountAttentionRelayClient {
     )
   }
 
-  /// The account-wide per-chat mute list (`preferences.mutedSessionIds`).
-  /// An account with no saved preferences has an empty list.
-  func fetchMutedSessionIds(
+  /// Account settings that affect notifications on this device.
+  func fetchDeliveryPreferences(
     baseURL: URL,
     token: String,
+    deviceId: String,
     refreshToken: (() async -> String?)? = nil
-  ) async throws -> [String] {
+  ) async throws -> AccountAttentionDeliveryPreferences {
     let data = try await perform(
       url: endpoint(baseURL, "preferences"),
       method: "GET",
@@ -819,7 +824,15 @@ struct AccountAttentionRelayClient {
       body: nil,
       refreshToken: refreshToken
     )
-    return try Self.mutedSessionIds(fromPreferencesResponse: data)
+    let preferences = try Self.parsePreferencesResponse(data)
+    let account = preferences["account"] as? [String: Any]
+    let devices = preferences["devices"] as? [String: Any]
+    let device = devices?[deviceId] as? [String: Any]
+    return AccountAttentionDeliveryPreferences(
+      mutedSessionIds: Self.mutedSessionIds(from: preferences),
+      notificationsPaused: (account?["notificationsEnabled"] as? Bool) == false
+        || (device?["deviceDeliveryEnabled"] as? Bool) == false
+    )
   }
 
   /// Mutes or unmutes one chat on every device. This route is the only writer
@@ -845,15 +858,18 @@ struct AccountAttentionRelayClient {
       body: body,
       refreshToken: refreshToken
     )
-    return try Self.mutedSessionIds(fromPreferencesResponse: data)
+    return Self.mutedSessionIds(from: try Self.parsePreferencesResponse(data))
   }
 
-  private static func mutedSessionIds(fromPreferencesResponse data: Data) throws -> [String] {
+  private static func parsePreferencesResponse(_ data: Data) throws -> [String: Any] {
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       throw RelayError.invalidSnapshot
     }
-    let preferences = object["preferences"] as? [String: Any]
-    let list = preferences?["mutedSessionIds"] as? [Any] ?? []
+    return object["preferences"] as? [String: Any] ?? [:]
+  }
+
+  private static func mutedSessionIds(from preferences: [String: Any]) -> [String] {
+    let list = preferences["mutedSessionIds"] as? [Any] ?? []
     return list.compactMap { entry in
       guard let id = (entry as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
             !id.isEmpty else { return nil }

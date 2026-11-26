@@ -12,6 +12,7 @@ import { openBytes, sealBytes, userKeys } from "./seal";
 import { callingComputer, segmentsAfter } from "./sessionCopies";
 import { logCloud, type CloudEnv } from "./store";
 import { sweep, sweepStatement, type SweepTarget } from "./storageSweeps";
+import { readBoundedBytes } from "../sinkUtils";
 
 /**
  * Fork capsules (README, "ADE without a computer"): what a provider needs to
@@ -166,8 +167,9 @@ async function handlePutPart(request: Request, env: CloudEnv, bucket: R2Bucket, 
   // The upload this part belongs to; an older ADE names none and adds to the pending one.
   const named = request.headers.get(CLOUD_CAPSULE_UPLOAD_HEADER)?.trim() || null;
   if (named && !UPLOAD_ID.test(named)) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
-  const plain = new Uint8Array(await request.arrayBuffer());
-  if (plain.byteLength > CLOUD_CAPSULE_MAX_PART_BYTES) return partTooLarge();
+  const read = await readBoundedBytes(request, CLOUD_CAPSULE_MAX_PART_BYTES);
+  if (!read.ok) return partTooLarge();
+  const plain = read.bytes;
   if (plain.byteLength === 0) return fail("bad_request", "That part is empty.", 400);
   // Part 1 starts a new upload under its own prefix; a later part needs the one before it, in the same upload.
   // The committed capsule stays as it is until this upload commits.

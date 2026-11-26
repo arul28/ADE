@@ -2007,6 +2007,8 @@ export function registerIpc({
     | "putAttentionPreferences"
     | "putActivityMachinePreferences"
     | "setAttentionSessionMuted"
+    | "listAttentionDevices"
+    | "putAttentionDevicePreferences"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -3503,6 +3505,25 @@ export function registerIpc({
         : {};
       return attentionAccountCoordinator.putActivityMachinePreferences(
         request.machineKey,
+        request.preferences,
+        request.accountOwnerId,
+      );
+    },
+  );
+
+  handle(
+    IPC.attentionListDevices,
+    async (_event, input: unknown) => attentionAccountCoordinator.listDevices(input),
+  );
+
+  handle(
+    IPC.attentionPutDevicePreferences,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as { accountOwnerId?: unknown; deviceId?: unknown; preferences?: unknown }
+        : {};
+      return attentionAccountCoordinator.putDevicePreferences(
+        request.deviceId,
         request.preferences,
         request.accountOwnerId,
       );

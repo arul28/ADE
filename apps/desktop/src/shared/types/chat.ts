@@ -2906,6 +2906,8 @@ export type AgentChatEventHistorySnapshot = {
    * Pass it as `beforeOffset` to `getChatEventHistoryPage` to page older
    * history. Null/undefined when the session had no transcript file or the
    * transcript was not truncated at the file level (nothing older on disk).
+   * A resting ADE Cloud chat's saved copy answers a part cursor here instead
+   * (`savedCopyHistoryCursor`), never a byte offset.
    */
   tailStartOffset?: number | null;
   /**
@@ -2934,8 +2936,10 @@ export type AgentChatEventHistorySnapshot = {
 export type AgentChatEventHistoryPage = {
   sessionId: string;
   events: AgentChatEventEnvelope[];
-  /** Byte offset in the transcript where this page begins. Pass as the next request's beforeOffset. 0 = head reached. */
+  /** Byte offset in the transcript where this page begins (a saved copy's part cursor when `savedCopy`). Pass as the next request's beforeOffset. 0 = head reached. */
   startOffset: number;
+  /** Read from the account's saved copy of an ADE Cloud chat, not from its computer. */
+  savedCopy?: boolean;
   /**
    * Byte offset of each row in `events`, positionally aligned with it.
    *

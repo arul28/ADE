@@ -600,6 +600,8 @@ describe("describeMachineUpdateAttempt", () => {
   it.each([
     ["landed: the machine reports the target", installing, { connected: true, version: "1.2.91" }, 0, { ok: true, inFlight: false, landed: true }],
     ["landed: the machine reports something newer", installing, { connected: true, version: "1.2.92" }, 0, { ok: true, inFlight: false, landed: true }],
+    ["waiting: the app is on Stable and the brain is still on Beta", installing, { connected: true, version: "1.2.91", track: "beta", appTrack: "stable" }, 0, { ok: true, inFlight: true, landed: false }],
+    ["waiting: the brain is on Stable and the app is still on Beta", installing, { connected: true, version: "1.2.91", track: "stable", appTrack: "beta" }, 0, { ok: true, inFlight: true, landed: false }],
     ["waiting: still old inside the grace", installing, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS - 1, { ok: true, inFlight: true, landed: false }],
     ["failed: still old after the grace", installing, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],
     ["failed: an older host's update that never landed", olderHost, { connected: true, version: "1.2.90" }, MACHINE_UPDATE_INSTALL_GRACE_MS + 1, { ok: false, inFlight: false, landed: false }],

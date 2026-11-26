@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { UpdateTrack } from "../../../shared/updateTrack";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { createRemoteUpdateInstaller } from "./remoteUpdateInstall";
 
@@ -33,6 +34,8 @@ function createUpdateService(
         await onCheck(set);
       }),
       quitAndInstall,
+      cancelTrackSwitch: vi.fn(),
+      startTrackSwitch: vi.fn((target: UpdateTrack) => ({ ok: true as const, target })),
       onStateChange: (cb: (next: AutoUpdateSnapshot) => void) => {
         listeners.add(cb);
         return () => listeners.delete(cb);
@@ -42,18 +45,20 @@ function createUpdateService(
 }
 
 const logger = { info: vi.fn(), warn: vi.fn() };
+const allowTrackSwitch = async (target: UpdateTrack) => ({ allowed: true as const, target, targetVersion: null });
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe("createRemoteUpdateInstaller", () => {
-  it("installs a staged update, but only after the brain has had time to reply", async () => {
+  it("replaces a queued install for a different build and gives the new reply time to arrive", async () => {
     vi.useFakeTimers();
     const updates = createUpdateService({ status: "ready", version: "1.2.91" });
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_500,
     });
@@ -64,7 +69,12 @@ describe("createRemoteUpdateInstaller", () => {
     // The service uninstall inside the install kills the brain that asked.
     await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.quitAndInstall).not.toHaveBeenCalled();
+    updates.set({ status: "ready", version: "1.2.92" });
+    expect(await installer.install({ targetVersion: "1.2.92" })).toMatchObject({ outcome: "installing", version: "1.2.92" });
     await vi.advanceTimersByTimeAsync(500);
+    expect(updates.quitAndInstall).not.toHaveBeenCalled();
+    expect((await installer.install({ targetVersion: "1.2.92" })).outcome).toBe("installing");
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(updates.quitAndInstall).toHaveBeenCalledTimes(1);
     // Marked as remote, so the updated machine does not open "What's new" for nobody.
     expect(updates.quitAndInstall).toHaveBeenCalledWith(true, { requestedRemotely: true });
@@ -78,6 +88,7 @@ describe("createRemoteUpdateInstaller", () => {
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_000,
     });
@@ -90,12 +101,36 @@ describe("createRemoteUpdateInstaller", () => {
     expect(updates.quitAndInstall).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["1.2.90", "1.2.90", "installing", 1],
+    ["1.2.91", "1.2.90", "no_update", 0],
+    ["1.3.0-beta.3", "1.2.90", "no_update", 0],
+    ["1.2.90", null, "failed", 0],
+  ] as const)("enforces the approved version during a switch from Beta with %s offered and %s approved", async (version, approved, outcome, installs) => {
+    vi.useFakeTimers();
+    const updates = createUpdateService({ currentVersion: "1.3.0-beta.2" }, (set) => {
+      set({ status: "ready", version });
+    });
+    const installer = createRemoteUpdateInstaller({
+      getService: () => updates.service,
+      supported: true,
+      checkTrackSwitch: async (target) => ({ allowed: true, target, targetVersion: approved }),
+      logger,
+      installDelayMs: 1_000,
+    });
+
+    expect((await installer.switchTrack({ track: "stable" })).outcome).toBe(outcome);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(updates.quitAndInstall).toHaveBeenCalledTimes(installs);
+  });
+
   it("does not install a download that failed", async () => {
     vi.useFakeTimers();
     const updates = createUpdateService({ status: "downloading", version: "1.2.91" });
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported: true,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_000,
     });
@@ -121,6 +156,7 @@ describe("createRemoteUpdateInstaller", () => {
     const installer = createRemoteUpdateInstaller({
       getService: () => updates.service,
       supported,
+      checkTrackSwitch: allowTrackSwitch,
       logger,
       installDelayMs: 1_000,
     });

@@ -166,18 +166,51 @@ export function chatEventDedupKey(entry: AgentChatEventEnvelope): string {
   return agentChatEventIdentityKey(entry);
 }
 
+/**
+ * A chat on an ADE Cloud computer has two histories: the computer's own
+ * transcript while it is awake (its cursors are byte offsets) and the
+ * account's saved copy while it rests (its cursors are part numbers). A
+ * saved copy's cursor is this base plus the part number, above every byte
+ * offset, so a pane never reads one history at the other's position.
+ */
+const SAVED_COPY_HISTORY_CURSOR_BASE = 2 ** 50;
+
+/** The history cursor that names a saved copy's part. */
+export function savedCopyHistoryCursor(part: number): number {
+  return SAVED_COPY_HISTORY_CURSOR_BASE + part;
+}
+
+/** The saved copy's part a history cursor names, or null for a byte offset (and for 0, the head). */
+export function savedCopyPartOf(cursor: number | null | undefined): number | null {
+  return typeof cursor === "number" && cursor > SAVED_COPY_HISTORY_CURSOR_BASE ? cursor - SAVED_COPY_HISTORY_CURSOR_BASE : null;
+}
+
+
+/**
+ * `dedupeAll`: drop every event already on screen, not only those at the
+ * seam. A saved copy's page can repeat events from anywhere on screen: the
+ * computer showed its own newest window, and maybe older pages, while it was
+ * awake (`readOlderHistoryBatch`'s `fromSavedCopy`).
+ */
 export function prependOlderChatHistoryPage(
   older: AgentChatEventEnvelope[],
   existing: AgentChatEventEnvelope[],
+  dedupeAll = false,
 ): AgentChatEventEnvelope[] {
   if (!older.length) return existing;
-  if (!existing.length) return older.slice();
-  const seamWindow = Math.min(existing.length, older.length + 64);
+  const seamWindow = dedupeAll ? existing.length : Math.min(existing.length, older.length + 64);
   const seamKeys = new Set<string>();
   for (let index = 0; index < seamWindow; index += 1) {
     seamKeys.add(chatEventDedupKey(existing[index]!));
   }
-  const fresh = older.filter((entry) => !seamKeys.has(chatEventDedupKey(entry)));
+  // One batch can hold an event twice: a computer's page, then the saved
+  // copy's newest page once the computer went to sleep mid-batch.
+  const fresh = older.filter((entry) => {
+    const key = chatEventDedupKey(entry);
+    if (seamKeys.has(key)) return false;
+    seamKeys.add(key);
+    return true;
+  });
   return fresh.length ? [...fresh, ...existing] : existing;
 }
 
@@ -186,8 +219,9 @@ export function mergeOlderChatHistoryPageWithCap(args: {
   existing: AgentChatEventEnvelope[];
   maxEvents: number;
   maxBytes?: number;
+  dedupeAll?: boolean;
 }): { events: AgentChatEventEnvelope[]; hitResidentCap: boolean } {
-  const merged = prependOlderChatHistoryPage(args.older, args.existing);
+  const merged = prependOlderChatHistoryPage(args.older, args.existing, args.dedupeAll);
   const events = trimChatEventHistoryFromStart(merged, args.maxEvents, args.maxBytes);
   return {
     events,
@@ -207,11 +241,15 @@ export function resolveSnapshotHistoryCursor(snapshot: {
 
 export function advanceOlderHistoryCursor(
   beforeOffset: number,
-  page: Pick<AgentChatEventHistoryPage, "startOffset" | "hasMore">,
+  page: Pick<AgentChatEventHistoryPage, "startOffset" | "hasMore" | "savedCopy">,
 ): number | null {
   if (!page.hasMore) return 0;
   if (!Number.isFinite(page.startOffset) || page.startOffset <= 0) return null;
-  if (page.startOffset >= beforeOffset) return null;
+  // A byte cursor that the saved copy answered (the computer went to sleep)
+  // comes back as a part cursor: that one move is forward, whatever the two
+  // numbers are. A part cursor never pages the computer.
+  const toSavedCopy = page.savedCopy === true && savedCopyPartOf(beforeOffset) == null;
+  if (!toSavedCopy && page.startOffset >= beforeOffset) return null;
   return page.startOffset;
 }
 
@@ -230,6 +268,9 @@ function isTurnBoundaryEvent(entry: AgentChatEventEnvelope): boolean {
  * So keep pulling pages until the accumulated span reaches a `user_message` —
  * the start of a turn — and the newly-loaded region always contains at least one
  * whole turn and renders as real content.
+ *
+ * `fromSavedCopy`: a page came from an ADE Cloud chat's saved copy; merge the
+ * batch with `dedupeAll`.
  */
 export async function readOlderHistoryBatch(args: {
   sessionId: string;
@@ -249,8 +290,9 @@ export async function readOlderHistoryBatch(args: {
    * point the reader has plenty of real content and the next scroll continues.
    */
   maxAnchorEvents?: number;
-}): Promise<{ events: AgentChatEventEnvelope[]; nextCursor: number } | null> {
+}): Promise<{ events: AgentChatEventEnvelope[]; nextCursor: number; fromSavedCopy: boolean } | null> {
   let currentOffset = args.beforeOffset;
+  let fromSavedCopy = false;
   let nextCursor = args.beforeOffset;
   const maxPages = args.maxPages ?? 8;
   const maxAnchorEvents = args.maxAnchorEvents ?? 400;
@@ -269,8 +311,9 @@ export async function readOlderHistoryBatch(args: {
       // Pages already pulled in this batch are real transcript content, and
       // `nextCursor: 0` latches "no older history" — dropping them here would
       // lose them until a reload.
-      return { events: collected.flat(), nextCursor: 0 };
+      return { events: collected.flat(), nextCursor: 0, fromSavedCopy };
     }
+    if (page.savedCopy === true) fromSavedCopy = true;
     const advancedCursor = advanceOlderHistoryCursor(currentOffset, page);
     if (advancedCursor == null) {
       throw new Error("Earlier-message cursor did not advance.");
@@ -290,7 +333,7 @@ export async function readOlderHistoryBatch(args: {
     if (collectedCount >= maxAnchorEvents) break;
     currentOffset = nextCursor;
   }
-  return { events: collected.flat(), nextCursor };
+  return { events: collected.flat(), nextCursor, fromSavedCopy };
 }
 
 export function resolveMergedSnapshotHistoryCursor(args: {
@@ -321,9 +364,14 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   const snapshotOverlaps = args.existingEvents.some((event) => snapshotKeys.has(chatEventDedupKey(event)));
   const oldestExistingKey = chatEventDedupKey(args.existingEvents[0]!);
   const keptOldestExisting = args.mergedEvents.some((event) => chatEventDedupKey(event) === oldestExistingKey);
-  return snapshotOverlaps && keptOldestExisting
-    ? Math.min(args.currentCursor, args.snapshotCursor)
-    : args.snapshotCursor;
+  if (!snapshotOverlaps || !keptOldestExisting) return args.snapshotCursor;
+  if ((savedCopyPartOf(args.currentCursor) == null) === (savedCopyPartOf(args.snapshotCursor) == null)) {
+    return Math.min(args.currentCursor, args.snapshotCursor);
+  }
+  // The two cursors are of different histories (an ADE Cloud computer woke or
+  // slept with the chat open): keep the one whose history starts at the
+  // oldest event on screen. The smaller number is not the older position.
+  return chatEventDedupKey(args.mergedEvents[0]!) === oldestExistingKey ? args.currentCursor : args.snapshotCursor;
 }
 
 type ChatDisplayFilter = {

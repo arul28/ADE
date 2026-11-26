@@ -4,6 +4,7 @@ import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsored
 import { gravitySwitches } from "./sponsoredSwitch";
 import { fail, json } from "./http";
 import { CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
+import { accountWithUnsettledPhones } from "./credits";
 import { clerkUserIdsFor, handleOwnerPhoneBeta } from "./phoneBeta";
 import { enforcePhoneAllowance, periodPhones, phoneAccess, phoneCreditsFor, phoneUsageOf } from "./phones";
 import { CLOUD_PLANS, isPaidPlanId } from "./plans";
@@ -22,7 +23,9 @@ import {
   earnedBalanceMilli,
   extraActive,
   hasAccountTest,
+  hoursState,
   includedMilliOf,
+  isOutOfHours,
   loadAccount,
   logCloud,
   reportCloudFailure,
@@ -43,10 +46,16 @@ import {
  * A test plan changes what the account may do and sees (the limits, the
  * hours meter, the computer limit, sponsored cards, Small's hours). It never
  * touches billing: Stripe, extra hours, the period and its roll keep the real
- * plan. It ends by itself at `test_until` (`expireAccountTests`).
+ * plan. It never spends or blocks real credits either: a lower test plan
+ * keeps the period's credits (`includedMilliOf`) and a paid account acting
+ * as Free keeps Small unlimited (`smallUsesNoHours`). Only test credits
+ * (`hours`) lower them on purpose, and the answer carries a warning when the
+ * test leaves the account out of credits its real plan still has. It ends by
+ * itself at `test_until` (`expireAccountTests`).
  *
  * - `POST /cloud/owner/account` `{ email | userId, plan?, computers?, hours?, phone?, adFormat?, days?, note?, tester?, reset? }`:
- *   changes what is given, then answers the account as `show` does. Only an
+ *   changes what is given, then answers the account as `show` does, with
+ *   `warnings` when the test in force needs the owner's eye. Only an
  *   email or userId: just `show`. `plan: null` (and `computers`, `hours`)
  *   clears that one; `reset: true` clears every test field.
  *   `phone` (`on` or `off`) puts the account on the ADE Cloud iPhone's beta
@@ -202,6 +211,44 @@ const safeJson = (text: string): unknown => {
   }
 };
 
+/**
+ * What the owner must know about the test in force: it leaves the account out
+ * of credits its real plan still has, so the next minute tick stops its
+ * computers that use credits, cancels its timed wake-ups and emails it.
+ */
+async function testWarnings(env: CloudEnv, account: AccountRow, now: number): Promise<string[]> {
+  if (!hasAccountTest(account)) return [];
+  const liveUsed = (await accountWithUnsettledPhones(env, account.user_id, now)).liveUsedMilli ?? account.used_milli;
+  const real = { ...account, test_plan: null, test_computers: null, test_hours_milli: null };
+  if (!isOutOfHours(account, liveUsed) || isOutOfHours(real, liveUsed)) return [];
+  return [`This test leaves the account out of credits (${hoursOf(liveUsed)} used of ${hoursOf(includedMilliOf(account))}) while its real plan still has some. At the next minute tick its computers that use credits stop, its timed wake-ups are cancelled, and it gets the out-of-credits email. Give the test more credits, or reset, to avoid it.`];
+}
+
+/**
+ * After a test changes or ends: the credits warnings the account is no longer
+ * past, under the credits in force now, start over, so the real ones still
+ * fire later. One it is still past stays sent. Clearing the out-of-credits one
+ * counts as credits back (`hours_restored_at`), as everywhere else.
+ */
+async function restartPassedWarnings(env: CloudEnv, userId: string, now: number): Promise<void> {
+  try {
+    const { account, liveUsedMilli } = await accountWithUnsettledPhones(env, userId, now);
+    if (!account || liveUsedMilli == null) return;
+    const state = hoursState(account, liveUsedMilli);
+    const zero = state !== "zero" && account.warned_zero_at != null;
+    const at95 = (state === "none" || state === "warn80") && account.warned_95_at != null;
+    const at80 = state === "none" && account.warned_80_at != null;
+    if (!zero && !at95 && !at80) return;
+    await env.DB.prepare(`update cloud_accounts set warned_80_at = case when ? then null else warned_80_at end,
+      warned_95_at = case when ? then null else warned_95_at end, warned_zero_at = case when ? then null else warned_zero_at end,
+      hours_restored_at = case when ? then ? else hours_restored_at end, updated_at = ? where user_id = ?`)
+      .bind(at80 ? 1 : 0, at95 ? 1 : 0, zero ? 1 : 0, zero ? 1 : 0, now, now, userId).run();
+  } catch (error) {
+    // The test's change stands; a warning left stamped only skips one email this period.
+    reportCloudFailure("cloud.owner_warnings_restart_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+  }
+}
+
 /** `POST /cloud/owner/account`. The owner token was checked before this runs (`safety.ts`). */
 export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unknown>, now: number): Promise<Response> {
   const who = await resolveUserId(env, body);
@@ -274,8 +321,11 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     await env.DB.batch(statements);
     // Small's hours follow the plan and the testers list at once.
     await syncSmallRates(env, await loadAccount(env, who.userId, now), now);
-    // A running phone is held to the new credits at once: fewer stop it sooner, more let it run on.
-    if (reset || change.plan !== undefined || change.hoursMilli !== undefined) await holdPhoneToAllowance(env, who.userId, now);
+    if (reset || change.plan !== undefined || change.hoursMilli !== undefined) {
+      // A running phone is held to the new credits at once: fewer stop it sooner, more let it run on.
+      await holdPhoneToAllowance(env, who.userId, now);
+      await restartPassedWarnings(env, who.userId, now);
+    }
     logCloud("cloud.owner_account_changed", { userId: who.userId, reset, tester: tester ?? null, plan: change.plan ?? null });
   }
   // The beta list keeps its own rules (a removal stops a running phone): its route does it, after the test's write.
@@ -288,7 +338,8 @@ export async function handleOwnerAccount(env: CloudEnv, body: Record<string, unk
     if (!listed.ok) return listed;
   }
   if (testChanged || phoneChoice !== undefined) account = await loadAccount(env, who.userId, now);
-  return json({ ok: true, account: await describeAccount(env, account, who.email, now) });
+  const warnings = await testWarnings(env, account, now);
+  return json({ ok: true, account: await describeAccount(env, account, who.email, now), ...(warnings.length ? { warnings } : {}) });
 }
 
 /** `POST /cloud/owner/settings`. The owner token was checked before this runs (`safety.ts`). */
@@ -338,8 +389,9 @@ export async function expireAccountTests(env: CloudEnv, now: number): Promise<nu
     ended += 1;
     const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
     if (account) await syncSmallRates(env, account, now);
-    // The real plan's credits again: a running phone is held to them.
+    // The real plan's credits again: a running phone is held to them, and the warnings it is no longer past start over.
     await holdPhoneToAllowance(env, userId, now);
+    await restartPassedWarnings(env, userId, now);
   }
   if (ended) logCloud("cloud.account_tests_ended", { count: ended });
   return ended;

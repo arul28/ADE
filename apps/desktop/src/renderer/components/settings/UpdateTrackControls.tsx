@@ -6,7 +6,8 @@ import { confirmDialog } from "../ui/dialog";
 import { Banner, type BannerModel } from "../ui/notice";
 import { ModernRow, ModernRows, SettingsSegmented } from "./primitives";
 
-const TRACK_OPTIONS = [
+/** Stable and Beta, with what each means; the one list of tracks a control offers. */
+export const UPDATE_TRACK_OPTIONS = [
   { value: "stable", label: "Stable", hint: "Tested releases" },
   { value: "beta", label: "Beta", hint: "New builds every few hours" },
 ] as const;
@@ -154,7 +155,7 @@ export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot
           <SettingsSegmented<UpdateTrack>
             ariaLabel="Update track"
             value={track.selected}
-            options={TRACK_OPTIONS}
+            options={UPDATE_TRACK_OPTIONS}
             disabled={checking != null || snapshot.status === "installing"}
             onChange={(next) => { void switchTo(next); }}
           />

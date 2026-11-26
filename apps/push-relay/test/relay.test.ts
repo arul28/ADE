@@ -549,6 +549,7 @@ describe("push relay", () => {
     ["OPTIONS:POST", "/attention/account/passwords/key", 403],
     ["OPTIONS:PUT", "/attention/account/snapshot", 405],
     ["OPTIONS:PATCH", "/attention/account/preferences/machines/abc", 204],
+    ["OPTIONS:GET", "/attention/account/devices", 204],
     ["OPTIONS:DELETE", "/attention/account/settings/all/chat.launchDefaults.v1", 204],
     ["OPTIONS:PUT", "/attention/account/settings", 204],
   ])("answers a browser %s %s with %i before auth", async (method, path, status) => {

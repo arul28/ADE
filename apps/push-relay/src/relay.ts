@@ -703,6 +703,43 @@ function selectTargets(devices: DeviceRow[], requested: string[] | null): Device
   return devices.filter((device) => wanted.has(device.device_id));
 }
 
+/**
+ * Older brains publish by machine key. Match their APNs registration to the
+ * current account's phone by token, app and environment. The account device
+ * ID may differ from the legacy paired ID.
+ */
+async function legacyMutedAlertDevices(env: PushRelayEnv, machineKey: string): Promise<Set<string>> {
+  const { results } = await env.DB.prepare(`
+    select distinct legacy.device_id
+    from machines as machine
+    join attention_preferences as prefs on prefs.user_id = machine.account_user_id
+    join device_registrations as legacy on legacy.machine_key = machine.machine_key
+    where machine.machine_key = ?
+      and (
+        json_type(prefs.payload_json, '$.account.notificationsEnabled') = 'false'
+        or exists (
+          select 1 from json_each(prefs.payload_json, '$.machines') as scope
+          where scope.key = machine.machine_key
+            and json_type(case when scope.type = 'object' then scope.value end, '$.notificationsEnabled') = 'false'
+        )
+        or exists (
+          select 1
+          from attention_devices as device
+          join json_each(prefs.payload_json, '$.devices') as scope on scope.key = device.device_id
+          where device.user_id = machine.account_user_id
+            and device.apns_token = legacy.apns_token
+            and device.bundle_id = legacy.bundle_id
+            and device.aps_environment = legacy.aps_environment
+            and (
+              json_type(case when scope.type = 'object' then scope.value end, '$.deviceDeliveryEnabled') = 'false'
+              or json_type(case when scope.type = 'object' then scope.value end, '$.notificationsEnabled') = 'false'
+            )
+        )
+      )
+  `).bind(machineKey).all<{ device_id: string }>();
+  return new Set(results.map((row) => row.device_id));
+}
+
 async function deliverAlertItem(
   env: PushRelayEnv,
   config: ApnsKeyConfig,
@@ -1130,13 +1167,15 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
   const devices = await listMachineDevices(env, machineKey);
   const defaultTopic = env.APNS_DEFAULT_TOPIC?.trim() || "";
   const outcomes: DeliveryOutcome[] = [];
-  const suppressions = await loadSuppressions(
-    env,
-    machineKey,
-    alerts.flatMap((item) => (item.dedupeKey ? [item.dedupeKey] : [])),
-  );
-  for (const item of alerts) {
-    outcomes.push(...await deliverAlertItem(env, config, machineKey, devices, item, defaultTopic, suppressions));
+  if (alerts.length > 0) {
+    const [suppressions, muted] = await Promise.all([
+      loadSuppressions(env, machineKey, alerts.flatMap((item) => item.dedupeKey ? [item.dedupeKey] : [])),
+      legacyMutedAlertDevices(env, machineKey),
+    ]);
+    const alertDevices = devices.filter((device) => !muted.has(device.device_id));
+    for (const item of alerts) {
+      outcomes.push(...await deliverAlertItem(env, config, machineKey, alertDevices, item, defaultTopic, suppressions));
+    }
   }
   for (const item of liveActivities) {
     // The Live Activity is account-wide and owned by the account route. A
@@ -1209,6 +1248,7 @@ const BROWSER_ACCOUNT_ROUTES: ReadonlyArray<{ pattern: RegExp; methods: readonly
   { pattern: /^\/attention\/account\/snapshot$/, methods: ["GET"] },
   { pattern: /^\/attention\/account\/(?:ack|presence)$/, methods: ["POST"] },
   { pattern: /^\/attention\/account\/preferences$/, methods: ["GET", "PUT"] },
+  { pattern: /^\/attention\/account\/devices$/, methods: ["GET"] },
   { pattern: /^\/attention\/account\/preferences\/(?:devices|machines|sessions)\/[^/]+$/, methods: ["PATCH"] },
   { pattern: /^\/attention\/account\/settings$/, methods: ["GET", "PUT"] },
   { pattern: /^\/attention\/account\/settings\/[^/]+\/[^/]+$/, methods: ["DELETE"] },

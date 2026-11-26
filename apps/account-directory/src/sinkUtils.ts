@@ -134,16 +134,16 @@ export function dailyLimitVar(raw: string | undefined, fallback: number): number
  * A stream that errors mid-read (the client went away) rejects; each route
  * decides what that means for its answer and its log line.
  */
-export async function readBoundedBody(
+export async function readBoundedBytes(
   request: Request,
   maxBytes: number,
-): Promise<{ ok: true; text: string } | { ok: false; reason: "too_large" }> {
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: "too_large" }> {
   const declared = Number(request.headers.get("content-length") ?? "");
   if (Number.isFinite(declared) && declared > maxBytes) {
     return { ok: false, reason: "too_large" };
   }
   const body = request.body;
-  if (!body) return { ok: true, text: "" };
+  if (!body) return { ok: true, bytes: new Uint8Array(0) };
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -162,13 +162,23 @@ export async function readBoundedBody(
   } finally {
     reader.releaseLock();
   }
+  if (chunks.length === 1) return { ok: true, bytes: chunks[0]! };
   const joined = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     joined.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return { ok: true, text: new TextDecoder().decode(joined) };
+  return { ok: true, bytes: joined };
+}
+
+/** `readBoundedBytes` as UTF-8 text, for JSON and form bodies. */
+export async function readBoundedBody(
+  request: Request,
+  maxBytes: number,
+): Promise<{ ok: true; text: string } | { ok: false; reason: "too_large" }> {
+  const read = await readBoundedBytes(request, maxBytes);
+  return read.ok ? { ok: true, text: new TextDecoder().decode(read.bytes) } : read;
 }
 
 /** A JSON object body; `{}` for an empty body, null when it is too big or isn't an object. */

@@ -211,6 +211,7 @@ describe("app update over the desktop bridge", () => {
   }
 
   const installingInstaller = (): RemoteUpdateInstaller => ({
+    switchTrack: async () => ({ outcome: "already_current", currentVersion: "1.2.90", version: "1.2.90", message: "Follows Stable again." }),
     install: async ({ targetVersion }) => ({
       outcome: "installing",
       currentVersion: "1.2.90",

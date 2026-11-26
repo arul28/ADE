@@ -2163,13 +2163,14 @@ final class AccountService: ObservableObject {
     }
   }
 
-  /// The account-wide per-chat mute list, or nil when it could not be read
-  /// for the account that is signed in now.
-  func fetchAttentionMutedSessionIds() async -> [String]? {
-    await performAttentionMuteRequest { client, baseURL, token, refreshToken in
-      try await client.fetchMutedSessionIds(
+  /// Notification delivery preferences for the account that is signed in now.
+  func fetchAttentionDeliveryPreferences() async -> AccountAttentionDeliveryPreferences? {
+    let deviceId = attentionDeviceId
+    return await performAttentionPreferenceRequest { client, baseURL, token, refreshToken in
+      try await client.fetchDeliveryPreferences(
         baseURL: baseURL,
         token: token,
+        deviceId: deviceId,
         refreshToken: refreshToken
       )
     }
@@ -2179,7 +2180,7 @@ final class AccountService: ObservableObject {
   /// Returns the account list after the change, or nil when the change did not
   /// land for the account that is signed in now.
   func setAttentionSessionMuted(sessionId: String, muted: Bool) async -> [String]? {
-    await performAttentionMuteRequest { client, baseURL, token, refreshToken in
+    await performAttentionPreferenceRequest { client, baseURL, token, refreshToken in
       try await client.setSessionMuted(
         baseURL: baseURL,
         token: token,
@@ -2190,16 +2191,15 @@ final class AccountService: ObservableObject {
     }
   }
 
-  /// Shared fencing for the mute routes: the result only counts when the
-  /// account that asked is still the one signed in when it returns.
-  private func performAttentionMuteRequest(
+  /// An Attention preference result counts only for the account that requested it.
+  private func performAttentionPreferenceRequest<Value: Sendable>(
     _ operation: (
       AccountAttentionRelayClient,
       URL,
       String,
       @escaping () async -> String?
-    ) async throws -> [String]
-  ) async -> [String]? {
+    ) async throws -> Value
+  ) async -> Value? {
     guard isSignedIn,
           let requestedOwnerId = identity?.userId,
           let baseURL = AccountConfig.attentionRelayBaseURL,

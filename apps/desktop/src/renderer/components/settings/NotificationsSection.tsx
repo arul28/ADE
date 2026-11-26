@@ -93,8 +93,8 @@ function timeValueToMinutes(value: string, fallback: number): number {
 }
 
 export function NotificationsSection() {
-  const model = useActivitySettings();
-  const { account, busy, signedOut, updateAccount } = model;
+  const model = useActivitySettings({ includeDevices: true });
+  const { account, accountBusy: busy, signedOut, updateAccount } = model;
 
   const setEventPolicy = (kind: AttentionEventKind, policy: AttentionDeliveryPolicy) => {
     updateAccount({ eventPolicies: { ...account.eventPolicies, [kind]: policy } });

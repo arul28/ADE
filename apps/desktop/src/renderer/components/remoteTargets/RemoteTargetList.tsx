@@ -50,14 +50,13 @@ import {
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
-  isMachineVersionOutdated,
   machinesBehindOnTheirTrack,
   machineUpdateTargetVersion,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
   type MachineSection,
 } from "./remoteMachineModel";
-import { describeMachineUpdateAttempt, machineUpdateGraceMs, machineUpdatePhase } from "./machineUpdateStatus";
+import { describeMachineUpdateAttempt, machineMatchesUpdateTarget, machineUpdateGraceMs, machineUpdatePhase } from "./machineUpdateStatus";
 import {
   accountMachinePresence,
   connectedMachineIds,
@@ -397,12 +396,12 @@ export function RemoteTargetList({
         return [id, version] as const;
       }),
     );
-    // Once the machine reports the new version the update is over, and a
+    // Once the machine reports the target track and version the update is over, and a
     // later disconnect is an ordinary one.
     const restarting = (row: (typeof assigned.available)[number]): boolean => {
       if (row.kind !== "saved") return false;
       const pending = pendingById.get(row.target.id);
-      return pending != null && (!row.version || isMachineVersionOutdated(row.version, pending));
+      return pending != null && !machineMatchesUpdateTarget(row, pending);
     };
     const moved = [...assigned.available, ...assigned.unavailable].filter(restarting);
     if (moved.length === 0) return assigned;
@@ -1232,7 +1231,7 @@ export function RemoteTargetList({
       const updateStatus = updateAttempt
         ? describeMachineUpdateAttempt(
           updateAttempt,
-          { connected: row.connected, version: row.version, hostStartedAt: row.status?.hostStartedAt ?? null, hostUpdateBlock: row.status?.hostUpdateBlock ?? null },
+          { ...row, hostStartedAt: row.status?.hostStartedAt, hostUpdateBlock: row.status?.hostUpdateBlock },
           updateClockMs,
         )
         : null;

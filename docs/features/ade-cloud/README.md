@@ -144,6 +144,7 @@ Facts from those docs that ADE's design leans on:
 | A default-size launch moving its computer from Small to Medium when setup runs out of memory, and the repository remembered (migration `0036`) | `apps/ade-cli/src/services/power/cloudSetupUpsize.ts`, `apps/account-directory/src/cloud/launches.ts` (`launchAutoSizeCheck`, `startSizeOf`) |
 | Server safety: block list, card rule, kill switch, hourly limits, owner alerts (migration `0037`) | `apps/account-directory/src/cloud/blocks.ts`, `safety.ts`, `costReport.ts` (free-use cap) |
 | Server launches from the web and the phone: queued messages, sign-in status, models (migration `0038`) | `apps/account-directory/src/cloud/launches.ts`, `launchMessages.ts`, `accountSignIns.ts`, `models.ts` |
+| Launch files and their per-account caps (migration `0068`) | `apps/account-directory/src/cloud/launchFiles.ts` |
 | The cloud computer's side of a launch: sign-in wait, queued messages | `apps/ade-cli/src/services/account/cloudBootLaunch.ts`, `cloudLaunchSignInWait.ts`, `cloudLaunchMessages.ts` |
 
 Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
@@ -1376,7 +1377,9 @@ computer. The new computer runs its own launch. The routes are in
 [`apps/account-directory/README.md`](../../../apps/account-directory/README.md#launches-from-the-web-and-the-phone).
 
 - **Files.** `PUT /cloud/launches/:id/files/:fileId` first (at most 10, 25 MB
-  each, R2 `launches/<user>/<launch>/`). The desktop copies images attached on
+  each, R2 `launches/<user>/<launch>/`). An account holds at most 300 open
+  drafts and 2 GB in them; past either the upload answers 429
+  `uploads_full`. The route counts against the `uploads` minute. The desktop copies images attached on
   another machine to this computer first, through that machine's
   `chat.getImageDataUrl` (`cloudLaunchFileCopies.ts`); a non-image file from
   another machine stops the start with what to do.

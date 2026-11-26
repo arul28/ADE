@@ -635,16 +635,16 @@ category on one phone. Its size is capped like the other scopes:
 - quiet hours;
 - muted sessions.
 
-Device-registration preferences are a compatibility fallback. Account
-preferences override those registration defaults, and only an explicit
-`devices[deviceId]` entry in the account preference document overrides the
-account defaults for one device. The iOS Push delivery controls write that
-explicit per-device account override through an atomic scoped mutation,
-including the phone's muted-session selection. Account/project writes preserve
-device overrides, so the visible switch state and relay policy cannot drift
-apart or overwrite a simultaneous edit from another client. A failed phone
-preference mutation retries with capped exponential backoff until it succeeds,
-the account changes, or a newer local preference replaces it.
+Registration provides defaults that the account, project, machine, and device
+can override. Turning notifications off at any of those levels stops delivery.
+The **Send notifications to** switch in desktop and web settings controls
+account delivery to one iPhone or iPad. The iOS **Notifications on this device**
+switch controls that device's own preference. iOS shows when account settings
+pause delivery for the whole account or for this device. Each client saves its
+own setting, so a phone's preference sync preserves the account's delivery
+choice. A failed phone preference save retries with capped exponential
+backoff until it succeeds, the account changes, or a newer local preference
+replaces it.
 
 When desktop-first delivery is enabled (the default) and the user is at a
 computer, the relay waits for the configured bounded delay

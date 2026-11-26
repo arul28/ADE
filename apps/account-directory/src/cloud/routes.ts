@@ -1872,11 +1872,14 @@ function blockedMayRead(method: string, path: string): boolean {
 }
 
 const EVENT_WAKES_ROUTE = /^\/cloud\/instances\/([^/]+)\/event-wakes$/;
+/** `PUT /cloud/launches/:launch/files/:file`: a file for a launch or a queued message. */
+const LAUNCH_FILE_ROUTE = /^\/cloud\/launches\/[^/]+\/files\/[^/]+$/;
 
 /** The minute budget a write to these rows counts against (`takeRequest`); null for a read or another route. */
 function writeBucketOf(path: string, method: string): CloudRequestBucket | null {
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return null;
   if ([CLOUD_PATHS.sessions, CLOUD_PATHS.git, CLOUD_PATHS.capsules, CLOUD_PATHS.backups].some((route) => path.startsWith(`${route}/`))) return "uploads";
+  if (LAUNCH_FILE_ROUTE.test(path)) return "uploads";
   if (path === CLOUD_EDGE_PATHS.limits || EVENT_WAKES_ROUTE.test(path)) return "settings";
   return null;
 }
