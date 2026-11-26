@@ -13,18 +13,18 @@ const COLLAPSED_ROWS = 3;
  */
 export function CtoWaitingOnYou({
   needs,
-  failed = false,
+  error = null,
   onRetry,
   onOpen,
 }: {
   needs: readonly CtoNeed[];
-  /** The lines could not be read and none are known: say so, with a retry. */
-  failed?: boolean;
+  /** The lines could not be read and none are known (the read's error): say so, with a retry. */
+  error?: string | null;
   onRetry?: () => void;
   onOpen: (need: CtoNeed) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
-  if (!needs.length && failed) {
+  if (!needs.length && error) {
     return (
       <Banner
         layout="inline"
@@ -33,7 +33,7 @@ export function CtoWaitingOnYou({
           tone: "warning",
           title: "Couldn't load what's waiting on you",
           actions: onRetry ? [{ label: "Retry", onClick: onRetry }] : undefined,
-          report: { surface: "cto_needs", code: "needs_read_failed" },
+          report: { surface: "cto_needs", code: "needs_read_failed", technicalDetail: error },
         }}
       />
     );
@@ -48,7 +48,7 @@ export function CtoWaitingOnYou({
         <span>Waiting on you</span>
         <span className="ade-cto-needs-count">{needs.length}</span>
       </header>
-      <ul className="ade-cto-needs-list">
+      <ul className="ade-cto-needs-list" data-expanded={expanded ? "true" : undefined}>
         {shown.map((need) => (
           <li key={need.childSessionId}>
             <button

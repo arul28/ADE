@@ -279,7 +279,7 @@ export function formatCtoStallNudge(stalls: readonly CtoChildStall[], nowMs: num
   ].join("\n");
 }
 
-type KvDb = { getJson: (key: string) => unknown; setJson: (key: string, value: unknown) => void };
+export type KvDb = { getJson: (key: string) => unknown; setJson: (key: string, value: unknown) => void };
 
 type StoredNeed = {
   childSessionId: string;
@@ -490,31 +490,39 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
       }
       due.push(stall);
     }
-    if (!due.length) return nextCheckMs;
-    if (deps.ctoBusy(ctoSessionId)) return nowMs + 30_000;
+    // The reads above can take a while: a brain shutting down stops here, and
+    // the gap is measured from the send, not from the start of the pass.
+    if (disposed || !due.length) return nextCheckMs;
+    const sendMs = now();
+    if (deps.ctoBusy(ctoSessionId)) return sendMs + 30_000;
     const last = lastNudgeAt.get(ctoSessionId) ?? 0;
-    if (nowMs - last < CTO_STALL_NUDGE_GAP_MS) return last + CTO_STALL_NUDGE_GAP_MS;
+    if (sendMs - last < CTO_STALL_NUDGE_GAP_MS) return last + CTO_STALL_NUDGE_GAP_MS;
 
     due.sort((left, right) => left.sinceMs - right.sinceMs);
     const told = due.slice(0, NUDGE_MAX_STALLS);
-    // Recorded before the send: a send that fails is not retried into a
-    // second copy of the same nudge. The child's next move makes a new key.
+    // Recorded before the send, so a pass that overlaps it cannot send a
+    // second copy. A send the CTO refused gives its stalls back for the next
+    // nudge; the gap still holds, so a CTO that keeps refusing is asked at
+    // most once per gap.
     for (const item of told) nudged.add(item.stateKey);
     saveNudged();
-    noteNudged(ctoSessionId, nowMs);
+    noteNudged(ctoSessionId, sendMs);
     try {
-      await deps.wakeCto(ctoSessionId, formatCtoStallNudge(told, nowMs));
+      await deps.wakeCto(ctoSessionId, formatCtoStallNudge(told, sendMs));
       deps.logger?.info("cto.stall_judge.nudged", {
         ctoSessionId,
         stalls: told.map((item) => ({ childSessionId: item.childSessionId, kind: item.kind })),
       });
     } catch (error) {
+      for (const item of told) nudged.delete(item.stateKey);
+      saveNudged();
       deps.logger?.warn("cto.stall_judge.nudge_failed", {
         ctoSessionId,
         error: getErrorMessage(error),
       });
+      return sendMs + CTO_STALL_NUDGE_GAP_MS;
     }
-    return due.length > told.length ? nowMs + CTO_STALL_NUDGE_GAP_MS : nextCheckMs;
+    return due.length > told.length ? sendMs + CTO_STALL_NUDGE_GAP_MS : nextCheckMs;
   };
 
   const checkNow = async (): Promise<void> => {
@@ -527,9 +535,11 @@ export function createCtoStallJudge(deps: CtoStallJudgeDeps): CtoStallJudge {
     let next: number | null = null;
     try {
       const nowMs = now();
-      // The first-run baseline holds only once every CTO was read: a pass
-      // that could not see some children must not end it, or the next pass
-      // would tell the CTO about a day of old stalls.
+      // The first-run baseline holds until a pass could list every CTO and
+      // its children: a pass that could not must not end it, or the next pass
+      // would tell the CTO about a day of old stalls. (One child whose summary
+      // fails is left out of that pass alone; failing the whole CTO for it
+      // would stall every other child behind one unreadable chat.)
       let allRead = true;
       let ctoSessionIds: string[] = [];
       try {

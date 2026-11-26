@@ -18,8 +18,11 @@ export type CtoActivityData = {
   children: CtoChildChat[];
   /** The CTO's "Waiting on you" lines, oldest first; the host drops one once its chat moves. */
   needs: CtoNeed[];
-  /** The needs read failed and none has succeeded for this CTO yet: the card says so, not "nothing waiting". */
-  needsFailed: boolean;
+  /**
+   * The needs read failed and none has succeeded for this CTO yet, with its
+   * error: the card says so, not "nothing waiting". Null otherwise.
+   */
+  needsError: string | null;
   /** Library only; empty until the Library has been opened. */
   prs: PrSummary[];
   proof: ComputerUseArtifactView[];
@@ -87,7 +90,7 @@ export function useCtoActivityData({
   pinRef.current = pin;
   const [children, setChildren] = useState<CtoChildChat[]>([]);
   const [needs, setNeeds] = useState<CtoNeed[]>([]);
-  const [needsFailed, setNeedsFailed] = useState(false);
+  const [needsError, setNeedsError] = useState<string | null>(null);
   const needsLoadedRef = useRef(false);
   const [prs, setPrs] = useState<PrSummary[]>([]);
   const [proof, setProof] = useState<ComputerUseArtifactView[]>([]);
@@ -96,6 +99,8 @@ export function useCtoActivityData({
   const libraryOpenRef = useRef(libraryOpen);
   libraryOpenRef.current = libraryOpen;
   const generationRef = useRef(0);
+  /** Bumps on every load: only the newest load writes, so an older one cannot restore lines a newer one cleared. */
+  const loadSeqRef = useRef(0);
 
   // A different CTO (another home, another thread) shows nothing of the last one.
   useEffect(() => {
@@ -103,7 +108,7 @@ export function useCtoActivityData({
     childIdsRef.current = new Set();
     setChildren([]);
     setNeeds([]);
-    setNeedsFailed(false);
+    setNeedsError(null);
     needsLoadedRef.current = false;
     setPrs([]);
     setProof([]);
@@ -115,28 +120,32 @@ export function useCtoActivityData({
     const agentChat = window.ade?.agentChat;
     if (!target || !ctoSessionId || !agentChat?.list) return;
     const generation = generationRef.current;
-    let summaries: AgentChatSessionSummary[] = [];
+    const seq = ++loadSeqRef.current;
+    const current = () => generation === generationRef.current && seq === loadSeqRef.current;
     // Needs ride the same reads: they change when the CTO's turn ends (it set
     // one) or a child moves (the host dropped one), the events below.
     // An older host has no `getNeeds`: no card, not an error.
     const needsRead = window.ade?.cto?.getNeeds
-      ? window.ade.cto.getNeeds(target).catch(() => "failed" as const)
+      ? window.ade.cto.getNeeds(target).catch((error: unknown) => ({ failed: error instanceof Error ? error.message : String(error) }))
       : Promise.resolve(null);
-    try {
-      summaries = await agentChat.list({ includeArchived: false }, target);
-    } catch {
-      return;
-    }
+    const listRead = agentChat.list({ includeArchived: false }, target).then(
+      (rows) => rows,
+      () => null,
+    );
     const nextNeeds = await needsRead;
-    if (generation !== generationRef.current) return;
-    if (nextNeeds === "failed") {
+    if (!current()) return;
+    // The needs apply on their own: a failed chat list does not hide them.
+    if (nextNeeds && "failed" in nextNeeds) {
       // Known lines stay on a failed read; only a card that never loaded says so.
-      if (!needsLoadedRef.current) setNeedsFailed(true);
+      if (!needsLoadedRef.current) setNeedsError(nextNeeds.failed || "The read failed.");
     } else if (nextNeeds) {
       needsLoadedRef.current = true;
-      setNeedsFailed(false);
-      setNeeds((current) => (sameNeeds(current, nextNeeds.needs) ? current : nextNeeds.needs));
+      setNeedsError(null);
+      setNeeds((shown) => (sameNeeds(shown, nextNeeds.needs) ? shown : nextNeeds.needs));
     }
+    const listed = await listRead;
+    if (!current() || !listed) return;
+    const summaries = listed;
     const mine = summaries
       .filter((summary) => summary.sessionId !== ctoSessionId
         && summary.orchestrationParentSessionId?.trim() === ctoSessionId
@@ -216,7 +225,7 @@ export function useCtoActivityData({
 
   const refresh = useCallback(() => { void loadRef.current(); }, []);
   return useMemo(
-    () => ({ children, needs, needsFailed, prs, proof, libraryLoaded, refresh }),
-    [children, libraryLoaded, needs, needsFailed, proof, prs, refresh],
+    () => ({ children, needs, needsError, prs, proof, libraryLoaded, refresh }),
+    [children, libraryLoaded, needs, needsError, proof, prs, refresh],
   );
 }

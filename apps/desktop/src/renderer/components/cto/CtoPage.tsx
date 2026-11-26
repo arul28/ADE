@@ -577,17 +577,17 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const runningChildren = useMemo(() => activity.children.filter((child) => child.running).length, [activity.children]);
   const navigate = useNavigate();
   const waitingOnYou = useMemo(
-    () => (activity.needs.length || activity.needsFailed
+    () => (activity.needs.length || activity.needsError
       ? (
         <CtoWaitingOnYou
           needs={activity.needs}
-          failed={activity.needsFailed}
+          error={activity.needsError}
           onRetry={activity.refresh}
           onOpen={(need) => openCtoChat(navigate, need.childSessionId, need.laneId, ctoPin, pinTargetsTab)}
         />
       )
       : null),
-    [activity.needs, activity.needsFailed, activity.refresh, ctoPin, navigate, pinTargetsTab],
+    [activity.needs, activity.needsError, activity.refresh, ctoPin, navigate, pinTargetsTab],
   );
 
   const baseAvatarState = welcomeWaking

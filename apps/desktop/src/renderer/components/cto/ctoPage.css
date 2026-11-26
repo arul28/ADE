@@ -789,6 +789,13 @@
   list-style: none;
 }
 
+/* Every line shown: it scrolls past about six rows, so the box below stays on screen. */
+.ade-cto-needs-list[data-expanded="true"] {
+  max-height: 172px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .ade-cto-needs-row {
   display: flex;
   align-items: baseline;

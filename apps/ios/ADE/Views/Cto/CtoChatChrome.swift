@@ -670,18 +670,36 @@ private struct CtoNeedsFeed: ViewModifier {
   @Binding var shown: Bool
 
   @Environment(\.ctoStore) private var store
+  @Environment(\.ctoLiveModel) private var live
 
   func body(content: Content) -> some View {
-    if let store {
-      content.modifier(CtoNeedsFeedActive(store: store, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    if let store, let live {
+      content.modifier(CtoNeedsFeedAwake(live: live, store: store, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    } else if let store {
+      content.modifier(CtoNeedsFeedActive(store: store, asleep: false, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
     } else {
       content
     }
   }
 }
 
+/// Watches the CTO's sleep: the card hides while it sleeps, so the composer keeps no room for it.
+private struct CtoNeedsFeedAwake: ViewModifier {
+  @ObservedObject var live: CtoLiveModel
+  let store: CtoStore
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  func body(content: Content) -> some View {
+    content.modifier(CtoNeedsFeedActive(store: store, asleep: live.asleep, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+  }
+}
+
 private struct CtoNeedsFeedActive: ViewModifier {
   @ObservedObject var store: CtoStore
+  let asleep: Bool
   let sessionId: String
   let turnActive: Bool
   let eventToken: Int
@@ -696,8 +714,8 @@ private struct CtoNeedsFeedActive: ViewModifier {
     content
       .onAppear { visible = true }
       .onDisappear { visible = false }
-      .onChange(of: store.needs.isEmpty || store.needsFailed, initial: true) { _, _ in
-        let show = !store.needs.isEmpty || store.needsFailed
+      // The card's own condition (`CtoWaitingOnYouSlot`).
+      .onChange(of: !asleep && (!store.needs.isEmpty || store.needsFailed), initial: true) { _, show in
         if shown != show { shown = show }
       }
       // Appear, foreground, then every 60 s while on screen and active.
@@ -729,9 +747,24 @@ private struct CtoNeedsFeedActive: ViewModifier {
 /// waiting; `ctoNeedsFeed` keeps it fresh.
 struct CtoWaitingOnYouSlot: View {
   @Environment(\.ctoStore) private var store
+  @Environment(\.ctoLiveModel) private var live
 
   var body: some View {
-    if let store {
+    if let store, let live {
+      CtoWaitingOnYouAwake(live: live, store: store)
+    } else if let store {
+      CtoWaitingOnYouCard(store: store)
+    }
+  }
+}
+
+/// The card hides while the CTO sleeps; its lines come back when it wakes.
+private struct CtoWaitingOnYouAwake: View {
+  @ObservedObject var live: CtoLiveModel
+  let store: CtoStore
+
+  var body: some View {
+    if !live.asleep {
       CtoWaitingOnYouCard(store: store)
     }
   }
@@ -805,11 +838,15 @@ private struct CtoWaitingOnYouCard: View {
         .padding(.top, 10)
         .padding(.bottom, 2)
 
-      ForEach(Array(rows.enumerated()), id: \.element.id) { index, need in
-        if index > 0 {
-          Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5).padding(.horizontal, 14)
+      if expanded {
+        // Every line: it scrolls past a few rows, so the composer stays on screen.
+        ScrollView {
+          rowList(rows)
         }
-        row(need)
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: 220)
+      } else {
+        rowList(rows)
       }
 
       if more > 0 {
@@ -833,6 +870,17 @@ private struct CtoWaitingOnYouCard: View {
     .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("Cto.WaitingOnYou")
+  }
+
+  private func rowList(_ rows: [CtoNeed]) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(Array(rows.enumerated()), id: \.element.id) { index, need in
+        if index > 0 {
+          Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5).padding(.horizontal, 14)
+        }
+        row(need)
+      }
+    }
   }
 
   private func row(_ need: CtoNeed) -> some View {

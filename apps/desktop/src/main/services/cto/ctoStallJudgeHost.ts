@@ -10,6 +10,7 @@ import {
   type CtoChildFacts,
   type CtoNeedChild,
   type CtoStallJudge,
+  type KvDb,
 } from "./ctoStallJudge";
 
 /**
@@ -19,8 +20,6 @@ import {
  * `getNeeds`. Children on this machine only: a chat the CTO started on another
  * machine has no parent link here and keeps its check-back schedule.
  */
-
-type KvDb = { getJson: (key: string) => unknown; setJson: (key: string, value: unknown) => void };
 
 /** What the host reads about a chat loaded in this brain. Memory only, so it is cheap on every chat event. */
 export type CtoHostLoadedChat = { parentId: string | null; identityKey: string | null; deleted: boolean };
@@ -89,7 +88,11 @@ export function createCtoStallJudgeHost(deps: CtoStallJudgeHostDeps): CtoStallJu
   }), "children");
   const seededCtoIds = onceList(async () => (await deps.listCtoChats()).map((cto) => cto.sessionId), "ctos");
 
-  /** The CTO threads: loaded ones first, then the ones the one-time list found. */
+  /**
+   * The CTO threads the judge watches: loaded ones, and the ones the one-time
+   * list found that still have an unarchived row (a deleted or archived CTO
+   * drops out without listing again).
+   */
   const ctoIds = async (): Promise<string[]> => {
     const ids = new Set<string>();
     for (const id of deps.loadedChatIds()) {
@@ -97,7 +100,10 @@ export function createCtoStallJudgeHost(deps: CtoStallJudgeHostDeps): CtoStallJu
       if (chat && !chat.deleted && chat.identityKey === "cto") ids.add(id);
     }
     for (const id of await seededCtoIds()) ids.add(id);
-    return [...ids];
+    return [...ids].filter((id) => {
+      const row = deps.sessionRow(id);
+      return Boolean(row && !row.archivedAt);
+    });
   };
 
   /** The CTO's children: the ones the one-time list found, plus every loaded one. */
@@ -259,7 +265,10 @@ export function createCtoStallJudgeHost(deps: CtoStallJudgeHostDeps): CtoStallJu
   return {
     judge,
     getCtoNeeds: async () => {
-      const ctoSessionId = (await ctoIds())[0];
+      // The CTO thread as every reader picks it (newest first, as
+      // ensureIdentitySession and the attention badge do), so the card shows
+      // the thread the person opens.
+      const ctoSessionId = (await deps.listCtoChats())[0]?.sessionId;
       if (!ctoSessionId) return { needs: [] };
       return { needs: await judge.listNeeds(ctoSessionId) };
     },
