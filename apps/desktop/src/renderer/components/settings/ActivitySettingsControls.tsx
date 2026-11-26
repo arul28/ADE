@@ -14,7 +14,7 @@ import {
   type AttentionAccountDevice,
   type AttentionPreferences,
 } from "../../../shared/types";
-import { relativeWhen } from "../../lib/format";
+import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { isMac } from "../../lib/platform";
 import { useAccountStatus } from "../../lib/account";
@@ -162,9 +162,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
       .catch((loadError: unknown) => {
         if (cancelled || !mounted.current) return;
         setLoadFailed(true);
-        setLoadError(loadError instanceof Error && loadError.message.trim()
-          ? loadError.message
-          : "ADE couldn’t load your Activity settings.");
+        setLoadError(ipcErrorMessage(loadError)
+          || "ADE couldn’t load your Activity settings.");
       })
       .finally(() => {
         if (!cancelled && mounted.current) setLoading(false);
@@ -243,9 +242,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     } catch (saveError) {
       if (!mounted.current || accountScope.current !== scope) return;
       setPreferences((current) => ({ ...current, account: previous }));
-      setSaveError("account", saveError instanceof Error && saveError.message.trim()
-        ? saveError.message
-        : "ADE couldn’t save your Activity settings.");
+      setSaveError("account", ipcErrorMessage(saveError)
+        || "ADE couldn’t save your Activity settings.");
     } finally {
       scope.pending.delete("account");
       if (mounted.current && accountScope.current === scope) setSavingTargets(new Set(scope.pending));
@@ -282,9 +280,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
       flashSaved();
     } catch (saveError) {
       if (!mounted.current || accountScope.current !== account) return;
-      setSaveError(key, saveError instanceof Error && saveError.message.trim()
-        ? saveError.message
-        : `ADE couldn’t change notifications for that ${noun}.`);
+      setSaveError(key, ipcErrorMessage(saveError)
+        || `ADE couldn’t change notifications for that ${noun}.`);
     } finally {
       account.pending.delete(key);
       if (mounted.current && accountScope.current === account) setSavingTargets(new Set(account.pending));
