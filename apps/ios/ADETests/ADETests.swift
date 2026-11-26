@@ -2144,6 +2144,33 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(args["name"] as? String, "Feature lane")
   }
 
+  /// A command's project to the host: a machine-wide action stays projectless
+  /// unless it keeps the project it names (the phone's answer to a size
+  /// request is read in the chat's project), and never borrows the active one.
+  func testCommandProjectScopeKeepsOnlyTheNamedProjectForMachineWideActions() {
+    struct Case { let name: String; let runtime: Bool; let keeps: Bool; let target: String?; let root: String?; let id: String?; let path: String? }
+    let cases = [
+      Case(name: "machine-wide drops a named project", runtime: true, keeps: false, target: "project-b", root: "/b", id: nil, path: nil),
+      Case(name: "machine-wide keeps the project it names", runtime: true, keeps: true, target: "project-b", root: "/b", id: "project-b", path: "/b"),
+      Case(name: "machine-wide never borrows the active project", runtime: true, keeps: true, target: " ", root: nil, id: nil, path: nil),
+      Case(name: "project action falls back to the active project", runtime: false, keeps: false, target: nil, root: nil, id: "project-a", path: "/a"),
+      Case(name: "another project with no root sends none", runtime: false, keeps: false, target: "project-b", root: nil, id: "project-b", path: nil),
+    ]
+    for c in cases {
+      let scope = syncCommandProjectScope(
+        actionIsRuntimeScoped: c.runtime,
+        keepsProjectForRuntimeAction: c.keeps,
+        fallbackToActiveProjectScope: true,
+        targetProjectId: c.target,
+        targetProjectRootPath: c.root,
+        activeProjectId: "project-a",
+        activeProjectRootPath: "/a"
+      )
+      XCTAssertEqual(scope.projectId, c.id, c.name)
+      XCTAssertEqual(scope.rootPath, c.path, c.name)
+    }
+  }
+
   func testCommandEnvelopePayloadOmitsBlankProjectScope() {
     let payload = syncCommandEnvelopePayload(
       commandId: "cmd-1",
