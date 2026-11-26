@@ -84357,6 +84357,8 @@ export function createAgentChatService(args: {
       // retry at the next boundary instead, regardless of which runtime or API
       // created it.
       if (liveManaged?.session.status === "active") return true;
+      // A send was accepted and its turn is still starting (a cold runtime can take a while).
+      if (liveManaged?.turnAcceptedAt) return true;
       // An open card refuses every new turn. Firing now would close the row as
       // "Not delivered" and lose the wake; keep it armed until the card closes.
       if (hasLivePendingInput(liveManaged)) return true;

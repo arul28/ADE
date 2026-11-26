@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alarm, ArrowsClockwise, Binoculars, CalendarBlank, CloudSlash, DotsThree, Lightning, PauseCircle, Trash } from "@phosphor-icons/react";
 import type { AgentChatScheduledWorkItem, OpenProjectBinding } from "../../../shared/types";
+import { isBareSessionMetaNudge } from "../../../shared/sessionMetaEvents";
 import { useMinuteClock } from "../../hooks/useMinuteClock";
 import { ipcErrorMessage } from "../../lib/format";
 import { SettingsToggle } from "../settings/primitives";
@@ -423,10 +424,8 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (envelope.sessionId !== sessionId) return;
       const event = envelope.event;
-      // A quiet check keeps the row's status, so the scheduler reports it only
-      // as a bare session_meta_updated; meta updates carrying a field are other news.
-      const bareMetaUpdate = event.type === "session_meta_updated" && Object.keys(event).length === 1;
-      if (event.type !== "scheduled_work_update" && event.type !== "done" && !bareMetaUpdate) return;
+      // A quiet check keeps the row's status, so it arrives only as a bare meta nudge.
+      if (event.type !== "scheduled_work_update" && event.type !== "done" && !isBareSessionMetaNudge(event)) return;
       if (timer != null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = null;

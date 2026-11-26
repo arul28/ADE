@@ -119,7 +119,7 @@ function snapshotCheckState(record: ChatScheduledWorkRecord): ChatScheduledWorkC
   return { checkHash: record.checkHash, checkFailing: record.checkFailing, lastCheckedAt: record.lastCheckedAt };
 }
 
-function restoreCheckState(record: ChatScheduledWorkRecord, state: ChatScheduledWorkCheckState): void {
+function setCheckState(record: ChatScheduledWorkRecord, state: ChatScheduledWorkCheckState): void {
   if (state.checkHash) record.checkHash = state.checkHash;
   else delete record.checkHash;
   if (state.checkFailing) record.checkFailing = true;
@@ -286,6 +286,8 @@ const NATIVE_FIRE_GRACE_MS = 90_000;
 const BUSY_DEFER_RETRY_MS = 20_000;
 /** How long a chat that just took a scheduled wake holds the next one back. */
 const DELIVERY_SETTLE_MS = 5_000;
+/** A delivery that has not returned by then no longer holds its chat's other wakes. */
+const DELIVERY_HUNG_MS = 60_000;
 const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_TERMINAL_HISTORY_RECORDS = 200;
 const LEGACY_PROVISIONAL_CRON_PREFIX = "cron-tool:";
@@ -416,16 +418,18 @@ export function createChatScheduledWorkScheduler(
   const schedules = new Map<string, ChatScheduledWorkRecord>();
   const pausedSessionIds = new Set<string>();
   const timerHandles = new Map<string, unknown>();
-  // A chat taking a scheduled wake: null while it is delivered, then the time
-  // the delivery returned. A send returns before its turn shows as active, so
-  // the guard holds a moment longer than the delivery itself.
-  const deliveringSessions = new Map<string, number | null>();
+  // A chat taking a scheduled wake. A send returns before its turn shows as
+  // active, so the guard holds a moment past the delivery; one that never
+  // returns lets go after a ceiling instead of silencing the chat's wakes.
+  const deliveringSessions = new Map<string, { startedAt: number; returnedAt: number | null }>();
   const deliveryHeld = (sessionId: string): boolean => {
-    if (!deliveringSessions.has(sessionId)) return false;
-    const returnedAt = deliveringSessions.get(sessionId);
-    if (returnedAt == null || now() - returnedAt < DELIVERY_SETTLE_MS) return true;
-    deliveringSessions.delete(sessionId);
-    return false;
+    const delivery = deliveringSessions.get(sessionId);
+    if (!delivery) return false;
+    const held = delivery.returnedAt == null
+      ? now() - delivery.startedAt < DELIVERY_HUNG_MS
+      : now() - delivery.returnedAt < DELIVERY_SETTLE_MS;
+    if (!held) deliveringSessions.delete(sessionId);
+    return held;
   };
   const inFlight = new Set<string>();
   let started = false;
@@ -606,8 +610,9 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
-    deliveringSessions.set(schedule.sessionId, null);
-    let delivered = false;
+    // Taken only once a wake is decided (below); a quiet check holds nothing.
+    let delivery: { startedAt: number; returnedAt: number | null } | null = null;
+    let fireStarted = false;
     try {
       inFlight.add(scheduleId);
       let checkWake: ChatScheduledWorkCheckWake | undefined;
@@ -618,11 +623,11 @@ export function createChatScheduledWorkScheduler(
         const decision = decideScheduledWorkCheck(schedule, run);
         // A check that wakes is stamped with the fire's own time, so a reader can
         // tell it from a later quiet one.
-        schedule.lastCheckedAt = decision.wake ? currentTime : now();
-        if (decision.checkHash) schedule.checkHash = decision.checkHash;
-        else delete schedule.checkHash;
-        if (decision.checkFailing) schedule.checkFailing = true;
-        else delete schedule.checkFailing;
+        setCheckState(schedule, {
+          checkHash: decision.checkHash,
+          checkFailing: decision.checkFailing,
+          lastCheckedAt: decision.wake ? currentTime : now(),
+        });
         if (!decision.wake) {
           // Nothing new: the occurrence is spent without a turn. Its claim
           // stays, so another brain follows the moved fireAt instead.
@@ -632,12 +637,15 @@ export function createChatScheduledWorkScheduler(
           try {
             await persist();
           } catch (error) {
-            // Unsaved: put the occurrence and its check state back, give up the
-            // claim and try again soon, like an undelivered wake.
-            schedule.fireAt = previousFireAt;
-            restoreCheckState(schedule, previousCheck);
-            options.releaseFire?.(cloneSchedule(schedule));
-            armBusyDeferRetry(schedule);
+            // Unsaved: give up the claim (keyed by the old occurrence), put the
+            // occurrence and its check state back and try again soon, like an
+            // undelivered wake. A replacement row armed its own timer.
+            options.releaseFire?.({ ...cloneSchedule(schedule), fireAt: previousFireAt });
+            if (schedules.get(scheduleId) === schedule) {
+              schedule.fireAt = previousFireAt;
+              setCheckState(schedule, previousCheck);
+              armBusyDeferRetry(schedule);
+            }
             throw error;
           }
           await emitTransition(schedule, schedule.status);
@@ -651,6 +659,9 @@ export function createChatScheduledWorkScheduler(
           ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
         };
       }
+      // No await since deliveryHeld() above, so no other wake took the chat meanwhile.
+      delivery = { startedAt: now(), returnedAt: null };
+      deliveringSessions.set(schedule.sessionId, delivery);
       const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
       const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
       const previousLastFiredAt = schedule.lastFiredAt;
@@ -667,7 +678,7 @@ export function createChatScheduledWorkScheduler(
         if (previousLastFiredAt == null) delete schedule.lastFiredAt;
         else schedule.lastFiredAt = previousLastFiredAt;
         schedule.lateFlag = previousLateFlag;
-        restoreCheckState(schedule, previousCheck);
+        setCheckState(schedule, previousCheck);
         inFlight.delete(scheduleId);
         options.releaseFire?.(cloneSchedule(schedule));
         armBusyDeferRetry(schedule);
@@ -690,7 +701,7 @@ export function createChatScheduledWorkScheduler(
       let retry = false;
       let outcomeSummary: string | undefined;
       try {
-        delivered = true;
+        fireStarted = true;
         const result = await options.fire(cloneSchedule(schedule), { late, ...(checkWake ? { check: checkWake } : {}) });
         complete = result != null && "complete" in result && result.complete === true;
         retry = result != null && "retry" in result && result.retry === true;
@@ -712,7 +723,7 @@ export function createChatScheduledWorkScheduler(
         if (previousLastFiredAt == null) delete current.lastFiredAt;
         else current.lastFiredAt = previousLastFiredAt;
         current.lateFlag = previousLateFlag;
-        if (current === schedule) restoreCheckState(current, previousCheck);
+        if (current === schedule) setCheckState(current, previousCheck);
         delete current.activeTurnId;
         await persist();
         await emitTransition(current, current.status);
@@ -735,8 +746,11 @@ export function createChatScheduledWorkScheduler(
       await emitTransition(current, current.status);
       arm(current);
     } finally {
-      if (delivered) deliveringSessions.set(schedule.sessionId, now());
-      else deliveringSessions.delete(schedule.sessionId);
+      if (delivery && deliveringSessions.get(schedule.sessionId) === delivery) {
+        // Only a wake that reached fire() holds the chat past its own delivery.
+        if (fireStarted) delivery.returnedAt = now();
+        else deliveringSessions.delete(schedule.sessionId);
+      }
     }
   };
 
@@ -773,7 +787,7 @@ export function createChatScheduledWorkScheduler(
     schedule.lateFlag = persisted.lateFlag;
     schedule.terminalAt = persisted.terminalAt;
     // The owner ran the check too; keep its verdict so this brain doesn't report the same news again.
-    restoreCheckState(schedule, snapshotCheckState(persisted));
+    setCheckState(schedule, snapshotCheckState(persisted));
     if (isTerminal(schedule)) pruneTerminalHistory();
     else if (schedule.status === "scheduled") arm(schedule);
     await emitTransition(schedule, schedule.status);
