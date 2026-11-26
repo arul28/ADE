@@ -437,6 +437,8 @@ func ctoStepWords(toolName: String, argsText: String?) -> String? {
   case "runMachineAction": return "Acting on a machine"
   case "listComputerUseArtifacts", "getArtifactPreview", "reviewArtifact": return "Looking at proof"
   case "captureProof": return "Filing proof"
+  case "showMedia": return "Adding a picture"
+  case "getChatProof": return "Getting a chat's proof"
   case "gitStatus", "gitListRecentCommits", "gitListBranches": return "Checking git"
   case "getRecentEvents", "getProjectHealthSummary": return "Catching up on the project"
   case "listSubagents": return "Checking helpers"

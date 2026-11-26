@@ -1605,6 +1605,44 @@ export function createComputerUseArtifactBrokerService(args: {
     return artifacts.map((artifact) => toArtifactView(artifact, linksByArtifact.get(artifact.id) ?? []));
   };
 
+  /** Adds `owner` to each artifact that lacks it. All or none, in one savepoint. */
+  const linkArtifactsToOwner = (artifactIds: string[], owner: ComputerUseArtifactOwner): ComputerUseArtifactView[] => {
+    const ids = [...new Set(artifactIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+    const missing = ids.filter((id) => !readArtifactById(id));
+    if (missing.length) throw new Error(`Computer-use artifact not found: ${missing.join(", ")}`);
+    const at = nowIso();
+    const added: string[] = [];
+    // A savepoint, like ingest: one call links all or none, and it nests.
+    db.run("savepoint computer_use_link");
+    try {
+      for (const artifactId of ids) {
+        const existing = readLinkRows([artifactId])
+          .some((link) => link.ownerKind === owner.kind && link.ownerId === owner.id);
+        if (existing) continue;
+        insertLink(artifactId, owner);
+        added.push(artifactId);
+      }
+      db.run("release computer_use_link");
+    } catch (error) {
+      try {
+        db.run("rollback to computer_use_link");
+        db.run("release computer_use_link");
+      } catch {
+        // The original error is the one worth reporting.
+      }
+      throw error;
+    }
+    for (const artifactId of added) {
+      emit({
+        type: "artifact-linked",
+        artifactId,
+        at,
+        owner: { kind: owner.kind, id: owner.id, relation: owner.relation ?? "attached_to" },
+      });
+    }
+    return ids.map((artifactId) => toArtifactView(readArtifactById(artifactId)!, readLinkRows([artifactId])));
+  };
+
   return {
     /** The artifact's file on disk, confined to the artifacts directory; null for links or paths outside it. */
     resolveArtifactFilePath(artifact: Pick<ComputerUseArtifactRecord, "storageKind" | "uri">): string | null {
@@ -1881,6 +1919,44 @@ export function createComputerUseArtifactBrokerService(args: {
         });
       }
       return views;
+    },
+
+    /**
+     * Shows proof another chat filed in this chat too, without a copy: one
+     * more owner link on the same record. The CTO uses it to put a child's
+     * screenshot in its own answer. The record keeps its lane and its first
+     * owner, so deleting it there removes it here too.
+     */
+    /**
+     * Refuses `absolutePath` the way ingest refuses a caller's file: a
+     * secret, or outside the import roots. For a caller that turns the file
+     * into another one first (an MP4 copy) and would otherwise only have the
+     * copy checked.
+     */
+    assertImportableSource(absolutePath: string): void {
+      if (isDeniedArtifactSource(absolutePath, deniedImportRoots)) {
+        throw new Error(`Artifact path is not allowed as a proof source: ${absolutePath}`);
+      }
+      try {
+        resolvePathWithinRoot(layout.artifactsDir, absolutePath);
+        return;
+      } catch {
+        // Not filed proof already; it has to sit in an import root.
+      }
+      if (!isAllowedExternalArtifactSource(absolutePath, allowedImportRoots)) {
+        throw outsideImportRootsError(absolutePath, allowedImportRoots);
+      }
+    },
+
+    linkArtifactsToChat(args: { artifactIds: string[]; chatSessionId: string }): ComputerUseArtifactView[] {
+      const chatSessionId = String(args.chatSessionId ?? "").trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      return linkArtifactsToOwner(args.artifactIds, {
+        kind: "chat_session",
+        id: chatSessionId,
+        relation: "attached_to",
+        metadata: { sharedAt: nowIso() },
+      });
     },
 
     updateArtifactReview(args: ComputerUseArtifactReviewArgs): ComputerUseArtifactView {

@@ -1,5 +1,5 @@
 import type { FileContent } from "../../../../shared/types";
-import type { SyncFileBlob } from "../../../../shared/types/sync";
+import type { SyncArtifactRange, SyncFileBlob } from "../../../../shared/types/sync";
 import type { AdeSyncClient, SupportedFileAction } from "../../sync";
 import type { AdapterProjectState } from "./projectState";
 
@@ -48,4 +48,15 @@ export async function requestDataUrl(
 ): Promise<string | null> {
   const blob = await requestFileBlob(client, state, action, args);
   return dataUrlFromBlob(blob);
+}
+
+/** One slice of a stored proof (`readArtifactRange`), for a file over the host's whole-file cap. */
+export async function requestArtifactRange(
+  client: AdeSyncClient,
+  state: AdapterProjectState,
+  args: { uri: string; offset: number; length?: number },
+): Promise<SyncArtifactRange> {
+  return (await client.requestFile("readArtifactRange", args as never, {
+    projectId: state.getProjectId(),
+  })) as SyncArtifactRange;
 }

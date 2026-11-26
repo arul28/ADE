@@ -672,6 +672,70 @@ Renderers:
   proof sheet's loader. An id outside the chat's list shows "This chat has no
   proof with the id …".
 - A client that predates this shows the alt text or the code fence.
+- **Hosted web client, large files:** a picture or video over the host's 8 MiB
+  whole-file read is pulled in `readArtifactRange` slices into a blob URL
+  (`webclient/adapter/computerUse.ts`), up to 256 MiB; the last four stay
+  cached. Larger proof says to open it in the ADE app. The page's policy
+  (`webclient/public/_headers`) allows `media-src 'self' data: blob:`; with no
+  `media-src` the browser blocked every proof video on the web.
+
+### Proof in the CTO's answer
+
+The CTO cites proof the same way, and every client resolves the id through
+the CTO chat on the CTO's home machine. So the proof must be there, owned by
+the CTO chat (`cto/ctoProofShare.ts`):
+
+- **A child on the same machine.** When a child chat (or tracked CLI) reports
+  back, ADE links the proof it filed in that turn to the CTO chat
+  (`broker.linkArtifactsToChat`: one more owner link, no copy) and the wake
+  carries the cite lines. A tracked CLI has no turn stamps, so its newest
+  proof is shared. When the report's turn id matches no proof (a fallback id
+  the broker never stamped), the newest proof the CTO chat does not hold yet
+  is shared instead; a real turn that filed none shares none. A record whose
+  file is gone is skipped with that reason. The record keeps its lane, so
+  deleting the child's lane deletes the proof here too, and the citation then
+  says the file is gone. The wake waits at most 45 s for the lines (a long
+  video to convert); past that, it tells the CTO to call `getChatProof` and
+  the copy keeps going. A delivery retry reuses the lines.
+- **A child on another machine or an ADE Cloud lane.** The wake (or the
+  check-in) tells the CTO to call `getChatProof({ sessionId, machine })`.
+  The home brain lists that chat's proof there and pulls each file in
+  `computer_use_artifacts.readArtifactRange` slices, then files it as the
+  CTO's with `metadata.importedFrom` (machine, artifact, chat). It pulls a
+  record once; a repeat call reuses the copy, which stays viewable after that
+  machine sleeps or after the file there is deleted. The limit is 512 MiB per file. A machine on an older ADE
+  refuses slices to another brain, so the pull falls back to its 10 MiB
+  whole-file preview and says to update it for larger files.
+- **A file the CTO or a helper made.** `showMedia({ path, caption })` files it
+  as the CTO's proof and returns the cite. The path is checked against the
+  import roots and the secrets folder (`broker.assertImportableSource`) before
+  any conversion, since the MP4 copy itself sits in an allowed folder.
+- **One copy at a time.** A conversion or a pull runs once per CTO chat and
+  record; a second caller (a report's wake and a `getChatProof` call) joins it.
+- **Video conversion.** A MOV, MKV, WebM or AVI gets an H.264 MP4 copy
+  (`computerUse/proofPlayableVideo.ts`). It is remuxed when the video is
+  already H.264, and re-encoded with ffmpeg otherwise (the machine's ffmpeg,
+  or ADE's pinned copy on Linux and Windows). On a Mac with no ffmpeg, a MOV
+  goes through `avconvert`. The copy has `metadata.convertedFrom`. When nothing
+  can convert it, the original is shown with a note. An MP4 is probed too:
+  HEVC or VP9 inside one gets the same H.264 copy. Any local ffmpeg with
+  libx264 converts (the demo renderer's extra need, drawtext, does not apply).
+- **More than one page.** At most 8 come back per call; `more` counts the
+  rest and `getChatProof({ skip })` reaches them.
+- **The other machine asleep.** `getChatProof` with `machine` returns the
+  copies pulled from that chat before, with a note that they are not a live
+  read.
+
+A remote brain is refused secret-bearing actions, and raw proof bytes are one
+of them. The one exception is `readArtifactRange` for a caller at the CTO role
+(`isCtoBrainCopyableAdeAction` in `actionPolicy.ts`). There, the CTO's code
+copies the bytes, never its model: `runMachineAction` still refuses the
+action, and an agent's bridge is still refused.
+
+The doctrine (`ctoStateService.ts`, "How you show proof") has the CTO ask a
+child for proof when its work shows on screen or runs on another machine. It
+puts the cites in its done reply, and when there is no proof it says what was
+not shown or tested.
 
 ## For agents
 
