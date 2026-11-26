@@ -6218,20 +6218,23 @@ export const CHAT_REACTION_EMOJIS: readonly ChatReactionEmoji[] = ["👍", "👎
 /** The CTO's set: every reaction but 👎, which the CTO has no use for. */
 export type CtoReactionEmoji = Exclude<ChatReactionEmoji, "👎">;
 
-export const CTO_REACTION_MEANINGS: Readonly<Record<CtoReactionEmoji, string>> = {
-  "👍": CHAT_REACTION_MEANINGS["👍"],
-  "👀": CHAT_REACTION_MEANINGS["👀"],
-  "✅": CHAT_REACTION_MEANINGS["✅"],
-  "🎉": CHAT_REACTION_MEANINGS["🎉"],
-  "❤️": CHAT_REACTION_MEANINGS["❤️"],
-  "😂": CHAT_REACTION_MEANINGS["😂"],
-  "😢": CHAT_REACTION_MEANINGS["😢"],
-};
+export const CTO_REACTION_MEANINGS = Object.fromEntries(
+  Object.entries(CHAT_REACTION_MEANINGS).filter(([emoji]) => emoji !== "👎"),
+) as Readonly<Record<CtoReactionEmoji, string>>;
 
 export const CTO_REACTION_EMOJIS = Object.keys(CTO_REACTION_MEANINGS) as CtoReactionEmoji[];
 
 /** "👍 got it, 👀 looking into it, …" for the CTO's prompt and tool descriptions. */
 export const CTO_REACTION_LEGEND = CTO_REACTION_EMOJIS.map((emoji) => `${emoji} ${CTO_REACTION_MEANINGS[emoji]}`).join(", ");
+
+/** The CTO's `react` tool description, for the in-process tool and the ADE MCP bridge alike. */
+export const CTO_REACT_TOOL_DESCRIPTION =
+  "Put an emoji on the person's newest message instead of replying, when they wrote and need no words back "
+  + `(an "ok", a thanks, a go-ahead). ${CTO_REACTION_LEGEND}. `
+  + "A newer reaction replaces the old one. In a turn the person did not start (a helper's report, a wake), "
+  + "it swaps the newest 👀 you left on one of their messages, so 👀 can become ✅ once the look is done. "
+  + "Any reaction but 👀 ends the turn with no reply: write nothing after it. "
+  + "After 👀, end with noReply while a helper looks, or finish the look: react ✅ if all is clear, else reply with what you found.";
 
 export function isCtoReactionEmoji(value: unknown): value is CtoReactionEmoji {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(CTO_REACTION_MEANINGS, value);

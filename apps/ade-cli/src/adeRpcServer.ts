@@ -229,7 +229,7 @@ import {
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   CTO_REACTION_EMOJIS,
-  CTO_REACTION_LEGEND,
+  CTO_REACT_TOOL_DESCRIPTION,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
 
@@ -1565,7 +1565,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "react",
-    description: `Put an emoji on the person's newest message instead of replying, when they wrote and need no words back. ${CTO_REACTION_LEGEND}. A newer reaction replaces the old one. In a turn the person did not start (a helper's report, a wake), it swaps the newest 👀 you left on one of their messages, so 👀 can become ✅ once the look is done. Any reaction but 👀 ends the turn with no reply. After 👀, end with noReply while a helper looks, or finish the look: react ✅ if all is clear, else reply with what you found.`,
+    description: CTO_REACT_TOOL_DESCRIPTION,
     inputSchema: {
       type: "object",
       required: ["emoji"],

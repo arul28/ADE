@@ -1097,15 +1097,20 @@ import {
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
 import {
-  addCtoReactionFeedback,
   ctoLookingReactTarget,
-  ctoReactableMessage,
-  ctoReactionFeedbackSection,
-  ctoReactionFeedbackSinceLastTurn,
   stepCtoQuietTurn,
   type CtoQuietTurnState,
-  type CtoReactionFeedback,
 } from "./ctoQuietTurn";
+import {
+  addCtoReactionFeedback,
+  ctoReactableMessage,
+  ctoReactionFeedbackSinceLastTurn,
+  parseCtoReactionFeedback,
+  settleCtoReactionFeedback,
+  stageCtoReactionFeedback,
+  type CtoReactionFeedback,
+  type CtoReactionFeedbackQueue,
+} from "./ctoReactionFeedback";
 import {
   CrossMachineHandoffReturnRefusedError,
   createCrossMachineHandoffDestination,
@@ -2700,6 +2705,8 @@ type PersistedChatState = {
   ctoRefreshPending?: CtoProviderThreadRefreshReason;
   /** CTO only: see ManagedChatSession.ctoFallbackIndex / Since / RetryAt. */
   ctoFallback?: { index: number; since: number | null; retryAt: number | null };
+  /** CTO only: the pending list of ManagedChatSession.ctoReactionFeedback. */
+  ctoReactionFeedback?: CtoReactionFeedback[];
   /** CTO only: see ManagedChatSession.ctoAccountApplied. */
   ctoAccountApplied?: string;
   /** See ManagedChatSession.pendingRestartNote. */
@@ -6005,12 +6012,11 @@ type ManagedChatSession = {
   /**
    * CTO only: the person's reactions on CTO messages that no turn has been
    * told about yet. Each rides the next turn's context and clears once a send
-   * delivers it. Undefined until first read; after a restart it is rebuilt
-   * from the transcript (`ctoReactionFeedbackSinceLastTurn`).
+   * delivers it. Undefined until first read. The chat state saves `pending`;
+   * a chat saved without it rebuilds it from the transcript
+   * (`ctoReactionFeedbackSinceLastTurn`).
    */
-  ctoReactionFeedback?: CtoReactionFeedback[];
-  /** The items the pending turn context holds, so a send clears only what it told. */
-  ctoReactionFeedbackStaged?: readonly CtoReactionFeedback[] | null;
+  ctoReactionFeedback?: CtoReactionFeedbackQueue;
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
@@ -6262,6 +6268,8 @@ type MovedAwayPath =
   | "recover_turn"
   | "codex_recovery"
   | "respond_to_input"
+  /** The person's reaction on a CTO message (`reactToMessage`). */
+  | "react"
   /** A tracked agent CLI that moved to another machine, started here again. */
   | "cli_resume";
 
@@ -6624,6 +6632,8 @@ const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 // Every reader of recent conversation wants at most the last 40 entries; tool
 // output dominates a transcript's bytes, so the window is generous.
 const RECENT_TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024;
+/** How far back a reaction on an older CTO reply looks for that reply. */
+const REACTION_LOOKUP_TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
 
@@ -18733,10 +18743,13 @@ export function createAgentChatService(args: {
   const ctoReactionFeedbackFor = (
     managed: ManagedChatSession,
     events?: readonly AgentChatEvent[],
-  ): CtoReactionFeedback[] => {
-    managed.ctoReactionFeedback ??= ctoReactionFeedbackSinceLastTurn(
-      events ?? readRecentTranscriptEnvelopes(managed).map((entry) => entry.event),
-    );
+  ): CtoReactionFeedbackQueue => {
+    managed.ctoReactionFeedback ??= {
+      pending: ctoReactionFeedbackSinceLastTurn(
+        events ?? readRecentTranscriptEnvelopes(managed).map((entry) => entry.event),
+      ),
+      staged: null,
+    };
     return managed.ctoReactionFeedback;
   };
 
@@ -18808,9 +18821,7 @@ export function createAgentChatService(args: {
         // An unreadable zone leaves the line out rather than guessing.
       }
       // After the other volatile lines: a tight budget cuts from the front.
-      const staged = ctoReactionFeedbackFor(managed).slice();
-      managed.ctoReactionFeedbackStaged = staged.length ? staged : null;
-      const reactions = ctoReactionFeedbackSection(staged);
+      const reactions = stageCtoReactionFeedback(ctoReactionFeedbackFor(managed));
       if (reactions) sections.push({ id: "reactions", text: reactions });
     }
 
@@ -19072,12 +19083,9 @@ export function createAgentChatService(args: {
     }
     if (delivered.has("tail")) managed.conversationTail.pending = false;
     if (delivered.has("static")) managed.ctoStaticContext.pending = false;
-    if (delivered.has("reactions") && managed.ctoReactionFeedbackStaged) {
-      // A reaction that came in after the context was built waits for the next send.
-      const told = new Set(managed.ctoReactionFeedbackStaged);
-      managed.ctoReactionFeedback = (managed.ctoReactionFeedback ?? []).filter((item) => !told.has(item));
+    if (hadReconstruction && managed.ctoReactionFeedback) {
+      settleCtoReactionFeedback(managed.ctoReactionFeedback, delivered.has("reactions"));
     }
-    if (hadReconstruction) managed.ctoReactionFeedbackStaged = null;
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -22125,6 +22133,9 @@ export function createAgentChatService(args: {
       ...(managed.reportedRestartLossIds?.length ? { reportedRestartLossIds: managed.reportedRestartLossIds } : {}),
       ...(managed.claudeFreshThreadPending ? { claudeFreshThreadPending: true as const } : {}),
       ...(managed.ctoRefreshPending ? { ctoRefreshPending: managed.ctoRefreshPending } : {}),
+      // Saved even when empty: a restart then restores what is still untold
+      // instead of guessing it from the transcript.
+      ...(managed.ctoReactionFeedback ? { ctoReactionFeedback: managed.ctoReactionFeedback.pending } : {}),
       ...(managed.ctoAccountApplied !== undefined ? { ctoAccountApplied: managed.ctoAccountApplied } : {}),
       ...(managed.ctoFallbackIndex != null
         ? {
@@ -22701,6 +22712,9 @@ export function createAgentChatService(args: {
         ...(typeof record.ctoRefreshPending === "string" ? { ctoRefreshPending: record.ctoRefreshPending } : {}),
         ...(typeof record.ctoAccountApplied === "string" ? { ctoAccountApplied: record.ctoAccountApplied } : {}),
         ...(record.ctoFallback && typeof record.ctoFallback === "object" ? { ctoFallback: record.ctoFallback } : {}),
+        ...(Array.isArray(record.ctoReactionFeedback)
+          ? { ctoReactionFeedback: parseCtoReactionFeedback(record.ctoReactionFeedback) }
+          : {}),
         ...(asyncQuestions?.length ? { asyncQuestions } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
         ...(typeof record.preferredExecutionLaneId === "string" && record.preferredExecutionLaneId.trim().length
@@ -31479,6 +31493,10 @@ export function createAgentChatService(args: {
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     // A Codex chat saved before the cloud rule shows full access from load.
     applyCodexCloudFullAccess(managed.session);
+    // Before the context is built, which stages the untold reactions.
+    if (persisted?.ctoReactionFeedback) {
+      managed.ctoReactionFeedback = { pending: [...persisted.ctoReactionFeedback], staged: null };
+    }
     refreshReconstructionContext(managed);
     if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
       managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
@@ -68166,23 +68184,37 @@ export function createAgentChatService(args: {
    */
   const reactToMessage = async (args: AgentChatReactToMessageArgs): Promise<AgentChatReactToMessageResult> => {
     const emoji = normalizeChatReactionEmoji(args.emoji);
-    if (!emoji) throw new Error(`Pick one of ${CHAT_REACTION_EMOJIS.join(" ")}.`);
+    if (!emoji) throw new AdeExpectedError(`Pick one of ${CHAT_REACTION_EMOJIS.join(" ")}.`, "user");
     const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
     const targetKey = typeof args.targetKey === "string" ? args.targetKey.trim() : "";
-    if (!sessionId || !targetKey) throw new Error("A reaction needs a chat and a message.");
+    // A message key carries a provider's own id (`message:msg_01…`); the cap
+    // holds for every transport (IPC, phone, web) before the transcript read.
+    if (!sessionId || !targetKey || targetKey.length > 512) throw new AdeExpectedError("A reaction needs a chat and a message.", "user");
+    // The same gates as a steer: a reaction written on a copy that does not
+    // own the chat, or on a CTO's old home, would never reach the CTO.
+    assertChatRuntimeOwnedHere(sessionId, "react in");
+    assertChatNotMovedAway(sessionId, "react");
+    await assertCtoHomeHere(sessionId);
     const managed = ensureManagedSession(sessionId);
     if (managed.deleted || managed.session.identityKey !== "cto") {
-      throw new Error("Only the CTO's messages take a reaction.");
+      throw new AdeExpectedError("Only the CTO's messages take a reaction.", "user");
     }
-    if (managed.session.archivedAt) throw new Error("This chat is archived.");
+    if (managed.session.archivedAt) throw new AdeExpectedError("This chat is archived.", "user");
     const events = readRecentTranscriptEnvelopes(managed).map((entry) => entry.event);
-    const message = ctoReactableMessage(events, targetKey);
-    if (!message) throw new Error("That message is no longer in this chat.");
+    // A reply older than the recent window (the person scrolled back) is
+    // looked up further back, off the sync path and within a cap.
+    const message = ctoReactableMessage(events, targetKey)
+      ?? ctoReactableMessage(
+        (await readTranscriptEnvelopesForSessionIdAsync(sessionId, REACTION_LOOKUP_TRANSCRIPT_MAX_BYTES)).envelopes.map((entry) => entry.event),
+        targetKey,
+      );
+    if (!message) throw new AdeExpectedError("That message is no longer in this chat.", "user");
     if (message.current === emoji) return { targetKey, emoji, changed: false };
     // Seeded before the new event lands, so a restart's rebuild cannot count it twice.
-    const pending = ctoReactionFeedbackFor(managed, events);
+    const feedback = ctoReactionFeedbackFor(managed, events);
     emitChatEvent(managed, { type: "assistant_message_reaction", targetKey, emoji });
-    addCtoReactionFeedback(pending, { targetKey, emoji, quote: message.quote });
+    addCtoReactionFeedback(feedback.pending, { targetKey, emoji, quote: message.quote });
+    persistChatState(managed);
     return { targetKey, emoji, changed: true };
   };
 

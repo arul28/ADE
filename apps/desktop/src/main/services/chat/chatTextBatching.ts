@@ -85,6 +85,9 @@ export function shouldFlushBufferedAssistantTextForEvent(event: AgentChatEvent):
     case "subagent_result":
     // Data-only citations for the message being streamed; they must not split it.
     case "sources":
+    // The person's reaction on an earlier message belongs to no turn; a reply
+    // being streamed must stay one message around it.
+    case "assistant_message_reaction":
       return false;
     case "plan":
       return event.streamingText === undefined;

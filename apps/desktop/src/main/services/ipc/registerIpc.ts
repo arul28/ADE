@@ -9880,14 +9880,11 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     const record = requireRecord(arg, "Agent chat reaction request");
     const emoji = normalizeChatReactionEmoji(record.emoji);
-    if (!emoji) throw new Error("Pick a reaction from the set.");
-    // A message key carries a provider's own id (`message:msg_01…`), so it
-    // gets a length check here; the service checks it against the transcript.
-    const targetKey = typeof record.targetKey === "string" ? record.targetKey.trim() : "";
-    if (!targetKey || targetKey.length > 512) throw new Error("A reaction needs the message it is on.");
+    if (!emoji) throw new AdeExpectedError("Pick a reaction from the set.", "user");
+    // The service checks the target's length and finds it in the transcript.
     return await ctx.agentChatService.reactToMessage({
       sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
-      targetKey,
+      targetKey: typeof record.targetKey === "string" ? record.targetKey : "",
       emoji,
     });
   });

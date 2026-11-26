@@ -18367,7 +18367,11 @@ export function AgentChatPane({
           emoji,
         }, chatPin));
       } catch (reactError) {
-        setError(reactError instanceof Error ? reactError.message : String(reactError));
+        const message = reactError instanceof Error ? reactError.message : String(reactError);
+        // A machine on an older ADE does not know the action yet.
+        setError(/unknown action|not callable/i.test(message)
+          ? "This chat's machine runs an older ADE. Update ADE there to react to messages."
+          : message);
         throw reactError;
       }
     },

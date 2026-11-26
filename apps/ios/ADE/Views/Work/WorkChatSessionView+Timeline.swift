@@ -117,18 +117,11 @@ extension WorkChatSessionView {
     return message
   }
 
-  func withAssistantReactionOverride(_ model: WorkAssistantMarkdownBlockRenderModel) -> WorkAssistantMarkdownBlockRenderModel {
-    guard let emoji = model.reaction.key.flatMap({ assistantReactionOverrides[$0] }) else { return model }
-    var model = model
-    model.reaction.emoji = emoji
-    return model
-  }
-
-  func withAssistantReactionOverride(_ model: WorkAssistantMonospacedRenderModel) -> WorkAssistantMonospacedRenderModel {
-    guard let emoji = model.reaction.key.flatMap({ assistantReactionOverrides[$0] }) else { return model }
-    var model = model
-    model.reaction.emoji = emoji
-    return model
+  func withAssistantReactionOverride<Row: WorkAssistantReactionRow>(_ row: Row) -> Row {
+    guard let emoji = row.reaction.key.flatMap({ assistantReactionOverrides[$0] }) else { return row }
+    var row = row
+    row.reaction.emoji = emoji
+    return row
   }
 
   /// The whole answer on its own screen, via "Open full response" in the

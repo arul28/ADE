@@ -4276,18 +4276,6 @@ private struct AgentChatSpawnCompletionPayload: Decodable {
 /// `metadata.sideChat` on a message a side chat sent to its main chat.
 let agentChatSideChatMetadataKey = "sideChat"
 
-/// The reactions the CTO may put on the person's message (`react`), each with
-/// what it means. A fixed set; the same as desktop `CTO_REACTION_MEANINGS`.
-let ctoReactionMeanings: [String: String] = [
-  "👍": "got it",
-  "👀": "looking into it",
-  "✅": "done",
-  "🎉": "celebrate",
-  "❤️": "thanks",
-  "😂": "funny",
-  "😢": "sorry",
-]
-
 /// The reactions the person may put on one of the CTO's messages, each with
 /// what it means. The same as desktop `CHAT_REACTION_MEANINGS`.
 let chatReactionMeanings: [String: String] = [
@@ -4300,6 +4288,10 @@ let chatReactionMeanings: [String: String] = [
   "👀": "looking into it",
   "😢": "sorry",
 ]
+
+/// The reactions the CTO may put on the person's message (`react`): every
+/// one but 👎. The same as desktop `CTO_REACTION_MEANINGS`.
+let ctoReactionMeanings: [String: String] = chatReactionMeanings.filter { $0.key != "👎" }
 
 /// The person's reactions in picker order (desktop `CHAT_REACTION_EMOJIS`).
 let chatReactionEmojis: [String] = ["👍", "👎", "❤️", "😂", "🎉", "✅", "👀", "😢"]

@@ -1473,6 +1473,14 @@ struct WorkAssistantReactionInfo: Equatable, Hashable {
   var isLastRow = true
 }
 
+/// A row of an assistant answer that draws the person's reaction.
+protocol WorkAssistantReactionRow {
+  var reaction: WorkAssistantReactionInfo { get set }
+}
+
+extension WorkAssistantMarkdownBlockRenderModel: WorkAssistantReactionRow {}
+extension WorkAssistantMonospacedRenderModel: WorkAssistantReactionRow {}
+
 enum WorkTimelineRenderPayload: Equatable {
   case entry(WorkTimelineEntry)
   case assistantMarkdownBlock(WorkAssistantMarkdownBlockRenderModel)

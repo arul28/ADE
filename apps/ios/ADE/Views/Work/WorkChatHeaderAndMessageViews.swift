@@ -2504,9 +2504,9 @@ struct WorkAssistantReactionPicker: View {
   var body: some View {
     ControlGroup {
       ForEach(chatReactionEmojis, id: \.self) { emoji in
-        Button {
-          onPick(emoji)
-        } label: {
+        // A toggle, so the palette marks the current reaction. Picking it
+        // again keeps it (the person's reaction is replaced, never cleared).
+        Toggle(isOn: Binding(get: { emoji == current }, set: { _ in onPick(emoji) })) {
           Text(emoji)
         }
         // A palette row keeps its menu open by default; a pick is the whole

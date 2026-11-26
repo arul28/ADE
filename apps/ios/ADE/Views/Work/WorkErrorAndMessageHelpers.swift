@@ -48,34 +48,34 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   )
 }
 
-/// The newest CTO `user_message_reaction` emoji per target key (timestamp,
-/// then sequence; a later row wins a tie). Applied to the folded messages by
-/// `WorkChatMessageFold.finished`.
+/// The newest CTO `user_message_reaction` emoji per target key. Applied to
+/// the folded messages by `WorkChatMessageFold.finished`.
 func workUserMessageReactionsByKey(from transcript: [WorkChatEnvelope]) -> [String: String] {
-  var emojiByKey: [String: String] = [:]
-  var orderByKey: [String: (timestamp: String, sequence: Int)] = [:]
-  for envelope in transcript {
-    guard case .userMessageReaction(let targetKey, let emoji, _) = envelope.event else { continue }
-    let sequence = envelope.sequence ?? 0
-    if let existing = orderByKey[targetKey],
-       envelope.timestamp < existing.timestamp
-        || (envelope.timestamp == existing.timestamp && sequence < existing.sequence) {
-      continue
-    }
-    emojiByKey[targetKey] = emoji
-    orderByKey[targetKey] = (envelope.timestamp, sequence)
+  workNewestReactionByKey(from: transcript) { event in
+    guard case .userMessageReaction(let targetKey, let emoji, _) = event else { return nil }
+    return (targetKey, emoji)
   }
-  return emojiByKey
 }
 
-/// The person's newest `assistant_message_reaction` emoji per target key, by
-/// the same order as `workUserMessageReactionsByKey`. Applied to the CTO's
-/// messages by `WorkChatMessageFold.finished`.
+/// The person's newest `assistant_message_reaction` emoji per target key.
+/// Applied to the CTO's messages by `WorkChatMessageFold.finished`.
 func workAssistantMessageReactionsByKey(from transcript: [WorkChatEnvelope]) -> [String: String] {
+  workNewestReactionByKey(from: transcript) { event in
+    guard case .assistantMessageReaction(let targetKey, let emoji) = event else { return nil }
+    return (targetKey, emoji)
+  }
+}
+
+/// The newest reaction emoji per target key, by timestamp, then sequence; a
+/// later row wins a tie.
+private func workNewestReactionByKey(
+  from transcript: [WorkChatEnvelope],
+  _ reaction: (WorkChatEvent) -> (targetKey: String, emoji: String)?
+) -> [String: String] {
   var emojiByKey: [String: String] = [:]
   var orderByKey: [String: (timestamp: String, sequence: Int)] = [:]
   for envelope in transcript {
-    guard case .assistantMessageReaction(let targetKey, let emoji) = envelope.event else { continue }
+    guard let (targetKey, emoji) = reaction(envelope.event) else { continue }
     let sequence = envelope.sequence ?? 0
     if let existing = orderByKey[targetKey],
        envelope.timestamp < existing.timestamp
@@ -1581,7 +1581,9 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
         turnId: incomingTurnId ?? existingTurnId,
         itemId: incomingItemId ?? existingItemId
       ),
-      textPhase: incoming.textPhase ?? existing.textPhase
+      textPhase: incoming.textPhase ?? existing.textPhase,
+      // The reply's first fragment names it, as on desktop.
+      assistantMessageReactionKey: existing.assistantMessageReactionKey ?? incoming.assistantMessageReactionKey
     )
   default:
     return incoming
