@@ -358,7 +358,10 @@ trackers: `list` (with `--tracker linear|github|jira` and `--scope`), `view`,
 `resolve`, `comment`, `state`, `create` and `open-url`. Its references can be a
 Linear key, a Jira key, a GitHub number or a URL. The runtime `issues` action
 domain serves `list`, `get`, `resolve`, `comment`, `setState` and `create`
-(`actionPolicy.ts`). Editing fields goes through the tracker's own command below.
+(`actionPolicy.ts`). A `list` without `--tracker` merges every connected
+tracker and leaves out one with nothing set up for this project (GitHub with
+no repository); any other tracker failure fails the list. Editing fields goes
+through the tracker's own command below.
 
 - **Linear** (`ade linear`): `create`, `edit`, `comment`, `set-state`,
   `assign`, `label`, `unlabel`, `set-priority`, `set-estimate`, `set-cycle`,
