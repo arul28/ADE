@@ -21452,11 +21452,6 @@ export function createAgentChatService(args: {
   const turnDiffSummariesInFlight = new Map<string, number>();
 
   const emitTurnDiffSummaryIfChanged = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
-    if (!managed.turnBeforeSha) {
-      managed.turnBeforeSha = null;
-      managed.turnBeforeTree = null;
-      return;
-    }
     const sessionId = managed.session.id;
     turnDiffSummariesInFlight.set(sessionId, (turnDiffSummariesInFlight.get(sessionId) ?? 0) + 1);
     try {

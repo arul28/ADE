@@ -184,10 +184,12 @@ export async function uploadPendingCloudChats(timeoutMs = 45_000): Promise<Cloud
 }
 
 /**
- * A string a provider reads back byte for byte and no secret has the shape
- * of: a Claude thinking signature, a Codex `encrypted_content`, an image's
- * base64 or data URL. A change to one breaks the resume.
+ * A value a provider reads back byte for byte: a Claude thinking signature or
+ * image `data`, a Codex `encrypted_content` or `image_url`, an OpenCode file
+ * `url`. Kept only under these names and only when it has a blob's shape, so
+ * a change can't break the resume and a key elsewhere still goes.
  */
+const OPAQUE_KEYS: ReadonlySet<string> = new Set(["signature", "data", "encrypted_content", "image_url", "url"]);
 const OPAQUE_BLOB = /^(?:[A-Za-z0-9+/_-]{256,}={0,2}|data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/]+={0,2})$/;
 
 type RedactShape = { maxStringChars: number | null; maxDepth: number; keepOpaque: boolean };
@@ -195,19 +197,29 @@ const TRANSCRIPT_SHAPE: RedactShape = { maxStringChars: MAX_STRING_CHARS, maxDep
 /** A provider's own history: nothing is cut, since its resume reads every string back. */
 const HISTORY_SHAPE: RedactShape = { maxStringChars: null, maxDepth: 200, keepOpaque: true };
 
-function redactValue(value: unknown, redact: (text: string) => string, depth: number, shape: RedactShape): unknown {
+/** `value` redacted; `redact` sees every string, and `mark` hears each field replaced by its name alone. */
+function redactValue(value: unknown, redact: (text: string) => string, depth: number, shape: RedactShape, mark?: () => void): unknown {
   if (typeof value === "string") {
-    if (shape.keepOpaque && OPAQUE_BLOB.test(value)) return value;
     const cut = shape.maxStringChars !== null && value.length > shape.maxStringChars ? `${value.slice(0, shape.maxStringChars)}\n[truncated]` : value;
     return redact(cut);
   }
   if (!value || typeof value !== "object") return value;
-  if (depth >= shape.maxDepth) return "[truncated]";
-  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, redact, depth + 1, shape));
+  if (depth >= shape.maxDepth) {
+    mark?.();
+    return "[truncated]";
+  }
+  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, redact, depth + 1, shape, mark));
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    // A JSON field that holds a credential: the value alone looks like nothing.
-    out[key] = typeof entry === "string" && SENSITIVE_KEY.test(key) && entry.length >= 4 ? REDACTED : redactValue(entry, redact, depth + 1, shape);
+    if (typeof entry === "string" && shape.keepOpaque && OPAQUE_KEYS.has(key) && OPAQUE_BLOB.test(entry)) {
+      out[key] = entry;
+    } else if (typeof entry === "string" && SENSITIVE_KEY.test(key) && entry.length >= 4) {
+      // A JSON field that holds a credential: the value alone looks like nothing.
+      mark?.();
+      out[key] = REDACTED;
+    } else {
+      out[key] = redactValue(entry, redact, depth + 1, shape, mark);
+    }
   }
   return out;
 }
@@ -231,25 +243,42 @@ export function redactChatTranscriptLine(line: string, redact: (text: string) =>
  * anything else is redacted as text.
  */
 export function redactProviderHistoryFile(text: string, redact: (text: string) => string): string {
-  const parse = (raw: string): { value: unknown } | null => {
+  let changed = false;
+  const mark = () => {
+    changed = true;
+  };
+  const tracked = (entry: string) => {
+    const next = redact(entry);
+    if (next !== entry) changed = true;
+    return next;
+  };
+  /** The JSON value redacted, or null when nothing in it changed (the text stays byte for byte). */
+  const redactJson = (value: unknown): string | null => {
+    changed = false;
+    const out = redactValue(value, tracked, 0, HISTORY_SHAPE, mark);
+    return changed ? JSON.stringify(out) : null;
+  };
+  const parseObject = (raw: string): { value: object } | null => {
     try {
-      return { value: JSON.parse(raw) };
+      const value: unknown = JSON.parse(raw);
+      return value && typeof value === "object" ? { value } : null;
     } catch {
       return null;
     }
   };
-  const whole = text.trim() ? parse(text) : null;
-  if (whole && whole.value && typeof whole.value === "object") {
-    return `${JSON.stringify(redactValue(whole.value, redact, 0, HISTORY_SHAPE))}${text.endsWith("\n") ? "\n" : ""}`;
+  const whole = text.trim() ? parseObject(text) : null;
+  if (whole) {
+    const out = redactJson(whole.value);
+    return out === null ? text : `${out}${text.endsWith("\n") ? "\n" : ""}`;
   }
   const lines = text.split("\n");
   let json = false;
   const out = lines.map((line) => {
     if (!line.trim()) return line;
-    const parsed = parse(line);
-    if (!parsed || !parsed.value || typeof parsed.value !== "object") return null;
+    const parsed = parseObject(line);
+    if (!parsed) return null;
     json = true;
-    return JSON.stringify(redactValue(parsed.value, redact, 0, HISTORY_SHAPE));
+    return redactJson(parsed.value) ?? line;
   });
   // Plain text (a tool result): redacted whole, so a key across lines goes too.
   if (!json) return redact(text);
@@ -599,7 +628,9 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       if (disposed) return;
       if (entry.dirty || running.has(sessionId) || restoringChats.has(sessionId)) continue;
       // A line still queued in memory counts too.
-      await deps.flushTranscript(sessionId).catch(() => {});
+      await deps.flushTranscript(sessionId).catch((error: unknown) => {
+        log?.warn("cloud.chat_upload_flush_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
+      });
       let size: number;
       try {
         // Only the live file: a `.jsonl.gz` is not written to.
