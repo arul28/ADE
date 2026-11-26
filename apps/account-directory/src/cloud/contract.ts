@@ -1328,11 +1328,14 @@ export type CloudChatRowSettings = Partial<Record<CloudChatRowTextSetting, strin
 };
 
 /**
- * One token: no space or control character, at most 300 characters, as the
- * queue takes a model id. Model ids carry much more than words: `[1m]`,
- * `%2F` (OpenCode), `(xhigh)` (a Droid custom model).
+ * One token: no space or control character. Model ids carry much more than
+ * words: `[1m]`, `%2F` (OpenCode), `(xhigh)` (a Droid custom model). At most
+ * 300 characters, as the queue takes a model id; a preset id up to 1,024 (a
+ * harness route's id is its whole route, encoded).
  */
-const ROW_SETTING_TEXT = /^[^\s\p{C}]{1,300}$/u;
+const ROW_SETTING_TOKEN = /^[^\s\p{C}]+$/u;
+const ROW_SETTING_MAX_CHARS = 300;
+const ROW_PRESET_ID_MAX_CHARS = 1_024;
 
 /**
  * The composer settings of a chat summary (or a row's `settings`), checked:
@@ -1347,7 +1350,11 @@ export function cloudChatRowSettingsOf(value: unknown): CloudChatRowSettings | n
   for (const key of CLOUD_CHAT_ROW_TEXT_SETTINGS) {
     const entry = record[key];
     if (entry === null) settings[key] = null;
-    else if (typeof entry === "string" && ROW_SETTING_TEXT.test(entry)) settings[key] = entry;
+    else if (
+      typeof entry === "string"
+      && entry.length <= (key === "presetId" ? ROW_PRESET_ID_MAX_CHARS : ROW_SETTING_MAX_CHARS)
+      && ROW_SETTING_TOKEN.test(entry)
+    ) settings[key] = entry;
   }
   if (typeof record.fastMode === "boolean") settings.fastMode = record.fastMode;
   if (record.fastTier === "ultrafast" || record.fastTier === null) settings.fastTier = record.fastTier;

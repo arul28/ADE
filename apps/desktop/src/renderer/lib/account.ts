@@ -54,7 +54,12 @@ function accountApi() {
 function emit(status: AdeAccountStatus): void {
   // Another account (or none): its machine list is not this one's.
   const accountOf = (value: AdeAccountStatus | undefined) => (value?.signedIn ? value.userId : null);
-  if (cachedStatus && accountOf(cachedStatus.value) !== accountOf(status)) cachedMachines = null;
+  if (cachedStatus && accountOf(cachedStatus.value) !== accountOf(status)) {
+    cachedMachines = null;
+    // A read that started for the other account must not fill the list.
+    machinesInFlight = null;
+    machinesAccountGeneration += 1;
+  }
   cachedStatus = { value: status, fetchedAtMs: Date.now() };
   for (const listener of listeners) {
     try {
@@ -280,6 +285,8 @@ const UNAVAILABLE_MACHINES: AdeAccountMachinesResult = {
 
 let cachedMachines: { value: AdeAccountMachinesResult; fetchedAtMs: number } | null = null;
 let machinesInFlight: Promise<AdeAccountMachinesResult> | null = null;
+/** Moves when the signed-in account changes; a read from an older one keeps nothing. */
+let machinesAccountGeneration = 0;
 
 /** Remember a list fetched elsewhere (the Account page) so the panel opens warm. */
 export function publishAccountMachines(result: AdeAccountMachinesResult): void {
@@ -307,7 +314,9 @@ export async function fetchAccountMachines(
   // A failed refresh must never turn a known list into "no computers yet" —
   // that reads as a fact about the account, and it is only a fact about this
   // one request. Signed out is different: it IS authoritative, so it wins.
+  const generation = machinesAccountGeneration;
   const settle = (result: AdeAccountMachinesResult): AdeAccountMachinesResult => {
+    if (generation !== machinesAccountGeneration) return result;
     if (result.state === "ok") {
       cachedMachines = { value: result, fetchedAtMs: Date.now() };
       return result;
@@ -323,7 +332,7 @@ export async function fetchAccountMachines(
     .then((result) => settle(result ?? UNAVAILABLE_MACHINES))
     .catch(() => settle(UNAVAILABLE_MACHINES))
     .finally(() => {
-      machinesInFlight = null;
+      if (generation === machinesAccountGeneration) machinesInFlight = null;
     });
   return machinesInFlight;
 }

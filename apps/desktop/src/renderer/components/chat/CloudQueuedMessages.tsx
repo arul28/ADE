@@ -39,8 +39,11 @@ export function cloudQueuedMessageEnvelope(
   sessionId: string,
   timestamp: string,
 ): AgentChatEventEnvelope {
+  // The files wait on the account server, not on this device: the bubble
+  // names them, and the real message shows them once the computer has it.
   const names = message.attachments.map((attachment) => attachment.name).filter(Boolean);
-  const text = message.text.trim() || (names.length ? `Attached: ${names.join(", ")}` : "");
+  const files = names.length ? `Files: ${names.join(", ")}` : "";
+  const text = [message.text.trim(), files].filter(Boolean).join("\n\n");
   return {
     sessionId,
     timestamp,
