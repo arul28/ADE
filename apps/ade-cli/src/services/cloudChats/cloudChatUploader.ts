@@ -183,18 +183,31 @@ export async function uploadPendingCloudChats(timeoutMs = 45_000): Promise<Cloud
   );
 }
 
-function redactValue(value: unknown, redact: (text: string) => string, depth: number): unknown {
+/**
+ * A string a provider reads back byte for byte and no secret has the shape
+ * of: a Claude thinking signature, a Codex `encrypted_content`, an image's
+ * base64 or data URL. A change to one breaks the resume.
+ */
+const OPAQUE_BLOB = /^(?:[A-Za-z0-9+/_-]{256,}={0,2}|data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/]+={0,2})$/;
+
+type RedactShape = { maxStringChars: number | null; maxDepth: number; keepOpaque: boolean };
+const TRANSCRIPT_SHAPE: RedactShape = { maxStringChars: MAX_STRING_CHARS, maxDepth: MAX_LINE_DEPTH, keepOpaque: false };
+/** A provider's own history: nothing is cut, since its resume reads every string back. */
+const HISTORY_SHAPE: RedactShape = { maxStringChars: null, maxDepth: 200, keepOpaque: true };
+
+function redactValue(value: unknown, redact: (text: string) => string, depth: number, shape: RedactShape): unknown {
   if (typeof value === "string") {
-    const cut = value.length > MAX_STRING_CHARS ? `${value.slice(0, MAX_STRING_CHARS)}\n[truncated]` : value;
+    if (shape.keepOpaque && OPAQUE_BLOB.test(value)) return value;
+    const cut = shape.maxStringChars !== null && value.length > shape.maxStringChars ? `${value.slice(0, shape.maxStringChars)}\n[truncated]` : value;
     return redact(cut);
   }
   if (!value || typeof value !== "object") return value;
-  if (depth >= MAX_LINE_DEPTH) return "[truncated]";
-  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, redact, depth + 1));
+  if (depth >= shape.maxDepth) return "[truncated]";
+  if (Array.isArray(value)) return value.map((entry) => redactValue(entry, redact, depth + 1, shape));
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     // A JSON field that holds a credential: the value alone looks like nothing.
-    out[key] = typeof entry === "string" && SENSITIVE_KEY.test(key) && entry.length >= 4 ? REDACTED : redactValue(entry, redact, depth + 1);
+    out[key] = typeof entry === "string" && SENSITIVE_KEY.test(key) && entry.length >= 4 ? REDACTED : redactValue(entry, redact, depth + 1, shape);
   }
   return out;
 }
@@ -207,7 +220,40 @@ export function redactChatTranscriptLine(line: string, redact: (text: string) =>
   } catch {
     return null;
   }
-  return JSON.stringify(redactValue(parsed, redact, 0));
+  return JSON.stringify(redactValue(parsed, redact, 0, TRANSCRIPT_SHAPE));
+}
+
+/**
+ * One file of a provider's own history (a Claude session or subagent file, a
+ * tool result, a Codex rollout, an OpenCode export), redacted before it
+ * leaves the computer in a fork capsule. JSON stays JSON field by field (one
+ * document, or one line at a time), so the provider still resumes from it;
+ * anything else is redacted as text.
+ */
+export function redactProviderHistoryFile(text: string, redact: (text: string) => string): string {
+  const parse = (raw: string): { value: unknown } | null => {
+    try {
+      return { value: JSON.parse(raw) };
+    } catch {
+      return null;
+    }
+  };
+  const whole = text.trim() ? parse(text) : null;
+  if (whole && whole.value && typeof whole.value === "object") {
+    return `${JSON.stringify(redactValue(whole.value, redact, 0, HISTORY_SHAPE))}${text.endsWith("\n") ? "\n" : ""}`;
+  }
+  const lines = text.split("\n");
+  let json = false;
+  const out = lines.map((line) => {
+    if (!line.trim()) return line;
+    const parsed = parse(line);
+    if (!parsed || !parsed.value || typeof parsed.value !== "object") return null;
+    json = true;
+    return JSON.stringify(redactValue(parsed.value, redact, 0, HISTORY_SHAPE));
+  });
+  // Plain text (a tool result): redacted whole, so a key across lines goes too.
+  if (!json) return redact(text);
+  return out.map((line, index) => line ?? redact(lines[index]!)).join("\n");
 }
 
 type Reader = { size: number; read: (position: number, length: number) => Buffer };
@@ -540,6 +586,34 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     persist();
   }
 
+  /**
+   * Before a rest: a chat whose transcript grew after its last part gets
+   * marked. Only `done` marks a chat during work, and some lines come after
+   * it: the turn's diff summary (it waits on git), a notice or card written
+   * while the chat is idle. One stat per saved chat, once per rest save, so
+   * a streaming turn still uploads once.
+   */
+  async function markGrownTranscripts(): Promise<void> {
+    let changed = false;
+    for (const [sessionId, entry] of Object.entries(state.chats)) {
+      if (disposed) return;
+      if (entry.dirty || running.has(sessionId) || restoringChats.has(sessionId)) continue;
+      // A line still queued in memory counts too.
+      await deps.flushTranscript(sessionId).catch(() => {});
+      let size: number;
+      try {
+        // Only the live file: a `.jsonl.gz` is not written to.
+        size = fs.statSync(path.join(deps.chatTranscriptsDir, `${sessionId}.jsonl`)).size;
+      } catch {
+        continue;
+      }
+      if (size === entry.offset) continue;
+      entry.dirty = true;
+      changed = true;
+    }
+    if (changed) persist();
+  }
+
   async function deleteAndRestart(sessionId: string, base: string, machineKey: string, headers: Record<string, string>, entry: Entry): Promise<void> {
     try {
       const response = await fetcher(cloudSavedChatUrl(base, machineKey, sessionId), { method: "DELETE", headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
@@ -640,6 +714,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       };
       const drain = (async () => {
         await runDeletes().catch(() => {});
+        await markGrownTranscripts();
         // Dirty chats plus any upload already running, so a turn that just ended is waited for.
         pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
         await flush(pending);
