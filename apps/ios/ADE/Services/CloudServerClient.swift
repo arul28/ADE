@@ -907,6 +907,8 @@ struct CloudPushWorkLane: Equatable {
   let ahead: Int
   /// `clean`, `pushed`, `failed` or `unpushed` (anything else reads as unpushed).
   let state: String
+  /// Why GitHub stopped a failed lane (`github_refused`, `github_unreachable`); nil when it didn't.
+  var reason: String? = nil
 
   /// "main checkout", else the lane's name, else its branch (`cloudWorkLaneName`).
   var shownName: String { primary ? "main checkout" : (laneName.isEmpty ? branchRef : laneName) }
@@ -946,7 +948,8 @@ struct CloudPushWorkTally: Equatable {
           primary: lane["primary"] as? Bool == true,
           dirty: lane["dirty"] as? Bool == true,
           ahead: (lane["ahead"] as? NSNumber)?.intValue ?? 0,
-          state: known.contains(state) ? state : "unpushed"
+          state: known.contains(state) ? state : "unpushed",
+          reason: lane["reason"] as? String
         )
       }
     } else {
@@ -957,6 +960,28 @@ struct CloudPushWorkTally: Equatable {
   /// The lanes whose work is still only on the computer (`toWorkLanes`).
   var leftLanes: [CloudPushWorkLane] { (lanes ?? []).filter(\.isLeft) }
 }
+
+/// The sentence when GitHub stopped a lane at risk, the desktop's words
+/// (`pushWorkGithubProblem` and `pushWorkGithubMessage` in the account
+/// directory): a refusal wins over no answer. `kept`: a free that stopped;
+/// otherwise a check before a delete. Nil when GitHub didn't stop one.
+func cloudPushWorkGithubMessage(_ lanes: [CloudPushWorkLane], kept: Bool) -> String? {
+  let atRisk = lanes.filter(\.isLeft)
+  if atRisk.contains(where: { $0.reason == "github_refused" }) {
+    return kept
+      ? "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."
+      : "GitHub refused this computer access to the lane's repository, so ADE can't tell what isn't on GitHub."
+  }
+  if atRisk.contains(where: { $0.reason == "github_unreachable" }) {
+    return kept
+      ? "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."
+      : "This computer couldn't reach GitHub, so ADE can't tell what isn't on GitHub."
+  }
+  return nil
+}
+
+/// A free whose lanes don't include this one (`LANE_NOT_ON_COMPUTER_MESSAGE`).
+let cloudLaneNotOnComputerMessage = "This lane isn't on the computer (its setup didn't finish), so there is no lane to keep. Delete the computer instead."
 
 /// How one of these steps went: whether it did it, and the sentence to show.
 struct CloudComputerOutcome {
@@ -1047,6 +1072,7 @@ extension CloudServerClient {
     guard let tally = ran.tally else { return (nil, [], ran.error ?? "ADE couldn't read this computer's work.") }
     guard tally.lanes != nil else { return (nil, [], "This computer's ADE is too old to say what isn't pushed.") }
     let left = tally.leftLanes
+    if let github = cloudPushWorkGithubMessage(left, kept: false) { return (nil, left, github) }
     if tally.failed > 0 { return (nil, left, "ADE couldn't read every project on this computer.") }
     return (!left.isEmpty, left, nil)
   }
@@ -1128,6 +1154,7 @@ extension CloudServerClient {
     }
     let left = tally.leftLanes
     if tally.failed > 0 || !left.isEmpty || (tally.lanes == nil && tally.skipped > 0) {
+      if let github = cloudPushWorkGithubMessage(left, kept: true) { return fail(github) }
       let names = left.map(\.shownName).filter { !$0.isEmpty }
       return fail("ADE couldn't push all work on this computer\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Open the lane to see why, then try again.")
     }
@@ -1141,7 +1168,7 @@ extension CloudServerClient {
     }
     let ownLane = tally.lanes?.first { $0.laneId == laneId } ?? tally.lanes?.first { !$0.primary }
     guard let branchRef = nonEmptyTrimmed(ownLane?.branchRef) ?? box.laneBranch else {
-      return fail("ADE couldn't tell which branch this lane is on, so the computer stays.")
+      return fail(tally.lanes != nil && ownLane == nil ? cloudLaneNotOnComputerMessage : "ADE couldn't tell which branch this lane is on, so the computer stays.")
     }
     // A refusal (the server couldn't read the lane, or knows none) deleted
     // nothing: its sentence is shown as it is, and the lane is not freed.

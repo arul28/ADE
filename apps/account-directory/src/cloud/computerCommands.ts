@@ -507,6 +507,8 @@ export type PushWorkLane = {
   /** Uncommitted files / commits GitHub doesn't have, as read; null when the ADE didn't say. */
   dirty: boolean | null;
   ahead: number | null;
+  /** Why GitHub stopped a failed lane (`github_refused`, `github_unreachable`); null when it didn't, or the ADE didn't say. */
+  reason: string | null;
 };
 
 /** `push-work`'s or `work-state`'s answer; `lanes` is null from an ADE too old to list them. Null when unreadable. */
@@ -527,6 +529,7 @@ export function readPushWorkTally(stdout: string): { pushed: number; failed: num
           state: typeof lane.state === "string" ? lane.state : "unpushed",
           dirty: typeof lane.dirty === "boolean" ? lane.dirty : null,
           ahead: typeof lane.ahead === "number" ? lane.ahead : null,
+          reason: typeof lane.reason === "string" ? lane.reason : null,
         }];
       })
       : null;
@@ -535,6 +538,42 @@ export function readPushWorkTally(stdout: string): { pushed: number; failed: num
     return null;
   }
 }
+
+/**
+ * Whether GitHub stopped push-work's fetch or push of a lane at risk
+ * (`reason` in its tally): `refused` (the repository is gone, or the
+ * computer's GitHub access can't reach it) wins over `unreachable`. Null when
+ * GitHub didn't, or the computer's ADE is too old to say.
+ */
+export function pushWorkGithubProblem(lanes: ReadonlyArray<{ state: string; reason?: string | null }> | null): "refused" | "unreachable" | null {
+  const atRisk = (lanes ?? []).filter((lane) => lane.state === "failed" || lane.state === "unpushed");
+  if (atRisk.some((lane) => lane.reason === "github_refused")) return "refused";
+  if (atRisk.some((lane) => lane.reason === "github_unreachable")) return "unreachable";
+  return null;
+}
+
+/**
+ * The sentence for a GitHub problem, the same on every client. `kept`: a free
+ * or a delete that stopped, so the computer stays. `unknown`: a check before a
+ * delete, which can't say what isn't on GitHub.
+ */
+export function pushWorkGithubMessage(problem: "refused" | "unreachable", outcome: "kept" | "unknown"): string {
+  if (problem === "refused") {
+    return outcome === "kept"
+      ? "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."
+      : "GitHub refused this computer access to the lane's repository, so ADE can't tell what isn't on GitHub.";
+  }
+  return outcome === "kept"
+    ? "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."
+    : "This computer couldn't reach GitHub, so ADE can't tell what isn't on GitHub.";
+}
+
+/**
+ * A free whose push-work lists the computer's lanes without this one: a
+ * launch that failed before it made the lane (a provider refused its key)
+ * leaves the computer with only its main checkout. A delete is the way out.
+ */
+export const LANE_NOT_ON_COMPUTER_MESSAGE = "This lane isn't on the computer (its setup didn't finish), so there is no lane to keep. Delete the computer instead.";
 
 /* ---- A copy: a new computer with the original's disk ---- */
 

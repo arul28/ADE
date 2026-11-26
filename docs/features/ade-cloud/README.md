@@ -1560,6 +1560,21 @@ account, never a pin.
   lane that can't be read, or a fetch that fails, reads `failed`, never
   `clean`, and the computer is kept. `ade cloud work-state` runs the same
   check.
+  - **When GitHub stopped it.** A `failed` lane carries `reason` when git's
+    error says GitHub stopped the fetch or the push (`classifyGitPushFailure`):
+    `github_refused` (repository not found, a sign-in or a permission
+    refused; trying again won't help) or `github_unreachable` (no answer in
+    time). The server's free, the desktop's, the web's and the phone's delete
+    check then say what GitHub did (`pushWorkGithubProblem`,
+    `pushWorkGithubMessage` in `computerCommands.ts`) instead of "open the
+    lane". A refusal is the person's to fix, so the free logs it and sends no
+    Sentry event. An older ADE on the computer sends no `reason`, and the
+    older sentences stay.
+  - **A lane that isn't on the computer.** A launch that failed before it
+    made the lane (a provider refused its key) leaves a computer with only its
+    main checkout. A free there finds no lane in the tally and no branch, so
+    it says there is no lane to keep and to delete the computer instead
+    (`LANE_NOT_ON_COMPUTER_MESSAGE`).
   - **No wake for a saved computer.** When the computer is not running and
     the server says it saved its lanes at rest (`backups.saved`; any start
     clears it), the check reads the lanes' backups instead

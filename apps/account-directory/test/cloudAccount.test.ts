@@ -5393,6 +5393,18 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
         lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0 }),
       ] });
     }, "ADE couldn't read the work in (main checkout), so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why."],
+    ["GitHub refused the computer's fetch (the repository moved, or GitHub access can't reach it)", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 2, skipped: 0, lanes: [
+        lane("failed", { dirty: false, ahead: 0, reason: "github_refused" }),
+        lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0, reason: "github_refused" }),
+      ] });
+    }, "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."],
+    ["GitHub didn't answer the check after the push", () => {
+      shell.check = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: false, ahead: 0, reason: "github_unreachable" })] });
+    }, "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."],
+    ["the lane isn't on the computer (a launch that failed before it made the lane)", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("clean", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true })] });
+    }, "This lane isn't on the computer (its setup didn't finish), so there is no lane to keep. Delete the computer instead."],
     ["an older ADE's push names no lanes", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0 });
     }, "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again."],

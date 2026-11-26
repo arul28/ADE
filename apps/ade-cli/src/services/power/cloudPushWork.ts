@@ -5,6 +5,7 @@
  */
 
 import type { AdeRuntime } from "../../bootstrap";
+import { classifyGitPushFailure } from "../../../../desktop/src/main/services/git/gitPushFailure";
 
 const COMMIT_MESSAGE = "Work saved from ADE Cloud";
 /**
@@ -19,7 +20,9 @@ const FETCH_STEP_TIMEOUT_MS = 60_000;
  * check, or a primary lane, which is never pushed). `failed`: a push that
  * didn't go through, or a lane whose state couldn't be read. `pushed`: on
  * GitHub now. `clean`: read now, nothing GitHub doesn't have. `ahead` counts
- * commits no remote has (not commits past the lane's base).
+ * commits no remote has (not commits past the lane's base). `reason` says why
+ * GitHub stopped a `failed` lane's fetch or push, when it did: the free and the
+ * delete name that cause instead of "open the lane".
  */
 export type CloudPushWorkLane = {
   laneId: string;
@@ -29,7 +32,15 @@ export type CloudPushWorkLane = {
   dirty: boolean;
   ahead: number;
   state: "clean" | "pushed" | "failed" | "unpushed";
+  reason?: CloudPushWorkFailReason;
 };
+
+/**
+ * `github_refused`: the repository is gone, or the computer's GitHub access
+ * can't see or write it, so trying again won't help. `github_unreachable`: no
+ * answer from GitHub in time.
+ */
+export type CloudPushWorkFailReason = "github_refused" | "github_unreachable";
 
 /**
  * `readsRemotes: true` marks a tally from this read (`ade cloud push-work` and
@@ -38,6 +49,19 @@ export type CloudPushWorkLane = {
  * primary lane may still hold unpushed commits, so the server trusts only this.
  */
 export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: number; skipped: number; lanes: CloudPushWorkLane[] };
+
+const GITHUB_REFUSED_KINDS: ReadonlySet<string> = new Set(["auth_failed", "permission_denied", "repository_not_found"]);
+const GITHUB_UNREACHABLE = /could not resolve host|failed to connect|connection (timed out|refused|reset)|timed out|network is unreachable/i;
+
+/** Why GitHub stopped a fetch or a push, read from git's error; undefined when it wasn't GitHub. */
+function githubFailReason(error: unknown): CloudPushWorkFailReason | undefined {
+  const text = error instanceof Error ? error.message : String(error);
+  const kind = classifyGitPushFailure(text)?.kind;
+  if (kind && GITHUB_REFUSED_KINDS.has(kind)) return "github_refused";
+  const name = error instanceof Error ? error.name : "";
+  if (name === "AbortError" || name === "TimeoutError" || name === "GitTimeoutError") return "github_unreachable";
+  return GITHUB_UNREACHABLE.test(text) ? "github_unreachable" : undefined;
+}
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
 
@@ -93,14 +117,14 @@ export async function pushCloudComputerWork(args: {
       // deleted on GitHub reads as saved because its changes are in the base
       // (`readUnsavedWork`), so it is not pushed back. A fetch that fails
       // marks every lane of the project `failed`, so the computer is kept and
-      // delete says ADE couldn't read the work.
-      let fetchFailed = false;
+      // delete says ADE couldn't read the work, or what GitHub said.
+      let fetchFailed: { reason?: CloudPushWorkFailReason } | null = null;
       const anchor = lanes.find((lane) => lane.laneType === "primary") ?? lanes[0];
       if (anchor) {
         try {
           await runtime.gitService.fetch({ laneId: anchor.id, allRemotes: true, signal: AbortSignal.timeout(FETCH_STEP_TIMEOUT_MS) });
         } catch (error) {
-          fetchFailed = true;
+          fetchFailed = { reason: githubFailReason(error) };
           args.logger?.warn("cloud.push_work_fetch_failed", { error: error instanceof Error ? error.message : String(error) });
         }
       }
@@ -110,6 +134,7 @@ export async function pushCloudComputerWork(args: {
         tally.lanes.push(entry);
         if (fetchFailed) {
           entry.state = "failed";
+          if (fetchFailed.reason) entry.reason = fetchFailed.reason;
           tally.failed += 1;
           continue;
         }
@@ -137,6 +162,8 @@ export async function pushCloudComputerWork(args: {
           tally.pushed += 1;
         } catch (error) {
           entry.state = "failed";
+          const reason = githubFailReason(error);
+          if (reason) entry.reason = reason;
           tally.failed += 1;
           args.logger?.warn("cloud.push_work_lane_failed", { laneId: lane.id, error: error instanceof Error ? error.message : String(error) });
         }
