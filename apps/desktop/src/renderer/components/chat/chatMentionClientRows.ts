@@ -11,46 +11,45 @@
  */
 
 import { accountMachineMentionSuggestion } from "../../../shared/accountMachineSnapshot";
-import { isChatMentionId, rankChatMentionMenu } from "../../../shared/chatMentions";
-import { isChatToolType } from "../../../shared/sessionSpawnNesting";
-import type { AdeAccountMachine } from "../../../shared/types/account";
+import {
+  chatMentionTitle,
+  isMentionablePr,
+  laneMentionSuggestion,
+  mentionEpoch,
+  parseChatMentionKindFilter,
+  prMentionSuggestion,
+  rankChatMentionMenu,
+} from "../../../shared/chatMentions";
+import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNesting";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
+import { fetchAccountMachines } from "../../lib/account";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
 
-/** The account's machine list is a network read: one read serves the menu this long. */
-const MACHINE_CACHE_TTL_MS = 30_000;
 /** How long one menu query waits for a cold machine read before it answers without it. */
 const MACHINE_MENU_WAIT_MS = 800;
+/** After a failed read, the menu asks again only after this (each keystroke would wait again). */
+const MACHINE_FAILURE_PAUSE_MS = 5_000;
 
-type MachineList = AdeAccountMachine[];
-
-let machineCache: { at: number; promise: Promise<MachineList | null> } | null = null;
-
-function readAccountMachines(): Promise<MachineList | null> {
-  const now = Date.now();
-  if (machineCache && now - machineCache.at < MACHINE_CACHE_TTL_MS) return machineCache.promise;
-  const list = window.ade?.account?.listMachines;
-  const promise: Promise<MachineList | null> = list
-    ? list().then((result) => (result.state === "ok" ? result.machines : null), () => null)
-    : Promise.resolve(null);
-  const entry = { at: now, promise };
-  machineCache = entry;
-  // Only a good read is kept; a failed one is asked again on the next keystroke.
-  void promise.then((machines) => {
-    if (!machines && machineCache === entry) machineCache = null;
-  });
-  return promise;
-}
+let machineReadFailedAt = 0;
 
 /**
- * The account's machines as menu rows. A cold read waits at most
- * `MACHINE_MENU_WAIT_MS`; it goes on and fills the cache for the next query.
- * `localMachineKey` is the chat's own machine, labeled "this machine".
+ * The account's machines as menu rows, from the window's shared list
+ * (`fetchAccountMachines`, kept 15 s, dropped on an account change). A cold
+ * read waits at most `MACHINE_MENU_WAIT_MS`; it goes on and fills the cache
+ * for the next query. `localMachineKey` is the chat's own machine, labeled
+ * "this machine".
  */
-export async function accountMachineMentionRows(localMachineKey: string | null): Promise<ChatMentionSuggestion[]> {
+async function accountMachineMentionRows(localMachineKey: string | null): Promise<ChatMentionSuggestion[]> {
+  if (Date.now() - machineReadFailedAt < MACHINE_FAILURE_PAUSE_MS) return [];
+  const read = fetchAccountMachines().then((result) => {
+    if (result.state === "ok") return result.machines;
+    machineReadFailedAt = Date.now();
+    if (result.state !== "signed_out") console.warn("[chat] account machines read for the @ menu failed", result.state, result.message ?? "");
+    return null;
+  });
   let timer: ReturnType<typeof setTimeout> | null = null;
   const machines = await Promise.race([
-    readAccountMachines(),
+    read,
     new Promise<null>((resolve) => {
       timer = setTimeout(() => resolve(null), MACHINE_MENU_WAIT_MS);
     }),
@@ -62,24 +61,13 @@ export async function accountMachineMentionRows(localMachineKey: string | null):
   return machines.map((machine) => accountMachineMentionSuggestion(machine, { activityItems: null, localMachineKey, nowMs }));
 }
 
-function firstLine(value: string | null | undefined, max = 120): string | null {
-  const line = value?.split("\n").map((part) => part.trim()).find(Boolean) ?? "";
-  if (!line) return null;
-  return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
-}
-
-function epoch(value: string | null | undefined): number | null {
-  const ms = value ? Date.parse(value) : Number.NaN;
-  return Number.isFinite(ms) ? ms : null;
-}
-
 /**
  * A resting computer's chats, lanes and open PRs as its saved Work slice
  * shows them: the same ids its own menu gives, so a sent chip resolves on
  * the computer once it is awake. Terminals are left out (their processes do
  * not outlast a sleep).
  */
-export function restingMachineMentionRows(
+function restingMachineMentionRows(
   entry: Pick<CrossMachineMachineLanes, "sessions" | "lanes" | "prs">,
   excludeSessionId: string | null,
 ): ChatMentionSuggestion[][] {
@@ -89,31 +77,13 @@ export function restingMachineMentionRows(
     .map((session) => ({
       kind: "chat",
       id: session.id,
-      title: firstLine(session.title) ?? firstLine(session.goal) ?? `Chat ${session.id.slice(0, 8)}`,
-      subtitle: [laneNames.get(session.laneId) ?? session.laneName, session.status].filter(Boolean).join(" · "),
-      lastActivityAt: epoch(session.lastActivityAt) ?? epoch(session.startedAt),
+      title: chatMentionTitle(session),
+      // As the brain writes it: lane · provider · status.
+      subtitle: [laneNames.get(session.laneId) ?? session.laneName, chatToolProvider(session.toolType), session.status].filter(Boolean).join(" · "),
+      lastActivityAt: mentionEpoch(session.lastActivityAt) ?? mentionEpoch(session.startedAt),
     }));
-  const lanes: ChatMentionSuggestion[] = entry.lanes
-    .filter((lane) => !lane.archivedAt)
-    .map((lane) => ({
-      kind: "lane",
-      id: lane.id,
-      title: lane.name,
-      subtitle: lane.branchRef,
-      lastActivityAt: epoch(lane.createdAt),
-    }));
-  const prs: ChatMentionSuggestion[] = entry.prs
-    .filter((pr) => (pr.state === "open" || pr.state === "draft") && isChatMentionId(pr.id))
-    .map((pr) => ({
-      kind: "pr",
-      id: pr.id,
-      title: `#${pr.githubPrNumber} ${firstLine(pr.title) ?? "Untitled pull request"}`,
-      subtitle: [pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : null, laneNames.get(pr.laneId), pr.state === "draft" ? "draft" : null]
-        .filter(Boolean)
-        .join(" · "),
-      lastActivityAt: epoch(pr.updatedAt) ?? epoch(pr.createdAt),
-      pr: { number: pr.githubPrNumber, state: pr.state, checks: pr.checksStatus },
-    }));
+  const lanes = entry.lanes.filter((lane) => !lane.archivedAt).map(laneMentionSuggestion);
+  const prs = entry.prs.filter(isMentionablePr).map((pr) => prMentionSuggestion(pr, laneNames.get(pr.laneId)));
   return [chats, lanes, prs];
 }
 
@@ -122,7 +92,7 @@ export function restingMachineMentionRows(
  * machine answered keeps its rows; the window's rows fill a kind it left
  * empty (all of them while the computer rests). Ranked as the brain ranks.
  */
-export function mergeMentionRows(machineRows: ChatMentionSuggestion[], windowRows: ChatMentionSuggestion[][], rawQuery: string): ChatMentionSuggestion[] {
+function mergeMentionRows(machineRows: ChatMentionSuggestion[], windowRows: ChatMentionSuggestion[][], rawQuery: string): ChatMentionSuggestion[] {
   const answered = new Set(machineRows.map((row) => row.kind));
   const fill = windowRows.flat().filter((row) => !answered.has(row.kind));
   if (fill.length === 0) return machineRows;
@@ -133,4 +103,30 @@ export function mergeMentionRows(machineRows: ChatMentionSuggestion[], windowRow
     byKind.set(row.kind, list);
   }
   return rankChatMentionMenu([...byKind.values()], rawQuery);
+}
+
+/**
+ * The chat's @-menu for one query. `away` is the Work slice of the chat's
+ * ADE Cloud computer while it rests or is gone: then `machineRows` is never
+ * called, since a read must not wake it. The account's machines join only
+ * when the machine's answer has none and the query may show machines.
+ */
+export async function chatMentionMenu(args: {
+  query: string;
+  machineRows: () => Promise<ChatMentionSuggestion[]>;
+  away: Pick<CrossMachineMachineLanes, "sessions" | "lanes" | "prs"> | null;
+  excludeSessionId: string | null;
+  /** The chat's own machine, labeled "this machine". */
+  localMachineKey: string | null;
+}): Promise<ChatMentionSuggestion[]> {
+  const query = args.query.trim();
+  const kind = parseChatMentionKindFilter(query).kind;
+  // Started with the machine's read, so a fill never waits after it.
+  const accountRead = kind == null || kind === "machine" ? accountMachineMentionRows(args.localMachineKey) : null;
+  const fromMachine = args.away ? [] : await args.machineRows();
+  const accountMachines = accountRead && !fromMachine.some((row) => row.kind === "machine") ? await accountRead : [];
+  const windowRows = args.away
+    ? [...restingMachineMentionRows(args.away, args.excludeSessionId), accountMachines]
+    : [accountMachines];
+  return mergeMentionRows(fromMachine, windowRows, query);
 }

@@ -98,9 +98,11 @@ export function CloudQueuedBubbleStatus({ event }: { event: Extract<AgentChatEve
 
 /**
  * The messages the account's queue could not send for an ADE Cloud chat
- * (`useAdeCloudChatQueue().failed`). A message that still waits shows as its
- * own bubble in the chat (`cloudQueuedMessageEnvelope`), not here. Account
- * level, by the chat's machine key: no pin.
+ * (`useAdeCloudChatQueue().failed`). Each stays, with the server's sentence,
+ * until the person puts its text back in the box or dismisses it. A message
+ * that still waits shows as its own bubble in the chat
+ * (`cloudQueuedMessageEnvelope`), not here. Account level, by the chat's
+ * machine key: no pin.
  */
 export function CloudQueuedMessages({
   failed,
@@ -116,24 +118,6 @@ export function CloudQueuedMessages({
   onDismiss: (messageId: string) => void;
 }) {
   if (failed.length === 0) return null;
-  return <FailedQueuedMessages failed={failed} style={style} onPutBack={onPutBack} onDismiss={onDismiss} />;
-}
-
-/**
- * The messages the server could not send. Each stays, with the server's
- * sentence, until the person puts its text back in the box or dismisses it.
- */
-function FailedQueuedMessages({
-  failed,
-  style,
-  onPutBack,
-  onDismiss,
-}: {
-  failed: CloudChatQueuedMessage[];
-  style?: CSSProperties;
-  onPutBack: (message: CloudChatQueuedMessage) => void;
-  onDismiss: (messageId: string) => void;
-}) {
   return (
     <Banner
       layout="inline"

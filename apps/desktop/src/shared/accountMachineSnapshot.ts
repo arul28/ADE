@@ -192,17 +192,16 @@ export function buildAccountMachineSnapshot(args: {
   };
 }
 
-/** "online", "asleep · last seen 3h ago", "offline · last seen 2d ago". */
 /**
  * One machine's row in the @-menu. The same row on a brain (the suggestion
  * service) and in a window (a chat whose computer rests asks no brain).
  */
 export function accountMachineMentionSuggestion(
   machine: AdeAccountMachine,
-  args: { activityItems: readonly AttentionItem[] | null; localMachineKey?: string | null; nowMs?: number },
+  args: { activityItems: readonly AttentionItem[] | null; localMachineKey: string | null; nowMs: number },
 ): ChatMentionSuggestion {
-  const now = args.nowMs ?? Date.now();
-  const snapshot = buildAccountMachineSnapshot({ machine, activityItems: args.activityItems, localMachineKey: args.localMachineKey ?? null });
+  const now = args.nowMs;
+  const snapshot = buildAccountMachineSnapshot({ machine, activityItems: args.activityItems, localMachineKey: args.localMachineKey });
   const projects = snapshot.activityAvailable && snapshot.projects.length
     ? `${snapshot.projects.length} project${snapshot.projects.length === 1 ? "" : "s"}`
     : null;
@@ -221,6 +220,7 @@ export function accountMachineMentionSuggestion(
   };
 }
 
+/** "online", "asleep · last seen 3h ago", "offline · last seen 2d ago". */
 export function describeAccountMachinePresence(
   snapshot: Pick<AccountMachineSnapshot, "online" | "lastSeenAt" | "sleepState">,
   nowMs: number = Date.now(),

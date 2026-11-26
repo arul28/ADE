@@ -15,17 +15,19 @@ import {
 import type { AgentChatSessionSummary } from "./types/chat";
 
 export type { CloudChatComputer, CloudChatRowSettings, CloudComputerDeleteReason };
+/**
+ * The composer settings of a chat (from its summary), for its saved row: the
+ * computer sends them with each part, and a client shows them while the
+ * computer rests. Null when the chat has none.
+ */
+export { cloudChatRowSettingsOf };
 
 /**
- * The composer settings of a chat, for its saved row: the computer sends them
- * with each part, and a client shows them while the computer rests. Null when
- * the chat has none (or no summary was read).
+ * A saved row's settings as summary fields, checked again: a client never
+ * trusts a stored copy's shape. The check keeps known keys and short tokens
+ * only, not each field's own union: a value this ADE does not know (a newer
+ * computer's mode) reaches the composer, whose pickers show what they know.
  */
-export function savedChatRowSettings(summary: AgentChatSessionSummary | null | undefined): CloudChatRowSettings | null {
-  return cloudChatRowSettingsOf(summary);
-}
-
-/** A saved row's settings as summary fields, checked again: a client never trusts a stored copy's shape. */
 export function savedChatSettingsSummaryFields(row: Pick<CloudChatRow, "settings">): Partial<AgentChatSessionSummary> {
   return (cloudChatRowSettingsOf(row.settings) ?? {}) as Partial<AgentChatSessionSummary>;
 }

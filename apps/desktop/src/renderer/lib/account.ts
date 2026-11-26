@@ -52,6 +52,9 @@ function accountApi() {
 }
 
 function emit(status: AdeAccountStatus): void {
+  // Another account (or none): its machine list is not this one's.
+  const accountOf = (value: AdeAccountStatus | undefined) => (value?.signedIn ? value.userId : null);
+  if (cachedStatus && accountOf(cachedStatus.value) !== accountOf(status)) cachedMachines = null;
   cachedStatus = { value: status, fetchedAtMs: Date.now() };
   for (const listener of listeners) {
     try {

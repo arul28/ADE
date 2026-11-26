@@ -524,9 +524,16 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     for (const [sessionId, entry] of Object.entries(state.chats)) {
       if (disposed) return;
       if (entry.dirty || entry.seq < 1 || running.has(sessionId) || restoringChats.has(sessionId)) continue;
-      const row = await deps.readChatRow(sessionId).catch(() => null);
-      // No key recorded yet (a copy older than settings): sent once.
-      if (!row || (entry.settings !== undefined && settingsKey(row) === entry.settings)) continue;
+      const row = await deps.readChatRow(sessionId).catch((error: unknown) => {
+        log?.warn("cloud.chat_settings_row_read_failed", { sessionId, error: error instanceof Error ? error.name : "unknown" });
+        return null;
+      });
+      if (!row) continue;
+      const key = settingsKey(row);
+      // No key recorded yet (a copy older than settings): sent once. Settings
+      // that went away are a summary that could not be read, not a change:
+      // sending that row would clear the saved model too.
+      if (entry.settings !== undefined && (key === entry.settings || (!key && entry.settings))) continue;
       entry.rowStale = true;
       entry.dirty = true;
     }
@@ -619,23 +626,30 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       const deadline = started + timeoutMs;
       let pending: string[] = [];
       let uploaded = 0;
-      const drain = (async () => {
-        await runDeletes().catch(() => {});
-        await markChangedSettings().catch((error: unknown) => {
-          log?.warn("cloud.chat_settings_check_failed", { error: error instanceof Error ? error.name : "unknown" });
-        });
-        // Dirty chats plus any upload already running, so a turn that just ended is waited for.
-        pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
+      const flush = async (ids: string[]) => {
         let index = 0;
         const worker = async () => {
-          while (index < pending.length) {
-            const sessionId = pending[index++]!;
+          while (index < ids.length) {
+            const sessionId = ids[index++]!;
             await schedule(sessionId, "flush");
             await (running.get(sessionId) ?? Promise.resolve());
             if (!state.chats[sessionId]?.dirty) uploaded += 1;
           }
         };
-        await Promise.all(Array.from({ length: Math.min(4, pending.length || 1) }, worker));
+        await Promise.all(Array.from({ length: Math.min(4, ids.length || 1) }, worker));
+      };
+      const drain = (async () => {
+        await runDeletes().catch(() => {});
+        // Dirty chats plus any upload already running, so a turn that just ended is waited for.
+        pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
+        await flush(pending);
+        // Then rows whose settings changed with no new text: new turns go first.
+        await markChangedSettings().catch((error: unknown) => {
+          log?.warn("cloud.chat_settings_check_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
+        const changed = Object.entries(state.chats).filter(([id, entry]) => entry.dirty && !pending.includes(id)).map(([id]) => id);
+        pending = [...pending, ...changed];
+        await flush(changed);
       })();
       let timer: ReturnType<typeof setTimeout> | null = null;
       const timedOut = await Promise.race([

@@ -232,18 +232,24 @@ export function savedChatHistoryPage(page: CloudSavedChatPage, sessionId: string
  */
 export function savedChatSummary(location: SavedChatLocation): AgentChatSessionSummary {
   const row = location.row;
-  const picks = queuedChatPicks.get(location.chatId);
+  const sent = sentChatPicks.get(location.chatId);
+  // Sent picks show until the computer saves a newer row (it applied them before the message).
+  const sentPicks = sent && row.updatedAt < sent.sentAtMs && Date.now() - sent.sentAtMs < SENT_PICKS_MAX_MS ? sent.picks : null;
+  const picks: QueuedChatPicks = { ...sentPicks, ...queuedChatPicks.get(location.chatId) };
+  const fields: Partial<AgentChatSessionSummary> = { ...savedChatSettingsSummaryFields(row) };
+  if (picks.modelId) fields.modelId = picks.modelId;
+  // A null preset pick leaves the preset: the saved one must not show beside the new model.
+  if (typeof picks.presetId === "string") fields.presetId = picks.presetId;
+  else if (picks.presetId === null) delete fields.presetId;
+  if (picks.reasoningEffort !== undefined) fields.reasoningEffort = picks.reasoningEffort;
+  if (picks.fastMode !== undefined) fields.fastMode = picks.fastMode;
+  if (picks.fastTier !== undefined) fields.fastTier = picks.fastTier;
   return {
-    ...savedChatSettingsSummaryFields(row),
-    ...(picks?.modelId ? { modelId: picks.modelId } : {}),
-    ...(typeof picks?.presetId === "string" ? { presetId: picks.presetId } : {}),
-    ...(picks?.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
-    ...(picks?.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
-    ...(picks?.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
+    ...fields,
     sessionId: location.chatId,
     laneId: row.laneId ?? "unknown",
     provider: row.provider ?? "claude",
-    model: picks?.modelId ?? row.model ?? "",
+    model: picks.modelId ?? row.model ?? "",
     title: row.title,
     status: "idle",
     startedAt: row.lastActivityAt ?? "",
@@ -275,6 +281,23 @@ export function peekQueuedChatPicks(chatId: string): QueuedChatPicks | null {
 /** A send carried the picks: drop them. */
 export function clearQueuedChatPicks(chatId: string): void {
   queuedChatPicks.delete(chatId);
+}
+
+/** Picks a queued send carried, by chat id, with when it went (`savedChatSummary` shows them). */
+const sentChatPicks = new Map<string, { picks: QueuedChatPicks; sentAtMs: number }>();
+/** A computer that never saved a newer row: its sent picks stop showing after a day. */
+const SENT_PICKS_MAX_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The account's queue took a send that carries the picks: drop them, but
+ * show them until the computer saves a newer row, which has them applied.
+ * Without this the composer goes back to the older saved settings meanwhile.
+ */
+export function noteQueuedChatPicksSent(chatId: string): void {
+  const picks = queuedChatPicks.get(chatId);
+  queuedChatPicks.delete(chatId);
+  if (!picks) return;
+  sentChatPicks.set(chatId, { picks: { ...sentChatPicks.get(chatId)?.picks, ...picks }, sentAtMs: Date.now() });
 }
 
 /** This chat's picks, once (a direct send applies them); null when none. */
@@ -325,7 +348,7 @@ function savedChatSessionAfterPick(location: SavedChatLocation): AgentChatSessio
     provider: summary.provider,
     model: summary.model,
     ...(summary.modelId ? { modelId: summary.modelId } : {}),
-    ...(summary.presetId ? { presetId: summary.presetId } : {}),
+    ...(typeof summary.presetId === "string" ? { presetId: summary.presetId } : {}),
     ...(summary.reasoningEffort !== undefined ? { reasoningEffort: summary.reasoningEffort } : {}),
     ...(summary.fastMode !== undefined ? { fastMode: summary.fastMode } : {}),
     ...(summary.fastTier !== undefined ? { fastTier: summary.fastTier } : {}),

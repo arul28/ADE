@@ -2039,16 +2039,17 @@ One busy list, `decideCloudBusy` in
 - **The chat's settings while it rests.** The computer puts the chat's
   settings in each saved row: model, preset, thinking level, Fast and the
   access modes (`settings`, `readChatRow` in `bootstrap.ts`). A setting that
-  changed with no new transcript part goes at the next rest save
-  (`markChangedSettings` in `cloudChatUploader.ts`). The server checks each
+  changed with no new transcript part goes at the next rest save, after the
+  new turns (`markChangedSettings` in `cloudChatUploader.ts`). The server checks each
   field (`cloudChatRowSettingsOf`), seals them in the copy's summary and
   returns them in `GET /cloud/chats`. The desktop and ADE Web show them in
-  the composer (`savedChatSummary`); a pick since the last send wins. The
+  the composer (`savedChatSummary`); a pick since the last send wins, and a
+  pick a queued send carried shows until the computer saves a newer row. The
   phone shows the model, thinking level and Fast (`rosterChatSummary`) and
   still hides the access mode of a saved chat.
 - **The @ menu while it rests.** The menu never asks a resting or deleted
   computer, since a read must not wake it. It shows the account's machines
-  (an account read, kept 30 s) and the computer's saved chats, lanes and open
+  (an account read, kept 15 s) and the computer's saved chats, lanes and open
   PRs from its Work slice (`chatMentionClientRows.ts`). While the computer is
   awake, its own answer comes first, and the account's machines fill the
   menu only when that answer has no machine rows.

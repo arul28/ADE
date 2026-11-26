@@ -1327,12 +1327,16 @@ export type CloudChatRowSettings = Partial<Record<CloudChatRowTextSetting, strin
   fastTier?: "ultrafast" | null;
 };
 
-/** Ids and words only: a model id can carry `@`, `[`, `]` and `+` (`claude-x[1m]`). */
-const ROW_SETTING_TEXT = /^[A-Za-z0-9._:/@[\]+-]{1,160}$/;
+/**
+ * One token: no space or control character, at most 300 characters, as the
+ * queue takes a model id. Model ids carry much more than words: `[1m]`,
+ * `%2F` (OpenCode), `(xhigh)` (a Droid custom model).
+ */
+const ROW_SETTING_TEXT = /^[^\s\p{C}]{1,300}$/u;
 
 /**
  * The composer settings of a chat summary (or a row's `settings`), checked:
- * known keys only, short plain strings, booleans and nulls. Anything else is
+ * known keys only, single-token strings, booleans and nulls. Anything else is
  * left out. Null when nothing is left. The computer passes its whole chat
  * summary; the server checks what the computer sent again.
  */

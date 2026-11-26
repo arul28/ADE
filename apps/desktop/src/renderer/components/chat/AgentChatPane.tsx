@@ -134,7 +134,7 @@ import {
   normalizeChatContextAttachments,
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
-import { isChatMentionTokenBody, parseChatMentionKindFilter } from "../../../shared/chatMentions";
+import { isChatMentionTokenBody } from "../../../shared/chatMentions";
 import { rememberMentionSuggestionLabels } from "./mentionChipLabels";
 import { searchComposerPullRequests } from "./composerPrSearch";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -515,9 +515,9 @@ import { releaseHeldAttachments, releaseSentHeldAttachments } from "./heldChatAt
 import { prepareDeviceHeldForSend } from "./deviceHeldSend";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, peekNewComputerSize, pickNewComputerSize, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
-import { CloudQueuedBubbleContext, CloudQueuedMessages, cloudQueuedMessageEnvelope, draftWithPutBack } from "./CloudQueuedMessages";
-import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
-import { accountMachineMentionRows, mergeMentionRows, restingMachineMentionRows } from "./chatMentionClientRows";
+import { CloudQueuedBubbleContext, CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
+import { cloudQueueWaitLine, useCloudQueuedBubbles } from "./useCloudQueuedBubbles";
+import { chatMentionMenu } from "./chatMentionClientRows";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -3380,7 +3380,8 @@ const MUSE_PERMISSION_MODES: readonly AgentChatMusePermissionMode[] = AGENT_CHAT
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
 const APP_CONTROL_PROVIDERS: readonly AppControlContextItem["provider"][] = ["cdp", "os-accessibility", "computer-use", "external", "coordinate-fallback"];
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
-const EMPTY_CLOUD_QUEUED: CloudChatQueuedMessage[] = [];
+/** A resting computer with no Work slice here: the menu still asks it nothing. */
+const NO_WORK_SLICE = { sessions: [], lanes: [], prs: [] };
 const EMPTY_REASONING_TIERS: string[] = [];
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 
@@ -6602,6 +6603,15 @@ export function AgentChatPane({
   const followedCloudLaunchId = cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching"
     ? cloudQueueSend.launchId
     : null;
+  // The queued messages the chat shows as its own sent bubbles, oldest first
+  // (the launch card shows the followed launch's).
+  const cloudQueuedBubbles = useCloudQueuedBubbles({
+    messages: cloudQueue.messages,
+    followedLaunchId: followedCloudLaunchId,
+    sessionId: renderedSessionId === selectedSessionId ? renderedSessionId : null,
+    events: selectedEvents,
+  });
+  const noteCloudQueuedSendBubble = cloudQueuedBubbles.noteSendBubble;
   // A queued row goes when its message arrives in the transcript. The user
   // message carries the `clientSendId` of its send, which is the row's
   // `messageId`, so a row matches by id first. An older host writes no id:
@@ -6611,9 +6621,10 @@ export function AgentChatPane({
   // the same words go one at a time. A message with an id never counts as a
   // text match, so words typed in the live chat never clear a queued row.
   const queuedTextBaselineRef = useRef(new Map<string, number>());
+  const transcriptSentIds = cloudQueuedBubbles.sentIds;
   useEffect(() => {
     if (cloudQueue.messages.length === 0 || renderedSessionId !== selectedSessionId) return;
-    const sentIds = new Set<string>();
+    const sentIds = transcriptSentIds;
     const counts = new Map<string, number>();
     // A steer writes its row twice (queued, then delivered); only the first
     // carries the id, so each steer counts once.
@@ -6625,10 +6636,8 @@ export function AgentChatPane({
         if (seenSteers.has(steerId)) continue;
         seenSteers.add(steerId);
       }
-      if (envelope.event.clientSendId) {
-        sentIds.add(envelope.event.clientSendId);
-        continue;
-      }
+      // A message with an id is matched by it (`sentIds`), never by its words.
+      if (envelope.event.clientSendId) continue;
       const text = envelope.event.text.trim();
       counts.set(text, (counts.get(text) ?? 0) + 1);
     }
@@ -6654,7 +6663,7 @@ export function AgentChatPane({
         }
       }
     }
-  }, [cloudQueue.messages, renderedSessionId, selectedEvents, selectedSessionId]);
+  }, [cloudQueue.messages, renderedSessionId, selectedEvents, selectedSessionId, transcriptSentIds]);
   // A failed message whose words reached this chat later (the person sent
   // them again) is no longer missing: its row goes, as a Dismiss would. Only
   // a user message after the failed one was queued counts.
@@ -6672,32 +6681,6 @@ export function AgentChatPane({
       if (arrived) dismissFailedQueued(message.messageId);
     }
   }, [cloudQueue.failed, dismissFailedQueued, renderedSessionId, selectedEvents, selectedSessionId]);
-  // The queued messages the chat shows as its own sent bubbles, oldest first
-  // (the launch card shows the followed launch's). One the transcript has
-  // already gives way to it before the effect above drops its row.
-  const cloudQueuedOpen = useMemo(() => {
-    if (cloudQueue.messages.length === 0 || renderedSessionId !== selectedSessionId) return EMPTY_CLOUD_QUEUED;
-    const sentIds = new Set<string>();
-    for (const { event } of selectedEvents) {
-      if (event.type === "user_message" && event.clientSendId) sentIds.add(event.clientSendId);
-    }
-    const open = cloudQueue.messages.filter((message) => (
-      !(message.launchId && message.launchId === followedCloudLaunchId) && !sentIds.has(message.messageId)
-    ));
-    return open.length ? open : EMPTY_CLOUD_QUEUED;
-  }, [cloudQueue.messages, followedCloudLaunchId, renderedSessionId, selectedEvents, selectedSessionId]);
-  // A send's own bubble hands over to its queued bubble at the same time, so
-  // the row stays and plays no second entrance (set when the send goes out).
-  const cloudQueuedBubbleTimesRef = useRef(new Map<string, string>());
-  const cloudQueuedEnvelopes = useMemo(() => (
-    renderedSessionId && cloudQueuedOpen.length
-      ? cloudQueuedOpen.map((message) => cloudQueuedMessageEnvelope(
-        message,
-        renderedSessionId,
-        cloudQueuedBubbleTimesRef.current.get(message.messageId) ?? new Date(message.createdAt).toISOString(),
-      ))
-      : EMPTY_CHAT_EVENTS
-  ), [cloudQueuedOpen, renderedSessionId]);
   // A chat that arrived from another machine carries one durable marker.
   const crossMachineArrival = useCrossMachineArrival(renderedSessionId, selectedEvents);
   const compactFirst = useCompactFirst(selectedEvents, renderedSessionId, selectedSession?.promptCache, selectedSession?.provider, selectedSession?.model, selectedSession?.compactFirstIdleMs);
@@ -6721,11 +6704,15 @@ export function AgentChatPane({
   // pane has not committed yet.
   const buildEventsForDisplay = useCallback((events: AgentChatEventEnvelope[]) => {
     // Queued ADE Cloud messages come after the transcript, as sent bubbles.
-    const withQueued = cloudQueuedEnvelopes.length ? [...events, ...cloudQueuedEnvelopes] : events;
+    const queued = cloudQueuedBubbles.envelopes;
+    const withQueued = queued.length ? [...events, ...queued] : events;
+    // A queued bubble stands for its own send only: it takes that send's time
+    // (`noteSendBubble`), so a new message with the same words still shows.
     const shouldRenderOptimistic =
       optimisticOutgoingMessage
       && optimisticOutgoingMessage.sessionId === renderedSessionId
-      && !hasMatchingCommittedUserMessage(withQueued, optimisticOutgoingMessage.envelope);
+      && !hasMatchingCommittedUserMessage(events, optimisticOutgoingMessage.envelope)
+      && !queued.some((envelope) => envelope.timestamp === optimisticOutgoingMessage.envelope.timestamp);
     const baseEvents = shouldRenderOptimistic
       ? [...withQueued, optimisticOutgoingMessage.envelope]
       : withQueued;
@@ -6745,7 +6732,7 @@ export function AgentChatPane({
       return buildChatLaunchThreadEvents(chatLaunch, displayEvents);
     }
     return displayEvents;
-  }, [chatLaunch, cloudQueuedEnvelopes, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId]);
+  }, [chatLaunch, cloudQueuedBubbles.envelopes, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId]);
   const selectedEventsForDisplay = useMemo(
     () => buildEventsForDisplay(selectedEvents),
     [buildEventsForDisplay, selectedEvents],
@@ -11121,22 +11108,14 @@ export function AgentChatPane({
   // another window or the CLI started. The first connection needs none: the
   // read above covers it.
   const chatConnectionMark = useRemoteConnectionMark(chatRuntimePin?.kind === "remote" ? chatRuntimePin.targetId : null);
-  // While queued messages wait, the working line under the chat says for
-  // what, and counts from the oldest. None while each one waits for a
-  // sign-in: that needs the person, and its bubble says so.
-  const cloudQueueWait = useMemo((): { sinceMs: number; label: string | null } | null => {
-    const waiting = cloudQueuedOpen.filter((message) => message.state !== "waiting_for_sign_in");
-    if (waiting.length === 0) return null;
-    const sinceMs = Math.min(...waiting.map((message) => message.createdAt));
-    const wake = cloudQueue.wake?.state;
-    let label: string | null;
-    if (chatLaneChangeKind === "move" || wake === "moving") label = "Moving to the new computer…";
-    else if (chatLaneChangeKind === "resize") label = "Changing the computer's size…";
-    else if (wake === "launching" || waiting.some((message) => message.launchId)) label = "Starting a new computer…";
-    else if (waiting.some((message) => message.state === "sending") || chatConnectionMark) label = `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…`;
-    else label = cloudQueue.waking ? null : "Waiting for the computer…";
-    return { sinceMs, label };
-  }, [chatConnectionMark, chatLaneChangeKind, cloudQueue.wake?.state, cloudQueue.waking, cloudQueuedOpen, selectedSession?.provider]);
+  // While queued messages wait, the working line under the chat says for what.
+  const cloudQueueWait = useMemo(() => cloudQueueWaitLine(cloudQueuedBubbles.open, {
+    laneChange: chatLaneChangeKind,
+    wake: cloudQueue.wake?.state,
+    waking: cloudQueue.waking,
+    connected: Boolean(chatConnectionMark),
+    agentLabel: providerDisplayLabel(selectedSession?.provider, "the agent"),
+  }), [chatConnectionMark, chatLaneChangeKind, cloudQueue.wake?.state, cloudQueue.waking, cloudQueuedBubbles.open, selectedSession?.provider]);
   const lastChatConnectionMarkRef = useRef(chatConnectionMark);
   useEffect(() => {
     const previous = lastChatConnectionMarkRef.current;
@@ -12283,37 +12262,34 @@ export function AgentChatPane({
   const searchMentions = useCallback(async (query: string): Promise<ChatMentionSuggestion[]> => {
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     if (!pin) return [];
-    const computerAway = selectedSessionId != null && chatComputerAwayRef.current;
-    const awayEntry = computerAway ? chatMachineEntryRef.current : null;
-    const chatMachineKey = computerAway && selectedSessionId
-      ? chatQueueMachineKey(pin, savedChatLocation(pin, selectedSessionId, () => false))
+    const away = selectedSessionId != null && chatComputerAwayRef.current
+      ? chatMachineEntryRef.current ?? NO_WORK_SLICE
       : null;
-    const machineRows = async (): Promise<ChatMentionSuggestion[]> => {
-      if (computerAway) return [];
-      try {
-        // Optional call: the webclient adapter's agentChat surface may not
-        // implement this yet, and a missing method must degrade to "no rows".
-        const result = await agentChatApiRef.current.listMentionSuggestions?.(
-          {
-            query: query.trim(),
-            // A chat never suggests itself.
-            ...(selectedSessionId ? { excludeSessionId: selectedSessionId } : {}),
-          },
-          pin,
-        );
-        return result?.suggestions ?? [];
-      } catch {
-        return [];
-      }
-    };
-    const fromMachine = await machineRows();
-    // Only when the machine gave no machine rows (asleep, a slow directory
-    // read), and the query may show machines.
-    const kindFilter = parseChatMentionKindFilter(query).kind;
-    const wantsMachines = !fromMachine.some((row) => row.kind === "machine") && (kindFilter == null || kindFilter === "machine");
-    const accountMachines = wantsMachines ? await accountMachineMentionRows(chatMachineKey).catch(() => [] as ChatMentionSuggestion[]) : [];
-    const windowRows = awayEntry ? [...restingMachineMentionRows(awayEntry, selectedSessionId), accountMachines] : [accountMachines];
-    const suggestions = mergeMentionRows(fromMachine, windowRows, query.trim());
+    const suggestions = await chatMentionMenu({
+      query,
+      away,
+      excludeSessionId: selectedSessionId,
+      localMachineKey: selectedSessionId
+        ? chatQueueMachineKey(pin, savedChatLocation(pin, selectedSessionId, () => false))
+        : null,
+      machineRows: async () => {
+        try {
+          // Optional call: the webclient adapter's agentChat surface may not
+          // implement this yet, and a missing method must degrade to "no rows".
+          const result = await agentChatApiRef.current.listMentionSuggestions?.(
+            {
+              query: query.trim(),
+              // A chat never suggests itself.
+              ...(selectedSessionId ? { excludeSessionId: selectedSessionId } : {}),
+            },
+            pin,
+          );
+          return result?.suggestions ?? [];
+        } catch {
+          return [];
+        }
+      },
+    });
     // Sent `@pr:` / `@mac:` chips reuse these titles instead of a short id.
     rememberMentionSuggestionLabels(suggestions);
     return suggestions;
@@ -17530,7 +17506,7 @@ export function AgentChatPane({
         optimisticDisplayText = text;
       }
     }
-    // Kept for the queued bubble that may take this bubble's place (`cloudQueuedBubbleTimesRef`).
+    // Kept for the queued bubble that may take this bubble's place (`useCloudQueuedBubbles`).
     let optimisticTimestamp: string | null = null;
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       sendTiming.attach(selectedSessionId);
@@ -17787,12 +17763,7 @@ export function AgentChatPane({
         },
       };
       handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere, identityKey: sendIdentity.identityKey, clientSendId: sendIdentity.record.clientSendId };
-      if (optimisticTimestamp) {
-        const times = cloudQueuedBubbleTimesRef.current;
-        times.set(sendIdentity.record.clientSendId, optimisticTimestamp);
-        // A few sends' worth; an old id only names a message long gone.
-        if (times.size > 50) times.delete(times.keys().next().value!);
-      }
+      if (optimisticTimestamp) noteCloudQueuedSendBubble(sendIdentity.record.clientSendId, optimisticTimestamp);
       // The bubble and the cleared composer draw first. Re-sorting the list
       // and marking the chat as running re-render every surface that reads
       // the list, so that waits for the task after the frame: one frame later.
@@ -18122,6 +18093,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
+    noteCloudQueuedSendBubble,
     putUnsentSendInSavedDraft,
     startFreedLaneChat,
     sendThroughCloudQueue,

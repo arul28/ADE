@@ -1046,8 +1046,11 @@ extension RemoteRosterChat {
   }
 }
 
-/// The saved-row settings a stand-in summary takes (`CloudChatRowSettings`).
-/// `fastMode` is the only flag; every other key is text.
+/// The saved-row settings a stand-in summary takes: the keys of
+/// `CLOUD_CHAT_ROW_TEXT_SETTINGS` (account-directory `contract.ts`, same
+/// order) plus `fastMode`, the only flag. Left out: `acpPermissionMode`,
+/// `cursorCloudServiceTier` and `fastTier`, which this summary has no field
+/// for. Each kept key is a `String?` or `Bool?` on `AgentChatSessionSummary`.
 private let rosterSavedSettingKeys: Set<String> = [
   "modelId", "presetId", "reasoningEffort", "fastMode", "executionMode", "interactionMode", "permissionMode",
   "claudePermissionMode", "codexApprovalPolicy", "codexSandbox", "codexConfigSource", "opencodePermissionMode",
