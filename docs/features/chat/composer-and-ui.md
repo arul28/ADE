@@ -585,7 +585,11 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   two rows that read apart; `@people` narrows to them, and `@linear` or
   `@github` matches a source through the subtitle. Each source is read once
   and kept 5 minutes; a disconnected or failing source is retried after a
-  minute; a cold read waits at most 800 ms. No email is read into a row. A
+  minute. A bare `@` browse waits at most 800 ms for a cold read (the rows
+  join on the next keystroke); a typed search waits for the read itself (4 s
+  cap), because an answer without people would read as no matches and the
+  composer closes the menu on that. Finishing a kind word (`@peop` →
+  `@people`) reopens a menu that a no-match closed; an Escape still holds. No email is read into a row. A
   person mention is **context only**: its block (`kind="person"`) gives the
   name, Linear display name and user id, or the GitHub login and repository,
   and tells the agent to assign, comment or notify only when the user asks
@@ -598,8 +602,11 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   `@pr:<id>`, `@mac:<id>`, `@mcp:<name>` or `@person:<source>.<id>`
   (`linear.<user id>`, `github.<login>`) pointer and shows a title chip
   (`shared/chatMentions.ts`; a PR chip reads `#1319 title`). A sent Linear
-  person chip gets its name from the menu's rows, else from one people read on
-  the chat's machine (`mentionChipLabels.ts`); a GitHub one shows `@login`.
+  person chip gets its name from the menu's rows, else from an exact lookup of
+  the chips' ids on the chat's machine (`listMentionSuggestions` with `ids`,
+  batched per machine, never on a resting ADE Cloud computer; a miss is asked
+  again after a minute) (`mentionChipLabels.ts`); a GitHub one shows
+  `@login`.
 - **`#`** lists the PRs the chat can reach (`ComposerPrSuggestion`,
   `prs.listAll` on the chat's pin) and inserts a PR chip.
 - **`/`** groups Commands, Skills and MCP prompts (per server), ranked by the

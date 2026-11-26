@@ -8,9 +8,10 @@
 //      read), which also yields the number/repo a click needs;
 //   3. machines: one account directory read per app session, only when a
 //      machine chip has no remembered label;
-//   4. Linear people: one people read from the chat's machine per pin, only
-//      when a chip has no remembered label (a GitHub chip already shows its
-//      login).
+//   4. Linear people: an exact lookup of the chips' ids on the chat's
+//      machine, batched per pin, only when a chip has no remembered label (a
+//      GitHub chip already shows its login). A miss is asked again after a
+//      minute, not remembered as "nobody".
 // Unknown stays the chip's short-id label; nothing here throws.
 
 import { useEffect, useMemo, useState } from "react";
@@ -51,21 +52,32 @@ export type MentionChipResolution = {
 
 const NONE: MentionChipResolution = { label: null, prTarget: null };
 
-/** One people read per chat machine, so a transcript full of chips asks once. */
-const peopleReads = new Map<string, Promise<void>>();
+/** How long a person id that did not resolve waits before it is asked again. */
+const PERSON_LABEL_RETRY_MS = 60_000;
+/** How long chips that render together wait to share one lookup. */
+const PERSON_LABEL_BATCH_MS = 30;
 
-function loadPeopleLabels(pin: OpenProjectBinding | null): Promise<void> {
-  if (!pin) return Promise.resolve();
-  const existing = peopleReads.get(pin.key);
-  if (existing) return existing;
-  const read = Promise.resolve(window.ade?.agentChat?.listMentionSuggestions?.({ query: "people" }, pin))
+const personLabelMissedAt = new Map<string, number>();
+/** The lookup being gathered for each chat machine: chips that render together share it. */
+const personLabelBatches = new Map<string, { ids: Set<string>; done: Promise<void> }>();
+
+/** Look up person ids on the chat's machine by exact id; results land in `rememberedLabels`. */
+function lookupPersonLabel(pin: OpenProjectBinding, id: string): Promise<void> {
+  const pending = personLabelBatches.get(pin.key);
+  if (pending) {
+    pending.ids.add(id);
+    return pending.done;
+  }
+  const ids = new Set([id]);
+  const done = new Promise<void>((resolve) => setTimeout(resolve, PERSON_LABEL_BATCH_MS))
+    .then(() => {
+      personLabelBatches.delete(pin.key);
+      return window.ade?.agentChat?.listMentionSuggestions?.({ query: "people", ids: [...ids] }, pin);
+    })
     .then((result) => rememberMentionSuggestionLabels(result?.suggestions ?? []))
-    .catch(() => {
-      // A failed read is asked again on the next chip, not cached as empty.
-      peopleReads.delete(pin.key);
-    });
-  peopleReads.set(pin.key, read);
-  return read;
+    .catch(() => undefined);
+  personLabelBatches.set(pin.key, { ids, done });
+  return done;
 }
 
 function prResolution(pr: PrSummary): MentionChipResolution {
@@ -108,9 +120,11 @@ export function useMentionChipResolution(
       : mention.kind === "mcp" ? Promise.resolve(NONE)
       : mention.kind === "person"
         // A resting ADE Cloud computer is never woken for a label.
-        ? (parsePersonMentionId(mention.id)?.source === "linear" && !scope.machineRests
-          ? loadPeopleLabels(scope.pin).then((): MentionChipResolution => {
+        ? (parsePersonMentionId(mention.id)?.source === "linear" && scope.pin && !scope.machineRests
+          && Date.now() - (personLabelMissedAt.get(chip.token) ?? 0) >= PERSON_LABEL_RETRY_MS
+          ? lookupPersonLabel(scope.pin, mention.id).then((): MentionChipResolution => {
               const label = rememberedLabels.get(chip.token) ?? null;
+              if (!label) personLabelMissedAt.set(chip.token, Date.now());
               return label ? { label, prTarget: null } : NONE;
             })
           : Promise.resolve(NONE))

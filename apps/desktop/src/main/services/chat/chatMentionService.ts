@@ -476,13 +476,17 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     };
   };
 
-  const buildPersonCandidates = async (): Promise<ChatMentionSuggestion[]> => {
+  const buildPersonCandidates = async (args: ChatMentionSuggestArgs): Promise<ChatMentionSuggestion[]> => {
     const sources = peopleSources();
     if (!sources.length) return [];
-    // Like machines: a cold source gets a short wait, then fills the cache for
-    // the next keystroke instead of holding the other rows back. Each source
-    // waits on its own, so a warm Linear list never waits on a cold GitHub one.
+    // A bare browse gives a cold source a short wait, like machines, and the
+    // rows join on the next keystroke. A typed search or an exact lookup waits
+    // for the read itself (bounded by its timeout): an answer without people
+    // there would read as "no matches", and the composer closes the menu on
+    // that and keeps it closed while the user finishes the name.
+    const fullRead = Boolean(args.ids?.length) || parseChatMentionKindFilter(args.query ?? "").rest.length > 0;
     const reads = await Promise.all(sources.map(async ([source, read]) => {
+      if (fullRead) return await loadPeople(source, read);
       let budgetTimer: ReturnType<typeof setTimeout> | null = null;
       return await Promise.race([
         loadPeople(source, read),
@@ -508,7 +512,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     pr: () => buildPrCandidates(),
     machine: () => buildMachineCandidates(),
     mcp: () => buildMcpCandidates(),
-    person: () => buildPersonCandidates(),
+    person: (args) => buildPersonCandidates(args),
   };
 
   /**
@@ -542,6 +546,10 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         return [] as ChatMentionSuggestion[];
       }
     }));
+    if (args.ids?.length) {
+      const wanted = new Set(args.ids);
+      return { suggestions: perKind.flat().filter((row) => wanted.has(row.id)) };
+    }
     return { suggestions: rankChatMentionMenu(perKind, rawQuery) };
   };
 

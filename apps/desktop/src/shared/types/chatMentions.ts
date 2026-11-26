@@ -61,6 +61,12 @@ export type ChatMentionSuggestArgs = {
   query?: string;
   /** Caller's own chat session id, so a chat never suggests itself. */
   excludeSessionId?: string;
+  /**
+   * Exact lookup, for the labels of chips in sent messages: only the rows
+   * with these ids (of the kind the query names), uncapped, after each source's
+   * full read. An older brain ignores it and answers the plain query.
+   */
+  ids?: string[];
 };
 
 export type ChatMentionSuggestResult = {

@@ -3410,12 +3410,16 @@ function AgentChatComposerImpl({
     setCommandMenuTrigger(null);
   }, [setCommandMenuTrigger]);
   /** Close the menu and keep it closed while the user extends this query. */
-  const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null) => {
+  const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null, noMatch = false) => {
     dismissedTriggerRef.current = trigger
-      ? { type: trigger.type, start: trigger.start, query: trigger.query }
+      ? { type: trigger.type, start: trigger.start, query: trigger.query, ...(noMatch ? { noMatch: true } : {}) }
       : null;
     setCommandMenuTrigger(null);
   }, [setCommandMenuTrigger]);
+  const dismissCommandMenuNoMatch = useCallback(
+    (trigger: ComposerTrigger | null) => dismissCommandMenu(trigger, true),
+    [dismissCommandMenu],
+  );
   /**
    * True when this trigger may open the menu. A trigger that is no longer
    * covered by the dismissal clears it, so the next dead query starts fresh.
@@ -9315,7 +9319,7 @@ function AgentChatComposerImpl({
       anchor={commandMenuAnchor}
       onSelect={handleCommandMenuSelectLatest}
       onClose={closeCommandMenu}
-      onNoMatches={dismissCommandMenu}
+      onNoMatches={dismissCommandMenuNoMatch}
     />
   ), [closeCommandMenu, commandMenuAnchor, commandMenuSlashCommands, commandMenuTrigger, dismissCommandMenu, handleCommandMenuSelectLatest, modelMentionOptions, modelMentionsLoading, modelRecents, onSearchAttachments, onSearchMentions, onSearchPullRequests]);
   const attachmentPreviewDialog = useMemo(() => (
