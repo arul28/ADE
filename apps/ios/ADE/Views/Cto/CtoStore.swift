@@ -190,6 +190,11 @@ final class CtoStore: ObservableObject {
   @Published var archiveQuery = ""
   @Published var archiveFilter: ArchiveFilter = .all
   @Published var archiveLoadingMore = false
+  /// The filter and query `archive` answers: its cursor pages back only those.
+  @Published private(set) var archivePageKey: String?
+  var archiveRequestKey: String {
+    "\(archiveFilter.rawValue)|\(archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines))"
+  }
   @Published var routines: [AgentChatScheduledWorkItem] = []
   @Published var routinesLoaded = false
   @Published var children: [CtoChildRow] = []
@@ -216,7 +221,7 @@ final class CtoStore: ObservableObject {
   /// Drops an archive answer to an older query or filter.
   private var archiveGeneration = 0
   private(set) var sessionId: String?
-  private var homeMachineKey: String?
+  private(set) var homeMachineKey: String?
   private var needsTask: Task<Void, Never>?
   private var lastNeedsFetchAt: Date?
   private var needsLoaded = false
@@ -265,6 +270,11 @@ final class CtoStore: ObservableObject {
       needsLoaded = false
       if !needs.isEmpty { needs = [] }
       if needsFailed { needsFailed = false }
+      // The old home's archive too; the list reads the new one (its task id names the binding).
+      archiveGeneration += 1
+      archive = nil
+      archiveError = nil
+      archivePageKey = nil
     }
   }
 
@@ -609,6 +619,8 @@ final class CtoStore: ObservableObject {
   func loadArchive(more: Bool = false) async {
     let query = archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     let kinds = archiveFilter.kinds
+    let key = archiveRequestKey
+    if more && archivePageKey != key { return }
     if isFixture {
       let all = fixtureArchiveAll?.entries ?? []
       let words = query.lowercased().split(separator: " ").map(String.init)
@@ -617,6 +629,7 @@ final class CtoStore: ObservableObject {
           && words.allSatisfy { entry.text.lowercased().contains($0) }
       }
       archive = CtoArchivePage(available: true, mode: query.isEmpty ? "recent" : "keyword", entries: entries, counts: fixtureArchiveAll?.counts)
+      archivePageKey = key
       return
     }
     guard let sync, canReadArchive else { return }
@@ -636,6 +649,7 @@ final class CtoStore: ObservableObject {
         archive = current
       } else {
         archive = page
+        archivePageKey = key
       }
       archiveError = nil
     } catch {

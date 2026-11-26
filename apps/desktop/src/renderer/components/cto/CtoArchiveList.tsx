@@ -75,6 +75,8 @@ export function CtoArchiveList({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [page, setPage] = useState<CtoArchivePage | null>(null);
+  /** The query and filter `page` answers: its cursor pages back only those. */
+  const [pageKey, setPageKey] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -86,6 +88,7 @@ export function CtoArchiveList({
 
   const kinds = FILTERS.find((entry) => entry.id === filter)?.kinds ?? [];
   const kindsKey = kinds.join(",");
+  const requestKey = `${query.trim()}|${kindsKey}`;
 
   const load = useCallback(async (before?: number) => {
     const target = pinRef.current;
@@ -101,12 +104,13 @@ export function CtoArchiveList({
       }, target);
       if (generation !== generationRef.current) return;
       setPage((current) => (before && current ? { ...next, entries: [...current.entries, ...next.entries] } : next));
+      if (!before) setPageKey(requestKey);
       setError(null);
     } catch (err) {
       if (generation !== generationRef.current) return;
       setError(ipcErrorMessage(err) || "Couldn't read the archive.");
     }
-  }, [query, kindsKey]);
+  }, [query, kindsKey, requestKey]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void load(), query ? SEARCH_DEBOUNCE_MS : 0);
@@ -120,6 +124,8 @@ export function CtoArchiveList({
     setError(null);
     try {
       await onRecall({ id: entry.id });
+      // A note the notes already held changes no hash: read the list again here.
+      void load();
     } catch (err) {
       setError(ipcErrorMessage(err) || "Couldn't pin it.");
     } finally {
@@ -256,7 +262,7 @@ export function CtoArchiveList({
           type="button"
           className="kit-btn kit-btn-ghost self-start"
           data-size="sm"
-          disabled={loadingMore}
+          disabled={loadingMore || pageKey !== requestKey}
           onClick={async () => {
             setLoadingMore(true);
             await load(page.nextBefore ?? undefined);

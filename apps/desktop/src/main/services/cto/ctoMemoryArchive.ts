@@ -181,6 +181,8 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   let fts = false;
   /** Set after a failed open: one try per process, not one per note. */
   let failed = false;
+  /** Set by `close` (teardown): a late write never opens the file again. */
+  let closed = false;
 
   const warn = (event: string, error: unknown, meta?: Record<string, unknown>): void => {
     args.logger?.warn(event, { ...(meta ?? {}), error: error instanceof Error ? error.message : String(error) });
@@ -196,10 +198,17 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       handle.exec(DDL);
       handle.prepare("INSERT OR IGNORE INTO meta(key, value) VALUES ('schemaVersion', ?)").run(String(SCHEMA_VERSION));
       try {
-        const hadIndex = handle.prepare("SELECT 1 FROM sqlite_master WHERE name = 'entries_fts'").get() != null;
-        handle.exec(FTS_DDL);
-        // An archive a build without FTS5 wrote: its rows go into the new index too.
-        if (!hadIndex) handle.exec("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild')");
+        if (handle.prepare("SELECT 1 FROM sqlite_master WHERE name = 'entries_fts'").get() != null) {
+          handle.exec(FTS_DDL);
+        } else {
+          // A new index, maybe for an archive a build without FTS5 wrote: its
+          // rows go in too. One transaction, so a failed rebuild leaves no
+          // half index and the next open builds it again.
+          inTransaction(handle, () => {
+            handle.exec(FTS_DDL);
+            handle.exec("INSERT INTO entries_fts(entries_fts) VALUES ('rebuild')");
+          });
+        }
         fts = true;
       } catch (error) {
         // No FTS5 in this SQLite build: word matching still finds things.
@@ -220,7 +229,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   /** The open database, or null when this machine can't have one (logged once). */
   const open = (): DatabaseSyncType | null => {
     if (db) return db;
-    if (failed) return null;
+    if (failed || closed) return null;
     try {
       db = openAt();
       return db;
@@ -249,6 +258,13 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   };
 
   const available = (): boolean => open() != null;
+
+  /**
+   * True once this process gave up on the archive: the file could not open
+   * or be set aside, or teardown closed it. A busy file is not off: it opens
+   * on a later call.
+   */
+  const isOff = (): boolean => failed || closed;
 
   /**
    * Adds an entry. One that already says the same thing stays one entry; a
@@ -569,6 +585,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   };
 
   const close = (): void => {
+    closed = true;
     try {
       db?.close();
     } catch {
@@ -579,6 +596,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
 
   return {
     available,
+    isOff,
     add,
     addMany,
     get,

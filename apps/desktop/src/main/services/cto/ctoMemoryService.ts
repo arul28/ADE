@@ -730,7 +730,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         `${archiveExists ? "" : "# Worker discoveries archive (evicted from discoveries.md)\n\n"}<!-- evicted by size cap ${nowIso()} -->\n${evicted.join("\n")}\n`,
         "utf8",
       );
-      archive?.addMany(discoveryRecords(evicted, "evicted"));
+      if (archive?.addMany(discoveryRecords(evicted, "evicted")) === null) archiveOps.importDiscoveriesAgain();
       const removed = buffer.byteLength - utf8Bytes(rendered);
       writeTextAtomic(discoveriesPath, rendered);
       const cursor = readDiscoveryCursor();
@@ -843,7 +843,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     if (!stoppedEarly) keptBytes += pendingBytes;
     if (options.advance !== false) {
       writeDiscoveryCursor(stoppedEarly ? windowStart + keptBytes : nextCursor);
-      archive?.addMany(discoveryRecords(lines, "drained"));
+      if (archive?.addMany(discoveryRecords(lines, "drained")) === null) archiveOps.importDiscoveriesAgain();
     }
     if (!lines.length) return { lines: [], text: "" };
     const joined = lines.join("\n");

@@ -79,13 +79,15 @@ export function createCtoMemoryArchiveOps(args: {
 }) {
   const { archive } = args;
 
+  let importAgain = false;
+
   /**
    * Once per archive: the discovery files and the story written before it
    * existed. Lazy, so no boot pays for it. Marked done only when the rows are
    * in, so a failed import runs again.
    */
   const ensureImported = (): void => {
-    if (!archive?.available() || archive.readMeta(ARCHIVE_IMPORTED_META)) return;
+    if (!archive?.available() || (!importAgain && archive.readMeta(ARCHIVE_IMPORTED_META))) return;
     const files = args.readFilesBeforeArchive();
     const records: CtoArchiveRecord[] = [
       ...discoveryRecords(files.evictedDiscoveries.split(/\r?\n/), "evicted"),
@@ -96,6 +98,16 @@ export function createCtoMemoryArchiveOps(args: {
     }
     if (archive.addMany(records) == null) return;
     archive.writeMeta(ARCHIVE_IMPORTED_META, nowIso());
+    importAgain = false;
+  };
+
+  /**
+   * A discovery write the archive missed: the lines are still in the
+   * discovery files, so the next use imports those files again (one row per
+   * text, so nothing doubles).
+   */
+  const importDiscoveriesAgain = (): void => {
+    importAgain = true;
   };
 
   const searchArchive = (query: CtoArchiveQuery = {}): CtoArchivePage => {
@@ -133,11 +145,12 @@ export function createCtoMemoryArchiveOps(args: {
 
   /**
    * Facts and decisions a story fold pulled out, with their source turns.
-   * How many were new; 0 with no archive on this machine; null when the
-   * archive couldn't store them (the fold then waits and runs again).
+   * How many were new; 0 with no archive on this machine (or one this process
+   * gave up on); null when the archive couldn't store them now, busy included
+   * (the fold then waits and runs again).
    */
   const recordStoryFacts = (facts: readonly CtoStoryFactRecord[]): number | null =>
-    archive?.available() && facts.length ? archive.addMany(facts) : 0;
+    !archive || archive.isOff() || !facts.length ? 0 : archive.addMany(facts);
 
   /** Cheap: changes whenever `exportArchiveForCopy` could. Null with no archive. */
   const archiveStamp = (): string | null => {
@@ -179,6 +192,7 @@ export function createCtoMemoryArchiveOps(args: {
 
   return {
     ensureImported,
+    importDiscoveriesAgain,
     searchArchive,
     recallArchived,
     recallArchivedForUser,

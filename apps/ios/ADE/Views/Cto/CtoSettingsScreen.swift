@@ -580,7 +580,7 @@ struct CtoArchiveSection: View {
             }
             .font(.subheadline)
             .foregroundStyle(accent)
-            .disabled(store.archiveLoadingMore)
+            .disabled(store.archiveLoadingMore || store.archivePageKey != store.archiveRequestKey)
             .frame(minHeight: 44)
           }
         }
@@ -588,7 +588,7 @@ struct CtoArchiveSection: View {
         CtoEmptyLine(symbol: "archivebox", text: "Loading…")
       }
     }
-    .task(id: "\(store.archiveFilter.rawValue)|\(store.archiveQuery)|\(store.memory?.memoryHash ?? "")|\(store.memory?.userNotesHash ?? "")") {
+    .task(id: "\(store.sessionId ?? "")|\(store.homeMachineKey ?? "")|\(store.archiveFilter.rawValue)|\(store.archiveQuery)|\(store.memory?.memoryHash ?? "")|\(store.memory?.userNotesHash ?? "")") {
       // A beat after typing stops; a filter or a notes change reads at once.
       if !store.archiveQuery.isEmpty { try? await Task.sleep(nanoseconds: 250_000_000) }
       guard !Task.isCancelled else { return }

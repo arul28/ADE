@@ -44,6 +44,8 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
   pinRef.current = pin;
   /** Drops a read that answers after the pin moved to another machine. */
   const generationRef = useRef(0);
+  /** Drops a read that a newer read or a finished write overtook. */
+  const readRef = useRef(0);
 
   const refresh = useCallback(async () => {
     const target = pinRef.current;
@@ -54,17 +56,19 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
       return;
     }
     const generation = generationRef.current;
+    const read = ++readRef.current;
+    const current = () => generation === generationRef.current && read === readRef.current;
     setLoading(true);
     try {
       const next = await bridge.getMemory(target);
-      if (generation !== generationRef.current) return;
+      if (!current()) return;
       setMemory(next);
       setError(null);
     } catch (err) {
-      if (generation !== generationRef.current) return;
+      if (!current()) return;
       setError(errorText(err, "Couldn't read notes."));
     } finally {
-      if (generation === generationRef.current) setLoading(false);
+      if (current()) setLoading(false);
     }
   }, []);
 
@@ -83,8 +87,11 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
     const generation = generationRef.current;
     const next = await run(target);
     if (generation === generationRef.current) {
+      // A read that started before this write would answer the older notes.
+      readRef.current += 1;
       setMemory(next);
       setError(null);
+      setLoading(false);
     }
     return next;
   }, []);

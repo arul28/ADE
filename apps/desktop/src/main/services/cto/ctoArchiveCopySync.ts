@@ -42,6 +42,9 @@ type Logger = {
 
 type VaultRow = ReturnType<CtoAccountCopyVault["list"]>[number];
 
+/** How long a chunk a fresh index names may be missing before it counts as lost. */
+const CHUNK_SETTLE_MS = 10 * 60_000;
+
 type CtoArchiveCopyMemory = Partial<Pick<
   CtoMemoryService,
   "archiveStamp" | "exportArchiveForCopy" | "importArchiveFromCopy" | "readArchiveMeta" | "writeArchiveMeta"
@@ -77,8 +80,8 @@ export function createCtoArchiveCopySync(args: {
    * Takes another home's archive into this machine's. True when what could
    * be read is stored; a chunk that is gone is skipped (logged), so one lost
    * chunk can't stop the archive travelling. The heat comes only with every
-   * chunk. False when the archive here couldn't store it: the next save tries
-   * again.
+   * chunk. False when the archive here couldn't store it, or a chunk of a
+   * fresh index hasn't arrived yet: the next save tries again.
    */
   const take = (scope: string, index: CtoArchiveCopyIndex): boolean => {
     const importer = args.memory.importArchiveFromCopy;
@@ -94,6 +97,14 @@ export function createCtoArchiveCopySync(args: {
     const meta = { rows: records.length, chunks: index.chunks.length, missing, stored };
     if (!stored) {
       logger.warn("cto.archive_copy_take_failed", meta);
+      return false;
+    }
+    // A chunk of a fresh index may still be on its way (the relay can hand
+    // out the index first): until it settles, the old index stays, and the
+    // next save reads its chunks again. After that the chunk counts as lost.
+    const savedAt = Date.parse(index.savedAt);
+    if (missing && Number.isFinite(savedAt) && args.now() - savedAt < CHUNK_SETTLE_MS) {
+      logger.info?.("cto.archive_copy_waiting_for_chunks", meta);
       return false;
     }
     takenFrom = indexIdentity(index);

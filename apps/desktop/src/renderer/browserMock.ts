@@ -342,6 +342,26 @@ const mockCtoMemorySnapshot = () => {
     openWork: [], notesOverflowArchives: true, updatedAt: new Date().toISOString(),
   };
 };
+/** The CTO's archive in the browser preview; a recall pins its entry until reload. */
+type MockCtoArchiveEntry = {
+  id: number; kind: string; scope: string | null; text: string; truncated?: boolean; reason: string | null;
+  sourceAt: string | null; sourceLabel: string | null; sourceSessionId: string | null; archivedAt: string;
+  fullText?: string; pinned?: boolean;
+};
+const mockCtoArchive: MockCtoArchiveEntry[] = (() => {
+  const now = new Date().toISOString();
+  return [
+    { id: 7, kind: "fact", scope: null, text: "PR #2492 adds reactions and quiet turns to the CTO; branch cto-reactions.", reason: null, sourceAt: now, sourceLabel: "Tool result (createPrFromLane)", sourceSessionId: "mock-cto-session", archivedAt: now },
+    { id: 6, kind: "decision", scope: null, text: "The person chose squash merges for release PRs.", reason: null, sourceAt: now, sourceLabel: "Person", sourceSessionId: "mock-cto-session", archivedAt: now },
+    { id: 5, kind: "note", scope: "project", text: "Desktop tests need Node 22 on PATH.", reason: "cold", sourceAt: null, sourceLabel: null, sourceSessionId: null, archivedAt: now },
+    { id: 4, kind: "story", scope: null, text: "## Where things stand\nThe CTO is landing the sync transport fixes; the person reviews in the morning…", truncated: true, reason: null, sourceAt: now, sourceLabel: "anthropic/claude-haiku-5-5", sourceSessionId: null, archivedAt: now },
+    { id: 3, kind: "discovery", scope: null, text: "Vitest localStorage suites need Node 22 [topic:testing]", reason: "drained", sourceAt: now, sourceLabel: "Worker discovery", sourceSessionId: null, archivedAt: now },
+    { id: 2, kind: "note", scope: "user", text: "Prefers short status updates.", reason: "replaced", sourceAt: null, sourceLabel: null, sourceSessionId: null, archivedAt: now },
+    { id: 1, kind: "fact", scope: null, text: "Lane sync-hardening runs on the Mac Studio.", reason: null, sourceAt: now, sourceLabel: "CTO", sourceSessionId: "mock-cto-session", archivedAt: now },
+  ].map((entry) => (entry.kind === "story"
+    ? { ...entry, fullText: `${entry.text.replace(/…$/, "")}. Next: cut the release once the transport fixes merge.` }
+    : entry));
+})();
 /** A failed built-in run: the "Clean up merged lanes" template run by hand. */
 const BROWSER_MOCK_FAILED_RUN = {
   id: "run-2",
@@ -9581,26 +9601,32 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
         updatedAt: now,
       }),
-      searchMemoryArchive: resolvedArg({
-        available: true,
-        mode: "recent",
-        nextBefore: null,
-        counts: { note: 2, fact: 2, decision: 1, discovery: 1, story: 1 },
-        entries: [
-          { id: 7, kind: "fact", scope: null, text: "PR #2492 adds reactions and quiet turns to the CTO; branch cto-reactions.", reason: null, sourceAt: now, sourceLabel: "Tool result (createPrFromLane)", sourceSessionId: "mock-cto-session", archivedAt: now },
-          { id: 6, kind: "decision", scope: null, text: "The person chose squash merges for release PRs.", reason: null, sourceAt: now, sourceLabel: "Person", sourceSessionId: "mock-cto-session", archivedAt: now },
-          { id: 5, kind: "note", scope: "project", text: "Desktop tests need Node 22 on PATH.", reason: "cold", sourceAt: null, sourceLabel: null, sourceSessionId: null, archivedAt: now },
-          { id: 4, kind: "story", scope: null, text: "## Where things stand\nThe CTO is landing the sync transport fixes; the person reviews in the morning…", truncated: true, reason: null, sourceAt: now, sourceLabel: "anthropic/claude-haiku-5-5", sourceSessionId: null, archivedAt: now },
-          { id: 3, kind: "discovery", scope: null, text: "Vitest localStorage suites need Node 22 [topic:testing]", reason: "drained", sourceAt: now, sourceLabel: "Worker discovery", sourceSessionId: null, archivedAt: now },
-          { id: 2, kind: "note", scope: "user", text: "Prefers short status updates.", reason: "replaced", sourceAt: null, sourceLabel: null, sourceSessionId: null, archivedAt: now },
-          { id: 1, kind: "fact", scope: null, text: "Lane sync-hardening runs on the Mac Studio.", reason: null, sourceAt: now, sourceLabel: "CTO", sourceSessionId: "mock-cto-session", archivedAt: now },
-        ],
-      }),
-      recallArchivedNote: resolvedArg({
-        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
-        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
-        updatedAt: now,
-      }),
+      searchMemoryArchive: async (args: { query?: string; kinds?: string[]; id?: number } = {}) => {
+        const visible = mockCtoArchive.filter((entry) => !entry.pinned);
+        const counts: Record<string, number> = { note: 0, fact: 0, decision: 0, discovery: 0, story: 0 };
+        for (const entry of visible) counts[entry.kind] = (counts[entry.kind] ?? 0) + 1;
+        const words = (args.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+        const entries = typeof args.id === "number"
+          ? visible.filter((entry) => entry.id === args.id).map((entry) => ({ ...entry, text: entry.fullText ?? entry.text, truncated: false }))
+          : visible.filter((entry) => (!args.kinds?.length || args.kinds.includes(entry.kind))
+            && words.every((word) => (entry.fullText ?? entry.text).toLowerCase().includes(word)));
+        return {
+          available: true,
+          mode: words.length ? "keyword" : "recent",
+          nextBefore: null,
+          counts,
+          entries: entries.map(({ pinned: _pinned, fullText: _fullText, ...entry }) => entry),
+        };
+      },
+      recallArchivedNote: async (args: { id: number; scope?: "project" | "user" }) => {
+        const entry = mockCtoArchive.find((item) => item.id === args.id && !item.pinned);
+        if (entry) {
+          const scope = args.scope ?? (entry.scope === "user" ? "user" : "project");
+          mockCtoNotes[scope] = `${mockCtoNotes[scope]}\n${entry.text}`;
+          entry.pinned = true;
+        }
+        return mockCtoMemorySnapshot();
+      },
       refreshContext: resolvedArg({ refreshed: true }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",

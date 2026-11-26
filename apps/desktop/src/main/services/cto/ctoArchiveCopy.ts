@@ -124,12 +124,17 @@ function group(rows: readonly CarriedRow[]): CarriedRow[][] {
   return groups;
 }
 
-/** A group that gzips past the relay's ceiling splits in half until each part fits. */
+/**
+ * A group that gzips past the relay's ceiling splits in half until each part
+ * fits. One row that still doesn't fit (16,000 characters that barely
+ * compress) travels with its text clipped: a shorter copy, never none.
+ */
 function encodeGroup(rows: CarriedRow[]): CtoArchiveCopyChunk[] {
   const value = encode(rows);
-  if (value.length <= CHUNK_MAX_ENCODED_CHARS || rows.length < 2) {
-    // One row never passes the ceiling: the archive clips an entry at 16,000 chars.
-    return value.length <= CHUNK_MAX_ENCODED_CHARS ? [{ key: chunkKey(value), value, rows: rows.length }] : [];
+  if (value.length <= CHUNK_MAX_ENCODED_CHARS) return [{ key: chunkKey(value), value, rows: rows.length }];
+  if (rows.length === 1) {
+    const row = rows[0]!;
+    return encodeGroup([{ ...row, t: `${row.t.slice(0, Math.floor(row.t.length * 0.75)).trimEnd()}…` }]);
   }
   const half = Math.ceil(rows.length / 2);
   return [...encodeGroup(rows.slice(0, half)), ...encodeGroup(rows.slice(half))];

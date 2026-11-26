@@ -226,4 +226,31 @@ describe("ctoAccountCopyService across machines", () => {
     expect(account.copy()?.ownerDeviceId).toBe("device-a");
     expect(account.copy()?.projectNotes).toContain("Freeze starts Friday");
   });
+
+  it("a chunk the old home's fresh index names but this machine can't read yet keeps that index until the chunk arrives", async () => {
+    const account = createAccount();
+    const vault = account.vaultFor({ synced: "ready" });
+    const a = createMachine("device-a", account);
+    const b = createMachine("device-b", account);
+    b.memory.writeNotes("project", "- Deploys go out on Thursdays\n- The staging cluster is eu-west-2");
+    expect(b.memory.forget({ note: "staging cluster" }).ok).toBe(true);
+    tick();
+    await b.service.save("turn_ended");
+    const chunk = decodeCtoArchiveCopyIndex(account.value("archive"))!.chunks[0]!;
+    const value = account.value(chunk)!;
+    const revision = () => vault.list(SCOPE).find((row) => row.key === chunk)?.revision;
+    // The relay handed out the index before this chunk.
+    expect(vault.tryRemove!(SCOPE, CTO_ACCOUNT_COPY_VAULT_KIND, chunk, { expectedRevision: revision() })).toBe("queued");
+
+    const home = homeOn("device-a");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
+    expect((await a.service.adopt({ home })).restored).toBe(true);
+    expect(decodeCtoArchiveCopyIndex(account.value("archive"))?.ownerDeviceId).toBe("device-b");
+
+    expect(vault.trySet(SCOPE, CTO_ACCOUNT_COPY_VAULT_KIND, chunk, value, { expectedRevision: revision() })).toBe("queued");
+    tick();
+    await a.service.save("turn_ended");
+    expect(a.memory.searchArchive({ query: "staging cluster" }).entries[0]?.text).toBe("The staging cluster is eu-west-2");
+    expect(decodeCtoArchiveCopyIndex(account.value("archive"))?.ownerDeviceId).toBe("device-a");
+  });
 });

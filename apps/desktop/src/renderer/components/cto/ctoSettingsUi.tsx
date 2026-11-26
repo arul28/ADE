@@ -172,6 +172,8 @@ export function AutosaveTextArea({
   draftRef.current = draft;
   const timerRef = useRef<number | null>(null);
   const savingRef = useRef(false);
+  /** False once the editor closed: a save that answers later changes nothing here. */
+  const mountedRef = useRef(true);
   const [conflict, setConflict] = useState(false);
   const conflictRef = useRef(false);
   conflictRef.current = conflict;
@@ -219,6 +221,7 @@ export function AutosaveTextArea({
     savingRef.current = true;
     try {
       const answer = await onSave(text, savedHashRef.current);
+      if (!mountedRef.current) return;
       if (answer) {
         // In step with what the host kept (secrets scrubbed, lines moved
         // out), with its hash, before the new props render: a keystroke that
@@ -242,19 +245,24 @@ export function AutosaveTextArea({
       }
       flash();
     } catch (err) {
+      if (!mountedRef.current) return;
       if (isCtoNotesChangedError(err)) setConflict(true);
       else fail(ipcErrorMessage(err) || "Couldn't save.");
     } finally {
       savingRef.current = false;
     }
     // A keystroke that landed while the save was in flight is saved next.
-    if (draftRef.current !== savedRef.current) {
+    if (mountedRef.current && draftRef.current !== savedRef.current) {
       timerRef.current = window.setTimeout(() => void save(), 900);
     }
   }, [adoptHost, fail, flash, limit, onSave, overflowMovesOut]);
 
-  useEffect(() => () => {
-    if (timerRef.current != null) window.clearTimeout(timerRef.current);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+    };
   }, []);
 
   return (
