@@ -75,6 +75,7 @@ import {
 } from "./remoteTargetListStyles";
 import { useCloudMachineGroup, type RowExtras } from "./useCloudMachineGroup";
 import type { MachineRow } from "./remoteMachineModel";
+import { machineSectionFold, type MachineFoldContext } from "./machineSectionFold";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -191,11 +192,6 @@ const SECTION_LABELS: Record<MachineSection, string> = {
 
 const NO_RELAYS: readonly string[] = [];
 
-/** The sections of computers that are not connected, which fold to one line. */
-const FOLDABLE_SECTIONS: ReadonlySet<MachineSection> = new Set(["available", "unavailable"]);
-/** One quiet row is already one line; a fold starts at two. */
-const FOLD_MIN_ROWS = 2;
-
 function removeKey<T>(record: Record<string, T>, key: string): Record<string, T> {
   if (!(key in record)) return record;
   const next = { ...record };
@@ -310,12 +306,7 @@ export function RemoteTargetList({
     const timer = accountConnectionToastTimers.current.get(machineKey);
     if (timer != null) window.clearTimeout(timer);
     accountConnectionToastTimers.current.delete(machineKey);
-    setAccountConnectionToasts((current) => {
-      if (!(machineKey in current)) return current;
-      const next = { ...current };
-      delete next[machineKey];
-      return next;
-    });
+    setAccountConnectionToasts((current) => removeKey(current, machineKey));
   }, []);
 
   const showAccountConnectionToast = useCallback(
@@ -329,12 +320,7 @@ export function RemoteTargetList({
       }));
       const timer = window.setTimeout(() => {
         accountConnectionToastTimers.current.delete(machineKey);
-        setAccountConnectionToasts((current) => {
-          if (!(machineKey in current)) return current;
-          const next = { ...current };
-          delete next[machineKey];
-          return next;
-        });
+        setAccountConnectionToasts((current) => removeKey(current, machineKey));
       }, ACCOUNT_CONNECTION_TOAST_MS);
       accountConnectionToastTimers.current.set(machineKey, timer);
     },
@@ -352,12 +338,7 @@ export function RemoteTargetList({
   );
 
   const clearAccountRowStage = useCallback((machineKey: string) => {
-    setAccountRowStages((current) => {
-      if (!(machineKey in current)) return current;
-      const next = { ...current };
-      delete next[machineKey];
-      return next;
-    });
+    setAccountRowStages((current) => removeKey(current, machineKey));
   }, []);
 
   // Never surface THIS Mac in its own account list. Match on the stable
@@ -899,12 +880,7 @@ export function RemoteTargetList({
       // A cancelled pairing still running in main would race a second one.
       if (isPairingInFlight(rowKey)) return;
       clearAccountConnectionToast(machineKey);
-      setAccountRowErrors((current) => {
-        if (!(machineKey in current)) return current;
-        const next = { ...current };
-        delete next[machineKey];
-        return next;
-      });
+      setAccountRowErrors((current) => removeKey(current, machineKey));
       clearAccountRowStage(machineKey);
       const attempt = beginConnectAttempt(rowKey);
       const stillWanted = () => isConnectAttemptCurrent(rowKey, attempt);
@@ -1216,6 +1192,26 @@ export function RemoteTargetList({
     [visibleAccountMachines],
   );
 
+  // Read by the saved rows (a failure shows as a card) and by the section fold.
+  const foldContext: MachineFoldContext = {
+    busyById,
+    accountRowErrors,
+    accountRowStages,
+    connectedIds,
+    checkingIds: machineUpdates.checkingIds,
+    updatingIds: machineUpdates.updatingIds,
+    testingId,
+    formTargetId: formPrefill?.targetId ?? null,
+    hostKeyTargetId: hostKeyTrust?.targetId ?? null,
+    focusMachineKey,
+    accountMachineForTarget,
+    savedRowUserAttempted: (target) => {
+      const machineKey = target.pairedMachine?.machineKey ?? null;
+      return userAttemptIds.has(target.id)
+        || (machineKey != null && accountRowErrors[machineKey] != null);
+    },
+  };
+
   const accountToastByTargetId = useMemo(() => {
     const labels = new Map<string, string>();
     for (const toast of Object.values(accountConnectionToasts)) {
@@ -1299,10 +1295,7 @@ export function RemoteTargetList({
           saving={saving}
           formPrefill={formPrefill}
           testOpen={testingId === row.target.id}
-          userAttempted={
-            userAttemptIds.has(row.target.id)
-            || (pairedMachineKey != null && accountRowErrors[pairedMachineKey] != null)
-          }
+          userAttempted={foldContext.savedRowUserAttempted(row.target)}
           onDismissError={() => {
             clearUserAttempt(row.target.id);
             if (pairedMachineKey) setAccountRowErrors((current) => removeKey(current, pairedMachineKey));
@@ -1352,14 +1345,7 @@ export function RemoteTargetList({
           onConnect={(targetId) => {
             markUserAttempt(targetId);
             const machineKey = row.target.pairedMachine?.machineKey;
-            if (machineKey) {
-              setAccountRowErrors((current) => {
-                if (!(machineKey in current)) return current;
-                const next = { ...current };
-                delete next[machineKey];
-                return next;
-              });
-            }
+            if (machineKey) setAccountRowErrors((current) => removeKey(current, machineKey));
             void connectTarget(targetId);
           }}
           onDisconnect={(targetId) => void disconnectTarget(targetId)}
@@ -1422,14 +1408,7 @@ export function RemoteTargetList({
                     row.machine.machineKey,
                   );
                   if (!machine) return;
-                  setAccountRowErrors((current) => {
-                    if (!(row.machine.machineKey in current)) {
-                      return current;
-                    }
-                    const next = { ...current };
-                    delete next[row.machine.machineKey];
-                    return next;
-                  });
+                  setAccountRowErrors((current) => removeKey(current, row.machine.machineKey));
                   openNearbyPairing(machine);
                 }
               : null
@@ -1462,52 +1441,10 @@ export function RemoteTargetList({
     );
   }
 
-  /**
-   * True when a not-connected row has something to say beyond one quiet line:
-   * it is online, connecting or updating, it shows a failure of the person's
-   * own press, or they opened one of its panels. Its section stays open.
-   */
-  function rowNeedsAttention(row: MachineRow): boolean {
-    if (row.kind === "saved") {
-      const id = row.target.id;
-      const machineKey = row.target.pairedMachine?.machineKey ?? null;
-      const accountMachine = accountMachineForTarget(row.target);
-      return row.connected
-        || busyById[id] != null
-        || (machineKey != null && busyById[accountRowKey(machineKey)] != null)
-        || row.status?.state === "connecting"
-        || (accountMachine != null && accountMachinePresence(accountMachine) === "online")
-        || machineUpdates.checkingIds.has(id)
-        || machineUpdates.updatingIds.has(id)
-        || userAttemptIds.has(id)
-        || (machineKey != null && accountRowErrors[machineKey] != null)
-        || testingId === id
-        || formPrefill?.targetId === id
-        || hostKeyTrust?.targetId === id
-        || row.status?.hostStorageWait != null
-        || row.status?.hostStall != null
-        || (focusMachineKey != null && machineKey === focusMachineKey);
-    }
-    if (row.kind === "account") {
-      const machineKey = row.machine.machineKey;
-      return busyById[accountRowKey(machineKey)] != null
-        || isMachineConnected(row.machine, connectedIds)
-        || accountMachinePresence(row.machine) === "online"
-        || accountRowErrors[machineKey] != null
-        || accountRowStages[machineKey] != null
-        || testingId === row.id
-        || machineKey === focusMachineKey;
-    }
-    return true;
-  }
-
   function renderSection(section: MachineSection) {
     const rows = listedSections[section];
     if (rows.length === 0) return null;
-    // Computers that are off fold to one line, "Not connected · 5", until one
-    // of them has something to say or the person opens the section.
-    const foldable = FOLDABLE_SECTIONS.has(section) && rows.length >= FOLD_MIN_ROWS;
-    const open = !foldable || (sectionOpenOverride[section] ?? rows.some(rowNeedsAttention));
+    const { foldable, open } = machineSectionFold(section, rows, sectionOpenOverride[section], foldContext);
     const listId = `machine-section-${section}`;
     // Connected machines behind the newest ADE this computer knows on their track.
     const behindMachines = section === "connected"

@@ -492,6 +492,12 @@ export type MultiProjectRpcHandlerOptions = {
   /** Truthful sync status for a brain hosting (or not hosting) sync with no project scope. */
   getProjectlessSyncSnapshot?: () => SyncRoleSnapshot;
   /**
+   * True while the brain hosts machine-level sync itself, beside a project
+   * scope that follows another machine. Machine-wide calls then answer for
+   * this machine, not for that project's viewer.
+   */
+  holdsProjectlessSyncHostLease?: () => boolean;
+  /**
    * Re-pair this machine into the account after an owner-side removal. Owned by
    * the brain (it holds the account machine publisher), injected here because
    * `account.repairMachinePairing` and interactive sign-in are the two places a
@@ -2799,6 +2805,15 @@ export function createMultiProjectRpcRequestHandler(
   // Status is a recovery control: if a project scope is already alive, use it
   // without re-entering host activation (which may be timed out or backed off).
   // With nothing booted the caller answers with the machine-level status.
+  /**
+   * A viewer scope does not speak for the machine while the brain hosts
+   * machine-level sync beside it (a project that follows another machine):
+   * its status hides this machine's pairing code and its PIN is the other
+   * machine's. Null then, so the caller answers with the machine controls.
+   */
+  const machineWideSyncService = <T extends { getHostService?: () => unknown } | null>(service: T): T | null =>
+    service && options.holdsProjectlessSyncHostLease?.() && !service.getHostService?.() ? null : service;
+
   const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
     const requestedProjectId = requestedSyncProjectId(params);
     const targetProjectId = requestedProjectId
@@ -2806,9 +2821,11 @@ export function createMultiProjectRpcRequestHandler(
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
     // A known target answers only from its own ready scope. A missing target
     // scope must never redirect a destructive action.
-    const syncService = targetProjectId
+    const targetService = targetProjectId
       ? scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null
       : resolveReadySyncServiceForRead();
+    // A project the caller named answers as itself, viewer or not.
+    const syncService = requestedProjectId ? targetService : machineWideSyncService(targetService);
     if (syncService) await applyPendingLanePresence();
     return syncService;
   };
@@ -2921,7 +2938,7 @@ export function createMultiProjectRpcRequestHandler(
     run: (syncService: ActiveSyncService) => TService | Promise<TService>,
     machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
   ): Promise<TFallback | TService> => {
-    const syncService = await resolveSyncService();
+    const syncService = machineWideSyncService(await resolveSyncService());
     if (syncService) {
       await applyPendingLanePresence();
       return await run(syncService);
@@ -2950,7 +2967,7 @@ export function createMultiProjectRpcRequestHandler(
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;
-    const runningSyncService = readySyncService ?? resolveReadySyncServiceForRead();
+    const runningSyncService = machineWideSyncService(readySyncService ?? resolveReadySyncServiceForRead());
     if (runningSyncService) {
       await applyPendingLanePresence();
       return await run(runningSyncService);

@@ -62,6 +62,11 @@ type VolumeState = {
    * gates hangs on any of its files, and one stuck file is still stuck.
    */
   probePath: string | null;
+  /**
+   * The whole drive is marked, not only its open project folders: a drive
+   * that stops answering stops for every folder on it.
+   */
+  driveMarked: boolean;
 };
 
 const roots = new Map<string, RootState>();
@@ -102,9 +107,10 @@ function membersOf(volume: string): RootState[] {
 }
 
 function notify(): void {
-  setUnansweringRoots(
-    [...roots.values()].filter((state) => state.wait?.reason === "not_answering").map((state) => state.root),
-  );
+  setUnansweringRoots([
+    ...[...roots.values()].filter((state) => state.wait?.reason === "not_answering").map((state) => state.root),
+    ...[...volumes.entries()].filter(([, state]) => state.driveMarked).map(([volume]) => volume),
+  ]);
   for (const listener of [...listeners]) {
     try {
       listener();
@@ -165,22 +171,40 @@ function endWait(state: RootState, outcome: string): boolean {
  * 2026-11-26: seven hours of restarts alternating between two projects on a
  * hung external drive). Cleared with the rest when the drive answers.
  */
-function markVolumeNotAnswering(volume: string): void {
-  // Only a drive that can stall: never the system drive, whose folders hold
-  // ADE's own data, and never a folder that is not a drive of its own.
-  if (volumeOf(volume) !== volume || !isStallCapablePath(volume)) return;
-  // Built here rather than by `stateFor`: normalizing a drive root drops its
-  // separator (`Q:\` becomes `Q:`), whose own drive would then read as `Q:`,
-  // not this one, and the drive's verdicts would pass it by.
-  const key = normalizeRoot(volume);
-  if (!roots.has(key)) roots.set(key, { root: key, volume, openCount: 0, wait: null });
-  if (!volumes.has(volume)) volumes.set(volume, { probeInFlight: false, probePath: null });
+function canMarkDrive(volume: string): boolean {
+  // Only a drive that can stall: never the system drive, and never a folder
+  // that is not a drive of its own.
+  if (volumeOf(volume) !== volume || !isStallCapablePath(volume)) return false;
+  // Never the drive that holds ADE's own data (a home or ADE home kept on
+  // another drive): its own files and database would fail with it.
+  const comparable = (value: string): string => {
+    const resolved = path.resolve(value).replace(/\\/g, "/").replace(/\/+$/, "");
+    return process.platform === "linux" ? resolved : resolved.toLowerCase();
+  };
+  const drive = comparable(volume);
+  return ![os.homedir(), process.env.ADE_HOME]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .some((value) => {
+      const candidate = comparable(value);
+      return candidate === drive || candidate.startsWith(`${drive}/`);
+    });
 }
 
-/** Applies one verdict to every project folder on the drive, then tells listeners once. */
-function settleVolume(volume: string, apply: (state: RootState) => boolean): void {
+/**
+ * Applies one verdict to every project folder on the drive, and to the drive
+ * itself when `markDrive` is given, then tells listeners once.
+ */
+function settleVolume(volume: string, apply: (state: RootState) => boolean, markDrive?: boolean): void {
   let changed = false;
   for (const state of membersOf(volume)) changed = apply(state) || changed;
+  const volumeState = volumes.get(volume);
+  if (volumeState && markDrive !== undefined) {
+    const next = markDrive && canMarkDrive(volume);
+    if (volumeState.driveMarked !== next) {
+      volumeState.driveMarked = next;
+      changed = true;
+    }
+  }
   if (changed) notify();
   if (membersOf(volume).length === 0) volumes.delete(volume);
 }
@@ -195,8 +219,7 @@ function probe(volume: string): void {
   const timeout = setTimeout(() => {
     if (settled) return;
     const waitedMs = Date.now() - startedAt;
-    markVolumeNotAnswering(volume);
-    settleVolume(volume, (state) => startWait(state, "not_answering", "probe", { waitedMs }));
+    settleVolume(volume, (state) => startWait(state, "not_answering", "probe", { waitedMs }), true);
   }, PROJECT_ROOT_PROBE_TIMEOUT_MS);
   timeout.unref?.();
   const finish = (error: NodeJS.ErrnoException | null): void => {
@@ -205,7 +228,8 @@ function probe(volume: string): void {
     volumeState.probeInFlight = false;
     const code = error?.code;
     if (code === "EPERM" || code === "EACCES") {
-      settleVolume(volume, (state) => startWait(state, "denied", "probe", { code }));
+      // Answered, with a refusal: nothing freezes on it, so the drive is not held.
+      settleVolume(volume, (state) => startWait(state, "denied", "probe", { code }), false);
       return;
     }
     if (volumeState.probePath) {
@@ -216,7 +240,7 @@ function probe(volume: string): void {
       return;
     }
     // Anything else (gone, unmounted) is not a wait: nothing would freeze on it.
-    settleVolume(volume, (state) => endWait(state, error ? `error:${code ?? "unknown"}` : "answered"));
+    settleVolume(volume, (state) => endWait(state, error ? `error:${code ?? "unknown"}` : "answered"), false);
   };
   const answered = volumeState.probePath
     ? fs.promises.open(volumeState.probePath, "r").then((handle) => handle.close())
@@ -265,7 +289,7 @@ function stateFor(root: string): RootState {
     state = { root: key, volume: volumeOf(key), openCount: 0, wait: null };
     roots.set(key, state);
   }
-  if (!volumes.has(state.volume)) volumes.set(state.volume, { probeInFlight: false, probePath: null });
+  if (!volumes.has(state.volume)) volumes.set(state.volume, { probeInFlight: false, probePath: null, driveMarked: false });
   return state;
 }
 
@@ -302,8 +326,7 @@ export function reportProjectRootNotAnswering(
 ): void {
   const state = stateFor(root);
   if (typeof extra.path === "string" && extra.path) volumes.get(state.volume)!.probePath = extra.path;
-  markVolumeNotAnswering(state.volume);
-  settleVolume(state.volume, (member) => startWait(member, "not_answering", source, extra));
+  settleVolume(state.volume, (member) => startWait(member, "not_answering", source, extra), true);
   ensureTimer();
   probe(state.volume);
 }

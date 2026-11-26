@@ -245,6 +245,8 @@ export class ProjectScopeRegistry {
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
   private latestSyncHostTransitionId = 0;
   private latestSyncHostTransitionProjectId: ProjectId | null = null;
+  /** Sync-host switches still running (the requested id above outlives a failed one). */
+  private syncHostSwitchesInFlight = 0;
   private readonly remoteCommandExecutor = {
     execute: async (
       payload: SyncCommandPayload,
@@ -927,6 +929,16 @@ export class ProjectScopeRegistry {
   }
 
   /**
+   * Whether a sync host is active or a switch toward one is still running:
+   * what a caller that got no scope back may wait for. A failed switch leaves
+   * its requested id behind (status reads use it), so that id alone is not a
+   * host in progress.
+   */
+  hasSyncHostOrSwitchInFlight(): boolean {
+    return this.syncHostProjectId !== null || this.syncHostSwitchesInFlight > 0;
+  }
+
+  /**
    * Waits for a sync-host switch that superseded ours to land, and adopts its
    * result.
    *
@@ -1036,6 +1048,18 @@ export class ProjectScopeRegistry {
     options: SwitchSyncHostOptions = {},
   ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
+    this.syncHostSwitchesInFlight += 1;
+    try {
+      return await this.runSwitchSyncHost(projectId, options);
+    } finally {
+      this.syncHostSwitchesInFlight -= 1;
+    }
+  }
+
+  private async runSwitchSyncHost(
+    projectId: ProjectId,
+    options: SwitchSyncHostOptions,
+  ): Promise<ProjectScope | null> {
     const transitionId = ++this.latestSyncHostTransitionId;
     this.latestSyncHostTransitionProjectId = projectId;
 

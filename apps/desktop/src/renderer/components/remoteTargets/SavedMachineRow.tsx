@@ -38,6 +38,7 @@ import {
   formatLastSeen,
   isVersionSkewWarning,
   machineColorKey,
+  relativeLastSeenPhrase,
   selectMachineErrorCard,
   type MachineSection,
   type SavedMachineRow as SavedMachineRowModel,
@@ -81,6 +82,48 @@ function useStaleConnecting(connecting: boolean): boolean {
   }, [connecting]);
   return stale;
 }
+
+/**
+ * The word the state line leads with, or null for a plain "not connected"
+ * machine (the hollow dot and the section already say it).
+ */
+function savedMachineStateWord({
+  statusLabel,
+  accountOnline,
+  heldElsewhere,
+  connectingStale,
+  reachFailure,
+}: {
+  statusLabel: string;
+  accountOnline: boolean | null | undefined;
+  heldElsewhere: boolean;
+  connectingStale: boolean;
+  reachFailure: boolean;
+}): string | null {
+  // The account directory sees it offline: that is the state, whatever ADE's
+  // own reconnects to it are doing.
+  if (accountOnline === false && !heldElsewhere && !connectingStale) return "Offline";
+  if (statusLabel === "Not connected") return null;
+  if (reachFailure && !heldElsewhere) return "Can't reach";
+  return statusLabel;
+}
+
+/** "last seen 5m ago" after a state word, "Last seen 5m ago" when it leads the line. */
+function lastSeenWords(lastSeenAt: number | null, leads: boolean): string {
+  const phrase = relativeLastSeenPhrase(lastSeenAt);
+  if (lastSeenAt == null || phrase == null) return leads ? "Never connected" : "never connected";
+  // A time that is not a date: formatLastSeen's own words for it.
+  if (!Number.isFinite(new Date(lastSeenAt).getTime())) return formatLastSeen(lastSeenAt);
+  return `${leads ? "Last seen" : "last seen"} ${phrase}`;
+}
+
+type TestItemMode = "hide" | "explain" | "test";
+
+const TEST_ITEM: Record<TestItemMode, { label: string; ariaLabel: string | undefined; icon: ReactNode }> = {
+  hide: { label: "Hide connection details", ariaLabel: "Test", icon: <Pulse size={14} /> },
+  explain: { label: "Why offline?", ariaLabel: undefined, icon: <Question size={14} /> },
+  test: { label: "Test connection", ariaLabel: "Test", icon: <Pulse size={14} /> },
+};
 
 const SLOW_LINK_MODE_OPTIONS: readonly SegmentedOption<SlowLinkPreference>[] = [
   { value: "auto", label: "Automatic" },
@@ -299,15 +342,7 @@ export function SavedMachineRow({
     errorCard.kind === "unreachable" || errorCard.failure === "unreachable" || errorCard.failure === "timeout"
   );
   const heldElsewhere = statusLabel === HELD_ELSEWHERE_STATE_LABEL;
-  // The account directory sees it offline: that is the state, whatever ADE's
-  // own reconnects to it are doing.
-  const stateWord = accountOnline === false && !heldElsewhere && !connectingStale
-    ? "Offline"
-    : statusLabel === "Not connected"
-      ? null
-      : reachFailure && !heldElsewhere
-        ? "Can't reach"
-        : statusLabel;
+  const stateWord = savedMachineStateWord({ statusLabel, accountOnline, heldElsewhere, connectingStale, reachFailure });
 
   const parkedLine = parked && !row.connected && !updatePhase ? parked : null;
   const presence: "online" | "busy" | "offline" | "error" = updatePhase
@@ -346,14 +381,13 @@ export function SavedMachineRow({
                     // The hollow dot and the section already say "not connected".
                     stateWord,
                     autoConnectOff,
-                    stateWord
-                      ? formatLastSeen(lastSeenAt).replace(/^Last connected /, "last seen ").replace(/^Never connected$/, "never connected")
-                      : formatLastSeen(lastSeenAt).replace(/^Last connected /, "Last seen "),
+                    lastSeenWords(lastSeenAt, stateWord == null),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   const showFinalUpdateStatus = Boolean(updateStatus) && !updatePhase;
   // "Why offline?" in ···: a machine that is not connected and has a failure to explain.
   const explainsOffline = !row.connected && shownErrorCard != null && accountOnline !== true;
+  const testItem = TEST_ITEM[testOpen ? "hide" : explainsOffline ? "explain" : "test"];
   const errorCardFor = (card: NonNullable<typeof shownErrorCard>, onDismiss: (() => void) | null) => (
     <RemoteErrorCard
       card={card}
@@ -451,9 +485,7 @@ export function SavedMachineRow({
                 ...(section !== "unavailable"
                   ? [{
                       key: "test",
-                      label: testOpen ? "Hide connection details" : explainsOffline ? "Why offline?" : "Test connection",
-                      ariaLabel: explainsOffline && !testOpen ? undefined : "Test",
-                      icon: explainsOffline && !testOpen ? <Question size={14} /> : <Pulse size={14} />,
+                      ...testItem,
                       disabled: busy,
                       onSelect: () => onToggleTest(target.id),
                     },

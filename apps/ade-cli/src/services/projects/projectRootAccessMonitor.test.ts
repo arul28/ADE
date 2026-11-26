@@ -83,7 +83,14 @@ describe("projectRootAccessMonitor", () => {
     const siblingProject = path.join(drive, id, "sibling-project");
     // The drive does not exist, so the probe's open fails at once and clears
     // the wait: the guard is read before that, synchronously.
-    const cleared = nextChange().then(() => nextChange());
+    // Resolves on the change that clears the wait, however many come first.
+    const cleared = new Promise<void>((resolve) => {
+      const stop = onProjectRootStorageWaitChange(() => {
+        if (readProjectRootStorageWait() !== null) return;
+        stop();
+        resolve();
+      });
+    });
     reportProjectRootNotAnswering(hungProject, "previous_brain_wedge", {
       path: path.join(hungProject, ".git", "config"),
     });

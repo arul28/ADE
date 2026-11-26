@@ -31869,6 +31869,9 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // Set while the projectless lease is held beside a viewer scope: hands the
+  // lease back when that scope starts hosting on its own.
+  let stopWatchingScopeHostLease: (() => void) | null = null;
   // A brain hosting phone sync with no project scope follows the shared
   // listener's port moves itself (a scope's sync service does this when one
   // hosts): the lease records the port and the account directory re-publishes.
@@ -33438,6 +33441,7 @@ async function runServe(
       accountAuthService: brainAccountAuthService,
       getAccountDirectoryHealth,
       getProjectlessSyncSnapshot: projectlessSyncSnapshot,
+      holdsProjectlessSyncHostLease: () => brainSyncHostLease != null,
       repairMachinePairing,
       // The desktop's "Start sync" button: the same repair the phone's "Fix
       // connection" runs, so a brain that lost the lease can be re-hosted from
@@ -33614,7 +33618,7 @@ async function runServe(
         });
       });
     }
-    if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
+    if (!activeScope && scopeRegistry.hasSyncHostOrSwitchInFlight()) {
       // A null here can mean "superseded" rather than "no host"; adopt the
       // switch that overtook ours instead of clobbering it with the
       // projectless lease. See `adoptRequestedSyncHost`.
@@ -33668,8 +33672,17 @@ async function runServe(
       // published nothing and dropped off the account until a restart chose
       // a different project (Mac Studio, 2026-11-26: the most recently
       // opened project followed another machine).
-      const { acquireSyncHostSingletonAsync } = await import("./services/sync/syncHostSingleton");
+      const { acquireSyncHostSingletonAsync, onSyncHostSingletonLeaseAcquired } = await import("./services/sync/syncHostSingleton");
       brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
+      // The viewer scope can start hosting by itself later (it stops following
+      // the other machine, or reclaims a stale draft) and takes its own lease.
+      // Keeping this one then leaves two leases and two relay gates, and the
+      // scope's later release deletes the lock file this one still counts on.
+      stopWatchingScopeHostLease ??= onSyncHostSingletonLeaseAcquired((ownerId) => {
+        if (!brainSyncHostLease || ownerId === brainSyncHostLease.owner.id) return;
+        headlessProjectLogger.info("sync.projectless_lease_handed_to_scope", {});
+        releaseProjectlessHostLease();
+      });
       const listenerPort = await sharedSyncListener.ensureListening(
         Array.from(
           { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
@@ -33708,6 +33721,8 @@ async function runServe(
     cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    stopWatchingScopeHostLease?.();
+    stopWatchingScopeHostLease = null;
     stopSyncHostRehostWatch?.();
     stopSyncHostRehostWatch = null;
     machinePairingAutoRecovery?.stop();

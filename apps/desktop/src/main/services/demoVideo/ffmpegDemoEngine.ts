@@ -63,13 +63,11 @@ import {
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { ffmpegContactSheet } from "./ffmpegContactSheet";
+import { isStuckMediaProcessError, stopMediaChild } from "./demoChildStop";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm"]);
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
 const RENDER_MIN_TIMEOUT_MS = 60_000;
-const KILL_GRACE_MS = 3_000;
-/** After SIGKILL, how long to wait for the exit before answering the caller anyway. */
-const UNKILLABLE_GRACE_MS = 10_000;
 const STDERR_TAIL_LINES = 20;
 /** Frames of one click ring's animation. */
 const RING_FRAMES = 10;
@@ -332,7 +330,8 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
         });
         return { bytes: size, durationSeconds: plan.durationSeconds, frames } satisfies DemoRenderResult;
       } catch (error) {
-        await fs.promises.rm(partial, { force: true }).catch(() => undefined);
+        // A process stuck on the output's drive: removing beside it would wait on it too.
+        if (!isStuckMediaProcessError(error)) await fs.promises.rm(partial, { force: true }).catch(() => undefined);
         throw error;
       } finally {
         await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
@@ -908,24 +907,16 @@ export function runFfmpeg(args: {
     const stop = (reason: Error): void => {
       if (stopReason || settled) return;
       stopReason = reason;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => {
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        child.kill("SIGKILL");
-        // A process stuck inside the kernel (a drive that stopped answering
-        // mid-write) cannot die until that call returns, and may never: answer
-        // the caller and let go of it rather than wait as long as the drive.
-        killTimer = setTimeout(() => {
-          if (settled) return;
-          logger?.warn("demo_video.ffmpeg_unkillable", { label, pid: child.pid ?? null });
-          child.stdout.destroy();
-          child.stderr.destroy();
-          child.unref();
-          finish(reason);
-        }, UNKILLABLE_GRACE_MS);
-        killTimer.unref?.();
-      }, KILL_GRACE_MS);
-      killTimer.unref?.();
+      stopMediaChild({
+        child,
+        reason,
+        label,
+        stuckEvent: "demo_video.ffmpeg_unkillable",
+        logger,
+        isSettled: () => settled,
+        settle: finish,
+        onTimer: (timer) => { killTimer = timer; },
+      });
     };
     const onAbort = (): void => stop(abortError(label));
     signal?.addEventListener("abort", onAbort, { once: true });

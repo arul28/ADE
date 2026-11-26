@@ -82,6 +82,7 @@ export type SyncHostSingletonDeps = {
 // happily dialed the relay and evicted the real host in a ~4s loop.
 const heldLeaseIds = new Set<string>();
 const authorityHandlers = new Set<(held: boolean) => void>();
+const acquiredHandlers = new Set<(ownerId: string) => void>();
 
 function notifyAuthorityChanged(held: boolean): void {
   for (const handler of [...authorityHandlers]) {
@@ -91,6 +92,18 @@ function notifyAuthorityChanged(held: boolean): void {
       // A subscriber must never break lease bookkeeping.
     }
   }
+}
+
+/**
+ * Subscribe to every lease this process takes, by its owner id. Called after
+ * the lease is recorded, on a later microtask, so a handler may dispose
+ * another lease without re-entering the acquire.
+ */
+export function onSyncHostSingletonLeaseAcquired(handler: (ownerId: string) => void): () => void {
+  acquiredHandlers.add(handler);
+  return () => {
+    acquiredHandlers.delete(handler);
+  };
 }
 
 /** True when this process holds the machine-wide sync host lease. */
@@ -1023,6 +1036,17 @@ export function acquireSyncHostSingleton(
   const hadAuthority = holdsSyncHostSingleton();
   heldLeaseIds.add(owner.id);
   if (!hadAuthority) notifyAuthorityChanged(true);
+  if (acquiredHandlers.size > 0) {
+    queueMicrotask(() => {
+      for (const handler of [...acquiredHandlers]) {
+        try {
+          handler(owner.id);
+        } catch {
+          // A subscriber must never break lease bookkeeping.
+        }
+      }
+    });
+  }
   return {
     owner,
     updatePort(port: number) {
