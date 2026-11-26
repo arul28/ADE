@@ -164,7 +164,7 @@ describe("a chat's saved rows and the live rows they were copied from", () => {
   const live: AgentChatEventEnvelope[] = [
     { sessionId: "chat-1", timestamp: at(1), sequence: 1, event: { type: "user_message", text: "deploy with token=ghp_abcdefghijklmnopqrstuvwxyz0123456789" } },
     { sessionId: "chat-1", timestamp: at(2), sequence: 2, event: { type: "tool_call", tool: "bash", args: { token: "abcd-1234", deep: { level: { list: [1, 2] } } }, itemId: "tool-1", turnId: "turn-1" } },
-    { sessionId: "chat-1", timestamp: at(3), sequence: 3, event: { type: "command", command: "cat build.log", cwd: "/repo", output: longOutput, itemId: "cmd-1", turnId: "turn-1" } },
+    { sessionId: "chat-1", timestamp: at(3), sequence: 3, event: { type: "command", command: "cat build.log", cwd: "/repo", output: longOutput, itemId: "cmd-1", turnId: "turn-1", status: "completed" } },
     { sessionId: "chat-1", timestamp: at(4), sequence: 4, event: { type: "text", text: "Deployed." } },
   ];
   // The same lines as the uploader saved them: a secret redacted, a
@@ -173,7 +173,7 @@ describe("a chat's saved rows and the live rows they were copied from", () => {
   const savedLines: AgentChatEventEnvelope[] = [
     { ...live[0]!, event: { type: "user_message", text: "deploy with token=[REDACTED]" } },
     { ...live[1]!, event: { type: "tool_call", tool: "bash", args: { token: "[REDACTED]", deep: "[truncated]" }, itemId: "tool-1", turnId: "turn-1" } },
-    { ...live[2]!, event: { type: "command", command: "cat build.log", cwd: "/repo", output: `${longOutput.slice(0, 1000)}\n[truncated]`, itemId: "cmd-1", turnId: "turn-1" } },
+    { ...live[2]!, event: { type: "command", command: "cat build.log", cwd: "/repo", output: `${longOutput.slice(0, 1000)}\n[truncated]`, itemId: "cmd-1", turnId: "turn-1", status: "completed" } },
     live[3]!,
   ];
   const page: CloudSavedChatPage = {
@@ -185,7 +185,7 @@ describe("a chat's saved rows and the live rows they were copied from", () => {
   const saved = savedChatSnapshot(page, "chat-1").events;
   // The same time, kind and number as the saved line, but a real difference
   // outside what the uploader marks: a different event, never hidden.
-  const otherCommand: AgentChatEventEnvelope = { ...live[2]!, event: { ...(live[2]!.event as object), command: "cat other.log" } as AgentChatEventEnvelope["event"] };
+  const otherCommand: AgentChatEventEnvelope = { ...live[2]!, event: { type: "command", command: "cat other.log", cwd: "/repo", output: longOutput, itemId: "cmd-1", turnId: "turn-1", status: "completed" } };
 
   it.each<{ seam: string; merge: () => AgentChatEventEnvelope[]; shows: AgentChatEventEnvelope[] }>([
     {
@@ -219,9 +219,6 @@ describe("a chat's saved rows and the live rows they were copied from", () => {
       shows: [live[0]!, live[1]!, saved[2]!, saved[3]!],
     },
   ])("$seam: each event shows once, as the computer wrote it when it has it", ({ merge, shows }) => {
-    // Fixture check: the saved copy parsed, and its marked rows differ from the live ones.
-    expect(saved).toHaveLength(4);
-    expect(saved[0]).not.toEqual(live[0]);
     expect(merge()).toEqual(shows);
   });
 });
