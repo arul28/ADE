@@ -32826,14 +32826,17 @@ async function runServe(
   // restart (`roomMark`) goes on the same way, with nobody watching.
   if (!embedded && cloudInstanceId) {
     void (async () => {
-      for (const project of projectRegistry.list()) {
+      // Side by side, so one slow folder doesn't keep the others closed. The
+      // registry still opens a project with open strikes alone
+      // (`opensAlone`), and a cloud computer holds few projects, each open
+      // from here on anyway.
+      await Promise.all(projectRegistry.list().map((project) =>
         // Not a use of the project: its "last opened" (and the folder a new
         // project defaults to beside) stays the person's.
-        await scopeRegistry.get(project.projectId, { touch: false }).then(
+        scopeRegistry.get(project.projectId, { touch: false }).then(
           () => headlessProjectLogger.info("cloud.project_open_at_start", { projectId: project.projectId }),
           (error: unknown) => headlessProjectLogger.warn("cloud.project_open_at_start_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) }),
-        );
-      }
+        )));
     })().catch((error: unknown) => {
       headlessProjectLogger.warn("cloud.project_open_at_start_scan_failed", { error: error instanceof Error ? error.message : String(error) });
     }).finally(() => markCloudProjectsOpened());
