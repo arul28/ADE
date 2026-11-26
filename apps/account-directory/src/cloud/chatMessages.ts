@@ -503,13 +503,17 @@ async function copyFilesToLaunch(env: CloudEnv, userId: string, attachments: Clo
     insert into cloud_launches (launch_id, user_id, state, created_at, updated_at, expires_at)
     values (?, ?, 'draft', ?, ?, ?) on conflict (launch_id) do nothing
   `).bind(launchId, userId, now, now, now + CLOUD_LAUNCH_DRAFT_TTL_MS).run();
+  let copied = 0;
   for (const file of attachments) {
     const object = await bucket.get(r2KeyOf(userId, file.launchId, file.fileId));
     if (!object) return `Upload "${file.name}" first, then send the message.`;
     await bucket.put(r2KeyOf(userId, launchId, file.fileId), await object.arrayBuffer(), {
       httpMetadata: { contentType: object.httpMetadata?.contentType ?? "application/octet-stream" },
     });
+    copied += object.size;
   }
+  // The copies count against the account's draft bytes (`launchFiles.ts`) while a refused start leaves them.
+  await env.DB.prepare("update cloud_launches set draft_bytes = ? where launch_id = ? and user_id = ? and state = 'draft'").bind(copied, launchId, userId).run();
   return null;
 }
 

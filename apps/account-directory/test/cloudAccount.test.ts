@@ -3765,11 +3765,16 @@ describe("ADE Cloud without a computer", () => {
     expect(await answer(fileOf(draft(1000), "photo-4", streamOf(5).stream))).toEqual([429, "uploads_full"]);
     expect(await answer(fileOf(draft(1000), "photo-4", bytes(5)))).toEqual([201, null]);
 
-    // Full: a new file is refused, a file sent again in its place makes room with its old bytes.
-    harness.exec("update cloud_launches set draft_bytes = draft_bytes + ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - heldBytes(), draft(0));
-    expect(await answer(fileOf(draft(1000), "photo-5", bytes(1)))).toEqual([429, "uploads_full"]);
+    // Five bytes of room: a file sent again in its place gives its old bytes back once it is stored.
+    harness.exec("update cloud_launches set draft_bytes = draft_bytes + ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 5 - heldBytes(), draft(0));
     expect(await answer(fileOf(draft(1000), "photo-4", bytes(5)))).toEqual([201, null]);
-    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT);
+    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 5);
+    // Past the bytes, a new file is refused, and a new draft leaves no row behind.
+    expect(await answer(fileOf(draft(1000), "photo-5", bytes(6)))).toEqual([429, "uploads_full"]);
+    harness.exec("delete from cloud_launches where launch_id = ?", draft(1));
+    expect(await answer(fileOf(draft(1002), "photo-1", bytes(6)))).toEqual([429, "uploads_full"]);
+    expect(harness.rows("select 1 from cloud_launches where launch_id = ?", draft(1002))).toHaveLength(0);
+    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 5);
 
     // The upload minute counts these files.
     harness.exec("update cloud_launches set draft_bytes = 0 where user_id = ?", OWNER);
