@@ -20,7 +20,7 @@ import { showToast } from "../app/toast/toastStore";
 /** The Mac App Store page for Xcode. */
 // https, not macappstore://: external links allow only http(s) and mailto,
 // and macOS hands an apps.apple.com link to the App Store anyway.
-const XCODE_APP_STORE_URL = "https://apps.apple.com/app/xcode/id497799835";
+export const XCODE_APP_STORE_URL = "https://apps.apple.com/app/xcode/id497799835";
 const XCODE_UPDATE_BANNER_KEY = "apple-xcode-update";
 
 /**

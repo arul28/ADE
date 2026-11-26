@@ -722,11 +722,12 @@ Storage & cleanup › Space ends with **Outside this project**
 Xcode build data, iOS simulators and simulator runtimes (on a Mac) and Android
 emulators, on the machine the page's project copy is on. Each row's Clean up
 opens Apple devices or Android devices on that machine, where the lists and
-their deletes live (`useDevToolsStorage`). The sizes come from the same calls
-the Apple and Android panes use (`iosSimulator.deviceList` with `disk`,
-`runtimeList`, `derivedDataList` with `measure`, `androidEmulator.listDevices`
-with `measureSizes`); they are read when the view opens and after a change,
-never on a timer. Nothing here deletes in the background: each delete is the
+their deletes live (`useDevToolsStorage`). Opening Space reads the lists only (cheap);
+sizes walk tens of GB, so they are measured when the person presses Measure
+sizes, with the same calls the Apple and Android panes use
+(`iosSimulator.deviceList` with `disk`, `runtimeList`, `derivedDataList` with
+`measure`, `androidEmulator.listDevices` with `measureSizes`), never on a timer.
+A part that could not be read says so, with Try again. Nothing here deletes in the background: each delete is the
 person's, confirmed with its size, and the brain refuses an unconfirmed one
 or one an agent asks for.
 

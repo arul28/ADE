@@ -1,4 +1,5 @@
-import type { AppleDeviceCleanupResult, AppleRuntimeDeleteResult } from "../../../shared/types/iosSimulator";
+import type { OpenProjectBinding } from "../../../shared/types";
+import type { AppleDeviceCleanupResult, AppleRuntimeDeleteResult, AppleRuntimeInventory } from "../../../shared/types/iosSimulator";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 
 /**
@@ -7,7 +8,7 @@ import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
  */
 
 /** The Clean up toast's tone and words: what happened, per docs/design/notices.md. */
-export function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; summary: string | null }): {
+function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; summary: string | null }): {
   tone: "success" | "warning" | "error";
   title: string;
   message?: string;
@@ -26,7 +27,7 @@ export function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: nu
 }
 
 /** Why Clean up powered nothing off, in the words the toast uses. */
-export const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
+const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
   "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
   "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
 };
@@ -49,4 +50,48 @@ export function showRuntimeRemoval(result: AppleRuntimeDeleteResult) {
     message: [parts.length ? `${parts.join(", ")}.` : null, failed ? result.errors[0]!.message : null].filter(Boolean).join(" "),
     ...(failed ? { durationMs: READABLE_TOAST_DURATION_MS } : {}),
   });
+}
+
+/** What one simulator Clean up did, as one toast: counts only, the raw errors are in the log. */
+export function showCleanupResult(result: AppleDeviceCleanupResult, id: string): void {
+  const parts = [
+    result.deleted.length ? `deleted ${result.deleted.length}` : null,
+    result.poweredOff.length ? `powered off ${result.poweredOff.length}` : null,
+    result.released.length ? `released ${result.released.length}` : null,
+  ].filter(Boolean);
+  const notice = cleanupNotice({
+    listUnreadable: result.errors.some((entry) => entry.udid === null),
+    deviceErrors: result.errors.filter((entry) => entry.udid !== null).length,
+    summary: parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : null,
+  });
+  const skippedWhy = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
+  const message = [notice.message, skippedWhy].filter(Boolean).join(" ");
+  showToast({
+    id,
+    tone: notice.tone,
+    title: notice.title,
+    ...(message ? { message } : {}),
+    ...(notice.tone === "success" ? {} : { durationMs: 18_000 }),
+  });
+}
+
+/**
+ * CoreSimulator unmounts a deleted runtime a moment after `simctl runtime
+ * delete` returns, so a list read straight away can still show it. Re-read
+ * until the removed runtimes are gone (a few seconds at most) and hand back
+ * the last list read, or null when a read failed.
+ */
+export async function readRuntimesUntilGone(
+  removedIds: readonly string[],
+  pin: OpenProjectBinding | null,
+  onInventory?: (inventory: AppleRuntimeInventory) => void,
+): Promise<AppleRuntimeInventory | null> {
+  let last: AppleRuntimeInventory | null = null;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    last = await window.ade.iosSimulator.runtimeList(pin);
+    onInventory?.(last);
+    if (!last.runtimes.some((entry) => entry.id && removedIds.includes(entry.id))) return last;
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+  }
+  return last;
 }

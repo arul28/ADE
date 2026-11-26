@@ -22,6 +22,8 @@ import {
 } from "./deviceSettingsCards";
 import { ModernSection } from "./primitives";
 import { AppleMachineSection } from "./devices/AppleMachineSection";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
+import { useSettingsMachines } from "./machines/settingsMachinesContext";
 
 /**
  * Presentation choices for Apple simulators and previews.
@@ -42,6 +44,32 @@ import { AppleMachineSection } from "./devices/AppleMachineSection";
 export function AppleDevicesSection() {
   const appleDevice = useAppStore((s) => s.appleDevice);
   const setAppleDevicePreferences = useAppStore((s) => s.setAppleDevicePreferences);
+  const scope = useSettingsMachineScope();
+  const { openMachine } = useSettingsMachines();
+
+  // The display and recording choices below are this computer's own (they
+  // save to this computer and measure its recordings). With another machine
+  // picked, they would change this computer while naming that one, so the
+  // page shows only the machine's part and points back here for the rest.
+  if (!scope.isThisMachine) {
+    return (
+      <div className="ade-as">
+        <AppleMachineSection />
+        <ModernSection
+          group="Apple Development"
+          anchor="apple-realistic-body"
+          title="Display and recordings"
+          hint="How simulators look, recording overlays and the streaming cap are set per computer, on the one you are using."
+        >
+          <div>
+            <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => openMachine(THIS_MACHINE_ID, "apple")}>
+              Open this computer's settings
+            </button>
+          </div>
+        </ModernSection>
+      </div>
+    );
+  }
 
   return (
     <div className="ade-as">

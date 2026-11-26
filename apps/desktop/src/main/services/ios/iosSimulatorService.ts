@@ -8546,7 +8546,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       darwinRuntimeManager().xcodeRunFirstLaunch(setupArgs),
 
     /* Xcode's DerivedData: list (sizes only with `measure`), and delete what the person picked. */
-    derivedDataList: async (listArgs: XcodeDerivedDataArgs = {}) => xcodeDerivedData().list(listArgs ?? {}),
+    derivedDataList: async (listArgs?: XcodeDerivedDataArgs) => xcodeDerivedData().list(listArgs ?? {}),
     derivedDataDelete: async (deleteArgs: XcodeDerivedDataDeleteArgs) => xcodeDerivedData().remove(deleteArgs),
     /** The lane is being archived or deleted: let go of its device in this process. */
     stopForLane,

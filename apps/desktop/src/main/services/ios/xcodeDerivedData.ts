@@ -9,6 +9,7 @@ import type {
   XcodeDerivedDataResult,
 } from "../../../shared/types/iosSimulator";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import { getErrorMessage } from "../shared/utils";
 import type { Logger } from "../logging/logger";
 import { measureTree } from "../storage/diskUsage";
 import { DELETING_TRASH_NAME, deletingTrashName, removeTrashInBackground, sweepDeletingTrash } from "../shared/deletingTrash";
@@ -28,6 +29,11 @@ import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
  * Measuring walks every file (tens of GB on a busy Mac), so it runs only when
  * asked (`measure: true`), never on a timer, three folders at a time, and the
  * answer is kept for a minute.
+ *
+ * Only folders Xcode made are listed or deleted: a project folder carries an
+ * `info.plist` naming its workspace, a cache folder ends in `.noindex`. A
+ * custom DerivedData location can be any folder (Settings > Locations), so the
+ * person's own folders that happen to sit there are never offered.
  */
 
 type RunCommand = (
@@ -83,6 +89,7 @@ export function parseDerivedDataInfoPlist(xml: string): { workspacePath: string 
 /** `ADE-abcdefghijklmnopqrstuvwxyzab` → `ADE`: Xcode appends a dash and a long lowercase hash. */
 export function derivedDataDisplayName(folderName: string, workspacePath: string | null): string {
   if (folderName === MODULE_CACHE_FOLDER) return "Module cache";
+  if (folderName.endsWith(".noindex")) return `${folderName.slice(0, -".noindex".length).replace(/Cache$/, "")} cache`.trim();
   if (workspacePath) {
     const base = path.posix.basename(workspacePath.replace(/\/+$/, ""));
     const ext = path.posix.extname(base);
@@ -94,7 +101,7 @@ export function derivedDataDisplayName(folderName: string, workspacePath: string
 
 /* ───────────────────────── the service ───────────────────────── */
 
-type MeasuredCache = { at: number; root: string; result: XcodeDerivedDataResult };
+type MeasuredCache = { at: number; result: XcodeDerivedDataResult };
 
 // Machine-wide, so shared by every project's simulator service in this process.
 const measuredCache = new Map<string, MeasuredCache>();
@@ -130,8 +137,9 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+/** A cache Xcode keeps beside the project folders (`ModuleCache.noindex`, `SymbolCache.noindex`). */
+function isXcodeCacheFolder(name: string): boolean {
+  return name.endsWith(".noindex");
 }
 
 export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
@@ -207,10 +215,12 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
       return { exists: false, entries: [] };
     }
     const folders = dirents.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !DELETING_TRASH_NAME.test(entry.name));
-    const entries = await mapLimit(folders, 8, async (dirent): Promise<XcodeDerivedDataEntry> => {
+    const read = await mapLimit(folders, 8, async (dirent): Promise<XcodeDerivedDataEntry | null> => {
       const folder = path.join(root, dirent.name);
-      const kind: XcodeDerivedDataEntry["kind"] = dirent.name === MODULE_CACHE_FOLDER ? "module-cache" : "project";
+      const kind: XcodeDerivedDataEntry["kind"] = isXcodeCacheFolder(dirent.name) ? "module-cache" : "project";
       const info = kind === "project" ? await readInfoPlist(folder) : { workspacePath: null, lastAccessedAt: null };
+      // Not Xcode's: no workspace in an info.plist, and not a cache folder.
+      if (kind === "project" && !info.workspacePath) return null;
       const stat = info.lastAccessedAt ? null : await lstatOrNull(folder);
       return {
         path: folder,
@@ -223,6 +233,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
         kind,
       };
     });
+    const entries = read.filter((entry): entry is XcodeDerivedDataEntry => entry != null);
     entries.sort((a, b) => (b.lastUsedAt ? Date.parse(b.lastUsedAt) : 0) - (a.lastUsedAt ? Date.parse(a.lastUsedAt) : 0));
     return { exists: true, entries };
   };
@@ -261,7 +272,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     };
   };
 
-  const list = async (args: XcodeDerivedDataArgs = {}): Promise<XcodeDerivedDataResult> => {
+  const list = async (args: XcodeDerivedDataArgs): Promise<XcodeDerivedDataResult> => {
     if (platform !== "darwin") return unsupported();
     const t0 = Date.now();
     const root = await resolveRoot();
@@ -292,7 +303,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
       if (!inFlight) {
         inFlight = measureEntries(root, listing.entries).finally(() => measuresInFlight.delete(root));
         measuresInFlight.set(root, inFlight);
-        void inFlight.then((value) => measuredCache.set(root, { at: Date.now(), root, result: value }), () => undefined);
+        void inFlight.then((value) => measuredCache.set(root, { at: Date.now(), result: value }), () => undefined);
       }
       result = { ...(await inFlight), buildRunning: running };
     }
@@ -323,6 +334,9 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
 
     const result: XcodeDerivedDataDeleteResult = { deleted: [], errors: [], freedBytes: 0 };
     const seen = new Set<string>();
+    // Phase one moves each folder into ADE's trash: a rename, so fast, and a
+    // build that starts now no longer finds its folder. Phase two measures.
+    const moved: Array<{ reported: string; trashPath: string }> = [];
     for (const raw of requested) {
       const reported = typeof raw === "string" ? raw : String(raw);
       const fail = (message: string) => result.errors.push({ path: reported, message });
@@ -356,24 +370,37 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
         fail("Not directly inside Xcode's DerivedData folder.");
         continue;
       }
-      let bytes: number | null = null;
-      try {
-        bytes = (await measureTree(realTarget, { deadline: Date.now() + MEASURE_BUDGET_MS })).bytes;
-      } catch {
-        bytes = null;
+      // The same rule as the list: only a folder Xcode made, never one of the person's that sits here.
+      if (!isXcodeCacheFolder(path.basename(realTarget)) && !(await readInfoPlist(realTarget)).workspacePath) {
+        fail("Not a folder Xcode made, so ADE leaves it alone.");
+        continue;
       }
       const trashPath = path.join(realRoot, deletingTrashName(path.basename(realTarget)));
       try {
         await nonAsarFs.promises.rename(realTarget, trashPath);
       } catch (error) {
-        fail(`Could not delete: ${errorMessage(error)}`);
+        fail(`Could not delete: ${getErrorMessage(error)}`);
         continue;
+      }
+      moved.push({ reported, trashPath });
+    }
+    measuredCache.delete(root);
+    // One deadline for the whole call, so a big "Delete unused" answers inside the action's timeout.
+    const deadline = Date.now() + MEASURE_BUDGET_MS;
+    await mapLimit(moved, MEASURE_FOLDERS_AT_ONCE, async ({ reported, trashPath }) => {
+      let bytes: number | null = null;
+      try {
+        const tree = await measureTree(trashPath, { deadline });
+        bytes = tree.bytes;
+        // A walk cut off by the deadline counted only part of the folder.
+        if (tree.truncated) result.freedIsLowerBound = true;
+      } catch {
+        result.freedIsLowerBound = true;
       }
       removeInBackground(trashPath);
       result.deleted.push({ path: reported, bytes });
       result.freedBytes += bytes ?? 0;
-    }
-    measuredCache.delete(root);
+    });
     deps.logger.info("apple.derived_data_deleted", {
       count: result.deleted.length,
       errors: result.errors.length,

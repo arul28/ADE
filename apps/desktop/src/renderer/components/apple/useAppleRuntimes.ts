@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { readRuntimesUntilGone } from "./appleStorageNotices";
 import type {
   AppleRuntimeDeleteResult,
   AppleRuntimeInstallState,
@@ -207,15 +208,8 @@ export function useAppleRuntimes({
    * until the removed runtimes are gone (a few seconds at most).
    */
   const reloadUntilGone = useCallback(async (removedIds: string[]) => {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const next = await window.ade.iosSimulator.runtimeList(runtimePinRef.current).catch((cause: unknown) => {
-        onErrorRef.current?.(cause);
-        return null;
-      });
-      if (next) noteInventory(next);
-      if (!next || !next.runtimes.some((entry) => entry.id && removedIds.includes(entry.id))) return;
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
-    }
+    await readRuntimesUntilGone(removedIds, runtimePinRef.current, noteInventory)
+      .catch((cause: unknown) => onErrorRef.current?.(cause));
   }, [noteInventory, runtimePinRef]);
 
   const runRemoval = useCallback(async (call: () => Promise<AppleRuntimeDeleteResult>) => {

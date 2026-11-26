@@ -225,21 +225,25 @@ an absolute path, else `~/Library/Developer/Xcode/DerivedData`). This is
 Xcode's machine-wide folder, not a lane's `.ade/cache/ios-simulator/DerivedData`.
 Both calls go to the machine by the lane's pin, like the runtimes.
 
-- `derivedDataList` (read, agents may call it): one entry per direct child,
-  newest first, named from `info.plist`'s `WorkspacePath` (flagged
-  `workspaceMissing` when that project is gone) and `ModuleCache.noindex` as
-  the shared module cache. Sizes only with `measure: true`, through
+- `derivedDataList` (read, agents may call it, no lane needed): one entry per
+  folder Xcode made, newest first: a project folder whose `info.plist` names
+  its `WorkspacePath` (flagged `workspaceMissing` when that project is gone),
+  or a `*.noindex` cache (`ModuleCache.noindex` is the shared module cache).
+  Any other folder in a custom location is the person's and is never listed. Sizes only with `measure: true`, through
   `storage/diskUsage.ts` (allocated blocks, links never followed), three
   folders at a time; the answer is kept a minute and dropped after a delete.
   It can walk tens of GB, so nothing measures on a timer. `buildRunning` is
   `pgrep -x Xcode` or `xcodebuild`. Off macOS: `supported: false`.
 - `derivedDataDelete` (person-only, `APPLE_USER_ONLY_ACTIONS`): needs
   `confirmedByUser: true`, and refuses while Xcode or xcodebuild runs. Each
-  path must be a real folder (not a link) directly inside the root; anything
-  else comes back in `errors`, never deleted. Each folder is measured, renamed
-  to ADE's `.ade-deleting-` trash beside it and removed in the background
-  (`shared/deletingTrash.ts`); a leftover trash folder is finished on the next
-  list. Xcode rebuilds what it needs on the next build.
+  path must be a real folder (not a link) directly inside the root and one
+  Xcode made (the list's rule); anything else comes back in `errors`, never
+  deleted. Every folder is first renamed to ADE's `.ade-deleting-` trash beside
+  it (fast, so a build that starts now no longer finds it), then the trash
+  folders are measured under one shared deadline and removed in the
+  background (`shared/deletingTrash.ts`). A size cut off by the deadline sets
+  `freedIsLowerBound` ("Freed at least ..."). A leftover trash folder is
+  finished on the next list. Xcode rebuilds what it needs on the next build.
 
 CLI: `ade apple derived-data [--measure]` (read only). Deleting is the
 person's call, from Settings.

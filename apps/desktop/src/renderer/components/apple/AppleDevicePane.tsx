@@ -75,7 +75,7 @@ import { useAppleDeviceStream } from "./useAppleDeviceStream";
 import { useAppleDeviceStartTracker, useAppleLoadingWatchdog } from "./useAppleDeviceStartTracker";
 import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
-import { CLEANUP_SKIP_REASON, cleanupNotice, showRuntimeRemoval } from "./appleStorageNotices";
+import { showCleanupResult, showRuntimeRemoval } from "./appleStorageNotices";
 import { useAppleDuoModel } from "./useAppleDuoModel";
 import { AppleRenderSheet } from "./AppleRenderSheet";
 import { APPLE_DEVICE_POSE_TARGETS, APPLE_ROTATE_NOT_ADOPTED_CODE, isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
@@ -568,27 +568,7 @@ function AppleDevicePaneOnMachine({
     setCleaning(true);
     void window.ade.iosSimulator
       .deviceCleanup({ ...(laneId ? { laneId } : {}), powerOffIdle: true }, runtimePinRef.current)
-      .then((result) => {
-        const parts = [
-          result.deleted.length ? `deleted ${result.deleted.length}` : null,
-          result.poweredOff.length ? `powered off ${result.poweredOff.length}` : null,
-          result.released.length ? `released ${result.released.length}` : null,
-        ].filter(Boolean);
-        const listUnreadable = result.errors.some((entry) => entry.udid === null);
-        const deviceErrors = result.errors.filter((entry) => entry.udid !== null).length;
-        const skippedWhy = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
-        // Counts only. The raw simctl errors are in the log, not in the toast.
-        const summary = parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : null;
-        const notice = cleanupNotice({ listUnreadable, deviceErrors, summary });
-        const message = [notice.message, skippedWhy].filter(Boolean).join(" ");
-        showToast({
-          id: "apple-device-cleanup",
-          tone: notice.tone,
-          title: notice.title,
-          ...(message ? { message } : {}),
-          ...(notice.tone === "success" ? {} : { durationMs: 18_000 }),
-        });
-      })
+      .then((result) => showCleanupResult(result, "apple-device-cleanup"))
       .catch((cause: unknown) => setError(cause))
       .finally(() => {
         setCleaning(false);

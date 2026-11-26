@@ -1,28 +1,24 @@
 import React from "react";
-import {
-  ArrowClockwise,
-  CaretDown,
-  CheckCircle,
-  CircleNotch,
-  DeviceMobile,
-  DeviceTablet,
-  Hammer,
-  Stack,
-  Watch,
-} from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, CircleNotch, DeviceMobile, DeviceTablet, Hammer, Stack, Watch } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import type { AppleRuntimeEntry, AppleRuntimeSimulatorDisposition, XcodeDerivedDataEntry } from "../../../../shared/types/iosSimulator";
+import type {
+  AppleRuntimeDeleteResult,
+  AppleRuntimeEntry,
+  AppleRuntimeSimulatorDisposition,
+  XcodeDerivedDataEntry,
+} from "../../../../shared/types/iosSimulator";
 import { formatStorageBytes, pluralCount } from "../../../../shared/formatting";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { openExternalUrl } from "../../../lib/openExternal";
-import { confirmRemoval } from "../../apple/AppleRuntimesSection";
-import { CLEANUP_SKIP_REASON, cleanupNotice, showRuntimeRemoval } from "../../apple/appleStorageNotices";
+import { confirmRemoval, XCODE_APP_STORE_URL } from "../../apple/AppleRuntimesSection";
+import { readRuntimesUntilGone, showCleanupResult, showRuntimeRemoval } from "../../apple/appleStorageNotices";
 import { ModernSection } from "../primitives";
-import { DevToolsSpaceBar } from "./DevToolsSpaceBar";
-import { devToolsTotals, type DevToolsStorage, type SimulatorRow } from "./useDevToolsStorage";
-import "./devTools.css";
+import { DevToolsSpaceBar, readyTotal, type SpaceSegment } from "./DevToolsSpaceBar";
+import { DevToolRow, DevToolsListSection, LIST_PREVIEW, ListSkeleton, PartError, RowAction, ShowAll, SizeCell, useDevToolHues } from "./devToolsList";
+import { captureDevToolsCleanup } from "./devToolsAnalytics";
+import { devToolsSizes, type DevToolsStorage, type SimulatorRow } from "./useDevToolsStorage";
 
 /**
  * Settings › Apple devices, the machine's half: the Xcode it has, what
@@ -33,18 +29,9 @@ import "./devTools.css";
  * refuses a delete that was not confirmed, and refuses one an agent asks for.
  */
 
-const XCODE_APP_STORE_URL = "https://apps.apple.com/app/xcode/id497799835";
+const GROUP = "Apple Development";
 /** Build data untouched this long is offered as one cleanup. */
 const STALE_BUILD_DATA_DAYS = 30;
-/** Rows shown before "Show all". */
-const LIST_PREVIEW = 6;
-
-export const DEV_TOOL_HUES = {
-  simulators: "#4aa8e0",
-  runtimes: "#8b7bf0",
-  buildData: "#e0a44a",
-  emulators: "#43b3a0",
-} as const;
 
 function daysSince(iso: string | null | undefined): number | null {
   if (!iso) return null;
@@ -53,7 +40,7 @@ function daysSince(iso: string | null | undefined): number | null {
 }
 
 /** "Used today", "Used 12 days ago", "Used 3 months ago". */
-export function usedWhen(iso: string | null | undefined): string | null {
+function usedWhen(iso: string | null | undefined): string | null {
   const days = daysSince(iso);
   if (days == null) return null;
   if (days === 0) return "Used today";
@@ -61,6 +48,13 @@ export function usedWhen(iso: string | null | undefined): string | null {
   if (days < 60) return `Used ${days} days ago`;
   return `Used ${Math.round(days / 30)} months ago`;
 }
+
+/** `/Users/ada/code/x` → `~/code/x`: the home folder says nothing a person needs. */
+function homeRelative(path: string | null): string | null {
+  return path ? path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~") : null;
+}
+
+const formatMac = (value: number) => formatStorageBytes(value, "mac");
 
 export function AppleToolsSection({
   storage,
@@ -72,30 +66,27 @@ export function AppleToolsSection({
   /** "this Mac" or the machine's name. */
   machineName: string;
 }) {
-  const bytes = (value: number) => formatStorageBytes(value, "mac");
-  const totals = devToolsTotals(storage);
+  const hues = useDevToolHues();
+  const sizes = devToolsSizes(storage);
   const scrollTo = (anchor: string) => document.getElementById(anchor)?.scrollIntoView({ block: "start", behavior: "smooth" });
-  const parts = [totals.simulators, totals.runtimes, totals.buildData];
-  const known = parts.every((value) => value != null);
-  const sum = parts.reduce<number>((total, value) => total + (value ?? 0), 0);
-  const xcode = storage.runtimes.data?.xcode ?? null;
+  const segments: SpaceSegment[] = [
+    { key: "simulators", label: "Simulators", size: sizes.simulators, hue: hues.simulators, onSelect: () => scrollTo("apple-simulators") },
+    { key: "runtimes", label: "Runtimes", size: sizes.runtimes, hue: hues.runtimes, onSelect: () => scrollTo("apple-runtimes") },
+    { key: "build", label: "Build data", size: sizes.buildData, hue: hues.buildData, onSelect: () => scrollTo("apple-build-data") },
+  ];
+  const total = readyTotal(segments);
+  const measuring = segments.some((segment) => segment.size.state === "measuring");
   const freeBytes = storage.runtimes.data?.freeBytes ?? null;
 
   return (
     <>
       <ModernSection
-        group="Apple Development"
+        group={GROUP}
         anchor="apple-xcode"
         title="Xcode"
         hint={`The Xcode simulators and builds use on ${machineName}.`}
         actions={
-          <button
-            type="button"
-            className="kit-icon-btn"
-            aria-label="Check again"
-            title="Check again"
-            onClick={storage.refreshApple}
-          >
+          <button type="button" className="kit-icon-btn" aria-label="Check again" title="Check again" onClick={storage.refreshApple}>
             <ArrowClockwise size={13} className={storage.runtimes.loading ? "animate-spin" : undefined} />
           </button>
         }
@@ -104,30 +95,28 @@ export function AppleToolsSection({
       </ModernSection>
 
       <ModernSection
-        group="Apple Development"
+        group={GROUP}
         anchor="apple-space"
         title="Space"
         hint="What simulators and Xcode builds keep on the disk, outside your projects. Build data and runtimes come back when they are needed; a deleted simulator takes its apps and data with it."
       >
         <div className="ade-dev-card">
           <DevToolsSpaceBar
-            format={bytes}
-            headline={known
-              ? <>Simulators and Xcode use <strong>{bytes(sum)}</strong> on {machineName}</>
-              : <>Measuring what simulators and Xcode use on {machineName}…</>}
-            footnote={freeBytes != null ? `${bytes(freeBytes)} free on the disk` : undefined}
-            segments={[
-              { key: "simulators", label: "Simulators", bytes: totals.simulators, measuring: storage.simulators.measuring, hue: DEV_TOOL_HUES.simulators, onSelect: () => scrollTo("apple-simulators") },
-              { key: "runtimes", label: "Runtimes", bytes: totals.runtimes, measuring: storage.runtimes.loading, hue: DEV_TOOL_HUES.runtimes, onSelect: () => scrollTo("apple-runtimes") },
-              { key: "build", label: "Build data", bytes: totals.buildData, measuring: storage.buildData.loading, hue: DEV_TOOL_HUES.buildData, onSelect: () => scrollTo("apple-build-data") },
-            ]}
+            format={formatMac}
+            segments={segments}
+            headline={total != null
+              ? <>Simulators and Xcode use <strong>{formatMac(total)}</strong> on {machineName}</>
+              : measuring
+                ? <>Measuring what simulators and Xcode use on {machineName}…</>
+                : <>Some sizes on {machineName} couldn't be read. <button type="button" className="ade-dev-inline-link" onClick={storage.refreshApple}>Try again</button></>}
+            footnote={freeBytes != null ? `${formatMac(freeBytes)} free on the disk` : undefined}
           />
         </div>
       </ModernSection>
 
-      <SimulatorsBlock storage={storage} pin={pin} bytes={bytes} />
-      <RuntimesBlock storage={storage} pin={pin} bytes={bytes} />
-      <BuildDataBlock storage={storage} pin={pin} bytes={bytes} buildRunningHint={xcode?.version ? "Quit Xcode" : "Wait for builds to finish"} />
+      <SimulatorsBlock storage={storage} pin={pin} />
+      <RuntimesBlock storage={storage} pin={pin} />
+      <BuildDataBlock storage={storage} pin={pin} />
     </>
   );
 }
@@ -138,14 +127,7 @@ function XcodeCard({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjec
   const { data, loading, error } = storage.runtimes;
   const [settingUp, setSettingUp] = React.useState(false);
   if (loading && !data) return <div className="ade-dev-card ade-dev-xcode" aria-busy="true"><span className="ade-dev-shimmer" /></div>;
-  if (error && !data) {
-    return (
-      <Banner
-        layout="inline"
-        model={{ id: "apple-xcode-read", tone: "warning", title: "Couldn't read Xcode", detail: error, actions: [{ label: "Try again", onClick: storage.refreshApple }] }}
-      />
-    );
-  }
+  if (error && !data) return <PartError id="apple-xcode-read" title="Couldn't read Xcode" error={error} onRetry={storage.refreshApple} />;
   const xcode = data?.xcode ?? null;
   if (!xcode?.version) {
     return (
@@ -171,10 +153,11 @@ function XcodeCard({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjec
       setSettingUp(false);
     }
   };
+  const latest = xcode.updateAvailable ? xcode.latest : null;
   const status = xcode.firstLaunchPending
     ? { tone: "warn", text: "Setup not finished" }
-    : xcode.updateAvailable && xcode.latest
-      ? { tone: "info", text: `${xcode.latest.version} is out` }
+    : latest
+      ? { tone: "info", text: `${latest.version} is out` }
       : { tone: "ok", text: "Up to date" };
   return (
     <div className="ade-dev-card ade-dev-xcode">
@@ -198,62 +181,11 @@ function XcodeCard({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjec
           {settingUp ? <CircleNotch size={12} className="animate-spin" /> : null}
           Finish setup
         </button>
-      ) : xcode.updateAvailable && xcode.latest ? (
-        <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => openExternalUrl(xcode.latest?.url || XCODE_APP_STORE_URL)}>
-          Get {xcode.latest.version}
+      ) : latest ? (
+        <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => openExternalUrl(latest.url || XCODE_APP_STORE_URL)}>
+          Get {latest.version}
         </button>
       ) : null}
-    </div>
-  );
-}
-
-/* ── Shared list pieces ──────────────────────────────────────────────── */
-
-function ListShell({
-  anchor,
-  title,
-  hint,
-  count,
-  actions,
-  children,
-}: {
-  anchor: string;
-  title: string;
-  hint: string;
-  count?: number | null;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <ModernSection group="Apple Development" anchor={anchor} title={count != null ? `${title} · ${count}` : title} hint={hint} actions={actions}>
-      {children}
-    </ModernSection>
-  );
-}
-
-function ShowAll({ total, open, onToggle }: { total: number; open: boolean; onToggle: () => void }) {
-  if (total <= LIST_PREVIEW) return null;
-  return (
-    <button type="button" className="ade-dev-showall" aria-expanded={open} onClick={onToggle}>
-      <CaretDown size={11} weight="bold" className="ade-dev-showall-caret" aria-hidden />
-      {open ? "Show fewer" : `Show all ${total}`}
-    </button>
-  );
-}
-
-function SizeCell({ value, measuring, bytes }: { value: number | null; measuring?: boolean; bytes: (value: number) => string }) {
-  if (value != null) return <span className="ade-dev-size">{bytes(value)}</span>;
-  return <span className="ade-dev-size" data-pending="true">{measuring ? "Measuring…" : "—"}</span>;
-}
-
-function PartError({ title, error, onRetry }: { title: string; error: string; onRetry: () => void }) {
-  return <Banner layout="inline" model={{ id: `dev-${title}`, tone: "warning", title, detail: error, actions: [{ label: "Try again", onClick: onRetry }] }} />;
-}
-
-function Skeleton() {
-  return (
-    <div className="ade-dev-list" aria-busy="true">
-      {[0, 1, 2].map((index) => <div key={index} className="ade-dev-row"><span className="ade-dev-shimmer" /></div>)}
     </div>
   );
 }
@@ -266,7 +198,7 @@ function familyGlyph(row: SimulatorRow) {
   return <DeviceMobile size={16} />;
 }
 
-function SimulatorsBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pin: OpenProjectBinding | null; bytes: (value: number) => string }) {
+function SimulatorsBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjectBinding | null }) {
   const { data, loading, error, measuring } = storage.simulators;
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -274,7 +206,7 @@ function SimulatorsBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pi
   const leftovers = rows.filter((row) => row.ownership === "ade-orphan");
 
   const remove = async (row: SimulatorRow) => {
-    const size = row.bytes != null ? bytes(row.bytes) : null;
+    const size = row.bytes != null ? formatMac(row.bytes) : null;
     const ok = await confirmDialog({
       title: `Delete ${row.sim.name}?`,
       message: `${row.sim.runtime}${size ? ` · ${size}` : ""}. Its apps and data go with it. You can make a new one any time.`,
@@ -285,8 +217,10 @@ function SimulatorsBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pi
     setBusy(row.sim.udid);
     try {
       await window.ade.iosSimulator.deviceDeleteInstalled({ udid: row.sim.udid, confirmedByUser: true }, pin);
+      captureDevToolsCleanup("simulator_deleted", "completed", row.bytes);
       showToast({ id: "apple-settings-sim-delete", tone: "success", title: `Deleted ${row.sim.name}`, ...(size ? { message: `Freed ${size}.` } : {}) });
     } catch (err) {
+      captureDevToolsCleanup("simulator_deleted", "failed");
       showToast({ id: "apple-settings-sim-delete", tone: "error", title: `Couldn't delete ${row.sim.name}`, message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(null);
@@ -297,19 +231,7 @@ function SimulatorsBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pi
   const cleanUp = async () => {
     setBusy("cleanup");
     try {
-      const result = await window.ade.iosSimulator.deviceCleanup({ powerOffIdle: true }, pin);
-      const parts = [
-        result.deleted.length ? `deleted ${result.deleted.length}` : null,
-        result.poweredOff.length ? `powered off ${result.poweredOff.length}` : null,
-      ].filter(Boolean);
-      const notice = cleanupNotice({
-        listUnreadable: result.errors.some((entry) => entry.udid === null),
-        deviceErrors: result.errors.filter((entry) => entry.udid !== null).length,
-        summary: parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : null,
-      });
-      const skipped = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
-      const text = [notice.message, skipped].filter(Boolean).join(" ");
-      showToast({ id: "apple-settings-cleanup", tone: notice.tone, title: notice.title, ...(text ? { message: text } : {}) });
+      showCleanupResult(await window.ade.iosSimulator.deviceCleanup({ powerOffIdle: true }, pin), "apple-settings-cleanup");
     } catch (err) {
       showToast({ id: "apple-settings-cleanup", tone: "error", title: "Couldn't clean up simulators", message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -320,7 +242,8 @@ function SimulatorsBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pi
 
   const shown = open ? rows : rows.slice(0, LIST_PREVIEW);
   return (
-    <ListShell
+    <DevToolsListSection
+      group={GROUP}
       anchor="apple-simulators"
       title="Simulators"
       count={data ? rows.length : null}
@@ -332,46 +255,28 @@ function SimulatorsBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pi
         </button>
       ) : undefined}
     >
-      {error && !data ? <PartError title="Couldn't read the simulators" error={error} onRetry={storage.refreshApple} /> : null}
-      {loading && !data ? <Skeleton /> : null}
+      {error && !data ? <PartError id="apple-settings-sims" title="Couldn't read the simulators" error={error} onRetry={storage.refreshApple} /> : null}
+      {loading && !data ? <ListSkeleton /> : null}
       {data && rows.length === 0 ? <div className="ade-dev-empty">No simulators on this Mac. Start one from a lane's Apple pane.</div> : null}
       {rows.length > 0 ? (
         <>
           <ul className="ade-dev-list" aria-label="Simulators">
             {shown.map((row) => (
-              <li key={row.sim.udid} className="ade-dev-row">
-                <span className="ade-dev-row-glyph" aria-hidden>{familyGlyph(row)}</span>
-                <span className="ade-dev-row-text">
-                  <span className="ade-dev-row-title">
-                    {row.sim.name}
-                    {row.sim.state.toLowerCase() === "booted" ? <span className="ade-dev-chip" data-tone="ok">Running</span> : null}
-                  </span>
-                  <span className="ade-dev-row-sub">
-                    {row.sim.runtime}
-                    <span className="ade-dev-owner" data-owner={row.laneHeld ? "lane" : row.ownership ?? "yours"}>{row.owner}</span>
-                  </span>
-                </span>
-                <SizeCell value={row.bytes} measuring={measuring} bytes={bytes} />
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  data-size="sm"
-                  data-variant="ghost"
-                  disabled={busy != null || row.deleteBlocked != null}
-                  title={row.deleteBlocked ?? `Delete ${row.sim.name}`}
-                  aria-label={`Delete ${row.sim.name}`}
-                  onClick={() => void remove(row)}
-                >
-                  {busy === row.sim.udid ? <CircleNotch size={12} className="animate-spin" /> : null}
-                  Delete
-                </button>
-              </li>
+              <DevToolRow
+                key={row.sim.udid}
+                glyph={familyGlyph(row)}
+                title={row.sim.name}
+                chips={row.sim.state.toLowerCase() === "booted" ? <span className="ade-dev-chip" data-tone="ok">Running</span> : null}
+                sub={<>{row.sim.runtime}<span className="ade-dev-owner" data-owner={row.laneHeld ? "lane" : row.ownership ?? "yours"}>{row.owner}</span></>}
+                size={<SizeCell value={row.bytes} measuring={measuring} format={formatMac} />}
+                action={<RowAction label="Delete" ariaLabel={`Delete ${row.sim.name}`} busy={busy === row.sim.udid} disabled={busy != null} blockedWhy={row.deleteBlocked} onClick={() => void remove(row)} />}
+              />
             ))}
           </ul>
           <ShowAll total={rows.length} open={open} onToggle={() => setOpen((value) => !value)} />
         </>
       ) : null}
-    </ListShell>
+    </DevToolsListSection>
   );
 }
 
@@ -382,21 +287,32 @@ function runtimeSub(entry: AppleRuntimeEntry): string {
   return [simulators, usedWhen(entry.lastUsedAt)].filter(Boolean).join(" · ");
 }
 
-function RuntimesBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pin: OpenProjectBinding | null; bytes: (value: number) => string }) {
+function RuntimesBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjectBinding | null }) {
   const { data, loading, error } = storage.runtimes;
   const [busy, setBusy] = React.useState(false);
   const runtimes = data?.runtimes ?? [];
   const leftovers = data?.leftovers ?? [];
   const replaceable = runtimes.filter((entry) => entry.superseded && entry.deletable && entry.id);
   const replaceableBytes = replaceable.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
+  const leftoverBytes = leftovers.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
+  const them = leftovers.length === 1 ? "it" : "them";
 
-  const run = async (work: (disposition: AppleRuntimeSimulatorDisposition) => Promise<Awaited<ReturnType<typeof window.ade.iosSimulator.runtimeDelete>>>, entries: AppleRuntimeEntry[], title: string) => {
+  const run = async (
+    work: (disposition: AppleRuntimeSimulatorDisposition) => Promise<AppleRuntimeDeleteResult>,
+    entries: AppleRuntimeEntry[],
+    title: string,
+  ) => {
     const disposition = await confirmRemoval({ title, entries, all: runtimes });
     if (!disposition) return;
     setBusy(true);
     try {
-      showRuntimeRemoval(await work(disposition));
+      const result = await work(disposition);
+      showRuntimeRemoval(result);
+      captureDevToolsCleanup("runtime_removed", result.errors.length ? "failed" : "completed", result.deleted.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0));
+      // CoreSimulator drops a removed runtime a moment later; read until it is gone.
+      await readRuntimesUntilGone(result.deleted.map((entry) => entry.id), pin).catch(() => null);
     } catch (err) {
+      captureDevToolsCleanup("runtime_removed", "failed");
       showToast({ id: "apple-runtime-remove", tone: "error", title: "The runtime was not removed", message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(false);
@@ -405,7 +321,8 @@ function RuntimesBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pin:
   };
 
   return (
-    <ListShell
+    <DevToolsListSection
+      group={GROUP}
       anchor="apple-runtimes"
       title="Runtimes"
       count={data ? runtimes.length : null}
@@ -419,82 +336,66 @@ function RuntimesBlock({ storage, pin, bytes }: { storage: DevToolsStorage; pin:
           onClick={() => void run((simulators) => window.ade.iosSimulator.runtimePrune({ simulators, confirmedByUser: true }, pin), replaceable, `Remove ${pluralCount(replaceable.length, "replaced runtime")}?`)}
         >
           {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
-          Remove replaced{replaceableBytes ? ` · ${bytes(replaceableBytes)}` : ""}
+          Remove replaced{replaceableBytes ? ` · ${formatMac(replaceableBytes)}` : ""}
         </button>
       ) : undefined}
     >
-      {error && !data ? <PartError title="Couldn't read the runtimes" error={error} onRetry={storage.refreshApple} /> : null}
-      {loading && !data ? <Skeleton /> : null}
+      {error && !data ? <PartError id="apple-settings-runtimes" title="Couldn't read the runtimes" error={error} onRetry={storage.refreshApple} /> : null}
+      {loading && !data ? <ListSkeleton rows={2} /> : null}
       {data && runtimes.length === 0 ? <div className="ade-dev-empty">No simulator runtimes yet. A lane's Apple pane installs the one Xcode needs.</div> : null}
       {runtimes.length > 0 ? (
         <ul className="ade-dev-list" aria-label="Runtimes">
-          {runtimes.map((entry) => (
-            <li key={entry.runtimeIdentifier} className="ade-dev-row">
-              <span className="ade-dev-row-glyph" aria-hidden><Stack size={16} /></span>
-              <span className="ade-dev-row-text">
-                <span className="ade-dev-row-title">
-                  {entry.name}
-                  {entry.newest ? <span className="ade-dev-chip">Newest</span> : entry.superseded ? <span className="ade-dev-chip" data-tone="muted">Replaced</span> : null}
-                </span>
-                <span className="ade-dev-row-sub">{runtimeSub(entry)}</span>
-              </span>
-              <SizeCell value={entry.sizeBytes} bytes={bytes} />
-              <button
-                type="button"
-                className="ade-modern-btn"
-                data-size="sm"
-                data-variant="ghost"
-                disabled={busy || !entry.deletable || !entry.id}
-                title={entry.deletable && entry.id ? `Remove ${entry.name}` : "macOS manages this runtime"}
-                aria-label={`Remove ${entry.name}`}
-                onClick={() => void run((simulators) => window.ade.iosSimulator.runtimeDelete({ id: entry.id!, simulators, confirmedByUser: true }, pin), [entry], `Remove ${entry.name}?`)}
-              >
-                Remove
-              </button>
-            </li>
-          ))}
+          {runtimes.map((entry) => {
+            const id = entry.deletable ? entry.id : null;
+            return (
+              <DevToolRow
+                key={entry.runtimeIdentifier}
+                glyph={<Stack size={16} />}
+                title={entry.name}
+                chips={entry.newest ? <span className="ade-dev-chip">Newest</span> : entry.superseded ? <span className="ade-dev-chip" data-tone="muted">Replaced</span> : null}
+                sub={runtimeSub(entry)}
+                size={<SizeCell value={entry.sizeBytes} format={formatMac} />}
+                action={(
+                  <RowAction
+                    label="Remove"
+                    ariaLabel={`Remove ${entry.name}`}
+                    disabled={busy}
+                    blockedWhy={id ? null : "macOS manages this runtime"}
+                    onClick={() => {
+                      if (id) void run((simulators) => window.ade.iosSimulator.runtimeDelete({ id, simulators, confirmedByUser: true }, pin), [entry], `Remove ${entry.name}?`);
+                    }}
+                  />
+                )}
+              />
+            );
+          })}
         </ul>
       ) : null}
       {leftovers.length > 0 ? (
         <div className="ade-dev-note">
           {pluralCount(leftovers.length, "old runtime download is", "old runtime downloads are")} still on the disk
-          {leftovers.some((entry) => entry.sizeBytes != null) ? ` (${bytes(leftovers.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0))})` : ""}
-          . macOS protects {leftovers.length === 1 ? "it" : "them"}: restart the Mac, then remove {leftovers.length === 1 ? "it" : "them"} in Xcode › Settings › Components.
+          {leftoverBytes ? ` (${formatMac(leftoverBytes)})` : ""}. macOS protects {them}: restart the Mac, then remove {them} in Xcode › Settings › Components.
         </div>
       ) : null}
-    </ListShell>
+    </DevToolsListSection>
   );
 }
 
 /* ── Xcode build data ────────────────────────────────────────────────── */
-
-/** `/Users/ada/code/x` → `~/code/x`: the home folder says nothing a person needs. */
-function homeRelative(path: string | null): string | null {
-  return path ? path.replace(/^\/Users\/[^/]+(?=\/|$)/, "~") : null;
-}
 
 function buildDataSub(entry: XcodeDerivedDataEntry): string {
   if (entry.kind === "module-cache") return "Shared by every project";
   return [usedWhen(entry.lastUsedAt), homeRelative(entry.workspacePath)].filter(Boolean).join(" · ");
 }
 
-function BuildDataBlock({
-  storage,
-  pin,
-  bytes,
-  buildRunningHint,
-}: {
-  storage: DevToolsStorage;
-  pin: OpenProjectBinding | null;
-  bytes: (value: number) => string;
-  buildRunningHint: string;
-}) {
+function BuildDataBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjectBinding | null }) {
   const { data, loading, error } = storage.buildData;
   const [open, setOpen] = React.useState(false);
   const [busy, setBusy] = React.useState<string | null>(null);
   // Biggest first, like every list on this page.
   const entries = React.useMemo(() => [...(data?.entries ?? [])].sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1)), [data]);
   const blocked = data?.buildRunning === true;
+  const blockedWhy = blocked ? "Quit Xcode and wait for builds to finish, then try again." : null;
   const stale = entries.filter((entry) => entry.kind === "project" && ((daysSince(entry.lastUsedAt) ?? 0) >= STALE_BUILD_DATA_DAYS || entry.workspaceMissing));
   const staleBytes = stale.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
 
@@ -505,10 +406,10 @@ function BuildDataBlock({
       message: "Xcode builds it again the next time you build, so the first build after this is slower.",
       children: targets.length > 1 ? (
         <ul className="ade-dev-confirm-list">
-          {targets.map((entry) => <li key={entry.path}>{entry.name}{entry.sizeBytes != null ? <span>{bytes(entry.sizeBytes)}</span> : null}</li>)}
+          {targets.map((entry) => <li key={entry.path}>{entry.name}{entry.sizeBytes != null ? <span>{formatMac(entry.sizeBytes)}</span> : null}</li>)}
         </ul>
       ) : undefined,
-      confirmLabel: freed ? `Delete · free ${bytes(freed)}` : "Delete",
+      confirmLabel: freed ? `Delete · free ${formatMac(freed)}` : "Delete",
       destructive: true,
     });
     if (!ok) return;
@@ -516,13 +417,16 @@ function BuildDataBlock({
     try {
       const result = await window.ade.iosSimulator.derivedDataDelete({ paths: targets.map((entry) => entry.path), confirmedByUser: true }, pin);
       const failed = result.errors.length > 0;
+      captureDevToolsCleanup("build_data_deleted", failed && !result.deleted.length ? "failed" : "completed", result.freedBytes);
+      const freedWords = `${result.freedIsLowerBound ? "at least " : ""}${formatMac(result.freedBytes)}`;
       showToast({
         id: "apple-settings-build-data",
         tone: failed ? (result.deleted.length ? "warning" : "error") : "success",
-        title: failed && !result.deleted.length ? "Build data was not deleted" : `Freed ${bytes(result.freedBytes)}`,
+        title: failed && !result.deleted.length ? "Build data was not deleted" : `Freed ${freedWords}`,
         ...(failed ? { message: result.errors[0]!.message } : {}),
       });
     } catch (err) {
+      captureDevToolsCleanup("build_data_deleted", "failed");
       showToast({ id: "apple-settings-build-data", tone: "error", title: "Build data was not deleted", message: err instanceof Error ? err.message : String(err) });
     } finally {
       setBusy(null);
@@ -532,7 +436,8 @@ function BuildDataBlock({
 
   const shown = open ? entries : entries.slice(0, LIST_PREVIEW);
   return (
-    <ListShell
+    <DevToolsListSection
+      group={GROUP}
       anchor="apple-build-data"
       title="Xcode build data"
       count={data?.supported ? entries.length : null}
@@ -543,53 +448,42 @@ function BuildDataBlock({
           className="ade-modern-btn"
           data-size="sm"
           disabled={busy != null || blocked}
-          title={blocked ? `${buildRunningHint}, then try again.` : undefined}
+          title={blockedWhy ?? undefined}
           onClick={() => void remove(stale, `Delete build data for ${pluralCount(stale.length, "project")}?`, "stale")}
         >
           {busy === "stale" ? <CircleNotch size={12} className="animate-spin" /> : null}
-          Delete unused{staleBytes ? ` · ${bytes(staleBytes)}` : ""}
+          Delete unused{staleBytes ? ` · ${formatMac(staleBytes)}` : ""}
         </button>
       ) : undefined}
     >
-      {error && !data ? <PartError title="Couldn't read Xcode build data" error={error} onRetry={storage.refreshApple} /> : null}
-      {loading && !data ? <Skeleton /> : null}
+      {error && !data ? <PartError id="apple-settings-build-data-read" title="Couldn't read Xcode build data" error={error} onRetry={storage.refreshApple} /> : null}
+      {loading && !data ? <ListSkeleton /> : null}
       {blocked ? (
-        <div className="ade-dev-note" data-tone="warn">Xcode is open or building, so build data can't be deleted right now. {buildRunningHint}, then check again.</div>
+        <Banner
+          layout="inline"
+          model={{ id: "apple-build-data-busy", tone: "warning", title: "Xcode is open or building", detail: "Build data can't be deleted while a build may be writing to it. Quit Xcode, then check again.", actions: [{ label: "Check again", onClick: storage.refreshApple }] }}
+        />
       ) : null}
       {data && (!data.exists || entries.length === 0) ? <div className="ade-dev-empty">No build data. Xcode makes it the first time it builds a project.</div> : null}
       {entries.length > 0 ? (
         <>
           <ul className="ade-dev-list" aria-label="Xcode build data">
             {shown.map((entry) => (
-              <li key={entry.path} className="ade-dev-row">
-                <span className="ade-dev-row-glyph" aria-hidden><Hammer size={16} /></span>
-                <span className="ade-dev-row-text">
-                  <span className="ade-dev-row-title">
-                    {entry.name}
-                    {entry.workspaceMissing ? <span className="ade-dev-chip" data-tone="muted">Project gone</span> : null}
-                  </span>
-                  <span className="ade-dev-row-sub" title={entry.workspacePath ?? entry.path}>{buildDataSub(entry)}</span>
-                </span>
-                <SizeCell value={entry.sizeBytes} measuring={loading} bytes={bytes} />
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  data-size="sm"
-                  data-variant="ghost"
-                  disabled={busy != null || blocked}
-                  title={blocked ? `${buildRunningHint}, then try again.` : `Delete ${entry.name}'s build data`}
-                  aria-label={`Delete build data: ${entry.name}`}
-                  onClick={() => void remove([entry], `Delete ${entry.name}'s build data?`, entry.path)}
-                >
-                  {busy === entry.path ? <CircleNotch size={12} className="animate-spin" /> : null}
-                  Delete
-                </button>
-              </li>
+              <DevToolRow
+                key={entry.path}
+                glyph={<Hammer size={16} />}
+                title={entry.name}
+                chips={entry.workspaceMissing ? <span className="ade-dev-chip" data-tone="muted">Project gone</span> : null}
+                sub={buildDataSub(entry)}
+                subTitle={entry.workspacePath ?? entry.path}
+                size={<SizeCell value={entry.sizeBytes} measuring={loading} format={formatMac} />}
+                action={<RowAction label="Delete" ariaLabel={`Delete build data: ${entry.name}`} busy={busy === entry.path} disabled={busy != null} blockedWhy={blockedWhy} onClick={() => void remove([entry], `Delete ${entry.name}'s build data?`, entry.path)} />}
+              />
             ))}
           </ul>
           <ShowAll total={entries.length} open={open} onToggle={() => setOpen((value) => !value)} />
         </>
       ) : null}
-    </ListShell>
+    </DevToolsListSection>
   );
 }

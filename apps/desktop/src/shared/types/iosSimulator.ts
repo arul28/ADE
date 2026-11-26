@@ -2122,6 +2122,8 @@ export type XcodeDerivedDataDeleteResult = {
   deleted: Array<{ path: string; bytes: number | null }>;
   errors: Array<{ path: string; message: string }>;
   freedBytes: number;
+  /** Some sizes were cut off by the time limit: the person freed at least `freedBytes`. */
+  freedIsLowerBound?: boolean;
 };
 
 /**
