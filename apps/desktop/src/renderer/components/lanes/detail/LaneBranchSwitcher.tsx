@@ -21,11 +21,14 @@ import { laneDisplayName } from "../../../../shared/laneDisplayName";
 import { LaneActiveWorkDialog } from "./LaneActiveWorkDialog";
 
 type PendingBranchSwitch = {
+  scope: BranchSwitchScope;
   branchName: string;
   mode: "existing" | "create";
   startPoint?: string;
   activeWork: LaneBranchActiveWorkItem[];
 };
+
+type BranchSwitchScope = { laneId: string; pinKey: string };
 
 const fieldStyle: React.CSSProperties = {
   width: "100%",
@@ -97,6 +100,11 @@ export function LaneBranchSwitcher({
   // Read through a ref so a rebuilt pin with the same key changes nothing.
   const pinRef = useRef(pin);
   pinRef.current = pin;
+  const scopeRef = useRef<BranchSwitchScope>({ laneId: lane.id, pinKey: pin.key });
+  if (scopeRef.current.laneId !== lane.id || scopeRef.current.pinKey !== pin.key) {
+    scopeRef.current = { laneId: lane.id, pinKey: pin.key };
+  }
+  const scope = scopeRef.current;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -111,7 +119,11 @@ export function LaneBranchSwitcher({
   // linger in lane B's dropdown until the new fetch resolves.
   useEffect(() => {
     setError(null);
-  }, [lane.id]);
+    setPendingSwitch(null);
+    setBusy(false);
+    inFlightSwitchRef.current = null;
+    setSwitchOperationId(null);
+  }, [scope]);
 
   useEffect(() => {
     setBranches([]);
@@ -177,6 +189,8 @@ export function LaneBranchSwitcher({
     startPoint?: string;
     acknowledgeActiveWork?: boolean;
   }) => {
+    if (scopeRef.current !== scope) return;
+    const switchPin = pinRef.current;
     if (lane.status.dirty) {
       setError({ message: `Cannot switch branches while ${laneDisplayName(lane)} has uncommitted changes. Commit, stash, or discard changes first.`, kind: "status" });
       return;
@@ -194,7 +208,8 @@ export function LaneBranchSwitcher({
           branchName,
           mode,
           startPoint: request.startPoint,
-        }, pinRef.current);
+        }, switchPin);
+        if (scopeRef.current !== scope) return;
         if (preview.duplicateLaneId) {
           setError({ message: `Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`, kind: "status" });
           return;
@@ -206,7 +221,7 @@ export function LaneBranchSwitcher({
         if (preview.activeWork.length > 0) {
           // The dialog says what is running and asks; the menu steps aside.
           setOpen(false);
-          setPendingSwitch({ branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
+          setPendingSwitch({ scope, branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
           return;
         }
       }
@@ -214,7 +229,7 @@ export function LaneBranchSwitcher({
         // The menu closes first so the confirm is not drawn under it.
         setOpen(false);
         const go = await confirmSwitch({ from: laneBranchLabel(lane.branchRef), to: branchNameFromLaneRef(branchName) });
-        if (!go) return;
+        if (!go || scopeRef.current !== scope) return;
       }
       const operationId = crypto.randomUUID();
       inFlightSwitchRef.current = operationId;
@@ -227,20 +242,27 @@ export function LaneBranchSwitcher({
           startPoint: request.startPoint,
           acknowledgeActiveWork: request.acknowledgeActiveWork,
           operationId,
-        }, pinRef.current);
+        }, switchPin);
       } finally {
-        inFlightSwitchRef.current = null;
-        setSwitchOperationId(null);
+        if (inFlightSwitchRef.current === operationId) {
+          inFlightSwitchRef.current = null;
+          setSwitchOperationId(null);
+        }
       }
+      if (scopeRef.current !== scope) return;
       await refreshLanes();
       // Another machine has no change feed here; ask the shared union to re-read it.
-      if (pinRef.current && machineId) requestCrossMachineLanesForMachine(machineId);
-      setBranches(await window.ade.git.listBranches({ laneId: lane.id }, pinRef.current));
+      if (machineId) requestCrossMachineLanesForMachine(machineId);
+      if (scopeRef.current !== scope) return;
+      const latest = await window.ade.git.listBranches({ laneId: lane.id }, switchPin);
+      if (scopeRef.current !== scope) return;
+      setBranches(latest);
       setPendingSwitch(null);
       setNewBranchName("");
       succeeded = true;
       onSwitched?.(branchName);
     } catch (err) {
+      if (scopeRef.current !== scope) return;
       const raw = extractError(err);
       const message = formatBranchCheckoutError(raw, laneDisplayName(lane));
       // The formatter only rewrites git's "commit or stash first" refusal.
@@ -248,10 +270,12 @@ export function LaneBranchSwitcher({
       // The error shows in the menu; reopen it when a dialog had closed it.
       if (request.acknowledgeActiveWork) setOpen(true);
     } finally {
-      setBusy(false);
-      if (succeeded) setOpen(false);
+      if (scopeRef.current === scope) {
+        setBusy(false);
+        if (succeeded) setOpen(false);
+      }
     }
-  }, [confirmSwitch, lane, machineId, onSwitched, refreshLanes]);
+  }, [confirmSwitch, lane, machineId, onSwitched, refreshLanes, scope]);
 
   const stopSwitch = useCallback((operationId: string) => {
     setSwitchOperationId(null);
@@ -480,7 +504,7 @@ export function LaneBranchSwitcher({
             ) : null}
           </div>
       </AnchoredMenu>
-      {pendingSwitch ? (
+      {pendingSwitch?.scope === scope ? (
         <LaneActiveWorkDialog
           open
           laneId={lane.id}

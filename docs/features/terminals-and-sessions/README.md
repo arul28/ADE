@@ -766,6 +766,9 @@ Renderer surfaces:
     `snoozedUntil`. One `setTimeout` at the soonest deadline (at most 10 min)
     re-derives the partition.
   - The board model (`buildWorkBoardModel`, `lanePrWaitingReason`).
+  - Pinned chats move to the top of their lane or board column immediately.
+    Status and Time show a Pinned group across machines. A chat's pin is
+    saved on its owning runtime and appears on other connected devices.
   - Chips, pins and sort are saved per project; a deeplink override is
     transient and clears on any change. `reorderWorkLanes` switches to Manual.
 - `apps/desktop/src/renderer/components/terminals/workLaneOrder.ts`,

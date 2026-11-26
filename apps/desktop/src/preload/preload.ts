@@ -965,6 +965,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -12979,10 +12980,7 @@ const adeBridge = {
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyResize, arg);
     },
-    dispose: async (arg: {
-      ptyId: string;
-      sessionId?: string;
-    }, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
+    dispose: async (arg: PtyDisposeArgs, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
       if (pin) {
         return callPinnedRuntimeAction<PtyDisposeResult>(pin, "pty", "dispose", { args: arg });
       }

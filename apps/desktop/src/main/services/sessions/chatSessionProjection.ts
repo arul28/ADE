@@ -24,7 +24,7 @@ type ChatProjectionServices = {
   agentChatService?: {
     listSessions(
       laneId?: string,
-      options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeSideChats?: boolean; sessionIds?: readonly string[] },
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeSideChats?: boolean; sessionIds?: readonly string[]; openOnly?: boolean },
     ): Promise<AgentChatSessionSummary[]>;
     getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
     getSessionIdentityKey(sessionId: string): Promise<AgentChatIdentityKey | null>;
@@ -281,6 +281,7 @@ export function projectChatOntoSession(
 export function projectChatSummariesOntoSessions(
   sessions: TerminalSessionSummary[],
   allChats: AgentChatSessionSummary[],
+  includeSideChats = false,
 ): TerminalSessionSummary[] {
   const hiddenSessionIds = new Set<string>();
   /**
@@ -295,8 +296,8 @@ export function projectChatSummariesOntoSessions(
   const identityKeyBySessionId = new Map<string, string>();
   const chatSummaryBySessionId = new Map<string, AgentChatSessionSummary>();
   for (const chat of allChats) {
-    // A side chat lives inside its main chat, so it is never a roster row.
-    if (chat.sideChatParentSessionId) {
+    // Side chats are absent from Work but count when checking a lane's open work.
+    if (chat.sideChatParentSessionId && !includeSideChats) {
       hiddenSessionIds.add(chat.sessionId);
       continue;
     }
@@ -330,7 +331,7 @@ export async function listSessionsWithChatProjection(
     .filter(sessionNeedsResumeTargetHydration)
     .slice(0, 10)
     .map((session) => session.id);
-  if (missingResumeTargetIds.length > 0 && services.ptyService?.ensureResumeTargets) {
+  if (!args.openOnly && missingResumeTargetIds.length > 0 && services.ptyService?.ensureResumeTargets) {
     try {
       await services.ptyService.ensureResumeTargets(missingResumeTargetIds);
       listedSessions = services.sessionService.list(args);
@@ -363,6 +364,7 @@ export async function listSessionsWithChatProjection(
         includeAutomation: true,
         includeSideChats: true,
         sessionIds: shownChatIds,
+        ...(args.openOnly ? { openOnly: true } : {}),
       });
       const summarized = new Set(allChats.map((chat) => chat.sessionId));
       const readIds = new Set<string>(shownChatIds.filter((id) => !summarized.has(id)));
@@ -382,9 +384,11 @@ export async function listSessionsWithChatProjection(
         laneId: laneId || null,
         error: getErrorMessage(error),
       });
+      if (args.openOnly) throw error;
     }
   }
-  return withCliCrossMachineMoves(services, projectChatSummariesOntoSessions(sessions, allChats));
+  const projected = projectChatSummariesOntoSessions(sessions, allChats, args.openOnly);
+  return args.openOnly ? projected : withCliCrossMachineMoves(services, projected);
 }
 
 /**

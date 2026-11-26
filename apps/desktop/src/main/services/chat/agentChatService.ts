@@ -73843,12 +73843,14 @@ export function createAgentChatService(args: {
       /** Side chats live inside their main chat and are left out unless asked for. */
       includeSideChats?: boolean;
       sessionIds?: readonly string[];
+      openOnly?: boolean;
     },
   ): Promise<AgentChatSessionSummary[]> => {
     await scheduledWorkReady;
     const rows = sessionService.list({
       ...(laneId ? { laneId } : {}),
-      limit: 500,
+      limit: options?.openOnly ? null : 500,
+      ...(options?.openOnly ? { openOnly: true, includeArchived: false } : {}),
       toolTypes: CHAT_SESSION_TOOL_TYPES,
     });
     const chatRows = rows.filter((row) => isChatToolType(row.toolType));

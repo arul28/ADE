@@ -4135,6 +4135,32 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
     expect(migrated?.pinnedSessionIds).toEqual(["session-snoozed", "session-not-loaded"]);
   });
 
+  it("keeps the latest pin choice visible through an older failed write", async () => {
+    const first = Promise.withResolvers<void>();
+    const updateMeta = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+    (window as any).ade.sessions.updateMeta = updateMeta;
+    const { result } = await renderWithSessions([runningSession]);
+    const row = () => result.current.sessions.find((session) => session.id === runningSession.id)!;
+
+    let pin!: Promise<string[]>;
+    await act(async () => { pin = result.current.setSessionsPinned([row()], true); });
+    expect(row().pinned).toBe(true);
+    let unpin!: Promise<string[]>;
+    let pinAgain!: Promise<string[]>;
+    await act(async () => { unpin = result.current.setSessionsPinned([row()], false); });
+    expect(row().pinned).toBe(false);
+    await act(async () => { pinAgain = result.current.setSessionsPinned([row()], true); });
+    expect(row().pinned).toBe(true);
+    expect(updateMeta.mock.calls.map(([args]) => args.pinned)).toEqual([true]);
+
+    await act(async () => {
+      first.reject(new Error("Pin write failed"));
+      await Promise.all([pin, unpin, pinAgain]);
+    });
+    expect(updateMeta.mock.calls.map(([args]) => args.pinned)).toEqual([true, false, true]);
+    expect(row().pinned).toBe(true);
+  });
+
   it("narrows the buckets and the by-lane grouping but not the exported filtered list", async () => {
     seedViewState({ workSessionFilters: { status: ["snoozed"], tool: [], hasPr: false, dirtyLane: false, machine: [] } });
     const { result } = await renderWithSessions([runningSession, snoozedSession]);

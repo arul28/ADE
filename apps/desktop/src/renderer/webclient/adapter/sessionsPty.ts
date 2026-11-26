@@ -661,6 +661,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId") || terminalRegistry.sessionForPty(stringField(record, "ptyId"));
       if (sessionId) unsubscribeSession(sessionId);
+      if (record.confirmProcessExit === true) {
+        return await commands.call<PtyDisposeResult>("work.stopRuntime", {
+          sessionId,
+          ptyId: stringField(record, "ptyId"),
+          confirmProcessExit: true,
+        }, { ...mutation, authoritative: true });
+      }
       return await commands.call<PtyDisposeResult>("work.stopRuntime", { sessionId }, mutation);
     },
     setDataSubscriptions: async (args: unknown, pin?: RuntimePinArg) => {

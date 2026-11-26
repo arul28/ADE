@@ -734,12 +734,20 @@ export function patchCrossMachineSessionsPinned(
   binding: OpenProjectBinding,
   sessionIds: ReadonlySet<string>,
   pinned: boolean,
+  writing = false,
 ): string | null {
   // Held until that machine's read agrees, so a read that started before the
   // write cannot flip the row back.
   const held = pendingForeignPinsByBinding.get(binding.key) ?? new Map();
   const expiresAtMs = Date.now() + FOREIGN_PENDING_PIN_TTL_MS;
-  for (const id of sessionIds) held.set(id, { pinned, expiresAtMs });
+  const optimistic = pendingForeignOptimisticSessionsByBinding.get(binding.key);
+  for (const id of sessionIds) {
+    held.set(id, { pinned, expiresAtMs, writing });
+    const entry = optimistic?.get(id);
+    if (entry && Boolean(entry.session.pinned) !== pinned) {
+      optimistic?.set(id, { ...entry, session: { ...entry.session, pinned } });
+    }
+  }
   pendingForeignPinsByBinding.set(binding.key, held);
   const store = rootAppStoreApi.getState();
   const existing = machineEntryForBinding(store, binding);
@@ -761,7 +769,7 @@ export function patchCrossMachineSessionsPinned(
 }
 
 /** A pin shown before its write lands, per machine binding and session id. */
-const pendingForeignPinsByBinding = new Map<string, Map<string, { pinned: boolean; expiresAtMs: number }>>();
+const pendingForeignPinsByBinding = new Map<string, Map<string, { pinned: boolean; expiresAtMs: number; writing: boolean }>>();
 const FOREIGN_PENDING_PIN_TTL_MS = 15_000;
 
 /** Keep a pin the person just set over a read of that machine that predates it. */
@@ -773,14 +781,14 @@ function applyPendingForeignPins(
   const held = pendingForeignPinsByBinding.get(binding.key);
   if (!held?.size) return sessions;
   for (const [id, entry] of held) {
-    if (entry.expiresAtMs <= nowMs) held.delete(id);
+    if (!entry.writing && entry.expiresAtMs <= nowMs) held.delete(id);
   }
   let changed = false;
   const next = sessions.map((session) => {
     const entry = held.get(session.id);
     if (!entry) return session;
     if (Boolean(session.pinned) === entry.pinned) {
-      held.delete(session.id);
+      if (!entry.writing) held.delete(session.id);
       return session;
     }
     changed = true;

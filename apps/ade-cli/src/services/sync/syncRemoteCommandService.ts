@@ -1,6 +1,6 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
-import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
+import { fallbackUnprojectedChatSession, listSessionsWithChatProjection } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
 import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
@@ -2286,7 +2286,9 @@ function parseListSessionsArgs(value: Record<string, unknown>): ListSessionsArgs
   return {
     ...(laneId ? { laneId } : {}),
     ...(status ? { status } : {}),
-    ...(typeof limit === "number" ? { limit } : {}),
+    ...(value.limit === null ? { limit: null } : typeof limit === "number" ? { limit } : {}),
+    ...(value.openOnly === true ? { openOnly: true } : {}),
+    ...(value.includeArchived === false ? { includeArchived: false } : {}),
   };
 }
 
@@ -4680,7 +4682,10 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
     args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
   register("work.listSessions", { viewerAllowed: true }, async (payload) => {
-    const sessions = await listRemoteWorkSessions(args, parseListSessionsArgs(payload));
+    const filters = parseListSessionsArgs(payload);
+    const sessions = filters.openOnly
+      ? await listSessionsWithChatProjection(args, filters)
+      : await listRemoteWorkSessions(args, filters);
     // `conditional: true` (newer phones) asks for `{ sessions, signature,
     // notModified }`, so a reconnect whose list did not change downloads a
     // signature instead of up to 200 rows. Without it the reply stays the bare
@@ -5104,6 +5109,11 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("work.stopRuntime", { viewerAllowed: true, queueable: true }, async (payload) => {
     const { sessionId } = parseStopRuntimeArgs(payload);
     const session = args.sessionService.get(sessionId);
+    if (payload.confirmProcessExit === true) {
+      const ptyId = requireString(payload.ptyId, "A terminal is required to confirm its exit.");
+      if (session?.ptyId !== ptyId) return { disposed: false, reason: "session-mismatch", processTreeExited: false };
+      return args.ptyService.disposeWithExitReceipt({ ptyId, sessionId });
+    }
     if (session?.ptyId) {
       await args.ptyService.dispose({ ptyId: session.ptyId, sessionId });
     }

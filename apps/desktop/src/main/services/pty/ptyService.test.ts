@@ -7052,6 +7052,40 @@ describe("ptyService", () => {
   });
 
   describe("dispose", () => {
+    it("confirms exit only after the terminal's foreground job leaves its process group", async () => {
+      vi.useFakeTimers();
+      setPlatform("darwin");
+      let jobAlive = true;
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (signal !== 0 || (jobAlive && (pid === 45678 || pid === -45678))) return true;
+        throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
+      });
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args.at(-1);
+        if (typeof callback === "function") callback(null, "12345 1 12345 45678\n45678 12345 45678 45678\n", "");
+        return { kill: vi.fn() };
+      });
+      try {
+        const { service, sessionService } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24 });
+        const onReceipt = vi.fn();
+        const confirmation = service.disposeWithExitReceipt({ ptyId, sessionId }).then(onReceipt);
+
+        await vi.advanceTimersByTimeAsync(100);
+        expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({ sessionId, status: "disposed" }));
+        expect(onReceipt).not.toHaveBeenCalled();
+
+        jobAlive = false;
+        await vi.advanceTimersByTimeAsync(100);
+        await confirmation;
+        expect(onReceipt).toHaveBeenCalledWith({ disposed: true, reason: "disposed", processTreeExited: true });
+      } finally {
+        kill.mockRestore();
+        setPlatform(originalPlatform);
+        vi.useRealTimers();
+      }
+    });
+
     it("kills the PTY and ends the session", async () => {
       const { service, mockPty, sessionService, broadcastExit } = createHarness();
       const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24 });

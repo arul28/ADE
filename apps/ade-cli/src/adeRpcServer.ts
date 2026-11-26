@@ -10531,7 +10531,10 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (method === "pty.dispose") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return runtime.ptyService.dispose(ptyArgs as Parameters<typeof runtime.ptyService.dispose>[0]);
+        const args = ptyArgs as import("../../desktop/src/shared/types").PtyDisposeArgs;
+        return args.confirmProcessExit === true
+          ? runtime.ptyService.disposeWithExitReceipt(args)
+          : runtime.ptyService.dispose(args);
       }
       if (method === "pty.list") {
         return { sessions: listAuthorizedPtySessions(runtime, session, method, ptyArgs) };

@@ -658,6 +658,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeArgs,
   PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
@@ -11887,8 +11888,9 @@ export function registerIpc({
     requirePtyService().resize(arg);
   });
 
-  handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> => {
-    return requirePtyService().dispose(arg);
+  handle(IPC.ptyDispose, async (_event, arg: PtyDisposeArgs): Promise<PtyDisposeResult> => {
+    const pty = requirePtyService();
+    return arg.confirmProcessExit === true ? pty.disposeWithExitReceipt(arg) : pty.dispose(arg);
   });
 
   handle(IPC.ptyShellSettingsGet, async () => requirePtyService().getShellSettings());

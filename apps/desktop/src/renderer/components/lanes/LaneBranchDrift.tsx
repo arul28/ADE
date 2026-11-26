@@ -343,7 +343,18 @@ export function LaneBranchComposerChip({
   const adoption = useRecentBranchAdoption(pin, laneId, laneBranchRef);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState<LaneBranchDriftResolution | null>(null);
-  const [activeWorkPrompt, setActiveWorkPrompt] = useState<LaneBranchDriftResolution | null>(null);
+  const [activeWorkRequest, setActiveWorkPrompt] = useState<{
+    laneId: string;
+    pinKey: string;
+    headBranchRef: string;
+    resolution: LaneBranchDriftResolution;
+  } | null>(null);
+  const activeWorkPrompt = activeWorkRequest
+    && activeWorkRequest.laneId === laneId
+    && activeWorkRequest.pinKey === pinKey
+    && activeWorkRequest.headBranchRef === drift?.headBranchRef
+    ? activeWorkRequest.resolution
+    : null;
   const laneName = useLaneDisplayNameById(laneId);
 
   const visible = Boolean(laneId && drift && armed);
@@ -378,7 +389,9 @@ export function LaneBranchComposerChip({
       // the right default — but without a way through it is a dead end. Offer an
       // explicit confirm that retries with the acknowledgement, the same shape the
       // lane list uses for its own branch switch.
-      if (isActiveWorkRefusal(message)) setActiveWorkPrompt(resolution);
+      if (isActiveWorkRefusal(message)) {
+        setActiveWorkPrompt({ laneId, pinKey: pin.key, headBranchRef: drift.headBranchRef, resolution });
+      }
       else toastSwitchFailure(laneId, message, resolution === "keep-head" ? "keep" : "switch");
     } finally {
       setPending(null);
@@ -397,7 +410,7 @@ export function LaneBranchComposerChip({
   }, [drift, driftKind]);
 
   if (!visible || !drift) {
-    return adoption && laneId && pin ? <LaneBranchAdoptedChip laneId={laneId} adoption={adoption} pin={pin} /> : null;
+    return adoption && laneId && pin ? <LaneBranchAdoptedChip key={adoptionKey(pin.key, laneId)} laneId={laneId} adoption={adoption} pin={pin} /> : null;
   }
 
   const busy = pending != null;

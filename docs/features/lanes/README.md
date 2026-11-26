@@ -1213,6 +1213,11 @@ lane creation do not request suggestions or assign an emoji.
 ## Branch switching inside a lane
 
 A lane can swap its checked-out branch without being deleted/recreated.
+When a lane has open work, the desktop and web branch picker shows its chats
+and terminals with their status and owning machine. Wait for running work
+to finish, stop it and switch, switch without stopping, or cancel. Stop and
+switch waits for the host to confirm that stopped terminal process trees exited
+and checks the lane again before checkout.
 The `lane_branch_profiles` table remembers per-(lane, branch) state
 (`base_ref`, `source_branch_ref`, last checkout time) for branch switching.
 

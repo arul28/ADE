@@ -53,6 +53,7 @@ import {
   resolvePiSessionFile,
 } from "../chat/piSessionStore";
 import {
+  killWindowsProcessTreeAsync,
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
   windowsCommandLineOverLimitMessage,
@@ -2884,6 +2885,7 @@ export function createPtyService({
   disposePtyBackend?: () => void;
 }) {
   const ptys = new Map<string, PtyEntry>();
+  const stoppedWindowsTrees = new WeakSet<PtyEntry>();
   /**
    * The account a new CLI session starts on when it names none, the same pick
    * a new chat makes. Set once the chat service exists, which is created after
@@ -10623,6 +10625,50 @@ export function createPtyService({
       });
     },
 
+    async disposeWithExitReceipt({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> {
+      const entry = ptys.get(ptyId);
+      const pid = entry?.pty.pid;
+      if (!entry || entry.disposed || !pid || (sessionId && entry.sessionId !== sessionId)) {
+        return { ...service.dispose({ ptyId, sessionId }), processTreeExited: false };
+      }
+
+      // Capture descendants while the PTY still owns them. Disposing first can
+      // reparent them, so closing the row or observing the leader exit is insufficient.
+      const windows = process.platform === "win32";
+      const scan = windows ? null : await collectPtyTreeProcesses(pid);
+      if (ptys.get(ptyId) !== entry || entry.disposed) {
+        return { disposed: false, reason: "already-disposed", processTreeExited: false };
+      }
+      const windowsTreeKilled = windows && await killWindowsProcessTreeAsync(pid, () => {
+        logger.warn("pty.dispose_exit_receipt_tree_kill_failed", { sessionId: entry.sessionId });
+      });
+      if (windowsTreeKilled) stoppedWindowsTrees.add(entry);
+      const result = service.dispose({ ptyId, sessionId });
+      if (windows ? !windowsTreeKilled : !scan?.succeeded) {
+        return { ...result, processTreeExited: false };
+      }
+
+      const pids = new Set([pid, ...(scan?.processes.map((child) => child.pid) ?? [])]);
+      const groups = windows ? [] : [...new Set([pid, ...(scan?.processes.flatMap((child) => [
+        child.processGroupId,
+        child.foregroundProcessGroupId,
+      ]) ?? [])])].filter((group) => group > 1);
+      const isAlive = (id: number) => {
+        try {
+          process.kill(id, 0);
+          return true;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code !== "ESRCH";
+        }
+      };
+      const treeIsAlive = () => [...pids].some(isAlive) || groups.some((group) => isAlive(-group));
+      const deadline = Date.now() + 5_000;
+      while (treeIsAlive() && Date.now() < deadline) await delay(100);
+      const processTreeExited = !treeIsAlive();
+      if (!processTreeExited) logger.warn("pty.dispose_exit_receipt_timed_out", { sessionId: entry.sessionId });
+      return { ...result, processTreeExited };
+    },
+
     dispose({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): PtyDisposeResult {
       const entry = ptys.get(ptyId);
       if (!entry) {
@@ -10733,7 +10779,7 @@ export function createPtyService({
       cleanupEntryPaths(entry);
       // Release the live-tail buffer; see closeEntry for rationale.
       entry.recentOutputTail = "";
-      terminatePtyProcessTree(entry, "SIGTERM", logger);
+      if (!stoppedWindowsTrees.has(entry)) terminatePtyProcessTree(entry, "SIGTERM", logger);
       const endedAt = new Date().toISOString();
       sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode: null, status: "disposed" });
       flushFinalTerminalSnapshot(entry);

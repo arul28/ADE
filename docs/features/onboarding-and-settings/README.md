@@ -665,6 +665,9 @@ steps and the time of the check.
   - **Only `<html>` carries `data-theme` / `data-theme-id`**; the stylesheet
     re-declares `--color-*` under `[data-theme]`, so the attribute lower down
     resets the palette.
+  - Hover or focus a theme swatch to see its colours in the composer and
+    transcript preview. Select the swatch to apply it. Theme files groups
+    import, export, and links to theme libraries under one disclosure.
   - `LEGACY_THEME_ID_ALIASES` maps retired ids (obsidian, high-contrast,
     midnight, evergreen, parchment, blush). `themeFollowsSystem` paints the
     family's variant for `systemColorScheme` (`effectiveThemeId`).

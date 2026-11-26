@@ -928,6 +928,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // Pins shown before the owning machine confirms them. A read that started
   // before the write must not flip the row back.
   const pendingPinsRef = useRef<Map<string, { pinned: boolean; expiresAtMs: number }>>(new Map());
+  const pinWritesRef = useRef(new Map<string, { confirmed: { pinned: boolean }; done: Promise<void> }>());
   // A pin that differs from the active binding used to mean "stale detached
   // launch", so its updates were dropped. Under per-chat runtime routing that
   // is the normal, correct state for every chat whose lane lives on another
@@ -1604,14 +1605,19 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const setSessionsPinned = useCallback(
     /** Resolves to the ids that now hold `pinned`, already-matching rows included. */
     async (targetSessions: ReadonlyArray<TerminalSessionSummary>, pinned: boolean): Promise<string[]> => {
-      const already = targetSessions.filter((session) => Boolean(session.pinned) === pinned).map((session) => session.id);
-      const changing = targetSessions.filter((session) => Boolean(session.pinned) !== pinned);
+      const writes = pinWritesRef.current;
+      const already: string[] = [];
+      const changing = targetSessions.filter((session) => {
+        if (writes.has(session.id) || Boolean(session.pinned) !== pinned) return true;
+        already.push(session.id);
+        return false;
+      });
       if (!changing.length) return already;
       const targets = changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) }));
       // Show the pin now, on this machine's rows and on another machine's copy,
       // so the row moves the moment it is pinned. The write below confirms it.
       const tabPinKey = tabCopyPinRef.current?.key ?? null;
-      const showPinned = (rows: typeof targets, value: boolean) => {
+      const showPinned = (rows: typeof targets, value: boolean, writing = false) => {
         const ids = new Set(rows.map(({ session }) => session.id));
         const expiresAtMs = Date.now() + PENDING_PIN_TTL_MS;
         const foreignByPinKey = new Map<string, { pin: OpenProjectBinding; ids: Set<string> }>();
@@ -1631,7 +1637,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         const foreignMachineIds = new Set<string>();
         for (const { pin, ids: machineIds } of foreignByPinKey.values()) {
           try {
-            const machineId = patchCrossMachineSessionsPinned(pin, machineIds, value);
+            const machineId = patchCrossMachineSessionsPinned(pin, machineIds, value, writing);
             if (machineId) foreignMachineIds.add(machineId);
           } catch (error) {
             // Showing it early is a nicety; it must never stop the write.
@@ -1640,15 +1646,41 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         }
         return foreignMachineIds;
       };
-      const foreignMachineIds = showPinned(targets, pinned);
-      const written = await setSessionsPinnedAction(targets, pinned);
-      const writtenIds = new Set(written.map(({ session }) => session.id));
-      const failed = targets.filter(({ session }) => !writtenIds.has(session.id));
-      if (failed.length) showPinned(failed, !pinned);
-      // The owning machine's change feed refreshes this machine's rows. Another
-      // machine's rows are read on a slow poll, so ask for them now.
-      for (const machineId of foreignMachineIds) requestCrossMachineLanesForMachine(machineId);
-      return [...already, ...written.map(({ session }) => session.id)];
+      const previous = targets.map(({ session }) => writes.get(session.id));
+      let finish!: () => void;
+      const done = new Promise<void>((resolve) => { finish = resolve; });
+      const batch = targets.map(({ session }, index) => ({
+        confirmed: previous[index]?.confirmed ?? { pinned: Boolean(session.pinned) },
+        done,
+      }));
+      targets.forEach(({ session }, index) => writes.set(session.id, batch[index]!));
+      try {
+        const foreignMachineIds = showPinned(targets, pinned, true);
+        // Overlapping choices reach the owning runtime in the order the user made them.
+        await Promise.all(previous.map((write) => write?.done));
+        const written = await setSessionsPinnedAction(targets, pinned);
+        const writtenIds = new Set(written.map(({ session }) => session.id));
+        targets.forEach((target, index) => {
+          const write = batch[index]!;
+          const { id } = target.session;
+          if (writtenIds.has(id)) write.confirmed.pinned = pinned;
+        });
+        // The local change feed refreshes its rows. Ask foreign machines to refresh now.
+        for (const machineId of foreignMachineIds) requestCrossMachineLanesForMachine(machineId);
+        return [...already, ...writtenIds];
+      } finally {
+        const pin: typeof targets = [];
+        const unpin: typeof targets = [];
+        targets.forEach((target, index) => {
+          const write = batch[index]!;
+          if (writes.get(target.session.id) !== write) return;
+          writes.delete(target.session.id);
+          (write.confirmed.pinned ? pin : unpin).push(target);
+        });
+        if (pin.length) showPinned(pin, true);
+        if (unpin.length) showPinned(unpin, false);
+        finish();
+      }
     },
     [machineRouter],
   );
@@ -1956,14 +1988,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (pendingPins.size > 0) {
         const now = Date.now();
         for (const [sessionId, pending] of [...pendingPins.entries()]) {
-          if (pending.expiresAtMs <= now) pendingPins.delete(sessionId);
+          if (pending.expiresAtMs <= now && !pinWritesRef.current.has(sessionId)) pendingPins.delete(sessionId);
         }
         for (let index = 0; index < rows.length; index += 1) {
           const row = rows[index];
           const pending = row ? pendingPins.get(row.id) : undefined;
           if (!row || !pending) continue;
-          if (pending.expiresAtMs <= now || Boolean(row.pinned) === pending.pinned) {
-            pendingPins.delete(row.id);
+          if (Boolean(row.pinned) === pending.pinned) {
+            if (!pinWritesRef.current.has(row.id)) pendingPins.delete(row.id);
             continue;
           }
           rows[index] = { ...row, pinned: pending.pinned };
