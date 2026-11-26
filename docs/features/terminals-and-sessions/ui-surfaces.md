@@ -189,7 +189,8 @@ the shelf, the headers and the board.
   (`Deleting`, `Deleted`, `Deleted with warnings`), and its cards get a
   `disabledReason` in every grouping.
 - Orphaned sessions (a `laneId` not in the lane list) group under their
-  `laneName` (`missingLaneSessionGroups`) with a warning icon, a note that the
+  lane's UI name (`sessionLaneDisplayName`, `missingLaneSessionGroups`) with a
+  warning icon, a note that the
   chat history is kept, and a lane refresh. ADE never deletes anything from
   this row.
 

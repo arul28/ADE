@@ -1121,7 +1121,7 @@ describe("searchService review fixes round 2 (PR #709)", () => {
     service.dispose();
   });
 
-  it("resolves a lane NAME passed via the laneId arg (CLI --lane)", async () => {
+  it("resolves a lane NAME or its UI name passed via the laneId arg (CLI --lane, the palette's lane filter)", async () => {
     const quickOpen = vi.fn(async () => []);
     const service = createSearchService({
       cacheDir: path.join(root, "cache"),
@@ -1148,7 +1148,8 @@ describe("searchService review fixes round 2 (PR #709)", () => {
             icon: null,
             tags: [],
             createdAt: "2026-07-01T00:00:00.000Z"
-          } as never
+          } as never,
+          { id: "lane-main", name: "Primary", laneType: "primary", createdAt: "2026-07-01T00:00:00.000Z" } as never,
         ]
       },
       files: { quickOpen, searchText: async () => [] },
@@ -1157,6 +1158,9 @@ describe("searchService review fixes round 2 (PR #709)", () => {
 
     await service.query({ query: "auth", laneId: "fix-login", kinds: ["file"] });
     expect(quickOpen).toHaveBeenCalledWith("auth", expect.any(Number), "lane-uuid-1");
+    // The palette offers the main checkout by its UI name, not its stored one.
+    await service.query({ query: "auth", laneId: "Main checkout", kinds: ["file"] });
+    expect(quickOpen).toHaveBeenLastCalledWith("auth", expect.any(Number), "lane-main");
     service.dispose();
   });
 });
