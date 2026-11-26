@@ -674,9 +674,9 @@ html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !
 .adecd-name > svg { flex: none; }
 .adecd-name-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .adecd-name .kit-tag { flex: none; }
-/* The size, then its rate; a rate that doesn't fit goes under the size whole, never cut. */
+/* The size, then its rate; a rate that doesn't fit goes under the size, and wraps there too, never cut. */
 .adecd-tr > .adecd-tsize { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; white-space: normal; color: var(--kit-text-2); }
-.adecd-tsize em { font-style: normal; white-space: nowrap; color: var(--kit-text-3); }
+.adecd-tsize em { min-width: 0; font-style: normal; color: var(--kit-text-3); }
 .adecd-when { color: var(--kit-text-3); }
 .adecd-row-actions {
   display: flex;
