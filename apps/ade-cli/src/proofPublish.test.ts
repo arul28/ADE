@@ -6,9 +6,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   assertGhSupportsAttach,
+  ghUploadEnv,
+  GH_UPLOAD_NEEDS_GH_LOGIN,
   publishProofIntoPullRequestBody,
   publishProofToPullRequest,
 } from "./proofPublish";
+import { createGithubSessionEnv } from "../../desktop/src/main/services/github/githubSessionEnv";
+import { createGithubShellTokenServer, githubShellTokenEndpointPath } from "../../desktop/src/main/services/github/githubShellShim";
 import { resolveStoredProofFile, type PublishableArtifact } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { symlinksSupported } from "./test/symlinks";
 
@@ -134,6 +138,7 @@ describe("publishProofToPullRequest", () => {
     const result = publishProofToPullRequest({
       pr: "12",
       projectRoot: root,
+      env: {},
       run,
       artifacts: [
         artifact({ description: "Login works now" }),
@@ -158,6 +163,7 @@ describe("publishProofToPullRequest", () => {
     expect(() => publishProofToPullRequest({
       pr: "12",
       projectRoot: root,
+      env: {},
       run,
       artifacts: [
         artifact({ id: "trace", kind: "browser_trace", uri: ".ade/artifacts/trace.har" }),
@@ -177,6 +183,7 @@ describe("publishProofToPullRequest", () => {
     expect(() => publishProofToPullRequest({
       pr: "999",
       projectRoot: root,
+      env: {},
       run,
       artifacts: [artifact()],
     })).toThrow(/no pull requests found/);
@@ -231,6 +238,7 @@ describe("publishProofIntoPullRequestBody", () => {
     const result = publishProofIntoPullRequestBody({
       pr: "12",
       projectRoot: root,
+      env: {},
       run,
       // A record the text does not cite is not uploaded.
       artifacts: [picture("pic-a", "a.png"), picture("pic-b", "b.png"), picture("pic-c", "c.png"), picture("pic-z", "unused.png")],
@@ -254,6 +262,7 @@ describe("publishProofIntoPullRequestBody", () => {
     const result = publishProofIntoPullRequestBody({
       pr: "12",
       projectRoot: root,
+      env: {},
       run,
       artifacts: [picture("pic-a", "a.png"), picture("pic-b", "b.png"), picture("gone", "missing.png")],
     });
@@ -275,6 +284,7 @@ describe("publishProofIntoPullRequestBody", () => {
     const second = publishProofIntoPullRequestBody({
       pr: "12",
       projectRoot: twice.root,
+      env: {},
       run: twice.run,
       artifacts: [picture("pic-b", "b.png"), picture("gone", "missing.png")],
     });
@@ -285,8 +295,50 @@ describe("publishProofIntoPullRequestBody", () => {
 
   it("changes nothing on GitHub when no cited proof can go up", () => {
     const { root, run, sent } = setup("![Lost](ade-proof://gone)", []);
-    expect(() => publishProofIntoPullRequestBody({ pr: "12", projectRoot: root, run, artifacts: [picture("gone", "missing.png")] }))
+    expect(() => publishProofIntoPullRequestBody({ pr: "12", projectRoot: root, env: {}, run, artifacts: [picture("gone", "missing.png")] }))
       .toThrow(/nothing to upload: gone \(its stored file is not on this machine/);
     expect(sent.body).toBeNull();
+  });
+});
+
+describe("ghUploadEnv", () => {
+  // GitHub's upload endpoint refuses App tokens, so an upload must carry the
+  // account's gh login copy, asked for over ADE's real token endpoint.
+  it("uploads with the account's gh login copy, refuses an App-only sign-in, and leaves an own login alone", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-gh-upload-"));
+    let copy: string | null = "gho_accountCopy";
+    const session = createGithubSessionEnv({
+      answersShells: false,
+      readAccountAppToken: async () => "ghu_appUserToken",
+      peekAccountAppToken: () => "ghu_appUserToken",
+      peekAccountGhToken: () => copy,
+      readGrant: Object.assign(async () => ({ installed: true }), { peek: () => null }) as never,
+      readRepoOwner: async () => "acme",
+      hasOwnGhLogin: () => false,
+    });
+    const endpoint = githubShellTokenEndpointPath({ sockDir: path.join(dir, "sock"), adeDir: dir, pid: process.pid });
+    const server = createGithubShellTokenServer({ endpoint, answer: () => session.tokenForOwner });
+    try {
+      expect(server.start()).toBe(endpoint);
+      await vi.waitFor(() => expect(server.isListening()).toBe(true));
+      const shell = { GH_CONFIG_DIR: path.join(dir, "gh"), ADE_GH_TOKEN_ENDPOINT: endpoint };
+      // A session started for the repository: every other gh run gets the App token.
+      await session.forSession(shell);
+      expect(await session.tokenForOwner(null)).toBe("ghu_appUserToken");
+
+      const upload = await ghUploadEnv(shell);
+      expect(upload.GH_TOKEN).toBe("gho_accountCopy");
+      expect(upload.ADE_GH_TOKEN_SOURCE).toBe("");
+
+      copy = null;
+      await expect(ghUploadEnv(shell)).rejects.toThrow(GH_UPLOAD_NEEDS_GH_LOGIN);
+
+      fs.mkdirSync(shell.GH_CONFIG_DIR);
+      fs.writeFileSync(path.join(shell.GH_CONFIG_DIR, "hosts.yml"), "github.com:\n    user: someone\n");
+      expect(await ghUploadEnv(shell)).toBe(shell);
+    } finally {
+      await server.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
