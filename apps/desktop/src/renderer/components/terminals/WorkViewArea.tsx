@@ -80,7 +80,7 @@ import type {
 } from "./importSessions/contract";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
-import { recordSentPrompt } from "../chat/chatPromptHistory";
+import { useSentPromptHistory } from "../chat/chatPromptHistory";
 import { isImeComposing } from "../../lib/imeComposition";
 import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
 import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
@@ -445,6 +445,7 @@ function WorkCliContinuationComposer({
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const sentPromptHistory = useSentPromptHistory();
   const launchPromptClipboardEnabled = useAppStore((s) => s.promptClipboardCopyEnabled);
 
   useEffect(() => {
@@ -544,15 +545,15 @@ function WorkCliContinuationComposer({
 
   const submit = useCallback(async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || !onContinue) return;
     setSending(true);
     setSubmitError(null);
     try {
-      recordSentPrompt(text);
       if (launchPromptClipboardEnabled) {
         void copyLaunchPromptToClipboard(text);
       }
-      await onContinue?.(session, text, resolvedLaunch);
+      await onContinue(session, text, resolvedLaunch);
+      sentPromptHistory.record(text);
       setDraft("");
       setCommandMenuTrigger(null);
     } catch (err) {
@@ -560,7 +561,7 @@ function WorkCliContinuationComposer({
     } finally {
       setSending(false);
     }
-  }, [draft, launchPromptClipboardEnabled, onContinue, resolvedLaunch, sending, session]);
+  }, [draft, launchPromptClipboardEnabled, onContinue, resolvedLaunch, sending, sentPromptHistory, session]);
 
   // Auto-grow from a single-line height (matches the active chat composer): start
   // thin and expand with the draft, capped so the transcript above keeps the room.

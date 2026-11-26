@@ -3805,6 +3805,19 @@ button, [role="button"] {
   background: var(--chat-user-bubble-solid, color-mix(in srgb, var(--chat-accent) 65%, #000000 35%));
 }
 
+[data-chat-bubble-fill="solid"] .ade-chat-message-card-user::before {
+  content: none;
+}
+
+[data-theme="light"] [data-chat-bubble-fill="solid"] [data-chat-composer-mode].ade-liquid-glass-strong {
+  background: var(--chat-panel-bg-strong);
+}
+
+[data-theme="light"] [data-chat-bubble-fill="solid"] [data-chat-composer-mode]::before,
+[data-theme="light"] [data-chat-bubble-fill="solid"] [data-chat-composer-sheen] {
+  display: none;
+}
+
 /* A chip takes the theme accent; on the accent-coloured bubble that tint is
    lost, so there it is white glass instead. */
 .ade-chat-message-card-user [data-chip-kind] {

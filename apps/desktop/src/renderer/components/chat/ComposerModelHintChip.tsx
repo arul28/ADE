@@ -2,12 +2,18 @@ import { memo } from "react";
 import { ArrowDown, ArrowUp, X } from "@phosphor-icons/react";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { reasoningEffortTierLabel } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { shortName } from "./modelHint";
+import { shortName, type ModelHint } from "./modelHint";
 import type { ComposerModelHint } from "./useComposerModelHint";
 
 function effortWord(effort: string | null): string {
   return effort ? reasoningEffortTierLabel(effort).toLowerCase() : "";
 }
+
+const CHIP_TITLE: Record<ModelHint["kind"], string> = {
+  model: "Suggested model",
+  effort: "Suggested effort",
+  context: "Suggested context window",
+};
 
 /** The chip for `useComposerModelHint`'s advice. */
 export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip }: { chip: ComposerModelHint["chip"] }) {
@@ -15,12 +21,13 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip 
   const { hint, apply, dismiss } = chip;
   const Arrow = hint.direction === "up" ? ArrowUp : ArrowDown;
   const contextWord = hint.contextTier === "long_context" ? "long context" : hint.contextTier ? "standard context" : null;
-  const label = hint.contextOnly
-    ? `${contextWord}?`
-    : hint.effortOnly
-      ? `${effortWord(hint.effort)} effort${contextWord ? ` · ${contextWord}` : ""}?`
-      : `${shortName(hint.displayName)}${hint.effort ? ` · ${effortWord(hint.effort)}` : ""}?`;
-  const actionLabel = hint.contextOnly
+  const withContext = contextWord ? ` · ${contextWord}` : "";
+  const label = {
+    model: `${shortName(hint.displayName)}${hint.effort ? ` · ${effortWord(hint.effort)}` : ""}?`,
+    effort: `${effortWord(hint.effort)} effort${withContext}?`,
+    context: `${contextWord}?`,
+  }[hint.kind];
+  const actionLabel = hint.kind === "context"
     ? `Use the ${contextWord} window`
     : `Use ${hint.displayName}${hint.effort ? ` at ${effortWord(hint.effort)} effort` : ""}${contextWord ? ` with the ${contextWord} window` : ""}`;
 
@@ -28,7 +35,7 @@ export const ComposerModelHintChip = memo(function ComposerModelHintChip({ chip 
     <SmartTooltip
       forceEnabled
       content={{
-        label: hint.contextOnly ? "Suggested context window" : hint.effortOnly ? "Suggested effort" : "Suggested model",
+        label: CHIP_TITLE[hint.kind],
         description: hint.reason,
       }}
     >

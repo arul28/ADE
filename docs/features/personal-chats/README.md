@@ -404,6 +404,8 @@ themselves are not trimmed.
   new chat only after **New** was pressed, and falls back to the most recent
   chat when the remembered one was deleted or archived. A link to a specific
   chat wins over the remembered one.
+  A new personal draft remembers its last model and thinking level for the
+  selected machine, including picks made before sending the first message.
 - iOS: the Hub is the only entry point. It pushes a native Chats page, then a
   new-chat or existing-chat destination without selecting a project.
 - CLI: the regular `ade` CLI commands are supported.

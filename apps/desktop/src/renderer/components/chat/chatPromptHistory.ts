@@ -1,3 +1,5 @@
+import { createContext, useContext } from "react";
+import { captureError } from "../../../shared/sentry/capture";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 
 export type AgentChatPromptHistoryEntry = {
@@ -65,73 +67,106 @@ const SENT_PROMPTS_LIMIT = 300;
 /** A prompt longer than this is kept whole in its chat, not in the list. */
 const SENT_PROMPT_MAX_CHARS = 20_000;
 
-let sentPromptsCache: readonly SentPromptRecord[] | null = null;
-const sentPromptListeners = new Set<() => void>();
+const EMPTY_SENT_PROMPTS: readonly SentPromptRecord[] = [];
+const SENT_PROMPTS_MAX_CHARS = 500_000;
 
-function readSentPrompts(): readonly SentPromptRecord[] {
-  if (sentPromptsCache) return sentPromptsCache;
-  let parsed: SentPromptRecord[] = [];
-  try {
-    const raw = window.localStorage.getItem(SENT_PROMPTS_STORAGE_KEY);
-    const value: unknown = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(value)) {
-      parsed = value.filter((row): row is SentPromptRecord =>
-        Boolean(row)
-        && typeof row === "object"
-        && typeof (row as SentPromptRecord).text === "string"
-        && typeof (row as SentPromptRecord).at === "string");
+function capSentPrompts(rows: readonly SentPromptRecord[]): SentPromptRecord[] {
+  let chars = 0;
+  let first = rows.length;
+  while (first > 0 && rows.length - first < SENT_PROMPTS_LIMIT) {
+    chars += rows[first - 1]!.text.length;
+    if (chars > SENT_PROMPTS_MAX_CHARS) break;
+    first--;
+  }
+  return rows.slice(first);
+}
+
+export function createSentPromptHistory(storageKey: string | null) {
+  const listeners = new Set<() => void>();
+  let snapshot = EMPTY_SENT_PROMPTS;
+  let lastRaw: string | null | undefined;
+
+  function refresh() {
+    if (!storageKey || typeof window === "undefined") return;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw === lastRaw) return;
+      lastRaw = raw;
+      const value: unknown = raw ? JSON.parse(raw) : [];
+      snapshot = Array.isArray(value)
+        ? capSentPrompts(value.filter((row): row is SentPromptRecord =>
+          typeof row?.text === "string" && typeof row?.at === "string"))
+        : EMPTY_SENT_PROMPTS;
+    } catch (error) {
+      snapshot = EMPTY_SENT_PROMPTS;
+      captureError(error, { handled: true, fingerprint: ["prompt-history-read"] });
     }
-  } catch {
-    parsed = [];
   }
-  sentPromptsCache = parsed.slice(-SENT_PROMPTS_LIMIT);
-  return sentPromptsCache;
-}
 
-function notifySentPromptListeners(): void {
-  for (const listener of [...sentPromptListeners]) listener();
-}
-
-/** Add a sent prompt; sending the same text again moves it to the newest. */
-export function recordSentPrompt(text: string): void {
-  const trimmed = text.trim();
-  if (!trimmed || trimmed.length > SENT_PROMPT_MAX_CHARS) return;
-  const next = [
-    ...readSentPrompts().filter((row) => row.text !== trimmed),
-    { text: trimmed, at: new Date().toISOString() },
-  ].slice(-SENT_PROMPTS_LIMIT);
-  sentPromptsCache = next;
-  try {
-    window.localStorage.setItem(SENT_PROMPTS_STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // A full store keeps the list for this window's life.
+  function onStorage(event: StorageEvent) {
+    if (event.key !== storageKey && event.key !== null) return;
+    const previous = snapshot;
+    refresh();
+    if (snapshot !== previous) listeners.forEach((listener) => listener());
   }
-  notifySentPromptListeners();
-}
 
-/** `useSyncExternalStore` source: this computer's sent prompts, oldest first. */
-export function subscribeSentPrompts(listener: () => void): () => void {
-  if (sentPromptListeners.size === 0 && typeof window !== "undefined") {
-    window.addEventListener("storage", handleSentPromptsStorage);
-  }
-  sentPromptListeners.add(listener);
-  return () => {
-    sentPromptListeners.delete(listener);
-    if (sentPromptListeners.size === 0 && typeof window !== "undefined") {
-      window.removeEventListener("storage", handleSentPromptsStorage);
-    }
+  return {
+    getSnapshot() {
+      if (!listeners.size) refresh();
+      return snapshot;
+    },
+    subscribe(listener: () => void) {
+      if (!storageKey || typeof window === "undefined") return () => {};
+      if (!listeners.size) {
+        window.addEventListener("storage", onStorage);
+        refresh();
+      }
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (!listeners.size) window.removeEventListener("storage", onStorage);
+      };
+    },
+    record(text: string) {
+      const trimmed = text.trim();
+      if (!storageKey || !trimmed || trimmed.length > SENT_PROMPT_MAX_CHARS) return;
+      const write = () => {
+        // A window may have missed storage events while its composer was closed.
+        refresh();
+        snapshot = capSentPrompts([
+          ...snapshot.filter((row) => row.text !== trimmed),
+          { text: trimmed, at: new Date().toISOString() },
+        ]);
+        try {
+          const raw = JSON.stringify(snapshot);
+          window.localStorage.setItem(storageKey, raw);
+          lastRaw = raw;
+        } catch (error) {
+          captureError(error, { handled: true, fingerprint: ["prompt-history-write"] });
+        }
+        listeners.forEach((listener) => listener());
+      };
+      // Serialize read-modify-write across windows when the browser supports it.
+      if (window.navigator.locks) {
+        void window.navigator.locks.request(storageKey, write).catch((error: unknown) => {
+          captureError(error, { handled: true, fingerprint: ["prompt-history-lock"] });
+        });
+      } else {
+        write();
+      }
+    },
   };
 }
 
-export function getSentPromptsSnapshot(): readonly SentPromptRecord[] {
-  return readSentPrompts();
+export const SentPromptHistoryContext = createContext(createSentPromptHistory(SENT_PROMPTS_STORAGE_KEY));
+
+export function createAccountSentPromptHistory(accountId: string | null) {
+  // The legacy web key is unowned and cannot be attributed safely.
+  return createSentPromptHistory(accountId ? `${SENT_PROMPTS_STORAGE_KEY}:account:${encodeURIComponent(accountId)}` : null);
 }
 
-/** Another ADE window sent a prompt. */
-function handleSentPromptsStorage(event: StorageEvent): void {
-  if (event.key !== SENT_PROMPTS_STORAGE_KEY) return;
-  sentPromptsCache = null;
-  notifySentPromptListeners();
+export function useSentPromptHistory() {
+  return useContext(SentPromptHistoryContext);
 }
 
 /**
@@ -143,15 +178,15 @@ function handleSentPromptsStorage(event: StorageEvent): void {
 export function mergePromptHistory(
   chatPrompts: readonly AgentChatPromptHistoryEntry[],
   sentPrompts: readonly SentPromptRecord[],
-): AgentChatPromptHistoryEntry[] {
-  if (!sentPrompts.length) return chatPrompts as AgentChatPromptHistoryEntry[];
+): readonly AgentChatPromptHistoryEntry[] {
+  if (!sentPrompts.length) return chatPrompts;
   const inChat = new Set(chatPrompts.map((entry) => entry.text.trim()));
   const others: AgentChatPromptHistoryEntry[] = [];
   for (const row of sentPrompts) {
     if (inChat.has(row.text)) continue;
     others.push({ text: row.text, eventKey: `sent#${row.at}#${row.text}`, fromOtherChat: true });
   }
-  return others.length ? [...others, ...chatPrompts] : (chatPrompts as AgentChatPromptHistoryEntry[]);
+  return others.length ? [...others, ...chatPrompts] : chatPrompts;
 }
 
 /**

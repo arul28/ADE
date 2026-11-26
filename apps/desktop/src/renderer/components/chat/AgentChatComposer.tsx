@@ -147,6 +147,7 @@ import {
   isImageAttachmentPath,
   isHeicAttachment,
   type ActiveTurnSendMode,
+  type AgentChatCopilotContextTier,
 } from "../../../shared/types/chat";
 import { cn } from "../ui/cn";
 import { PendingInputStack, type PendingInputStackEntry } from "./PendingInputStack";
@@ -1479,6 +1480,7 @@ export type ComposerOverflowItem = {
   /** The row opens a portal of its own (Account, Issue context). */
   opensMenu?: boolean;
   expanded?: boolean;
+  restoreFocus?: boolean;
   onSelect: () => void;
 };
 
@@ -1636,7 +1638,7 @@ function ComposerOverflowMenu({
                     onClick={() => {
                       setOpen(false);
                       item.onSelect();
-                      requestAnimationFrame(() => caretRef.current?.focus());
+                      if (item.restoreFocus !== false) requestAnimationFrame(() => caretRef.current?.focus());
                     }}
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
@@ -2840,8 +2842,8 @@ function AgentChatComposerImpl({
   droidPermissionMode?: AgentChatDroidPermissionMode;
   copilotPermissionMode?: "plan" | "ask" | "assisted" | "auto-edit" | "full-auto";
   onCopilotPermissionModeChange?: (mode: "plan" | "ask" | "assisted" | "auto-edit" | "full-auto") => void;
-  copilotContextTier?: "default" | "long_context";
-  onCopilotContextTierChange?: (modelId: string, tier: "default" | "long_context") => void;
+  copilotContextTier?: AgentChatCopilotContextTier;
+  onCopilotContextTierChange?: (modelId: string, tier: AgentChatCopilotContextTier) => void;
   copilotAutoTier?: "efficiency" | "balance" | "intelligence" | null;
   copilotAutoTierPending?: boolean;
   onCopilotAutoTierChange?: (tier: "efficiency" | "balance" | "intelligence") => void;
@@ -3630,6 +3632,7 @@ function AgentChatComposerImpl({
 
   useEffect(() => {
     clearPromptHistory();
+    setPromptSearchOpen(false);
   }, [clearPromptHistory, sessionId]);
 
   useEffect(() => () => {
@@ -7203,9 +7206,9 @@ function AgentChatComposerImpl({
     if (promptHistoryIndexRef.current === null) stashDraftBeforeHistory(currentText);
     applyPromptHistoryEntry(entry, index, currentText);
   }, [applyPromptHistoryEntry, draft, serializeRichEditor, stashDraftBeforeHistory, useRichComposer]);
-  const closePromptSearch = useCallback(() => {
+  const closePromptSearch = useCallback((restoreFocus = true) => {
     setPromptSearchOpen(false);
-    focusComposerInputRef.current();
+    if (restoreFocus) focusComposerInputRef.current();
   }, []);
 
   /* ── Keyboard handler for composer input ── */
@@ -8128,6 +8131,7 @@ function AgentChatComposerImpl({
       longWindow: descriptor.longContextWindow ?? null,
     };
     // The tick: the runtime catalog for this machine loaded or changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is the catalog's arrival
   }, [modelCatalogScopeKey, modelId, runtimeCatalogTick]);
   const modelHint = useComposerModelHint({
     draft,
@@ -8971,6 +8975,7 @@ function AgentChatComposerImpl({
   // which loads after mount and bumps the tick.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   ) : null), [compactControl, compactionPulse, modelCatalogScopeKey, modelId, onCompactContext, parallelChatMode, runtimeCatalogTick, turnActive, usageViewModel]);
+  const hasPromptHistory = promptHistory.length > 0;
   const attachmentAndToolControls = useMemo(() => (
     <>
       <SmartTooltip
@@ -9003,6 +9008,13 @@ function AgentChatComposerImpl({
           closeAccountMenu();
         }}
         items={[
+          ...(hasPromptHistory && !composerInputLocked ? [{
+            id: "prompt-history",
+            label: "Search prompt history",
+            icon: <Clock size={14} />,
+            restoreFocus: false,
+            onSelect: () => setPromptSearchOpen(true),
+          }] : []),
           ...(showLaunchAccountMenu
             ? [{
                 id: "launch-account",
@@ -9150,7 +9162,7 @@ function AgentChatComposerImpl({
         ) : null
       ) : null}
     </>
-  ), [accountMenuOpen, addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, closeAccountMenu, closeIssueContextMenu, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, issueContextMenuOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  ), [accountMenuOpen, addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, closeAccountMenu, closeIssueContextMenu, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, hasPromptHistory, iosSimulatorOpen, issueContextMenuOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
   const sendControls = useMemo(() => (turnActive ? (
 
         <>

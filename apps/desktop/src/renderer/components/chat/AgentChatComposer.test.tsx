@@ -1607,7 +1607,7 @@ describe("AgentChatComposer", () => {
     expect(onDraftChange).toHaveBeenLastCalledWith("Older prompt");
   });
 
-  it("keeps multiline caret motion after an interrupted history sequence", () => {
+  it("keeps caret motion when editing inside a recalled multiline prompt", () => {
     const onDraftChange = vi.fn();
     const promptHistory = [
       { text: "Older line one\nOlder line two", eventKey: "prompt-1" },
@@ -1628,12 +1628,10 @@ describe("AgentChatComposer", () => {
     expect(onDraftChange).toHaveBeenLastCalledWith(promptHistory[1].text);
 
     view.rerender(<AgentChatComposer {...props} draft={promptHistory[1].text} />);
-    textbox.setSelectionRange(textbox.value.length, textbox.value.length);
-    fireEvent.pointerDown(document.body);
+    const secondLine = textbox.value.indexOf("\n") + 3;
+    textbox.setSelectionRange(secondLine, secondLine);
     fireEvent.keyDown(textbox, { key: "ArrowUp" });
 
-    // The click canceled the rapid-history sequence. At the end of a multiline
-    // prompt, a single ArrowUp belongs to native caret movement.
     expect(onDraftChange).toHaveBeenCalledTimes(1);
 
     textbox.setSelectionRange(0, 0);
@@ -1659,7 +1657,7 @@ describe("AgentChatComposer", () => {
     expect(onDraftChange).not.toHaveBeenCalled();
   });
 
-  it("treats a direction change as an interruption of the rapid sequence", () => {
+  it("reverses direction from the edge of a recalled multiline prompt", () => {
     const onDraftChange = vi.fn();
     const promptHistory = [
       { text: "Oldest line one\nOldest line two", eventKey: "prompt-1" },
@@ -1687,13 +1685,11 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...props} draft={promptHistory[2].text} />);
     textbox.setSelectionRange(textbox.value.length, textbox.value.length);
 
-    // The Up after a Down is no longer part of the Down sequence. At the end
-    // of a multiline prompt it therefore belongs to native caret movement.
     fireEvent.keyDown(textbox, { key: "ArrowUp" });
-    expect(onDraftChange).toHaveBeenCalledTimes(3);
+    expect(onDraftChange).toHaveBeenLastCalledWith(promptHistory[1].text);
   });
 
-  it("expires the rapid-history window after three seconds", () => {
+  it("continues through multiline history after a pause", () => {
     vi.useFakeTimers();
     try {
       const onDraftChange = vi.fn();
@@ -1718,7 +1714,7 @@ describe("AgentChatComposer", () => {
       act(() => vi.advanceTimersByTime(3_001));
       fireEvent.keyDown(textbox, { key: "ArrowUp" });
 
-      expect(onDraftChange).toHaveBeenCalledTimes(1);
+      expect(onDraftChange).toHaveBeenLastCalledWith(promptHistory[0].text);
     } finally {
       vi.useRealTimers();
     }

@@ -226,10 +226,8 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import {
   collectAgentChatPromptHistory,
-  getSentPromptsSnapshot,
   mergePromptHistory,
-  recordSentPrompt,
-  subscribeSentPrompts,
+  useSentPromptHistory,
   type AgentChatPromptHistoryEntry,
 } from "./chatPromptHistory";
 import { ChatLifecyclePill } from "./ChatLifecyclePill";
@@ -3751,10 +3749,10 @@ function readLatestLastLaunchConfig(
   return null;
 }
 
-function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig): void {
+function writeLastLaunchConfig(storageKey: string, config: LastLaunchConfig, rememberGlobalModel = true): void {
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(config));
-    window.localStorage.setItem(LAST_MODEL_ID_KEY, config.modelId);
+    if (rememberGlobalModel) window.localStorage.setItem(LAST_MODEL_ID_KEY, config.modelId);
   } catch {
     // ignore
   }
@@ -3779,6 +3777,7 @@ function rememberLaunchConfig(
   settings: ChatLaunchSettings,
   created: { model: LaunchConfigSessionSource["model"]; modelId?: string | null },
   defaults: NativeControlState,
+  rememberGlobalModel = true,
 ): void {
   const controls = settings.launchControls;
   const launchConfig = buildLastLaunchConfig({
@@ -3799,7 +3798,7 @@ function rememberLaunchConfig(
     cursorModeId: controls.cursorModeId,
     cursorConfigValues: controls.cursorConfigValues,
   }, defaults);
-  if (launchConfig) writeLastLaunchConfig(storageKey, launchConfig);
+  if (launchConfig) writeLastLaunchConfig(storageKey, launchConfig, rememberGlobalModel);
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -4491,6 +4490,7 @@ export function AgentChatPane({
   shouldAutofocusComposer = false,
   draftContextTargetId = null,
   personalDraftKey = PERSONAL_DRAFT_COMPANION_STATE_KEY,
+  latestPersonalSession = null,
   canvasFill,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
@@ -4585,6 +4585,7 @@ export function AgentChatPane({
    * so one's draft and attached context never appear in the other.
    */
   personalDraftKey?: string;
+  latestPersonalSession?: AgentChatSessionSummary | null;
   /**
    * What the transcript and composer sit on, in place of the chat canvas
    * colour. A host that paints its own surface behind the pane (the Chats
@@ -4763,7 +4764,6 @@ export function AgentChatPane({
   // Every send and launch passes here: it is where a prompt joins this
   // computer's history, and where the optional clipboard copy happens.
   const copyPromptForLaunch = useCallback(async (promptText: string) => {
-    recordSentPrompt(promptText);
     if (!launchPromptClipboardEnabled) return;
     await copyLaunchPromptToClipboard(promptText);
   }, [launchPromptClipboardEnabled]);
@@ -4793,7 +4793,11 @@ export function AgentChatPane({
   const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
   // Full access on every provider unless the lane remembers another choice.
   const initialNativeControls = useMemo(() => defaultNativeControls(), []);
+  const personalLaunchScope = keepsOwnLaunchMemory ? chatScope.modelCatalogScopeKey : null;
   const lastLaunchConfigStorageKeys = useMemo(() => {
+    if (personalLaunchScope) {
+      return [[`${LAST_LAUNCH_CONFIG_KEY_PREFIX}:personal:${encodeURIComponent(personalLaunchScope)}`]];
+    }
     const [primary, migration] = launchConfigStorageKeys({
       bindingKey: projectBinding?.key ?? null,
       projectRoot,
@@ -4821,13 +4825,13 @@ export function AgentChatPane({
       ...(legacyMigration ?? []),
     ])].filter((key) => !primarySet.has(key));
     return [primaryTier, migrationTier];
-  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectBinding?.key, projectRoot, surfaceProfile, workDraftStorageKind]);
+  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, personalLaunchScope, projectBinding?.key, projectRoot, surfaceProfile, workDraftStorageKind]);
   // Writes always go to the machine-scoped key: the first entry of the PRIMARY
   // tier. The migration tier is read-only by construction.
   const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]![0]!;
   const draftLaunchConfigScopeKey = useMemo(
-    () => `${projectRoot ?? "project"}:${draftLaunchConfigLaneScopeId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
-    [draftLaunchConfigLaneScopeId, projectRoot, surfaceProfile, workDraftStorageKind],
+    () => personalLaunchScope ?? `${projectRoot ?? "project"}:${draftLaunchConfigLaneScopeId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
+    [draftLaunchConfigLaneScopeId, personalLaunchScope, projectRoot, surfaceProfile, workDraftStorageKind],
   );
   const draftLaunchJobsScopeKey = useMemo(
     () => [
@@ -7040,14 +7044,13 @@ export function AgentChatPane({
   const selectedChatHasSources = chatActionsOpen && selectedChatSources.total > 0;
   // ↑ walks this chat's prompts first, then every other prompt sent from
   // this computer (a new chat has only those).
-  const sentPrompts = useSyncExternalStore(subscribeSentPrompts, getSentPromptsSnapshot);
-  const promptHistory = useStableIdentity(
-    useMemo<AgentChatPromptHistoryEntry[]>(
-      () => mergePromptHistory(collectAgentChatPromptHistory(selectedEventsForDisplay), sentPrompts),
-      [selectedEventsForDisplay, sentPrompts],
-    ),
+  const sentPromptHistory = useSentPromptHistory();
+  const sentPrompts = useSyncExternalStore(sentPromptHistory.subscribe, sentPromptHistory.getSnapshot);
+  const chatPromptHistory = useStableIdentity(
+    useMemo(() => collectAgentChatPromptHistory(selectedEventsForDisplay), [selectedEventsForDisplay]),
     samePromptHistory,
   );
+  const promptHistory = useMemo(() => mergePromptHistory(chatPromptHistory, sentPrompts), [chatPromptHistory, sentPrompts]);
   const [killingWorkerIds, setKillingWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
   const killDroidWorker = useCallback(
     (workerSessionId: string) => {
@@ -10326,6 +10329,8 @@ export function AgentChatPane({
     selectedSession?.codexConfigSource,
     selectedSession?.opencodePermissionMode,
     selectedSession?.droidPermissionMode,
+    selectedSession?.copilotContextTier,
+    selectedSession?.copilotAutoTier,
     selectedSession?.musePermissionMode,
     selectedSession?.permissionMode,
     selectedSession?.cursorModeId,
@@ -10345,14 +10350,17 @@ export function AgentChatPane({
       draftLaunchConfigHydratedRef.current = machineHydrationKey;
       return;
     }
-    const latestSessionConfig = sessions[0]
-      ? buildLastLaunchConfig(sessions[0], initialNativeControls)
+    const latest = keepsOwnLaunchMemory ? latestPersonalSession : sessions[0];
+    const latestSessionConfig = latest
+      ? buildLastLaunchConfig(latest, initialNativeControls, latest.lastActivityAt)
       : null;
-    const sessionHydrationKey = `${draftKey}:session`;
-    if (latestSessionConfig) {
-      if (draftLaunchConfigHydratedRef.current === sessionHydrationKey) return;
-      applyLaunchConfigToComposer(latestSessionConfig);
-      draftLaunchConfigHydratedRef.current = sessionHydrationKey;
+    const local = keepsOwnLaunchMemory ? readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls) : null;
+    const preferred = local ?? latestSessionConfig;
+    if (preferred) {
+      const hydrationKey = keepsOwnLaunchMemory ? `${draftKey}:personal:${preferred.updatedAt}` : `${draftKey}:session`;
+      if (draftLaunchConfigHydratedRef.current === hydrationKey) return;
+      applyLaunchConfigToComposer(preferred);
+      draftLaunchConfigHydratedRef.current = hydrationKey;
       return;
     }
 
@@ -10368,7 +10376,10 @@ export function AgentChatPane({
     machineLaunchDefaults,
     draftLaunchConfigScopeKey,
     laneId,
+    keepsOwnLaunchMemory,
+    lastLaunchConfigStorageKey,
     lastLaunchConfigStorageKeys,
+    latestPersonalSession,
     lockSessionId,
     projectRoot,
     selectedSessionId,
@@ -12202,12 +12213,12 @@ export function AgentChatPane({
   // "Last used" is what the person chose: a model ADE set on a draft (the
   // tour's first chat, `draftKeepsMachineDefaultsRef`) is not written.
   useEffect(() => {
-    if (!preferencesReady) return;
+    if (!preferencesReady || keepsOwnLaunchMemory) return;
     if (!modelId.trim().length) return;
     if (draftKeepsMachineDefaultsRef.current) return;
     writeLastUsedModelId(modelId);
     writeLastPresetSelection(modelId, draftHarnessPresetId);
-  }, [modelId, draftHarnessPresetId, preferencesReady]);
+  }, [modelId, draftHarnessPresetId, keepsOwnLaunchMemory, preferencesReady]);
 
   useEffect(() => {
     if (!preferencesReady) return;
@@ -13610,7 +13621,7 @@ export function AgentChatPane({
     // ADE's pick stays its own until a person picks a model. Read from the
     // create args: a pick made while the create ran is not this chat's.
     if (built.createArgs.rememberLaunchDefaults !== false) {
-      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls);
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, created, initialNativeControls, !keepsOwnLaunchMemory);
     }
     loadedHistoryRef.current.delete(created.id);
     optimisticSessionIdsRef.current.add(created.id);
@@ -13618,7 +13629,7 @@ export function AgentChatPane({
     if (isTileVisibleRef.current) launchedSessionIdsRef.current.add(created.id);
     touchSession(created.id);
     return created;
-  }, [initialNativeControls, lastLaunchConfigStorageKey, touchSession]);
+  }, [initialNativeControls, keepsOwnLaunchMemory, lastLaunchConfigStorageKey, touchSession]);
 
   const createSessionForLane = useCallback(async (
     targetLaneId: string,
@@ -14618,6 +14629,7 @@ export function AgentChatPane({
       // sent in one call stays: the launch clock stopped deciding when that
       // call went out.
       if (!sentInOneCall) assertActive?.();
+      sentPromptHistory.record(prepared.text);
       if (canRefreshPinnedProject(pin)) {
         // The brain accepted the first turn. The create response still says idle,
         // so report the chat in flight: the new row reads "Working", not "Done",
@@ -14650,6 +14662,7 @@ export function AgentChatPane({
     createSessionForLane,
     notifySessionCreated,
     touchSession,
+    sentPromptHistory,
   ]);
 
   // The PTY launch a Work CLI draft starts, minus where it runs (lane, machine,
@@ -14779,6 +14792,7 @@ export function AgentChatPane({
       });
       throw abortError;
     }
+    sentPromptHistory.record(prepared.text);
     return {
       sessionId: result.sessionId,
       draftKind: "cli",
@@ -14786,6 +14800,7 @@ export function AgentChatPane({
   }, [
     buildDraftCliLaunchParams,
     onLaunchCliSession,
+    sentPromptHistory,
   ]);
 
   // "Auto-create lane" launches (chat or CLI, foreground or background) are
@@ -14862,6 +14877,7 @@ export function AgentChatPane({
       }),
       ...(files.length ? { files } : {}),
     })
+      .then(() => sentPromptHistory.record(snapshot.text))
       .catch((startError: unknown) => setError({ message: errorMessage(startError), kind: "status" }));
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
@@ -14874,6 +14890,7 @@ export function AgentChatPane({
     clearNewLaneConfig,
     clearPromptSuggestionForSession,
     selectedSessionId,
+    sentPromptHistory,
   ]);
 
   const launchDraftIntoNewLane = useCallback((
@@ -14973,6 +14990,8 @@ export function AgentChatPane({
         cli,
         ...(newDraftMarkAtSend ? { newDraftMarkAtSend } : {}),
         onUnsupported,
+      }).then((outcome) => {
+        if (outcome === "started") sentPromptHistory.record(snapshot.text);
       });
     } else {
       registerChatLaunchLocalRecord(launchId, {
@@ -15011,7 +15030,10 @@ export function AgentChatPane({
     const startedOn = draftStartedOnRef.current;
     void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
-      if (outcome === "started") recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
+      if (outcome === "started") {
+        recordStartOnLastMachine(startedOn.tabId, startedOn.machineKey);
+        sentPromptHistory.record(snapshot.text);
+      }
     });
     return true;
   }, [
@@ -15026,6 +15048,7 @@ export function AgentChatPane({
     pendingRendererRef,
     projectRoot,
     selectedSessionId,
+    sentPromptHistory,
   ]);
 
   /**
@@ -15065,6 +15088,7 @@ export function AgentChatPane({
       // Queued: the chat shows it as its own queued row (`adeCloudChatQueue.ts`),
       // the box clears, and the chat stays selected with the launch's card.
       noteAdeCloudQueuedSend(chat, answer, { text, provider, modelId: modelId || null });
+      sentPromptHistory.record(text);
       // A size picked while the send was out stays for the next send.
       if (sizeId && peekNewComputerSize(chat.machineKey) === sizeId) pickNewComputerSize(chat.machineKey, null);
       // Text typed while the send was out stays in the box.
@@ -15080,7 +15104,7 @@ export function AgentChatPane({
     } finally {
       cloudQueueSendInFlightRef.current = false;
     }
-  }, [attachments.length, contextAttachments.length, draftStore, modelId, selectedSession?.provider]);
+  }, [attachments.length, contextAttachments.length, draftStore, modelId, selectedSession?.provider, sentPromptHistory]);
 
   /**
    * Send in the chat of a lane kept without a computer: ADE makes the lane a
@@ -17154,6 +17178,7 @@ export function AgentChatPane({
               throw sendError;
             }
           }
+          if (!sentLaneIds.length) sentPromptHistory.record(text);
           sentLaneIds.push(childLaneId);
           await persistParallelLaunchState(buildParallelLaunchState({
             parentLaneId: laneId,
@@ -17904,6 +17929,7 @@ export function AgentChatPane({
         setError({ message: "Message not sent — the queue is full. Wait for the current turn to finish, then resend.", kind: "status" });
         return null;
       }
+      sentPromptHistory.record(text);
       // Skip refresh when we just created the session — createSession already triggered one.
       // A redundant refresh here causes flicker as it re-resolves session selection.
       if (!justCreatedSession) {
@@ -18126,6 +18152,7 @@ export function AgentChatPane({
     fastTier,
     constrainedModelSelectionError,
     copyPromptForLaunch,
+    sentPromptHistory,
     createSession,
     currentNativeControls,
     contextAttachments,
@@ -18648,10 +18675,18 @@ export function AgentChatPane({
     })();
   }, [updateNativeControls]);
 
+  const rememberPersonalPick = useCallback((pickedModelId: string, effort: string | null) => {
+    if (!personalLaunchScope || !pickedModelId) return;
+    const saved = readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls);
+    const config = buildLastLaunchConfig({ modelId: pickedModelId, reasoningEffort: effort }, saved?.controls ?? initialNativeControls);
+    if (config) writeLastLaunchConfig(lastLaunchConfigStorageKey, config, false);
+  }, [initialNativeControls, lastLaunchConfigStorageKey, personalLaunchScope]);
+
   const handleReasoningEffortChange = useCallback((nextReasoningEffort: string | null) => {
     const previousReasoningEffort = reasoningEffort;
     if (!selectedSessionId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+      rememberPersonalPick(modelId, nextReasoningEffort);
     }
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
@@ -18702,6 +18737,8 @@ export function AgentChatPane({
   }, [
     draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
+    modelId,
+    rememberPersonalPick,
     patchSessionSummary,
     reasoningEffort,
     refreshSessions,
@@ -21971,7 +22008,9 @@ export function AgentChatPane({
         reasoningEffort,
         fastMode: cursorCloudMode ? options?.fastMode === true : options ? options.fastMode : previousFastMode,
       });
-      setReasoningEffort(presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort);
+      const nextEffort = presetEffort !== undefined ? presetEffort : reconciledControls.reasoningEffort;
+      setReasoningEffort(nextEffort);
+      rememberPersonalPick(nextModelId, nextEffort);
       // Ultrafast carries over only to a model that offers it too.
       setFastModeState(
         reconciledControls.fastMode,
@@ -22429,9 +22468,11 @@ export function AgentChatPane({
             onHandoffToDevinCloud={handleHandoffToDevinCloud}
             onSubmitToCloud={async (promptText) => {
               void copyPromptForLaunch(promptText);
-              return devinCloudSessionActive
+              const sent = await (devinCloudSessionActive
                 ? launchDevinCloudSession(promptText)
-                : launchCursorCloudRun(promptText);
+                : launchCursorCloudRun(promptText));
+              if (sent) sentPromptHistory.record(promptText);
+              return sent;
             }}
             parallelChatMode={parallelChatMode}
             onParallelChatModeChange={(enabled) => {

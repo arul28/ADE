@@ -15,7 +15,7 @@ import {
   type ChatTranscriptDensity,
   type CodeBlockCopyButtonPosition,
 } from "../../state/appStore";
-import { PROVIDER_CHAT_ACCENTS } from "../chat/chatSurfaceTheme";
+import { chatSurfaceVars, PROVIDER_CHAT_ACCENTS } from "../chat/chatSurfaceTheme";
 import {
   CHAT_CHROME_TINT_LABEL,
   COPY_POSITION_META,
@@ -168,7 +168,7 @@ export function ChatSection() {
                   icon={<ChatTeardropText size={15} weight="bold" />}
                   tone="violet"
                   title="Message bubble"
-                  hint="Your messages. Solid drops the gradient, which can be hard to read on a light theme."
+                  hint="Solid removes the gradient from your messages and from the prompt box in light mode."
                 >
                   <ChoiceGrid
                     ariaLabel="Message bubble fill"
@@ -392,18 +392,15 @@ const USER_BUBBLE_FILL_LABEL: Record<ChatUserBubbleFill, string> = {
 };
 
 function BubbleArt({ fill }: { fill: ChatUserBubbleFill }) {
-  const accent = PROVIDER_CHAT_ACCENTS.claude ?? "var(--color-accent)";
   return (
-    <div className="ade-cs-tints">
+    <div className="ade-cs-tints" style={chatSurfaceVars("standard", PROVIDER_CHAT_ACCENTS.claude)}>
       <div
         className="ade-cs-tint"
         style={{
           marginLeft: "auto",
           width: "70%",
           borderColor: "transparent",
-          background: fill === "solid"
-            ? `color-mix(in srgb, ${accent} 65%, #000000 35%)`
-            : `linear-gradient(135deg, color-mix(in srgb, ${accent} 76%, #ffffff 6%) 0%, color-mix(in srgb, ${accent} 60%, #7c3aed 40%) 50%, color-mix(in srgb, ${accent} 58%, #4c1d95 42%) 100%)`,
+          background: fill === "solid" ? "var(--chat-user-bubble-solid)" : "var(--chat-user-bubble-gradient)",
         }}
       >
         <span className="ade-cs-line" style={{ width: "70%", background: "rgba(255,255,255,0.85)" }} />

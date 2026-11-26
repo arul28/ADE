@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ClockCounterClockwise, MagnifyingGlass, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { isMacPlatform } from "../../lib/platform";
@@ -33,13 +33,15 @@ export function PromptHistorySearch({
 }: {
   entries: readonly AgentChatPromptHistoryEntry[];
   onPick: (entry: AgentChatPromptHistoryEntry, index: number) => void;
-  onClose: () => void;
+  onClose: (restoreFocus?: boolean) => void;
 }) {
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const resultsId = useId();
   const matches = useMemo(() => matchPrompts(entries, query), [entries, query]);
+  const selected = Math.min(highlighted, matches.length - 1);
 
   useEffect(() => {
     inputRef.current?.focus({ preventScroll: true });
@@ -51,9 +53,9 @@ export function PromptHistorySearch({
 
   useEffect(() => {
     listRef.current
-      ?.querySelector<HTMLElement>(`[data-prompt-search-index="${highlighted}"]`)
+      ?.querySelector<HTMLElement>(`[data-prompt-search-index="${selected}"]`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [highlighted]);
+  }, [selected]);
 
   const pick = (position: number) => {
     const match = matches[position];
@@ -76,7 +78,7 @@ export function PromptHistorySearch({
       setHighlighted((value) => Math.max(value - 1, 0));
     } else if (event.key === "Enter") {
       event.preventDefault();
-      pick(highlighted);
+      pick(selected);
     }
   };
 
@@ -91,12 +93,14 @@ export function PromptHistorySearch({
           onKeyDown={onKeyDown}
           onBlur={(event) => {
             // Clicking a result moves focus into the list first; anything else closes.
-            if (!event.currentTarget.closest("[data-prompt-history-search]")?.contains(event.relatedTarget as Node | null)) onClose();
+            if (!event.currentTarget.closest("[data-prompt-history-search]")?.contains(event.relatedTarget as Node | null)) onClose(false);
           }}
           placeholder="Search your prompts"
           aria-label="Search prompt history"
-          aria-controls="prompt-history-search-results"
-          aria-activedescendant={matches.length ? `prompt-history-search-${highlighted}` : undefined}
+          role="combobox"
+          aria-expanded="true"
+          aria-controls={resultsId}
+          aria-activedescendant={selected >= 0 ? `${resultsId}-${selected}` : undefined}
           className="min-w-0 flex-1 border-0 bg-transparent p-0 font-sans shadow-none outline-none ring-0 focus:outline-none focus:ring-0 focus-visible:outline-none text-[length:calc(var(--chat-font-size)*12/14)] text-fg/90 placeholder:text-muted-fg/45"
           spellCheck={false}
         />
@@ -106,14 +110,14 @@ export function PromptHistorySearch({
           aria-label="Close prompt search"
           className="shrink-0 rounded p-0.5 text-muted-fg/50 transition-colors hover:text-fg/85"
           onMouseDown={(event) => event.preventDefault()}
-          onClick={onClose}
+          onClick={() => onClose()}
         >
           <X size={11} weight="bold" />
         </button>
       </div>
       <div
         ref={listRef}
-        id="prompt-history-search-results"
+        id={resultsId}
         role="listbox"
         aria-label="Matching prompts"
         className="max-h-56 overflow-y-auto p-1"
@@ -121,9 +125,9 @@ export function PromptHistorySearch({
         {matches.length ? matches.map(({ entry, index }, position) => (
           <div
             key={entry.eventKey}
-            id={`prompt-history-search-${position}`}
+            id={`${resultsId}-${position}`}
             role="option"
-            aria-selected={position === highlighted}
+            aria-selected={position === selected}
             data-prompt-search-index={position}
             tabIndex={-1}
             onMouseDown={(event) => event.preventDefault()}
@@ -131,7 +135,7 @@ export function PromptHistorySearch({
             onClick={() => onPick(entry, index)}
             className={cn(
               "flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)]",
-              position === highlighted ? "bg-fg/[0.07] text-fg/90" : "text-fg/70",
+              position === selected ? "bg-fg/[0.07] text-fg/90" : "text-fg/70",
             )}
           >
             <ClockCounterClockwise size={12} className="mt-[3px] shrink-0 text-muted-fg/45" aria-hidden />
