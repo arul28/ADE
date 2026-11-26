@@ -10,12 +10,12 @@
  *   node ./scripts/export-browser-mock-ade-snapshot.mjs --optional
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { fetchGithubActivityForBrowser, GITHUB_STATS_DEADLINE_MS } from "./browserMockGithubActivity.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RENDERER_ROOT = path.resolve(__dirname, "../src/renderer");
@@ -719,54 +719,11 @@ function getCtoState(projectId) {
   };
 }
 
-function runGhJson(args) {
-  return execFileSync("gh", args, {
-    cwd: projectRoot,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: 60_000,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
 function inUsageRange(iso, range) {
   const timestamp = Date.parse(iso ?? "");
   if (!Number.isFinite(timestamp)) return false;
   if (range.since && timestamp < Date.parse(range.since)) return false;
   return timestamp <= Date.parse(range.until);
-}
-
-function commitRangeArgs(range) {
-  const args = [];
-  if (range.since) args.push("-F", `since=${range.since}`);
-  args.push("-F", `until=${range.until}`);
-  return args;
-}
-
-function pullRequestGraphqlQuery() {
-  return [
-    "query($owner: String!, $name: String!, $endCursor: String) {",
-    "  repository(owner: $owner, name: $name) {",
-    "    pullRequests(first: 100, after: $endCursor, orderBy: { field: CREATED_AT, direction: DESC }) {",
-    "      pageInfo { hasNextPage endCursor }",
-    "      nodes {",
-    "        number state createdAt closedAt mergedAt additions deletions changedFiles",
-    "        author { login }",
-    "      }",
-    "    }",
-    "  }",
-    "}",
-  ].join("\n");
-}
-
-function parsePullRequestRows(raw, viewer) {
-  return raw
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => safeJson(line, null))
-    .filter((row) => row && typeof row === "object")
-    .filter((row) => row.author?.login === viewer);
 }
 
 function addStatsDaily(points, dateIso, patch) {
@@ -781,84 +738,17 @@ function addStatsDaily(points, dateIso, patch) {
   point.filesChanged += nonNegativeInt(patch.filesChanged);
 }
 
-function buildGithubStatsForBrowser(range) {
-  try {
-    const repoInfo = JSON.parse(runGhJson(["repo", "view", "--json", "owner,name"]));
-    const owner = typeof repoInfo.owner === "string" ? repoInfo.owner : repoInfo.owner?.login;
-    const repo = owner && repoInfo.name ? `${owner}/${repoInfo.name}` : null;
-    if (!repo) throw new Error("Unable to resolve GitHub repo.");
-    const viewer = JSON.parse(runGhJson(["api", "user", "--cache", "10m"])).login;
-    if (typeof viewer !== "string" || !viewer) throw new Error("Unable to resolve GitHub user.");
-
-    const prRows = parsePullRequestRows(runGhJson([
-      "api",
-      "graphql",
-      "--paginate",
-      "-F",
-      `owner=${owner}`,
-      "-F",
-      `name=${repoInfo.name}`,
-      "-f",
-      `query=${pullRequestGraphqlQuery()}`,
-      "--jq",
-      ".data.repository.pullRequests.nodes[] | @json",
-    ]), viewer);
-    const mergedPrs = prRows.filter((pr) => inUsageRange(pr.mergedAt, range));
-    const closedPrs = prRows.filter((pr) => inUsageRange(pr.closedAt, range));
-    const commitRows = runGhJson([
-      "api",
-      `repos/${repo}/commits`,
-      "--method",
-      "GET",
-      "--cache",
-      "10m",
-      "-F",
-      `author=${viewer}`,
-      ...commitRangeArgs(range),
-      "--paginate",
-      "--jq",
-      ".[] | [.sha, .commit.author.date] | @tsv",
-    ])
-      .split(/\r?\n/)
-      .map((line) => line.trim().split("\t")[1])
-      .filter(Boolean);
-    const createdPrs = prRows.filter((pr) => inUsageRange(pr.createdAt, range));
-    const commits = commitRows.filter((date) => inUsageRange(date, range));
-    const daily = makeBrowserDailySkeleton(range);
-    for (const date of commits) addStatsDaily(daily, date, { commits: 1 });
-    for (const pr of createdPrs) {
-      addStatsDaily(daily, pr.createdAt, {
-        prs: 1,
-      });
-    }
-    for (const pr of mergedPrs) {
-      addStatsDaily(daily, pr.mergedAt, {
-        insertions: pr.additions,
-        deletions: pr.deletions,
-        filesChanged: pr.changedFiles,
-      });
-    }
-    return {
-      repo,
-      available: true,
-      lastFetchedAt: new Date().toISOString(),
-      error: null,
-      commitsCreated: commits.length,
-      prsTracked: createdPrs.length,
-      prsOpen: createdPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "OPEN").length,
-      prsMerged: mergedPrs.length,
-      prsClosed: closedPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "CLOSED").length,
-      prAdditions: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.additions), 0),
-      prDeletions: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.deletions), 0),
-      filesChanged: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.changedFiles), 0),
-      daily,
-    };
-  } catch (error) {
+/** One preset's GitHub numbers, sliced from the activity fetched once. */
+function buildGithubStatsForBrowser(range, activity) {
+  const daily = makeBrowserDailySkeleton(range);
+  const tooFarBack = activity.coveredSince && (!range.since || Date.parse(range.since) < Date.parse(activity.coveredSince));
+  const error = activity.error ?? (tooFarBack ? `gh did not finish in ${GITHUB_STATS_DEADLINE_MS / 1000} s; complete only since ${activity.coveredSince.slice(0, 10)}` : null);
+  if (error) {
     return {
       repo: null,
       available: false,
       lastFetchedAt: null,
-      error: error instanceof Error ? error.message : String(error),
+      error,
       commitsCreated: 0,
       prsTracked: 0,
       prsOpen: 0,
@@ -867,9 +757,38 @@ function buildGithubStatsForBrowser(range) {
       prAdditions: 0,
       prDeletions: 0,
       filesChanged: 0,
-      daily: makeBrowserDailySkeleton(range),
+      daily,
     };
   }
+  const { prRows } = activity;
+  const mergedPrs = prRows.filter((pr) => inUsageRange(pr.mergedAt, range));
+  const closedPrs = prRows.filter((pr) => inUsageRange(pr.closedAt, range));
+  const createdPrs = prRows.filter((pr) => inUsageRange(pr.createdAt, range));
+  const commits = activity.commitDates.filter((date) => inUsageRange(date, range));
+  for (const date of commits) addStatsDaily(daily, date, { commits: 1 });
+  for (const pr of createdPrs) addStatsDaily(daily, pr.createdAt, { prs: 1 });
+  for (const pr of mergedPrs) {
+    addStatsDaily(daily, pr.mergedAt, {
+      insertions: pr.additions,
+      deletions: pr.deletions,
+      filesChanged: pr.changedFiles,
+    });
+  }
+  return {
+    repo: activity.repo,
+    available: true,
+    lastFetchedAt: new Date().toISOString(),
+    error: null,
+    commitsCreated: commits.length,
+    prsTracked: createdPrs.length,
+    prsOpen: createdPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "OPEN").length,
+    prsMerged: mergedPrs.length,
+    prsClosed: closedPrs.filter((pr) => String(pr.state ?? "").toUpperCase() === "CLOSED").length,
+    prAdditions: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.additions), 0),
+    prDeletions: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.deletions), 0),
+    filesChanged: mergedPrs.reduce((sum, pr) => sum + nonNegativeInt(pr.changedFiles), 0),
+    daily,
+  };
 }
 
 function buildUsageStatsFromSnapshot(usageSnapshot, preset) {
@@ -959,9 +878,9 @@ function mergeUsageTokensIntoDaily(points, dailyTokens) {
   }
 }
 
-function buildStatsDashboardStats(preset, usageSnapshot) {
+function buildStatsDashboardStats(preset, usageSnapshot, githubActivity) {
   const range = usageRangeForPreset(preset);
-  const github = buildGithubStatsForBrowser(range);
+  const github = buildGithubStatsForBrowser(range, githubActivity);
   const usage = buildUsageStatsFromSnapshot(usageSnapshot, preset);
   mergeUsageTokensIntoDaily(github.daily, usage.dailyTokens);
   const totalTokens = usage.inputTokens + usage.outputTokens + usage.cachedTokens;
@@ -1207,8 +1126,9 @@ const sessions = buildSessions(projectId);
 
 const automations = buildAutomations(projectId);
 const usageSnapshot = buildUsageSnapshot();
+const githubActivity = await fetchGithubActivityForBrowser({ cwd: projectRoot });
 const adeUsageStatsByPreset = Object.fromEntries(
-  ["today", "7d", "30d", "all"].map((preset) => [preset, buildStatsDashboardStats(preset, usageSnapshot)]),
+  ["today", "7d", "30d", "all"].map((preset) => [preset, buildStatsDashboardStats(preset, usageSnapshot, githubActivity)]),
 );
 const ctoState = getCtoState(projectId);
 
