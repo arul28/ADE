@@ -144,32 +144,6 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   return record;
 }
 
-/**
- * Whether a launch in `launchesDir` waits for room on the disk (its setup
- * filled it, and the host grew it: `roomMark`). A brain opens such a
- * project at start, so the launch goes on after the restart with nobody
- * watching. A read of a few small files, once per brain start.
- */
-export function hasChatLaunchAwaitingRoom(launchesDir: string): boolean {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(launchesDir);
-  } catch {
-    return false;
-  }
-  for (const entry of entries) {
-    if (!entry.endsWith(".json")) continue;
-    try {
-      const record = JSON.parse(fs.readFileSync(path.join(launchesDir, entry), "utf8")) as ChatLaunchRecord;
-      // Past its bound too: opening the project is what reads it as interrupted.
-      if (chatLaunchRoomVerdict(record, Date.now())) return true;
-    } catch {
-      // Unreadable: the service's own load says so.
-    }
-  }
-  return false;
-}
-
 export function createChatLaunchRecordStore(args: { launchesDir: string; logger: Logger }) {
   const { launchesDir, logger } = args;
   const recordPath = (launchId: string) => path.join(launchesDir, `${launchId}.json`);

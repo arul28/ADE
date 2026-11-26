@@ -2137,8 +2137,9 @@ One busy list, `decideCloudBusy` in
   - Before the grow, the launch record gets a room mark (`roomMark`); if that
     write fails, nothing grows. A grow that never started is taken back, so a
     Retry grows again.
-  - The grow restarts the computer. The brain opens the projects with marked
-    launches, and a marked launch runs its setup again ("running again after
+  - The grow restarts the computer. The brain opens its projects at start
+    (see [Timed wakes](#timed-wakes-and-event-wakes)), and a marked launch
+    runs its setup again ("running again after
     the disk grew (restart N)"). The mark goes when the environment stage
     settles, on Cancel and on Retry. Past 3 resumes or an hour after the mark,
     the launch reads as interrupted (`chat_launch.environment_resume_refused`).
@@ -2245,7 +2246,29 @@ directory wakes it (routes in `apps/account-directory/README.md`):
 
 - **Timed wakes.** Before it sleeps, the computer sends its next time
   (`PUT /cloud/wake`, `cloud_wakes`). The minute cron requests its public
-  address, and its row reads `waking` at once.
+  address 2 minutes early, and its row reads `waking` at once. The power log
+  shows the wake as `wake` `seen_by_tick` once the tick reads it awake.
+  - The next time is the soonest scheduled wake-up or automation cron in an
+    open project or in the personal chats (`readMachineNextScheduledWakeAt`).
+    A timer due in under 5 minutes keeps the computer awake (`schedule`); one
+    that could not be sent keeps it awake for the hour before it.
+  - A project's timers run only while the project is open, so the brain
+    opens every project of the computer when it starts
+    (`cloud.project_open_at_start`). Otherwise a restart (an update at idle,
+    a disk grow) leaves the project closed, the new brain sends "no timer",
+    the server drops the wake, and the check runs at the next message,
+    hours late.
+  - The keep-awake's busy read waits for those opens, for at most a minute
+    (`cloud.project_open_at_start_slow`). Its first check can sleep a
+    computer that woke only for an update, so that check must already send
+    the timer. The read never waits on a project still opening after that:
+    such a project counts as busy (`unknown`) for up to 10 minutes after the
+    brain's start, then it is left out. A hung folder never holds a check
+    back, and keeps the computer awake for 10 minutes at most.
+  - The last busy read before a sleep also compares the timer. A timer that
+    changed during the rest save (a project done opening) is not on the
+    server yet, so the computer does not sleep then; the next check sends it
+    first.
 - **Event wakes.** The computer lists the topics that wake it
   (`PUT /cloud/instances/:id/event-wakes`): a Linear organization, a Linear
   agent account, or the account's custom webhooks. The webhook relay reports

@@ -152,7 +152,7 @@ export function decideCloudBusy(
 
 export type CloudKeepAwakeBusy = {
   busy: boolean;
-  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "shell_agent_cli" (one started by hand in a shell), "disk_grow_command" (an `ade` command waiting on its own disk grow), "setup", "lane_setup", "move", "copy", "first_clone", "lane_launch", "schedule", "in_use". */
+  /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "shell_agent_cli" (one started by hand in a shell), "disk_grow_command" (an `ade` command waiting on its own disk grow), "setup", "lane_setup", "move", "copy", "first_clone", "lane_launch", "schedule", "in_use", "unknown" (a read that failed, or a project still opening at the brain's start). */
   reasons: string[];
   /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
   nextWakeAt?: number | null;
@@ -300,6 +300,8 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
   /** The last moment real work ran (never the boot itself), for `reportUse`. */
   let lastWorkAt: number | null = null;
   let lastTickAt: number | null = null;
+  /** The timer the last check read (and sent, when it could). */
+  let checkedWakeAt: number | null = null;
   /** The first check of this stretch awake, for `onIdleFacts`. */
   let awakeSince = lastBusyAt;
   /** The last check found work. */
@@ -457,7 +459,12 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       });
       // Work noted while the save ran wins: sleep waits for the next idle stretch.
       // Busy is read again too: work that started during the save may not be in it.
-      const busyAfterSave = usedSinceTick ? true : await options.readBusy().then((busy) => busy.busy, () => true);
+      // A timer that changed during the save (a project done opening) is
+      // not on the server yet: no sleep now, the next check sends it first.
+      const busyAfterSave = usedSinceTick ? true : await options.readBusy().then(
+        (busy) => busy.busy || (busy.nextWakeAt ?? null) !== checkedWakeAt,
+        () => true,
+      );
       if (usedSinceTick || busyAfterSave) {
         askedToSleep = false;
         return;
@@ -537,6 +544,7 @@ export function createCloudKeepAwake(options: CloudKeepAwakeOptions): CloudKeepA
       }
       usedSinceTick = false;
       const nextWakeAt = state.nextWakeAt ?? null;
+      checkedWakeAt = nextWakeAt;
       // An overdue timer fires on this awake machine on its own; only a future one is sent.
       const serverHolds = await syncTimedWake(url, nextWakeAt != null && nextWakeAt > now() ? nextWakeAt : null);
       if (nextWakeAt != null) {

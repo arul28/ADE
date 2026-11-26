@@ -31080,12 +31080,52 @@ async function runServe(
   // (`cloudActivityReporter.ts`): its agents from each busy read, its idle
   // clock from the keep-awake's checks; made once the account client exists below.
   let cloudActivityReporter: import("./services/account/cloudActivityReporter").CloudActivityReporter | null = null;
+  // The projects this brain opens at start (`cloud.project_open_at_start`)
+  // hold its chats' timers. The busy read waits for them, once and for at most
+  // a minute. The keep-awake's first check runs before they open, and after a
+  // wake only for an update that check may sleep the computer: read too
+  // early, it would tell the server "no timer" first.
+  const cloudProjectsOpenWaitMs = 60_000;
+  // A project still opening past that wait: its timers and work are unread,
+  // so it counts as busy ("unknown", as a failed read does) for this long
+  // after the brain's start. A hung open then costs this much awake time
+  // per start, not every hour after it.
+  const cloudProjectsOpeningBusyMs = 10 * 60_000;
+  const cloudBrainStartedAt = Date.now();
+  let markCloudProjectsOpened: () => void = () => {};
+  const cloudProjectsOpened = !embedded && cloudInstanceId
+    ? new Promise<void>((resolve) => {
+        const cap = setTimeout(() => {
+          headlessProjectLogger.warn("cloud.project_open_at_start_slow", { waitedMs: cloudProjectsOpenWaitMs });
+          resolve();
+        }, cloudProjectsOpenWaitMs);
+        cap.unref?.();
+        markCloudProjectsOpened = () => {
+          clearTimeout(cap);
+          resolve();
+        };
+      })
+    : null;
   const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
     ? async () => {
-        const sources = { projectRegistry, scopeRegistry };
+        if (cloudProjectsOpened) await cloudProjectsOpened;
+        // Only scopes whose boot is done: one still booting past that wait
+        // (a hung folder) must not hold every check back. A booting scope runs
+        // no agent work yet; the next check reads it once it is up, and until
+        // then it keeps the computer awake (below).
+        const opening = Date.now() - cloudBrainStartedAt < cloudProjectsOpeningBusyMs
+          && projectRegistry.list().some((record) =>
+            scopeRegistry.getIfBooted(record.projectId) != null && !scopeRegistry.getIfReady(record.projectId));
+        const readyScopes: Pick<InstanceType<typeof ProjectScopeRegistry>, "getIfBooted"> = {
+          getIfBooted: (projectId) => {
+            const scope = scopeRegistry.getIfReady(projectId);
+            return scope ? Promise.resolve(scope) : null;
+          },
+        };
+        const sources = { projectRegistry, scopeRegistry: readyScopes };
         const [facts, nextWakeAt] = await Promise.all([
           readMachineBusyFacts({ ...sources, personalChatScope }),
-          readMachineNextScheduledWakeAt(sources),
+          readMachineNextScheduledWakeAt({ ...sources, personalChatScope }),
         ]);
         const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
           ...facts,
@@ -31095,7 +31135,13 @@ async function runServe(
         cloudActivityReporter?.noteAgents(facts);
         // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
         // one goes to the account server, which wakes the machine for it.
-        return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
+        return {
+          busy: busy || opening,
+          reasons: opening ? [...reasons, "unknown"] : reasons,
+          nextWakeAt,
+          waitingOnPerson,
+          laneSetups: facts.laneSetups ?? 0,
+        };
       }
     : null;
   // A lane launch's setup filled the disk: grow it now, while nothing else
@@ -32794,25 +32840,31 @@ async function runServe(
     },
   });
 
-  // A lane launch's setup that filled the disk waits through the grow's
-  // restart (`roomMark`): its project opens now, so the launch goes on
-  // (and reads as busy, so the computer stays awake) with nobody watching.
+  // An ADE Cloud computer opens each of its projects when its brain starts.
+  // A chat's timers live in its project and run, and reach the keep-awake
+  // (`readMachineNextScheduledWakeAt`), only while it is open. After a
+  // restart (an update at idle, a disk grow) nothing else opened it before
+  // the computer slept: the new brain told the server it had no timer, and a
+  // check due in 20 minutes ran hours later, at the next message. The busy
+  // read waits for these opens (`cloudProjectsOpened`), so the first check
+  // sends the timer. A lane launch's setup that waited through a grow's
+  // restart (`roomMark`) goes on the same way, with nobody watching.
   if (!embedded && cloudInstanceId) {
     void (async () => {
-      const [{ hasChatLaunchAwaitingRoom }, { resolveAdeLayout }] = await Promise.all([
-        import("../../desktop/src/main/services/chat/chatLaunchRecords"),
-        import("../../desktop/src/shared/adeLayout"),
-      ]);
-      for (const project of projectRegistry.list()) {
-        if (!hasChatLaunchAwaitingRoom(path.join(resolveAdeLayout(project.rootPath).cacheDir, "chat-launches"))) continue;
-        headlessProjectLogger.info("cloud.lane_setup_resume_open", { projectId: project.projectId });
-        await scopeRegistry.get(project.projectId).catch((error: unknown) => {
-          headlessProjectLogger.warn("cloud.lane_setup_resume_open_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) });
-        });
-      }
+      // Side by side, so one slow folder doesn't keep the others closed. The
+      // registry still opens a project with open strikes alone
+      // (`opensAlone`), and a cloud computer holds few projects, each open
+      // from here on anyway.
+      await Promise.all(projectRegistry.list().map((project) =>
+        // Not a use of the project: its "last opened" (and the folder a new
+        // project defaults to beside) stays the person's.
+        scopeRegistry.get(project.projectId, { touch: false }).then(
+          () => headlessProjectLogger.info("cloud.project_open_at_start", { projectId: project.projectId }),
+          (error: unknown) => headlessProjectLogger.warn("cloud.project_open_at_start_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) }),
+        )));
     })().catch((error: unknown) => {
-      headlessProjectLogger.warn("cloud.lane_setup_resume_scan_failed", { error: error instanceof Error ? error.message : String(error) });
-    });
+      headlessProjectLogger.warn("cloud.project_open_at_start_scan_failed", { error: error instanceof Error ? error.message : String(error) });
+    }).finally(() => markCloudProjectsOpened());
   }
 
   // A server launch (C6): ADE's server made this computer for a caller with

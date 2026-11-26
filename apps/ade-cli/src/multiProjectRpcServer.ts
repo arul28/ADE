@@ -627,29 +627,40 @@ export async function readMachineBusyFacts(args: BootedRuntimeSources & {
   };
 }
 
+/** A runtime's scheduled chat wake-ups and automation crons, in epoch ms. */
+async function scheduledWakeTimesOf(runtime: AdeRuntime): Promise<number[]> {
+  const items = await runtime.agentChatService?.listScheduledWork?.({}).catch(() => []) ?? [];
+  // Automations on a cron fire on this machine too.
+  let rules: Array<{ enabled?: boolean; nextRunAt?: string | null }> = [];
+  try {
+    rules = runtime.automationService?.list?.() ?? [];
+  } catch {
+    rules = [];
+  }
+  return [
+    ...items.filter((item) => item.status === "scheduled").map((item) => item.nextRunAt),
+    ...rules.filter((rule) => rule.enabled !== false).map((rule) => rule.nextRunAt),
+  ]
+    .map((at) => (at ? Date.parse(at) : Number.NaN))
+    .filter((at) => Number.isFinite(at));
+}
+
 /**
  * The soonest scheduled wake-up of any chat in a project this brain has
- * booted, in epoch ms, or null. A project that is not booted has none due:
- * booting it is what loads its schedules.
+ * booted, or in its personal chats, in epoch ms, or null. A project that is
+ * not booted has none due: booting it is what loads its schedules (an ADE
+ * Cloud computer opens its projects at the brain's start).
  */
-export async function readMachineNextScheduledWakeAt(args: BootedRuntimeSources): Promise<number | null> {
-  const times = await mapBootedProjectRuntimes(args, async (runtime) => {
-    const items = await runtime.agentChatService?.listScheduledWork?.({}).catch(() => []) ?? [];
-    // Automations on a cron fire on this machine too.
-    let rules: Array<{ enabled?: boolean; nextRunAt?: string | null }> = [];
-    try {
-      rules = runtime.automationService?.list?.() ?? [];
-    } catch {
-      rules = [];
-    }
-    return [
-      ...items.filter((item) => item.status === "scheduled").map((item) => item.nextRunAt),
-      ...rules.filter((rule) => rule.enabled !== false).map((rule) => rule.nextRunAt),
-    ]
-      .map((at) => (at ? Date.parse(at) : Number.NaN))
-      .filter((at) => Number.isFinite(at));
-  });
-  const all = times.flat();
+export async function readMachineNextScheduledWakeAt(args: BootedRuntimeSources & {
+  personalChatScope: Partial<Pick<PersonalChatScope, "bootedRuntime">>;
+}): Promise<number | null> {
+  const personal = typeof args.personalChatScope.bootedRuntime === "function"
+    ? await args.personalChatScope.bootedRuntime()
+    : null;
+  const all = [
+    ...(await mapBootedProjectRuntimes(args, scheduledWakeTimesOf)).flat(),
+    ...(personal ? await scheduledWakeTimesOf(personal) : []),
+  ];
   return all.length ? Math.min(...all) : null;
 }
 

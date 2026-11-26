@@ -977,6 +977,53 @@ describe("cloud keep awake", () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+  // The server wakes a sleeping computer only for a timer it holds: a check
+  // that sleeps before it sends a timer it just found runs hours late.
+  it("sends a timer found during the rest save before it sleeps", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-timed-wake-"));
+    const paths = cloudKeepAwakePaths(home);
+    fs.mkdirSync(paths.dir, { recursive: true });
+    fs.writeFileSync(paths.wakeUrl, JSON.stringify({ instanceId: "thisbox001", url: "https://wake-abc.agent37.app" }));
+    const minute = 60_000;
+    let clock = 1_000_000;
+    const projectTimer = clock + 60 * minute;
+    const openedLateTimer = clock + 30 * minute;
+    let nextWakeAt = projectTimer;
+    const events: string[] = [];
+    const keepAwake = createCloudKeepAwake({
+      env: { ADE_CLOUD_INSTANCE_ID: "thisbox001" },
+      adeHome: home,
+      intervalMs: minute,
+      now: () => clock,
+      readBusy: async () => ({ busy: false, reasons: [], nextWakeAt }),
+      sendTimedWake: async (wake) => {
+        events.push("at" in wake ? `wake ${wake.at}` : "clear");
+      },
+      // A project that was still opening is up by the end of the save, with an earlier timer.
+      saveForRest: async () => {
+        nextWakeAt = openedLateTimer;
+        return null;
+      },
+      requestIdleSleep: async () => {
+        events.push("sleep");
+      },
+    });
+    try {
+      // A check a minute: the third minute is the first idle long enough to sleep.
+      for (let i = 0; i < 4; i += 1) {
+        if (i > 0) clock += minute;
+        await keepAwake.tick();
+      }
+      // Idle long enough, but the save found a timer the server doesn't hold yet.
+      expect(events).toEqual([`wake ${projectTimer}`]);
+      clock += minute;
+      await keepAwake.tick();
+      expect(events).toEqual([`wake ${projectTimer}`, `wake ${openedLateTimer}`, "sleep"]);
+    } finally {
+      keepAwake.dispose();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("cloud busy terminals", () => {
