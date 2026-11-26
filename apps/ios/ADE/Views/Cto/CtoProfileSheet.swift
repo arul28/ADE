@@ -240,7 +240,11 @@ struct CtoRoutineRow: View {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(3)
               .textSelection(.enabled)
-            if let status = ctoDescribeRoutineCheck(item, now: context.date) {
+            if item.checkFailing == true {
+              Text("Failing. It wakes again when it passes with new output.")
+                .font(.caption)
+                .foregroundStyle(ADEColor.danger)
+            } else if let status = ctoDescribeRoutineCheck(item, now: context.date) {
               Text(status.prefix(1).uppercased() + status.dropFirst())
                 .font(.caption)
                 .foregroundStyle(item.checkFailing == true ? ADEColor.danger : ADEColor.textMuted)

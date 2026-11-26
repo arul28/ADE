@@ -593,9 +593,20 @@ export function createChatScheduledWorkScheduler(
       if (!decision.wake) {
         // Nothing new: the occurrence is spent without a turn. Its claim
         // stays, so another brain follows the moved fireAt instead.
+        const previousFireAt = schedule.fireAt;
         schedule.fireAt = nextCronOccurrence(schedule, now());
         inFlight.delete(scheduleId);
-        await persist();
+        try {
+          await persist();
+        } catch (error) {
+          // Unsaved: put the occurrence and its check state back, give up the
+          // claim and try again soon, like an undelivered wake.
+          schedule.fireAt = previousFireAt;
+          restoreCheckState(schedule, previousCheck);
+          options.releaseFire?.(cloneSchedule(schedule));
+          armBusyDeferRetry(schedule);
+          throw error;
+        }
         await emitTransition(schedule, schedule.status);
         arm(schedule);
         return;

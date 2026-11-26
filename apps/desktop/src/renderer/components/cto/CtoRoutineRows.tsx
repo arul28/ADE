@@ -347,7 +347,7 @@ function RoutineRow({
                 <code>{check}</code>
                 {checkLine ? (
                   <span className="ade-cto-routine-check-state" data-tone={item.checkFailing ? "crit" : undefined}>
-                    {item.checkFailing ? "Failing. It wakes again once it passes." : `${checkLine.charAt(0).toUpperCase()}${checkLine.slice(1)}`}
+                    {item.checkFailing ? "Failing. It wakes again when it passes with new output." : `${checkLine.charAt(0).toUpperCase()}${checkLine.slice(1)}`}
                   </span>
                 ) : null}
               </div>
@@ -422,8 +422,11 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
     let timer: number | null = null;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (envelope.sessionId !== sessionId) return;
-      const type = envelope.event.type;
-      if (type !== "scheduled_work_update" && type !== "done") return;
+      const event = envelope.event;
+      // A quiet check keeps the row's status, so the scheduler reports it only
+      // as a bare session_meta_updated; meta updates carrying a field are other news.
+      const bareMetaUpdate = event.type === "session_meta_updated" && Object.keys(event).length === 1;
+      if (event.type !== "scheduled_work_update" && event.type !== "done" && !bareMetaUpdate) return;
       if (timer != null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = null;

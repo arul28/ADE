@@ -1421,6 +1421,48 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
+  it("keeps a quiet routine going when saving its quiet check fails", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    let failNextSave = false;
+    const claims = sharedClaims();
+    const releaseFire = vi.fn(claims.releaseFire);
+    const runCheck = vi.fn(async (): Promise<ChatScheduledWorkCheckRun> => ({ ok: true, outputHash: "hash-a", detail: "pending" }));
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => {
+        if (failNextSave) {
+          failNextSave = false;
+          throw new Error("disk full");
+        }
+        state = structuredClone(next);
+      },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      claimFire: claims.claimFire,
+      releaseFire,
+      runCheck,
+      fire: createFireMock(),
+    });
+    await scheduler.start();
+
+    failNextSave = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runCheck).toHaveBeenCalledTimes(1);
+    expect(releaseFire).toHaveBeenCalledTimes(1);
+    // The retry runs the check again and saves the spent occurrence.
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(runCheck).toHaveBeenCalledTimes(2);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START + 2 * 60_000,
+      lastCheckedAt: START + 80_000,
+    }));
+    scheduler.dispose();
+  });
+
   it("adopts the check verdict of the brain that owned the occurrence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
