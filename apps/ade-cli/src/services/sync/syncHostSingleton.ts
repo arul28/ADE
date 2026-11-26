@@ -112,6 +112,11 @@ export function onSyncHostSingletonLeaseAcquired(handler: (ownerId: string) => v
   };
 }
 
+/** Whether the lease with this owner id is still held by this process. */
+export function isSyncHostLeaseHeld(ownerId: string): boolean {
+  return heldLeaseIds.has(ownerId);
+}
+
 /** True when this process holds the machine-wide sync host lease. */
 export function holdsSyncHostSingleton(): boolean {
   return heldLeaseIds.size > 0;
@@ -400,11 +405,30 @@ function safeReadLock(
 
 function writeLock(lockPath: string, owner: SyncHostSingletonOwner, flag: "wx" | "w"): void {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-  fs.writeFileSync(lockPath, `${JSON.stringify({ version: LOCK_VERSION, owner }, null, 2)}\n`, {
-    encoding: "utf8",
-    flag,
-    mode: 0o600,
-  });
+  const contents = `${JSON.stringify({ version: LOCK_VERSION, owner }, null, 2)}\n`;
+  if (flag === "wx") {
+    fs.writeFileSync(lockPath, contents, { encoding: "utf8", flag, mode: 0o600 });
+    return;
+  }
+  // Replacing a live lock: a truncating write leaves it empty for a moment,
+  // and another brain that reads it then sees no owner and takes sync. Write
+  // a sibling and rename it over the lock instead.
+  const temp = `${lockPath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temp, contents, { encoding: "utf8", flag: "w", mode: 0o600 });
+    fs.renameSync(temp, lockPath);
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // Best effort: no reader trusts the temp file's name.
+    }
+    // Windows refuses a rename over a file another process has open: the
+    // plain write is the fallback there.
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") throw error;
+    fs.writeFileSync(lockPath, contents, { encoding: "utf8", flag: "w", mode: 0o600 });
+  }
 }
 
 function unlinkLock(lockPath: string): void {
@@ -1069,17 +1093,21 @@ export function acquireSyncHostSingleton(
       }
     },
     dispose() {
-      const lock = safeReadLock(lockPath, deps.platform);
       heldLeases.delete(owner.id);
-      if (lock?.owner.id === owner.id && lock.owner.pid === process.pid) {
-        // Another lease of this process still holds sync: the file names it
-        // instead of disappearing, so other brains still see an owner.
-        const remaining = [...heldLeases.values()].find((held) => held.lockPath === lockPath);
-        if (remaining) writeLock(lockPath, remaining.owner, "w");
-        else unlinkLock(lockPath);
-      }
-      if (heldLeaseIds.delete(owner.id) && !holdsSyncHostSingleton()) {
-        notifyAuthorityChanged(false);
+      try {
+        const lock = safeReadLock(lockPath, deps.platform);
+        if (lock?.owner.id === owner.id && lock.owner.pid === process.pid) {
+          // Another lease of this process still holds sync: the file names it
+          // instead of disappearing, so other brains still see an owner.
+          const remaining = [...heldLeases.values()].find((held) => held.lockPath === lockPath);
+          if (remaining) writeLock(lockPath, remaining.owner, "w");
+          else unlinkLock(lockPath);
+        }
+      } finally {
+        // The lease is gone whatever happened to the file.
+        if (heldLeaseIds.delete(owner.id) && !holdsSyncHostSingleton()) {
+          notifyAuthorityChanged(false);
+        }
       }
     },
   };

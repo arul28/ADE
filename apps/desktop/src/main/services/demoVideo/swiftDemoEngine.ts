@@ -121,6 +121,8 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
     async render(request, options) {
       assertSupported();
       const requestPath = await writeRequestFile(request);
+      // Stuck on a drive that stopped answering: no cleanup may wait on it.
+      let stuck = false;
       const startedAt = Date.now();
       try {
         const stdout = await runAdeMedia({
@@ -151,16 +153,20 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
         return result;
       } catch (error) {
         // A process stuck on the output's drive: the sweep would wait on it too.
-        if (!isStuckMediaProcessError(error)) await removePartialOutputs(request.output);
+        stuck = isStuckMediaProcessError(error);
+        if (!stuck) await removePartialOutputs(request.output);
         throw error;
       } finally {
-        await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
+        // The temp folder can share that drive.
+        if (!stuck) await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
       }
     },
 
     async contactSheet(request, options) {
       assertSupported();
       const requestPath = await writeRequestFile(request);
+      // Stuck on a drive that stopped answering: no cleanup may wait on it.
+      let stuck = false;
       try {
         const stdout = await runAdeMedia({
           binaryPath,
@@ -176,10 +182,12 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
         }
         return result;
       } catch (error) {
-        if (!isStuckMediaProcessError(error)) await removePartialOutputs(request.output);
+        stuck = isStuckMediaProcessError(error);
+        if (!stuck) await removePartialOutputs(request.output);
         throw error;
       } finally {
-        await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
+        // The temp folder can share that drive.
+        if (!stuck) await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
       }
     },
   };

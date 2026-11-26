@@ -214,6 +214,8 @@ function probe(volume: string): void {
   const volumeState = volumes.get(volume);
   if (!volumeState || members.length === 0 || volumeState.probeInFlight) return;
   volumeState.probeInFlight = true;
+  // What this probe answers for: a newer report may set another file while it runs.
+  const target = volumeState.probePath;
   const startedAt = Date.now();
   let settled = false;
   const timeout = setTimeout(() => {
@@ -226,6 +228,12 @@ function probe(volume: string): void {
     settled = true;
     clearTimeout(timeout);
     volumeState.probeInFlight = false;
+    if (volumeState.probePath !== target) {
+      // A report named a file that hung while this probe ran: this answer is
+      // not about it. Probe that file before anything is let back in.
+      probe(volume);
+      return;
+    }
     const code = error?.code;
     if (code === "EPERM" || code === "EACCES") {
       // Answered, with a refusal: nothing freezes on it, so the drive is not held.
@@ -242,8 +250,8 @@ function probe(volume: string): void {
     // Anything else (gone, unmounted) is not a wait: nothing would freeze on it.
     settleVolume(volume, (state) => endWait(state, error ? `error:${code ?? "unknown"}` : "answered"), false);
   };
-  const answered = volumeState.probePath
-    ? fs.promises.open(volumeState.probePath, "r").then((handle) => handle.close())
+  const answered = target
+    ? fs.promises.open(target, "r").then((handle) => handle.close())
     // Listed, not stat-ed: macOS gates reading a folder, and a listing is what
     // the per-program prompt holds. The first entry is enough.
     : fs.promises.opendir(members[0]!.root).then(async (dir) => {

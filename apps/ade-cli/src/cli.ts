@@ -33709,7 +33709,7 @@ async function runServe(
       // published nothing and dropped off the account until a restart chose
       // a different project (Mac Studio, 2026-11-26: the most recently
       // opened project followed another machine).
-      const { acquireSyncHostSingletonAsync, onSyncHostSingletonLeaseAcquired } = await import("./services/sync/syncHostSingleton");
+      const { acquireSyncHostSingletonAsync, isSyncHostLeaseHeld, onSyncHostSingletonLeaseAcquired } = await import("./services/sync/syncHostSingleton");
       // The viewer scope can start hosting by itself later (it stops following
       // the other machine, or reclaims a stale draft) and takes its own lease.
       // Keeping this one then leaves two leases and two relay gates, and the
@@ -33723,6 +33723,11 @@ async function runServe(
           return;
         }
         if (ownerId === brainSyncHostLease.owner.id) return;
+        // Released again before this ran (the notice comes a microtask later):
+        // handing over now would leave this process with no lease at all. A
+        // release after the hand-over drops authority, which the rehost watch
+        // answers by hosting projectless again.
+        if (!isSyncHostLeaseHeld(ownerId)) return;
         headlessProjectLogger.info("sync.projectless_lease_handed_to_scope", {});
         releaseProjectlessHostLease();
       });
@@ -33738,6 +33743,9 @@ async function runServe(
           (_, index) => DEFAULT_SYNC_HOST_PORT + index,
         ),
       );
+      // A scope may have taken its own lease while the port was bound, and this
+      // one was handed to it: that scope hosts now.
+      if (!brainSyncHostLease) return activeScope ?? null;
       brainSyncHostLease.updatePort(listenerPort);
       await ensureProjectlessRelayTunnel();
       if (activeScope) {

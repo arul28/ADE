@@ -7231,6 +7231,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         autoConnect: true,
       }),
       removeTarget: resolvedArg({ removed: true }),
+      // Connect asks for the host key first; the preview trusts every one.
+      getSshHostKeyTrust: resolvedArg({ state: "trusted" }),
       connect: withOfflineMacsConnect(withHeldElsewhereConnect(resolvedArg({
         target: {
           id: "mock-remote",

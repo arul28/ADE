@@ -869,7 +869,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         // Filing copies the movie and writes its sidecar on the same drive,
         // which would freeze this process. The raw recording stays in place.
         warn("apple.recording.drive_stuck_not_filed", { laneId });
-        return finished;
+        // lastError keeps every later filing (Pin to proof) off that drive.
+        return { ...finished, lastError: finished.lastError ?? "The recording's drive stopped answering, so the video was not filed." };
       }
       const filed = options.fileProof === false ? finished : fileAsProof(finished);
       writeSidecar(filed);

@@ -111,6 +111,15 @@ type RemoteTargetListProps = {
    * blaming each machine and the list says why once.
    */
   thisComputerOffline?: boolean;
+  /**
+   * The person's Show/Hide per folded section, owned by the panel so a
+   * switch to another Connections tab and back keeps it. Without it the list
+   * keeps its own, for as long as it is mounted.
+   */
+  sectionOverrides?: {
+    value: Partial<Record<MachineSection, boolean>>;
+    set: (update: (current: Partial<Record<MachineSection, boolean>>) => Partial<Record<MachineSection, boolean>>) => void;
+  } | null;
 };
 
 
@@ -221,6 +230,7 @@ export function RemoteTargetList({
   onOpenCloudSettings = null,
   focusMachineKey = null,
   thisComputerOffline = false,
+  sectionOverrides = null,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -308,7 +318,9 @@ export function RemoteTargetList({
   }, []);
   // A person's open/close of a folded section wins over the automatic choice
   // for as long as this list is open.
-  const [sectionOpenOverride, setSectionOpenOverride] = useState<Partial<Record<MachineSection, boolean>>>({});
+  const [ownSectionOpenOverride, setOwnSectionOpenOverride] = useState<Partial<Record<MachineSection, boolean>>>({});
+  const sectionOpenOverride = sectionOverrides?.value ?? ownSectionOpenOverride;
+  const setSectionOpenOverride = sectionOverrides?.set ?? setOwnSectionOpenOverride;
   // Account rows with a rename form open; their section stays open meanwhile.
   const [renamingMachineKeys, setRenamingMachineKeys] = useState<ReadonlySet<string>>(() => new Set());
   const renamingChangeHandlers = useRef(new Map<string, (renaming: boolean) => void>());
@@ -657,6 +669,9 @@ export function RemoteTargetList({
     async (targetId: string, options: ConnectTargetOptions = {}) => {
       const attempt = beginConnectAttempt(targetId);
       const stillWanted = () => isConnectAttemptCurrent(targetId, attempt);
+      // Every caller is a person's press (a row, a form, a pairing, a trusted
+      // host key): its failure shows as a card and keeps the section open.
+      markUserAttempt(targetId);
       setSelectedId(targetId);
       try {
         if (!options.skipHostKeyTrustCheck) {
@@ -762,6 +777,7 @@ export function RemoteTargetList({
       clearUserAttempt,
       endConnectAttempt,
       isConnectAttemptCurrent,
+      markUserAttempt,
       nextLocalConnectionSnapshotUpdatedAt,
       onConnected,
       targets,

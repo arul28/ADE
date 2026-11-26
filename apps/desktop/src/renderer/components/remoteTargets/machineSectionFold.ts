@@ -61,7 +61,13 @@ export function machineRowNeedsAttention(row: MachineRow, ctx: MachineFoldContex
       || ctx.hostKeyTargetId === id
       || row.status?.hostStorageWait != null
       || row.status?.hostStall != null
-      || (ctx.focusMachineKey != null && (machineKey === ctx.focusMachineKey || id === ctx.focusMachineKey));
+      || (ctx.focusMachineKey != null && (
+        machineKey === ctx.focusMachineKey
+        || id === ctx.focusMachineKey
+        // A saved row with no paired key can stand for an account machine
+        // (shared route, host identity) whose own row is then left out.
+        || accountMachine?.machineKey === ctx.focusMachineKey
+      ));
   }
   if (row.kind === "account") {
     const machineKey = row.machine.machineKey;

@@ -272,6 +272,8 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
       const tools = await deps.resolveTools();
       const startedAt = Date.now();
       const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-ffmpeg-demo-"));
+      // Stuck on a drive that stopped answering: no cleanup may wait on it.
+      let stuck = false;
       const partial = path.join(path.dirname(request.output), `.${path.basename(request.output)}.${process.pid}.partial.mp4`);
       try {
         // drawtext's `text_align` (each wrapped line centered) arrived after ffmpeg 6.
@@ -331,10 +333,12 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
         return { bytes: size, durationSeconds: plan.durationSeconds, frames } satisfies DemoRenderResult;
       } catch (error) {
         // A process stuck on the output's drive: removing beside it would wait on it too.
-        if (!isStuckMediaProcessError(error)) await fs.promises.rm(partial, { force: true }).catch(() => undefined);
+        stuck = isStuckMediaProcessError(error);
+        if (!stuck) await fs.promises.rm(partial, { force: true }).catch(() => undefined);
         throw error;
       } finally {
-        await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+        // The temp folder can share that drive.
+        if (!stuck) await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
       }
     },
 

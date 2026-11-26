@@ -121,7 +121,7 @@ function lastSeenWords(lastSeenAt: number | null, leads: boolean): string {
 type TestItemMode = "hide" | "explain" | "test";
 
 const TEST_ITEM: Record<TestItemMode, { label: string; ariaLabel: string | undefined; icon: ReactNode }> = {
-  hide: { label: "Hide connection details", ariaLabel: "Test", icon: <Pulse size={14} /> },
+  hide: { label: "Hide connection details", ariaLabel: undefined, icon: <Pulse size={14} /> },
   explain: { label: "Why offline?", ariaLabel: undefined, icon: <Question size={14} /> },
   test: { label: "Test connection", ariaLabel: "Test", icon: <Pulse size={14} /> },
 };
