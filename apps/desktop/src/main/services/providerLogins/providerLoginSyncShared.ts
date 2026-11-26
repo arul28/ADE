@@ -595,6 +595,8 @@ export type SyncShared = {
    * out): later turns go at once, until the next read of the ADE Cloud answer.
    */
   coldWaitSpent: boolean;
+  /** The account settings were pulled once for this account (the gate pulls them until then). */
+  settingsReady: boolean;
   cloudSetting(): CloudSetting;
   captureOffReason(): Promise<ProviderLoginCaptureOffReason | null>;
   setLocal(provider: ProviderLoginProvider, slotId: string, state: ProviderLoginLocalState, key: string | null): void;
@@ -769,6 +771,7 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
     accessPending: null,
     lastAccess: null,
     coldWaitSpent: false,
+    settingsReady: false,
     cloudSetting,
     captureOffReason,
     setLocal,

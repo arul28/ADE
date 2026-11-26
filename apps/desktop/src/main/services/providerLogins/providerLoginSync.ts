@@ -162,6 +162,8 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
       apply.forgetApplied();
       bundleMemos.clear();
       localStates.clear();
+      // The next account's settings are pulled again before a turn applies its sign-in.
+      s.settingsReady = false;
       metaMemo.clear();
       s.stateCache = null;
       // The GitHub CLI choice leaves with the marks file: another account starts with it off.

@@ -57,17 +57,24 @@ export function createGate(s: SyncShared) {
       const waited = await waitForAccount(providerId, options);
       if (waited !== "joined") return { result: waited };
     }
+    // The account settings hold which sign-in ADE Cloud uses. Their tick does
+    // not pull when it starts, so the gate pulls them until one pull is ready.
+    const pullSettings = (): Promise<unknown> | undefined => {
+      if (s.settingsReady) return undefined;
+      return deps.settings()?.sync?.()?.then((status) => {
+        if (status === "ready") s.settingsReady = true;
+      });
+    };
     const pullAccount = (): Promise<unknown> | undefined => {
       const vaultPull = deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS });
-      // A computer that just started has no account settings yet, and they hold which sign-in ADE Cloud uses.
-      const settingsPull = cold ? deps.settings()?.sync?.() : undefined;
+      const settingsPull = pullSettings();
       return settingsPull ? Promise.all([vaultPull, settingsPull]) : vaultPull;
     };
     const gated = PROVIDER_LOGIN_CARRY.some((row) => row.provider === providerId && row.carry === "carried")
       || SAVED_KEYS.some((spec) => spec.provider === providerId);
     if (!gated) {
       // Claude's pass check (a registered check, after this gate) reads the vault and settings: fresh after a cold start.
-      const pulled = cold ? pullAccount() : undefined;
+      const pulled = cold ? pullAccount() : pullSettings();
       if (pulled) await withTimeout(pulled, GATE_LIMIT_MS);
       return { result: "ok" };
     }
