@@ -1213,8 +1213,8 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
   envelope.userMessageClientSendId = entry.userMessageClientSendId
   envelope.userMessageReactionKey = entry.userMessageReactionKey
-  if case .text(_, let messageId, let turnId, let itemId, _) = entry.event {
-    envelope.assistantMessageReactionKey = workAssistantMessageReactionKey(messageId: messageId, itemId: itemId, turnId: turnId)
+  if case .text(_, let messageId, let turnId, let itemId, let phase) = entry.event {
+    envelope.assistantMessageReactionKey = workAssistantMessageReactionKey(messageId: messageId, itemId: itemId, turnId: turnId, phase: phase)
   }
   envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {

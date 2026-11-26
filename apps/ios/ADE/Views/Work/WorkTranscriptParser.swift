@@ -1235,7 +1235,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         parsed.assistantMessageReactionKey = workAssistantMessageReactionKey(
           messageId: eventDict["messageId"] as? String,
           itemId: eventDict["itemId"] as? String,
-          turnId: turnId
+          turnId: turnId,
+          phase: optionalString(eventDict["phase"])
         )
       }
       if type == "user_message" {

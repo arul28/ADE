@@ -4437,14 +4437,23 @@ func normalizedChatReactionEmoji(_ value: String?) -> String? {
 }
 
 /// The key an `assistant_message_reaction` names a CTO `text` event by: its
-/// message id, else its item id, else its turn (each trimmed). A merged
-/// message keeps its first fragment's key. The same as desktop
-/// `assistantMessageReactionKey`; keep the two the same.
-func workAssistantMessageReactionKey(messageId: String?, itemId: String?, turnId: String?) -> String? {
-  if let messageId = nonEmptyTrimmed(messageId) { return "message:\(messageId)" }
-  if let itemId = nonEmptyTrimmed(itemId) { return "item:\(itemId)" }
-  if let turnId = nonEmptyTrimmed(turnId) { return "turn:\(turnId)" }
-  return nil
+/// message id, else its item id, else its turn (each trimmed), then `#` and
+/// the text phase when it has one (a Codex commentary and its answer can
+/// share a message id). A merged message keeps its first fragment's key. The
+/// same as desktop `assistantMessageReactionKey`; keep the two the same.
+func workAssistantMessageReactionKey(messageId: String?, itemId: String?, turnId: String?, phase: String?) -> String? {
+  let base: String
+  if let messageId = nonEmptyTrimmed(messageId) {
+    base = "message:\(messageId)"
+  } else if let itemId = nonEmptyTrimmed(itemId) {
+    base = "item:\(itemId)"
+  } else if let turnId = nonEmptyTrimmed(turnId) {
+    base = "turn:\(turnId)"
+  } else {
+    return nil
+  }
+  guard let phase = nonEmptyTrimmed(phase) else { return base }
+  return "\(base)#\(phase)"
 }
 
 /// The key a `user_message_reaction` names its message by: its steer id, else

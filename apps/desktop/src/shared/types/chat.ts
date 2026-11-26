@@ -6276,20 +6276,24 @@ export function normalizeChatReactionEmoji(value: unknown): ChatReactionEmoji | 
 
 /**
  * The key an `assistant_message_reaction` names the CTO's message by: its
- * message id, else its item id, else its turn. Null for one with none.
- * Clients compute the same key for each reply (iOS mirrors this).
+ * message id, else its item id, else its turn, then `#` and the text phase
+ * when it has one. Codex can give a commentary and its answer one message id,
+ * and every client draws them as two replies, so each takes its own reaction.
+ * Null for one with no id. Clients compute the same key for each reply (iOS
+ * mirrors this).
  */
 export function assistantMessageReactionKey(event: {
   messageId?: string;
   itemId?: string;
   turnId?: string;
+  phase?: string;
 }): string | null {
   const messageId = event.messageId?.trim();
-  if (messageId) return `message:${messageId}`;
   const itemId = event.itemId?.trim();
-  if (itemId) return `item:${itemId}`;
   const turnId = event.turnId?.trim();
-  return turnId ? `turn:${turnId}` : null;
+  const base = messageId ? `message:${messageId}` : itemId ? `item:${itemId}` : turnId ? `turn:${turnId}` : null;
+  const phase = event.phase?.trim();
+  return base && phase ? `${base}#${phase}` : base;
 }
 
 /**
