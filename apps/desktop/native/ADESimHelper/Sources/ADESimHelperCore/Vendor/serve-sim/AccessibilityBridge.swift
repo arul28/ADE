@@ -401,67 +401,96 @@ final class AccessibilityBridge: NSObject {
         var pointBudget = Self.maxProbePoints  // safety cap for misbehaving sims
         var discovered: [[String: Any]] = []
 
+        /// Asks what is under one grid point and records it. True when the
+        /// point landed on a hollow bar (ADE patch): a gap between the items
+        /// of a container whose items only hit-tests find.
+        func probe(_ point: CGPoint) -> Bool {
+            // Skip points already enclosed by a known element — this
+            // is the load-bearing optimization. Once a card's text
+            // element is cataloged, every other grid point that falls
+            // inside the same text frame avoids an XPC round-trip.
+            if coverage.contains(toFrame(point)) { return false }
+            pointBudget -= 1
+
+            guard let translation = objectAtPoint(translator, pointSel, toProbe(point), displayId, token as NSString) as? NSObject else {
+                return false
+            }
+            translation.setValue(token, forKey: "bridgeDelegateToken")
+            guard let element = toMacElement(translator, macSel, translation) as? NSObject else {
+                return false
+            }
+            if let t = element.value(forKey: "translation") as? NSObject {
+                t.setValue(token, forKey: "bridgeDelegateToken")
+            }
+
+            // Read the frame once; serialize() will read it again for
+            // the dict, but the AXP element caches lazily so the cost
+            // collapses.
+            var frame: NSRect = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+            // ADE patch: the probe point is on the screen; the frame is
+            // relative to its window until it is placed, or, SpringBoard's,
+            // in the framebuffer's points.
+            if currentTurn?.isTurned == true || placement?.enabled == true, isSystemElement(element) {
+                frame = currentTurn?.toScreen(frame) ?? frame
+            } else if let placement, placement.enabled,
+               let offset = placement.offset(context: Self.contextId(of: element), frame: frame, seed: point) {
+                frame = frame.offsetBy(dx: offset.x, dy: offset.y)
+            }
+            if coverage.contains(frame) { return coverage.isHollow(frame) }
+            // The Application/window itself is too coarse to be
+            // useful — skip when the hit returns the screen.
+            if abs(frame.width - bounds.width) < 1,
+               abs(frame.height - bounds.height) < 1 {
+                coverage.insertContainer(frame)
+                return false
+            }
+            if let serialized = serialize(
+                element: element,
+                token: token,
+                coverage: &coverage,
+                visited: &visited,
+                remainingElements: &remainingElements,
+                truncatedBy: &truncatedBy,
+                depth: 0,
+                placement: placement,
+                seed: point
+            ) {
+                discovered.append(serialized)
+            }
+            return coverage.isHollow(frame)
+        }
+
+        var gaps: [CGPoint] = []
         var y = bounds.minY + step / 2
         while y < bounds.maxY, pointBudget > 0, remainingElements > 0 {
             var x = bounds.minX + step / 2
             while x < bounds.maxX, pointBudget > 0, remainingElements > 0 {
                 let point = CGPoint(x: x, y: y)
                 x += step
-
-                // Skip points already enclosed by a known element — this
-                // is the load-bearing optimization. Once a card's text
-                // element is cataloged, every other grid point that falls
-                // inside the same text frame avoids an XPC round-trip.
-                if coverage.contains(toFrame(point)) { continue }
-                pointBudget -= 1
-
-                guard let translation = objectAtPoint(translator, pointSel, toProbe(point), displayId, token as NSString) as? NSObject else {
-                    continue
-                }
-                translation.setValue(token, forKey: "bridgeDelegateToken")
-                guard let element = toMacElement(translator, macSel, translation) as? NSObject else {
-                    continue
-                }
-                if let t = element.value(forKey: "translation") as? NSObject {
-                    t.setValue(token, forKey: "bridgeDelegateToken")
-                }
-
-                // Read the frame once; serialize() will read it again for
-                // the dict, but the AXP element caches lazily so the cost
-                // collapses.
-                var frame: NSRect = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
-                // ADE patch: the probe point is on the screen; the frame is
-                // relative to its window until it is placed, or, SpringBoard's,
-                // in the framebuffer's points.
-                if currentTurn?.isTurned == true || placement?.enabled == true, isSystemElement(element) {
-                    frame = currentTurn?.toScreen(frame) ?? frame
-                } else if let placement, placement.enabled,
-                   let offset = placement.offset(context: Self.contextId(of: element), frame: frame, seed: point) {
-                    frame = frame.offsetBy(dx: offset.x, dy: offset.y)
-                }
-                if coverage.contains(frame) { continue }
-                // The Application/window itself is too coarse to be
-                // useful — skip when the hit returns the screen.
-                if abs(frame.width - bounds.width) < 1,
-                   abs(frame.height - bounds.height) < 1 {
-                    coverage.insertContainer(frame)
-                    continue
-                }
-                if let serialized = serialize(
-                    element: element,
-                    token: token,
-                    coverage: &coverage,
-                    visited: &visited,
-                    remainingElements: &remainingElements,
-                    truncatedBy: &truncatedBy,
-                    depth: 0,
-                    placement: placement,
-                    seed: point
-                ) {
-                    discovered.append(serialized)
-                }
+                if probe(point) { gaps.append(point) }
             }
             y += step
+        }
+        // ADE patch: a row shorter than the grid's step (a 28 pt button, a
+        // one-line title) can sit between two rows of points. Inside a bar,
+        // where only hit-tests find the items, each point that fell in a gap
+        // is asked again half a step away on every side and corner, since
+        // the missed row can lie above, below or beside it; a point two gaps
+        // share is asked once. Points elsewhere are not, so the cost follows
+        // the bars on the screen. The coarse pass runs first, so the whole
+        // screen is asked before any of this.
+        let half = step / 2
+        var asked = Set<String>()
+        for gap in gaps {
+            for dy in [-half, 0, half] {
+                for dx in [-half, 0, half] where dx != 0 || dy != 0 {
+                    guard pointBudget > 0, remainingElements > 0 else { break }
+                    let point = CGPoint(x: gap.x + dx, y: gap.y + dy)
+                    guard bounds.contains(point),
+                          asked.insert("\(Int(point.x)),\(Int(point.y))").inserted else { continue }
+                    _ = probe(point)
+                }
+            }
         }
         // A cap reached: the rest of the screen was never asked about (ADE
         // patch: said, not silent).
@@ -647,7 +676,7 @@ final class AccessibilityBridge: NSObject {
         // physically too large to be a single tappable element) stays
         // probe-able so we can discover "remote" elements iOS hid under
         // empty-children Groups (Nav bar / Tab Bar / scroll views).
-        coverage.insert(frame, hasWalkedChildren: !childDicts.isEmpty)
+        coverage.insert(frame, hasWalkedChildren: !childDicts.isEmpty, role: role)
         dict["children"] = childDicts
 
         return dict
@@ -768,6 +797,7 @@ struct AccessibilityCoverage {
     /// ADE patch: large elements with no walked children (a tab bar, a nav
     /// bar). iOS draws them over the content and hosts their items remotely.
     private var barRects: [NSRect] = []
+    private var hollowKeys: Set<String> = []
     private var keys: Set<String> = []
 
     /// Add a known-leaf rect — point-in-rect checks will skip XPC for any
@@ -792,9 +822,13 @@ struct AccessibilityCoverage {
 
     /// A container with no walked children: dedups by frame like any
     /// container, and shields its own area (`contains(_ point:)`).
-    mutating func insertBar(_ rect: NSRect) {
-        if keys.insert(Self.key(for: rect)).inserted {
+    /// ADE patch: `hollow` is false for a bar that holds nothing to find (a
+    /// large image), so the grid does not ask again between its points.
+    mutating func insertBar(_ rect: NSRect, hollow: Bool = true) {
+        let key = Self.key(for: rect)
+        if keys.insert(key).inserted {
             barRects.append(rect)
+            if hollow { hollowKeys.insert(key) }
         }
     }
 
@@ -809,6 +843,12 @@ struct AccessibilityCoverage {
         return leafRects.contains { leaf in
             leaf.contains(point) && bars.allSatisfy { $0.insetBy(dx: -1, dy: -1).contains(leaf) }
         }
+    }
+
+    /// ADE patch: whether this frame is a bar whose items may sit between
+    /// the grid's points (`insertBar(_:hollow:)`).
+    func isHollow(_ rect: NSRect) -> Bool {
+        hollowKeys.contains(Self.key(for: rect))
     }
 
     private static func key(for rect: NSRect) -> String {
