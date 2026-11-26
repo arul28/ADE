@@ -1258,9 +1258,8 @@ extension SyncService {
       let laneNames = Dictionary(project.lanes.map { ($0.id, $0.displayName) }, uniquingKeysWith: { first, _ in first })
       for chat in project.chats where chat.id != key.sessionId && chat.archived != true && isWorkChatToolType(chat.toolType) {
         guard seen.insert("chat:\(chat.id)").inserted else { continue }
-        let provider = nonEmptyTrimmed(chat.provider)
-          ?? chat.toolType.flatMap { $0.hasSuffix("-chat") ? String($0.dropLast("-chat".count)) : nil }
-        let subtitle = [laneNames[chat.laneId], provider, chat.status.rawValue]
+        // As the computer writes it: lane · provider · status.
+        let subtitle = [laneNames[chat.laneId], chat.providerKey, chat.status.rawValue]
           .compactMap { $0.flatMap { nonEmptyTrimmed($0) } }
           .joined(separator: " · ")
         rows.append(ChatMentionSuggestionRow(
