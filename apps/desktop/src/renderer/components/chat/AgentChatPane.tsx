@@ -3720,6 +3720,20 @@ function readLastLaunchConfig(storageKey: string, defaults: NativeControlState):
   return null;
 }
 
+function readPersonalLaunchConfig(
+  storageKey: string,
+  defaults: NativeControlState,
+  latest: AgentChatSessionSummary | null,
+): LastLaunchConfig | null {
+  const local = readLastLaunchConfig(storageKey, defaults);
+  // A personal chat started on another client may be newer than the last pick
+  // here. Activity in an older chat must not replace a newer unsent choice.
+  if (latest && (!local || Date.parse(latest.startedAt) > Date.parse(local.updatedAt))) {
+    return buildLastLaunchConfig(latest, defaults, latest.startedAt) ?? local;
+  }
+  return local;
+}
+
 /**
  * The newest config within the HIGHEST-PRECEDENCE tier that has one.
  *
@@ -4672,6 +4686,8 @@ export function AgentChatPane({
   // them, so letting them seed this draft reopened it on a project chat's
   // model and effort every time (ADE-202).
   const keepsOwnLaunchMemory = chatScope?.kind === "personal";
+  const latestPersonalSessionRef = useRef(latestPersonalSession);
+  latestPersonalSessionRef.current = latestPersonalSession;
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
   // The originating project's binding, captured per launch so detached draft
@@ -10350,12 +10366,10 @@ export function AgentChatPane({
       draftLaunchConfigHydratedRef.current = machineHydrationKey;
       return;
     }
-    const latest = keepsOwnLaunchMemory ? latestPersonalSession : sessions[0];
-    const latestSessionConfig = latest
-      ? buildLastLaunchConfig(latest, initialNativeControls, latest.lastActivityAt)
-      : null;
-    const local = keepsOwnLaunchMemory ? readLastLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls) : null;
-    const preferred = local ?? latestSessionConfig;
+    const latest = sessions[0];
+    const preferred = keepsOwnLaunchMemory
+      ? readPersonalLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls, latestPersonalSession)
+      : latest ? buildLastLaunchConfig(latest, initialNativeControls, latest.lastActivityAt) : null;
     if (preferred) {
       const hydrationKey = keepsOwnLaunchMemory ? `${draftKey}:personal:${preferred.updatedAt}` : `${draftKey}:session`;
       if (draftLaunchConfigHydratedRef.current === hydrationKey) return;
@@ -13119,17 +13133,24 @@ export function AgentChatPane({
         draftModelChosenRef.current = true;
         draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
         draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:composer-draft`;
-        applyLaunchConfigToComposer({
+        const personal = keepsOwnLaunchMemory
+          ? readPersonalLaunchConfig(lastLaunchConfigStorageKey, initialNativeControls, latestPersonalSessionRef.current)
+          : null;
+        const savedConfig: LastLaunchConfig = {
           version: 1,
           modelId: saved.modelId,
-          reasoningEffort: saved.reasoningEffort,
+          reasoningEffort: personal ? personal.reasoningEffort : saved.reasoningEffort,
           fastMode: saved.fastMode,
           fastTier: saved.fastTier ?? null,
           cursorCloudServiceTier: saved.cursorCloudServiceTier,
           executionMode: saved.executionMode,
           controls: saved.controls,
           updatedAt: saved.updatedAt,
-        }, { preserveFast: true });
+        };
+        // Reopen the saved text and attachments with the latest personal
+        // model and effort. A different model brings its own launch controls.
+        const modelChanged = personal != null && personal.modelId !== saved.modelId;
+        applyLaunchConfigToComposer(modelChanged ? personal : savedConfig, { preserveFast: !modelChanged });
         // ADE's own pick stays out of the launch defaults after a reload; a
         // person's pick is remembered.
         draftKeepsMachineDefaultsRef.current = saved.keepsMachineDefaults === true;
@@ -13160,6 +13181,8 @@ export function AgentChatPane({
     draftLaunchConfigScopeKey,
     flushPendingComposerDraftWrite,
     initialNativeControls,
+    keepsOwnLaunchMemory,
+    lastLaunchConfigStorageKey,
     selectedSessionId,
     setAttachmentsWithIds,
     updateSubmittedDraftTextEdit,
@@ -18686,8 +18709,8 @@ export function AgentChatPane({
     const previousReasoningEffort = reasoningEffort;
     if (!selectedSessionId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
-      rememberPersonalPick(modelId, nextReasoningEffort);
     }
+    rememberPersonalPick(modelId, nextReasoningEffort);
     setReasoningEffort(nextReasoningEffort);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -22026,6 +22049,12 @@ export function AgentChatPane({
       setCursorCloudServiceTier(nextCursorCloudTier);
     } else {
       setCursorCloudServiceTier(nextCursorCloudTier);
+    }
+    if (selectedSessionId && personalLaunchScope) {
+      const nextEffort = presetEffort !== undefined
+        ? presetEffort
+        : reconcileDraftModelControls(snapshot.nextDesc, { reasoningEffort, fastMode: false }).reasoningEffort;
+      rememberPersonalPick(nextModelId, nextEffort);
     }
     if (!selectedSessionId || turnActive) {
       applyModelSelectionSnapshot(snapshot);
