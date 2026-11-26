@@ -7,6 +7,7 @@ import {
   applyChatLaunchEvent,
   applyChatLaunchSnapshot,
   buildOptimisticChatLaunchSnapshot,
+  chatLaunchAckMark,
   chatLaunchRowSourcesNow,
   chatLaunchStore,
   getChatLaunchEntry,
@@ -107,22 +108,17 @@ describe("chatLaunchStore", () => {
   });
 
   it("keeps a launch the start reply acknowledged after the host list was sent", () => {
-    const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
-    try {
-      insertOptimisticChatLaunch(BINDING_B, optimistic("launch-1"));
-      applyChatLaunchSnapshot(BINDING_B, optimistic("launch-1", { sequence: 1 }));
+    insertOptimisticChatLaunch(BINDING_B, optimistic("launch-1"));
+    const sentBeforeAck = chatLaunchAckMark();
+    applyChatLaunchSnapshot(BINDING_B, optimistic("launch-1", { sequence: 1 }));
 
-      // Sent before (or in the same ms as) the start reply: the host may not have had it yet.
-      hydrateChatLaunches(BINDING_B, [], 1_000);
-      hydrateChatLaunches(BINDING_B, [], 2_000);
-      expect(getChatLaunchEntry("launch-1")?.hostSeen).toBe(true);
+    // Sent before the start reply: the host may not have had the launch yet.
+    hydrateChatLaunches(BINDING_B, [], sentBeforeAck);
+    expect(getChatLaunchEntry("launch-1")?.hostSeen).toBe(true);
 
-      // A list sent after the acknowledgement that still lacks it is the host's answer.
-      hydrateChatLaunches(BINDING_B, [], 2_001);
-      expect(getChatLaunchEntry("launch-1")).toBeNull();
-    } finally {
-      now.mockRestore();
-    }
+    // A list sent after the acknowledgement that still lacks it is the host's answer.
+    hydrateChatLaunches(BINDING_B, [], chatLaunchAckMark());
+    expect(getChatLaunchEntry("launch-1")).toBeNull();
   });
 
   it("removes a launch on launch-removed", () => {
