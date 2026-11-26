@@ -230,7 +230,7 @@ import {
   AGENT_CHAT_MUSE_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   CTO_REACTION_EMOJIS,
-  CTO_REACTION_LEGEND,
+  CTO_REACT_TOOL_DESCRIPTION,
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
 
@@ -1594,7 +1594,7 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "react",
-    description: `Put an emoji on the person's newest message instead of replying, when they wrote and need no words back. ${CTO_REACTION_LEGEND}. A newer reaction replaces the old one. Ends the turn with no reply.`,
+    description: CTO_REACT_TOOL_DESCRIPTION,
     inputSchema: {
       type: "object",
       required: ["emoji"],

@@ -103,6 +103,8 @@ export function isTurnProgressEvent(event: AgentChatEvent): boolean {
     case "interrupt_receipt":
     case "system_notice":
     case "ade_card":
+    // The person's emoji on an earlier CTO message, written by ADE.
+    case "assistant_message_reaction":
       return false;
     case "user_message":
       // A queued steer is staged, not delivered — the model has not read it,

@@ -268,7 +268,8 @@ struct ChatThreadTimelineFold {
     let rawMessages = messages.finished(
       metadataByTurn: workTurnModelMetadataByTurn(from: sparse),
       resolutionBySteerId: workUserMessageResolutionsBySteerId(from: sparse),
-      reactionByKey: workUserMessageReactionsByKey(from: sparse)
+      reactionByKey: workUserMessageReactionsByKey(from: sparse),
+      assistantReactionByKey: workAssistantMessageReactionsByKey(from: sparse)
     )
     let stampedMessages = stamped(rawMessages)
 

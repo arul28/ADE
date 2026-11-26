@@ -43,18 +43,39 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   return fold.finished(
     metadataByTurn: workTurnModelMetadataByTurn(from: transcript),
     resolutionBySteerId: workUserMessageResolutionsBySteerId(from: transcript),
-    reactionByKey: workUserMessageReactionsByKey(from: transcript)
+    reactionByKey: workUserMessageReactionsByKey(from: transcript),
+    assistantReactionByKey: workAssistantMessageReactionsByKey(from: transcript)
   )
 }
 
-/// The newest CTO `user_message_reaction` emoji per target key (timestamp,
-/// then sequence; a later row wins a tie). Applied to the folded messages by
-/// `WorkChatMessageFold.finished`.
+/// The newest CTO `user_message_reaction` emoji per target key. Applied to
+/// the folded messages by `WorkChatMessageFold.finished`.
 func workUserMessageReactionsByKey(from transcript: [WorkChatEnvelope]) -> [String: String] {
+  workNewestReactionByKey(from: transcript) { event in
+    guard case .userMessageReaction(let targetKey, let emoji, _) = event else { return nil }
+    return (targetKey, emoji)
+  }
+}
+
+/// The person's newest `assistant_message_reaction` emoji per target key.
+/// Applied to the CTO's messages by `WorkChatMessageFold.finished`.
+func workAssistantMessageReactionsByKey(from transcript: [WorkChatEnvelope]) -> [String: String] {
+  workNewestReactionByKey(from: transcript) { event in
+    guard case .assistantMessageReaction(let targetKey, let emoji) = event else { return nil }
+    return (targetKey, emoji)
+  }
+}
+
+/// The newest reaction emoji per target key, by timestamp, then sequence; a
+/// later row wins a tie.
+private func workNewestReactionByKey(
+  from transcript: [WorkChatEnvelope],
+  _ reaction: (WorkChatEvent) -> (targetKey: String, emoji: String)?
+) -> [String: String] {
   var emojiByKey: [String: String] = [:]
   var orderByKey: [String: (timestamp: String, sequence: Int)] = [:]
   for envelope in transcript {
-    guard case .userMessageReaction(let targetKey, let emoji, _) = envelope.event else { continue }
+    guard let (targetKey, emoji) = reaction(envelope.event) else { continue }
     let sequence = envelope.sequence ?? 0
     if let existing = orderByKey[targetKey],
        envelope.timestamp < existing.timestamp
@@ -282,7 +303,9 @@ struct WorkChatMessageFold {
           timestamp: envelope.timestamp,
           turnId: turnId,
           itemId: itemId,
-          textPhase: textPhase
+          textPhase: textPhase,
+          // A merged message keeps its first fragment's key, as on desktop.
+          assistantReactionKey: envelope.assistantMessageReactionKey
         ), metadataKey: metadataKey)
       }
       previousEnvelopeWasAssistantText = true
@@ -317,7 +340,8 @@ struct WorkChatMessageFold {
   func finished(
     metadataByTurn: [String: WorkTurnModelMetadata],
     resolutionBySteerId: [String: WorkUserMessageResolution],
-    reactionByKey: [String: String]
+    reactionByKey: [String: String],
+    assistantReactionByKey: [String: String] = [:]
   ) -> [WorkChatMessage] {
     var result = messages
     if !metadataByTurn.isEmpty {
@@ -354,6 +378,17 @@ struct WorkChatMessageFold {
           guard let emoji = unplaced.removeValue(forKey: key) else { continue }
           result[index].ctoReaction = emoji
         }
+      }
+    }
+    if !assistantReactionByKey.isEmpty {
+      // Like desktop `attachAssistantMessageReaction`: each lands on the
+      // newest assistant message its key names.
+      var unplaced = assistantReactionByKey
+      for index in result.indices.reversed() where result[index].role == "assistant" {
+        guard !unplaced.isEmpty else { break }
+        guard let key = result[index].assistantReactionKey,
+              let emoji = unplaced.removeValue(forKey: key) else { continue }
+        result[index].assistantReaction = emoji
       }
     }
     return result
@@ -1180,6 +1215,9 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageIsRestartResume = entry.userMessageIsRestartResume
   envelope.userMessageClientSendId = entry.userMessageClientSendId
   envelope.userMessageReactionKey = entry.userMessageReactionKey
+  if case .text(_, let messageId, let turnId, let itemId, let phase) = entry.event {
+    envelope.assistantMessageReactionKey = workAssistantMessageReactionKey(messageId: messageId, itemId: itemId, turnId: turnId, phase: phase)
+  }
   envelope.omittedRowOffset = entry.omittedRowOffset
   if case .systemNotice(_, _, let detail, _, _) = entry.event {
     envelope.continuityNotice = workContinuityNotice(from: detail)
@@ -1537,7 +1575,7 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
     // doesn't jump to the latest fragment position when the transcript is sorted,
     // which would reorder the visible timeline around tool/status events.
     let keepExistingOrder = workChatEnvelopeSortPrecedesOrMatches(existing, incoming)
-    return WorkChatEnvelope(
+    var merged = WorkChatEnvelope(
       sessionId: incoming.sessionId,
       timestamp: keepExistingOrder ? existing.timestamp : incoming.timestamp,
       sequence: keepExistingOrder ? existing.sequence : incoming.sequence,
@@ -1548,6 +1586,9 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
       ),
       textPhase: incoming.textPhase ?? existing.textPhase
     )
+    // The reply's first fragment names it, as on desktop.
+    merged.assistantMessageReactionKey = existing.assistantMessageReactionKey ?? incoming.assistantMessageReactionKey
+    return merged
   default:
     return incoming
   }
@@ -2640,6 +2681,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     // marked undone); the card fold draws the newest in the first one's place.
     let state = changes.map { "\($0.id):\($0.undone ? "1" : "0")" }.joined(separator: ",")
     return ["cto_learned", turnId ?? "", learnId, state].joined(separator: "|")
+  case .assistantMessageReaction(let targetKey, let emoji):
+    return ["assistant_message_reaction", targetKey, emoji].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
     let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !normalizedItemId.isEmpty {

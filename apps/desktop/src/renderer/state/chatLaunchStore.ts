@@ -39,6 +39,12 @@ export type ChatLaunchEntry = {
   /** A snapshot for this launch has come from the host at least once. */
   hostSeen: boolean;
   /**
+   * This window's acknowledgment count (`chatLaunchAckMark`) when it first had
+   * a host snapshot for the launch. A host list sent before then may predate
+   * the launch, so it cannot drop it (`hydrateChatLaunches`).
+   */
+  hostSeenOrder: number | null;
+  /**
    * `chatLaunch.start` rejected before the host accepted the launch. The card
    * shows the failure; Retry re-sends `start` with the same launch id.
    */
@@ -261,6 +267,18 @@ function retiredWithin(retired: Record<string, true>, entries: Record<string, Ch
   return kept;
 }
 
+/**
+ * How many launches this window has had a first host snapshot for. A counter,
+ * not a clock: "acknowledged after this list was sent" stays exact within one
+ * millisecond and across a clock change.
+ */
+let hostSeenCount = 0;
+
+/** Read right before a host list is sent; pass it to `hydrateChatLaunches`. */
+export function chatLaunchAckMark(): number {
+  return hostSeenCount;
+}
+
 /** A launch this window is about to start, shown before the host answers. */
 export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, snapshot: ChatLaunchSnapshot): void {
   setEntries((entries) => {
@@ -273,6 +291,7 @@ export function insertOptimisticChatLaunch(binding: OpenProjectBinding | null, s
         binding,
         snapshot,
         hostSeen: false,
+        hostSeenOrder: null,
         startError: null,
         pendingEndedAtMs: null,
         unlistedReads: 0,
@@ -307,6 +326,7 @@ export function applyChatLaunchSnapshot(binding: OpenProjectBinding | null, snap
         binding: current?.binding ?? binding,
         snapshot: merged,
         hostSeen: true,
+        hostSeenOrder: current?.hostSeenOrder ?? ++hostSeenCount,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
         unlistedReads: current?.unlistedReads ?? 0,
@@ -330,14 +350,27 @@ export function applyChatLaunchEvent(binding: OpenProjectBinding | null, event: 
  * Replace one binding's launches with the host's list. Launches the host has
  * never acknowledged (still starting, or `start` failed) are kept: the host
  * cannot list what it has not seen, and dropping them would lose the card.
+ *
+ * `sentAtAckMark` is `chatLaunchAckMark()` read when the list request went
+ * out. A launch first acknowledged after it is kept too: the host may have
+ * answered the list before it registered the launch, while the `start` reply
+ * arrived first (a list to another machine that also waits on a cloud read).
+ * Dropping it would take the new chat's row and open pane away until that
+ * machine lists the chat.
  */
-export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshots: readonly ChatLaunchSnapshot[]): void {
+export function hydrateChatLaunches(
+  binding: OpenProjectBinding | null,
+  snapshots: readonly ChatLaunchSnapshot[],
+  sentAtAckMark?: number,
+): void {
   const bindingKey = chatLaunchBindingKey(binding);
   const cancelled: ChatLaunchSnapshot[] = [];
+  const listMayPredate = (entry: ChatLaunchEntry) => sentAtAckMark != null
+    && (entry.hostSeenOrder == null || entry.hostSeenOrder > sentAtAckMark);
   setEntries((entries) => {
     const next: Record<string, ChatLaunchEntry> = {};
     for (const entry of Object.values(entries)) {
-      if (entry.bindingKey !== bindingKey || !entry.hostSeen) next[entry.launchId] = entry;
+      if (entry.bindingKey !== bindingKey || !entry.hostSeen || listMayPredate(entry)) next[entry.launchId] = entry;
     }
     for (const snapshot of snapshots) {
       const current = entries[snapshot.launchId];
@@ -349,6 +382,7 @@ export function hydrateChatLaunches(binding: OpenProjectBinding | null, snapshot
         binding: current?.binding ?? binding,
         snapshot: merged,
         hostSeen: true,
+        hostSeenOrder: current?.hostSeenOrder ?? ++hostSeenCount,
         startError: null,
         pendingEndedAtMs: pendingEndedAtFor(current, merged),
         unlistedReads: current?.unlistedReads ?? 0,

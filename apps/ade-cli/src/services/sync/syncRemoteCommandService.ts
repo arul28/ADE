@@ -39,6 +39,7 @@ import {
   isAgentChatDroidPermissionMode,
   isAgentChatTurnRecoveryAction,
   normalizeAgentChatSessionMetadataFields,
+  normalizeChatReactionEmoji,
   type AdeMessageAuthor,
 } from "../../../../desktop/src/shared/types/chat";
 import {
@@ -5837,6 +5838,16 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.resolveUnprocessedMessage", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.")
       .resolveUnprocessedMessage(parseAgentChatResolveUnprocessedMessageArgs(payload)));
+  register("chat.reactToMessage", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const emoji = normalizeChatReactionEmoji(payload.emoji);
+    if (!emoji) throw new Error("chat.reactToMessage requires an emoji from the set.");
+    // The service checks the target against the transcript.
+    return await requireService(args.agentChatService, "Agent chat service not available.").reactToMessage({
+      sessionId: requireString(payload.sessionId, "chat.reactToMessage requires sessionId."),
+      targetKey: requireString(payload.targetKey, "chat.reactToMessage requires targetKey."),
+      emoji,
+    });
+  });
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const steerArgs = withExpectedTurn(withGuestAgentNote(parseAgentChatSteerArgs(payload), context), context);

@@ -275,6 +275,9 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(learnId)
     hasher.combine(changes)
     combineOptional(turnId, into: &hasher)
+  case .assistantMessageReaction(let targetKey, let emoji):
+    hasher.combine(targetKey)
+    hasher.combine(emoji)
   case .assistantText(let text, let turnId, let itemId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -4315,7 +4318,7 @@ struct WorkReasoningTimingFold: Equatable {
 private func workReasoningRunEndsAt(_ event: WorkChatEvent) -> Bool {
   switch event {
   case .reasoning, .activity, .sources, .tokens, .pendingInputResolved, .turnDiagnostics,
-       .userMessageResolution, .userMessageReaction, .queueReordered, .unknown:
+       .userMessageResolution, .userMessageReaction, .assistantMessageReaction, .queueReordered, .unknown:
     return false
   case .status(let turnStatus, let message, _):
     let status = turnStatus.lowercased()
@@ -4883,8 +4886,8 @@ func eventCard(
       // redundant rows under each tool group. Live streaming hints come from
       // WorkActivityIndicator, not the persisted timeline.
       return nil
-    case .userMessageResolution, .userMessageReaction:
-      // Folded into the originating user bubble by `buildWorkChatMessages`.
+    case .userMessageResolution, .userMessageReaction, .assistantMessageReaction:
+      // Folded into the message it names by `buildWorkChatMessages`.
       return nil
     case .ctoLearned(let learnId, let changes, let turnId):
       // One card per `learnId`; a later copy (an Undo) replaces it in place
@@ -5872,7 +5875,8 @@ func workTurnId(for event: WorkChatEvent) -> String? {
     return turnId
   case .adeCard(let card):
     return card.turnId
-  case .queueReordered, .unknown:
+  case .assistantMessageReaction, .queueReordered, .unknown:
+    // A person's reaction belongs to no turn.
     return nil
   }
 }

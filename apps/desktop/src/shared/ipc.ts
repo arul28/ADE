@@ -475,6 +475,7 @@ export const IPC = {
   agentChatRecoverTurn: "ade.agentChat.recoverTurn",
   agentChatRecoverCodexTurn: "ade.agentChat.recoverCodexTurn",
   agentChatResolveUnprocessedMessage: "ade.agentChat.resolveUnprocessedMessage",
+  agentChatReactToMessage: "ade.agentChat.reactToMessage",
   agentChatRecoverContinuity: "ade.agentChat.recoverContinuity",
   agentChatApprove: "ade.agentChat.approve",
   agentChatRespondToInput: "ade.agentChat.respondToInput",

@@ -189,6 +189,7 @@ const CHAT_REPORT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "completion_report",
   "user_message_resolution",
   "user_message_reaction",
+  "assistant_message_reaction",
   "transcript_retraction",
   "conversation_reset",
   "interrupt_receipt",

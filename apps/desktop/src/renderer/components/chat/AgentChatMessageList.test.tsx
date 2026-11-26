@@ -593,8 +593,8 @@ describe("AgentChatMessageList transcript rendering", () => {
       expect(bubble.contains(status)).toBe(false);
       expect(bubble.textContent).not.toMatch(/accepted during turn|accepted · waiting|processed/);
       expect(screen.queryByTestId("user-message-delivery-chip")).toBeNull();
-      // The bubble and its status line share one row, bubble first.
-      expect(bubble.parentElement).toBe(screen.getByTestId("user-message-status-row").parentElement);
+      // The bubble and its status line share one column, bubble first.
+      expect(screen.getByTestId("user-message-status-row").parentElement?.contains(bubble)).toBe(true);
       expect(bubble.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 

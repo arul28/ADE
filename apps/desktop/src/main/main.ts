@@ -140,6 +140,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
+import { reportCtoMessageReaction } from "./services/analytics/ctoHomeProductAnalytics";
 import { captureChatAccountSwitchedAnalytics, captureFeatureUsedAnalytics, capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
@@ -5639,6 +5640,7 @@ app.whenReady().then(async () => {
         projectId,
         event,
       }),
+      onCtoMessageReaction: () => reportCtoMessageReaction(productAnalyticsService),
       onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
         analytics: productAnalyticsService,
         projectId,

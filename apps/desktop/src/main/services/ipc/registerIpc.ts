@@ -107,7 +107,7 @@ import {
   findRecentProjectForRepo,
   type RepoProjectCopyOnMachine,
 } from "../projects/repoProjectResolver";
-import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
+import { isAgentChatTurnRecoveryAction, normalizeChatReactionEmoji } from "../../../shared/types/chat";
 import { isAgentChatStopMode } from "../../../shared/chatStopModes";
 import {
   convertImageBufferToJpeg,
@@ -540,6 +540,7 @@ import type {
   AgentChatRecoverCodexTurnResult,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatResolveUnprocessedMessageResult,
+  AgentChatReactToMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
@@ -9882,6 +9883,22 @@ export function registerIpc({
       steerId: request.steerId,
     });
     return await ctx.agentChatService.resolveUnprocessedMessage(request);
+  });
+
+  handle(IPC.agentChatReactToMessage, async (
+    _event,
+    arg: unknown,
+  ): Promise<AgentChatReactToMessageResult> => {
+    const ctx = ensureAgentChatContext();
+    const record = requireRecord(arg, "Agent chat reaction request");
+    const emoji = normalizeChatReactionEmoji(record.emoji);
+    if (!emoji) throw new AdeExpectedError("Pick a reaction from the set.", "user");
+    // The service checks the target's length and finds it in the transcript.
+    return await ctx.agentChatService.reactToMessage({
+      sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
+      targetKey: typeof record.targetKey === "string" ? record.targetKey : "",
+      emoji,
+    });
   });
 
   handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {

@@ -17657,6 +17657,45 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The person's emoji on one of the CTO's messages (`chat.reactToMessage`).
+  /// Goes to the chat's own machine, like every chat action; starts no turn.
+  /// The host logs an `assistant_message_reaction`, which streams back.
+  func reactToMessage(
+    sessionId: String,
+    targetKey: String,
+    emoji: String
+  ) async throws -> AgentChatReactToMessageResult {
+    let normalizedTargetKey = targetKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedTargetKey.isEmpty, let normalizedEmoji = normalizedChatReactionEmoji(emoji) else {
+      throw NSError(
+        domain: "ADE",
+        code: 24,
+        userInfo: [NSLocalizedDescriptionKey: "That reaction can't be sent."]
+      )
+    }
+    let actionName = chatActionName("chat.reactToMessage", sessionId: sessionId)
+    // Asked of the chat's own machine, which may not be the tab's.
+    guard supportsChatRemoteAction("chat.reactToMessage", sessionId: sessionId) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [NSLocalizedDescriptionKey: "Reactions need a newer ADE on the machine. Update ADE there and reconnect."]
+      )
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: actionName,
+      payload: AgentChatReactToMessageRequest(
+        sessionId: sessionId,
+        targetKey: normalizedTargetKey,
+        emoji: normalizedEmoji
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatReactToMessageResult.self
+    )
+  }
+
   @discardableResult
   func steerChatSession(
     sessionId: String,

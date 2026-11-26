@@ -2776,6 +2776,7 @@ struct WorkSessionDestinationView: View {
       onOpenSideChat: openSideChatAction
     )
     chatView.ctoLive = ctoLiveModel
+    chatView.onReactToAssistantMessage = assistantReactionAction
     chatView.cloudHeld = cloudHeldThread(frame: thread.frame)
     chatView.sponsoredInstanceId = sponsoredInstanceId
     chatView.modelPickerCloudCatalog = restingCloudModelCatalog

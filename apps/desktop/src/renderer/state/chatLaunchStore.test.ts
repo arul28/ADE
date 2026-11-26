@@ -7,6 +7,7 @@ import {
   applyChatLaunchEvent,
   applyChatLaunchSnapshot,
   buildOptimisticChatLaunchSnapshot,
+  chatLaunchAckMark,
   chatLaunchRowSourcesNow,
   chatLaunchStore,
   getChatLaunchEntry,
@@ -104,6 +105,20 @@ describe("chatLaunchStore", () => {
     const ids = Object.keys(chatLaunchStore.getState().entries).sort();
     expect(ids).toEqual(["listed", "other-machine", "pending-start"]);
     expect(getChatLaunchEntry("listed")?.bindingKey).toBe(BINDING_A.key);
+  });
+
+  it("keeps a launch the start reply acknowledged after the host list was sent", () => {
+    insertOptimisticChatLaunch(BINDING_B, optimistic("launch-1"));
+    const sentBeforeAck = chatLaunchAckMark();
+    applyChatLaunchSnapshot(BINDING_B, optimistic("launch-1", { sequence: 1 }));
+
+    // Sent before the start reply: the host may not have had the launch yet.
+    hydrateChatLaunches(BINDING_B, [], sentBeforeAck);
+    expect(getChatLaunchEntry("launch-1")?.hostSeen).toBe(true);
+
+    // A list sent after the acknowledgement that still lacks it is the host's answer.
+    hydrateChatLaunches(BINDING_B, [], chatLaunchAckMark());
+    expect(getChatLaunchEntry("launch-1")).toBeNull();
   });
 
   it("removes a launch on launch-removed", () => {

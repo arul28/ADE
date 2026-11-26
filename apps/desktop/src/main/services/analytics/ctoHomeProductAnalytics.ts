@@ -27,3 +27,22 @@ export function reportCtoHomeMove(
     minimumIntervalMs: CTO_HOME_MOVE_ANALYTICS_DEDUPE_MS,
   });
 }
+
+/** One fact an hour: the question is whether people react, not how often. */
+const CTO_MESSAGE_REACTION_ANALYTICS_DEDUPE_MS = 60 * 60_000;
+
+/**
+ * The person put an emoji on a CTO reply (`chat.reactToMessage`), reported by
+ * the brain that stored it. Never the emoji, the message, the chat, or the machine.
+ */
+export function reportCtoMessageReaction(
+  service: Pick<ProductAnalyticsService, "captureInternal"> | null | undefined,
+): void {
+  service?.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    properties: { feature: "cto", action: "cto_message_reaction", outcome: "completed" },
+    dedupeKey: "cto_message_reaction",
+    minimumIntervalMs: CTO_MESSAGE_REACTION_ANALYTICS_DEDUPE_MS,
+  });
+}

@@ -495,6 +495,14 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         } else {
           event = .unknown(type: type)
         }
+      case "assistant_message_reaction":
+        // Same rule as the sync decoder: a missing key or an emoji outside the set draws nothing.
+        if let targetKey = nonEmptyTrimmed(optionalString(eventDict["targetKey"])),
+           let emoji = normalizedChatReactionEmoji(eventDict["emoji"] as? String) {
+          event = .assistantMessageReaction(targetKey: targetKey, emoji: emoji)
+        } else {
+          event = .unknown(type: type)
+        }
       case "text":
         event = .assistantText(
           text: stringValue(eventDict["text"]),
@@ -1233,6 +1241,14 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           ? optionalString(eventDict["steerId"]) ?? optionalString(eventDict["steer_id"])
           : nil
       )
+      if type == "text" {
+        parsed.assistantMessageReactionKey = workAssistantMessageReactionKey(
+          messageId: eventDict["messageId"] as? String,
+          itemId: eventDict["itemId"] as? String,
+          turnId: turnId,
+          phase: optionalString(eventDict["phase"])
+        )
+      }
       if type == "user_message" {
         parsed.userMessageReactionKey = workUserMessageReactionKey(
           steerId: eventDict["steerId"] as? String,

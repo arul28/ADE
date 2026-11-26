@@ -607,6 +607,21 @@ extension WorkSessionDestinationView {
     return workTurnRecoveryFeedback(status: result.status)
   }
 
+  /// The CTO thread's reaction send, while the chat takes one: the CTO chat,
+  /// not archived, on a machine that knows `chat.reactToMessage`. Asked of and
+  /// sent to the chat's own machine (`SyncService.reactToMessage`).
+  var assistantReactionAction: (@MainActor (_ targetKey: String, _ emoji: String) async throws -> Void)? {
+    guard let summary = composerChatSummary,
+          summary.identityKey == "cto",
+          summary.archivedAt == nil,
+          syncService.supportsChatRemoteAction("chat.reactToMessage", sessionId: sessionId) else { return nil }
+    let sessionId = sessionId
+    let syncService = syncService
+    return { targetKey, emoji in
+      _ = try await syncService.reactToMessage(sessionId: sessionId, targetKey: targetKey, emoji: emoji)
+    }
+  }
+
   @MainActor
   func runUnprocessedMessage(_ message: WorkChatMessage) async throws {
     guard liveTurnActiveHint != true && !shouldSteerActiveTurn else {

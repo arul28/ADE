@@ -213,7 +213,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",
       "interruptWithQueueMode", "stopTask", "messageSubagent", "controlSubagent", "restartSession", "armWait", "cancelWait", "armWebhook", "listWebhooks", "cancelWebhook",
-      "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage",
+      "holdBackgroundWork", "recoverTurn", "recoverCodexTurn", "resolveUnprocessedMessage", "reactToMessage",
       "recoverContinuity", "restoreCancelledQueue", "killDroidWorker", "launchCli",
       "launchHeadless", "startLaunch", "cancelLaunch", "retryLaunch", "startLaunchNow",
       "queueLaunchMessage", "completeLaunchClient", "createScheduledWork", "armUpdateResume", "releaseChatRuntime",

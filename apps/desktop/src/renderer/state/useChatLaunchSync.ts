@@ -4,6 +4,7 @@ import { isChatLaunchTerminal, laneSetupLaunchIdFromCardId } from "../../shared/
 import { useAppStore } from "./appStore";
 import {
   applyChatLaunchEvent,
+  chatLaunchAckMark,
   chatLaunchBindingKey,
   chatLaunchStore,
   hydrateChatLaunches,
@@ -124,6 +125,8 @@ export function useChatLaunchSync(): void {
         return;
       }
       let request: Promise<unknown>;
+      // A list sent before a launch was acknowledged cannot drop it.
+      const sentAtAckMark = chatLaunchAckMark();
       try {
         request = api.list(pin);
       } catch {
@@ -134,7 +137,7 @@ export function useChatLaunchSync(): void {
         if (disposed || !Array.isArray(snapshots)) return;
         // Apply buffered events first so the list lands on the newest state.
         coalescer.flush();
-        hydrateChatLaunches(binding, snapshots);
+        hydrateChatLaunches(binding, snapshots, sentAtAckMark);
       }).catch(() => {
         // A window with no runtime behind it has no launches to show.
       }).finally(() => {
