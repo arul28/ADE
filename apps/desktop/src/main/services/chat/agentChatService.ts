@@ -24838,7 +24838,7 @@ export function createAgentChatService(args: {
     const lifted = runtime.pendingSteers.splice(0);
     // Claude's live runtime tracks the messages on its queue; these left it.
     const claude = managed.runtime === runtime && managed.runtime.kind === "claude" ? managed.runtime : null;
-    for (const steer of claude ? lifted : []) claude?.knownQueuedMessages.delete(steer.uuid);
+    if (claude) for (const steer of lifted) claude.knownQueuedMessages.delete(steer.uuid);
     managed.usageLimitHeldSteers = [...(managed.usageLimitHeldSteers ?? []), ...lifted];
     persistChatState(managed);
   };
@@ -50513,7 +50513,6 @@ export function createAgentChatService(args: {
     const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
     runtime.preserveQueuedSteersOnInterrupt = false;
     if (reason === "interrupted" && preserveQueuedSteers) return;
-    // A usage limit keeps the queue for the resume or a switch (ADE-289).
     // A usage limit keeps the queue for the resume or a switch (ADE-289),
     // through any runtime teardown; closing the chat cancels it (`disposeSession`).
     if (usageLimitHoldsQueue(managed)) {
@@ -71010,16 +71009,7 @@ export function createAgentChatService(args: {
         await cancelSteerWithoutReview({ sessionId, steerId, requireQueued: true });
         return;
       }
-      held.text = trimmed;
-      held.displayText = undefined;
-      emitChatEvent(managed, {
-        type: "user_message",
-        text: trimmed,
-        ...(held.metadata ? { metadata: held.metadata } : {}),
-        steerId,
-        deliveryState: "queued",
-      });
-      persistChatState(managed);
+      applyQueuedSteerEdit(managed, held, trimmed, undefined);
       return;
     }
     if (runtime?.kind === "codex") {
@@ -71082,14 +71072,24 @@ export function createAgentChatService(args: {
       return;
     }
 
-    runtime.pendingSteers[idx].text = trimmed;
-    runtime.pendingSteers[idx].displayText = undefined;
+    applyQueuedSteerEdit(managed, runtime.pendingSteers[idx], trimmed, runtime.activeTurnId ?? undefined);
+  };
+
+  /** A queued steer's new text, and its row shown queued with it. */
+  const applyQueuedSteerEdit = (
+    managed: ManagedChatSession,
+    steer: QueuedSteer,
+    text: string,
+    turnId: string | undefined,
+  ): void => {
+    steer.text = text;
+    steer.displayText = undefined;
     emitChatEvent(managed, {
       type: "user_message",
-      text: trimmed,
-      ...(runtime.pendingSteers[idx].metadata ? { metadata: runtime.pendingSteers[idx].metadata } : {}),
-      steerId,
-      turnId: runtime.activeTurnId ?? undefined,
+      text,
+      ...(steer.metadata ? { metadata: steer.metadata } : {}),
+      steerId: steer.steerId,
+      ...(turnId ? { turnId } : {}),
       deliveryState: "queued",
     });
     persistChatState(managed);
@@ -71101,16 +71101,23 @@ export function createAgentChatService(args: {
    * `queuedSteersCanReorder`); a row an inline dispatch owns is refused, the
    * same as edit and cancel, because the agent may already have it.
    */
+  /** `queue` with one steer moved to `toIndex`, or null when it is not in the queue. */
+  const reorderedSteers = (queue: QueuedSteer[], steerId: string, toIndex: number): QueuedSteer[] | null => {
+    const nextIds = moveSteerId(queue.map((steer) => steer.steerId), steerId, toIndex);
+    if (!nextIds) return null;
+    const byId = new Map(queue.map((steer) => [steer.steerId, steer] as const));
+    return nextIds.map((id) => byId.get(id)!);
+  };
+
   const moveSteer = async ({ sessionId, steerId, toIndex }: AgentChatMoveSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const held = managed.usageLimitHeldSteers;
     if (held?.some((steer) => steer.steerId === steerId)) {
       // Held by a usage limit, on the session, whatever the provider.
-      const nextIds = moveSteerId(held.map((steer) => steer.steerId), steerId, toIndex);
-      if (!nextIds) throw steerNoLongerQueued(managed, steerId);
-      const byId = new Map(held.map((steer) => [steer.steerId, steer] as const));
-      managed.usageLimitHeldSteers = nextIds.map((id) => byId.get(id)!);
-      emitChatEvent(managed, { type: "queue_reordered", steerIds: nextIds });
+      const reordered = reorderedSteers(held, steerId, toIndex);
+      if (!reordered) throw steerNoLongerQueued(managed, steerId);
+      managed.usageLimitHeldSteers = reordered;
+      emitChatEvent(managed, { type: "queue_reordered", steerIds: reordered.map((steer) => steer.steerId) });
       persistChatState(managed);
       return;
     }
@@ -71144,13 +71151,12 @@ export function createAgentChatService(args: {
       throw new Error("This message is already being dispatched.");
     }
     const queue = runtime.pendingSteers;
-    const nextIds = moveSteerId(queue.map((steer) => steer.steerId), steerId, toIndex);
-    if (!nextIds) throw steerNoLongerQueued(managed, steerId);
-    const byId = new Map(queue.map((steer) => [steer.steerId, steer] as const));
-    queue.splice(0, queue.length, ...nextIds.map((id) => byId.get(id)!));
+    const reordered = reorderedSteers(queue, steerId, toIndex);
+    if (!reordered) throw steerNoLongerQueued(managed, steerId);
+    queue.splice(0, queue.length, ...reordered);
     emitChatEvent(managed, {
       type: "queue_reordered",
-      steerIds: nextIds,
+      steerIds: reordered.map((steer) => steer.steerId),
       turnId: runtime.activeTurnId ?? undefined,
     });
     persistChatState(managed);
