@@ -11,6 +11,7 @@ import {
 } from "@phosphor-icons/react";
 import type { ChatWorkLogEntry } from "../chatTranscriptRows";
 import { ctoChipsForEntries, type CtoChipKind } from "./ctoToolWords";
+import { CtoRemoteTaskRow } from "./CtoSpawnRows";
 import "./ctoChat.css";
 
 const CHIP_ICON: Record<CtoChipKind, Icon> = {
@@ -20,6 +21,7 @@ const CHIP_ICON: Record<CtoChipKind, Icon> = {
   resumed: PlayCircle,
   tracking: Circle,
   done: CheckCircle,
+  started: PlayCircle,
 };
 
 /**
@@ -30,8 +32,25 @@ const CHIP_ICON: Record<CtoChipKind, Icon> = {
  * still running draws nothing here (the working line names it).
  */
 export function CtoToolChips({ entries }: { entries: readonly ChatWorkLogEntry[] }) {
-  const chips = ctoChipsForEntries(entries);
-  if (chips.length === 0) return null;
+  const all = ctoChipsForEntries(entries);
+  if (all.length === 0) return null;
+  // A chat started on another machine draws the same row a local spawn does;
+  // a spawn that failed stays a chip ("Couldn't start").
+  const started = all.flatMap((chip) => (chip.remote ? [{ id: chip.id, title: chip.text, remote: chip.remote }] : []));
+  const chips = all.filter((chip) => !chip.remote);
+  return (
+    <>
+      {started.length ? (
+        <div className="ade-cto-spawns">
+          {started.map((spawn) => <CtoRemoteTaskRow key={spawn.id} title={spawn.title} remote={spawn.remote} />)}
+        </div>
+      ) : null}
+      {chips.length ? <CtoChipRow chips={chips} /> : null}
+    </>
+  );
+}
+
+function CtoChipRow({ chips }: { chips: ReturnType<typeof ctoChipsForEntries> }) {
   return (
     <div className="ade-cto-chips" data-testid="cto-tool-chips">
       {chips.map((chip) => {

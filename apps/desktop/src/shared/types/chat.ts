@@ -2096,6 +2096,12 @@ export type AgentChatEvent =
       background?: boolean;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       spawnKind?: AgentChatSpawnKind;
+      /**
+       * A spawned ADE chat that started read-only (`permissionMode "plan"`):
+       * a background helper, not a task of its own. The CTO thread groups it
+       * with native background subagents.
+       */
+      readOnly?: boolean;
       workflowName?: string;
       workflowProgress?: AgentChatWorkflowProgress;
       /** SDK spawn_depth when the host publishes it; 0 is the top-level agent. */

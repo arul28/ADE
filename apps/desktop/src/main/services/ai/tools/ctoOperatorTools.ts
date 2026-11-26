@@ -1086,6 +1086,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         }
         const session = await deps.createChat({
           laneId: executionLaneId,
+          // Named at creation, so the parent's "Started a new task" row reads the title, not "Claude chat".
+          ...(title?.trim() ? { title: title.trim() } : {}),
           provider: resolved.provider,
           model: resolved.model,
           ...(selectedModelId ? { modelId: selectedModelId } : {}),
