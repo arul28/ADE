@@ -311,7 +311,9 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       next = [...lines, note];
     }
     if (!input.personAskedAgain) {
-      const refusal = learning.undoneRefusal(notesArea(scope), "write", note);
+      // A replace also removes the old note: the person may have undone its removal.
+      const refusal = learning.undoneRefusal(notesArea(scope), "write", note)
+        ?? (replaced ? learning.undoneRefusal(notesArea(scope), "remove", replaced) : null);
       if (refusal) return { ok: false, error: refusal };
     }
     const limit = notesLimit(scope);

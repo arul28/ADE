@@ -223,8 +223,9 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     expect(read(path.join(ctoDir, "RULES.md"))).toContain("- Keep PRs small — reviews stay fast.");
     expect(read(path.join(ctoDir, "RULES.md"))).toContain("# Mine");
     expect(read(path.join(ctoDir, "skills", "triage", "SKILL.md"))).toBe(skillBefore);
-    // The CTO may not remove the rule the person kept.
+    // The CTO may not remove the rule the person kept, not even by replacing it.
     expect(service.removeRule({ rule: "Keep PRs small" })).toMatchObject({ ok: false });
+    expect(service.addRule({ rule: "Batch PRs weekly", why: "fewer deploys", replaces: "Keep PRs small" })).toMatchObject({ ok: false });
     // A second Undo of the same change is a no-op, not a second restore.
     expect(service.undoLearned({ learnId: learned.learnId, changeId: learned.changes[0]!.id }).ok).toBe(true);
     expect(read(path.join(ctoDir, "RULES.md")).match(/Keep PRs small/g)).toHaveLength(1);
@@ -280,6 +281,16 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
     expect(here.finishLearningTurn({})?.changes.map(({ area, text }) => `${area}:${text}`)).toEqual([
       "user_notes:Reviews on Wednesdays",
     ]);
+    // This CTO drops a line while another project's CTO adds a similar one: they are not
+    // paired, and Undo puts this CTO's line back without touching the other project's.
+    here.beginLearningTurn();
+    here.forget({ note: "Works in UTC", scope: "user" });
+    elsewhere.remember({ note: "Works in GMT", scope: "user" });
+    const dropped = here.finishLearningTurn({})!;
+    expect(dropped.changes.map(({ op, text }) => `${op}:${text}`)).toEqual(["removed:Works in UTC"]);
+    here.undoLearned({ learnId: dropped.learnId, changeId: dropped.changes[0]!.id });
+    expect(here.readNotes("user")).toContain("Works in UTC");
+    expect(here.readNotes("user")).toContain("Works in GMT");
   });
 
   it("still reports a turn a brain restart cut short", () => {

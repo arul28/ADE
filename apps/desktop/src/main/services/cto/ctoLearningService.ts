@@ -484,7 +484,9 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       next = appendLine(content, line);
     }
     if (!input.personAskedAgain) {
-      const refusal = undoneRefusal("rules", "write", line);
+      // A replace also removes the old rule: the person may have undone its removal.
+      const refusal = undoneRefusal("rules", "write", line)
+        ?? (replaced ? undoneRefusal("rules", "remove", replaced) : null);
       if (refusal) return { ok: false, error: refusal };
     }
     const bytes = utf8Bytes(next);
@@ -880,8 +882,11 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     }
     diffLines("project_notes");
     if (start.user_notes !== end.user_notes) {
-      const mine = diffLineItems("user_notes", start.user_notes, end.user_notes, replacedThisTurn.get("user_notes"))
-        .filter((change) => userNoteLinesThisTurn.has(change.text) || (change.previous != null && userNoteLinesThisTurn.has(change.previous)));
+      // That file is shared across projects: diff only the lines this CTO wrote,
+      // so another project's line is never paired with one of them.
+      const onlyMine = (content: string): string =>
+        parseNoteLines(content).filter((line) => userNoteLinesThisTurn.has(line)).join("\n");
+      const mine = diffLineItems("user_notes", onlyMine(start.user_notes), onlyMine(end.user_notes), replacedThisTurn.get("user_notes"));
       if (mine.length) {
         before.user_notes = start.user_notes;
         changes.push(...mine);
