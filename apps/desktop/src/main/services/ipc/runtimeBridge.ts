@@ -514,6 +514,19 @@ export class RemoteProjectNotFoundError extends Error {
   }
 }
 
+/**
+ * Opening a project reads it, and reading never wakes an ADE Cloud computer.
+ * An open on one that is asleep or stopped is refused with this; the window
+ * shows the repository from ADE Cloud instead (the top bar's tab fallback).
+ * Connect, a send, or any change still wakes it.
+ */
+export class CloudComputerAsleepError extends AdeExpectedError {
+  constructor() {
+    super("Your ADE Cloud computer is asleep. Its project reads from ADE Cloud, and a message to one of its chats wakes it.", "network");
+    this.name = "CloudComputerAsleepError";
+  }
+}
+
 function canBindRemoteProjectToSender(
   windowId: number | null,
   sender: WebContents,
@@ -891,6 +904,7 @@ export function registerRuntimeBridge({
       options?: { timeoutMs?: number },
     ) => remoteConnectionService.callMachineMethod<T>(targetId, method, params ?? {}, options ?? {}),
     openRemoteProjectForWindow: async ({ targetId, projectId, rootPath, windowId }) => {
+      await refuseOpenOnSleepingCloudComputer(targetId);
       const binding = await resolveRemoteProjectBinding(targetId, projectId, rootPath);
       bindRemoteProject?.(windowId, binding);
       return binding;
@@ -932,6 +946,13 @@ export function registerRuntimeBridge({
       ),
     },
   };
+
+  /** Throws `CloudComputerAsleepError` for a cloud computer that is asleep and not connected. Asks; never wakes. */
+  async function refuseOpenOnSleepingCloudComputer(rawTargetId: string): Promise<void> {
+    const target = savedOrGoneTarget(rawTargetId.trim());
+    if (!target || remoteConnectionService.isConnected(target.id)) return;
+    if (await cloudAsleepForUse(target) === true) throw new CloudComputerAsleepError();
+  }
 
   async function resolveRemoteProjectBinding(
     rawTargetId: string,
@@ -1771,6 +1792,7 @@ export function registerRuntimeBridge({
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       try {
+        await refuseOpenOnSleepingCloudComputer(id);
         const binding = await resolveRemoteProjectBinding(id, projectId);
         if (
           isLatestOpenRequest() &&

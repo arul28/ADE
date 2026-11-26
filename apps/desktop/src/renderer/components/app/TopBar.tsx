@@ -154,7 +154,6 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
 import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
-import { useProjectOpenWaking } from "../../state/projectOpenWaking";
 
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
@@ -878,7 +877,6 @@ export function TopBar({
   const musicTabOpen = useAppStore((s) => s.musicTabOpen);
   const setMusicTabOpen = useAppStore((s) => s.setMusicTabOpen);
   const projectTransition = useAppStore((s) => s.projectTransition);
-  const projectOpenWaking = useProjectOpenWaking();
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   // Which open tabs have a loaded project: only those switch at once.
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
@@ -1548,7 +1546,23 @@ export function TopBar({
             // brain opens it, so the composer takes input before the open ends.
             void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true, showCachedView: true }).catch(reportStripRestoreFailure);
           } else {
-            void store.switchRemoteProject(active.copy.binding.targetId, active.copy.binding.projectId).catch(reportStripRestoreFailure);
+            const copy = active.copy.binding;
+            void store.switchRemoteProject(copy.targetId, copy.projectId).catch((error: unknown) => {
+              // Its computer did not answer, or is an ADE Cloud computer that
+              // sleeps (an open never wakes one): a repository's tab still
+              // comes back in front, bound to ADE Cloud, as a tab click does.
+              const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
+                connection.target.id === copy.targetId && connection.state === "connected"
+              ));
+              const adeCloud = adeCloudProjectForTabId(active.id, active.displayName);
+              const latest = useAppStore.getState();
+              if (connected || latest.projectTransition || (!adeCloud.gitOriginUrl && !active.id.startsWith("ap_"))) {
+                reportStripRestoreFailure(error);
+                return;
+              }
+              useAppStore.setState({ projectTransitionError: null });
+              void latest.openAdeCloudProject(adeCloud).catch(reportStripRestoreFailure);
+            });
           }
         }
       })
@@ -2783,10 +2797,7 @@ export function TopBar({
         projectTransitionLabel = "Opening project…";
         break;
       case "switching":
-        // ADE Web opening a project on a sleeping ADE Cloud computer wakes it first.
-        projectTransitionLabel = projectOpenWaking
-          ? `Waking ${projectOpenWaking}…`
-          : `Switching to ${transitionTargetName}…`;
+        projectTransitionLabel = `Switching to ${transitionTargetName}…`;
         break;
       case "closing":
         projectTransitionLabel = "Closing project…";

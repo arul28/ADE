@@ -319,7 +319,7 @@ export function ProjectWelcomePage() {
       if (!machine) {
         // The row of an open tab names that tab's saved machine, which the
         // list does not hold while its computer is asleep or not answering:
-        // open the tab, which wakes a sleeping ADE Cloud computer first.
+        // open the tab (a sleeping ADE Cloud computer opens from ADE Cloud).
         void (async () => {
           try {
             await switchRemoteProject(machineKey, projectId);
@@ -398,7 +398,8 @@ export function ProjectWelcomePage() {
       if (webMode && rp.kind === "remote" && rp.remote) {
         // A tab of this repository is open, or waiting, on a computer this
         // browser cannot reach now (asleep, or not answering): the row opens
-        // that tab, which wakes a sleeping ADE Cloud computer first.
+        // that tab. A sleeping ADE Cloud computer is not woken: the tab opens
+        // as the repository's ADE Cloud tab.
         const origin = normalizeGitRemoteIdentity(rp.gitOriginUrl ?? null);
         const unreachableTab = [...useAppStore.getState().openRemoteProjectTabs, ...webStoppedTabCopies()].find((binding) => (
           (origin ? normalizeGitRemoteIdentity(binding.gitOriginUrl ?? null) === origin : binding.rootPath === rp.rootPath)
@@ -457,11 +458,11 @@ export function ProjectWelcomePage() {
           });
           return;
         }
-        // Offline: establish the SSH connection first, then bind the project.
+        // Offline: the open connects the machine first (it never wakes a
+        // sleeping ADE Cloud computer: that one opens with no machine below).
         setConnectingKeys((prev) => new Set(prev).add(key));
         void (async () => {
           try {
-            await window.ade.remoteRuntime.connect(targetId);
             await switchRemoteProject(targetId, projectId);
           } catch (error) {
             // The machine did not come online: the repository still opens, as
