@@ -656,18 +656,17 @@ Settings shows the scope switcher when the relay advertises support for scoped
 events. If a project save returns 404, Settings hides the Project choice and
 explains why.
 
-Besides the agent and PR events, three events have a setting:
-`agent_message` (messages from `ade notify`, agents and automations; Notify by
-default, read by the relay for message items and `POST /attention/account/notify`),
-`agent_goal` (a goal reached or blocked; computers only) and `ade_service`
-(the background service fell back or recovered; this computer only, never
-scoped). An account saved before they existed has no entry and uses the default.
+The event matrix includes messages from agents and automations, goal outcomes,
+chat resumes after a usage limit, and background-service notices. Messages
+have a phone delivery policy. Goal outcomes, usage-limit resumes, and
+background-service notices are computer events. Background-service notices
+can be configured everywhere or for one computer.
 
-Quiet hours hold a push when the account's window or the phone's own window
-covers now, each read in its own `timeZone`. The desktop saves its zone with
-the window (`localAttentionTimeZone`); before, a window set on a computer was
-read in UTC. Desktop notifications follow the same windows
-(`attentionQuietHoursActive`).
+Quiet hours hold a push when an account, project, computer, or phone window
+covers now. Each window uses its saved time zone. The default schedule takes
+the local zone when enabled. Time edits keep the saved zone, and **Use** with
+the local zone's name switches it explicitly. Desktop alerts check the same
+scoped windows.
 The **Send notifications to** switch in desktop and web settings controls
 account delivery to one iPhone or iPad. The iOS **Notifications on this device**
 switch controls that device's own preference. iOS shows when account settings

@@ -17,7 +17,7 @@ import {
   type AttentionPreferences,
   type AttentionScopePatch,
 } from "../../../shared/types";
-import { applyAttentionScopePatchLocally, localAttentionTimeZone } from "../../../shared/attention/attentionScope";
+import { applyAttentionScopePatchLocally } from "../../../shared/attention/attentionScope";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { isMac } from "../../lib/platform";
@@ -245,13 +245,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     // The account endpoint replaces the whole account scope. Keep one save
     // in flight so a failed request can restore its last confirmed value.
     const previous = preferences.account;
-    // Quiet hours are read in the zone they were set in. Without one the
-    // relay read a computer's window in UTC.
-    const account = {
-      ...previous,
-      ...patch,
-      ...(patch.quietHours ? { quietHours: { ...patch.quietHours, timeZone: localAttentionTimeZone() } } : {}),
-    };
+    const account = { ...previous, ...patch };
     scope.pending.add("account");
     setSavingTargets(new Set(scope.pending));
     setPreferences((current) => ({ ...current, account }));

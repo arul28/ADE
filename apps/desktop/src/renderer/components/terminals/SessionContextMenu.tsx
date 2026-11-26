@@ -353,9 +353,19 @@ function SessionContextMenuPanel({
   const [scopedHandoffRules, setScopedHandoffRules] = useState<AutomationRuleSummary[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const finalizedRef = useRef(false);
+  const {
+    session,
+    binding = null,
+    laneActions = null,
+    openIn = null,
+    laneType = null,
+    x,
+    y,
+  } = menu;
+  const notificationMute = useSessionNotificationMute(session.id);
   const { ref: menuRef, position: clampedPosition } = useClampedFixedPosition(
-    { x: menu.x, y: menu.y },
-    renaming || tagging,
+    { x, y },
+    `${renaming || tagging}:${notificationMute.available}`,
   );
 
   // Reset inline edit state when the target menu changes.
@@ -374,15 +384,6 @@ function SessionContextMenuPanel({
     }
   }, [renaming, tagging]);
 
-  const {
-    session,
-    binding = null,
-    laneActions = null,
-    openIn = null,
-    laneType = null,
-    x,
-    y,
-  } = menu;
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
@@ -426,7 +427,6 @@ function SessionContextMenuPanel({
   const changeStatus = (target: WorkBoardMoveTarget): void => {
     onChangeStatus(session, target, binding);
   };
-  const notificationMute = useSessionNotificationMute(session.id);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
   const isSettled = canonicalPhase === "settled"
     // A settled row that is mid-turn reads Working (a settle only holds at

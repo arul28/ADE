@@ -371,7 +371,7 @@ import {
   resolveAttentionScope,
   type AttentionScopeTarget,
 } from "../shared/attention/attentionScope";
-import { deriveProjectSettingsKey } from "../../../ade-cli/src/services/push/projectSettingsKey";
+import { createProjectSettingsKeyReader } from "../../../ade-cli/src/services/push/projectSettingsKey";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -2813,11 +2813,21 @@ app.whenReady().then(async () => {
   };
   /** The last account notification settings any window loaded, for this computer's alerts. */
   let attentionPreferencesForAlerts: { ownerId: string; preferences: AttentionPreferences } | null = null;
-  /**
-   * A notice about this computer itself (no project, no chat): shown unless
-   * the account set its event to Off or quiet hours are on. Unknown settings
-   * (signed out, not loaded yet) allow it.
-   */
+  let notificationPushStore: ReturnType<typeof createPushRegistrationStore> | undefined;
+  const readNotificationMachineKey = (): string | null => {
+    try {
+      notificationPushStore ??= createPushRegistrationStore({
+        filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+      });
+      return notificationPushStore.getOrCreateIdentity().machineKey;
+    } catch (error) {
+      localRuntimeLogger.warn("attention.notification_machine_key_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   const computerNoticeAllowed = (
     kind: "ade_service" | "agent_goal" | "agent_usage_limit_resumed",
     target: AttentionScopeTarget = {},
@@ -2829,7 +2839,8 @@ app.whenReady().then(async () => {
       : null;
     if (!preferences) return true;
     if (sessionId && preferences.mutedSessionIds?.includes(sessionId)) return false;
-    const { scope, scopedOff, quietHours } = resolveAttentionScope(preferences, target);
+    const machineKey = Object.keys(preferences.machines ?? {}).length ? readNotificationMachineKey() : null;
+    const { scope, scopedOff, quietHours } = resolveAttentionScope(preferences, { ...target, machineKey });
     const nowMs = Date.now();
     return !scopedOff
       && attentionEventPolicy(scope, kind) === "notify"
@@ -5490,36 +5501,19 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
-    /** This project's notification settings keys, read on the first chat notice. */
-    let chatNoticeProjectIdsCache: string[] | null = null;
+    const readProjectSettingsKey = createProjectSettingsKeyReader();
+    let chatNoticeFolderId: string | undefined;
     const chatNoticeProjectIds = (): string[] => {
-      if (chatNoticeProjectIdsCache) return chatNoticeProjectIdsCache;
       try {
-        const folderId = deriveProjectId(projectRoot);
-        chatNoticeProjectIdsCache = [deriveProjectSettingsKey(projectRoot, folderId), folderId, projectId]
+        chatNoticeFolderId ??= deriveProjectId(projectRoot);
+        return [readProjectSettingsKey(projectRoot, chatNoticeFolderId), chatNoticeFolderId, projectId]
           .filter((id): id is string => Boolean(id));
       } catch (error) {
         logger.warn("agent_chat.notice_project_key_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
-        chatNoticeProjectIdsCache = [projectId];
+        return [projectId];
       }
-      return chatNoticeProjectIdsCache;
-    };
-    let chatNoticePushStore: ReturnType<typeof createPushRegistrationStore> | undefined;
-    const chatNoticeTarget = (): AttentionScopeTarget => {
-      let machineKey: string | null = null;
-      try {
-        chatNoticePushStore ??= createPushRegistrationStore({
-          filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
-        });
-        machineKey = chatNoticePushStore.getOrCreateIdentity().machineKey;
-      } catch (error) {
-        logger.warn("agent_chat.notice_machine_key_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      return { projectIds: chatNoticeProjectIds(), machineKey };
     };
 
     /** Show a chat notification when ADE is in the background. */
@@ -5723,7 +5717,7 @@ app.whenReady().then(async () => {
         provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
-        if (!computerNoticeAllowed("agent_usage_limit_resumed", chatNoticeTarget(), sessionId)) return;
+        if (!computerNoticeAllowed("agent_usage_limit_resumed", { projectIds: chatNoticeProjectIds() }, sessionId)) return;
         showChatOsNotification({
           sessionId,
           title: "Chat resumed",
@@ -5735,7 +5729,7 @@ app.whenReady().then(async () => {
         });
       },
       onGoalEnded: ({ sessionId, title, objective, outcome }) => {
-        if (!computerNoticeAllowed("agent_goal", chatNoticeTarget(), sessionId)) return;
+        if (!computerNoticeAllowed("agent_goal", { projectIds: chatNoticeProjectIds() }, sessionId)) return;
         showChatOsNotification({
           sessionId,
           title: outcome === "reached" ? "Goal reached" : "Goal blocked",

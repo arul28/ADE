@@ -12,7 +12,7 @@ import {
 /**
  * How one notification's settings are decided: the account, then the
  * project, machine and device it is about. The push relay applies the same
- * rules to phones (`resolveScopedDeliveryPreferences`, `quietHoursActive` and
+ * rules to phones (`resolveScopedDeliveryPreferences`, `quietWindowActive` and
  * `applyAttentionScopePatch` in `apps/push-relay/src/attention.ts`); keep the
  * two in step.
  */
@@ -87,7 +87,7 @@ export function attentionEventPolicy(
 /**
  * Whether a quiet-hours window covers `nowMs`, read in the window's own time
  * zone (UTC when it names none). The push
- * relay reads phone windows with the same rule (`quietHoursActive`), including
+ * relay reads phone windows with the same rule (`quietWindowActive`), including
  * staying quiet-free when the zone is unknown.
  */
 export function attentionQuietHoursActive(

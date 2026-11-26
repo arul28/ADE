@@ -69,7 +69,12 @@ const HIDDEN_DETAIL_TITLE: Record<Exclude<DesktopAlert["kind"], "activity" | "me
 };
 
 function alertKey(alert: DesktopAlert): string {
-  return `${alert.itemId}\u0000${alertEvent(alert) ?? alert.kind}`;
+  const event = alertEvent(alert) ?? alert.kind;
+  const key = `${alert.itemId}\u0000${event}`;
+  // Snapshot-only events carry the identity of a phase entry, so two turns can
+  // finish close together and still produce distinct alerts. For older rows,
+  // desktopAlertFromItem supplies the phase timestamp.
+  return alert.kind === "activity" ? `${key}\u0000${alert.alertFingerprint ?? alert.at}` : key;
 }
 
 function alertEvent(alert: DesktopAlert): AttentionPolicyEventKind | undefined {
@@ -119,7 +124,7 @@ export function desktopAlertFromItem(item: AttentionItem): DesktopAlert | null {
  */
 export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
   const now = deps.now ?? (() => Date.now());
-  /** item + kind -> when the last state entry we handled began. */
+  /** Alert key -> when the last handled entry began. */
   const handledEntryAt = new Map<string, number>();
   /**
    * Alerts that arrived signed in before any settings loaded, re-checked once

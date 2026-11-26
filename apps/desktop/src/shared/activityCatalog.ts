@@ -35,10 +35,9 @@ export type ActivityEventDescriptor = {
    */
   reach: "everywhere" | "computers";
   /**
-   * Project and machine settings can change it. False for a notice about this
-   * computer itself, which belongs to no project.
+   * Project settings can change it. Notices about the computer itself have no project.
    */
-  scoped: boolean;
+  projectScoped: boolean;
   order: number;
 };
 
@@ -69,7 +68,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 0,
   },
   {
@@ -81,7 +80,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 1,
   },
   {
@@ -93,7 +92,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 2,
   },
   {
@@ -105,7 +104,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 3,
   },
   {
@@ -117,7 +116,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 4,
   },
   {
@@ -129,7 +128,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 5,
   },
   {
@@ -141,7 +140,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 6,
   },
   {
@@ -153,7 +152,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 7,
   },
   {
@@ -165,7 +164,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 8,
   },
   {
@@ -177,7 +176,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 9,
   },
   {
@@ -189,7 +188,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "ambient",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 10,
   },
   {
@@ -201,7 +200,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: false,
     reach: "computers",
-    scoped: true,
+    projectScoped: true,
     order: 11,
   },
   {
@@ -213,7 +212,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: false,
     reach: "computers",
-    scoped: true,
+    projectScoped: true,
     order: 12,
   },
   {
@@ -225,7 +224,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: true,
     reach: "everywhere",
-    scoped: true,
+    projectScoped: true,
     order: 13,
   },
   {
@@ -237,7 +236,7 @@ export const ACTIVITY_EVENT_CATALOG = [
     defaultPolicy: "notify",
     supportsAmbient: false,
     reach: "computers",
-    scoped: false,
+    projectScoped: false,
     order: 14,
   },
 ] as const satisfies readonly ActivityEventDescriptor[];

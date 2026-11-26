@@ -63,7 +63,7 @@ import type {
   RosterPhaseAnchor,
 } from "./attentionItemBuilder";
 import { deriveProjectId } from "../projects/projectRegistry";
-import { deriveProjectSettingsKey } from "./projectSettingsKey";
+import { createProjectSettingsKeyReader } from "./projectSettingsKey";
 
 /** The subagent that raised a card, from the card's own request record. */
 function approvalRequestSubagentName(event: { detail?: unknown }): string | null {
@@ -1028,21 +1028,17 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
-  /** `deriveProjectSettingsKey`, read once per root for the life of the brain. */
-  const projectSettingsKeyByRoot = new Map<string, string | null>();
+  const readProjectSettingsKey = createProjectSettingsKeyReader();
   const projectSettingsKey = (rootPath: string | null | undefined): string | null => {
     const trimmed = rootPath?.trim();
     if (!trimmed) return null;
-    if (projectSettingsKeyByRoot.has(trimmed)) return projectSettingsKeyByRoot.get(trimmed) ?? null;
-    let key: string | null = null;
+    const folderId = canonicalProjectId(trimmed);
     try {
-      key = deriveProjectSettingsKey(trimmed, canonicalProjectId(trimmed));
+      return readProjectSettingsKey(trimmed, folderId);
     } catch (error) {
       logWarn("attention.project_settings_key_failed", error);
-      key = canonicalProjectId(trimmed);
+      return folderId;
     }
-    projectSettingsKeyByRoot.set(trimmed, key);
-    return key;
   };
 
   const loadActivityRoster = async (nowMs: number): Promise<ActivityRosterProject[]> => {

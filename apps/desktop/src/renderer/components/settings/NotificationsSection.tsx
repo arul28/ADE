@@ -18,6 +18,7 @@ import {
 import type { ActivityEventDescriptor, ActivityIconKey } from "../../../shared/activityCatalog";
 import { attentionEventPolicy, localAttentionTimeZone } from "../../../shared/attention/attentionScope";
 import {
+  DEFAULT_ATTENTION_PREFERENCES,
   type AttentionDeliveryPolicy,
   type AttentionPolicyEventKind,
   type AttentionPreferenceScope,
@@ -96,15 +97,10 @@ const SCOPE_NOUN: Record<NotificationScopeCollection, string> = {
   devices: "phone",
 };
 
-/**
- * The events a scope can change. A phone only gets what the relay pushes, so
- * events only a computer shows are left out; a notice about this computer
- * itself belongs to no project or machine.
- */
 function eventsForScope(kind: ScopeKind): readonly ActivityEventDescriptor[] {
-  if (kind === "account") return ACTIVITY_EVENT_CATALOG;
+  if (kind === "projects") return ACTIVITY_EVENT_CATALOG.filter((event) => event.projectScoped);
   if (kind === "devices") return ACTIVITY_EVENT_CATALOG.filter((event) => event.reach === "everywhere");
-  return ACTIVITY_EVENT_CATALOG.filter((event) => event.scoped);
+  return ACTIVITY_EVENT_CATALOG;
 }
 
 /** The scope's own settings, or undefined for the account. */
@@ -150,6 +146,11 @@ export function NotificationsSection() {
   const { account, accountBusy: busy, signedOut, updateAccount } = model;
   const [scope, setScope] = useState<EventScope>({ collection: "account" });
   const localTimeZone = useMemo(() => localAttentionTimeZone(), []);
+  const quietHours = account.quietHours;
+  const defaultQuietHours = DEFAULT_ATTENTION_PREFERENCES.account.quietHours;
+  const quietHoursUseDefault = quietHours.timeZone === defaultQuietHours.timeZone
+    && quietHours.startMinute === defaultQuietHours.startMinute
+    && quietHours.endMinute === defaultQuietHours.endMinute;
 
   // A scope whose project, computer or phone left the account falls back to Everywhere.
   // An account service that predates per-scope events offers none of them.
@@ -476,18 +477,18 @@ export function NotificationsSection() {
                 <ModernRow
                   anchor="quiet-hours"
                   title="Quiet hours"
-                  hint={account.quietHours.enabled && account.quietHours.timeZone ? (
+                  hint={quietHours.enabled && quietHours.timeZone ? (
                     <>
-                      Nothing notifies during this window ({account.quietHours.timeZone} time). Activity still lists it.
-                      {/* Windows saved from a computer before ADE stored the zone read as UTC. */}
-                      {account.quietHours.timeZone !== localTimeZone ? (
+                      Nothing notifies during this window ({quietHours.timeZone} time). Activity still lists it.
+                      {/* Schedules from before ADE stored the zone read as UTC. */}
+                      {quietHours.timeZone !== localTimeZone ? (
                         <>
                           {" "}
                           <button
                             type="button"
                             className="ade-nt-inherit"
                             disabled={busy}
-                            onClick={() => updateAccount({ quietHours: account.quietHours })}
+                            onClick={() => updateAccount({ quietHours: { ...quietHours, timeZone: localTimeZone } })}
                           >
                             Use {localTimeZone}
                           </button>
@@ -497,28 +498,34 @@ export function NotificationsSection() {
                   ) : "Nothing notifies during this window, on computers or phones. Activity still lists it."}
                   control={(
                     <>
-                      {account.quietHours.enabled ? (
+                      {quietHours.enabled ? (
                         <span className="ade-nt-quiet">
                           <QuietHourField
                             label="From"
-                            value={account.quietHours.startMinute}
+                            value={quietHours.startMinute}
                             disabled={busy}
-                            onChange={(startMinute) => updateAccount({ quietHours: { ...account.quietHours, startMinute } })}
+                            onChange={(startMinute) => updateAccount({ quietHours: { ...quietHours, startMinute } })}
                           />
                           <span>to</span>
                           <QuietHourField
                             label="To"
-                            value={account.quietHours.endMinute}
+                            value={quietHours.endMinute}
                             disabled={busy}
-                            onChange={(endMinute) => updateAccount({ quietHours: { ...account.quietHours, endMinute } })}
+                            onChange={(endMinute) => updateAccount({ quietHours: { ...quietHours, endMinute } })}
                           />
                         </span>
                       ) : null}
                       <SettingsToggle
                         label="Quiet hours"
-                        checked={account.quietHours.enabled}
+                        checked={quietHours.enabled}
                         disabled={busy}
-                        onChange={(enabled) => updateAccount({ quietHours: { ...account.quietHours, enabled } })}
+                        onChange={(enabled) => updateAccount({
+                          quietHours: {
+                            ...quietHours,
+                            enabled,
+                            timeZone: enabled && quietHoursUseDefault ? localTimeZone : quietHours.timeZone,
+                          },
+                        })}
                       />
                     </>
                   )}

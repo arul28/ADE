@@ -945,6 +945,10 @@ async function enforceActivityAccountItemCap(
   return { itemsTruncated: true, revision };
 }
 
+type ScopedDeliveryPreferences = Record<string, unknown> & {
+  quietHoursWindows: Record<string, unknown>[];
+};
+
 /**
  * One device's effective delivery preferences: the registration defaults, then
  * the account, then the project and machine scopes, then an explicit device
@@ -961,7 +965,7 @@ export function resolveScopedDeliveryPreferences(
   device: Pick<AttentionDeviceRow, "device_id" | "preferences_json">,
   scope: { projectIds?: readonly (string | null | undefined)[]; machineKey?: string | null },
   preferences: Record<string, unknown>,
-): Record<string, unknown> {
+): ScopedDeliveryPreferences {
   const registered = readPreferences(device.preferences_json);
   const account = isRecord(preferences.account) ? preferences.account : {};
   const projects = isRecord(preferences.projects) ? preferences.projects : {};
@@ -1014,14 +1018,26 @@ export function resolveScopedDeliveryPreferences(
     || layers.some((layer) => layer.notificationsEnabled === false)) {
     merged.notificationsEnabled = false;
   }
-  return merged;
+  // Registration supplies the same phone's fallback window. An explicit
+  // phone window replaces it, while account, project and machine windows
+  // still apply independently.
+  const deviceWindow = explicitDevice.quietHours !== undefined
+    ? explicitDevice.quietHours
+    : registered.quietHours;
+  const deviceWindowEnabled = explicitDevice.quietHoursEnabled
+    ?? (explicitDevice.quietHours === undefined ? registered.quietHoursEnabled : undefined);
+  const quietHoursWindows = [account, ...projectLayers, machine].flatMap((layer) =>
+    layer.quietHoursEnabled !== false && isRecord(layer.quietHours) ? [layer.quietHours] : [],
+  );
+  if (deviceWindowEnabled !== false && isRecord(deviceWindow)) quietHoursWindows.push(deviceWindow);
+  return { ...merged, quietHoursWindows };
 }
 
 function resolveActivityDeliveryPreferences(
   device: AttentionDeviceRow,
   item: ParsedAttentionItem,
   preferences: Record<string, unknown>,
-): Record<string, unknown> {
+): ScopedDeliveryPreferences {
   return resolveScopedDeliveryPreferences(
     device,
     {
@@ -1063,23 +1079,6 @@ function resolvedMutedSessionIds(
     }
   }
   return muted;
-}
-
-/**
- * Quiet hours hold a push when the account's window or the device's own window
- * covers now. A phone writes its own window into its override on every sync,
- * and reading only that one ignored the account's window on every phone that
- * had ever synced.
- */
-export function quietHoursActive(
-  device: Record<string, unknown>,
-  account: Record<string, unknown>,
-  nowMs: number,
-): boolean {
-  if (device.quietHoursEnabled !== false && isRecord(device.quietHours) && quietWindowActive(device.quietHours, nowMs)) {
-    return true;
-  }
-  return isRecord(account.quietHours) && quietWindowActive(account.quietHours, nowMs);
 }
 
 function quietWindowActive(raw: Record<string, unknown>, nowMs: number): boolean {
@@ -1336,7 +1335,7 @@ async function deliverAttentionNotifications(
       );
       if (
         !notificationsEnabled
-        || quietHoursActive(override, accountPreferences, nowMs)
+        || override.quietHoursWindows.some((window) => quietWindowActive(window, nowMs))
         || stringListIncludes(
           resolvedMutedSessionIds(device, preferences, devicePreferences),
           itemSessionId(item),
@@ -3909,7 +3908,7 @@ async function handleCustomNotification(
     );
     if (
       !notificationsEnabled
-      || quietHoursActive(override, accountPreferences, nowMs)
+      || override.quietHoursWindows.some((window) => quietWindowActive(window, nowMs))
       || effectiveEventPolicy(
         "agent_message",
         isRecord(override.eventPolicies) ? override.eventPolicies : {},
