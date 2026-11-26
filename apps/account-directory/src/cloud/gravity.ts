@@ -44,7 +44,7 @@ import {
   type SponsoredRequester,
 } from "./sponsoredConsent";
 import { lookKeepsSmallFree, noteSmallLook, smallFreeFrom, smallLookNetwork, smallLookTripwire, smallStateOf, syncSmallRates } from "./sponsoredSmall";
-import { captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
+import type { CloudWaitUntil } from "./analytics";
 import { gravitySwitches, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
 import {
   loadAccount,
@@ -488,10 +488,7 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   logCloud("cloud.sponsored.consent", { consent: choice });
   // Small's rate follows the answer at once (`smallUsesNoHours`). A US yes over a yes whose looks
   // lapsed frees Small again, as a look does.
-  const rerated = await syncSmallRates(env, account, now);
-  if (rerated && lookedAt != null && before?.consent === "granted" && !lookKeepsSmallFree(before, now)) {
-    captureCloudFreePlan(env, waitUntil, account.user_id, "small_restored", null, now);
-  }
+  await syncSmallRates(env, account, now, { waitUntil, restore: lookedAt != null && before?.consent === "granted" && !lookKeepsSmallFree(before, now) });
   // A yes from the US restarts Small's week, so a script could send yeses instead of looks: the same tripwire.
   if (lookedAt != null) await smallLookTripwire(env, account, lookedAsn, now, waitUntil);
   return answered();

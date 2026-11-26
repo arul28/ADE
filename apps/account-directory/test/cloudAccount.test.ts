@@ -2405,11 +2405,16 @@ describe("ADE Cloud server launcher", () => {
 
   const madeCalls = () => providerCalls(harness, /POST .*\/instances$/);
   const joinCode = (): string => (madeCalls()[0]!.body!.env as Record<string, string>).ADE_LAUNCH_JOIN!;
-  const join = (body: Record<string, unknown>, instanceId = "madenew12345") => handleCloudRequest(new Request(`https://directory.test/cloud/launches/${LAUNCH}/join`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-ade-instance": instanceId },
-    body: JSON.stringify(body),
-  }), harness.env);
+  const join = (body: Record<string, unknown>, instanceId = "madenew12345") => {
+    const request = new Request(`https://directory.test/cloud/launches/${LAUNCH}/join`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-ade-instance": instanceId },
+      body: JSON.stringify(body),
+    });
+    // The provider's network, as Cloudflare names it.
+    Object.defineProperty(request, "cf", { value: { asn: 24940 } });
+    return handleCloudRequest(request, harness.env);
+  };
   const seedDeviceSignIn = (userCode = USER_CODE) => harness.insert("device_authorizations", {
     device_code: `device-${userCode}`, user_code: userCode, device_secret_hash: "hash", status: "pending", poll_interval_seconds: 5, created_at: NOW, expires_at: NOW + 60 * 60_000,
   });
@@ -2539,6 +2544,8 @@ describe("ADE Cloud server launcher", () => {
 
     expect(first.status).toBe(200);
     expect((await first.json() as { url: string }).url).toContain(`ticket=t_${OWNER}`);
+    // The join is the computer's own (a code no person holds): its network is ADE Cloud's (Free Small's tripwire).
+    expect(harness.row("select join_asn from cloud_computers where instance_id = ?", "madenew12345")?.join_asn).toBe(24940);
     expect(second.status).toBe(200);
     expect(providerCalls(harness, /sign_in_tokens/).map((call) => call.body?.user_id)).toEqual([OWNER, OWNER]);
     // After it was spent, the same computer may still say a person has to confirm.
@@ -5544,16 +5551,18 @@ describe("sponsored cards", () => {
     expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 2, 2]);
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
     // An activity report sent through another network (it uses the account's own sign-in) rewrites the
-    // computer's network and hides the look, until live computers of three accounts call from that network:
-    // it is ADE Cloud's own, which one account can't rewrite.
+    // computer's network and hides the look. Other accounts' reports can't make a network ADE Cloud's (they
+    // could name anyone's home network); a computer's join can: the computer's own, with a code no person holds.
     expect((await fromWhere({ country: "US", regionCode: "TX", asn: 9009 })("POST", `/cloud/instances/${INSTANCE}/activity`, activity())).status).toBe(200);
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toEqual([]);
-    for (const other of ["b", "c", "d"]) seedComputer(harness, { instance_id: `cloud-${other}`, user_id: `user_${other}`, net_asn: DATACENTER });
+    for (const other of ["b", "c", "d"]) seedComputer(harness, { instance_id: `cloud-${other}`, user_id: `user_${other}`, net_asn: DATACENTER, created_at: clock - DAY });
+    expect(await smallCloudLookAlarms(harness.env as never, clock)).toEqual([]);
+    seedComputer(harness, { instance_id: "cloud-e", user_id: "user_e", join_asn: DATACENTER, created_at: clock - DAY });
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
     clock += 7 * DAY;
     expect(await look(fromComputer)).toEqual({ ok: true });
     expect(tripped()).toEqual([3, 3]);
-    harness.exec("delete from cloud_computers where user_id in ('user_b', 'user_c', 'user_d')");
+    harness.exec("delete from cloud_computers where user_id in ('user_b', 'user_c', 'user_d', 'user_e')");
     // A no keeps nothing of where the person looked from: the look's network goes with its time.
     expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
     expect(harness.row("select looked_at, looked_asn from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ looked_at: null, looked_asn: null });

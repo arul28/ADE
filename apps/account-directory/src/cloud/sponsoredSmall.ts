@@ -126,9 +126,7 @@ export async function noteSmallLook(env: GravityEnv, account: AccountRow, consen
   `).bind(now, now, smallLookNetwork(account, asn), account.user_id, consent.decided_at).run();
   // A no saved meanwhile: this look counted for nothing.
   if (!saved.meta?.changes) return;
-  if (!lookKeepsSmallFree(consent, now) && await syncSmallRates(env, account, now)) {
-    captureCloudFreePlan(env, waitUntil, account.user_id, "small_restored", null, now);
-  }
+  if (!lookKeepsSmallFree(consent, now)) await syncSmallRates(env, account, now, { waitUntil, restore: true });
   await smallLookTripwire(env, account, asn, now, waitUntil);
 }
 
@@ -141,13 +139,13 @@ export const smallLookNetwork = (account: AccountRow, asn: number | null): numbe
 /** The owner hears of one account at most once in this long (weeks counted from the Unix epoch, so they start Thursdays 00:00 UTC). */
 const TRIPWIRE_ALERT_MS = 7 * 24 * 60 * 60_000;
 /**
- * A network is ADE Cloud's own once live computers of this many accounts call
- * from it: the provider's, learned from everyone's activity reports. An
- * activity report uses the account's own sign-in, so one account can rewrite
- * its computers' network (a report sent through a VPN); it can't rewrite
- * everyone's.
+ * How long a network an ADE Cloud computer joined from stays ADE Cloud's own.
+ * The join (`launches.ts`) is made by the computer itself during setup, with a
+ * one-time code no person holds, so no account can fake one. An activity
+ * report uses the account's own sign-in, so its network names only that
+ * account's computers (a report sent through a VPN rewrites only its own).
  */
-const SHARED_CLOUD_NETWORK_ACCOUNTS = 3;
+const JOINED_NETWORK_MS = 30 * 24 * 60 * 60_000;
 
 /**
  * The tripwire at a US look or yes (`gravity.ts`): one from the network the
@@ -164,11 +162,11 @@ export async function smallLookTripwire(env: GravityEnv, account: AccountRow, as
     const seen = await env.DB.prepare(`
       select
         (select count(*) from cloud_computers c where c.user_id = ? and c.deleted_at is null and c.net_asn = ?) as own,
-        (select count(distinct c.user_id) from cloud_computers c where c.deleted_at is null and c.net_asn = ?) as accounts,
+        (select count(*) from cloud_computers c where c.join_asn = ? and c.created_at >= ?) as joined,
         (select count(*) from cloud_computers c where c.user_id = ? and c.deleted_at is null and ${smallComputerSql("c")}) as smalls
-    `).bind(account.user_id, network, network, account.user_id, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb).first<{ own: number; accounts: number; smalls: number }>();
-    // Only a look from ADE Cloud's network (its own computers', or the provider's) that keeps a live Small free matters.
-    if (!seen?.smalls || (!seen.own && seen.accounts < SHARED_CLOUD_NETWORK_ACCOUNTS)) return;
+    `).bind(account.user_id, network, network, now - JOINED_NETWORK_MS, account.user_id, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb).first<{ own: number; joined: number; smalls: number }>();
+    // Only a look from ADE Cloud's network (its own computers', or one a computer joined from) that keeps a live Small free matters.
+    if (!seen?.smalls || (!seen.own && !seen.joined)) return;
     logCloud("cloud.sponsored.small_cloud_look", { userId: account.user_id, asn: network });
     await sendOwnerAlert(env, {
       key: `small_cloud_look:${account.user_id}:${Math.floor(now / TRIPWIRE_ALERT_MS)}`,
@@ -176,7 +174,7 @@ export async function smallLookTripwire(env: GravityEnv, account: AccountRow, as
       userId: account.user_id,
       subject: "ADE Cloud: free Small kept free from an ADE Cloud computer's network",
       reason: "A US view of a cloud chat (or a turn-on of sponsored cards) that keeps this Free account's Small computers free came from the network ADE Cloud computers call from, not from a phone or laptop. It may be a script on a cloud computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
-      counts: { Network: `AS${network}`, "Its computers on that network": seen.own, "Accounts with computers on that network": seen.accounts, "Its Small computers": seen.smalls },
+      counts: { Network: `AS${network}`, "Its computers on that network": seen.own, "ADE Cloud computers that joined from it (30 days)": seen.joined, "Its Small computers": seen.smalls },
       step: "small_cloud_look",
       abuse: true,
     }, now, waitUntil);
@@ -192,14 +190,23 @@ export async function smallLookTripwire(env: GravityEnv, account: AccountRow, as
  * trip for every Safari user of ADE's web app: never kept.
  */
 const SHARED_RELAY_NETWORKS: ReadonlySet<number> = new Set([13335, 36183, 54113]);
+const computerNetworkOf = (asn: number | null): number | null => (asn == null || SHARED_RELAY_NETWORKS.has(asn) ? null : asn);
 
 /**
  * Keeps the network an ADE Cloud computer's brain calls from (its activity
  * report, `routes.ts`), for the tripwire. Written only when it changed.
  */
 export async function noteComputerNetwork(env: Pick<GravityEnv, "DB">, computer: Pick<ComputerRow, "instance_id" | "net_asn">, asn: number | null): Promise<void> {
-  if (asn == null || SHARED_RELAY_NETWORKS.has(asn) || computer.net_asn === asn) return;
-  await env.DB.prepare("update cloud_computers set net_asn = ? where instance_id = ?").bind(asn, computer.instance_id).run();
+  const network = computerNetworkOf(asn);
+  if (network == null || computer.net_asn === network) return;
+  await env.DB.prepare("update cloud_computers set net_asn = ? where instance_id = ?").bind(network, computer.instance_id).run();
+}
+
+/** Keeps the network a computer joined from (`launches.ts`, its first join only): ADE Cloud's own, for the tripwire. */
+export async function noteComputerJoin(env: Pick<GravityEnv, "DB">, instanceId: string, asn: number | null): Promise<void> {
+  const network = computerNetworkOf(asn);
+  if (network == null) return;
+  await env.DB.prepare("update cloud_computers set join_asn = ? where instance_id = ? and join_asn is null").bind(network, instanceId).run();
 }
 
 /** Accounts the daily report names at most. */
@@ -208,9 +215,9 @@ const TRIPWIRE_REPORT_LIMIT = 25;
 /**
  * The daily report's tripwire alarms: Free accounts the ad switch reaches,
  * not blocked, whose live Small is free now through a US look or yes from
- * ADE Cloud's network (their own computers', or one computers of
- * `SHARED_CLOUD_NETWORK_ACCOUNTS` accounts call from). One line each, with its
- * block command. Empty on a quiet day.
+ * ADE Cloud's network (their own computers', or one a computer joined from in
+ * `JOINED_NETWORK_MS`). One line each, with its block command. Empty on a
+ * quiet day.
  */
 export async function smallCloudLookAlarms(env: GravityEnv, now: number): Promise<string[]> {
   const { mode } = await gravitySwitches(env);
@@ -219,10 +226,10 @@ export async function smallCloudLookAlarms(env: GravityEnv, now: number): Promis
     where s.consent = 'granted' and s.looked_at >= ? and s.looked_asn is not null and a.deleted_at is null
       and ${SHOWN_FREE_SQL} and ${SWITCH_REACHES_SQL} and ${notBlockedSql("s.user_id")}
       and (exists (select 1 from cloud_computers c where c.user_id = s.user_id and c.deleted_at is null and c.net_asn = s.looked_asn)
-        or (select count(distinct c.user_id) from cloud_computers c where c.deleted_at is null and c.net_asn = s.looked_asn) >= ?)
+        or exists (select 1 from cloud_computers c where c.join_asn = s.looked_asn and c.created_at >= ?))
       and exists (select 1 from cloud_computers c where c.user_id = s.user_id and c.deleted_at is null and ${smallComputerSql("c")})
     limit ?
-  `).bind(freeLookSince(now), mode, mode, SHARED_CLOUD_NETWORK_ACCOUNTS, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, TRIPWIRE_REPORT_LIMIT).all<{ user_id: string; looked_asn: number }>();
+  `).bind(freeLookSince(now), mode, mode, now - JOINED_NETWORK_MS, SMALL_SHAPE.cpu, SMALL_SHAPE.memoryGb, TRIPWIRE_REPORT_LIMIT).all<{ user_id: string; looked_asn: number }>();
   return (rows.results ?? []).map((row) =>
     `Free account ${row.user_id}: its Small stays free through a US view or turn-on from an ADE Cloud computer's network (AS${row.looked_asn}), not a phone or laptop. Block it: ${blockCommand(env, row.user_id, "small_cloud_look")}`);
 }
@@ -236,9 +243,16 @@ export const rateMilliFor = (size: Pick<CloudSize, "tier" | "multiplierMilli">, 
  * (`rateMilliFor`): the time so far is charged at the old rate and the new
  * one starts there, as a resize does. Run after anything that changes the
  * answer (a yes or no, a test plan, a tester), and by the tick for every
- * account after a switch flips. The number of computers re-rated.
+ * account after a switch flips. The number of computers re-rated (only the
+ * updates that wrote). `restore`: it follows a US look or yes over a yes whose
+ * looks lapsed, so a move back to free counts as `small_restored`.
  */
-export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: number, settings?: CloudSettings, waitUntil?: CloudWaitUntil): Promise<number> {
+export async function syncSmallRates(
+  env: GravityEnv,
+  account: AccountRow,
+  now: number,
+  { settings, waitUntil, restore = false }: { settings?: CloudSettings; waitUntil?: CloudWaitUntil; restore?: boolean } = {},
+): Promise<number> {
   const why = await smallRule(env, account, settings, now);
   const smallFree = SMALL_FREE_WHYS.has(why);
   const rows = await env.DB.prepare("select * from cloud_computers where user_id = ? and deleted_at is null").bind(account.user_id).all<ComputerRow>();
@@ -265,6 +279,8 @@ export async function syncSmallRates(env: GravityEnv, account: AccountRow, now: 
   const changed = rateUpdates.filter((at) => (results[at]?.meta?.changes ?? 0) > 0).length;
   if (changed) logCloud("cloud.small_rate_synced", { userId: account.user_id, smallFree, why, changed });
   if (changed && why === "lapsed") captureCloudFreePlan(env, waitUntil, account.user_id, "small_lapsed", null, now);
+  // Only a move that wrote, toward free: a no landing meanwhile moves Small the other way.
+  if (changed && restore && smallFree) captureCloudFreePlan(env, waitUntil, account.user_id, "small_restored", null, now);
   return changed;
 }
 
@@ -300,7 +316,7 @@ export async function syncAllSmallRates(env: GravityEnv, now: number, { force = 
     let pageChanged = 0;
     for (const { user_id: userId } of page) {
       const account = await env.DB.prepare("select * from cloud_accounts where user_id = ?").bind(userId).first<AccountRow>();
-      if (account) pageChanged += await syncSmallRates(env, account, now, settings, waitUntil);
+      if (account) pageChanged += await syncSmallRates(env, account, now, { settings, waitUntil });
     }
     changed += pageChanged;
     // One page a tick; a forced sync pages on while rows still move and the budget lasts.

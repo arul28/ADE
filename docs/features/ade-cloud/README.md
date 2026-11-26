@@ -900,11 +900,14 @@ card, whatever the plan.
   and each look or US yes that moves `looked_at` saves its network
   (`cloud_sponsored_consent.looked_asn`, migration `0066`; a no clears it with
   `looked_at`; kept only for Free, and never a privacy relay's network such
-  as Cloudflare's, Akamai's or Fastly's). ADE Cloud's network is the
-  account's own computers', or one that live computers of 3 accounts call from
-  (`SHARED_CLOUD_NETWORK_ACCOUNTS`: an activity report uses the account's own
-  sign-in, so one account can rewrite its computers' network, never
-  everyone's). A look or yes from it, while the account has a live Small,
+  as Cloudflare's, Akamai's or Fastly's). Each computer's launch join also
+  saves its network once (`cloud_computers.join_asn`): the join is the
+  computer's own, made during setup with a one-time code no person holds. ADE
+  Cloud's network is the account's own computers' (activity reports use the
+  account's own sign-in, so they name only that account's computers), or one an
+  ADE Cloud computer joined from in the last 30 days (`JOINED_NETWORK_MS`), so
+  an account rewriting its own computers' network hides nothing and no account
+  can make someone's home network count. A look or yes from it, while the account has a live Small,
   sends the owner one alert per account per week (`small_cloud_look`: an
   email, a Sentry `cloud.abuse` issue, a `cloud_abuse_events` row and the
   `ade_cloud_safety` step) and adds a line to the daily report while that look

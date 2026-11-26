@@ -142,6 +142,8 @@ export type ComputerRow = {
   deleted_at: number | null;
   /** The network (AS number) its brain calls ADE's server from (`sponsoredSmall.ts`, Free Small's tripwire). */
   net_asn?: number | null;
+  /** The network it joined from (its launch join, the computer's own; `sponsoredSmall.ts`). */
+  join_asn?: number | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
   /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */

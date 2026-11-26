@@ -927,8 +927,8 @@ client version and for work nobody watches
   `blocked_returned` (a blocked GitHub account or card on a new account),
   `rate_limited`, `creates_paused`, `signup_burst` or `small_cloud_look` (Free
   Small's tripwire: a US look or yes that keeps Small free came from ADE
-  Cloud's network, the account's own computers' or one that computers of 3+
-  accounts call from; once a week per account, with an owner email). One per account, step,
+  Cloud's network, the account's own computers' or one an ADE Cloud computer
+  joined from; once a week per account, with an owner email). One per account, step,
   key (hashed into the uuid, never sent) and hour. Server log lines:
   `cloud.first_chat`, `cloud.free_cap_refused`, `cloud.free_cap_step`,
   `cloud.block_computer_stopped`, `cloud.account_unblocked`,
@@ -943,7 +943,8 @@ client version and for work nobody watches
   alarms, and reports its own failures to Sentry:
   `cloud.sponsored.small_tripwire_failed` (the check at a look or yes),
   `cloud.computer_network_failed` (saving a computer's network from its
-  activity report) and `cloud.abuse_signal_read_failed` with kind
+  activity report), `cloud.computer_join_network_failed` (saving the network
+  of its launch join) and `cloud.abuse_signal_read_failed` with kind
   `small_cloud_look` (the daily report's read).
 
 Never an instance id, a name, a size in numbers, a price, an amount, a
