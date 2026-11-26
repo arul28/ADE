@@ -5582,6 +5582,8 @@ type ManagedChatSession = {
    * turn instead of a "stopped" after every restart.
    */
   restartContinuingTurnId?: string | null;
+  /** The stop report recovery held back; sent if the resume is not armed after all. */
+  restartHeldStopTurnId?: string | null;
   /**
    * Set when the child was relinked to a live ancestor: the line its next
    * report opens with, so the ancestor knows why it hears from this chat.
@@ -23862,13 +23864,17 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     customResume?: { prompt: string; reason: string },
   ): void => {
-    if (!continueAfterThisRestart()) return;
     const restartContinue = customResume === undefined;
+    if (!continueAfterThisRestart()) {
+      if (restartContinue) releaseRestartHeldStopReport(managed);
+      return;
+    }
     const resume = customResume ?? {
       prompt: chatRestartResumePrompt(brainRestartCause()),
       reason: RESTART_RESUME_REASON,
     };
     const sessionId = managed.session.id;
+    let resumeWillRun = false;
     void (async () => {
       await scheduledWorkReady;
       if (!scheduledWorkScheduler) return;
@@ -23876,7 +23882,10 @@ export function createAgentChatService(args: {
       // Settled chats resume too: settle stops nothing, and the resumed turn
       // takes the chat out of settled.
       if (!row || !isSchedulableAgentSession(row) || row.archivedAt) return;
-      if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) return;
+      if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) {
+        resumeWillRun = true;
+        return;
+      }
       const restartResumeStreak = restartResumeStreakFor(managed);
       if (restartResumeStreak > MAX_CONSECUTIVE_RESTART_RESUMES) {
         logger.warn("agent_chat.restart_resume_capped", {
@@ -23911,6 +23920,7 @@ export function createAgentChatService(args: {
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
           restartResumeStreak,
         });
+        resumeWillRun = true;
         logger.info("agent_chat.restart_resume_armed", {
           sessionId,
           provider: managed.session.provider,
@@ -23924,7 +23934,23 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    })();
+    })().finally(() => {
+      // Recovery held back the parent's "stopped" report for a resume that
+      // will not run (capped, archived, the arm failed): send it now, or the
+      // parent waits on a child that is not coming back.
+      if (!restartContinue) return;
+      if (resumeWillRun) managed.restartHeldStopTurnId = null;
+      else releaseRestartHeldStopReport(managed);
+    });
+  };
+
+  const releaseRestartHeldStopReport = (managed: ManagedChatSession): void => {
+    // Not closed yet: its `done` then reports as usual.
+    managed.restartContinuingTurnId = null;
+    const turnId = managed.restartHeldStopTurnId;
+    if (!turnId) return;
+    managed.restartHeldStopTurnId = null;
+    reportChildSpawnEnded(managed.session.id, "interrupted", "done", turnId);
   };
 
   /**
@@ -52598,6 +52624,25 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * The child was relinked to `parentSessionId` after its last finished turn:
+   * its newest relink line names that parent, and no other turn ended since.
+   */
+  const relinkedSinceLastReport = (
+    history: readonly AgentChatEventEnvelope[],
+    parentSessionId: string,
+    turnId: string,
+  ): boolean => {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const event = history[index]!.event;
+      if (event.type === "done" && event.turnId !== turnId) return false;
+      if (event.type === "system_notice" && event.status === "spawn_parent_relinked") {
+        return event.openSessionId === parentSessionId;
+      }
+    }
+    return false;
+  };
+
   const reportChildSpawnEnded = (
     childSessionId: string,
     status: "completed" | "interrupted" | "failed",
@@ -52612,6 +52657,8 @@ export function createAgentChatService(args: {
     if (continuingTurnId && source === "done") {
       child.restartContinuingTurnId = null;
       if (status === "interrupted" && (!turnId || turnId === continuingTurnId)) {
+        // Kept until the resume is armed; released as a report if it is not.
+        child.restartHeldStopTurnId = continuingTurnId;
         logger.info("agent_chat.spawn_completion_skipped_restart_continue", { childSessionId, turnId: continuingTurnId });
         return;
       }
@@ -52634,7 +52681,9 @@ export function createAgentChatService(args: {
     }
     // Relinked now or earlier (an orphan repair when the chat list loaded):
     // the first report to the new parent says why it hears from this chat.
-    const relinkNote = child.pendingRelinkNote ?? null;
+    // The note lives in memory; after a restart the child's own relink line
+    // says the same, without the gone chat's title.
+    let relinkNote = child.pendingRelinkNote ?? null;
     child.pendingRelinkNote = null;
 
     // A parent outside this chat service (another project, the personal
@@ -52668,6 +52717,9 @@ export function createAgentChatService(args: {
       source,
     });
     if (!resolvedTurnId) return;
+    if (!relinkNote && spawnKind === "subagent" && relinkedSinceLastReport(readChildHistory(), parentSessionId, resolvedTurnId)) {
+      relinkNote = relinkedReportNote("");
+    }
     const deliveryKey = spawnDeliveryKey(parentSessionId, childSessionId, resolvedTurnId);
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
@@ -52685,10 +52737,9 @@ export function createAgentChatService(args: {
     const assistantFinal = [...child.recentConversationEntries]
       .reverse()
       .find((entry) => entry.role === "assistant" && entry.turnId === resolvedTurnId)
-      ?.text
-      .trim();
+      ?.text;
     let baseSummary: string;
-    if (resultStatus === "completed" && assistantFinal) {
+    if (resultStatus === "completed" && assistantFinal?.trim()) {
       baseSummary = boundChildReport(assistantFinal, { childSessionId });
     } else if (resultStatus === "completed") {
       baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Chat turn finished.";
