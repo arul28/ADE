@@ -10,13 +10,14 @@ const WINDOW_STRIP_OWNER_STORAGE_KEY = "ade.projectTabs.windowStrip.owner.v1";
  * kept. A sign-out and a sign-in as another account in the same tab keep
  * sessionStorage, so the strip of another account (or of an older build,
  * which named none) is dropped before the app restores it. Called once the
- * signed-in account is known.
+ * signed-in account is known; an account with no user id keeps no strip.
  */
-export function claimWindowStripForAccount(userId: string): void {
+export function claimWindowStripForAccount(userId: string | null): void {
   try {
     const storage = window.sessionStorage;
-    if (storage.getItem(WINDOW_STRIP_OWNER_STORAGE_KEY) !== userId) storage.removeItem(WINDOW_STRIP_STORAGE_KEY);
-    storage.setItem(WINDOW_STRIP_OWNER_STORAGE_KEY, userId);
+    if (!userId || storage.getItem(WINDOW_STRIP_OWNER_STORAGE_KEY) !== userId) storage.removeItem(WINDOW_STRIP_STORAGE_KEY);
+    if (userId) storage.setItem(WINDOW_STRIP_OWNER_STORAGE_KEY, userId);
+    else storage.removeItem(WINDOW_STRIP_OWNER_STORAGE_KEY);
   } catch {
     // Storage unavailable: no strip was kept.
   }

@@ -740,7 +740,7 @@ export function WebClientRoot({
       }
 
       // This tab's strip of project tabs reopens only for the account that kept it.
-      if (snapshot.userId) claimWindowStripForAccount(snapshot.userId);
+      claimWindowStripForAccount(snapshot.userId);
       const linkTarget = pendingTargetRef.current ?? readPendingTarget();
       const ownedLinkTarget = isOwnedOrAccountLink(linkTarget) ? linkTarget : null;
       const targetPathsLoad = loadTargetPaths();

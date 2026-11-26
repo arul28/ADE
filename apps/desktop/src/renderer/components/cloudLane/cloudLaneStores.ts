@@ -3,7 +3,7 @@ import { cloudLaneJobIsLive, type CloudLaneJobSnapshot, type CloudLaneWithoutCom
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
-import { accountScopedCopy } from "../../state/accountScopedStorage";
+import { accountScopeGeneration, accountScopedCopy } from "../../state/accountScopedStorage";
 import { cloudLaneLifeAvailable, listCloudLaneJobs, listCloudLanesWithoutComputer } from "./cloudLaneActions";
 
 /**
@@ -271,10 +271,16 @@ function publishWithout(next: Partial<WithoutState>): void {
 export function refreshCloudLanesWithoutComputer(): void {
   if (!cloudLaneLifeAvailable()) return;
   const current = ++withoutGeneration;
+  const account = accountScopeGeneration();
   publishWithout({ loading: true });
   void listCloudLanesWithoutComputer().then(
     (lanes) => {
       if (current !== withoutGeneration) return;
+      // Started before the account was known, or for the last one: ask again.
+      if (account !== accountScopeGeneration()) {
+        refreshCloudLanesWithoutComputer();
+        return;
+      }
       publishWithout({ lanes, known: true, loading: false });
       saveWithout(lanes);
     },

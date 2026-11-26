@@ -2,7 +2,7 @@ import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
 import { captureError } from "../../../shared/sentry/capture";
 import { extractError } from "../../lib/format";
-import { accountScopeGeneration } from "../../state/accountScopedStorage";
+import { accountScopeGeneration, onAccountScopeChange } from "../../state/accountScopedStorage";
 import { cloudLaneIndexFresh, noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
 import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
 import { chatLaunchStore } from "../../state/chatLaunchStore";
@@ -94,6 +94,13 @@ function load(): void {
     if (current === generation) publish({ loading: false });
   });
 }
+
+// Another account, or none: the last account's computers leave the shared list
+// now, and a surface still open reads the new account's.
+onAccountScopeChange(() => {
+  publish({ result: null, loadError: null });
+  if (listeners.size > 0) load();
+});
 
 function startWatching(): void {
   const off = window.ade?.cloud?.onStatusChanged?.(load);

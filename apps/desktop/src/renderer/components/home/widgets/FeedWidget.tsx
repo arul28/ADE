@@ -135,6 +135,8 @@ function useUpdateSnapshot(): AutoUpdateSnapshot | null {
 const PRESENCE_KEY = "ade.home.feed.machines.v1";
 const PRESENCE_KEEP_MS = 8 * 86_400_000;
 
+const NO_PRESENCE: MachinePresenceEntry[] = [];
+
 /** Kept per account: another account signed in here never sees the last one's machines come and go. */
 type PresenceStore = { userId: string | null; last: Record<string, { name: string; online: boolean }>; log: MachinePresenceEntry[] };
 
@@ -158,15 +160,15 @@ function readPresence(userId: string | null): PresenceStore {
  */
 function useMachinePresence(rows: readonly MachineRow[], onlineSince: ReadonlyMap<string, number>): MachinePresenceEntry[] {
   const userId = useAccountUserId();
-  const [log, setLog] = useState<MachinePresenceEntry[]>(() => readPresence(userId).log);
+  const [shown, setShown] = useState(() => ({ userId, log: readPresence(userId).log }));
   // Another account (or none): its log, not the last one's.
   useEffect(() => {
-    setLog(readPresence(userId).log);
+    setShown({ userId, log: readPresence(userId).log });
   }, [userId]);
   // Another window logged a transition: show it here too.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key === PRESENCE_KEY) setLog(readPresence(userId).log);
+      if (event.key === PRESENCE_KEY) setShown({ userId, log: readPresence(userId).log });
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -196,9 +198,10 @@ function useMachinePresence(rows: readonly MachineRow[], onlineSince: ReadonlyMa
     } catch {
       // Full or unavailable storage: this session still shows the change.
     }
-    setLog(store.log);
+    setShown({ userId, log: store.log });
   }, [onlineSince, rows, userId]);
-  return log;
+  // Until the effect above reads the new account's log, the last one's never shows.
+  return shown.userId === userId ? shown.log : NO_PRESENCE;
 }
 
 // ── "While you were away" ────────────────────────────────────────────

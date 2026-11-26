@@ -41,8 +41,9 @@ export type AccountScopedCopy = {
 const copies: Copy[] = [];
 let scope: Scope = undefined;
 let watching = false;
-/** Moves on at each sign-out or change of account (see `accountScopeGeneration`). */
+/** Moves on when the account is first known and at each sign-out or change of account (see `accountScopeGeneration`). */
 let generation = 0;
+const changeListeners = new Set<() => void>();
 
 function scopeOf(status: AdeAccountStatus): Scope {
   if (status.signedIn) return status.userId?.trim() || undefined;
@@ -108,7 +109,8 @@ function noteScope(next: Scope): void {
   if (next === undefined || next === scope) return;
   const previous = scope;
   scope = next;
-  if (previous !== undefined) generation += 1;
+  // A read still on its way started before this answer: its account is not known.
+  generation += 1;
   for (const copy of copies) {
     if (previous === undefined) {
       settle(copy);
@@ -119,6 +121,9 @@ function noteScope(next: Scope): void {
     remove(copy.key);
     copy.forget();
   }
+  if (previous !== undefined) {
+    for (const listener of changeListeners) listener();
+  }
 }
 
 function watch(): void {
@@ -127,7 +132,12 @@ function watch(): void {
   // Only a real answer counts: a missing bridge or a failed read answers with a
   // made-up "signed out", which `fetchAccountStatus` resolves with but never publishes.
   subscribeAccountStatus((status) => noteScope(scopeOf(status)));
-  if (typeof window.ade?.account?.status === "function") void fetchAccountStatus({ force: true });
+  if (typeof window.ade?.account?.status !== "function") return;
+  void fetchAccountStatus({ force: true });
+  // A sign-in or sign-out in another window says so only through ADE Cloud's
+  // change signal (`cloudAccountChanged`): ask whose account this is again, so
+  // a read for the new account is never kept under the last one.
+  window.ade?.cloud?.onStatusChanged?.(() => void fetchAccountStatus({ force: true }));
 }
 
 /**
@@ -137,6 +147,16 @@ function watch(): void {
  */
 export function accountScopeGeneration(): number {
   return generation;
+}
+
+/**
+ * Runs after another account signs in here, or the account signs out, for a
+ * store that holds account data in memory only. Answers the unsubscribe.
+ */
+export function onAccountScopeChange(listener: () => void): () => void {
+  changeListeners.add(listener);
+  watch();
+  return () => changeListeners.delete(listener);
 }
 
 /**
