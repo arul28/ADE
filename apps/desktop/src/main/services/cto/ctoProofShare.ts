@@ -203,6 +203,7 @@ export async function showFileAsCtoProof(args: {
       converted = playable.converted;
     } catch (error) {
       note = getErrorMessage(error);
+      args.logger?.warn("cto.proof_convert_failed", { tool: "showMedia", error: note });
     }
   }
   try {
@@ -485,6 +486,7 @@ async function importOne(args: {
         filePath = playable.path;
       } catch (error) {
         note = getErrorMessage(error);
+        args.logger?.warn("cto.proof_convert_failed", { machineId: args.machine.machineId, artifactId: artifact.id, error: note });
       }
     }
     const view = await fileAsCto({

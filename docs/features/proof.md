@@ -691,8 +691,12 @@ the CTO chat (`cto/ctoProofShare.ts`):
   carries the cite lines. A tracked CLI has no turn stamps, so its newest
   proof is shared. When the report's turn id matches no proof (a fallback id
   the broker never stamped), the newest proof the CTO chat does not hold yet
-  is shared instead. A record whose file is gone is skipped with that reason. The record keeps its lane, so deleting the child's lane
-  deletes the proof here too, and the citation then says the file is gone.
+  is shared instead; a real turn that filed none shares none. A record whose
+  file is gone is skipped with that reason. The record keeps its lane, so
+  deleting the child's lane deletes the proof here too, and the citation then
+  says the file is gone. ADE works the lines out before the notice that marks
+  the report delivered, and waits at most 45 s (a long video to convert); past
+  that, the wake tells the CTO to call `getChatProof` and the copy keeps going.
 - **A child on another machine or an ADE Cloud lane.** The wake (or the
   check-in) tells the CTO to call `getChatProof({ sessionId, machine })`.
   The home brain lists that chat's proof there and pulls each file in
@@ -703,7 +707,11 @@ the CTO chat (`cto/ctoProofShare.ts`):
   refuses slices to another brain, so the pull falls back to its 10 MiB
   whole-file preview and says to update it for larger files.
 - **A file the CTO or a helper made.** `showMedia({ path, caption })` files it
-  as the CTO's proof and returns the cite.
+  as the CTO's proof and returns the cite. The path is checked against the
+  import roots and the secrets folder (`broker.assertImportableSource`) before
+  any conversion, since the MP4 copy itself sits in an allowed folder.
+- **One copy at a time.** A conversion or a pull runs once per CTO chat and
+  record; a second caller (a report's wake and a `getChatProof` call) joins it.
 - **Video conversion.** A MOV, MKV, WebM or AVI gets an H.264 MP4 copy
   (`computerUse/proofPlayableVideo.ts`). It is remuxed when the video is
   already H.264, and re-encoded with ffmpeg otherwise (the machine's ffmpeg,
