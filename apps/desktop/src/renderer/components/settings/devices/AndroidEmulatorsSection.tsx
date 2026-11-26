@@ -5,6 +5,7 @@ import { formatStorageBytes, pluralCount } from "../../../../shared/formatting";
 import { confirmDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { useSettingsProjectPin } from "../ProjectCopyScope";
 import { captureDevToolsCleanup } from "./devToolsAnalytics";
 import { DevToolRow, DevToolsListSection, ListSkeleton, PartError, RowAction, SizeCell } from "./devToolsList";
 import { useDevToolsStorage } from "./useDevToolsStorage";
@@ -21,7 +22,22 @@ const formatAvd = (value: number) => formatStorageBytes(value, undefined);
 
 export function AndroidEmulatorsSection() {
   const scope = useSettingsMachineScope();
-  const storage = useDevToolsStorage({ pin: scope.pin, apple: false, android: true });
+  // The page's own pin is the machine route (the SDK needs no project); the
+  // emulator list and its delete are answered by a project's runtime there.
+  const pin = useSettingsProjectPin();
+  if (!pin) {
+    return (
+      <DevToolsListSection group="Android devices" anchor="android-emulators" title="Emulators" hint="Every emulator on this machine and what it keeps on disk.">
+        <div className="ade-dev-empty">{scope.isThisMachine ? "This computer" : scope.machineName} has no copy of this project, so its emulators can't be listed from here.</div>
+      </DevToolsListSection>
+    );
+  }
+  return <AndroidEmulatorList pin={pin} />;
+}
+
+function AndroidEmulatorList({ pin }: { pin: NonNullable<ReturnType<typeof useSettingsProjectPin>> }) {
+  const scope = useSettingsMachineScope();
+  const storage = useDevToolsStorage({ pin, apple: false, android: true });
   const { data, loading, error } = storage.emulators;
   const [busy, setBusy] = React.useState<string | null>(null);
   const avds = data ?? [];
@@ -40,7 +56,7 @@ export function AndroidEmulatorsSection() {
     if (!ok) return;
     setBusy(avd.name);
     try {
-      const result = await window.ade.androidEmulator.deleteDevice({ avdName: avd.name }, scope.pin);
+      const result = await window.ade.androidEmulator.deleteDevice({ avdName: avd.name }, pin);
       captureDevToolsCleanup("emulator_deleted", result.deleted ? "completed" : "failed", avd.sizeBytes);
       showToast({
         id: "android-settings-avd-delete",

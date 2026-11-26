@@ -97,9 +97,11 @@ function buildSimulatorRows(list: AppleDeviceListResult, measured: AppleDeviceLi
         owner: simulatorOwner(holder?.laneName ?? null, laneHeld, ownership),
         deleteBlocked: laneHeld
           ? "A lane uses it. Delete it from that lane's Apple pane."
-          : booted
-            ? "It is running. Turn it off first."
-            : null,
+          : ownership === "ade-other-project"
+            ? "ADE made it for another project, whose lane may use it. Delete it from that project."
+            : booted
+              ? "It is running. Turn it off first."
+              : null,
       };
     })
     // Biggest first: this is a list for finding space.
@@ -252,11 +254,12 @@ export function devToolsSizes(storage: DevToolsStorage, measured = true): {
     : simulators.totalBytes != null
       ? { bytes: simulators.totalBytes, state: "ready" }
       : { bytes: null, state: "measuring" };
-  const runtimeList = runtimes.data?.runtimes;
+  // Runtimes and the old downloads macOS still keeps: both take the disk.
+  const runtimeSizes = runtimes.data ? [...runtimes.data.runtimes, ...(runtimes.data.leftovers ?? [])].map((entry) => entry.sizeBytes) : null;
   const rts: DevToolsPartSize = runtimes.error
     ? { bytes: null, state: "failed" }
-    : runtimeList
-      ? { bytes: runtimeList.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0), state: "ready" }
+    : runtimeSizes
+      ? { bytes: runtimeSizes.reduce<number>((sum, bytes) => sum + (bytes ?? 0), 0), state: runtimeSizes.every((bytes) => bytes != null) ? "ready" : "failed" }
       : { bytes: null, state: "measuring" };
   const build = buildData.data;
   const bd: DevToolsPartSize = buildData.error

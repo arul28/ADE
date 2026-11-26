@@ -133,9 +133,11 @@ function XcodeCard({ storage, pin }: { storage: DevToolsStorage; pin: OpenProjec
   const { data, loading, error } = storage.runtimes;
   const [settingUp, setSettingUp] = React.useState(false);
   if (loading && !data) return <div className="ade-dev-card ade-dev-xcode" aria-busy="true"><span className="ade-dev-shimmer" /></div>;
-  if (error && !data) return <PartError id="apple-xcode-read" title="Couldn't read Xcode" error={error} onRetry={storage.refreshApple} />;
+  // simctl refuses without Xcode, so on a Mac with only the command line tools the read fails with an install hint.
+  const missing = error != null && !data && /install xcode|xcode-select|simctl|xcrun/i.test(error);
+  if (error && !data && !missing) return <PartError id="apple-xcode-read" title="Couldn't read Xcode" error={error} onRetry={storage.refreshApple} />;
   const xcode = data?.xcode ?? null;
-  if (!xcode?.version) {
+  if (missing || !xcode?.version) {
     return (
       <div className="ade-dev-card ade-dev-xcode" data-state="missing">
         <span className="ade-dev-xcode-glyph" aria-hidden><Hammer size={22} weight="duotone" /></span>

@@ -51,7 +51,7 @@ export function OutsideProjectStorage() {
     ...(mac ? [
       { key: "build", icon: <Hammer size={16} />, title: "Xcode build data", hue: hues.buildData, count: storage.buildData.data?.entries.length ?? null, noun: ["folder", "folders"] as [string, string], size: sizes.buildData, error: storage.buildData.error, open: openApple },
       { key: "simulators", icon: <DeviceMobile size={16} />, title: "iOS simulators", hue: hues.simulators, count: storage.simulators.data?.length ?? null, noun: ["simulator", "simulators"] as [string, string], size: sizes.simulators, error: storage.simulators.error, open: openApple },
-      { key: "runtimes", icon: <Stack size={16} />, title: "Simulator runtimes", hue: hues.runtimes, count: storage.runtimes.data?.runtimes.length ?? null, noun: ["runtime", "runtimes"] as [string, string], size: sizes.runtimes, error: storage.runtimes.error, open: openApple },
+      { key: "runtimes", icon: <Stack size={16} />, title: "Simulator runtimes", hue: hues.runtimes, count: storage.runtimes.data ? storage.runtimes.data.runtimes.length + (storage.runtimes.data.leftovers?.length ?? 0) : null, noun: ["runtime", "runtimes"] as [string, string], size: sizes.runtimes, error: storage.runtimes.error, open: openApple },
     ] : []),
     { key: "emulators", icon: <AndroidLogo size={16} />, title: "Android emulators", hue: hues.emulators, count: storage.emulators.data?.length ?? null, noun: ["emulator", "emulators"], size: sizes.emulators, error: storage.emulators.error, open: () => openMachine(scope.machineId, "android") },
   ];

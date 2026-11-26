@@ -112,6 +112,8 @@ type MeasuredCache = { at: number; result: XcodeDerivedDataResult };
 // Machine-wide, so shared by every project's simulator service in this process.
 const measuredCache = new Map<string, MeasuredCache>();
 const measuresInFlight = new Map<string, Promise<XcodeDerivedDataResult>>();
+/** Bumped by every delete: a walk started before it never fills the cache. */
+const rootGenerations = new Map<string, number>();
 
 async function lstatOrNull(target: string): Promise<fs.Stats | null> {
   try {
@@ -272,12 +274,15 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     const measured = await mapLimit(entries, MEASURE_FOLDERS_AT_ONCE, async (entry) => {
       try {
         const tree = await measureTree(entry.path, { deadline });
-        return { ...entry, sizeBytes: tree.bytes };
+        // A walk the deadline cut off counted only part of the folder: unknown, not a smaller number.
+        return { ...entry, sizeBytes: tree.truncated ? null : tree.bytes };
       } catch {
         return entry;
       }
     });
-    const totalBytes = measured.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
+    const totalBytes = measured.every((entry) => entry.sizeBytes != null)
+      ? measured.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0)
+      : null;
     return {
       supported: true,
       root,
@@ -318,9 +323,16 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     } else {
       let inFlight = measuresInFlight.get(root);
       if (!inFlight) {
-        inFlight = measureEntries(root, listing.entries).finally(() => measuresInFlight.delete(root));
-        measuresInFlight.set(root, inFlight);
-        void inFlight.then((value) => measuredCache.set(root, { at: Date.now(), result: value }), () => undefined);
+        const generation = rootGenerations.get(root) ?? 0;
+        const walk: Promise<XcodeDerivedDataResult> = measureEntries(root, listing.entries).finally(() => {
+          if (measuresInFlight.get(root) === walk) measuresInFlight.delete(root);
+        });
+        inFlight = walk;
+        measuresInFlight.set(root, walk);
+        void walk.then((value) => {
+          // A delete since this walk began: its sizes name folders that are gone.
+          if ((rootGenerations.get(root) ?? 0) === generation) measuredCache.set(root, { at: Date.now(), result: value });
+        }, () => undefined);
       }
       result = { ...(await inFlight), buildRunning: running };
     }
@@ -402,6 +414,8 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
       moved.push({ reported, trashPath });
     }
     measuredCache.delete(root);
+    measuresInFlight.delete(root);
+    rootGenerations.set(root, (rootGenerations.get(root) ?? 0) + 1);
     // One short deadline for the whole call: the folders are gone already, so a big "Delete unused" answers in seconds.
     const deadline = Date.now() + DELETE_MEASURE_BUDGET_MS;
     await mapLimit(moved, MEASURE_FOLDERS_AT_ONCE, async ({ reported, trashPath }) => {
