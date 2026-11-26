@@ -20,7 +20,7 @@ import { CLOUD_PHONE_IDLE_SECONDS } from "../../../desktop/src/shared/cloudPhone
 import { CLOUD_PATHS, withoutPhoneProviderNames, type CloudPhoneDevice } from "./contract";
 import { fail, json } from "./http";
 import { LIVE_STATES, TOKEN_MINUTES, VIEW_MINUTES, stopRefused, type PhoneProviderServer, type PhoneRead, type PhoneWhere } from "./phoneProvider";
-import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
+import { accountRules, logCloud, reportCloudFailure, type CloudEnv } from "./store";
 
 /** What Revyl bills ADE: the second, at $3.60 an hour, which is 1,000 micro-dollars a second. */
 export const REVYL_MICROS_PER_SECOND = 1_000;
@@ -370,6 +370,62 @@ async function revylViewUrl(env: CloudEnv, userId: string, ref: string, origin: 
     ...(Array.isArray(answer.body?.ice_servers) ? { ice: JSON.stringify(answer.body.ice_servers) } : {}),
   });
   return { url: `${origin}${CLOUD_PATHS.phoneViewer}#${fragment.toString()}`, points };
+}
+
+/** Revyl's phone time: `cloud_phones.cost_micros` already counts it, so a day's other costs leave it out. */
+const PHONE_METER = "ios_simulator_seconds";
+
+/**
+ * What Revyl charged each account's workspace on `day` (UTC) beyond its
+ * phones' own time, app builds mostly, at Revyl's own prices
+ * (`GET /partner/usage`), kept in `cloud_revyl_days` for the free-use cap and
+ * the owner's report. One read per workspace; a workspace that can't be read
+ * keeps no row and is reported, so a day is never counted as free of cost by
+ * mistake. Rerunning a day rewrites it.
+ */
+export async function recordRevylDayCosts(env: CloudEnv, day: string, now: number): Promise<void> {
+  if (!revylConfigured(env)) return;
+  const workspaces = (await env.DB.prepare(`
+    select r.user_id, r.external_id, a.plan, a.stripe_status
+    from cloud_phone_revyl r left join cloud_accounts a on a.user_id = r.user_id
+  `).all<{ user_id: string; external_id: string; plan: string | null; stripe_status: string | null }>()).results ?? [];
+  if (workspaces.length === 0) return;
+  const priced = await partner(env, "GET", "/partner/usage");
+  const meters = Array.isArray(priced.body?.meters) ? priced.body.meters as Array<Record<string, unknown>> : null;
+  if (priced.status !== 200 || !meters) {
+    reportCloudFailure("cloud.revyl_day_prices_failed", { status: priced.status, code: revylErrorOf(priced).code });
+    return;
+  }
+  const prices = new Map(meters.flatMap((meter) => typeof meter.meter === "string" && Number.isFinite(Number(meter.unit_price_usd))
+    ? [[meter.meter, Number(meter.unit_price_usd)] as const] : []));
+  const range = new URLSearchParams({ from: `${day}T00:00:00Z`, to: new Date(Date.parse(`${day}T00:00:00Z`) + 86_400_000).toISOString().replace(".000Z", "Z") });
+  const statements: D1PreparedStatement[] = [];
+  let unread = 0;
+  for (const workspace of workspaces) {
+    const answer = await partner(env, "GET", `/partner/connections/${encodeURIComponent(workspace.external_id)}/usage?${range.toString()}`);
+    const rows = Array.isArray(answer.body?.usage) ? answer.body.usage as Array<Record<string, unknown>> : null;
+    if (answer.status !== 200 || !rows) {
+      // A workspace disconnected since (the account deleted) has nothing more to count.
+      if (answer.status !== 404) unread += 1;
+      continue;
+    }
+    let usd = 0;
+    for (const row of rows) {
+      const feature = typeof row.feature === "string" ? row.feature : "";
+      const price = feature !== PHONE_METER ? prices.get(feature) : undefined;
+      if (price == null) continue;
+      // A meter counts seconds or, for AI use, millicents; Revyl's price is per that unit.
+      const amount = Number(feature.endsWith("_millicents") ? row.millicents : row.seconds);
+      if (Number.isFinite(amount) && amount > 0) usd += amount * price;
+    }
+    statements.push(env.DB.prepare(`
+      insert into cloud_revyl_days (user_id, day, cost_micros, free, read_at) values (?, ?, ?, ?, ?)
+      on conflict (user_id, day) do update set cost_micros = excluded.cost_micros, free = excluded.free, read_at = excluded.read_at
+    `).bind(workspace.user_id, day, Math.round(usd * 1_000_000), accountRules({ plan: workspace.plan === "paid" ? "paid" : "free", stripe_status: workspace.stripe_status }) === "free" ? 1 : 0, now));
+  }
+  if (statements.length) await env.DB.batch(statements);
+  if (unread) reportCloudFailure("cloud.revyl_day_usage_failed", { day, unread });
+  logCloud("cloud.revyl_day_costs", { day, workspaces: workspaces.length, read: statements.length, unread });
 }
 
 /**

@@ -1312,6 +1312,37 @@ describe("ADE Cloud account", () => {
     expect(computer(harness).disk_gb).toBe(4);
   });
 
+  it("the free-use cap counts each provider's own bill: Agent 37's day less its disk, and Revyl's builds", async () => {
+    seedAccount(harness, OWNER);
+    seedStopped([4]);
+    harness.insert("cloud_settings", { key: "last_daily_day", value: "2026-11-09", updated_at: NOW });
+    harness.env.REVYL_PARTNER_API_KEY = "rvl_test";
+    harness.insert("cloud_phone_revyl", { user_id: OWNER, external_id: `ade-${OWNER}`, app_id: null, created_at: NOW, updated_at: NOW });
+    const network = harness.net.fetchStub;
+    const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      // Agent 37 billed $0.50 for the computer on 2026-11-09, its 4 GB disk ($0.012) in it.
+      if (url.startsWith(`${PROVIDER}/usage?`)) return reply({ instances: url.includes("from=2026-11-09") ? [{ id: INSTANCE, awake_minutes: 60, total_micros: 500_000 }] : [] });
+      if (url === "https://backend.revyl.ai/api/v1/partner/usage") return reply({ meters: [{ meter: "ios_simulator_seconds", unit_price_usd: 0.001 }, { meter: "ios_build_seconds", unit_price_usd: 0.001 }] });
+      // The phone's own time is counted per phone; only the 100 build seconds are the day's other cost.
+      if (url.startsWith(`https://backend.revyl.ai/api/v1/partner/connections/ade-${OWNER}/usage?`)) {
+        return reply({ usage: [{ feature: "ios_simulator_seconds", seconds: 600 }, { feature: "ios_build_seconds", seconds: 100 }] });
+      }
+      return network(input, init);
+    });
+
+    clock = NOW + DAY;
+    await harness.tick();
+
+    expect(harness.row("select cost_micros, free_cost_micros from cloud_computer_days where instance_id = ? and day = '2026-11-09'", INSTANCE)).toEqual({ cost_micros: 488_000, free_cost_micros: 488_000 });
+    expect(harness.row("select cost_micros, free from cloud_revyl_days where user_id = ? and day = '2026-11-09'", OWNER)).toEqual({ cost_micros: 100_000, free: 1 });
+    clock += 11 * 60_000;
+    await harness.tick();
+    const diskMicros = Number(harness.row("select coalesce(sum(peak_gb), 0) as gb from cloud_disk_days where free = 1").gb) * 3_000;
+    expect(Number(harness.row("select value from cloud_settings where key = 'free_cost_mtd_micros'").value)).toBe(488_000 + 100_000 + diskMicros);
+  });
+
   it.each<[string, Error | null, number, string]>([
     // The row names no lane and the provider's metadata names none either: nothing to keep.
     ["the provider's metadata names no lane", null, 409, "no_lane"],

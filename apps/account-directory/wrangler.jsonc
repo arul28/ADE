@@ -107,6 +107,10 @@
   // phones from an ADE beta app. With neither provider able to start phones,
   // the phone reads `off`.
   //
+  // SECRET — CLOUDFLARE_BILLING_TOKEN (the daily report's Cloudflare invoice, src/cloud/costReport.ts)
+  // A read-only Cloudflare API token that can read billing. Optional: unset,
+  // the all-costs line says Cloudflare's invoice can't be read. Production only.
+  //
   // SECRET — GRAVITY_API_KEY (sponsored cards and the Index, src/cloud/gravity.ts)
   // Gravity's publisher key (trygravity.com): ads, Index searches and the
   // owner report's earnings. Only this Worker holds it; no app ever ships it.

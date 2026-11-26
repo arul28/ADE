@@ -13,7 +13,8 @@ import { markRestedWithBackups } from "./laneBackups";
 import { sweepLeftovers } from "./storageSweeps";
 import type { CloudInstance } from "./contract";
 import { refreshCostEstimate, runDailyCostReport } from "./costReport";
-import { AWAKE_COMPUTER_CAP, cloudSizeFor, usesHours, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
+import { recordRevylDayCosts } from "./phoneRevyl";
+import { AWAKE_COMPUTER_CAP, DISK_COST_MICROS_PER_GB_DAY, cloudSizeFor, usesHours, computeCostMicrosFor, hoursMilliFor, isMeteredStatus, isRestingStatus, tierOf, utcDay } from "./plans";
 import { CloudProviderError, TRY_AGAIN_CODE, createCloudProvider, type CloudProvider } from "./provider";
 import { runPlanLimitChecks } from "./planCleanup";
 import { enforceBlocksInTick } from "./safety";
@@ -590,6 +591,8 @@ async function runDaily(env: CloudEnv, provider: CloudProvider, computers: TickC
     }
   };
   await step("disk_baseline", () => writeDiskBaseline(env, computers, now));
+  // Revyl's builds for the day, before the report and the month's estimate read them.
+  await step("revyl_day_costs", () => recordRevylDayCosts(env, yesterday, now));
   await step("cost_report", () => runDailyCostReport(env, yesterday));
   await step("analytics", () => captureDailyAnalytics(env, waitUntil, computers, yesterday));
   await writeSetting(env, "last_daily_day", today, now);
@@ -668,13 +671,13 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
     if (usage.instances.length === 0) continue;
     const ids = usage.instances.map((entry) => entry.id);
     const rows = await env.DB.prepare(`
-      select c.instance_id, c.user_id, c.multiplier_milli as computer_mult, c.type, c.cpu, c.memory_gb,
+      select c.instance_id, c.user_id, c.multiplier_milli as computer_mult, c.type, c.cpu, c.memory_gb, c.disk_gb,
         d.metered_ms, d.metered_milli, d.multiplier_milli, d.free_ms, d.reconciled_at, d.cost_micros, a.period_start
       from cloud_computers c
       left join cloud_computer_days d on d.instance_id = c.instance_id and d.day = ?
       left join cloud_accounts a on a.user_id = c.user_id
       where c.instance_id in (select value from json_each(?))
-    `).bind(day, JSON.stringify(ids)).all<ReconcileRow & { computer_mult: number; type: string; cpu: number; memory_gb: number; cost_micros: number | null }>();
+    `).bind(day, JSON.stringify(ids)).all<ReconcileRow & { computer_mult: number; type: string; cpu: number; memory_gb: number; disk_gb: number; cost_micros: number | null }>();
     const known = new Map((rows.results ?? []).map((row) => [row.instance_id, row]));
     const statements: D1PreparedStatement[] = [];
     for (const entry of usage.instances) {
@@ -694,9 +697,13 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
       // The provider charges every awake minute, an update's free time too, at the rate the day ran at.
       const providerAwakeMs = entry.awakeMinutes * 60_000;
       const meteredCost = row.cost_micros ?? 0;
-      const providerCost = meteredMs > 0 && meteredCost > 0
-        ? Math.round((providerAwakeMs * meteredCost) / meteredMs)
-        : computeCostMicrosFor(providerAwakeMs, { type: row.type, cpu: row.cpu, memoryGb: row.memory_gb });
+      // What Agent 37 billed for the day when it says, less the day's disk (`cloud_disk_days` counts that);
+      // otherwise its public price for the awake minutes.
+      const providerCost = entry.costMicros != null
+        ? Math.max(0, Math.round(entry.costMicros - row.disk_gb * DISK_COST_MICROS_PER_GB_DAY))
+        : meteredMs > 0 && meteredCost > 0
+          ? Math.round((providerAwakeMs * meteredCost) / meteredMs)
+          : computeCostMicrosFor(providerAwakeMs, { type: row.type, cpu: row.cpu, memoryGb: row.memory_gb });
       // A day that ended by the time the period began belongs to the one before.
       const inPeriod = row.period_start != null && Date.parse(`${day}T00:00:00Z`) + 86_400_000 > row.period_start;
       // First: it reads the mark the next statement sets, so a repeat of this day charges once.

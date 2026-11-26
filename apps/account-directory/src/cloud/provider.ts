@@ -204,8 +204,11 @@ export type CloudCreateInput = {
 };
 
 export type CloudUsageWindow = {
-  /** Awake minutes per instance, for the whole workspace. */
-  instances: Array<{ id: string; awakeMinutes: number }>;
+  /**
+   * Awake minutes per instance, for the whole workspace, and what Agent 37
+   * charged for it over the window (its disk included, asleep too), when it says.
+   */
+  instances: Array<{ id: string; awakeMinutes: number; costMicros: number | null }>;
 };
 
 export type CloudBilling = {
@@ -423,7 +426,7 @@ export function createCloudProvider(apiKey: string, fetcher: typeof fetch = fetc
         const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
         const id = str(record?.id);
         if (!id) continue;
-        instances.push({ id, awakeMinutes: num(record?.awake_minutes) ?? 0 });
+        instances.push({ id, awakeMinutes: num(record?.awake_minutes) ?? 0, costMicros: num(record?.total_micros) });
       }
       return { instances };
     },
