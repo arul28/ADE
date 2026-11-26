@@ -125,8 +125,18 @@ export function IgnoreButton({ choices, subject, disabled }: { choices: readonly
   const anchorRef = React.useRef<HTMLButtonElement | null>(null);
   const [open, setOpen] = React.useState(false);
   const firstItemRef = React.useRef<HTMLButtonElement | null>(null);
+  // The menu is hidden for the frame before it is placed, and a hidden item
+  // cannot take focus: move focus in once it is on screen.
   React.useEffect(() => {
-    if (open) firstItemRef.current?.focus();
+    if (!open) return;
+    let second = 0;
+    const first = window.requestAnimationFrame(() => {
+      second = window.requestAnimationFrame(() => firstItemRef.current?.focus());
+    });
+    return () => {
+      window.cancelAnimationFrame(first);
+      window.cancelAnimationFrame(second);
+    };
   }, [open]);
   if (choices.length === 0) return null;
   const single = choices.length === 1 ? choices[0]! : null;
@@ -147,6 +157,13 @@ export function IgnoreButton({ choices, subject, disabled }: { choices: readonly
         disabled={disabled}
         data-open={open || undefined}
         onClick={() => (single ? single.run() : setOpen((value) => !value))}
+        onKeyDown={(event) => {
+          // Arrow keys on the trigger open the menu (or step into it) instead of scrolling the page.
+          if (single || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
+          event.preventDefault();
+          if (open) firstItemRef.current?.focus();
+          else setOpen(true);
+        }}
       >
         <EyeSlash size={14} />
       </button>

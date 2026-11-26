@@ -6,25 +6,12 @@
  */
 
 /* ── The button beside a row ─────────────────────────────────────────── */
-/* Out of the way until the row is pointed at or focused, so a list of
-   flagged rows reads as their fixes, not as a column of eyes. Touch
-   screens have no hover, so there it is always shown. */
+/* Always there, so a person who wants a row gone can find it, but a step
+   quieter than the row's own fix, which stays the loud button. */
 .ade-ignore-btn {
   width: 26px;
   height: 26px;
-  color: var(--kit-text-3);
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-.ade-attn-row:hover .ade-ignore-btn,
-.ade-attn-row:focus-within .ade-ignore-btn,
-.ade-health-issue:hover .ade-ignore-btn,
-.ade-health-issue:focus-within .ade-ignore-btn,
-.ade-ignore-btn[data-open="true"] {
-  opacity: 1;
-}
-@media (hover: none) {
-  .ade-ignore-btn { opacity: 1; }
+  color: var(--kit-text-2);
 }
 .ade-ignore-btn:hover:not(:disabled),
 .ade-ignore-btn[data-open="true"] {
@@ -178,6 +165,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-ignored-caret,
-  .ade-ignore-btn { transition: none; }
+  .ade-ignored-caret { transition: none; }
 }
