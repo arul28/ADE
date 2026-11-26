@@ -320,6 +320,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       return { ok: false, error: notesFullMessage(utf8Bytes(renderNotes(lines)), limit) };
     }
     writeNoteLines(scope, next);
+    if (scope === "user") learning.ctoWroteUserNotes(replaced ? [note, replaced] : [note]);
     return { ok: true, saved: true, note, ...(replaced ? { replaced } : {}), scope, bytes, limitBytes: limit };
   };
 
@@ -344,6 +345,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       if (refusal) return { ok: false, error: refusal };
     }
     writeNoteLines(scope, lines.filter((_, index) => index !== matches[0]));
+    if (scope === "user") learning.ctoWroteUserNotes([forgotten]);
     return { ok: true, forgotten, scope };
   };
 
@@ -804,6 +806,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     getSnapshot,
     buildMemoryContextSections,
     readRules: learning.readRules,
+    readUndone: learning.readUndone,
+    replaceUndone: learning.replaceUndone,
     addRule: learning.addRule,
     removeRule: learning.removeRule,
     listSkills: learning.listSkills,

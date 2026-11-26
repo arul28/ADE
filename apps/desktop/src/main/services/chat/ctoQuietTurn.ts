@@ -34,6 +34,11 @@ export function newCtoQuietTurnState(): CtoQuietTurnState {
 /** The host-continuation reason of the hidden review turn after a correction. */
 export const CTO_REVIEW_REASON = "cto_review";
 
+/** ADE's hidden review prompt: never part of the conversation anyone reads back (tails, copies, stories). */
+export function isCtoReviewMessage(event: AgentChatEvent): boolean {
+  return event.type === "user_message" && event.metadata?.hostContinuation?.reason === CTO_REVIEW_REASON;
+}
+
 const CORRECTION_EXCERPT_MAX_CHARS = 400;
 
 /**

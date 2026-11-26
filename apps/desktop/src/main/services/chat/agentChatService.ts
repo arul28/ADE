@@ -1094,7 +1094,7 @@ import {
   selectCrossMachineReturnSuffix,
   type CrossMachineBatchChatState,
 } from "./crossMachineHandoffSource";
-import { newCtoQuietTurnState, startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
+import { isCtoReviewMessage, newCtoQuietTurnState, startCtoQuietTurn, stepCtoQuietTurn, type CtoQuietTurnState } from "./ctoQuietTurn";
 import { createCtoReviewTurns, ctoLearnedEvent } from "./ctoLearningLoop";
 import {
   CrossMachineHandoffReturnRefusedError,
@@ -18507,6 +18507,7 @@ export function createAgentChatService(args: {
     try {
       for (const { event, timestamp } of readRecentTranscriptEnvelopes(managed)) {
         if (sinceIso && timestamp < sinceIso) continue;
+        if (isCtoReviewMessage(event)) continue;
         if (event.type === "user_message") {
           const text = event.text.trim();
           const displayText = event.displayText?.trim();
@@ -18665,6 +18666,7 @@ export function createAgentChatService(args: {
 
   const appendRecentConversationEntry = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     if (event.type !== "user_message" && event.type !== "text") return;
+    if (isCtoReviewMessage(event)) return;
     // A steer is one entry, on the row where the model read it: not its
     // `queued` or `accepted` rows, and not at all when it was dropped.
     if (event.type === "user_message" && event.steerId && !steerReachedModel(event.deliveryState)) return;

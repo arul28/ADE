@@ -4,6 +4,7 @@ import {
   CTO_SKILL_MAX_BYTES,
   CTO_SKILLS_MAX,
   ctoSkillSlug,
+  isCtoNotesChangedError,
   type CtoSkillFile,
   type CtoSkillSummary,
   type OpenProjectBinding,
@@ -60,10 +61,16 @@ export function CtoSkillsList({
   }, [openName, pinKey, load]);
 
   const save = useCallback(async (name: string, text: string, baseHash?: string) => {
-    await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pin);
+    try {
+      await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pinRef.current);
+    } catch (err) {
+      // Changed elsewhere: read the newer file, so the editor's Reload takes it.
+      if (isCtoNotesChangedError(err)) await load(name);
+      throw err;
+    }
     await load(name);
     await onChanged();
-  }, [load, onChanged, pin]);
+  }, [load, onChanged]);
 
   const remove = async (name: string) => {
     setBusy(true);

@@ -750,7 +750,7 @@ func ctoNewSkillText(_ name: String) -> String {
 }
 
 /// A typed skill name as the host stores it: lower case, runs of anything
-/// else turned into single dashes (desktop `CtoSkillsList.create`).
+/// else turned into single dashes, at most 48 characters (desktop `ctoSkillSlug`).
 func ctoSkillSlug(_ raw: String) -> String {
   var slug = ""
   var pendingDash = false
@@ -763,8 +763,13 @@ func ctoSkillSlug(_ raw: String) -> String {
       pendingDash = true
     }
   }
-  return slug
+  var capped = String(slug.prefix(ctoSkillNameMaxChars))
+  while capped.hasSuffix("-") { capped.removeLast() }
+  return capped
 }
+
+/// The host's cap on a skill's folder name (`CTO_SKILL_NAME_MAX_CHARS`).
+let ctoSkillNameMaxChars = 48
 
 /// The `description:` line of a SKILL.md's frontmatter, if it has one.
 func ctoSkillDescription(_ text: String) -> String? {

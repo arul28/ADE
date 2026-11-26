@@ -113,6 +113,25 @@ type UndoneItem = {
   at: string;
 };
 
+const UNDONE_AREAS: ReadonlySet<string> = new Set<CtoLearnedArea>(["rules", "skill", "project_notes", "user_notes"]);
+const UNDONE_OPS: ReadonlySet<string> = new Set<CtoLearnedChange["op"]>(["added", "changed", "removed"]);
+
+/** Undone entries from a file or an account copy; anything malformed is dropped. */
+function parseUndoneItems(raw: unknown): UndoneItem[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((entry): UndoneItem[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    if (typeof item.text !== "string" || typeof item.area !== "string" || typeof item.op !== "string") return [];
+    if (!UNDONE_AREAS.has(item.area) || !UNDONE_OPS.has(item.op)) return [];
+    return [{
+      area: item.area as CtoLearnedArea,
+      op: item.op as CtoLearnedChange["op"],
+      text: item.text,
+      at: typeof item.at === "string" ? item.at : nowIso(),
+    }];
+  });
+}
+
 export type CtoLearnedPayload = {
   learnId: string;
   sessionId: string | null;
@@ -171,13 +190,27 @@ function appendLine(content: string, text: string): string {
   return `${base.length ? `${base}\n` : ""}- ${text}\n`;
 }
 
-/** The content with one line change taken back; null when it already is. */
-function revertLineChange(content: string, change: CtoLearnedChange): string | null {
-  if (change.op === "added") return dropLine(content, change.text);
-  if (change.op === "removed") return parseNoteLines(content).includes(change.text) ? null : appendLine(content, change.text);
+type LineRevert =
+  | { kind: "write"; next: string }
+  /** Nothing to do: the change is already taken back. */
+  | { kind: "already" }
+  /** The line the turn wrote was edited since: putting the old one back would undo that edit too. */
+  | { kind: "changed_since" };
+
+/** One line change taken back from `content`. */
+function revertLineChange(content: string, change: CtoLearnedChange): LineRevert {
+  const lines = parseNoteLines(content);
+  if (change.op === "added") {
+    const next = dropLine(content, change.text);
+    return next == null ? { kind: "already" } : { kind: "write", next };
+  }
+  if (change.op === "removed") {
+    return lines.includes(change.text) ? { kind: "already" } : { kind: "write", next: appendLine(content, change.text) };
+  }
   const previous = change.previous ?? "";
-  return swapLine(content, change.text, previous)
-    ?? (previous && !parseNoteLines(content).includes(previous) ? appendLine(content, previous) : null);
+  const next = swapLine(content, change.text, previous);
+  if (next != null) return { kind: "write", next };
+  return previous && lines.includes(previous) ? { kind: "already" } : { kind: "changed_since" };
 }
 
 const ALREADY_REVERTED_NOTE: Record<CtoLearnedChange["op"], string> = {
@@ -312,17 +345,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     if (!raw.trim()) return [];
     try {
       const parsed = JSON.parse(raw) as { items?: unknown };
-      return (Array.isArray(parsed?.items) ? parsed.items : []).flatMap((entry): UndoneItem[] => {
-        if (!entry || typeof entry !== "object") return [];
-        const item = entry as Record<string, unknown>;
-        if (typeof item.text !== "string" || typeof item.area !== "string" || typeof item.op !== "string") return [];
-        return [{
-          area: item.area as CtoLearnedArea,
-          op: item.op as CtoLearnedChange["op"],
-          text: item.text,
-          at: typeof item.at === "string" ? item.at : nowIso(),
-        }];
-      });
+      return parseUndoneItems(parsed?.items);
     } catch (error) {
       logger?.warn("cto_learning.undone_unreadable", { error: error instanceof Error ? error.message : String(error) });
       return [];
@@ -332,6 +355,12 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   const writeUndone = (items: readonly UndoneItem[]): void => {
     fs.mkdirSync(learningDir, { recursive: true });
     writeTextAtomic(undonePath, `${JSON.stringify({ version: 1, items: items.slice(-UNDONE_KEPT) }, null, 2)}\n`);
+  };
+
+  /** An account copy's undone list replaces this machine's: the CTO moved here with it. */
+  const replaceUndone = (items: unknown): void => {
+    writeUndone(parseUndoneItems(items));
+    changed();
   };
 
   const sameText = (area: CtoLearnedArea, a: string, b: string): boolean => {
@@ -702,6 +731,18 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   let baseline: LearnState | null = readBaselineFile();
 
   /**
+   * The lines the CTO itself wrote or dropped in the notes about the person
+   * this turn. That file is shared by every project on the machine, so a
+   * change there is this turn's only when the CTO made it: another project's
+   * edit is never offered for Undo here. In memory: after a restart mid-turn
+   * the turn's About-you changes go unlisted rather than misattributed.
+   */
+  const userNoteLinesThisTurn = new Set<string>();
+  const ctoWroteUserNotes = (lines: readonly string[]): void => {
+    for (const line of lines) userNoteLinesThisTurn.add(line);
+  };
+
+  /**
    * The person changed a file in the middle of a turn (Settings, another
    * device, an account copy): their version becomes the baseline, so it is
    * never reported as something the CTO learned.
@@ -728,6 +769,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   /** A CTO turn starts. Keeps an open baseline: a turn that never finished folds into this one. */
   const beginTurn = (): void => {
     if (baseline) return;
+    userNoteLinesThisTurn.clear();
     try {
       baseline = captureState();
       saveBaseline(baseline);
@@ -803,7 +845,15 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       after.skills = skills.after;
     }
     diffLines("project_notes");
-    diffLines("user_notes");
+    if (start.user_notes !== end.user_notes) {
+      const mine = diffLineItems("user_notes", start.user_notes, end.user_notes)
+        .filter((change) => userNoteLinesThisTurn.has(change.text) || (change.previous != null && userNoteLinesThisTurn.has(change.previous)));
+      if (mine.length) {
+        before.user_notes = start.user_notes;
+        changes.push(...mine);
+      }
+    }
+    userNoteLinesThisTurn.clear();
     if (!changes.length) return null;
     const record: LearnedRecord = {
       v: 1,
@@ -852,6 +902,9 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
         return { ok: false, error: "This skill changed after that turn. Edit it in Settings › Memory." };
       }
       const was = record.before.skills?.[change.text];
+      if (was != null && !fs.existsSync(skillPath(change.text)) && readSkillNames().length >= CTO_SKILLS_MAX) {
+        return { ok: false, error: `Skills are full (${CTO_SKILLS_MAX}). Delete one in Settings › Memory, then undo.` };
+      }
       if (was == null) removeSkillDir(change.text);
       else writeSkillFile(change.text, was);
       if (baseline) {
@@ -860,19 +913,25 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
       }
     } else {
       const area = change.area;
-      const next = revertLineChange(readLineFile(area), change);
-      if (next == null) {
+      const revert = revertLineChange(readLineFile(area), change);
+      if (revert.kind === "changed_since") {
+        return { ok: false, error: "That line changed after that turn. Edit it in Settings › Memory." };
+      }
+      if (revert.kind === "already") {
         note = ALREADY_REVERTED_NOTE[change.op];
       } else {
         const limit = LINE_AREA_LIMIT[area];
-        if (utf8Bytes(next) > limit.bytes) {
+        if (utf8Bytes(revert.next) > limit.bytes) {
           return { ok: false, error: `${limit.name} are full (${limit.bytes} bytes). Make room in Settings › Memory, then undo.` };
         }
-        writeLineFile(area, next);
+        writeLineFile(area, revert.next);
       }
       // The same edit on the open turn's baseline, so what that turn wrote
       // meanwhile still shows in its own row.
-      if (baseline) baseline[area] = revertLineChange(baseline[area], change) ?? baseline[area];
+      if (baseline) {
+        const onBaseline = revertLineChange(baseline[area], change);
+        if (onBaseline.kind === "write") baseline[area] = onBaseline.next;
+      }
     }
     if (baseline) saveBaseline(baseline);
     change.undone = true;
@@ -889,6 +948,8 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
 
   return {
     readRules,
+    readUndone,
+    replaceUndone,
     rulesHash: () => textHash(readRules()),
     addRule,
     removeRule,
@@ -902,6 +963,7 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
     buildContextSections,
     undoneRefusal,
     personWrote,
+    ctoWroteUserNotes,
     beginTurn,
     finishTurn,
     undo,

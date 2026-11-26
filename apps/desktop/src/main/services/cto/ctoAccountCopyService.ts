@@ -27,6 +27,7 @@ import {
   CTO_ACCOUNT_COPY_VAULT_KIND,
   type CtoAccountCopy,
   type CtoAccountCopyRoutine,
+  type CtoAccountCopyUndone,
   type CtoAccountCopyStory,
   type CtoAccountCopyStatus,
   type CtoAdoptAccountCopyResult,
@@ -101,6 +102,7 @@ export type CtoAccountCopyServiceArgs = {
     CtoMemoryService,
     "readNotes" | "writeNotes" | "readOpenWorkText" | "replaceOpenWorkText"
     | "readRules" | "listSkills" | "readSkill" | "writeSkillText" | "deleteSkillAsPerson"
+    | "readUndone" | "replaceUndone"
   > & Partial<Pick<CtoMemoryService, "readStory" | "writeStory">>;
   /** The CTO thread's tail and routines, read when a copy is written. */
   readSources: () => Promise<CtoAccountCopySources>;
@@ -150,17 +152,29 @@ function portableIdentity(identity: CtoIdentity): Record<string, unknown> {
   };
 }
 
-export function encodeCtoAccountCopy(copy: CtoAccountCopy): string | null {
+/**
+ * The copy as one vault value, under the relay's ceiling; null when even the
+ * memory alone does not fit. `skillsLeftOut`: the skills did not fit and the
+ * copy carries none, so a restore keeps the new home's skills as they are
+ * (a partial list would delete the ones left out).
+ */
+export function encodeCtoAccountCopy(copy: CtoAccountCopy): { value: string; skillsLeftOut: boolean } | null {
   let candidate = copy;
   // A long tail is what grows past the ceiling: keep its newest half until it
-  // fits. The story (at most 12k) goes only when no tail is left to cut.
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  // fits. The story (at most 12k) goes only when no tail is left to cut, and
+  // the skills last.
+  for (let attempt = 0; attempt < 16; attempt += 1) {
     const encoded = `${ENCODED_PREFIX}${gzipSync(Buffer.from(JSON.stringify(candidate), "utf8")).toString("base64")}`;
-    if (encoded.length <= CTO_ACCOUNT_COPY_MAX_CHARS) return encoded;
+    if (encoded.length <= CTO_ACCOUNT_COPY_MAX_CHARS) {
+      return { value: encoded, skillsLeftOut: Boolean(copy.skills?.length) && candidate.skills === undefined };
+    }
     if (candidate.tail) {
       candidate = { ...candidate, tail: candidate.tail.length < 512 ? "" : candidate.tail.slice(Math.floor(candidate.tail.length / 2)) };
     } else if (candidate.story) {
       candidate = { ...candidate, story: null };
+    } else if (candidate.skills !== undefined) {
+      const { skills: _skills, ...withoutSkills } = candidate;
+      candidate = withoutSkills;
     } else {
       return null;
     }
@@ -187,6 +201,12 @@ export function decodeCtoAccountCopy(value: string | null | undefined): CtoAccou
         ? {
           skills: parsed.skills.filter((skill): skill is { name: string; text: string } =>
             Boolean(skill) && typeof skill.name === "string" && typeof skill.text === "string"),
+        }
+        : {}),
+      ...(Array.isArray(parsed.undone)
+        ? {
+          undone: parsed.undone.filter((item): item is CtoAccountCopyUndone =>
+            Boolean(item) && typeof item.area === "string" && typeof item.op === "string" && typeof item.text === "string" && typeof item.at === "string"),
         }
         : {}),
       routines: Array.isArray(parsed.routines)
@@ -340,6 +360,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
         const skill = args.ctoMemory.readSkill(summary.name);
         return skill ? [{ name: skill.name, text: skill.text }] : [];
       }),
+      undone: args.ctoMemory.readUndone(),
       // Routines a move brought that have no CTO thread to land on yet.
       routines: readJson<{ routines?: CtoAccountCopyRoutine[] }>(carriedRoutinesPath)?.routines ?? sources.routines,
       tail,
@@ -378,11 +399,13 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     const { savedAt: _savedAt, ...stable } = copy;
     const hash = createHash("sha256").update(JSON.stringify(stable)).digest("hex");
     if (hash === lastWrittenHash && existing.copy && sameDevice(existing.copy.ownerDeviceId, self)) return;
-    const encoded = encodeCtoAccountCopy(copy);
-    if (!encoded) {
+    const encodedCopy = encodeCtoAccountCopy(copy);
+    if (!encodedCopy) {
       logger.warn("cto.account_copy_too_large", { reason });
       return;
     }
+    if (encodedCopy.skillsLeftOut) logger.warn("cto.account_copy_skills_left_out", { reason, skills: copy.skills?.length ?? 0 });
+    const encoded = encodedCopy.value;
     const answer = args.vault.trySet(
       scope,
       CTO_ACCOUNT_COPY_VAULT_KIND,
@@ -537,6 +560,9 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
         }
         for (const skill of copy.skills) args.ctoMemory.writeSkillText({ name: skill.name, text: skill.text });
       }],
+      // After the rules and skills: writing those forgives undone entries
+      // they match, and the copy's list is the one that holds.
+      ["undone", () => { if (copy.undone !== undefined) args.ctoMemory.replaceUndone(copy.undone); }],
       // The old home's story, with the carried turns waiting to be folded into
       // it. It covers through the move: this machine's older turns are from an
       // earlier stay, older than anything the copy holds. Required: a save
