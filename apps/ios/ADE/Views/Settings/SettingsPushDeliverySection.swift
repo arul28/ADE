@@ -66,6 +66,9 @@ struct SettingsPushDeliverySection: View {
         }
         .task {
             await pushService.refreshNotificationSettings()
+            if content == .controls {
+                await pushService.refreshAccountMutedSessions()
+            }
             await pushService.refreshStatus()
         }
     }
@@ -87,7 +90,11 @@ struct SettingsPushDeliverySection: View {
 
         ADESettingsSection("Push delivery", hint: "Alerts and Live Activities from your computers.", symbol: "bell.badge", tint: .red) {
             ADESettingsRows {
-                toggleRow("Notifications", hint: "Approvals, replies and failures", isOn: notificationsBinding)
+                toggleRow(
+                    "Notifications on this device",
+                    hint: notificationDeliveryHint,
+                    isOn: notificationsBinding
+                )
                 toggleRow("Live Activities", hint: "Agent runs on the Lock Screen", isOn: liveActivitiesBinding)
                 toggleRow("Hide details", hint: "Private Lock Screen previews", isOn: hideDetailsBinding)
             }
@@ -113,6 +120,15 @@ struct SettingsPushDeliverySection: View {
                 }
             }
         }
+    }
+
+    private var notificationDeliveryHint: String {
+        if pushService.accountDeliveryPaused {
+            return "Delivery is paused in your ADE account settings"
+        }
+        return snapshot.accountDeliveryAvailable
+            ? "Account notification settings also apply"
+            : "Approvals, replies and failures"
     }
 
     private func toggleRow(_ title: String, hint: String?, isOn: Binding<Bool>) -> some View {

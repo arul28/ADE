@@ -3757,6 +3757,36 @@ describe("update tracks", () => {
     relaunched.dispose();
   });
 
+  it("discards a track switch cancelled while the feed is still checking", async () => {
+    const { service, updater } = trackService({ currentVersion: "1.2.128", offer: "1.2.129-beta.1" });
+    const readOffer = updater.checkForUpdates.getMockImplementation()!;
+    let releaseFeed!: () => void;
+    const feedReady = new Promise<void>((resolve) => { releaseFeed = resolve; });
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      await feedReady;
+      return await readOffer();
+    });
+
+    try {
+      expect(service.startTrackSwitch("beta").ok).toBe(true);
+      const checking = service.checkForUpdates();
+      service.cancelTrackSwitch("beta");
+      releaseFeed();
+      await checking;
+
+      expect(service.getSnapshot()).toMatchObject({
+        status: "idle",
+        version: null,
+        track: { running: "stable", selected: "stable", switching: null },
+      });
+      expect(await service.quitAndInstall()).toBe(false);
+    } finally {
+      releaseFeed();
+      service.dispose();
+    }
+  });
+
   // "Go back" (startupRecovery.ts) leaves `wentBackFrom` and turns automatic
   // install off. The build it went back to must never take the broken build
   // again by itself; the first build newer than it turns automatic install

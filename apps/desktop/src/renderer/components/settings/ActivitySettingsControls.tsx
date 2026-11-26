@@ -333,6 +333,8 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     setPhoneNotificationsEnabled,
     phoneNotificationsEnabled: (deviceId: string) =>
       preferences.devices[deviceId]?.deviceDeliveryEnabled !== false,
+    phoneHasNotificationsEnabled: (deviceId: string) =>
+      preferences.devices[deviceId]?.notificationsEnabled !== false,
   };
 }
 
@@ -679,6 +681,7 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
     machineMuted,
     setPhoneNotificationsEnabled,
     phoneNotificationsEnabled,
+    phoneHasNotificationsEnabled,
   } = model;
   const phonesOff = !account.notificationsEnabled;
   return (
@@ -714,20 +717,23 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
         {phones.map((phone) => {
           const name = phoneName(phone);
           const enabled = phoneNotificationsEnabled(phone.deviceId);
+          const deviceEnabled = phoneHasNotificationsEnabled(phone.deviceId);
           const lastSeen = phone.lastSeenAt ? ` · seen ${relativeWhen(phone.lastSeenAt)}` : "";
           return (
             <NotificationTargetRow
               key={phone.deviceId}
               icon={phone.kind === "tablet" ? DeviceTablet : DeviceMobile}
               name={name}
-              lit={enabled && !phonesOff}
+              lit={enabled && deviceEnabled && !phonesOff}
               hint={model.loadFailed
                 ? "Notification setting didn’t load"
                 : phonesOff
                   ? "Off · Phone notifications is off"
-                  : enabled
-                    ? `Gets notifications${lastSeen}`
-                    : "Muted · no notifications on this phone"}
+                  : !enabled
+                    ? "Delivery muted for this device"
+                    : deviceEnabled
+                      ? `Delivery allowed${lastSeen}`
+                      : "Notifications are off in ADE on this device"}
               toggleLabel={`Send notifications to ${name}`}
               checked={enabled && !phonesOff}
               disabled={busy || phonesOff || model.savingTargets.has(`devices:${phone.deviceId}`)}

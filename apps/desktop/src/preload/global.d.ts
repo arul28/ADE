@@ -668,6 +668,8 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
+  AttentionAccountDevice,
+  AttentionPreferenceScope,
   CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
@@ -2326,7 +2328,7 @@ declare global {
         putMachinePreferences?: (
           accountOwnerId: string,
           machineKey: string,
-          preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
+          preferences: Partial<AttentionPreferenceScope>,
         ) => Promise<void>;
         /**
          * The account's phones and tablets, for choosing which get
@@ -2335,12 +2337,12 @@ declare global {
          */
         listDevices?: (
           accountOwnerId: string,
-        ) => Promise<import("../shared/types").AttentionAccountDevice[]>;
+        ) => Promise<AttentionAccountDevice[]>;
         /** One phone's override (`preferences.devices[deviceId]`). Account-scoped, no pin. */
         putDevicePreferences?: (
           accountOwnerId: string,
           deviceId: string,
-          preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
+          preferences: Partial<AttentionPreferenceScope>,
         ) => Promise<void>;
         /**
          * Mute one chat's notifications on every device. Account-scoped, so it

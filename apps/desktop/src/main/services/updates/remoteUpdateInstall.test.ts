@@ -34,6 +34,7 @@ function createUpdateService(
         await onCheck(set);
       }),
       quitAndInstall,
+      cancelTrackSwitch: vi.fn(),
       startTrackSwitch: vi.fn((target: UpdateTrack) => ({ ok: true as const, target })),
       onStateChange: (cb: (next: AutoUpdateSnapshot) => void) => {
         listeners.add(cb);

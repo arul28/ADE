@@ -29,6 +29,7 @@ type UpdateService = {
   quitAndInstall(resumeChats?: boolean, options?: { requestedRemotely?: boolean }): Promise<boolean>;
   onStateChange(cb: (snapshot: AutoUpdateSnapshot) => void): () => void;
   startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult;
+  cancelTrackSwitch(target: UpdateTrack): void;
 };
 
 export type RemoteUpdateInstaller = {
@@ -108,6 +109,7 @@ export function createRemoteUpdateInstaller(args: {
       if (disposed) return;
       if (track && !covers(service.getSnapshot().version, version, track)) {
         args.logger.warn("autoUpdate.remote_track_switch_archive_changed", { track, version });
+        service.cancelTrackSwitch(track);
         return;
       }
       args.logger.info("autoUpdate.remote_install_start", { version });
@@ -115,9 +117,13 @@ export function createRemoteUpdateInstaller(args: {
       // person who asked is not here to resume them by hand.
       void service.quitAndInstall(true, { requestedRemotely: true }).then(
         (started) => {
-          if (!started) args.logger.warn("autoUpdate.remote_install_not_started", { version });
+          if (!started) {
+            args.logger.warn("autoUpdate.remote_install_not_started", { version });
+            if (track) service.cancelTrackSwitch(track);
+          }
         },
         (error: unknown) => {
+          if (track) service.cancelTrackSwitch(track);
           args.logger.warn("autoUpdate.remote_install_failed", {
             version,
             error: error instanceof Error ? error.message : String(error),
@@ -130,9 +136,13 @@ export function createRemoteUpdateInstaller(args: {
   const installWhenDownloaded = (service: UpdateService, targetVersion: string | null, track?: UpdateTrack): void => {
     clearPendingDownload();
     let unsubscribe: (() => void) | null = null;
+    const fail = (): void => {
+      stop();
+      if (track) service.cancelTrackSwitch(track);
+    };
     const timeout = setTimeout(() => {
       args.logger.warn("autoUpdate.remote_install_download_timeout", { targetVersion });
-      stop();
+      fail();
     }, downloadTimeoutMs);
     const stop = (): void => {
       clearTimeout(timeout);
@@ -152,6 +162,7 @@ export function createRemoteUpdateInstaller(args: {
             if (pendingDownload !== null || disposed) return;
             if (blocked) {
               args.logger.warn("autoUpdate.remote_install_blocked", { version, reason: blocked });
+              if (track) service.cancelTrackSwitch(track);
               return;
             }
             scheduleInstall(service, version, track);
@@ -161,6 +172,7 @@ export function createRemoteUpdateInstaller(args: {
             targetVersion,
             version: snapshot.version,
           });
+          if (track) service.cancelTrackSwitch(track);
         }
         return;
       }
@@ -170,7 +182,7 @@ export function createRemoteUpdateInstaller(args: {
           status: snapshot.status,
           error: snapshot.error,
         });
-        stop();
+        fail();
       }
     };
     unsubscribe = service.onStateChange(onSnapshot);
@@ -351,8 +363,7 @@ export function createRemoteUpdateInstaller(args: {
       const answer = await install({ targetVersion: null, requestedBy: request.requestedBy ?? null }, target);
       if (answer.outcome !== "installing" && answer.outcome !== "downloading") {
         // The asking machine hears this failed: the switch must not finish later on its own.
-        const cancelled = service.startTrackSwitch(runningTrack);
-        if (!cancelled.ok) args.logger.warn("autoUpdate.remote_track_switch_cancel_failed", { target, reason: cancelled.reason });
+        service.cancelTrackSwitch(target);
       }
       return answer;
     },

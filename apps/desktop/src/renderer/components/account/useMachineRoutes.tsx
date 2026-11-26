@@ -144,10 +144,11 @@ export function useMachineRoutesControl(args: {
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
+    const scheduled = timers.current;
     return () => {
       alive.current = false;
-      for (const timer of timers.current) window.clearTimeout(timer);
-      timers.current.clear();
+      for (const timer of scheduled) window.clearTimeout(timer);
+      scheduled.clear();
     };
   }, []);
   const later = useCallback((run: () => void, ms: number) => {
