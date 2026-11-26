@@ -652,16 +652,15 @@ async function scheduledWakeTimesOf(runtime: AdeRuntime): Promise<number[]> {
  * Cloud computer opens its projects at the brain's start).
  */
 export async function readMachineNextScheduledWakeAt(args: BootedRuntimeSources & {
-  personalChatScope?: Partial<Pick<PersonalChatScope, "bootedRuntime">>;
+  personalChatScope: Partial<Pick<PersonalChatScope, "bootedRuntime">>;
 }): Promise<number | null> {
-  const personal = typeof args.personalChatScope?.bootedRuntime === "function"
+  const personal = typeof args.personalChatScope.bootedRuntime === "function"
     ? await args.personalChatScope.bootedRuntime()
     : null;
-  const times = [
-    ...await mapBootedProjectRuntimes(args, (runtime) => scheduledWakeTimesOf(runtime)),
-    personal ? await scheduledWakeTimesOf(personal) : [],
+  const all = [
+    ...(await mapBootedProjectRuntimes(args, scheduledWakeTimesOf)).flat(),
+    ...(personal ? await scheduledWakeTimesOf(personal) : []),
   ];
-  const all = times.flat();
   return all.length ? Math.min(...all) : null;
 }
 

@@ -32806,7 +32806,9 @@ async function runServe(
   if (!embedded && cloudInstanceId) {
     void (async () => {
       for (const project of projectRegistry.list()) {
-        await scopeRegistry.get(project.projectId).then(
+        // Not a use of the project: its "last opened" (and the folder a new
+        // project defaults to beside) stays the person's.
+        await scopeRegistry.get(project.projectId, { touch: false }).then(
           () => headlessProjectLogger.info("cloud.project_open_at_start", { projectId: project.projectId }),
           (error: unknown) => headlessProjectLogger.warn("cloud.project_open_at_start_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) }),
         );
