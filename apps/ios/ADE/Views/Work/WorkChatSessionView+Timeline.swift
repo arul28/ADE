@@ -200,7 +200,8 @@ extension WorkChatSessionView {
         WorkMcpAppCardView(card: card)
       } else if card.variant == cloudTierRequestVariant {
         // An agent's size request: the person answers it here, on the chat's own machine.
-        WorkCloudTierRequestCard(card: card, sessionId: session.id)
+        // A same-machine quick look at another project's chat reads it only, as its sign-in card.
+        WorkCloudTierRequestCard(card: card, sessionId: session.id, canAct: providerSignInAllowed)
       } else if card.variant == "lane_setup", let launchStore = SyncService.shared?.chatLaunchStore {
         // The instant-lane setup record. Rendered from the live launch snapshot
         // while this device holds one, from the card's own rows otherwise.

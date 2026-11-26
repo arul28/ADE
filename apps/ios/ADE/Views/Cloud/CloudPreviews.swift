@@ -630,10 +630,31 @@ private struct CloudTierRequestChatFixture: View {
     ], sessionId: sessionId, timestamp: "2026-11-26T10:00:00Z", sequence: 1, turnId: "turn-1")
   }
 
+  /// An earlier request the person said yes to, whose change failed: "Try again".
+  private var failedCard: WorkAdeCardModel {
+    workAdeCardModel(from: [
+      "cardId": "cloud-tier-request:fixture-0",
+      "variant": "cloud_tier_request",
+      "state": "resolved",
+      "title": "Change fix-login-redirect to X-Large?",
+      "subtitle": "You said do it now. The change failed: ADE Cloud has no full computer free right now.",
+      "rows": [
+        ["key": "tier_request_computer", "icon": "info", "text": "fix-login-redirect", "detail": "zodqsue74s"],
+        ["key": "tier_request_size", "icon": "info", "text": "4 credits an hour on X-Large (1 now)", "detail": "xlarge"],
+        ["key": "tier_request_to_label", "icon": "info", "text": "X-Large"],
+        ["key": "tier_request_from", "icon": "info", "text": "Now Medium", "detail": "medium"],
+        ["key": "tier_request_answer", "icon": "info", "text": "Do it now", "detail": "now"],
+        ["key": "tier_request_outcome", "icon": "info", "text": "Failed", "detail": "failed"],
+      ],
+      "fallbackText": "The agent asked to change fix-login-redirect to X-Large. The change failed.",
+    ], sessionId: sessionId, timestamp: "2026-11-26T09:00:00Z", sequence: 0, turnId: "turn-0")
+  }
+
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
+          WorkCloudTierRequestCard(card: failedCard, sessionId: sessionId)
           Text("The tests pass. I don't need the big computer any more, so I asked to go back to Medium.")
             .font(.system(size: 15))
             .foregroundStyle(ADEColor.textPrimary)

@@ -30,6 +30,8 @@ struct WorkCloudTierRequestFacts: Equatable {
   let rateText: String?
   /// What the card says the person answered (`idle`, `now`, `dismiss`); nil while it still asks.
   let answer: String?
+  /// How the change ended as the card says (`online`, `failed`, `cancelled`); nil before it ends.
+  let outcome: String?
 
   init?(_ card: WorkAdeCardModel) {
     guard card.variant == cloudTierRequestVariant, card.id.hasPrefix("cloud-tier-request:") else { return nil }
@@ -51,6 +53,8 @@ struct WorkCloudTierRequestFacts: Equatable {
     rateText = size.text.hasPrefix("To ") ? nil : nonEmptyTrimmed(size.text)
     let answered = row("tier_request_answer")?.detail
     answer = ["idle", "now", "dismiss"].contains(answered ?? "") ? answered : nil
+    let ended = row("tier_request_outcome")?.detail
+    outcome = ["online", "failed", "cancelled"].contains(ended ?? "") ? ended : nil
   }
 }
 
@@ -73,10 +77,13 @@ final class WorkCloudTierRequestRuns: ObservableObject {
   /// The computers a change of this phone runs on: one change of a computer at a time.
   private var changing: Set<String> = []
 
-  /// A chat the phone couldn't tell how its change ended is tried again after these waits.
-  private let tellRetrySeconds: [UInt64] = [15, 60, 120]
-  private let movePollSeconds: UInt64 = 5
+  /// A chat the phone couldn't tell how its change ended is tried again after
+  /// these waits: its computer restarts, or (a move) the chat shows up on the
+  /// new computer once the phone's machine list has it.
+  private let tellRetrySeconds: [UInt64] = [15, 30, 60, 120, 180, 240]
+  private let pollSeconds: UInt64 = 5
   private let moveWaitMaxSeconds: Double = 30 * 60
+  private let resizeWaitMaxSeconds: Double = 10 * 60
 
   func isWorking(_ requestId: String) -> Bool {
     if case .working = runs[requestId] { return true }
@@ -100,7 +107,8 @@ final class WorkCloudTierRequestRuns: ObservableObject {
 
   /// Do it now: the agent hears the yes on its chat's machine, the change runs
   /// on the account server with the phone's sign-in (a resize, or a move to
-  /// the other kind), and the chat hears how it ended.
+  /// the other kind), and the chat hears how it ended. Again after a failed
+  /// change: the card's yes stands, and the new end is told.
   func changeNow(_ facts: WorkCloudTierRequestFacts, sessionId: String) async {
     guard !isWorking(facts.requestId), !changing.contains(facts.instanceId), let sync = SyncService.shared else { return }
     changing.insert(facts.instanceId)
@@ -114,12 +122,12 @@ final class WorkCloudTierRequestRuns: ObservableObject {
     defer {
       if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
     }
-
-    guard let client = await sync.cloudServerClient() else {
-      runs[facts.requestId] = .failed("Sign in to ADE, then try again.")
+    func refuse(_ sentence: String) {
+      runs[facts.requestId] = .failed(sentence)
       ADEHaptics.error()
-      return
     }
+
+    guard let client = await sync.cloudServerClient() else { return refuse("Sign in to ADE, then try again.") }
     let account: CloudPhoneAccount?
     if let known = AccountCloudStore.shared.account {
       account = known
@@ -127,17 +135,17 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       account = try? await client.account()
     }
     guard let tier = cloudPhoneTiers(account?.catalog).first(where: { $0.id == facts.toSizeId }) else {
-      runs[facts.requestId] = .failed("ADE Cloud doesn't offer that size now.")
-      ADEHaptics.error()
-      return
+      return refuse("ADE Cloud doesn't offer that size now.")
     }
     let box: CloudServerInstance
     do {
       box = try await client.instance(facts.instanceId)
     } catch {
-      runs[facts.requestId] = .failed(cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't read this computer.")
-      ADEHaptics.error()
-      return
+      return refuse(cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't read this computer.")
+    }
+    // A disk can't shrink (a move keeps it too): refused before anything stops.
+    if let disk = box.resources?.disk, let max = tier.diskMaxGb, disk > max {
+      return refuse("\(tier.label) holds a disk of up to \(cloudGbText(max)) GB, and this computer's disk is \(cloudGbText(disk)) GB. A disk can't shrink, so pick a size that holds it.")
     }
     let move = (box.type == "vm" ? "vm" : "default") != tier.type
 
@@ -152,11 +160,16 @@ final class WorkCloudTierRequestRuns: ObservableObject {
     let outcome: (end: String, error: String?)
     if move {
       runs[facts.requestId] = .working("Moving \(facts.computerName) to \(tier.withArticle). It takes a few minutes.")
-      outcome = await runMove(client: client, facts: facts, tier: tier)
+      let request = sync.cloudTierRequestChatPin(sessionId: sessionId).map {
+        CloudMoveChatRequest(requestId: facts.requestId, chatSessionId: sessionId, pin: $0)
+      }
+      outcome = await runMove(client: client, facts: facts, tier: tier, request: request)
     } else {
       runs[facts.requestId] = .working("Changing \(facts.computerName) to \(tier.label). It restarts on the new size.")
       let result = await client.changeSize(instanceId: facts.instanceId, to: tier)
-      outcome = result.ok ? ("online", nil) : ("failed", cloudPhoneWords(result.message) ?? result.message)
+      outcome = result.ok
+        ? await waitForSize(client: client, facts: facts, tier: tier, wasAwake: box.status == "running")
+        : ("failed", cloudPhoneWords(result.message) ?? result.message)
     }
     switch outcome.end {
     case "online":
@@ -164,6 +177,10 @@ final class WorkCloudTierRequestRuns: ObservableObject {
       ADEHaptics.success()
     case "cancelled":
       runs[facts.requestId] = .done("The change was cancelled. \(facts.computerName) kept its size.")
+    case "running":
+      // Still going on the server: nothing to tell yet; whoever follows it there tells the chat.
+      runs[facts.requestId] = .done(outcome.error ?? "The move is still running. Follow it on the ADE Cloud page.")
+      return
     default:
       runs[facts.requestId] = .failed("The change to \(tier.label) stopped\(outcome.error.map { ": \(cloudWithoutStop($0))" } ?? "").")
       ADEHaptics.error()
@@ -171,35 +188,56 @@ final class WorkCloudTierRequestRuns: ObservableObject {
     await tellEnd(sync: sync, facts: facts, sessionId: sessionId, outcome: outcome)
   }
 
+  /// A resize the server took, followed until the computer reads the new CPU
+  /// and memory (and runs again, when it was awake): then it is online.
+  private func waitForSize(client: CloudServerClient, facts: WorkCloudTierRequestFacts, tier: CloudPhoneTier, wasAwake: Bool) async -> (end: String, error: String?) {
+    let since = Date()
+    while Date().timeIntervalSince(since) < resizeWaitMaxSeconds {
+      if let box = try? await client.instance(facts.instanceId), let size = box.resources,
+         size.cpu == tier.cpu, size.memory == tier.memoryGb, !wasAwake || box.status == "running" {
+        return ("online", nil)
+      }
+      try? await Task.sleep(nanoseconds: pollSeconds * 1_000_000_000)
+    }
+    return ("failed", "It isn't back on \(tier.label) after 10 minutes. Check it on the ADE Cloud page")
+  }
+
   /// The server's move to the other kind, followed until it ends. A move that
-  /// waits on the person's approval shows on the ADE Cloud page.
-  private func runMove(client: CloudServerClient, facts: WorkCloudTierRequestFacts, tier: CloudPhoneTier) async -> (end: String, error: String?) {
+  /// waits on the person's approval shows on the ADE Cloud page. The request
+  /// rides on the move's record, so the desktop and ADE Web tell the chat too.
+  private func runMove(client: CloudServerClient, facts: WorkCloudTierRequestFacts, tier: CloudPhoneTier, request: CloudMoveChatRequest?) async -> (end: String, error: String?) {
+    let moveId = UUID().uuidString.lowercased()
     var record: CloudServerMove
     do {
-      record = try await client.startMove(instanceId: facts.instanceId, to: tier.full ? "full" : "standard", sizeId: tier.id, moveId: UUID().uuidString.lowercased())
+      record = try await client.startMove(instanceId: facts.instanceId, to: tier.full ? "full" : "standard", sizeId: tier.id, moveId: moveId, request: request)
     } catch CloudServerClient.Failure.noAccess {
       return ("failed", cloudPhoneKindChangeReason(to: tier))
     } catch {
       return ("failed", cloudPhoneWords(cloudServerFailureMessage(error)) ?? "ADE Cloud couldn't start the move")
+    }
+    // The server answers a move already running for this computer instead: not this request's.
+    guard record.moveId.lowercased() == moveId else {
+      return ("failed", "Another change of this computer is already running. Follow it on the ADE Cloud page")
     }
     let since = Date()
     while !record.isFinished, Date().timeIntervalSince(since) < moveWaitMaxSeconds {
       if record.approval != nil {
         runs[facts.requestId] = .working("The move waits for you. Finish it on the ADE Cloud page.")
       }
-      try? await Task.sleep(nanoseconds: movePollSeconds * 1_000_000_000)
+      try? await Task.sleep(nanoseconds: pollSeconds * 1_000_000_000)
       if let fresh = try? await client.move(record.moveId) { record = fresh }
     }
     switch record.state {
     case "done": return ("online", nil)
     case "cancelled": return ("cancelled", nil)
     case "failed": return ("failed", record.error ?? cloudPhoneWords(record.message))
-    default: return ("failed", "The move is still running. Follow it on the ADE Cloud page")
+    default: return ("running", "The move is still running. Follow it on the ADE Cloud page.")
     }
   }
 
   /// How the change ended, to the chat's own machine, tried again while that
-  /// computer comes back from its restart.
+  /// computer comes back from its restart (or the chat shows up on the new
+  /// computer after a move: the route is read again on every try).
   private func tellEnd(sync: SyncService, facts: WorkCloudTierRequestFacts, sessionId: String, outcome: (end: String, error: String?)) async {
     var attempt = 0
     while true {
@@ -226,23 +264,44 @@ final class WorkCloudTierRequestRuns: ObservableObject {
 
 /// An agent's size request in its chat: what it asks for and why, the rates
 /// now and after, and two buttons. Answered (here or anywhere), it is one
-/// line with the answer.
+/// line with the answer, and "Try again" after a failed change.
 struct WorkCloudTierRequestCard: View {
   let card: WorkAdeCardModel
   let sessionId: String
+  /// False where the phone can't reach the chat's machine to answer (a
+  /// cross-project quick look): the card reads, with no buttons.
+  var canAct: Bool = true
   @ObservedObject private var runs = WorkCloudTierRequestRuns.shared
   @ObservedObject private var accountCloud = AccountCloudStore.shared
 
   var body: some View {
     if let facts = WorkCloudTierRequestFacts(card), !sessionId.isEmpty {
       if facts.answer != nil || card.isTerminal {
+        let run = runs.runs[facts.requestId]
         VStack(alignment: .leading, spacing: 2) {
           answeredLine(card.subtitle.flatMap { nonEmptyTrimmed($0) } ?? card.fallbackText)
-          // This phone's change still runs (a move waiting on approval) or stopped: say so under the answer.
-          switch runs.runs[facts.requestId] {
+          // This phone's change still runs (a move waiting on approval), ended
+          // before the card says so, or stopped: say so under the answer.
+          switch run {
           case .working(let text): runLine(text, tone: ADEColor.textSecondary)
+          case .done(let text) where facts.outcome == nil: runLine(text, tone: ADEColor.textSecondary)
           case .failed(let text): runLine(text, tone: ADEColor.warning)
           default: EmptyView()
+          }
+          if canRetry(facts, run: run) {
+            Button {
+              Task { await runs.changeNow(facts, sessionId: sessionId) }
+            } label: {
+              Text("Try again")
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(ADEColor.accentBright)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(ADEColor.accent.opacity(0.12), in: Capsule(style: .continuous))
+                .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.36), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 4)
           }
         }
       } else {
@@ -341,7 +400,7 @@ struct WorkCloudTierRequestCard: View {
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
       }
-      if !isDone(run) {
+      if canAct && !isDone(run) {
         HStack(spacing: 8) {
           Button {
             Task { await runs.changeNow(facts, sessionId: sessionId) }
@@ -383,6 +442,16 @@ struct WorkCloudTierRequestCard: View {
   private func isMove(_ facts: WorkCloudTierRequestFacts) -> Bool {
     guard let from = facts.fromSizeId.flatMap(cloudPhoneTierType(id:)), let to = cloudPhoneTierType(id: facts.toSizeId) else { return false }
     return from != to
+  }
+
+  /// A yes whose change failed, here or as the card says: the same change again.
+  private func canRetry(_ facts: WorkCloudTierRequestFacts, run: WorkCloudTierRequestRun?) -> Bool {
+    guard canAct, facts.answer == "now" || facts.answer == "idle" else { return false }
+    switch run {
+    case .failed: return true
+    case nil: return facts.outcome == "failed"
+    default: return false
+    }
   }
 
   private func isDone(_ run: WorkCloudTierRequestRun?) -> Bool {

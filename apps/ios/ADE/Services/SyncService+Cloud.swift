@@ -602,6 +602,30 @@ extension SyncService {
     )
   }
 
+  /// The asking chat as a move's record keeps it (`requestedByChatPin`): a
+  /// saved-chat pin that names the chat's ADE Cloud computer by its account
+  /// key (`cloud-saved:<key>`), as the desktop and ADE Web read it. Whoever
+  /// follows the move there tells the chat on the new computer, after the
+  /// phone closes too. Nil for a chat on no ADE Cloud computer or with no project.
+  func cloudTierRequestChatPin(sessionId: String) -> [String: String]? {
+    guard let key = chatThreadKey(for: sessionId), isCloudFleetKey(key.machineKey),
+          let accountKey = cloudAccountMachineKey(fleetKey: key.machineKey).flatMap({ nonEmptyTrimmed($0) }) else { return nil }
+    let projectId: String
+    let rootPath: String?
+    switch key.scope {
+    case .crossProject(let id, let root):
+      projectId = id
+      rootPath = root
+    case .project(let id):
+      projectId = id
+      rootPath = activeProjectRootPath
+    case .personal:
+      return nil
+    }
+    guard let projectId = nonEmptyTrimmed(projectId), let rootPath = rootPath.flatMap({ nonEmptyTrimmed($0) }) else { return nil }
+    return ["kind": "remote", "targetId": "cloud-saved:\(accountKey)", "projectId": projectId, "rootPath": rootPath]
+  }
+
   /// Whether the account pays for ADE Cloud, or nil while that can't be read
   /// (ADE Cloud is off for the account, an older machine, no connection).
   /// One account read, no computers: the CTO's home chooser needs only the
