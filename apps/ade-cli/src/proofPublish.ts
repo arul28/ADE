@@ -8,6 +8,11 @@
  * rewrites each `![caption](./file)` reference in the body to the uploaded
  * asset, so the comment reads like the agent's answer: each item under its
  * caption.
+ *
+ * GitHub's upload endpoint refuses most GitHub App tokens, so on a computer
+ * where `gh` runs on the ADE account's App token (an ADE Cloud computer) the
+ * upload goes out with the account's copy of a `gh` login instead, or is
+ * refused up front with what to do ({@link ghUploadEnv}).
  */
 
 import { spawnSync } from "node:child_process";
@@ -22,6 +27,13 @@ import {
   stageProofFile,
   type PublishableArtifact,
 } from "../../desktop/src/main/services/prs/prBodyProofStaging";
+import {
+  envHasOwnGithubToken,
+  ghHasOwnGithubLogin,
+  GH_TOKEN_SOURCE_ACCOUNT_APP,
+  GH_TOKEN_SOURCE_ENV,
+} from "../../desktop/src/main/services/github/githubSessionEnv";
+import { GH_TOKEN_ENDPOINT_ENV, GH_TOKEN_USE_UPLOAD } from "../../desktop/src/main/services/github/githubShellShim";
 
 export type ProofPublishResult = {
   prUrl: string;
@@ -62,6 +74,68 @@ export function assertGhSupportsAttach(run: typeof spawnSync = spawnSync): void 
   }
 }
 
+/** What to do when only ADE's GitHub App sign-in could upload, which GitHub refuses. */
+export const GH_UPLOAD_NEEDS_GH_LOGIN =
+  "GitHub does not take file uploads from ADE's GitHub App sign-in, and it is the only GitHub sign-in this command has. " +
+  "Run gh auth login on this computer, or on one of your own computers (ADE shares that login with your account), then run this again.";
+
+/** GitHub App tokens: user-to-server and installation. The upload endpoint refuses most of them. */
+const isGithubAppToken = (token: string): boolean => /^gh[us]_/.test(token);
+
+/**
+ * Asks this machine's ADE token endpoint for a token that can upload: the
+ * account's copy of a `gh` login. A child process, because the publish runs
+ * synchronously. Null when ADE has none; "unreached" when the endpoint did not
+ * answer (a sandbox may block it).
+ */
+function askUploadToken(endpoint: string, env: NodeJS.ProcessEnv, run: typeof spawnSync): string | null | "unreached" {
+  const script = [
+    'const http = require("node:http");',
+    `const request = http.request({ socketPath: process.argv[1], path: "/v1/token?use=${GH_TOKEN_USE_UPLOAD}", method: "GET", agent: false, timeout: 10000 }, (response) => {`,
+    '  let body = ""; response.setEncoding("utf8");',
+    '  response.on("data", (chunk) => { body += chunk; });',
+    '  response.on("end", () => { process.stdout.write(response.statusCode + "\\n" + body); });',
+    "});",
+    'request.on("timeout", () => request.destroy(new Error("timeout")));',
+    'request.on("error", () => process.exit(3));',
+    "request.end();",
+  ].join("\n");
+  const result = run(process.execPath, ["-e", script, endpoint], {
+    encoding: "utf8",
+    env: { ...env, ELECTRON_RUN_AS_NODE: "1" },
+    timeout: 15_000,
+    windowsHide: true,
+  });
+  const [status, token = ""] = String(result.stdout ?? "").split("\n");
+  if (result.status !== 0 || (status !== "200" && status !== "204")) return "unreached";
+  return status === "200" && /^[A-Za-z0-9_.-]+$/.test(token) ? token : null;
+}
+
+/**
+ * The environment for `gh` calls that upload files. A token or `gh` login of
+ * this machine's own is used as it is (the person's computer). When only ADE
+ * gives `gh` a token, the upload uses the account's copy of a `gh` login, and
+ * is refused with {@link GH_UPLOAD_NEEDS_GH_LOGIN} when that is all an App
+ * token, instead of gh's "requires write access" (GitHub answers an App
+ * token's upload with a 404, whatever the App's permissions).
+ */
+export function ghUploadEnv(env: NodeJS.ProcessEnv = process.env, run: typeof spawnSync = spawnSync): NodeJS.ProcessEnv {
+  if (envHasOwnGithubToken(env) || ghHasOwnGithubLogin(env)) return env;
+  const endpoint = env[GH_TOKEN_ENDPOINT_ENV]?.trim();
+  if (endpoint) {
+    const token = askUploadToken(endpoint, env, run);
+    // The shim would not reach it either and says so; gh runs as before.
+    if (token === "unreached") return env;
+    if (!token || isGithubAppToken(token)) throw new ProofPublishError(GH_UPLOAD_NEEDS_GH_LOGIN);
+    // No ADE marker: the shim steps aside and the real gh runs with this token.
+    return { ...env, GH_TOKEN: token, [GH_TOKEN_SOURCE_ENV]: "" };
+  }
+  // No endpoint: ADE may have frozen a token into the session (githubSessionEnv.ts).
+  const frozen = env[GH_TOKEN_SOURCE_ENV] === GH_TOKEN_SOURCE_ACCOUNT_APP ? env.GH_TOKEN?.trim() : "";
+  if (frozen && isGithubAppToken(frozen)) throw new ProofPublishError(GH_UPLOAD_NEEDS_GH_LOGIN);
+  return env;
+}
+
 /**
  * Posts the artifacts to the PR as one comment and returns what went up and
  * what was left out, with the reason. Throws when nothing could be posted or
@@ -76,14 +150,18 @@ export function publishProofToPullRequest(args: {
   /** Delete this account's earlier ADE proof comments on the PR, after the new one posts. */
   replace?: boolean;
   cwd?: string;
+  env?: NodeJS.ProcessEnv;
   run?: typeof spawnSync;
 }): ProofPublishResult {
   const run = args.run ?? spawnSync;
   assertGhSupportsAttach(run);
+  // Every call uses the upload's login, so `replace` finds the comments it posted.
+  const env = ghUploadEnv(args.env, run);
 
   const view = run("gh", ["pr", "view", args.pr, "--json", "url", "--jq", ".url"], {
     encoding: "utf8",
     cwd: args.cwd,
+    env,
     timeout: GH_TIMEOUTS_MS.quick,
   });
   const prUrl = String(view.stdout ?? "").trim();
@@ -122,13 +200,14 @@ export function publishProofToPullRequest(args: {
     const comment = run("gh", ["pr", "comment", prUrl, "--body-file", "body.md", ...attachArgs], {
       encoding: "utf8",
       cwd: staging,
+      env,
       timeout: GH_TIMEOUTS_MS.upload,
     });
     if (comment.status !== 0) {
       throw new ProofPublishError(`gh pr comment failed: ${ghFailure(comment, `exit ${comment.status}`)}`);
     }
     const commentUrl = /https:\/\/\S+#issuecomment-\d+/.exec(String(comment.stdout ?? ""))?.[0] ?? null;
-    const replaced = args.replace ? deleteEarlierProofComments({ run, prUrl, keepUrl: commentUrl, cwd: args.cwd, warnings }) : undefined;
+    const replaced = args.replace ? deleteEarlierProofComments({ run, prUrl, keepUrl: commentUrl, cwd: args.cwd, env, warnings }) : undefined;
     return { prUrl, commentUrl, posted, skipped, warnings, ...(replaced !== undefined ? { replaced } : {}) };
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
@@ -146,6 +225,7 @@ function deleteEarlierProofComments(args: {
   prUrl: string;
   keepUrl: string | null;
   cwd?: string;
+  env: NodeJS.ProcessEnv;
   warnings: string[];
 }): number {
   const match = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(args.prUrl);
@@ -155,7 +235,7 @@ function deleteEarlierProofComments(args: {
     return 0;
   }
   const [, owner, repo, number] = match;
-  const login = args.run("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8", cwd: args.cwd, timeout: GH_TIMEOUTS_MS.quick });
+  const login = args.run("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8", cwd: args.cwd, env: args.env, timeout: GH_TIMEOUTS_MS.quick });
   const me = String(login.stdout ?? "").trim();
   if (login.status !== 0 || !me) {
     args.warnings.push(`Earlier proof comments were left in place: ${ghFailure(login, "gh could not read the signed-in account")}.`);
@@ -164,7 +244,7 @@ function deleteEarlierProofComments(args: {
   const list = args.run(
     "gh",
     ["api", "--paginate", `repos/${owner}/${repo}/issues/${number}/comments`, "--jq", `.[] | [.id, .user.login, (.body | contains(${JSON.stringify(PROOF_COMMENT_FOOTER)}))] | @tsv`],
-    { encoding: "utf8", cwd: args.cwd, timeout: GH_TIMEOUTS_MS.upload },
+    { encoding: "utf8", cwd: args.cwd, env: args.env, timeout: GH_TIMEOUTS_MS.upload },
   );
   if (list.status !== 0) {
     args.warnings.push(`Earlier proof comments were left in place: ${ghFailure(list, "gh could not list the PR's comments")}.`);
@@ -177,6 +257,7 @@ function deleteEarlierProofComments(args: {
     const removal = args.run("gh", ["api", "-X", "DELETE", `repos/${owner}/${repo}/issues/comments/${id}`], {
       encoding: "utf8",
       cwd: args.cwd,
+      env: args.env,
       timeout: GH_TIMEOUTS_MS.quick,
     });
     if (removal.status === 0) deleted += 1;
@@ -199,11 +280,13 @@ export function publishProofIntoPullRequestBody(args: {
   projectRoot: string;
   artifacts: PublishableArtifact[];
   cwd?: string;
+  env?: NodeJS.ProcessEnv;
   run?: typeof spawnSync;
 }): ProofPublishResult {
   const run = args.run ?? spawnSync;
   assertGhSupportsAttach(run);
-  const { url: prUrl, body } = readPullRequestBody(args.pr, { cwd: args.cwd, run });
+  const env = ghUploadEnv(args.env, run);
+  const { url: prUrl, body } = readPullRequestBody(args.pr, { cwd: args.cwd, env, run });
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-publish-"));
   try {
     const { rewritten, posted, skipped, warnings } = stagePrBodyProof({ body, artifacts: args.artifacts, projectRoot: args.projectRoot, staging });
@@ -216,7 +299,7 @@ export function publishProofIntoPullRequestBody(args: {
     const edit = run(
       "gh",
       ["pr", "edit", prUrl, "--body-file", "body.md", ...posted.flatMap((entry) => ["--attach", `./${entry.file}`])],
-      { encoding: "utf8", cwd: staging, timeout: GH_TIMEOUTS_MS.upload },
+      { encoding: "utf8", cwd: staging, env, timeout: GH_TIMEOUTS_MS.upload },
     );
     if (edit.status !== 0) {
       throw new ProofPublishError(`gh pr edit failed: ${ghFailure(edit, `exit ${edit.status}`)}`);
@@ -228,11 +311,15 @@ export function publishProofIntoPullRequestBody(args: {
 }
 
 /** The PR's URL and its text as GitHub holds them now. */
-export function readPullRequestBody(pr: string, options: { cwd?: string; run?: typeof spawnSync } = {}): { url: string; body: string } {
+export function readPullRequestBody(
+  pr: string,
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; run?: typeof spawnSync } = {},
+): { url: string; body: string } {
   const run = options.run ?? spawnSync;
   const view = run("gh", ["pr", "view", pr, "--json", "url,body"], {
     encoding: "utf8",
     cwd: options.cwd,
+    env: options.env,
     timeout: GH_TIMEOUTS_MS.quick,
   });
   let parsed: { url?: unknown; body?: unknown } = {};

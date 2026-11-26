@@ -27,6 +27,9 @@ import { defaultCliShimsRoot } from "../shared/cliShimsRoot";
  *   5) on Windows. One per process (desktop main, brain), named by its pid.
  *   `GET /v1/token?owner=<owner>` answers 200 with the token, or 204 when
  *   ADE has none for that owner (the shim then steps aside).
+ *   `GET /v1/token?use=upload` asks for a token that can upload files (`gh
+ *   --attach`): only the account's copy of a `gh` login, never the App token
+ *   (see {@link GH_TOKEN_USE_UPLOAD}). `ade proof publish` asks it directly.
  * - The shims, written to `<tmp>/ade-cli-shims[-<uid>]/github-<hash>` (beside the
  *   `ade` shims), refusing a folder another user owns or can write:
  *   - macOS/Linux: `gh` is a `#!/bin/sh` script. It asks with `curl`
@@ -59,6 +62,15 @@ import { defaultCliShimsRoot } from "../shared/cliShimsRoot";
 export const GITHUB_SHIM_MARKER_FILE = ".ade-github-shim";
 export const GH_TOKEN_ENDPOINT_ENV = "ADE_GH_TOKEN_ENDPOINT";
 export const GH_SHIM_OWNER_ENV = "ADE_GH_SHIM_OWNER";
+/**
+ * The endpoint's `use` for a file upload. GitHub's upload endpoint
+ * (`uploads.github.com/user-attachments/assets`, behind `gh --attach`)
+ * refuses most GitHub App tokens, whatever the App's permissions: it answers
+ * 404, which gh words as "attaching files requires write access to the
+ * repository" (cli/cli#14309, #14495). So an upload gets only the account's
+ * copy of a `gh` login.
+ */
+export const GH_TOKEN_USE_UPLOAD = "upload";
 const GIT_CREDENTIAL_HELPER_NAME = "git-credential-ade-github";
 const GIT_HELPER_CONFIG_KEY = "credential.https://github.com.helper";
 /** Git Credential Manager's switch for its sign-in prompts, for github.com only. */
@@ -512,8 +524,11 @@ export function installGithubShellShim(args: {
 // Token endpoint
 // ---------------------------------------------------------------------------
 
-/** Answers the shims: the token for `owner`, or null to make them step aside. */
-export type GithubShellTokenAnswer = (owner: string | null) => Promise<string | null>;
+/**
+ * Answers the shims: the token for `owner`, or null to make them step aside.
+ * With `use: "upload"`, only a token that can upload files, or null.
+ */
+export type GithubShellTokenAnswer = (owner: string | null, options?: { use?: typeof GH_TOKEN_USE_UPLOAD }) => Promise<string | null>;
 
 /** This process's endpoint: a Unix socket in the ADE sock folder, or a named pipe. */
 export function githubShellTokenEndpointPath(args: {
@@ -583,13 +598,14 @@ export function createGithubShellTokenServer(args: {
     if (url.pathname !== "/v1/token") return finish(404);
     const rawOwner = url.searchParams.get("owner")?.trim() ?? "";
     const owner = OWNER_PATTERN.test(rawOwner) ? rawOwner : null;
+    const use = url.searchParams.get("use") === GH_TOKEN_USE_UPLOAD ? GH_TOKEN_USE_UPLOAD : undefined;
     const answer = args.answer();
     if (!answer) return finish(204);
     let token: string | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     try {
       token = await Promise.race([
-        answer(owner),
+        use ? answer(owner, { use }) : answer(owner),
         new Promise<null>((resolve) => {
           timer = setTimeout(() => resolve(null), ANSWER_TIMEOUT_MS);
         }),
