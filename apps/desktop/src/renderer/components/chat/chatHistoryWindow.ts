@@ -5,6 +5,7 @@ import type {
 import {
   agentChatEventIdentityKey,
   foldedOverAppends,
+  reconcileAgentChatSavedCopies,
   recordAgentChatLiveAppend,
 } from "../../../shared/chatHistoryMerge";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
@@ -193,11 +194,15 @@ export function savedCopyPartOf(cursor: number | null | undefined): number | nul
  * awake (`readOlderHistoryBatch`'s `fromSavedCopy`).
  */
 export function prependOlderChatHistoryPage(
-  older: AgentChatEventEnvelope[],
-  existing: AgentChatEventEnvelope[],
+  olderRead: AgentChatEventEnvelope[],
+  held: AgentChatEventEnvelope[],
   dedupeAll = false,
 ): AgentChatEventEnvelope[] {
-  if (!older.length) return existing;
+  if (!olderRead.length) return held;
+  // A saved copy's row and the live row it was copied from are one event,
+  // wherever on screen the other one sits.
+  const { held: existing, incoming, matchedIncoming } = reconcileAgentChatSavedCopies(held, olderRead);
+  const older = matchedIncoming.size ? incoming.filter((_entry, index) => !matchedIncoming.has(index)) : incoming;
   const seamWindow = dedupeAll ? existing.length : Math.min(existing.length, older.length + 64);
   const seamKeys = new Set<string>();
   for (let index = 0; index < seamWindow; index += 1) {
@@ -360,9 +365,11 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   ) {
     return args.snapshotCursor;
   }
+  // The merge took each saved copy's live row in its place (`reconcileAgentChatSavedCopies`).
+  const existingEvents = reconcileAgentChatSavedCopies(args.existingEvents, args.snapshotEvents).held;
   const snapshotKeys = new Set(args.snapshotEvents.map(chatEventDedupKey));
-  const snapshotOverlaps = args.existingEvents.some((event) => snapshotKeys.has(chatEventDedupKey(event)));
-  const oldestExistingKey = chatEventDedupKey(args.existingEvents[0]!);
+  const snapshotOverlaps = existingEvents.some((event) => snapshotKeys.has(chatEventDedupKey(event)));
+  const oldestExistingKey = chatEventDedupKey(existingEvents[0]!);
   const keptOldestExisting = args.mergedEvents.some((event) => chatEventDedupKey(event) === oldestExistingKey);
   if (!snapshotOverlaps || !keptOldestExisting) return args.snapshotCursor;
   if ((savedCopyPartOf(args.currentCursor) == null) === (savedCopyPartOf(args.snapshotCursor) == null)) {

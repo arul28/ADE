@@ -28,6 +28,145 @@ export function agentChatEventIdentityKey(entry: AgentChatEventEnvelope): string
 }
 
 /**
+ * What an ADE Cloud chat's saved copy writes in place of what it leaves out
+ * (`redactValue` in `cloudChatUploader`): a secret or a credential field
+ * becomes `[REDACTED]`, a long string ends in `\n[truncated]`, a value nested
+ * too deep becomes `[truncated]`.
+ */
+const SAVED_COPY_MARK = /\[(?:REDACTED|truncated)\]/;
+const savedCopyMarkCache = new WeakMap<AgentChatEventEnvelope, boolean>();
+
+/** Whether a row carries a saved copy's mark anywhere, so it may be the saved copy of a live row. */
+function carriesSavedCopyMark(entry: AgentChatEventEnvelope): boolean {
+  const cached = savedCopyMarkCache.get(entry);
+  if (cached !== undefined) return cached;
+  const marked = SAVED_COPY_MARK.test(agentChatEventIdentityKey(entry));
+  savedCopyMarkCache.set(entry, marked);
+  return marked;
+}
+
+/** The parts of a row the saved copy never changes: its chat, time, kind and number. */
+function savedCopyKey(entry: AgentChatEventEnvelope): string {
+  return `${entry.sessionId}\u0000${entry.timestamp}\u0000${entry.event.type}\u0000${entry.sequence ?? ""}\u0000${entry.sequenceStart ?? ""}`;
+}
+
+function isSavedCopyMarkedString(value: string): boolean {
+  return value.includes("[REDACTED]") || value.endsWith("\n[truncated]");
+}
+
+/**
+ * Whether `copy` is `original` as the saved copy wrote it: the same in every
+ * value, except a string the saved copy marked (it stands for any string) and
+ * a `[truncated]` that stands for a deep object or array. Any other
+ * difference is a different event. Undefined fields don't survive JSON, so
+ * they count as absent.
+ */
+function savedCopyValueMatches(copy: unknown, original: unknown): boolean {
+  if (copy === original) return true;
+  if (typeof copy === "string") {
+    if (copy === "[truncated]" && original !== null && typeof original === "object") return true;
+    return typeof original === "string" && isSavedCopyMarkedString(copy);
+  }
+  if (Array.isArray(copy)) {
+    if (!Array.isArray(original) || copy.length !== original.length) return false;
+    return copy.every((value, index) => savedCopyValueMatches(value, original[index] ?? null));
+  }
+  if (!copy || typeof copy !== "object" || !original || typeof original !== "object" || Array.isArray(original)) {
+    return false;
+  }
+  const copyRecord = copy as Record<string, unknown>;
+  const originalRecord = original as Record<string, unknown>;
+  for (const [key, value] of Object.entries(originalRecord)) {
+    if (value !== undefined && !savedCopyValueMatches(copyRecord[key], value)) return false;
+  }
+  for (const [key, value] of Object.entries(copyRecord)) {
+    if (value !== undefined && originalRecord[key] === undefined) return false;
+  }
+  return true;
+}
+
+function isSavedCopyOf(copy: AgentChatEventEnvelope, original: AgentChatEventEnvelope): boolean {
+  return copy !== original
+    && savedCopyKey(copy) === savedCopyKey(original)
+    && agentChatEventIdentityKey(copy) !== agentChatEventIdentityKey(original)
+    && savedCopyValueMatches(copy.event, original.event);
+}
+
+/** Where each marked row of a list sits, by `savedCopyKey`. */
+function savedCopyIndexOf(events: readonly AgentChatEventEnvelope[]): Map<string, number> {
+  const index = new Map<string, number>();
+  for (let position = 0; position < events.length; position += 1) {
+    const entry = events[position]!;
+    if (!carriesSavedCopyMark(entry)) continue;
+    const key = savedCopyKey(entry);
+    if (!index.has(key)) index.set(key, position);
+  }
+  return index;
+}
+
+export type AgentChatSavedCopyReconciliation = {
+  /** The held rows, each saved copy whose original `incoming` has replaced by that original, in place. */
+  held: AgentChatEventEnvelope[];
+  /** The incoming rows, each saved copy of a held original replaced by the held envelope. */
+  incoming: AgentChatEventEnvelope[];
+  /** Positions in `incoming` of rows `held` now holds the same envelope for. */
+  matchedIncoming: ReadonlySet<number>;
+};
+
+const NO_MATCHED_INCOMING: ReadonlySet<number> = new Set();
+
+/**
+ * One event read twice, from an ADE Cloud chat's saved copy and from its
+ * computer, is two different payloads: the saved copy redacts and cuts what
+ * it stores. The content identity then sees two events and the pane showed
+ * both. Pair each saved row with the live row it was copied from (same chat,
+ * time, kind and number; equal but for what the saved copy marked) and keep
+ * the live one: it is what the computer wrote, and nothing is lost. A live
+ * row that differs in anything else stays a separate event. Lists with no
+ * marked row come back as they are.
+ */
+export function reconcileAgentChatSavedCopies(
+  held: AgentChatEventEnvelope[],
+  incoming: AgentChatEventEnvelope[],
+): AgentChatSavedCopyReconciliation {
+  const unchanged = { held, incoming, matchedIncoming: NO_MATCHED_INCOMING };
+  if (!held.length || !incoming.length) return unchanged;
+  const heldCopies = savedCopyIndexOf(held);
+  if (!heldCopies.size && !incoming.some(carriesSavedCopyMark)) return unchanged;
+  let nextHeld = held;
+  let nextIncoming = incoming;
+  const matched = new Set<number>();
+  let heldByKey: Map<string, number> | null = null;
+  for (let position = 0; position < incoming.length; position += 1) {
+    const entry = incoming[position]!;
+    const key = savedCopyKey(entry);
+    const copyAt = heldCopies.get(key);
+    if (copyAt !== undefined && isSavedCopyOf(nextHeld[copyAt]!, entry)) {
+      if (nextHeld === held) nextHeld = [...held];
+      nextHeld[copyAt] = entry;
+      heldCopies.delete(key);
+      matched.add(position);
+      continue;
+    }
+    if (!carriesSavedCopyMark(entry)) continue;
+    if (!heldByKey) {
+      heldByKey = new Map();
+      for (let index = 0; index < nextHeld.length; index += 1) {
+        const heldKey = savedCopyKey(nextHeld[index]!);
+        if (!heldByKey.has(heldKey)) heldByKey.set(heldKey, index);
+      }
+    }
+    const originalAt = heldByKey.get(key);
+    if (originalAt !== undefined && isSavedCopyOf(entry, nextHeld[originalAt]!)) {
+      if (nextIncoming === incoming) nextIncoming = [...incoming];
+      nextIncoming[position] = nextHeld[originalAt]!;
+      matched.add(position);
+    }
+  }
+  return matched.size ? { held: nextHeld, incoming: nextIncoming, matchedIncoming: matched } : unchanged;
+}
+
+/**
  * Capture the identities already resident at the start of an asynchronous
  * history read so reconciliation can distinguish stale pre-read replay rows
  * from events received while that read was in flight.
@@ -202,6 +341,8 @@ type LiveMergeIndex = {
   identityKeys: Set<string>;
   /** Null until a tool event first needs it. */
   toolCallIndexByKey: Map<string, number> | null;
+  /** Where each row that may be a saved copy sits (`savedCopyIndexOf`); usually empty. */
+  savedCopies: Map<string, number>;
 };
 
 const liveMergeIndexByList = new WeakMap<readonly AgentChatEventEnvelope[], LiveMergeIndex>();
@@ -363,18 +504,34 @@ export function mergeAgentChatLiveEvents(
 
   const carried = liveMergeIndexByList.get(existing);
   const seen = carried?.identityKeys ?? new Set(existing.map(agentChatEventIdentityKey));
+  const savedCopies = carried?.savedCopies ?? savedCopyIndexOf(existing);
   const fresh: AgentChatEventEnvelope[] = [];
+  // The held list with each saved copy whose live row just arrived replaced
+  // by that row (an ADE Cloud computer woke and sent what its saved copy holds).
+  let held = existing;
   for (const entry of incoming) {
     const key = agentChatEventIdentityKey(entry);
     if (seen.has(key)) continue;
+    const copyAt = savedCopies.size ? savedCopies.get(savedCopyKey(entry)) : undefined;
+    if (copyAt !== undefined && isSavedCopyOf(held[copyAt]!, entry)) {
+      if (held === existing) held = [...existing];
+      seen.delete(agentChatEventIdentityKey(held[copyAt]!));
+      savedCopies.delete(savedCopyKey(entry));
+      held[copyAt] = entry;
+      seen.add(key);
+      continue;
+    }
     seen.add(key);
     fresh.push(entry);
   }
-  if (!fresh.length) return existing;
+  if (!fresh.length && held === existing) return existing;
   // `seen` now also holds the new events: it describes the merged list, so the
   // old list must not keep it.
   liveMergeIndexByList.delete(existing);
-  const index: LiveMergeIndex = { identityKeys: seen, toolCallIndexByKey: carried?.toolCallIndexByKey ?? null };
+  // Rare (right after a wake), so it takes the full path: the carried values
+  // only know appends and tool-call resends.
+  if (held !== existing) return upsertRepeatedToolCalls(orderAgentChatEventsChronologically([...held, ...fresh]), held);
+  const index: LiveMergeIndex = { identityKeys: seen, toolCallIndexByKey: carried?.toolCallIndexByKey ?? null, savedCopies };
 
   let appendAnchor = existing[existing.length - 1];
   let appendOnly = true;
@@ -452,13 +609,15 @@ function prefixJoinsAtResentToolCall(
  * they arrived during hydration and must not be discarded by the stale snapshot.
  */
 export function mergeAgentChatHistorySnapshot(
-  snapshot: AgentChatEventEnvelope[],
-  existing: AgentChatEventEnvelope[],
+  snapshotRead: AgentChatEventEnvelope[],
+  held: AgentChatEventEnvelope[],
   options: AgentChatHistorySnapshotMergeOptions = {},
 ): AgentChatEventEnvelope[] {
-  if (!existing.length) return upsertRepeatedToolCalls(snapshot);
-  if (!snapshot.length) return existing;
+  if (!held.length) return upsertRepeatedToolCalls(snapshotRead);
+  if (!snapshotRead.length) return held;
 
+  // A saved copy's row and the live row it was copied from are one event.
+  const { held: existing, incoming: snapshot } = reconcileAgentChatSavedCopies(held, snapshotRead);
   const identityKey = options.identityKey ?? agentChatEventIdentityKey;
   const existingByKey = new Map<string, AgentChatEventEnvelope>();
   const existingIndexByKey = new Map<string, number>();
