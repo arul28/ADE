@@ -171,6 +171,7 @@ export interface CtoOperatorToolDeps {
     linkArtifactsToChat?: CtoProofBroker["linkArtifactsToChat"];
     ingestAsync?: CtoProofBroker["ingestAsync"];
     resolveArtifactFilePath?: CtoProofBroker["resolveArtifactFilePath"];
+    assertImportableSource?: CtoProofBroker["assertImportableSource"];
   } | null;
   /** Where `showMedia` and `getChatProof` write converted or pulled files before filing them. */
   proofScratchDir?: string | null;
@@ -1244,7 +1245,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   const proofBroker = (): CtoProofBroker | null => {
     const broker = deps.computerUseArtifactBrokerService;
-    if (!broker?.linkArtifactsToChat || !broker.ingestAsync || !broker.resolveArtifactFilePath) return null;
+    if (!broker?.linkArtifactsToChat || !broker.ingestAsync || !broker.resolveArtifactFilePath || !broker.assertImportableSource) return null;
     return broker as CtoProofBroker;
   };
   const proofScratchDir = (): string => deps.proofScratchDir?.trim() || path.join(os.tmpdir(), "ade-cto-proof");

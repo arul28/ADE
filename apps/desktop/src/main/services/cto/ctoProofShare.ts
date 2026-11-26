@@ -10,7 +10,7 @@ import {
   type ComputerUseArtifactView,
 } from "../../../shared/types";
 import type { CtoMachineTarget, CtoRemoteActionCall } from "../ai/tools/ctoCrossMachine";
-import { ensurePlayableVideo, isConvertibleVideoPath } from "../computerUse/proofPlayableVideo";
+import { ensurePlayableVideo, isConvertibleVideoPath, PROOF_VIDEO_EXTENSIONS } from "../computerUse/proofPlayableVideo";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, isRecord } from "../shared/utils";
 
@@ -54,6 +54,8 @@ export type CtoProofBroker = {
   linkArtifactsToChat: (args: { artifactIds: string[]; chatSessionId: string }) => ComputerUseArtifactView[];
   ingestAsync: (request: ComputerUseArtifactIngestionRequest) => Promise<ComputerUseArtifactIngestionResult>;
   resolveArtifactFilePath: (artifact: Pick<ComputerUseArtifactView, "storageKind" | "uri">) => string | null;
+  /** Throws when ingest would refuse `absolutePath` (a secret, or outside the import roots). */
+  assertImportableSource: (absolutePath: string) => void;
 };
 
 /** Which of a chat's proof to show. `latest`: the newest turn that filed any. */
@@ -66,6 +68,22 @@ const REMOTE_SLICE_BYTES = 4 * 1024 * 1024;
 export const CTO_REMOTE_PROOF_MAX_BYTES = 512 * 1024 * 1024;
 const REMOTE_SLICE_TIMEOUT_MS = 60_000;
 const SHOWABLE_KINDS = new Set<ComputerUseArtifactKind>(["screenshot", "video_recording"]);
+/** Enough to hold every copy one CTO chat makes; the broker's own ceiling. */
+const CTO_OWNED_LIST_LIMIT = 2000;
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif", ".tif", ".tiff"]);
+
+/**
+ * One conversion or pull per CTO chat and record at a time: a report's wake
+ * and a getChatProof call for the same proof would otherwise both copy it.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
+function onceAtATime<T>(key: string, run: () => Promise<T>): Promise<T> {
+  const running = inFlight.get(key) as Promise<T> | undefined;
+  if (running) return running;
+  const started = run().finally(() => inFlight.delete(key));
+  inFlight.set(key, started);
+  return started;
+}
 
 function turnIdOf(artifact: ComputerUseArtifactView): string | null {
   const value = artifact.metadata?.turnId;
@@ -116,7 +134,7 @@ function ownedCopyOf(
   return broker.listArtifacts({
     ownerKind: "chat_session",
     ownerId: ctoSessionId,
-    limit: 500,
+    limit: CTO_OWNED_LIST_LIMIT,
     ...PROOF_LISTING_ARTIFACT_FILTER,
   }).find((row) => row.availability !== "missing_file" && matches(row.metadata ?? {})) ?? null;
 }
@@ -165,11 +183,14 @@ export async function showFileAsCtoProof(args: {
   logger?: Logger | null;
 }): Promise<CtoShownProof> {
   const extension = path.extname(args.sourcePath).toLowerCase();
-  const video = /^\.(mp4|m4v|mov|qt|webm|mkv|avi)$/.test(extension);
-  const image = /^\.(png|jpe?g|gif|webp|heic|heif|tiff?)$/.test(extension);
+  const video = PROOF_VIDEO_EXTENSIONS.has(extension);
+  const image = IMAGE_EXTENSIONS.has(extension);
   if (!video && !image) {
     throw new Error(`showMedia shows pictures and videos; ${path.basename(args.sourcePath)} is neither.`);
   }
+  // Checked before converting: the MP4 copy sits in the scratch dir, which
+  // ingest allows, so only the source can be refused.
+  args.broker.assertImportableSource(args.sourcePath);
   const stat = await fs.promises.stat(args.sourcePath).catch(() => null);
   if (!stat?.isFile()) throw new Error(`There is no file at ${args.sourcePath}.`);
   let filePath = args.sourcePath;
@@ -210,6 +231,18 @@ async function playableCopyFor(args: {
 }): Promise<CtoShownProof | null> {
   const sourcePath = args.broker.resolveArtifactFilePath(args.artifact);
   if (!sourcePath || !isConvertibleVideoPath(sourcePath)) return null;
+  return onceAtATime(`${args.ctoSessionId}:${args.artifact.id}`, () => convertForCto({ ...args, sourcePath }));
+}
+
+async function convertForCto(args: {
+  broker: CtoProofBroker;
+  ctoSessionId: string;
+  artifact: ComputerUseArtifactView;
+  sourcePath: string;
+  scratchDir: string;
+  logger?: Logger | null;
+}): Promise<CtoShownProof | null> {
+  const { sourcePath } = args;
   const existing = ownedCopyOf(args.broker, args.ctoSessionId, (metadata) => metadata.convertedFrom === args.artifact.id);
   if (existing) return shown(existing, { sourceArtifactId: args.artifact.id });
   const playable = await ensurePlayableVideo({ sourcePath, outputDir: args.scratchDir, logger: args.logger ?? null });
@@ -255,7 +288,7 @@ export async function shareChatProofWithCto(args: {
   });
   if (args.onlyUnshared) {
     const copiedFrom = new Set(
-      args.broker.listArtifacts({ ownerKind: "chat_session", ownerId: args.ctoSessionId, limit: 500, ...PROOF_LISTING_ARTIFACT_FILTER })
+      args.broker.listArtifacts({ ownerKind: "chat_session", ownerId: args.ctoSessionId, limit: CTO_OWNED_LIST_LIMIT, ...PROOF_LISTING_ARTIFACT_FILTER })
         .map((row) => row.metadata?.convertedFrom)
         .filter((id): id is string => typeof id === "string"),
     );
@@ -285,6 +318,7 @@ export async function shareChatProofWithCto(args: {
     try {
       copy = await playableCopyFor({ ...args, artifact });
     } catch (error) {
+      args.logger?.warn("cto.proof_convert_failed", { artifactId: artifact.id, error: getErrorMessage(error) });
       showOriginal(artifact, getErrorMessage(error));
       continue;
     }
@@ -406,66 +440,82 @@ export async function importRemoteChatProof(args: {
   const result: CtoProofShareResult = { shown: [], skipped: [], more };
   await fs.promises.mkdir(args.scratchDir, { recursive: true });
   for (const artifact of picked) {
-    // A copy pulled before outlives the original: it shows even after the
-    // file there is deleted or that machine goes to sleep.
-    const existing = ownedCopyOf(args.broker, args.ctoSessionId, (metadata) => {
-      const from = isRecord(metadata.importedFrom) ? metadata.importedFrom : null;
-      return from?.artifactId === artifact.id && from?.machineId === args.machine.machineId;
-    });
-    if (existing) {
-      result.shown.push(shown(existing, { sourceArtifactId: artifact.id }));
-      continue;
-    }
-    if (artifact.availability && artifact.availability !== "available") {
-      result.skipped.push({ artifactId: artifact.id, title: artifact.title, reason: `its file is gone on ${args.machine.name}` });
-      continue;
-    }
-    const pulled = path.join(args.scratchDir, `${randomUUID()}${extensionFor(artifact)}`);
-    let playablePath: string | null = null;
-    try {
-      await pullRemoteFile({ runAction: args.runAction, machine: args.machine, artifact, target: pulled });
-      let filePath = pulled;
-      let note: string | undefined;
-      if (isConvertibleVideoPath(pulled)) {
-        try {
-          const playable = await ensurePlayableVideo({ sourcePath: pulled, outputDir: args.scratchDir, logger: args.logger ?? null });
-          if (playable.converted) playablePath = playable.path;
-          filePath = playable.path;
-        } catch (error) {
-          note = getErrorMessage(error);
-        }
-      }
-      const view = await fileAsCto({
-        broker: args.broker,
-        ctoSessionId: args.ctoSessionId,
-        filePath,
-        kind: artifact.kind,
-        title: artifact.title,
-        description: artifact.description,
-        metadata: {
-          importedFrom: {
-            machineId: args.machine.machineId,
-            machineName: args.machine.name,
-            artifactId: artifact.id,
-            chatSessionId: args.chatSessionId,
-          },
-        },
-        toolName: "getChatProof",
-      });
-      result.shown.push(shown(view, { sourceArtifactId: artifact.id, ...(note ? { note } : {}) }));
-    } catch (error) {
-      args.logger?.warn("cto.proof_import_failed", {
-        machineId: args.machine.machineId,
-        artifactId: artifact.id,
-        error: getErrorMessage(error),
-      });
-      result.skipped.push({ artifactId: artifact.id, title: artifact.title, reason: getErrorMessage(error) });
-    } finally {
-      await fs.promises.rm(pulled, { force: true }).catch(() => undefined);
-      if (playablePath) await fs.promises.rm(playablePath, { force: true }).catch(() => undefined);
-    }
+    const outcome = await onceAtATime(
+      `${args.ctoSessionId}:${args.machine.machineId}:${artifact.id}`,
+      () => importOne({ ...args, artifact }),
+    );
+    if ("reason" in outcome) result.skipped.push(outcome);
+    else result.shown.push(outcome);
   }
   return result;
+}
+
+/** One remote record: the CTO's copy (pulled now or before), or why it could not be shown. */
+async function importOne(args: {
+  broker: CtoProofBroker;
+  runAction: RemoteRunAction;
+  machine: CtoMachineTarget;
+  chatSessionId: string;
+  ctoSessionId: string;
+  artifact: ComputerUseArtifactView;
+  scratchDir: string;
+  logger?: Logger | null;
+}): Promise<CtoShownProof | { artifactId: string; title: string; reason: string }> {
+  const { artifact } = args;
+  // A copy pulled before outlives the original: it shows even after the
+  // file there is deleted or that machine goes to sleep.
+  const existing = ownedCopyOf(args.broker, args.ctoSessionId, (metadata) => {
+    const from = isRecord(metadata.importedFrom) ? metadata.importedFrom : null;
+    return from?.artifactId === artifact.id && from?.machineId === args.machine.machineId;
+  });
+  if (existing) return shown(existing, { sourceArtifactId: artifact.id });
+  if (artifact.availability && artifact.availability !== "available") {
+    return { artifactId: artifact.id, title: artifact.title, reason: `its file is gone on ${args.machine.name}` };
+  }
+  const pulled = path.join(args.scratchDir, `${randomUUID()}${extensionFor(artifact)}`);
+  let playablePath: string | null = null;
+  try {
+    await pullRemoteFile({ runAction: args.runAction, machine: args.machine, artifact, target: pulled });
+    let filePath = pulled;
+    let note: string | undefined;
+    if (isConvertibleVideoPath(pulled)) {
+      try {
+        const playable = await ensurePlayableVideo({ sourcePath: pulled, outputDir: args.scratchDir, logger: args.logger ?? null });
+        if (playable.converted) playablePath = playable.path;
+        filePath = playable.path;
+      } catch (error) {
+        note = getErrorMessage(error);
+      }
+    }
+    const view = await fileAsCto({
+      broker: args.broker,
+      ctoSessionId: args.ctoSessionId,
+      filePath,
+      kind: artifact.kind,
+      title: artifact.title,
+      description: artifact.description,
+      metadata: {
+        importedFrom: {
+          machineId: args.machine.machineId,
+          machineName: args.machine.name,
+          artifactId: artifact.id,
+          chatSessionId: args.chatSessionId,
+        },
+      },
+      toolName: "getChatProof",
+    });
+    return shown(view, { sourceArtifactId: artifact.id, ...(note ? { note } : {}) });
+  } catch (error) {
+    args.logger?.warn("cto.proof_import_failed", {
+      machineId: args.machine.machineId,
+      artifactId: artifact.id,
+      error: getErrorMessage(error),
+    });
+    return { artifactId: artifact.id, title: artifact.title, reason: getErrorMessage(error) };
+  } finally {
+    await fs.promises.rm(pulled, { force: true }).catch(() => undefined);
+    if (playablePath) await fs.promises.rm(playablePath, { force: true }).catch(() => undefined);
+  }
 }
 
 /** The lines a child report's wake carries, so the CTO can show the proof without asking for it. */

@@ -6,8 +6,10 @@ import type {
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
 } from "../../../shared/types";
-import type { SyncArtifactRange } from "../../../shared/types/sync";
-import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
+import { inlineMediaMime } from "../../components/chat/chatInlineMediaUtils";
+import { base64ToBytes } from "../../lib/base64";
+import { playableVideoMime } from "../../lib/playableMedia";
+import { requestArtifactRange, requestDataUrl } from "./infra/fileBlob";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
@@ -69,7 +71,9 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
       }),
     readArtifactPreview: async (args: { uri: string }, pin?: RuntimePinArg): Promise<string | null> => {
       assertWebRuntimePinRoutable("computerUse.readArtifactPreview", pin, scope);
-      const cached = largeMediaUrls.get(args.uri);
+      // A path is only unique within one machine's project.
+      const cacheKey = `${client.getStatus().selectedEnvId ?? ""}\u0000${state.getProjectId() ?? ""}\u0000${args.uri}`;
+      const cached = largeMediaUrls.get(cacheKey);
       if (cached) return cached;
       try {
         return await requestDataUrl(client, state, "readArtifact", { uri: args.uri });
@@ -78,7 +82,7 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
         // the way the phone plays a long recording.
         if (!/too large/i.test(error instanceof Error ? error.message : String(error))) throw error;
         const url = await readLargeArtifact(args.uri);
-        rememberLargeMediaUrl(args.uri, url);
+        rememberLargeMediaUrl(cacheKey, url);
         return url;
       }
     },
@@ -89,18 +93,22 @@ export function createComputerUseNamespace(infra: AdapterInfra): AdeNamespace<"c
     let offset = 0;
     let total = Number.POSITIVE_INFINITY;
     while (offset < total) {
-      const slice = (await requestFileBlob(client, state, "readArtifactRange", { uri, offset })) as unknown as SyncArtifactRange;
+      const slice = await requestArtifactRange(client, state, { uri, offset });
       total = slice.totalSize;
       if (total > WEB_LARGE_MEDIA_MAX_BYTES) {
         throw new Error(`This proof is ${Math.round(total / (1024 * 1024))} MB, too large to play in the browser. Open it in the ADE app.`);
       }
       const bytes = base64ToBytes(slice.content);
-      if (!bytes.length) break;
+      if (!bytes.length) {
+        if (slice.eof) break;
+        throw new Error("The machine sent an empty part of this proof. Try again.");
+      }
       parts.push(bytes);
       offset += bytes.length;
       if (slice.eof) break;
     }
-    return URL.createObjectURL(new Blob(parts as BlobPart[], { type: mediaTypeForUri(uri) }));
+    // A QuickTime movie plays as MP4 in Chromium (see `playableMedia.ts`).
+    return URL.createObjectURL(new Blob(parts as BlobPart[], { type: playableVideoMime(inlineMediaMime(uri.split(/[?#]/)[0] ?? uri)) }));
   }
 }
 
@@ -110,32 +118,11 @@ const WEB_LARGE_MEDIA_MAX_BYTES = 256 * 1024 * 1024;
 const LARGE_MEDIA_URL_KEEP = 4;
 const largeMediaUrls = new Map<string, string>();
 
-function rememberLargeMediaUrl(uri: string, url: string): void {
-  largeMediaUrls.set(uri, url);
+function rememberLargeMediaUrl(key: string, url: string): void {
+  largeMediaUrls.set(key, url);
   while (largeMediaUrls.size > LARGE_MEDIA_URL_KEEP) {
-    const [oldestUri, oldestUrl] = largeMediaUrls.entries().next().value as [string, string];
-    largeMediaUrls.delete(oldestUri);
+    const [oldestKey, oldestUrl] = largeMediaUrls.entries().next().value as [string, string];
+    largeMediaUrls.delete(oldestKey);
     URL.revokeObjectURL(oldestUrl);
-  }
-}
-
-function base64ToBytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
-/** A QuickTime movie plays as MP4 in Chromium (see `playableMedia.ts`). */
-function mediaTypeForUri(uri: string): string {
-  const extension = /\.([a-z0-9]+)(?:[?#].*)?$/i.exec(uri)?.[1]?.toLowerCase() ?? "";
-  switch (extension) {
-    case "mp4": case "m4v": case "mov": return "video/mp4";
-    case "webm": return "video/webm";
-    case "png": return "image/png";
-    case "jpg": case "jpeg": return "image/jpeg";
-    case "gif": return "image/gif";
-    case "webp": return "image/webp";
-    default: return "application/octet-stream";
   }
 }

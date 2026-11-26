@@ -549,8 +549,8 @@ export function isSecretBearingAdeAction(domain: string, action: string): boolea
  * its own code (never its model) copies the result. Proof bytes: the CTO
  * shows a child's screenshot by pulling it home in slices
  * (`cto/ctoProofShare.ts`). The CTO's `runMachineAction` tool still refuses
- * these, so the bytes never reach a transcript, and an agent's bridge (role
- * `agent`) is still refused here.
+ * these, so the model cannot pull raw slices into its transcript, and an
+ * agent's bridge (role `agent`) is still refused here.
  */
 const ADE_ACTION_CTO_BRAIN_COPYABLE: Partial<Record<AdeActionDomain, readonly string[]>> = {
   computer_use_artifacts: ["readArtifactRange"],

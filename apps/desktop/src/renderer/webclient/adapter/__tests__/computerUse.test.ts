@@ -35,7 +35,9 @@ function hostWith(file: Uint8Array, sliceBytes: number) {
 }
 
 describe("computerUse.readArtifactPreview on the web", () => {
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   it("plays a proof over the host's whole-file cap from its slices, and pulls it once", async () => {
     const file = Uint8Array.from({ length: 25 }, (_, index) => index * 7);
@@ -47,7 +49,7 @@ describe("computerUse.readArtifactPreview on the web", () => {
     });
     const computerUse = createComputerUseNamespace(infra);
 
-    const url = await computerUse.readArtifactPreview!({ uri: ".ade/artifacts/computer-use/big-recording.mov" });
+    const url = await computerUse.readArtifactPreview!({ uri: ".ade/artifacts/computer-use/big-recording.mov" }, undefined as never);
 
     expect(url).toBe("blob:test/1");
     expect(blobs[0]!.type).toBe("video/mp4");
@@ -56,7 +58,7 @@ describe("computerUse.readArtifactPreview on the web", () => {
       .toEqual([0, 10, 20]);
 
     requestFile.mockClear();
-    await expect(computerUse.readArtifactPreview!({ uri: ".ade/artifacts/computer-use/big-recording.mov" })).resolves.toBe(url);
+    await expect(computerUse.readArtifactPreview!({ uri: ".ade/artifacts/computer-use/big-recording.mov" }, undefined as never)).resolves.toBe(url);
     expect(requestFile).not.toHaveBeenCalled();
   });
 });

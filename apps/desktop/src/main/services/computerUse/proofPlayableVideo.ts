@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
-import { ensureFfmpegTools, ffmpegDownloadable, runFfmpeg } from "../demoVideo/ffmpegDemoEngine";
+import { ensureFfmpegTools, ffmpegDownloadable, resolveFfmpegTools, runFfmpeg } from "../demoVideo/ffmpegDemoEngine";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 
@@ -14,13 +14,11 @@ import { getErrorMessage } from "../shared/utils";
  */
 const PLAYABLE_VIDEO_EXTENSIONS = new Set([".mp4", ".m4v"]);
 const CONVERTIBLE_VIDEO_EXTENSIONS = new Set([".mov", ".qt", ".webm", ".mkv", ".avi"]);
+/** Every video extension the CTO shows: the ones that play everywhere and the ones it converts. */
+export const PROOF_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([...PLAYABLE_VIDEO_EXTENSIONS, ...CONVERTIBLE_VIDEO_EXTENSIONS]);
 /** Containers whose video is usually already H.264 (screen and phone recordings). */
 const REMUX_FIRST_EXTENSIONS = new Set([".mov", ".qt", ".mkv"]);
 const CONVERT_TIMEOUT_MS = 5 * 60_000;
-
-export function isPlayableEverywhereVideoPath(filePath: string): boolean {
-  return PLAYABLE_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
-}
 
 export function isConvertibleVideoPath(filePath: string): boolean {
   return CONVERTIBLE_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
@@ -30,15 +28,14 @@ export type PlayableVideoResult =
   | { path: string; converted: false }
   | { path: string; converted: true; via: "ffmpeg-remux" | "ffmpeg" | "avconvert" };
 
-let localFfmpegLookup: string | null | undefined;
-function localFfmpeg(): string | null {
-  if (localFfmpegLookup === undefined) localFfmpegLookup = resolveExecutableFromKnownLocations("ffmpeg")?.path ?? null;
-  return localFfmpegLookup;
-}
-
+/**
+ * An ffmpeg that can encode H.264: one on this machine (a build without
+ * libx264, like Fedora's `ffmpeg-free`, is skipped), else ADE's pinned copy,
+ * downloaded on first use where ADE ships one.
+ */
 async function ffmpegPath(): Promise<string | null> {
-  const found = localFfmpeg();
-  if (found) return found;
+  const found = resolveFfmpegTools();
+  if (found) return found.ffmpegPath;
   if (!ffmpegDownloadable()) return null;
   return (await ensureFfmpegTools()).ffmpegPath;
 }
@@ -78,7 +75,7 @@ export async function ensurePlayableVideo(args: {
   const extension = path.extname(sourcePath).toLowerCase();
   if (!CONVERTIBLE_VIDEO_EXTENSIONS.has(extension)) return { path: sourcePath, converted: false };
   await fs.promises.mkdir(outputDir, { recursive: true });
-  const output = path.join(outputDir, `${path.basename(sourcePath, path.extname(sourcePath))}-${Date.now().toString(36)}.mp4`);
+  const output = path.join(outputDir, `${path.basename(sourcePath, path.extname(sourcePath))}-${randomUUID()}.mp4`);
   const tryFfmpeg = async (binaryPath: string, remux: boolean): Promise<boolean> => {
     try {
       await runFfmpeg({

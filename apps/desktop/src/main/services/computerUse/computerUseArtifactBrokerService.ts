@@ -1927,6 +1927,27 @@ export function createComputerUseArtifactBrokerService(args: {
      * screenshot in its own answer. The record keeps its lane and its first
      * owner, so deleting it there removes it here too.
      */
+    /**
+     * Refuses `absolutePath` the way ingest refuses a caller's file: a
+     * secret, or outside the import roots. For a caller that turns the file
+     * into another one first (an MP4 copy) and would otherwise only have the
+     * copy checked.
+     */
+    assertImportableSource(absolutePath: string): void {
+      if (isDeniedArtifactSource(absolutePath, deniedImportRoots)) {
+        throw new Error(`Artifact path is not allowed as a proof source: ${absolutePath}`);
+      }
+      try {
+        resolvePathWithinRoot(layout.artifactsDir, absolutePath);
+        return;
+      } catch {
+        // Not filed proof already; it has to sit in an import root.
+      }
+      if (!isAllowedExternalArtifactSource(absolutePath, allowedImportRoots)) {
+        throw outsideImportRootsError(absolutePath, allowedImportRoots);
+      }
+    },
+
     linkArtifactsToChat(args: { artifactIds: string[]; chatSessionId: string }): ComputerUseArtifactView[] {
       const chatSessionId = String(args.chatSessionId ?? "").trim();
       if (!chatSessionId) throw new Error("chatSessionId is required.");
