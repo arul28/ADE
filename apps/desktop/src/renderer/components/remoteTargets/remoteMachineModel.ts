@@ -629,6 +629,11 @@ export function isMachineStateConnectError(kind: RemoteRuntimeConnectErrorInfo["
   return kind != null && kind !== "generic";
 }
 
+/** The attempt never reached the machine: it may be asleep, or this computer may be offline. */
+export function isReachabilityFailure(failure: RemoteRuntimeConnectionAttemptFailure | null | undefined): boolean {
+  return failure === "unreachable" || failure === "timeout";
+}
+
 /**
  * Chooses what a failed connection should show the user. A structured
  * `lastErrorInfo` wins and is shown verbatim (plain-language message + optional

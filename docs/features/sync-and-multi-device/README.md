@@ -2488,7 +2488,7 @@ answers a `403` with a machine-readable code — `machine_revoked` or
 `pairing_authentication_required` — carried on the publisher health's
 `lastHttpReason`. The Connections popover decodes it with
 `readAccountRefusalCode` (in `shared/accountMachineRefusal.ts`) instead of
-showing "can't reach your ADE account right now": the This-machine line and the
+showing an outage line: the This-machine line and the
 publish-failing banner say "this computer was removed from your ADE account" or
 "sign in again to reconnect this computer", and the banner offers a
 **Reconnect this computer** or **Sign in again** button that presses the same
@@ -2496,8 +2496,11 @@ brain repair the Account page does. The shared copy table
 (`describeUnpublishedAccountDirectory` in `shared/types/sync.ts`) and the shared
 reconnect orchestration (`runMachinePairingReconnect`, which escalates to the
 device-flow sign-in only when the refusal demands it) keep the pane, the banner,
-and `ade setup` from drifting; a plain transport or `5xx` failure keeps the
-reachability wording.
+and `ade setup` from drifting. Any other HTTP failure (a `5xx`) says "ADE's
+account service is having trouble right now", and a request that gets no reply
+at all (a timeout or transport error) says "no internet connection": the
+directory sits on Cloudflare's edge, which answers even when the service behind
+it is down, so silence means this computer is offline.
 
 Every refusal the Worker issues is also logged with its wire code, a finer
 `reason`, the correlation id, and 8-character identifier prefixes, because by

@@ -542,6 +542,26 @@ const SYNC_ACCOUNT_DIRECTORY_STATES: readonly SyncAccountDirectoryState[] = [
 ];
 
 /**
+ * Publish attempts that got no reply at all: a timeout or a transport error,
+ * never an HTTP answer. The directory and Clerk sit on Cloudflare's edge, which
+ * answers even when the service behind it is down, so silence almost always
+ * means this computer is offline. The advice table words these states that
+ * way, and the desktop's offline check reads the same set.
+ */
+const ACCOUNT_DIRECTORY_NO_REPLY_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
+  "http_timeout",
+  "token_timeout",
+  "timeout",
+  "transport_error",
+]);
+
+export function isAccountDirectoryNoReplyState(
+  state: SyncAccountDirectoryState | string | null | undefined,
+): boolean {
+  return state != null && ACCOUNT_DIRECTORY_NO_REPLY_STATES.has(state as SyncAccountDirectoryState);
+}
+
+/**
  * Narrows a publisher state that arrived over RPC as an untyped string.
  *
  * The widening belongs here, at the trust boundary, rather than in a caller's
@@ -717,8 +737,10 @@ export function describeUnpublishedAccountDirectory(
           nextAction: "Confirm it's you",
         };
       }
+      // The directory answered, just not with a yes (a 5xx, or a 4xx with no
+      // refusal code). The network is fine; the service is not.
       return {
-        summary: "can't reach your ADE account right now, retrying",
+        summary: "ADE's account service is having trouble right now, retrying",
         nextAction: null,
       };
     }
@@ -726,8 +748,10 @@ export function describeUnpublishedAccountDirectory(
     case "token_timeout":
     case "timeout":
     case "transport_error":
+      // Nothing came back (see `isAccountDirectoryNoReplyState`). Saying
+      // "can't reach your ADE account" read like the account was broken.
       return {
-        summary: "can't reach your ADE account right now, retrying",
+        summary: "no internet connection, retrying",
         nextAction: null,
       };
     case "snapshot_failed":

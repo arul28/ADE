@@ -36,18 +36,18 @@ describe("describeUnpublishedAccountDirectory http_error refusal branches", () =
     });
   });
 
-  it("keeps the reachability text for every other HTTP failure", () => {
+  it("calls every other HTTP failure a service problem, not a reachability one", () => {
     const serverError = createSyncAccountDirectoryHealth("http_error", null, {
       lastHttpStatus: 500,
       lastHttpReason: null,
     });
     expect(describeUnpublishedAccountDirectory("http_error", serverError)).toEqual({
-      summary: "can't reach your ADE account right now, retrying",
+      summary: "ADE's account service is having trouble right now, retrying",
       nextAction: null,
     });
     // A caller with only the state (the CLI) keeps the same text.
     expect(describeUnpublishedAccountDirectory("http_error")).toEqual({
-      summary: "can't reach your ADE account right now, retrying",
+      summary: "ADE's account service is having trouble right now, retrying",
       nextAction: null,
     });
   });

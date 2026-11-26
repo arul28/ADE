@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
-import { CloudSlash, Gift, GithubLogo, Robot } from "@phosphor-icons/react";
+import { CloudSlash, Gift, GithubLogo, Robot, WifiSlash } from "@phosphor-icons/react";
 import type { NavigateFunction } from "react-router-dom";
 import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
   GitHubStatus,
   PrEventPayload,
-  SyncRouteHealth,
 } from "../../../shared/types";
+import {
+  deriveRelayOutageState,
+  relayGraceRemainingMs,
+  type RelayRouteHealth,
+} from "../../lib/thisComputerOffline";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import {
   deriveGithubAccountAuthState,
@@ -50,7 +54,7 @@ import {
  * every banner it raises is project scoped and leaves with the project.
  */
 
-export type RelayRouteHealth = SyncRouteHealth["relay"];
+export type { RelayRouteHealth } from "../../lib/thisComputerOffline";
 
 export type IntegrationBannersProps = {
   machineId: string;
@@ -70,6 +74,12 @@ export type IntegrationBannersProps = {
    * relay banner stays silent in that window rather than guessing.
    */
   relayHealth: RelayRouteHealth | null;
+  /**
+   * This machine's account-directory publish is getting no reply at all (a
+   * timeout or transport error). With the relay also down past its grace, the
+   * computer is offline (`deriveThisComputerOffline`).
+   */
+  accountDirectoryNoReply: boolean;
   navigate: NavigateFunction;
 };
 
@@ -82,59 +92,7 @@ const GITHUB_ICON = <GithubLogo size={13} weight="fill" />;
 const RELAY_ICON = <CloudSlash size={13} weight="fill" />;
 const AI_ICON = <Robot size={13} weight="fill" />;
 const FREE_MODELS_ICON = <Gift size={13} weight="fill" />;
-
-/**
- * How long the relay control has to stay down before we say anything. Relay
- * drops and redials constantly (sleep/wake, Wi-Fi hops, worker deploys); a
- * banner on every blip would be noise. Two minutes of UNINTERRUPTED outage is
- * past every normal reconnect.
- */
-const RELAY_OUTAGE_GRACE_MS = 120_000;
-
-export type RelayOutageState = "suppressed" | "down";
-
-/**
- * Decide whether the relay leg is in a state worth telling the user about.
- *
- * `relayControlSuppressed` is immediate: it means this process deliberately
- * stopped redialing because another ADE process on this machine claimed the
- * same machineKey. Nothing recovers that on its own, so a grace period would
- * only delay the fix.
- *
- * Everything else is measured from `relayControlFailingSinceMs` — the start of
- * the CURRENT uninterrupted outage. `lastFailureAt` deliberately isn't used: it
- * restamps on every retry, so it can never measure how long relay has been down.
- */
-export function deriveRelayOutageState(
-  relay: RelayRouteHealth | null | undefined,
-  nowMs: number,
-): RelayOutageState | null {
-  if (!relay) return null;
-  if (relay.enabled !== true) return null;
-  if (relay.relayControlConnected === true) return null;
-  if (relay.relayControlSuppressed === true) return "suppressed";
-  const failingSince = relay.relayControlFailingSinceMs;
-  if (failingSince == null) return null;
-  return nowMs - failingSince > RELAY_OUTAGE_GRACE_MS ? "down" : null;
-}
-
-/**
- * Milliseconds until an ongoing outage becomes reportable, or null when no
- * deadline is pending. Shares the predicate above so the timer and the banner
- * can never disagree about what counts as an outage.
- */
-export function relayGraceRemainingMs(
-  relay: RelayRouteHealth | null | undefined,
-  nowMs: number,
-): number | null {
-  if (deriveRelayOutageState(relay, nowMs) != null) return null;
-  const failingSince = relay?.relayControlFailingSinceMs;
-  if (relay?.enabled !== true || relay.relayControlConnected === true || failingSince == null) {
-    return null;
-  }
-  const remaining = RELAY_OUTAGE_GRACE_MS - (nowMs - failingSince);
-  return remaining > 0 ? remaining : null;
-}
+const OFFLINE_ICON = <WifiSlash size={13} weight="bold" />;
 
 export function IntegrationBanners({
   machineId,
@@ -144,6 +102,7 @@ export function IntegrationBanners({
   freeModelsReady,
   aiStatusLoaded,
   relayHealth,
+  accountDirectoryNoReply,
   navigate,
 }: IntegrationBannersProps): null {
   const dismissals = useBannerDismissals();
@@ -275,6 +234,9 @@ export function IntegrationBanners({
   // force the re-render when the grace timer fires. The result is a string or
   // null, so downstream dep lists stay stable.
   const relayOutage = deriveRelayOutageState(relayHealth, Date.now());
+  // Same predicate as `deriveThisComputerOffline`, from the boolean AppShell
+  // already reduced the account-directory state to.
+  const offline = relayOutage === "down" && accountDirectoryNoReply;
 
   // Clear-on-recovery: when a banner's underlying condition is HEALTHY, drop any
   // dismissal recorded for it so a later regression to the SAME state resurfaces a
@@ -305,11 +267,13 @@ export function IntegrationBanners({
     }
     if (hasAnyAiProvider) clearDismissal(`ai-provider:${currentProjectRoot}`);
     if (relayOutage == null) clearDismissal("relay-offline");
+    if (!offline) clearDismissal("this-computer-offline");
     if (!describeGithubOutage(githubStatus)) clearDismissal("github-outage");
   }, [
     machineId,
     currentProjectRoot,
     relayOutage,
+    offline,
     appStatusLoaded,
     appAuth,
     appInstall,
@@ -322,6 +286,28 @@ export function IntegrationBanners({
 
   const models = useMemo<BannerModel[]>(() => {
     const list: BannerModel[] = [];
+
+    // This computer is offline. The relay banner and "GitHub status is
+    // unavailable" are then symptoms of one cause, and three banners read
+    // like three broken services. Say it once; everything reconnects on its
+    // own, so there is nothing to press but the panel that shows the detail.
+    if (offline) {
+      list.push({
+        id: "this-computer-offline",
+        tone: "warning",
+        icon: OFFLINE_ICON,
+        title: "This computer is offline",
+        detail: "ADE can't reach the internet. Your other computers, your phone and GitHub reconnect on their own when it's back.",
+        actions: [
+          {
+            label: "Open connections",
+            variant: "primary",
+            onClick: () => openConnectionsPanel("machines"),
+          },
+        ],
+        dismiss: { key: "this-computer-offline", fingerprint: "offline" },
+      });
+    }
 
     // 0) GitHub outage (NEW). When GitHub's own status page confirms an
     // incident on a surface ADE uses, every GitHub banner below is a symptom of
@@ -448,6 +434,8 @@ export function IntegrationBanners({
       && currentProjectRoot
       && githubStatus
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
+      // Offline: "could not reach GitHub" is the offline banner's to say.
+      && !(offline && githubStatus.authFailure?.kind === "network")
     ) {
       githubCliShown = true;
       const described = describeGithubCliBanner(githubStatus, githubCliOnly);
@@ -551,7 +539,7 @@ export function IntegrationBanners({
     // the dismiss key is global (like github-app-account) rather than
     // project-scoped, and the fingerprint separates the two states so dismissing
     // a plain outage can't hide a later process-conflict.
-    if (relayOutage) {
+    if (relayOutage && !offline) {
       const reason =
         relayHealth?.relayControlSuppressedReason
         ?? relayHealth?.skipReason
@@ -635,6 +623,7 @@ export function IntegrationBanners({
     issueAccess,
     githubCliOnly,
     relayOutage,
+    offline,
     relayHealth,
     appStatusLoaded,
     appAuth,
@@ -662,7 +651,7 @@ export function IntegrationBanners({
         model,
         options: {
           placement: "docked",
-          priority: model.id === "github-outage"
+          priority: model.id === "github-outage" || model.id === "this-computer-offline"
             ? APP_BANNER_PRIORITY.outage
             : APP_BANNER_PRIORITY.integration + index / 100,
         },
