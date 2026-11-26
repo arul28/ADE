@@ -5206,7 +5206,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     makes a new computer). --stale: unused a week or due for
                                                     cleanup, biggest disk first. --deleted, --project <origin>
     $ ade cloud lanes <lane> --text               One lane and its saved chats (<lane>: name, id, branch or link)
-    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats (the card also offers Keep for later)
+    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats.
                                                     ADE checks its work first; the card also offers Keep for later
     $ ade cloud lanes free <lane>                 Keep for later: push its work, remove its computer, keep the lane
     $ ade cloud lanes start <lane> [--size medium]

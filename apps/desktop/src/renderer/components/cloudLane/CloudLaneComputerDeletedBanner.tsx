@@ -16,10 +16,10 @@ import { Banner, NoticePopover, type NoticeAction } from "../ui/notice";
 import { cloudLaneRestartProblem, cloudLaneRestartTier, useStartLaneOnNewComputer } from "./CloudLaneWithoutComputer";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import {
+  CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
   CLOUD_QUEUE_SIZE_ID,
   canDeleteCloudLaneWithoutComputer,
   cloudLaneWithoutComputerBranch,
-  CLOUD_LANE_WITHOUT_COMPUTER_DELETE_LABEL,
   cloudLaneWithoutComputerFate,
   cloudLaneWithoutComputerRowNow,
   cloudQueueSizeLabel,
@@ -235,7 +235,7 @@ export function CloudLaneComputerDeletedBanner({
           tone: "warning",
           icon: <CloudMark size={13} brand />,
           title: "ADE can't make a new computer for this lane",
-          detail: facts.blocked.message,
+          detail: onlyChats ? `${facts.blocked.message} ${onlyChats}` : facts.blocked.message,
           actions: [...fixes, ...(onOpenChat ? [{ label: "Open chat", variant: "secondary" as const, onClick: onOpenChat }] : []), ...(deleteAction ? [deleteAction] : [])],
         }}
       />
