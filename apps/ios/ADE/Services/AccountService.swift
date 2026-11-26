@@ -1475,7 +1475,9 @@ final class AccountService: ObservableObject {
   func signInWithOAuth(_ provider: OAuthProvider) async throws {
     lastError = nil
     do {
-      let result = try await signInStep { try await Clerk.shared.auth.signInWithOAuth(provider: provider) }
+      let result = try await signInStep {
+        try await Self.acceptLegalTermsIfMissing(try await Clerk.shared.auth.signInWithOAuth(provider: provider))
+      }
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
@@ -1494,7 +1496,9 @@ final class AccountService: ObservableObject {
   func signInWithApple() async throws {
     lastError = nil
     do {
-      let result = try await signInStep { try await Clerk.shared.auth.signInWithApple() }
+      let result = try await signInStep {
+        try await Self.acceptLegalTermsIfMissing(try await Clerk.shared.auth.signInWithApple())
+      }
       authenticationOutcome = Self.outcome(from: result)
       finishInteractiveSignIn()
       ProductAnalytics.shared.captureSignInOutcome(
@@ -2580,7 +2584,10 @@ final class AccountService: ObservableObject {
         _ = try await Clerk.shared.auth.signInWithEmailCode(emailAddress: email)
       },
       startSignUp: { email in
-        let signUp = try await Clerk.shared.auth.signUp(emailAddress: email)
+        // The sign-in sheet shows "By continuing, you agree to ADE's Terms and
+        // Privacy Policy" above every way in; Clerk requires the acceptance
+        // while its legal-consent setting is on.
+        let signUp = try await Clerk.shared.auth.signUp(emailAddress: email, legalAccepted: true)
         _ = try await signUp.sendEmailCode()
       },
       verifySignIn: { code in
@@ -2593,9 +2600,25 @@ final class AccountService: ObservableObject {
         guard let signUp = Clerk.shared.auth.currentSignUp else {
           throw AccountError.message("Start the email verification again.")
         }
-        _ = try await signUp.verifyEmailCode(code)
+        let verified = try await signUp.verifyEmailCode(code)
+        try await Self.acceptLegalTermsIfMissing(verified)
       }
     )
+  }
+
+  /// A Google, GitHub or Apple sign-up that Clerk holds back only for the
+  /// legal acceptance (ClerkKit's transfer flow does not send it). The sheet
+  /// already showed the agreement, so accept it and let Clerk finish.
+  @discardableResult
+  private static func acceptLegalTermsIfMissing(_ result: TransferFlowResult) async throws -> TransferFlowResult {
+    guard case .signUp(let signUp) = result else { return result }
+    try await acceptLegalTermsIfMissing(signUp)
+    return result
+  }
+
+  private static func acceptLegalTermsIfMissing(_ signUp: SignUp) async throws {
+    guard signUp.status == .missingRequirements, signUp.missingFields.contains(.legalAccepted) else { return }
+    _ = try await signUp.update(legalAccepted: true)
   }
 
   private static func outcome(from result: TransferFlowResult) -> AccountAuthenticationOutcome {
