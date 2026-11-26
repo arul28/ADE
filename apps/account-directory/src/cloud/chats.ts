@@ -20,9 +20,8 @@ import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedCompu
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
-import { deleteSessionCopiesForLane } from "./sessionCopies";
+import { deleteSessionCopiesForLane, readCappedJson } from "./sessionCopies";
 import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
-import { readBoundedBytes } from "../sinkUtils";
 
 /**
  * Saved chats (README, "Saved chats"). After each turn a computer sends the new
@@ -177,17 +176,6 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
   };
 }
 
-async function readJsonBody(request: Request, maxBytes: number): Promise<{ ok: true; value: unknown } | { ok: false; tooLarge: boolean }> {
-  const read = await readBoundedBytes(request, maxBytes);
-  if (!read.ok) return { ok: false, tooLarge: true };
-  try {
-    return { ok: true, value: JSON.parse(decoder.decode(read.bytes)) };
-  } catch {
-    return { ok: false, tooLarge: false };
-  }
-}
-
-
 /**
  * `PUT /cloud/chats/:machine/:chat/parts/:seq`, from the computer. Parts append
  * by sequence, and every path through here can be replayed:
@@ -204,7 +192,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     logCloud("cloud.chat_bucket_missing", { userId });
     return unavailable();
   }
-  const body = await readJsonBody(request, CLOUD_CHAT_MAX_PART_BYTES + PUT_BODY_OVERHEAD_BYTES);
+  const body = await readCappedJson(request, CLOUD_CHAT_MAX_PART_BYTES + PUT_BODY_OVERHEAD_BYTES);
   if (!body.ok) {
     if (body.tooLarge) {
       logCloud("cloud.chat_part_too_large", { userId, machineKey, chatId, seq });
@@ -212,11 +200,11 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     }
     return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   }
-  const record = body.value && typeof body.value === "object" && !Array.isArray(body.value) ? body.value as Record<string, unknown> : null;
-  const text = typeof record?.text === "string" ? record.text : null;
-  const instanceId = typeof record?.instanceId === "string" ? record.instanceId.trim() : "";
+  const record = body.value;
+  const text = typeof record.text === "string" ? record.text : null;
+  const instanceId = typeof record.instanceId === "string" ? record.instanceId.trim() : "";
   if (text == null || !instanceId) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
-  const rowInput = readRowInput(record?.row);
+  const rowInput = readRowInput(record.row);
   if (!rowInput) return fail("bad_request", UNREADABLE_REQUEST_MESSAGE, 400);
   const plain = encoder.encode(text);
   if (plain.byteLength > CLOUD_CHAT_MAX_PART_BYTES) {

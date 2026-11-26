@@ -22,7 +22,8 @@ import {
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
-import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { r2KeyOf } from "./launchFiles";
 import { cloudSizeForTier, type CloudSize } from "./plans";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { handOverQueuedMessagesStatements, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
