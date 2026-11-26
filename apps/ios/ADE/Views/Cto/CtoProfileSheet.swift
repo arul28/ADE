@@ -197,10 +197,11 @@ struct CtoRoutineRow: View {
   private var summary: some View {
     TimelineView(.everyMinute) { context in
       VStack(alignment: .leading, spacing: 2) {
+        // An open row shows its title and note in full.
         Text(title)
           .font(.body.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
+          .lineLimit(open ? nil : 1)
         Text(ctoRoutineScheduleLine(item, now: context.date, compact: !detailed))
           .font(.footnote)
           .foregroundStyle(ADEColor.textMuted)
@@ -210,7 +211,7 @@ struct CtoRoutineRow: View {
           Text(note.text)
             .font(.footnote)
             .foregroundStyle(noteColor(note.tone))
-            .lineLimit(1)
+            .lineLimit(open ? nil : 1)
             .id(note.text)
             .transition(.opacity)
         }

@@ -1463,6 +1463,35 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
+  it("delivers two wakes due on the same tick one after the other", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([
+      checkedCron({ id: "cron-a" }),
+      checkedCron({ id: "cron-b", check: "cat status.txt" }),
+    ]);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async (schedule) => ({ ok: true, outputHash: `new-${schedule.id}`, detail: "news" }),
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    // The chat takes one wake at a time; the other keeps its news for the retry.
+    expect(fire).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(fire.mock.calls.map(([schedule]) => schedule.id).sort()).toEqual(["cron-a", "cron-b"]);
+    expect(fire.mock.calls.every(([, context]) => (context as { check?: unknown }).check)).toBe(true);
+    scheduler.dispose();
+  });
+
   it("adopts the check verdict of the brain that owned the occurrence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -1500,10 +1529,13 @@ describe("a cron's check", () => {
     follower.dispose();
   });
 
-  it("lets a cancel that lands during the check win", async () => {
+  it.each([
+    ["a cancel", {}],
+    ["the routine's expiry", { expiresAt: START + 70_000 }],
+  ] as const)("lets %s that lands during the check win", async (name, overrides) => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
-    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron(overrides)]);
     let finishCheck: (run: ChatScheduledWorkCheckRun) => void = () => undefined;
     const claims = sharedClaims();
     const claimFire = vi.fn(claims.claimFire);
@@ -1522,7 +1554,8 @@ describe("a cron's check", () => {
     await scheduler.start();
     await vi.advanceTimersByTimeAsync(60_000);
 
-    await scheduler.cancel("cron-check");
+    if (name === "a cancel") await scheduler.cancel("cron-check");
+    else await vi.advanceTimersByTimeAsync(15_000);
     finishCheck({ ok: true, outputHash: "hash-new", detail: "news" });
     await vi.advanceTimersByTimeAsync(0);
 

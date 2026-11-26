@@ -284,6 +284,8 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
 const NATIVE_FIRE_GRACE_MS = 90_000;
 const BUSY_DEFER_RETRY_MS = 20_000;
+/** How long a chat that just took a scheduled wake holds the next one back. */
+const DELIVERY_SETTLE_MS = 5_000;
 const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_TERMINAL_HISTORY_RECORDS = 200;
 const LEGACY_PROVISIONAL_CRON_PREFIX = "cron-tool:";
@@ -414,6 +416,17 @@ export function createChatScheduledWorkScheduler(
   const schedules = new Map<string, ChatScheduledWorkRecord>();
   const pausedSessionIds = new Set<string>();
   const timerHandles = new Map<string, unknown>();
+  // A chat taking a scheduled wake: null while it is delivered, then the time
+  // the delivery returned. A send returns before its turn shows as active, so
+  // the guard holds a moment longer than the delivery itself.
+  const deliveringSessions = new Map<string, number | null>();
+  const deliveryHeld = (sessionId: string): boolean => {
+    if (!deliveringSessions.has(sessionId)) return false;
+    const returnedAt = deliveringSessions.get(sessionId);
+    if (returnedAt == null || now() - returnedAt < DELIVERY_SETTLE_MS) return true;
+    deliveringSessions.delete(sessionId);
+    return false;
+  };
   const inFlight = new Set<string>();
   let started = false;
   let disposed = false;
@@ -501,6 +514,14 @@ export function createChatScheduledWorkScheduler(
     return changed;
   };
 
+  const expire = async (schedule: ChatScheduledWorkRecord): Promise<void> => {
+    markTerminal(schedule, "cancelled");
+    clearTimer(schedule.id);
+    pruneTerminalHistory();
+    await persist();
+    await emitTransition(schedule, "cancelled");
+  };
+
   const processDue = async (scheduleId: string, overdueWhenArmed: boolean): Promise<void> => {
     if (disposed || inFlight.has(scheduleId)) return;
     const schedule = schedules.get(scheduleId);
@@ -508,11 +529,7 @@ export function createChatScheduledWorkScheduler(
 
     const currentTime = now();
     if (isExpired(schedule, currentTime)) {
-      markTerminal(schedule, "cancelled");
-      clearTimer(schedule.id);
-      pruneTerminalHistory();
-      await persist();
-      await emitTransition(schedule, "cancelled");
+      await expire(schedule);
       return;
     }
     if (schedule.fireAt == null || schedule.fireAt > currentTime) {
@@ -564,6 +581,11 @@ export function createChatScheduledWorkScheduler(
       }
       // A cancel, a pause or a replacement can land while the check runs; it wins.
       if (disposed || schedules.get(scheduleId) !== schedule || schedule.status !== "scheduled") return;
+      // A long check can run past the routine's expiry.
+      if (isExpired(schedule)) {
+        await expire(schedule);
+        return;
+      }
       // The chat can get busy during a long check.
       if (isDeferred(options.shouldDefer?.(cloneSchedule(schedule)))) {
         armBusyDeferRetry(schedule);
@@ -571,134 +593,151 @@ export function createChatScheduledWorkScheduler(
       }
     }
 
+    // One delivery per chat at a time. Two wakes due on the same tick both
+    // pass shouldDefer before either turn starts, and the second then fails as
+    // "Turn already active" after its occurrence (and its check's news) was
+    // spent. The later one waits and is deferred by the busy turn instead.
+    if (deliveryHeld(schedule.sessionId)) {
+      armBusyDeferRetry(schedule);
+      return;
+    }
     if (options.claimFire && !options.claimFire(cloneSchedule(schedule))) {
       await followClaimOwner(schedule);
       return;
     }
 
-    inFlight.add(scheduleId);
-    let checkWake: ChatScheduledWorkCheckWake | undefined;
-    // An undelivered wake must stay news for the next attempt, so its check state is put back.
-    const previousCheck = snapshotCheckState(schedule);
-    if (checkRun) {
-      const run = checkRun;
-      const decision = decideScheduledWorkCheck(schedule, run);
-      // A check that wakes is stamped with the fire's own time, so a reader can
-      // tell it from a later quiet one.
-      schedule.lastCheckedAt = decision.wake ? currentTime : now();
-      if (decision.checkHash) schedule.checkHash = decision.checkHash;
-      else delete schedule.checkHash;
-      if (decision.checkFailing) schedule.checkFailing = true;
-      else delete schedule.checkFailing;
-      if (!decision.wake) {
-        // Nothing new: the occurrence is spent without a turn. Its claim
-        // stays, so another brain follows the moved fireAt instead.
-        const previousFireAt = schedule.fireAt;
-        schedule.fireAt = nextCronOccurrence(schedule, now());
-        inFlight.delete(scheduleId);
-        try {
-          await persist();
-        } catch (error) {
-          // Unsaved: put the occurrence and its check state back, give up the
-          // claim and try again soon, like an undelivered wake.
-          schedule.fireAt = previousFireAt;
-          restoreCheckState(schedule, previousCheck);
-          options.releaseFire?.(cloneSchedule(schedule));
-          armBusyDeferRetry(schedule);
-          throw error;
+    deliveringSessions.set(schedule.sessionId, null);
+    let delivered = false;
+    try {
+      inFlight.add(scheduleId);
+      let checkWake: ChatScheduledWorkCheckWake | undefined;
+      // An undelivered wake must stay news for the next attempt, so its check state is put back.
+      const previousCheck = snapshotCheckState(schedule);
+      if (checkRun) {
+        const run = checkRun;
+        const decision = decideScheduledWorkCheck(schedule, run);
+        // A check that wakes is stamped with the fire's own time, so a reader can
+        // tell it from a later quiet one.
+        schedule.lastCheckedAt = decision.wake ? currentTime : now();
+        if (decision.checkHash) schedule.checkHash = decision.checkHash;
+        else delete schedule.checkHash;
+        if (decision.checkFailing) schedule.checkFailing = true;
+        else delete schedule.checkFailing;
+        if (!decision.wake) {
+          // Nothing new: the occurrence is spent without a turn. Its claim
+          // stays, so another brain follows the moved fireAt instead.
+          const previousFireAt = schedule.fireAt;
+          schedule.fireAt = nextCronOccurrence(schedule, now());
+          inFlight.delete(scheduleId);
+          try {
+            await persist();
+          } catch (error) {
+            // Unsaved: put the occurrence and its check state back, give up the
+            // claim and try again soon, like an undelivered wake.
+            schedule.fireAt = previousFireAt;
+            restoreCheckState(schedule, previousCheck);
+            options.releaseFire?.(cloneSchedule(schedule));
+            armBusyDeferRetry(schedule);
+            throw error;
+          }
+          await emitTransition(schedule, schedule.status);
+          // A replacement row armed its own timer; re-arm only the stored row.
+          if (schedules.get(scheduleId) === schedule) arm(schedule);
+          return;
         }
-        await emitTransition(schedule, schedule.status);
-        arm(schedule);
+        checkWake = {
+          because: decision.because ?? "changed",
+          detail: run.detail,
+          ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
+        };
+      }
+      const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
+      const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
+      const previousLastFiredAt = schedule.lastFiredAt;
+      const previousLateFlag = schedule.lateFlag;
+      schedule.status = "fired";
+      schedule.lastFiredAt = currentTime;
+      schedule.lateFlag = late;
+      try {
+        await persist();
+      } catch (error) {
+        // Nothing was delivered: give the occurrence back so a later attempt,
+        // here or in another brain, can claim it.
+        schedule.status = "scheduled";
+        if (previousLastFiredAt == null) delete schedule.lastFiredAt;
+        else schedule.lastFiredAt = previousLastFiredAt;
+        schedule.lateFlag = previousLateFlag;
+        restoreCheckState(schedule, previousCheck);
+        inFlight.delete(scheduleId);
+        options.releaseFire?.(cloneSchedule(schedule));
+        armBusyDeferRetry(schedule);
+        throw error;
+      }
+      await emitTransition(schedule, "fired");
+
+      // A cancel (a user message, a superseding schedule) can land inside those
+      // awaits. The row is the durable record of intent; once it is cancelled,
+      // delivery must not happen. Re-read it rather than trust the pre-await
+      // snapshot, and release the in-flight claim before returning so this id can
+      // arm again later.
+      const afterPersist = schedules.get(scheduleId);
+      if (!afterPersist || afterPersist.status !== "fired") {
+        inFlight.delete(scheduleId);
         return;
       }
-      checkWake = {
-        because: decision.because ?? "changed",
-        detail: run.detail,
-        ...(run.exitCode !== undefined ? { exitCode: run.exitCode } : {}),
-      };
-    }
-    const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
-    const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
-    const previousLastFiredAt = schedule.lastFiredAt;
-    const previousLateFlag = schedule.lateFlag;
-    schedule.status = "fired";
-    schedule.lastFiredAt = currentTime;
-    schedule.lateFlag = late;
-    try {
-      await persist();
-    } catch (error) {
-      // Nothing was delivered: give the occurrence back so a later attempt,
-      // here or in another brain, can claim it.
-      schedule.status = "scheduled";
-      if (previousLastFiredAt == null) delete schedule.lastFiredAt;
-      else schedule.lastFiredAt = previousLastFiredAt;
-      schedule.lateFlag = previousLateFlag;
-      restoreCheckState(schedule, previousCheck);
-      inFlight.delete(scheduleId);
-      options.releaseFire?.(cloneSchedule(schedule));
-      armBusyDeferRetry(schedule);
-      throw error;
-    }
-    await emitTransition(schedule, "fired");
 
-    // A cancel (a user message, a superseding schedule) can land inside those
-    // awaits. The row is the durable record of intent; once it is cancelled,
-    // delivery must not happen. Re-read it rather than trust the pre-await
-    // snapshot, and release the in-flight claim before returning so this id can
-    // arm again later.
-    const afterPersist = schedules.get(scheduleId);
-    if (!afterPersist || afterPersist.status !== "fired") {
-      inFlight.delete(scheduleId);
-      return;
-    }
-
-    let complete = false;
-    let retry = false;
-    let outcomeSummary: string | undefined;
-    try {
-      const result = await options.fire(cloneSchedule(schedule), { late, ...(checkWake ? { check: checkWake } : {}) });
-      complete = result != null && "complete" in result && result.complete === true;
-      retry = result != null && "retry" in result && result.retry === true;
-      if (result != null && "outcomeSummary" in result && result.outcomeSummary) {
-        outcomeSummary = result.outcomeSummary;
+      let complete = false;
+      let retry = false;
+      let outcomeSummary: string | undefined;
+      try {
+        delivered = true;
+        const result = await options.fire(cloneSchedule(schedule), { late, ...(checkWake ? { check: checkWake } : {}) });
+        complete = result != null && "complete" in result && result.complete === true;
+        retry = result != null && "retry" in result && result.retry === true;
+        if (result != null && "outcomeSummary" in result && result.outcomeSummary) {
+          outcomeSummary = result.outcomeSummary;
+        }
+      } catch {
+        // A delivery may have reached the session before its caller failed. Keep
+        // one-shots fired and advance crons so a retry cannot double-deliver.
+      } finally {
+        inFlight.delete(scheduleId);
       }
-    } catch {
-      // A delivery may have reached the session before its caller failed. Keep
-      // one-shots fired and advance crons so a retry cannot double-deliver.
-    } finally {
-      inFlight.delete(scheduleId);
-    }
 
-    const current = schedules.get(scheduleId);
-    if (!current || current.status === "cancelled" || current.status === "done") return;
-    if (retry) {
-      options.releaseFire?.(cloneSchedule(current));
+      const current = schedules.get(scheduleId);
+      if (!current || current.status === "cancelled" || current.status === "done") return;
+      if (retry) {
+        options.releaseFire?.(cloneSchedule(current));
+        current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
+        if (previousLastFiredAt == null) delete current.lastFiredAt;
+        else current.lastFiredAt = previousLastFiredAt;
+        current.lateFlag = previousLateFlag;
+        if (current === schedule) restoreCheckState(current, previousCheck);
+        delete current.activeTurnId;
+        await persist();
+        await emitTransition(current, current.status);
+        if (current.status === "scheduled") armBusyDeferRetry(current);
+        return;
+      }
+      if (outcomeSummary) current.outcomeSummary = outcomeSummary;
+      if (current.kind !== "cron") {
+        if (!complete) return;
+        markTerminal(current, "done");
+        pruneTerminalHistory();
+        await persist();
+        await emitTransition(current, "done");
+        return;
+      }
+
+      current.fireAt = nextCronOccurrence(current, now());
       current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
-      if (previousLastFiredAt == null) delete current.lastFiredAt;
-      else current.lastFiredAt = previousLastFiredAt;
-      current.lateFlag = previousLateFlag;
-      if (current === schedule) restoreCheckState(current, previousCheck);
-      delete current.activeTurnId;
       await persist();
       await emitTransition(current, current.status);
-      if (current.status === "scheduled") armBusyDeferRetry(current);
-      return;
+      arm(current);
+    } finally {
+      if (delivered) deliveringSessions.set(schedule.sessionId, now());
+      else deliveringSessions.delete(schedule.sessionId);
     }
-    if (outcomeSummary) current.outcomeSummary = outcomeSummary;
-    if (current.kind !== "cron") {
-      if (!complete) return;
-      markTerminal(current, "done");
-      pruneTerminalHistory();
-      await persist();
-      await emitTransition(current, "done");
-      return;
-    }
-
-    current.fireAt = nextCronOccurrence(current, now());
-    current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
-    await persist();
-    await emitTransition(current, current.status);
-    arm(current);
   };
 
   /**

@@ -267,7 +267,7 @@ function RoutineRow({
           disabled={!settings}
           onClick={() => setOpen((value) => !value)}
           // The lines clip, so the full text is a hover away.
-          title={[title, note?.text, !settings && check ? `Wakes only when \`${check}\` changes` : null].filter(Boolean).join("\n")}
+          title={[title, note?.text, !settings && check ? `Wakes only when \`${check}\` changes or first fails` : null].filter(Boolean).join("\n")}
         >
           <span className="ade-cto-routine-title">{title}</span>
           <span className="ade-cto-routine-when">

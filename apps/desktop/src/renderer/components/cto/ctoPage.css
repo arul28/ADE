@@ -716,6 +716,8 @@
 .ade-cto-routine-title,
 .ade-cto-routine-when,
 .ade-cto-routine-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An open row shows its title and note in full. */
+.ade-cto-routine-text[aria-expanded="true"] :is(.ade-cto-routine-title, .ade-cto-routine-note) { white-space: normal; overflow-wrap: anywhere; }
 .ade-cto-routine-title { font-size: 12.5px; font-weight: 500; line-height: 1.4; color: var(--color-fg); transition: color 200ms ease; }
 .ade-cto-routine[data-variant="settings"] .ade-cto-routine-title { font-size: 13px; }
 .ade-cto-routine-when { font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
@@ -759,7 +761,7 @@
   transition: opacity 180ms ease, padding-bottom 220ms ease;
 }
 .ade-cto-routine[data-open="true"] .ade-cto-routine-details-inner { padding-bottom: 14px; opacity: 1; }
-.ade-cto-routine-prompt { margin: 0; font-size: 12px; line-height: 1.55; color: var(--kit-text-2); white-space: pre-wrap; }
+.ade-cto-routine-prompt { margin: 0; font-size: 12px; line-height: 1.55; color: var(--kit-text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .ade-cto-routine-check {
   display: flex;
   flex-direction: column;
