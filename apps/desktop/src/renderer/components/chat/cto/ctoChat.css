@@ -376,6 +376,23 @@ button.ade-cto-working-line:focus-visible {
   border-radius: 999px;
   background: transparent;
   color: color-mix(in srgb, var(--color-fg) 66%, transparent);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ade-cto-learned-undo:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-cto-learned-undo:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ade-cto-learned-undone {
+  color: color-mix(in srgb, var(--color-fg) 40%, transparent);
+}
 
 /* ── Spawn rows: "Started a new task" and the background tasks group ── */
 
@@ -404,20 +421,6 @@ button.ade-cto-working-line:focus-visible {
   text-align: left;
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease;
-}
-
-.ade-cto-learned-undo:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  color: var(--color-fg);
-}
-
-.ade-cto-learned-undo:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.ade-cto-learned-undone {
-  color: color-mix(in srgb, var(--color-fg) 40%, transparent);
 }
 
 .ade-cto-spawn:hover {
