@@ -2284,12 +2284,17 @@ export function createGithubService({
           });
           return null;
         }),
-    ]).then(async ([status, gitTransport]): Promise<GitHubStatus> => ({
-      ...status,
-      gitTransport,
-      accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
-      accountApp: cliOnly() ? null : await accountApp.statusFor(status.repo, readAppIssueGrant),
-    }));
+    ]).then(async ([status, gitTransport]): Promise<GitHubStatus> => {
+      const usingCliOnly = cliOnly();
+      return {
+        ...status,
+        // Settings can remove a saved token even while GitHub actions ignore it.
+        patTokenStored: usingCliOnly ? Boolean(readStoredPatToken()) : status.patTokenStored,
+        gitTransport,
+        accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
+        accountApp: usingCliOnly ? null : await accountApp.statusFor(status.repo, readAppIssueGrant),
+      };
+    });
     statusInFlight = work;
     try {
       return await work;

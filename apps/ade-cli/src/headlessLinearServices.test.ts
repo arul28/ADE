@@ -1131,9 +1131,9 @@ describe("headlessLinearServices", () => {
   });
 
   it.each([
-    ["app_or_token", "environment", "ghp_environment_token", true],
-    ["cli_only", "gh", "gho_existing_cli_login", false],
-  ] as const)("uses the permitted GitHub sign-in in %s mode", async (mode, source, token, patTokenStored) => {
+    ["app_or_token", "environment", "ghp_environment_token"],
+    ["cli_only", "gh", "gho_existing_cli_login"],
+  ] as const)("uses the permitted GitHub sign-in in %s mode", async (mode, source, token) => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
     const previousGitHubToken = process.env.GITHUB_TOKEN;
@@ -1172,7 +1172,7 @@ describe("headlessLinearServices", () => {
         authSource: source,
         connected: true,
         writeAuthSource: "none",
-        patTokenStored,
+        patTokenStored: true,
         userLogin: "octocat",
       });
       expect(fetchImpl).toHaveBeenCalledWith(

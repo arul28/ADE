@@ -907,9 +907,11 @@ export function GitHubSection() {
             {signInRows.length === 0 ? (
               <div className="ade-ig-row"><span className="ade-ig-note">Checking sign-ins…</span></div>
             ) : signInRows.map((credential) => {
-              const badge = credentialStateBadge(credential, outage != null, appAccount);
               const isPat = credential.source === "pat";
               const active = credential.activeFor.length > 0;
+              const badge = isPat && cliOnly && !active
+                ? { label: "Saved · unused", tone: "neutral" as const }
+                : credentialStateBadge(credential, outage != null, appAccount);
               const account = accountLine(credential, accountCredentials, githubStatus?.patTokenStored === true, hasMissingScopes);
               // An older runtime has no gh sharing action; its account line has no button.
               const accountAction = account && (account.action === "remove-pat" || setGhAccountSharing) ? account.action : null;

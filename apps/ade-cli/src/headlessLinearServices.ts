@@ -2546,11 +2546,14 @@ export function createHeadlessGitHubService(
           return null;
         }),
       ]);
+      const usingCliOnly = cliOnly();
       return {
         ...status,
+        // Report storage separately so Settings can remove an unused token.
+        patTokenStored: usingCliOnly ? Boolean(await readStoredPatTokenAsync()) : status.patTokenStored,
         gitTransport,
         accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
-        accountApp: cliOnly() ? null : await accountApp.statusFor(status.repo, readAppIssueGrant),
+        accountApp: usingCliOnly ? null : await accountApp.statusFor(status.repo, readAppIssueGrant),
       };
     },
     async getBackgroundRequestPauseUntilMs() {

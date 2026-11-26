@@ -47,6 +47,9 @@ export function desktopMachineVaultService(service: Record<string, unknown> | nu
     get: only("get"),
     set: only("set"),
     remove: only("remove"),
+    // MCP renewal confirms the refresh owner against a fresh vault. Sync
+    // returns only its status and keeps the read and write filters below.
+    sync: service.sync,
     list: (scope?: unknown) => {
       if (scope !== ACCOUNT_SCOPE_ALL) throw new Error("Choose the account scope to list MCP server credentials.");
       const list = service.list as (scope: string) => Array<{ scope: string; kind: string; key: string }>;

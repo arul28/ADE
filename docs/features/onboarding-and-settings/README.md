@@ -775,8 +775,9 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
     an existing `gh auth login` or a shared copy of that login for GitHub
     operations. Git can use its usual SSH or HTTPS credentials. Live GitHub
     App notifications require the App, and ADE checks for PR updates
-    periodically in CLI-only mode. **App, token or CLI** restores the
-    credential choices.
+    periodically in CLI-only mode. You can remove a previously saved token
+    while CLI-only mode is on. **App, token or CLI** restores the credential
+    choices.
   - Classic PATs and CLI tokens show scopes; fine-grained PATs show
     repository-permission guidance; App tokens show installation access and
     never report missing `repo` / `workflow` scopes. The App panel says the App
