@@ -936,6 +936,7 @@ import {
   CHAT_REACTION_EMOJIS,
   isCtoReactionEmoji,
   normalizeChatReactionEmoji,
+  assistantMessageReactionKey,
   type CtoReactionEmoji,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -1439,6 +1440,7 @@ import { createAgentCliSessionActions } from "./agentCliSessionActions";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+  CHAT_EVENT_HISTORY_PAGE_MAX_BYTES,
   omittedHistoryRowMayHoldMessage,
   readTranscriptHistoryPage,
   readEnvelopesBackToSequence,
@@ -6632,8 +6634,8 @@ const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 // Every reader of recent conversation wants at most the last 40 entries; tool
 // output dominates a transcript's bytes, so the window is generous.
 const RECENT_TRANSCRIPT_MAX_BYTES = 4 * 1024 * 1024;
-/** How far back a reaction on an older CTO reply looks for that reply. */
-const REACTION_LOOKUP_TRANSCRIPT_MAX_BYTES = 64 * 1024 * 1024;
+/** How many 2 MB history pages back a reaction on an older CTO reply looks for it (64 MB). */
+const REACTION_LOOKUP_MAX_PAGES = 32;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
 
@@ -68182,6 +68184,43 @@ export function createAgentChatService(args: {
    * message, replacing their earlier one there. It starts no turn: the CTO
    * reads it as feedback in its next turn's context (`ctoReactionFeedback`).
    */
+  /**
+   * The CTO reply a reaction names when it is older than the recent window
+   * (the person scrolled back to it). Pages back from the end of the
+   * transcript, at most REACTION_LOOKUP_MAX_PAGES pages, and keeps only the
+   * page that holds its text and the page before it (for earlier fragments).
+   * The recent events still say whether ADE took it back or how the person
+   * reacted to it last.
+   */
+  const findOlderCtoReactableMessage = async (
+    sessionId: string,
+    targetKey: string,
+    recentEvents: readonly AgentChatEvent[],
+  ): Promise<ReturnType<typeof ctoReactableMessage>> => {
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
+    if (!transcriptPath) return null;
+    let cursor = await readHistoryFileSize(transcriptPath);
+    let hit: AgentChatEvent[] | null = null;
+    for (let pages = 0; cursor > 0 && pages < REACTION_LOOKUP_MAX_PAGES; pages += 1) {
+      const page = await readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId,
+        beforeOffset: cursor,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES,
+      });
+      cursor = page.startOffset;
+      const pageEvents = page.envelopes.map((entry) => entry.event);
+      if (hit) {
+        hit = [...pageEvents, ...hit];
+        break;
+      }
+      if (pageEvents.some((event) => event.type === "text" && assistantMessageReactionKey(event) === targetKey)) {
+        hit = pageEvents;
+      }
+    }
+    return hit ? ctoReactableMessage([...hit, ...recentEvents], targetKey) : null;
+  };
+
   const reactToMessage = async (args: AgentChatReactToMessageArgs): Promise<AgentChatReactToMessageResult> => {
     const emoji = normalizeChatReactionEmoji(args.emoji);
     if (!emoji) throw new AdeExpectedError(`Pick one of ${CHAT_REACTION_EMOJIS.join(" ")}.`, "user");
@@ -68201,13 +68240,7 @@ export function createAgentChatService(args: {
     }
     if (managed.session.archivedAt) throw new AdeExpectedError("This chat is archived.", "user");
     const events = readRecentTranscriptEnvelopes(managed).map((entry) => entry.event);
-    // A reply older than the recent window (the person scrolled back) is
-    // looked up further back, off the sync path and within a cap.
-    const message = ctoReactableMessage(events, targetKey)
-      ?? ctoReactableMessage(
-        (await readTranscriptEnvelopesForSessionIdAsync(sessionId, REACTION_LOOKUP_TRANSCRIPT_MAX_BYTES)).envelopes.map((entry) => entry.event),
-        targetKey,
-      );
+    const message = ctoReactableMessage(events, targetKey) ?? await findOlderCtoReactableMessage(sessionId, targetKey, events);
     if (!message) throw new AdeExpectedError("That message is no longer in this chat.", "user");
     if (message.current === emoji) return { targetKey, emoji, changed: false };
     // Seeded before the new event lands, so a restart's rebuild cannot count it twice.

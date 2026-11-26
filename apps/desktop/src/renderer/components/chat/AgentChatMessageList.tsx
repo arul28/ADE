@@ -3540,6 +3540,8 @@ function renderEvent(
     // In a side chat, a send block reads as a "Sent to the main chat" note,
     // and Copy takes the same text the row shows.
     const shownText = options?.sideChatTranscript ? sideChatSendBlocksToMarkdown(event.text) : event.text;
+    // Null for a reply with no id to name it by: it takes no reaction.
+    const reactKey = assistantMessageReactionKey(event);
     return (
       <motion.div
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
@@ -3590,8 +3592,8 @@ function renderEvent(
                 ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
                 : "mt-0.5",
             )}
-            reaction={options?.onReactToMessage || event.userReaction
-              ? { targetKey: assistantMessageReactionKey(event), current: event.userReaction ?? null, onReact: options?.onReactToMessage }
+            reaction={reactKey && (options?.onReactToMessage || event.userReaction)
+              ? { targetKey: reactKey, current: event.userReaction ?? null, onReact: options?.onReactToMessage }
               : null}
             hoverActions={<>
               {event.originTimestamp || envelope.timestampSynthetic !== true
