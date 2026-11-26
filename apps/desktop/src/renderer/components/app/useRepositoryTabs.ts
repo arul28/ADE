@@ -18,7 +18,7 @@
  */
 import { useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import { captureError } from "../../../shared/sentry/capture";
-import type { AccountProjectView } from "../../../shared/accountProject";
+import { accountProjectOrigins, type AccountProjectView } from "../../../shared/accountProject";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useAppStore } from "../../state/appStore";
@@ -56,10 +56,7 @@ export function useRepositoryIdentity(): RepositoryIdentity {
     if (list.state === "ready") {
       for (const project of list.projects) {
         projectById.set(project.id, project);
-        for (const key of [project.repoKey, ...project.aliases]) {
-          const origin = normalizeGitRemoteIdentity(originOfRepoKey(key)) ?? originOfRepoKey(key);
-          projectByOrigin.set(origin, project);
-        }
+        for (const origin of accountProjectOrigins(project)) projectByOrigin.set(origin, project);
       }
     }
     return {

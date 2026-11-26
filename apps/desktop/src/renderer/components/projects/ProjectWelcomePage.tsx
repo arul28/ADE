@@ -56,6 +56,7 @@ import {
 } from "./ProjectWelcomeWebNotices";
 import { MergeWorktreeProjectDialog } from "./MergeWorktreeProjectDialog";
 import type {
+  OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
@@ -76,10 +77,9 @@ function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
 
-/** Whether the tab in front is this remote project (no later choice replaced the open). */
-function isOpenRemoteProject(targetId: string, projectId: string): boolean {
-  const binding = useAppStore.getState().projectBinding;
-  return binding?.kind === "remote" && binding.targetId === targetId && binding.projectId === projectId;
+/** Whether the tab in front is still the binding an open returned (no later choice replaced it). */
+function isOpenBinding(opened: OpenProjectBinding): boolean {
+  return useAppStore.getState().projectBinding?.key === opened.key;
 }
 
 export function ProjectWelcomePage() {
@@ -322,8 +322,10 @@ export function ProjectWelcomePage() {
         // open the tab (a sleeping ADE Cloud computer opens from ADE Cloud).
         void (async () => {
           try {
-            await switchRemoteProject(machineKey, projectId);
-            if (isOpenRemoteProject(machineKey, projectId)) navigate(workspace.consumePendingProjectPath() ?? "/work");
+            // The open can land on the repository's ADE Cloud tab (a sleeping
+            // ADE Cloud computer): the binding it returned is the one to find.
+            const opened = await switchRemoteProject(machineKey, projectId);
+            if (isOpenBinding(opened)) navigate(workspace.consumePendingProjectPath() ?? "/work");
           } catch (error) {
             if (onUnreachable?.()) return;
             setRowError(error instanceof Error ? error.message : String(error));
@@ -409,9 +411,10 @@ export function ProjectWelcomePage() {
           const rowKey = recentKey(rp);
           setOpeningRowKey(rowKey);
           void switchRemoteProject(unreachableTab.targetId, unreachableTab.projectId).then(
-            () => {
-              // A later choice can supersede this open while the computer wakes.
-              if (isOpenRemoteProject(unreachableTab.targetId, unreachableTab.projectId)) {
+            (opened) => {
+              // A later choice can supersede this open. The open can land on
+              // the repository's ADE Cloud tab, so it checks what it returned.
+              if (isOpenBinding(opened)) {
                 navigate(workspace?.consumePendingProjectPath() ?? "/work");
               }
             },

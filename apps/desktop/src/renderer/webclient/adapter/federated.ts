@@ -33,6 +33,7 @@ import { resolveMachinePresence } from "../../../shared/types/power";
 import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
 import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { accountProjectOrigins } from "../../../shared/accountProject";
 import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { createAdeCloudAccountReader } from "../../../shared/adeCloud/accountReader";
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
@@ -663,13 +664,12 @@ export function createFederatedWebAdapter({
     try {
       const list = await accountClient.readAccountProjects();
       const project = list.state === "ready"
-        ? list.projects.find((entry) => [entry.repoKey, ...entry.aliases].some((key) => (
-            normalizeGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key) === origin
-          )))
+        ? list.projects.find((entry) => accountProjectOrigins(entry).includes(origin))
         : undefined;
       if (project) accountProjectId = project.id;
-    } catch {
+    } catch (error) {
       // The repository's address names the tab until the account answers.
+      console.warn("[ade-web] account projects read failed; the ADE Cloud tab is named by the repository address", error);
     }
     return adeCloudBinding({
       accountProjectId,

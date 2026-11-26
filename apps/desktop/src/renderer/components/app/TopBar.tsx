@@ -56,6 +56,7 @@ import {
 
 import { takeLegacyNoMachineTabs, useAppStore } from "../../state/appStore";
 import { adeCloudProjectForTabId, useAdeCloudTabFollowsCopy } from "../../state/adeCloudTabs";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
@@ -154,6 +155,34 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
 import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
+
+/** What the window shows in front: the binding, and whether Home covers it. */
+type WindowFront = { bindingKey: string | null; newTab: boolean };
+
+function frontOfWindow(): WindowFront {
+  const state = useAppStore.getState();
+  return { bindingKey: state.projectBinding?.key ?? null, newTab: state.isNewTabOpen === true };
+}
+
+/**
+ * The ADE Cloud tab of a saved repository tab whose copy is `copy`. The tab
+ * id names an account project (`ap_…`) or a repository (`repo:…`); a second
+ * checkout's tab is keyed by its binding, so its repository comes from the
+ * copy's own Git origin. Null for a folder with no repository.
+ */
+function adeCloudProjectForCopy(tabId: string, displayName: string, copy: RemoteOpenProjectBinding): AdeCloudBindingProject | null {
+  const named = tabId.startsWith("ap_") || tabId.startsWith("repo:");
+  const fromTab = adeCloudProjectForTabId(tabId, displayName);
+  const gitOriginUrl = fromTab.gitOriginUrl ?? copy.gitOriginUrl?.trim() ?? null;
+  const origin = normalizeGitRemoteIdentity(gitOriginUrl);
+  if (!gitOriginUrl || !origin) return null;
+  return {
+    ...fromTab,
+    accountProjectId: named ? tabId : `repo:${origin}`,
+    gitOriginUrl,
+    iconDataUrl: fromTab.iconDataUrl ?? copy.iconDataUrl ?? null,
+  };
+}
 
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
@@ -1455,6 +1484,38 @@ export function TopBar({
     ownTabKeys: ownTabKeysNow,
   });
 
+  /**
+   * An open of a remote copy failed while its computer is not connected: it
+   * did not answer, or it is an ADE Cloud computer that sleeps (an open never
+   * wakes one). The tab still comes to the front, bound to ADE Cloud, and
+   * opens its copy when the computer is back. False when the tab stays: a
+   * connected computer that refused the open keeps the error banner, a folder
+   * with no repository has no ADE Cloud tab, and a later choice (another
+   * open, or Home) owns the front. `frontBefore` is `frontOfWindow()` taken
+   * just before the open started.
+   */
+  const moveFailedOpenToAdeCloud = useCallback((
+    binding: RemoteOpenProjectBinding,
+    adeCloud: AdeCloudBindingProject | null,
+    frontBefore: WindowFront,
+  ): boolean => {
+    const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
+      connection.target.id === binding.targetId && connection.state === "connected"
+    ));
+    const store = useAppStore.getState();
+    const front = frontOfWindow();
+    const chosenSince = front.bindingKey !== frontBefore.bindingKey || front.newTab !== frontBefore.newTab;
+    if (connected || !adeCloud || store.projectTransition || chosenSince) return false;
+    const nextRemoteTabs = openRemoteProjectTabsRef.current.filter((entry) => entry.key !== binding.key);
+    openRemoteProjectTabsRef.current = nextRemoteTabs;
+    setOpenRemoteProjectTabs(nextRemoteTabs);
+    // Keep the tab's view (its chat and draft) for when the computer is back.
+    store.evictProjectDataCaches(binding.key);
+    useAppStore.setState({ projectTransitionError: null });
+    void store.openAdeCloudProject(adeCloud).catch(reportStripRestoreFailure);
+    return true;
+  }, [setOpenRemoteProjectTabs]);
+
   useEffect(() => {
     let cancelled = false;
     markBoot("session-asked");
@@ -1547,21 +1608,12 @@ export function TopBar({
             void store.switchProjectToPath(active.copy.rootPath, { skipWorktreeGate: true, showCachedView: true }).catch(reportStripRestoreFailure);
           } else {
             const copy = active.copy.binding;
+            // A repository's tab comes back in front even when its computer
+            // sleeps or does not answer, bound to ADE Cloud, as a tab click does.
+            const repository = adeCloudProjectForCopy(active.id, active.displayName, copy);
+            const frontBefore = frontOfWindow();
             void store.switchRemoteProject(copy.targetId, copy.projectId).catch((error: unknown) => {
-              // Its computer did not answer, or is an ADE Cloud computer that
-              // sleeps (an open never wakes one): a repository's tab still
-              // comes back in front, bound to ADE Cloud, as a tab click does.
-              const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
-                connection.target.id === copy.targetId && connection.state === "connected"
-              ));
-              const adeCloud = adeCloudProjectForTabId(active.id, active.displayName);
-              const latest = useAppStore.getState();
-              if (connected || latest.projectTransition || (!adeCloud.gitOriginUrl && !active.id.startsWith("ap_"))) {
-                reportStripRestoreFailure(error);
-                return;
-              }
-              useAppStore.setState({ projectTransitionError: null });
-              void latest.openAdeCloudProject(adeCloud).catch(reportStripRestoreFailure);
+              if (!moveFailedOpenToAdeCloud(copy, repository, frontBefore)) reportStripRestoreFailure(error);
             });
           }
         }
@@ -1575,7 +1627,7 @@ export function TopBar({
     return () => {
       cancelled = true;
     };
-  }, [setOpenProjectTabRoots]);
+  }, [moveFailedOpenToAdeCloud, setOpenProjectTabRoots]);
 
   useEffect(() => {
     const remoteRuntime = window.ade.remoteRuntime;
@@ -1864,27 +1916,9 @@ export function TopBar({
         return Promise.resolve();
       }
       carryRouteToCopy(remoteBinding?.key ?? project?.rootPath ?? null, binding.key, tabGroupsRef.current);
+      const frontBefore = frontOfWindow();
       return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {
-        // The tab's computer did not answer: the tab still comes to the
-        // front, bound to ADE Cloud, and opens its copy when the computer is
-        // back. A connected computer that refused the open keeps the error
-        // banner instead.
-        const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
-          connection.target.id === binding.targetId && connection.state === "connected"
-        ));
-        if (connected) return;
-        const adeCloud = adeCloudTabFor(binding);
-        if (!adeCloud) return;
-        const store = useAppStore.getState();
-        // Another switch started since this one: it owns the front.
-        if (store.projectTransition) return;
-        const nextRemoteTabs = openRemoteProjectTabsRef.current.filter((entry) => entry.key !== binding.key);
-        openRemoteProjectTabsRef.current = nextRemoteTabs;
-        setOpenRemoteProjectTabs(nextRemoteTabs);
-        // Keep the tab's view (its chat and draft) for when the computer is back.
-        store.evictProjectDataCaches(binding.key);
-        useAppStore.setState({ projectTransitionError: null });
-        void store.openAdeCloudProject(adeCloud).catch(reportStripRestoreFailure);
+        moveFailedOpenToAdeCloud(binding, adeCloudTabFor(binding), frontBefore);
       });
     },
     [
@@ -1893,9 +1927,9 @@ export function TopBar({
       hubRouteActive,
       isProjectBusy,
       leaveMachineRoute,
+      moveFailedOpenToAdeCloud,
       project?.rootPath,
       remoteBinding?.key,
-      setOpenRemoteProjectTabs,
       switchRemoteProject,
     ],
   );

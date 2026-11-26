@@ -904,8 +904,7 @@ export function registerRuntimeBridge({
       options?: { timeoutMs?: number },
     ) => remoteConnectionService.callMachineMethod<T>(targetId, method, params ?? {}, options ?? {}),
     openRemoteProjectForWindow: async ({ targetId, projectId, rootPath, windowId }) => {
-      await refuseOpenOnSleepingCloudComputer(targetId);
-      const binding = await resolveRemoteProjectBinding(targetId, projectId, rootPath);
+      const binding = await openRemoteProjectForRead(targetId, projectId, rootPath);
       bindRemoteProject?.(windowId, binding);
       return binding;
     },
@@ -947,17 +946,32 @@ export function registerRuntimeBridge({
     },
   };
 
-  /** Throws `CloudComputerAsleepError` for a cloud computer that is asleep and not connected. Asks; never wakes. */
+  /**
+   * Throws `CloudComputerAsleepError` for a cloud computer that is asleep.
+   * Asked even while it reads as connected: a sleeping computer's relay
+   * tunnel can look open until a call times out. Asks; never wakes. The open
+   * that follows connects with `wake: false` all the same.
+   */
   async function refuseOpenOnSleepingCloudComputer(rawTargetId: string): Promise<void> {
     const target = savedOrGoneTarget(rawTargetId.trim());
-    if (!target || remoteConnectionService.isConnected(target.id)) return;
-    if (await cloudAsleepForUse(target) === true) throw new CloudComputerAsleepError();
+    if (target && await cloudAsleepForUse(target) === true) throw new CloudComputerAsleepError();
+  }
+
+  /** A person opening a remote project: refused on a sleeping cloud computer, and the connect never wakes one. */
+  async function openRemoteProjectForRead(
+    targetId: string,
+    projectId: string,
+    rootPath?: string | null,
+  ): Promise<OpenProjectBinding & { kind: "remote" }> {
+    await refuseOpenOnSleepingCloudComputer(targetId);
+    return await resolveRemoteProjectBinding(targetId, projectId, rootPath, { wake: false });
   }
 
   async function resolveRemoteProjectBinding(
     rawTargetId: string,
     rawProjectId: string,
     rawRootPath?: string | null,
+    options?: { wake?: boolean },
   ): Promise<OpenProjectBinding & { kind: "remote" }> {
     const targetId = rawTargetId.trim();
     const projectId = rawProjectId.trim();
@@ -969,6 +983,7 @@ export function registerRuntimeBridge({
 
     const connection = await remoteConnectionService.connect(target.id, {
       explicit: true,
+      ...(options?.wake === false ? { wake: false } : {}),
     });
     // Two id spaces reach this lookup. A project opened from the runtime's own
     // catalog carries the machine-registry id; an Activity item carries the
@@ -1792,8 +1807,7 @@ export function registerRuntimeBridge({
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
       try {
-        await refuseOpenOnSleepingCloudComputer(id);
-        const binding = await resolveRemoteProjectBinding(id, projectId);
+        const binding = await openRemoteProjectForRead(id, projectId);
         if (
           isLatestOpenRequest() &&
           canBindRemoteProjectToSender(windowId, event.sender)
