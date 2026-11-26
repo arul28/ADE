@@ -122,7 +122,7 @@ export function McpServersSection() {
   const registry = useMcpRegistry();
   const [searchParams] = useSearchParams();
   const focusServer = searchParams.get("mcpServer")?.trim() ?? "";
-  const focusedServerRef = useRef<{ name: string; focused: boolean } | null>(null);
+  const focusRequest = useRef<{ name: string; pageSelected: boolean; highlighted: boolean } | null>(null);
   const projectName = useAppStore((state) => state.project?.displayName?.trim() || null);
   const [dialog, setDialog] = useState<{ editing: McpRegistryServer | null } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -141,35 +141,30 @@ export function McpServersSection() {
     setServerPage(0);
     setFoundPage(0);
   }, [needle]);
-  // A link to one server (`?mcpServer=`) opens the page it is on, once per
-  // link: a reload after a change must not pull the person back to it.
-  const pagedToServerRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!focusServer) {
-      pagedToServerRef.current = null;
-      return;
-    }
-    if (pagedToServerRef.current === focusServer) return;
-    const index = filteredServers.findIndex((server) => server.name === focusServer);
-    if (index < 0) return;
-    pagedToServerRef.current = focusServer;
-    setServerPage(Math.floor(index / MCP_PAGE_SIZE));
-  }, [filteredServers, focusServer]);
   const serversShown = pageOf(filteredServers, serverPage);
   const foundShown = pageOf(filteredFound, foundPage);
 
+  // Each new link gets one page selection and highlight, even if it returns
+  // to a previously shown server. Reloads keep the page the person chose.
   useEffect(() => {
-    if (focusedServerRef.current?.name !== focusServer) {
-      focusedServerRef.current = focusServer ? { name: focusServer, focused: false } : null;
+    if (focusRequest.current?.name !== focusServer) {
+      focusRequest.current = focusServer ? { name: focusServer, pageSelected: false, highlighted: false } : null;
     }
-    const request = focusedServerRef.current;
-    if (!focusServer || !ready) return;
-    if (!request || request.focused) return;
-    const row = document.querySelector<HTMLElement>(`[data-mcp-server="${CSS.escape(focusServer)}"]`);
+    const request = focusRequest.current;
+    if (!request || !ready || request.highlighted) return;
+    if (!request.pageSelected) {
+      const index = filteredServers.findIndex((server) => server.name === request.name);
+      if (index < 0) return;
+      request.pageSelected = true;
+      const targetPage = Math.floor(index / MCP_PAGE_SIZE);
+      setServerPage(targetPage);
+      if (targetPage !== serverPage) return;
+    }
+    const row = document.querySelector<HTMLElement>(`[data-mcp-server="${CSS.escape(request.name)}"]`);
     if (!row) return;
-    request.focused = true;
+    request.highlighted = true;
     return flashRowHighlight(row);
-  }, [focusServer, ready, registry.servers, serverPage]);
+  }, [filteredServers, focusServer, ready, serverPage]);
 
   /** Runs one change on one row, and says so when it did not take. */
   const run = useCallback(async (key: string, failed: string, change: () => Promise<string | null>): Promise<boolean> => {
