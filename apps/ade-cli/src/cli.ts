@@ -32360,10 +32360,21 @@ async function runServe(
             return { allowed: false, target, reason: "ADE Cloud updates itself, so its track isn't switched from here." };
           }
           const { checkTrackSwitch } = await import("../../desktop/src/main/services/updates/trackSwitchGuard");
-          return await checkTrackSwitch({ target, runningVersion: VERSION, logger: headlessProjectLogger });
+          try {
+            return await checkTrackSwitch({ target, runningVersion: VERSION, logger: headlessProjectLogger });
+          } catch (error) {
+            // The asking machine shows the refusal; this machine's log keeps why.
+            headlessProjectLogger.warn("brain.track_switch_check_failed", { target, error: String(error) });
+            throw error;
+          }
         },
         save: (target, options) => {
-          writeSavedUpdateTrack(target, process.env, undefined, options);
+          try {
+            writeSavedUpdateTrack(target, process.env, undefined, options);
+          } catch (error) {
+            headlessProjectLogger.warn("brain.track_switch_save_failed", { target, error: String(error) });
+            throw error;
+          }
         },
         requestDesktopApp: async (target, requestedBy) => {
           const { hostAppPath, requestDesktopAppTrackSwitch, requestTrackSwitchThroughClosedApp } =
