@@ -53,6 +53,7 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 // signed-out page.
 import { requirePin } from "../../lib/requirePin";
 import { showToast } from "../../components/app/toast/toastStore";
+import { claimWindowStripForAccount } from "../../components/app/windowStripStorage";
 
 async function loadFederatedAdapter(
   manager: WebMachineSessionManager,
@@ -738,6 +739,8 @@ export function WebClientRoot({
         return;
       }
 
+      // This tab's strip of project tabs reopens only for the account that kept it.
+      if (snapshot.userId) claimWindowStripForAccount(snapshot.userId);
       const linkTarget = pendingTargetRef.current ?? readPendingTarget();
       const ownedLinkTarget = isOwnedOrAccountLink(linkTarget) ? linkTarget : null;
       const targetPathsLoad = loadTargetPaths();

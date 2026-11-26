@@ -6,6 +6,7 @@ import {
   type AdeCloudAccessState,
   type CloudAccessIpcAnswer,
 } from "../../shared/adeCloudMachine";
+import { accountScopedCopy } from "./accountScopedStorage";
 
 /**
  * ADE Cloud's state in this window. ADE Cloud is one machine every account
@@ -19,9 +20,11 @@ import {
  * timer: the answer reaches the server at most once every 10 minutes
  * (`main/services/adeCloud/cloudAccess.ts`).
  *
- * The last answer is kept in this computer's storage, so a new window starts
- * with it (a blocked account starts read-only, not on). It holds no secret:
- * the state and the server's sentence. A sign-out deletes it.
+ * The last answer is kept in this computer's storage, for the account signed
+ * in here only, so a new window of that account starts with it (a blocked
+ * account starts read-only, not on). It holds no secret: the state and the
+ * server's sentence. A sign-out or another account deletes it; ADE Web keeps
+ * it in memory.
  */
 
 export type AdeCloudAccess = {
@@ -32,36 +35,19 @@ export type AdeCloudAccess = {
 
 const STORAGE_KEY = "ade.cloudAccess.v1";
 
-function readSaved(): AdeCloudAccess {
-  try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
-    // Only a fact about the account is kept: "on" or "blocked".
-    if (parsed && (parsed.state === "on" || parsed.state === "blocked")) {
-      return {
-        state: parsed.state,
-        reason: parsed.state === "blocked" && typeof parsed.reason === "string" ? parsed.reason : null,
-      };
-    }
-  } catch {
-    // This computer's copy is a convenience; the next read fills it again.
+/** A saved answer: only a fact about the account is kept, "on" or "blocked". */
+function parseSaved(value: unknown): AdeCloudAccess | null {
+  const parsed = value && typeof value === "object" ? value as Record<string, unknown> : null;
+  if (parsed && (parsed.state === "on" || parsed.state === "blocked")) {
+    return {
+      state: parsed.state,
+      reason: parsed.state === "blocked" && typeof parsed.reason === "string" ? parsed.reason : null,
+    };
   }
-  return { state: "unknown", reason: null };
+  return null;
 }
 
-function save(next: AdeCloudAccess): void {
-  try {
-    if (next.state === "on" || next.state === "blocked") {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ state: next.state, reason: next.reason }));
-    } else if (next.state === "signed_out") {
-      window.localStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {
-    // As above: a convenience only.
-  }
-}
-
-let access: AdeCloudAccess = readSaved();
+let access: AdeCloudAccess = { state: "unknown", reason: null };
 /** The end warning's pass, from the same read (desktop main fills it only while ADE Cloud is on). */
 let signInEnd: CloudSignInEnd | null = null;
 let reading = false;
@@ -71,6 +57,30 @@ let stopWatch: (() => void) | null = null;
 
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+// This computer's copy, for the account signed in here only (`accountScopedStorage.ts`):
+// one account's blocked state never shows for the next one, and ADE Web keeps none.
+const saved = accountScopedCopy({
+  key: STORAGE_KEY,
+  restore: (value) => {
+    const next = parseSaved(value);
+    // A read in this window already answered: that answer is newer.
+    if (!next || access.state !== "unknown") return;
+    access = next;
+    emit();
+  },
+  forget: () => {
+    access = { state: "unknown", reason: null };
+    signInEnd = null;
+    emit();
+    if (stopWatch) read();
+  },
+});
+
+function save(next: AdeCloudAccess): void {
+  if (next.state === "on" || next.state === "blocked") saved.save({ state: next.state, reason: next.reason });
+  else if (next.state === "signed_out") saved.clear();
 }
 
 /**

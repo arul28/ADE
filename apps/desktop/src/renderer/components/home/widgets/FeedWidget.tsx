@@ -188,7 +188,12 @@ function useMachinePresence(rows: readonly MachineRow[], onlineSince: ReadonlyMa
     }
     setLog(store.log);
   }, [onlineSince, rows]);
-  return log;
+  // The log is this computer's, the machines the account's: another account
+  // signed in here never sees the last one's machines come and go.
+  return useMemo(() => {
+    const listed = new Set(rows.map((row) => row.key));
+    return log.filter((entry) => listed.has(entry.key));
+  }, [log, rows]);
 }
 
 // ── "While you were away" ────────────────────────────────────────────

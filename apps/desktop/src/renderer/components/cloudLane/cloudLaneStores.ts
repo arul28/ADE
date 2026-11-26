@@ -3,6 +3,7 @@ import { cloudLaneJobIsLive, type CloudLaneJobSnapshot, type CloudLaneWithoutCom
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { accountScopedCopy } from "../../state/accountScopedStorage";
 import { cloudLaneLifeAvailable, listCloudLaneJobs, listCloudLanesWithoutComputer } from "./cloudLaneActions";
 
 /**
@@ -11,8 +12,9 @@ import { cloudLaneLifeAvailable, listCloudLaneJobs, listCloudLanesWithoutCompute
  * - the tier changes and moves (`listJobs` once, then `onLaneJob` events);
  * - the lanes kept without a computer (`lanesWithoutComputer`, read when the
  *   first surface opens, on window focus and when the account's computers
- *   change; this computer keeps the last answer so a chat on a removed
- *   computer says so before any read).
+ *   change; this computer keeps the last answer, for the account signed in
+ *   here only, so a chat on a removed computer says so before any read;
+ *   ADE Web keeps it in memory).
  *
  * One read however many surfaces show them; no timer, no poll. Both are
  * account level (main process, no pin) and empty where this ADE can't ask.
@@ -228,25 +230,37 @@ const WITHOUT_STORAGE_KEY = "ade.cloudLanesWithoutComputer.v1";
 
 type WithoutState = { lanes: readonly CloudLaneWithoutComputer[]; known: boolean; loading: boolean };
 
-let without: WithoutState = readSavedWithout();
+const EMPTY_WITHOUT: WithoutState = { lanes: [], known: false, loading: false };
+let without: WithoutState = EMPTY_WITHOUT;
 const withoutListeners = new Set<() => void>();
 let stopWithout: (() => void) | null = null;
 let withoutGeneration = 0;
 
-function readSavedWithout(): WithoutState {
-  try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(WITHOUT_STORAGE_KEY) : null;
-    const parsed = raw ? JSON.parse(raw) as unknown : null;
-    if (!Array.isArray(parsed)) return { lanes: [], known: false, loading: false };
-    const lanes = parsed.filter((row): row is CloudLaneWithoutComputer => Boolean(row)
-      && typeof (row as CloudLaneWithoutComputer).laneId === "string"
-      && typeof (row as CloudLaneWithoutComputer).laneName === "string"
-      && typeof (row as CloudLaneWithoutComputer).formerInstanceId === "string");
-    return { lanes, known: true, loading: false };
-  } catch {
-    return { lanes: [], known: false, loading: false };
-  }
+function parseSavedWithout(value: unknown): CloudLaneWithoutComputer[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter((row): row is CloudLaneWithoutComputer => Boolean(row)
+    && typeof (row as CloudLaneWithoutComputer).laneId === "string"
+    && typeof (row as CloudLaneWithoutComputer).laneName === "string"
+    && typeof (row as CloudLaneWithoutComputer).formerInstanceId === "string");
 }
+
+// This computer's copy, for the account signed in here only (`accountScopedStorage.ts`):
+// one account's kept lanes never show for the next one, and ADE Web keeps none.
+const savedWithout = accountScopedCopy({
+  key: WITHOUT_STORAGE_KEY,
+  restore: (value) => {
+    const lanes = parseSavedWithout(value);
+    // A read in this window already answered: that list is newer.
+    if (!lanes || without.known) return;
+    publishWithout({ lanes, known: true });
+  },
+  forget: () => {
+    // A read the last account started lands nowhere.
+    withoutGeneration += 1;
+    publishWithout({ ...EMPTY_WITHOUT });
+    if (withoutListeners.size > 0) refreshCloudLanesWithoutComputer();
+  },
+});
 
 function publishWithout(next: Partial<WithoutState>): void {
   without = { ...without, ...next };
@@ -271,11 +285,7 @@ export function refreshCloudLanesWithoutComputer(): void {
 }
 
 function saveWithout(lanes: readonly CloudLaneWithoutComputer[]): void {
-  try {
-    window.localStorage.setItem(WITHOUT_STORAGE_KEY, JSON.stringify(lanes));
-  } catch {
-    // This computer's copy is a convenience; the next read fills it again.
-  }
+  savedWithout.save(lanes);
 }
 
 /**
@@ -314,7 +324,6 @@ function subscribeWithout(listener: () => void): () => void {
 }
 
 const readWithout = () => without;
-const EMPTY_WITHOUT: WithoutState = { lanes: [], known: false, loading: false };
 const subscribeNothing = () => () => undefined;
 const readEmptyWithout = () => EMPTY_WITHOUT;
 
