@@ -889,6 +889,9 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           await api.putEventWakes(instanceId, topics);
           state.eventWakes = topics;
         } catch (error) {
+          // The server may have stored part of the list (a Linear workspace it couldn't match yet),
+          // so no list counts as sent: the next rest sends this one, or an earlier one, again.
+          state.eventWakes = null;
           logger.warn("cloud.rest_save_event_wakes_failed", { error: errorText(error) });
         }
       }
