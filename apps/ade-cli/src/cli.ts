@@ -767,6 +767,7 @@ import { REMOTE_WORK_HOLD_REASON, createCloudRemoteWorkHold } from "./services/p
 import { CLOUD_COMPUTER_MOVING_CODE, CLOUD_COMPUTER_MOVING_SENTENCE } from "../../account-directory/src/cloud/contract";
 import { encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
+import { endProviderLoginGateHold, holdProviderLoginGate } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
@@ -30864,23 +30865,27 @@ async function runServe(
   const personalChatScope = createPersonalChatScope(
     runtimeProfile ? { runtimeProfile } : undefined,
   );
-  // Off the boot path: the first pass waits for the vault's first tick anyway.
+  // Fixed for this process: an embedded runtime, a development build and a
+  // brain with sync off never open a store for it. Every other gate (an
+  // account with ADE Cloud, its switch, a synced vault) is checked on each pass.
+  const providerLoginStaticOff = embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null;
+  // The install runs off the boot path, so on a cloud computer a turn that
+  // comes first waits for its gate instead of starting with no sign-in written.
+  if (!providerLoginStaticOff && isAdeCloudComputer()) holdProviderLoginGate();
   void import("./services/account/brainProviderLoginSync").then(({ installBrainProviderLoginSync }) => installBrainProviderLoginSync({
-    // Fixed for this process: an embedded runtime, a development build and a
-    // brain with sync off never open a store for it. Every other gate (an
-    // account with ADE Cloud, its switch, a synced vault) is checked on each pass.
-    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    staticOff: providerLoginStaticOff,
     adeDir: layout.adeDir,
     secretsDir: layout.secretsDir,
     accountAuthService: brainAccountAuthService,
     logger: headlessProjectLogger,
   })).catch((error: unknown) => {
+    endProviderLoginGateHold();
     headlessProjectLogger.warn("provider_login.install_failed", { name: error instanceof Error ? error.name : "unknown" });
   });
   // Claude passes use the sign-in sync's hooks (its pass, its gate, its
   // status). The same fixed conditions turn both off; the boot token then stays.
   void import("../../desktop/src/main/services/claudePass/installClaudePassSync").then(({ installClaudePassSync }) => installClaudePassSync({
-    staticOff: embedded ? "embedded" : !brainReportsAsRelease(process.env) ? "dev_brain" : !syncEnabled ? "sync_off" : null,
+    staticOff: providerLoginStaticOff,
     adeDir: layout.adeDir,
     logger: headlessProjectLogger,
   })).catch((error: unknown) => {

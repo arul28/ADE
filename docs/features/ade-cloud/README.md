@@ -1123,6 +1123,19 @@ sentence.
   `ADE_MIN_VERSION` from a client's env and drops the rest (`CLIENT_ENV` in
   `cloud/routes.ts`, names logged as `cloud.create_env_dropped`). An older
   computer with keys in its env has them taken out at the first apply.
+- A turn or a CLI start on a cloud computer runs the gate first
+  (`providerLoginGate.ts`): chat sends, `agentChat.launchCli`, Work tab CLI
+  starts (`pty.create` with a runtime CLI launch) and `work.startCliSession`
+  from the web and the phone. Right after a start or a wake, the brain holds
+  turns until the sync has installed its gate (`holdProviderLoginGate`, at
+  most 30 s). Then, until the sync has the account's ADE Cloud answer, the
+  gate waits up to 30 s for the account sign-in and that answer (it asks
+  again every 5 s while the answer is unreadable), pulls the vault and the
+  account settings, and applies the provider before the turn goes. A chat
+  says "Getting this cloud computer's sign-ins from your ADE account…" while
+  it waits. A wait that runs out is logged (`provider_login.gate_cold`), and
+  later turns go at once until the next answer. On a person's own computer
+  the gate is not installed, so a send pays nothing.
 
 Sign-ins also come down to the person's own computers
 (`providerLoginApplyPass.ts`):

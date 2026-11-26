@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createHeadlessAccountVaultBridge } from "../../../../../ade-cli/src/services/account/accountRuntimeLifecycle";
 import { createAccountVaultStore, type AccountVaultRelay } from "../../../../../ade-cli/src/services/account/accountVaultStore";
-import { providerLoginGate } from "./providerLoginHooks";
+import { holdProviderLoginGate, providerLoginGate } from "./providerLoginHooks";
 import { originId } from "./providerLoginPayload";
 import { createProviderLoginSync } from "./providerLoginSync";
 
@@ -354,7 +354,12 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     cloud: boolean;
     storeNow?: () => number;
     renew?: (provider: string) => Promise<boolean | null>;
+    /** The ADE account signed in on this computer; null until the boot's sign-in lands. */
+    account?: { id: string | null };
+    /** The ADE Cloud answer (the network); ready when left out. */
+    cloudAccess?: () => Promise<"ready" | "unreadable">;
   }) {
+    const account = opts.account ?? { id: USER };
     const home = path.join(root, name, "home");
     const adeDir = path.join(root, name, "ade");
     fs.mkdirSync(home, { recursive: true });
@@ -362,7 +367,7 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     const vault = createAccountVaultStore({
       adeDir,
       relay: opts.relay.relayFor(opts.device),
-      getAccountUserId: () => USER,
+      getAccountUserId: () => account.id,
       getDeviceId: () => opts.device,
       ...(opts.storeNow ? { now: opts.storeNow } : {}),
     });
@@ -373,9 +378,9 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
       staticOff: null,
       vault: () => vault,
       settings: () => ({ get: () => undefined }),
-      accountUserId: () => USER,
+      accountUserId: () => account.id,
       machine: () => ({ machineKey: opts.machineKey, deviceId: opts.device, label: name, platform: "linux" }),
-      cloudAccess: async () => "ready",
+      cloudAccess: opts.cloudAccess ?? (async () => "ready"),
       cloudComputer: opts.cloud,
       logger: { info: () => {}, warn: () => {} },
       env: { HOME: home },
@@ -696,10 +701,16 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     return { relay, origin, expiresAt };
   }
 
-  async function cloudComputer(name: string, relay: ReturnType<typeof makeRelay>, renew?: (self: Computer) => Promise<boolean | null>): Promise<Computer> {
+  async function cloudComputer(
+    name: string,
+    relay: ReturnType<typeof makeRelay>,
+    renew?: (self: Computer) => Promise<boolean | null>,
+    boot?: Pick<Parameters<typeof makeComputer>[1], "account" | "cloudAccess">,
+  ): Promise<Computer> {
     let self!: Computer;
     self = await makeComputer(name, {
       relay,
+      ...boot,
       device: `device-${name}`,
       machineKey: `machine-${name}`,
       cloud: true,
@@ -730,6 +741,47 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
     expect(keyOf(world.relay.rows).refreshOwner).toBe("device-cloud");
     return { ...world, cloud };
   }
+
+  it.each([
+    ["its account signs in", "signed_out"],
+    ["the ADE Cloud answer can be read again", "unreadable"],
+  ] as const)("holds a turn on a cloud computer that just started until %s, then applies the sign-in first", async (_, start) => {
+    const { relay } = await originGoesOff();
+    // The boot: the sync is not installed yet, and the account's sign-in has
+    // not landed, or the network is not up after a wake.
+    holdProviderLoginGate();
+    const account = { id: start === "signed_out" ? null : USER };
+    const network = { down: start === "unreadable" };
+    const cloud = await cloudComputer("cloud", relay, undefined, {
+      account,
+      cloudAccess: async () => (network.down ? "unreadable" : "ready"),
+    });
+    const settled: string[] = [];
+    const beforeInstall = providerLoginGate("codex");
+    expect(beforeInstall).not.toBeNull();
+    void beforeInstall!.then(() => settled.push("before install"));
+    await elapse(1_000);
+    startComputer(cloud);
+    const afterInstall = providerLoginGate("codex")!;
+    void afterInstall.then(() => settled.push("after install"));
+    await elapse(3_000);
+    expect(settled).toEqual([]);
+    expect(fs.existsSync(cloud.codexPath)).toBe(false);
+
+    if (start === "signed_out") {
+      // The account signs in (the brain's `onSignedIn` asks the ADE Cloud answer again).
+      account.id = USER;
+      void cloud.sync.refreshAccess();
+    } else {
+      // The network is back: the waiting turn asks again itself, well before the 60 s re-check.
+      network.down = false;
+    }
+    const done = await drive(Promise.all([beforeInstall!, afterInstall]));
+    expect(done.value).toMatchObject([{ result: "ok" }, { result: "ok" }]);
+    // The origin's sign-in is written before the turn goes (access-only: the origin renews it).
+    const access = (JSON.parse(fs.readFileSync(cloud.codexPath, "utf8")) as { tokens: { access_token: string } }).tokens.access_token;
+    expect(JSON.parse(Buffer.from(access.split(".")[1]!, "base64url").toString())).toMatchObject({ n: "first" });
+  });
 
   it("takes the renewal over on a cloud computer only past expiry + 60 s, armed by a turn that came too early, and never holds a turn past 45 s", async () => {
     const { relay, expiresAt } = await originGoesOff();

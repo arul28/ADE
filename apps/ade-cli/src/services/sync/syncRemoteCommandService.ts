@@ -1,6 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
+import { awaitCliProviderLogin } from "../../../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
 import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
@@ -459,6 +460,7 @@ export type ExternalSessionsRemoteService = {
   importExternalSession(args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult>;
   getDetail(args: ExternalSessionDetailArgs, options?: { maxEvents?: number }): Promise<ExternalSessionDetail>;
 };
+
 
 const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
 
@@ -4889,6 +4891,10 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const permissionMode = parsed.permissionMode ?? "default";
     validateLaunchProfilePermissionMode(provider, permissionMode);
     const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider] as TerminalToolType;
+    // On a cloud computer, the account's sign-in for this CLI is written before
+    // it starts, as on the desktop path (P5 §4.4). Null everywhere else: no await.
+    // At most 20 s, under the phone's 30 s budget (`awaitCliProviderLogin`).
+    await awaitCliProviderLogin(provider, { event: "sync_remote.start_cli.provider_login", logger: args.logger });
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
       provider,
       title: parsed.title,
