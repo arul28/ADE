@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import { enforcePhoneAllowance, handleNomacWebhook } from "../src/cloud/phones";
-import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
+import { CLOUD_BACKUP_MAX_ACCOUNT_BYTES, CLOUD_BACKUP_MAX_BYTES, CLOUD_BACKUP_MAX_PART_BYTES, CLOUD_BACKUP_NEVER_SAVED_SENTENCE, CLOUD_CAPSULE_MAX_PART_BYTES, CLOUD_CHAT_MAX_PART_BYTES, CLOUD_CHAT_MESSAGE_TTL_MS, CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT, CLOUD_LAUNCH_MAX_FILE_BYTES, CLOUD_LAUNCH_MAX_OPEN_DRAFTS, CLOUD_SESSION_MAX_BYTES, CLOUD_OUTSIDE_AGENT_FREE_MESSAGE, type CloudAccountState, type CloudCopyRecord, type CloudFreeRecord, type CloudMoveRecord } from "../src/cloud/contract";
 import { deleteAllAccountChats } from "../src/cloud/chats";
 import { pruneSponsored } from "../src/cloud/sponsoredReport";
 import { smallCloudLookAlarms, syncAllSmallRates } from "../src/cloud/sponsoredSmall";
@@ -3697,6 +3697,13 @@ describe("ADE Cloud without a computer", () => {
     const upload = "3f6c2a1e-8b4d-4c7a-9e2f-5a1b0c9d8e7f";
     expect((await harness.send(OWNER, "PUT", `/cloud/launches/${upload}/files/photo-1`, "png", { "content-type": "image/png" })).status).toBe(201);
     const file = { launchId: upload, fileId: "photo-1", name: "photo.png", contentType: "image/png", sizeBytes: 5 };
+    // Copies that would carry the account past its draft bytes start no computer and copy nothing.
+    harness.exec("update cloud_launches set draft_bytes = ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 4, upload);
+    const refused = await harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId: "m0", text: "What is this?", attachments: [file] });
+    expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([429, "uploads_full"]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(0);
+    expect(harness.rows("select launch_id from cloud_launches where user_id = ?", OWNER)).toEqual([{ launch_id: upload }]);
+    harness.exec("update cloud_launches set draft_bytes = 5 where launch_id = ?", upload);
     const sent = await harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId: "m1", text: "What is this?", attachments: [file] });
     expect(sent.status).toBe(201);
     const { wake } = (await sent.json()) as { wake: { launchId: string } };
@@ -3704,6 +3711,108 @@ describe("ADE Cloud without a computer", () => {
     expect([await read(wake.launchId), await read(upload)]).toEqual([200, 200]);
     expect((harness.row("select expires_at from cloud_launches where launch_id = ?", upload) as { expires_at: number }).expires_at)
       .toBeGreaterThanOrEqual(NOW + CLOUD_CHAT_MESSAGE_TTL_MS);
+  });
+
+  /** A raw upload as a client sends it: its length when it has one, else a stream with no length. */
+  const rawPut = (path: string, body: Uint8Array | ReadableStream<Uint8Array>, headers: Record<string, string> = {}, caller = OWNER) =>
+    handleCloudRequest(new Request(`https://directory.test${path}`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${tokens[caller]}`, "content-type": "application/octet-stream", ...(body instanceof Uint8Array ? { "content-length": String(body.byteLength) } : {}), ...headers },
+      body: body as BodyInit,
+      ...(body instanceof Uint8Array ? {} : { duplex: "half" }),
+    } as RequestInit), harness.env);
+  /** A body with no length, made as it is read: `pulled` is how much the server asked for. */
+  const streamOf = (total: number) => {
+    const chunk = 1024 * 1024;
+    let pulled = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulled >= total) return controller.close();
+        const size = Math.min(chunk, total - pulled);
+        pulled += size;
+        controller.enqueue(new Uint8Array(size).fill(0x7b));
+      },
+    }, { highWaterMark: 0 });
+    return { stream, pulled: () => pulled };
+  };
+
+  it("an account's open launch drafts stay under their caps: a new draft past the count, a file past the bytes, a request past the minute are refused, and a refused upload holds nothing", async () => {
+    seedAccount(harness, OWNER);
+    seedAccount(harness, OTHER);
+    const draft = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+    const fileOf = (launchId: string, fileId: string, body: Uint8Array | ReadableStream<Uint8Array>, caller = OWNER) =>
+      rawPut(`/cloud/launches/${launchId}/files/${fileId}`, body, {}, caller);
+    const answer = async (response: Promise<Response>) => {
+      const sent = await response;
+      return [sent.status, sent.status === 201 ? null : ((await sent.json()) as { error: { code: string } }).error.code];
+    };
+    const bytes = (size: number) => new Uint8Array(size).fill(1);
+    const heldBytes = () => Number(harness.row("select coalesce(sum(draft_bytes), 0) as total from cloud_launches where user_id = ? and state = 'draft'", OWNER).total);
+    const insertDraft = (n: number, state = "draft", expiresAt = NOW + DAY) => harness.insert("cloud_launches", { launch_id: draft(n), user_id: OWNER, state, created_at: NOW, updated_at: NOW, expires_at: expiresAt });
+
+    // One short of the count; an expired draft and a started launch don't count.
+    for (let n = 0; n < CLOUD_LAUNCH_MAX_OPEN_DRAFTS - 1; n += 1) insertDraft(n);
+    insertDraft(500, "draft", NOW - 1);
+    insertDraft(501, "making");
+    expect(await answer(fileOf(draft(1000), "photo-1", bytes(3)))).toEqual([201, null]);
+    // A new draft past the count is refused before any row exists; the open draft still takes files; another account is its own.
+    expect(await answer(fileOf(draft(1001), "photo-1", bytes(3)))).toEqual([429, "uploads_full"]);
+    expect(harness.rows("select 1 from cloud_launches where launch_id = ?", draft(1001))).toHaveLength(0);
+    expect(await answer(fileOf(draft(1000), "photo-2", bytes(3)))).toEqual([201, null]);
+    expect(await answer(fileOf(draft(2000), "photo-1", bytes(3), OTHER))).toEqual([201, null]);
+    // An expired draft takes nothing more: the account's sum no longer counts it.
+    expect(await answer(fileOf(draft(500), "photo-1", bytes(3)))).toEqual([410, "files_expired"]);
+    expect(heldBytes()).toBe(6);
+
+    // Room for one whole file: a body with no length that runs past a file holds nothing after its refusal.
+    harness.exec("update cloud_launches set draft_bytes = ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - CLOUD_LAUNCH_MAX_FILE_BYTES - 6, draft(0));
+    expect(await answer(fileOf(draft(1000), "photo-3", streamOf(CLOUD_LAUNCH_MAX_FILE_BYTES + 1).stream))).toEqual([413, "file_too_big"]);
+    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - CLOUD_LAUNCH_MAX_FILE_BYTES);
+    // No length reserves a whole file and settles to its real size; then a whole file no longer fits, a known small one does.
+    expect(await answer(fileOf(draft(1000), "photo-3", streamOf(5).stream))).toEqual([201, null]);
+    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - CLOUD_LAUNCH_MAX_FILE_BYTES + 5);
+    expect(await answer(fileOf(draft(1000), "photo-4", streamOf(5).stream))).toEqual([429, "uploads_full"]);
+    expect(await answer(fileOf(draft(1000), "photo-4", bytes(5)))).toEqual([201, null]);
+
+    // Five bytes of room: a file sent again in its place gives its old bytes back once it is stored.
+    harness.exec("update cloud_launches set draft_bytes = draft_bytes + ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 5 - heldBytes(), draft(0));
+    expect(await answer(fileOf(draft(1000), "photo-4", bytes(5)))).toEqual([201, null]);
+    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 5);
+    // Past the bytes, a new file is refused, and a new draft leaves no row behind.
+    expect(await answer(fileOf(draft(1000), "photo-5", bytes(6)))).toEqual([429, "uploads_full"]);
+    harness.exec("delete from cloud_launches where launch_id = ?", draft(1));
+    expect(await answer(fileOf(draft(1002), "photo-1", bytes(6)))).toEqual([429, "uploads_full"]);
+    expect(harness.rows("select 1 from cloud_launches where launch_id = ?", draft(1002))).toHaveLength(0);
+    expect(heldBytes()).toBe(CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 5);
+
+    // The upload minute counts these files.
+    harness.exec("update cloud_launches set draft_bytes = 0 where user_id = ?", OWNER);
+    harness.exec("update cloud_request_windows set count = 1200 where user_id = ? and bucket = 'uploads'", OWNER);
+    expect((await fileOf(draft(1000), "photo-5", bytes(1))).status).toBe(429);
+  });
+
+  it.each([
+    ["a launch file", CLOUD_LAUNCH_MAX_FILE_BYTES, async () => `/cloud/launches/${"4a7d2c1e-9b3f-4e8a-8c6d-2f1b0a9e8d7c"}/files/photo-1`],
+    ["a chat part", CLOUD_CHAT_MAX_PART_BYTES, async () => "/cloud/chats/key-a/c1/parts/1"],
+    ["a session copy", CLOUD_SESSION_MAX_BYTES, async () => "/cloud/sessions/key-a/cli-1"],
+    ["a fork capsule part", CLOUD_CAPSULE_MAX_PART_BYTES, async () => "/cloud/capsules/key-a/c1/parts/1"],
+    ["a lane backup part", CLOUD_BACKUP_MAX_PART_BYTES, async () => {
+      const started = await harness.send(OWNER, "POST", "/cloud/backups/key-a/lane_big/uploads", {
+        instanceId: INSTANCE, fingerprint: "f".repeat(64), bundleBytes: 2 * CLOUD_BACKUP_MAX_PART_BYTES, patchBytes: 0,
+        facts: { branchRef: "ade/big", laneName: "big", projectKey: "github.com/acme/web", headSha: "1".repeat(40), snapshotSha: "2".repeat(40), baseSha: "3".repeat(40), commits: 1, files: 1 },
+      });
+      const { uploadId } = (await started.json()) as { uploadId: string };
+      return `/cloud/backups/key-a/lane_big/uploads/${uploadId}/bundle/1`;
+    }],
+  ])("%s with no length is refused once it runs past its cap, without reading the rest", async (_label, cap, pathOf) => {
+    seedAccount(harness, OWNER);
+    seedComputer(harness, { machine_key: "key-a" });
+    provide(harness);
+    const total = 2 * cap + 8 * 1024 * 1024;
+    const body = streamOf(total);
+    const sent = await rawPut(await pathOf(), body.stream, { "x-ade-instance": INSTANCE });
+    expect(sent.status).toBe(413);
+    expect(body.pulled()).toBeLessThan(total);
   });
 
   it("a send to a chat whose computer is gone continues it on one new computer, at the size the person picked: a second send rides the same launch", async () => {

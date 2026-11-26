@@ -1,6 +1,7 @@
 import { authenticate, type CallerTokenEnv } from "./callerToken";
 import { fail, json } from "./cloud/http";
 import { ACCOUNT_DELETE_PATH, type AccountDeleteResponse } from "./clientMinimumContract";
+import { readBoundedBody } from "./sinkUtils";
 import { trustedHttpsOrigin } from "./trustedOrigin";
 
 /**
@@ -64,9 +65,9 @@ export async function handleAccountSelfDeleteRequest(
 
   let confirm: unknown = null;
   try {
-    const text = await request.text();
-    if (text.length > MAX_BODY_BYTES) return withCors(fail("bad_request", "That request could not be read.", 400));
-    confirm = (JSON.parse(text || "{}") as { confirm?: unknown }).confirm;
+    const read = await readBoundedBody(request, MAX_BODY_BYTES);
+    if (!read.ok) return withCors(fail("bad_request", "That request could not be read.", 400));
+    confirm = (JSON.parse(read.text || "{}") as { confirm?: unknown }).confirm;
   } catch {
     return withCors(fail("bad_request", "That request could not be read.", 400));
   }

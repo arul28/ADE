@@ -6,7 +6,6 @@ import {
   CLOUD_CHAT_MESSAGES_OPEN_PER_ACCOUNT,
   CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT,
   CLOUD_CHAT_MESSAGES_PER_MINUTE,
-  CLOUD_LAUNCH_DRAFT_TTL_MS,
   cloudChatMessageSettingsOf,
   type CloudChatMessageAddResult,
   type CloudChatMessageAttachment,
@@ -22,7 +21,8 @@ import {
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { addLaunchMessage, cancelLaunchMessageStatement, LAUNCH_MESSAGE_ID, launchMessageOf } from "./launchMessages";
-import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, r2KeyOf, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { activeContinueLaunch, githubOriginOf, parseAttachments, parseSignIn, recordOf, type LaunchRow, type ParsedLaunchRequest } from "./launches";
+import { draftsFull, insertDraft, r2KeyOf } from "./launchFiles";
 import { cloudSizeForTier, type CloudSize } from "./plans";
 import { openJson, sealJson, userKeys, type UserKeys } from "./seal";
 import { handOverQueuedMessagesStatements, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
@@ -494,17 +494,16 @@ async function keepDraftFiles(env: CloudEnv, userId: string, attachments: CloudC
  * start that is refused (or answered by another launch) leaves files the cron
  * removes with the draft.
  */
-async function copyFilesToLaunch(env: CloudEnv, userId: string, attachments: CloudChatMessageAttachment[], launchId: string, now: number): Promise<string | null> {
+async function copyFilesToLaunch(env: CloudEnv, userId: string, attachments: CloudChatMessageAttachment[], launchId: string, now: number): Promise<Response | null> {
   if (!attachments.length) return null;
   const bucket = env.CLOUD_CHATS;
-  if (!bucket) return "ADE Cloud can't keep files right now. Send without them.";
-  await env.DB.prepare(`
-    insert into cloud_launches (launch_id, user_id, state, created_at, updated_at, expires_at)
-    values (?, ?, 'draft', ?, ?, ?) on conflict (launch_id) do nothing
-  `).bind(launchId, userId, now, now, now + CLOUD_LAUNCH_DRAFT_TTL_MS).run();
+  if (!bucket) return badRequest("ADE Cloud can't keep files right now. Send without them.");
+  // The copies count against the account's drafts like an upload: a refused start leaves them until the draft expires.
+  if (!await insertDraft(env, userId, launchId, attachments.reduce((total, file) => total + file.sizeBytes, 0), now)) return draftsFull(userId);
   for (const file of attachments) {
     const object = await bucket.get(r2KeyOf(userId, file.launchId, file.fileId));
-    if (!object) return `Upload "${file.name}" first, then send the message.`;
+    // The draft holds the sizes the message named: a file replaced since is not copied.
+    if (!object || object.size !== file.sizeBytes) return badRequest(`Upload "${file.name}" first, then send the message.`);
     await bucket.put(r2KeyOf(userId, launchId, file.fileId), await object.arrayBuffer(), {
       httpMetadata: { contentType: object.httpMetadata?.contentType ?? "application/octet-stream" },
     });
@@ -769,8 +768,8 @@ async function sendThroughLaunch(env: CloudEnv, keys: UserKeys, userId: string, 
       ...(input.settings && chat.kind !== "cli" ? { settings: input.settings } : {}),
     },
   };
-  const filesMissing = await copyFilesToLaunch(env, userId, input.attachments, parsed.launchId, now);
-  if (filesMissing) return badRequest(filesMissing);
+  const filesRefused = await copyFilesToLaunch(env, userId, input.attachments, parsed.launchId, now);
+  if (filesRefused) return filesRefused;
   const started = await deps.wake!.startLaunch(parsed);
   if (started.status !== 200 && started.status !== 201) return started;
   const record = await started.clone().json() as CloudLaunchRecord;
