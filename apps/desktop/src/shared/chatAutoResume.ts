@@ -151,7 +151,11 @@ export function isUsageLimitChatError(event: {
     `${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`,
   );
   // "outofusage": Cursor's "You're out of usage" carries neither phrase.
-  return identity.includes("usagelimit") || identity.includes("ratelimit") || identity.includes("outofusage");
+  if (identity.includes("usagelimit") || identity.includes("ratelimit") || identity.includes("outofusage")) return true;
+  // Plan windows named on their own: "You've hit your 5-hour limit",
+  // "5-hour limit reached", "weekly limit reached".
+  if (identity.includes("hityour") && identity.includes("limit")) return true;
+  return /\d+hourlimitreached|(?:weekly|opus|sonnet|fable)limitreached/.test(identity);
 }
 
 /**
@@ -181,9 +185,18 @@ export function formatAutoResumeHostClock(fireAtMs: number): string {
  * The one "auto-resume is armed" sentence. The host writes it into the chat as
  * a system notice; every client renders it verbatim. Shared so the notice and
  * the resume state can never disagree about what was scheduled or when.
+ *
+ * It quotes the provider's reset (`Paused: limit resets at 3:40 PM ET`), not
+ * ADE's buffered fire time; with no reset instant (a same-reset retry) it
+ * quotes the fire time.
  */
-export function autoResumeScheduledMessage(fireAtMs: number): string {
-  return `Resumes at ${formatAutoResumeHostClock(fireAtMs)}`;
+export function autoResumeScheduledMessage(fireAtMs: number, resetAtMs?: number | null): string {
+  const resetClock = typeof resetAtMs === "number" && Number.isFinite(resetAtMs) && resetAtMs + AUTO_RESUME_BUFFER_MS >= fireAtMs
+    ? formatAutoResumeHostClock(resetAtMs)
+    : "";
+  return resetClock
+    ? `Paused: limit resets at ${resetClock}`
+    : `Paused: resumes at ${formatAutoResumeHostClock(fireAtMs)}`;
 }
 
 export const AUTO_RESUME_ARMED_NOTICE_DETAIL =

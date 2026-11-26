@@ -22062,6 +22062,35 @@ export function AgentChatPane({
       return true;
     }
 
+    // A chat stopped at a usage limit switches now: the switch is what moves
+    // it off the limit and sends its queue to the new model (ADE-289), and
+    // there may be nothing left to type. Same call and pin as submit's.
+    if (usageLimitResume && renderedSessionId === selectedSessionId) {
+      applyModelSelectionSnapshot(snapshot);
+      const switchSessionId = selectedSessionId;
+      const presetId = options?.presetId ?? null;
+      const routeChanged = presetId !== (selectedSession?.presetId ?? null);
+      void withChatPin(
+        chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current),
+        (chatPin) => agentChatApiRef.current.updateSession({
+          sessionId: switchSessionId,
+          ...(presetId && routeChanged
+            ? { presetId }
+            : routeChanged ? { modelId: nextModelId, presetId: null } : { modelId: nextModelId }),
+        }, chatPin),
+      )
+        .then(() => {
+          setSessionRoutePick(null);
+          void refreshSessions().catch(() => {});
+        })
+        .catch((switchError: unknown) => {
+          // Left deferred, so the next send applies the pick as usual.
+          deferredComposerSessionIdRef.current = switchSessionId;
+          setError(errorMessage(switchError));
+        });
+      return true;
+    }
+
     // Keep the selection local until submit(). Submit applies the
     // existing updateSession handoff immediately before send(), so
     // no provider runtime is torn down or rebound while the user is
@@ -23243,6 +23272,7 @@ export function AgentChatPane({
                           && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
                           ? usageLimitResume.turnId ?? null
                           : null}
+                        usageLimitResumeResetAt={usageLimitResume?.resetAt ?? null}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.

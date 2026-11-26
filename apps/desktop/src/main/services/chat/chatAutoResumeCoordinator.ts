@@ -876,7 +876,7 @@ export function createChatAutoResumeCoordinator(
         if (state.noticeFireAt === fireAt) return;
         state.noticeFireAt = fireAt;
         emitAutoResumeNotice(sessionId, {
-          message: autoResumeScheduledMessage(fireAt),
+          message: autoResumeScheduledMessage(fireAt, sameResetRetry ? null : args.resetAtMs),
           detail: sameResetRetry ? AUTO_RESUME_RETRY_NOTICE_DETAIL : AUTO_RESUME_ARMED_NOTICE_DETAIL,
           turnId,
         });
@@ -902,7 +902,7 @@ export function createChatAutoResumeCoordinator(
    *
    * Deliberately NOT `maybeArmAfterUsageLimit`: this is the same arm, restored,
    * so counting it again would spend one of the two attempts the cap allows and
-   * announce a second "Resumes at ..." for a schedule the chat never lost. What
+   * announce a second "Paused: limit resets at ..." for a schedule the chat never lost. What
    * it does share is the guard and the shape — a chat that stopped being
    * schedulable while the send was in flight gets nothing, and the row is the
    * arm path's own payload.

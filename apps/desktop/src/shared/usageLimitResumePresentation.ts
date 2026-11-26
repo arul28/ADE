@@ -311,9 +311,35 @@ export function isUsageLimitTurn(
   return Boolean(resumeTurnId && done.turnId && done.turnId === resumeTurnId);
 }
 
-/** Footer copy for a turn that ended at a usage limit. */
-export function usageLimitTurnFooterLabel(elapsed: string | null): string {
-  return elapsed ? `Paused · usage limit · ${elapsed}` : "Paused · usage limit";
+/**
+ * Footer copy for a turn that ended at a usage limit: `Paused: limit resets at
+ * 3:40 PM` when the provider said when (the reset itself, not ADE's buffered
+ * fire time), else `Paused · usage limit`. A reset on another day names it.
+ */
+export function usageLimitTurnFooterLabel(
+  elapsed: string | null,
+  resetAtMs: number | null = null,
+  nowMs: number = Date.now(),
+): string {
+  const reset = formatUsageLimitResetInstant(resetAtMs, nowMs);
+  const lead = reset ? `Paused: limit resets at ${reset}` : "Paused · usage limit";
+  return elapsed ? `${lead} · ${elapsed}` : lead;
+}
+
+/** `3:40 PM`, or `Dec 1, 3:40 PM` when the reset is not on the viewer's today. */
+function formatUsageLimitResetInstant(resetAtMs: number | null, nowMs: number): string {
+  if (resetAtMs == null || !Number.isFinite(resetAtMs)) return "";
+  const clock = formatUsageLimitClock(resetAtMs);
+  if (!clock) return "";
+  const reset = new Date(resetAtMs);
+  const now = new Date(nowMs);
+  if (reset.toDateString() === now.toDateString()) return clock;
+  try {
+    const day = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(reset);
+    return `${day}, ${clock}`;
+  } catch {
+    return clock;
+  }
 }
 
 /**
@@ -357,6 +383,8 @@ export function isUsageLimitFailureText(text: string | null | undefined): boolea
   // session limit" / "…your weekly limit". Found in the wild as the last
   // assistant text of a turn that stopped at the limit.
   if (identity.includes("hityour") && identity.includes("limit")) return true;
+  // A plan window named on its own: "5-hour limit reached", "weekly limit reached".
+  if (/\d+hourlimitreached|(?:weekly|opus|sonnet|fable)limitreached/.test(identity)) return true;
   if (!identity.includes("429")) return false;
   return identity.includes("rate")
     || identity.includes("usage")

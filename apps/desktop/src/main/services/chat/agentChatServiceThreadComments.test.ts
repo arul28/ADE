@@ -1,6 +1,8 @@
 import {
   AgentChatEventEnvelope,
   claudeSdkCreateSessionCompat,
+  claudeSdkResumeSessionCompat,
+  createScheduledWorkDb,
   createService,
   fs,
   installClaudeResponseFixture,
@@ -158,6 +160,97 @@ describe("thread comments riding a steer", () => {
     expect(service.listThreadComments({ sessionId: session.id })).toHaveLength(0);
     finishActiveTurn();
     await activeTurn;
+    service.forceDisposeAll();
+  });
+});
+
+describe("thread comments queued at a usage limit", () => {
+  // ADE-289: the turn ends at a plan limit with a steer (and the comments on
+  // it) queued behind it. The limit holds the queue; switching the chat to
+  // another model releases it there.
+  it("a switch away from the limit sends the held queue and its comments to the new model", async () => {
+    const scheduledWork = createScheduledWorkDb();
+    const events: AgentChatEventEnvelope[] = [];
+    const send = vi.fn().mockResolvedValue(undefined);
+    const resetEpochSeconds = Math.floor((Date.now() + 2 * 3_600_000) / 1000);
+    const limitText = `Claude AI usage limit reached|${resetEpochSeconds}`;
+    let streamCall = 0;
+    let finishActiveTurn!: () => void;
+    const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-limit-switch", slash_commands: [] };
+        return;
+      }
+      if (streamCall === 2) {
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await activeTurnGate;
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: limitText,
+          terminal_reason: "api_error",
+          api_error_status: 429,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Delivered" }], usage: { input_tokens: 1, output_tokens: 1 } },
+      };
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+    const sdkSession = { send, stream, close: vi.fn(), sessionId: "sdk-limit-switch", setPermissionMode: vi.fn() };
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+    vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+    const { service } = createService({
+      db: scheduledWork.db,
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+    const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "text" && event.event.text.includes("Still working"),
+    );
+    await createComment(service, session.id);
+    const queued = await service.steer({
+      sessionId: session.id,
+      text: "carry my comments",
+      includeThreadComments: true,
+    });
+    expect(queued.queued).toBe(true);
+
+    finishActiveTurn();
+    await activeTurn;
+    await vi.waitFor(async () => {
+      expect((await service.getSessionSummary(session.id))?.usageLimitResume).toMatchObject({ state: "armed" });
+    });
+    // Held at the limit: neither sent into the limited account nor cancelled.
+    const sentText = () => JSON.stringify(send.mock.calls);
+    expect(sentText()).not.toContain("carry my comments");
+    expect(events.some((event) =>
+      event.event.type === "system_notice"
+      && (event.event as { steerId?: string }).steerId === queued.steerId
+      && /cancelled/i.test(event.event.message))).toBe(false);
+
+    await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-4-7" });
+
+    await vi.waitFor(() => {
+      expect(sentText()).toContain("carry my comments");
+      expect(sentText()).toContain("my note");
+    }, { timeout: 5_000 });
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.usageLimitResume ?? null).toBeNull();
+    expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
     service.forceDisposeAll();
   });
 });

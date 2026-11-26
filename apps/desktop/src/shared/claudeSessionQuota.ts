@@ -19,7 +19,29 @@ export type ClaudeRateLimitClassification =
 const SESSION_LIMIT_RE = /(?:session|weekly) limit/i;
 const RESETS_RE = /\bresets\b/i;
 const COST_LIMIT_RE = /cost limit|spending limit/i;
-const CLOCK_RE = /resets\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?/i;
+/**
+ * Claude Code's reset clause: `resets 3pm`, `resets 3:40pm (America/New_York)`,
+ * or, past a day, `resets Dec 1, 3pm (America/New_York)`.
+ */
+const CLOCK_RE = /resets\s+(?:at\s+)?(?:([A-Z][a-z]{2,8})\s+(\d{1,2}),?\s+(?:(\d{4}),?\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?/i;
+/** Older Claude Code: `Claude AI usage limit reached|1760000000` (epoch seconds). */
+const PIPE_EPOCH_RE = /limit reached\|(\d{9,13})\b/i;
+/**
+ * The limit wordings Claude Code writes as a turn's result text. Each names
+ * a plan window, so ordinary 429 or "session limit reached" copy (which is
+ * about a chat, not a plan) never matches.
+ *   - `You've hit your 5-hour limit · resets 3pm` (and weekly, Opus, Sonnet,
+ *     Fable, plain `limit`), `You've reached your Fable limit.`
+ *   - `5-hour limit reached ∙ resets 3:40pm`, `usage limit reached`,
+ *     `weekly limit reached`.
+ */
+const PLAN_LIMIT_TEXT_RES = [
+  /you(?:'|\u2019)?ve (?:hit|reached) your\b.{0,40}?\blimit\b/i,
+  /\b\d+[-\s]?hour limit reached\b/i,
+  /\b(?:usage|weekly|opus|sonnet|fable) limit reached\b/i,
+];
+const WEEKLY_LIMIT_RE = /\b(?:weekly|opus|sonnet|fable|7-day|seven[-\s]day) limit\b/i;
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
 export function claudeSessionQuotaCardId(sessionId: string): string {
   return `claude-session-quota:${sessionId}`;
@@ -30,7 +52,8 @@ export function isClaudeSessionQuotaText(value: string | null | undefined): bool
   if (!text) return false;
   if (COST_LIMIT_RE.test(text)) return true;
   if (SESSION_LIMIT_RE.test(text) && RESETS_RE.test(text)) return true;
-  return /you'?ve hit your (?:session|weekly) limit/i.test(text);
+  if (PIPE_EPOCH_RE.test(text)) return true;
+  return PLAN_LIMIT_TEXT_RES.some((re) => re.test(text));
 }
 
 export function utilizationToPercent(value: unknown): number | null {
@@ -97,15 +120,26 @@ export function parseClaudeSessionQuotaResetAt(
   text: string,
   nowMs: number = Date.now(),
 ): number | null {
+  const epoch = text.match(PIPE_EPOCH_RE);
+  if (epoch) return normalizeResetsAtMs(Number.parseInt(epoch[1] ?? "", 10));
   const match = text.match(CLOCK_RE);
   if (!match) return null;
-  const hour12 = Number.parseInt(match[1] ?? "", 10);
-  const minute = Number.parseInt(match[2] ?? "0", 10);
-  const ampm = (match[3] ?? "").toLowerCase();
-  const timeZone = match[4]?.trim() || undefined;
+  const monthName = match[1]?.slice(0, 3).toLowerCase();
+  const dayOfMonth = match[2] ? Number.parseInt(match[2], 10) : null;
+  const explicitYear = match[3] ? Number.parseInt(match[3], 10) : null;
+  const hour12 = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "0", 10);
+  const ampm = (match[6] ?? "").toLowerCase();
+  const timeZone = match[7]?.trim() || undefined;
   if (!Number.isFinite(hour12) || hour12 < 1 || hour12 > 12) return null;
   if (!Number.isFinite(minute) || minute < 0 || minute > 59) return null;
   const hour24 = ampm === "pm" ? (hour12 % 12) + 12 : hour12 % 12;
+  if (monthName && dayOfMonth != null) {
+    const month = MONTHS.indexOf(monthName);
+    // A word before the day that is not a month is not a date clause.
+    if (month < 0) return nextWallClockMs({ hour24, minute, timeZone, nowMs });
+    return nextDatedWallClockMs({ month, day: dayOfMonth, year: explicitYear, hour24, minute, timeZone, nowMs });
+  }
   return nextWallClockMs({ hour24, minute, timeZone, nowMs });
 }
 
@@ -134,7 +168,7 @@ export function snapshotFromClaudeSessionQuotaText(
   return {
     utilizationPct: null,
     resetsAtMs: parseClaudeSessionQuotaResetAt(text, nowMs),
-    limitKind: /weekly limit/i.test(text) ? "weekly" : "session",
+    limitKind: WEEKLY_LIMIT_RE.test(text) ? "weekly" : "session",
   };
 }
 
@@ -215,6 +249,46 @@ function nextWallClockMs(args: {
   return candidates.find((value): value is number => value != null) ?? null;
 }
 
+/**
+ * `Dec 1, 3pm`: that date in this year, or next year when it has already
+ * passed (a reset is never in the past by more than the clock's slack).
+ */
+function nextDatedWallClockMs(args: {
+  month: number;
+  day: number;
+  year: number | null;
+  hour24: number;
+  minute: number;
+  timeZone?: string;
+  nowMs: number;
+}): number | null {
+  if (!Number.isFinite(args.day) || args.day < 1 || args.day > 31) return null;
+  const currentYear = zonedYear(args.nowMs, args.timeZone);
+  if (currentYear == null) return null;
+  const years = args.year != null ? [args.year] : [currentYear, currentYear + 1];
+  let last: number | null = null;
+  for (const year of years) {
+    const candidate = wallClockOnYmd(year, args.month + 1, args.day, args.hour24, args.minute, args.timeZone);
+    if (candidate == null) continue;
+    last = candidate;
+    if (candidate > args.nowMs - 24 * 60 * 60 * 1000) return candidate;
+  }
+  return last;
+}
+
+function zonedYear(ms: number, timeZone: string | undefined): number | null {
+  if (!timeZone) return new Date(ms).getFullYear();
+  try {
+    const year = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric" })
+      .formatToParts(new Date(ms))
+      .find((part) => part.type === "year")?.value;
+    const parsed = Number.parseInt(year ?? "", 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function wallClockOnDate(
   date: Date,
   hour24: number,
@@ -237,12 +311,36 @@ function wallClockOnDate(
     const month = Number.parseInt(parts.find((part) => part.type === "month")?.value ?? "", 10);
     const day = Number.parseInt(parts.find((part) => part.type === "day")?.value ?? "", 10);
     if (![year, month, day].every(Number.isFinite)) return null;
+    return wallClockOnYmd(year, month, day, hour24, minute, timeZone);
+  } catch {
+    return null;
+  }
+}
+
+/** `month` is 1-based. Without a zone the clock is this machine's. */
+function wallClockOnYmd(
+  year: number,
+  month: number,
+  day: number,
+  hour24: number,
+  minute: number,
+  timeZone: string | undefined,
+): number | null {
+  if (!timeZone) {
+    const local = new Date(year, month - 1, day, hour24, minute, 0, 0);
+    return Number.isNaN(local.getTime()) ? null : local.getTime();
+  }
+  try {
     // Walk UTC hours until the zoned clock matches. 15-minute steps cover DST folds.
     const start = Date.UTC(year, month - 1, day) - 14 * 60 * 60 * 1000;
     for (let offset = 0; offset <= 48 * 4; offset += 1) {
       const ms = start + offset * 15 * 60 * 1000;
-      const clock = zonedHourMinute(ms, timeZone);
-      if (clock && clock.hour === hour24 && clock.minute === minute) return ms;
+      const clock = zonedClock(ms, timeZone);
+      if (
+        clock
+        && clock.year === year && clock.month === month && clock.day === day
+        && clock.hour === hour24 && clock.minute === minute
+      ) return ms;
     }
     return null;
   } catch {
@@ -250,18 +348,24 @@ function wallClockOnDate(
   }
 }
 
-function zonedHourMinute(ms: number, timeZone: string): { hour: number; minute: number } | null {
+function zonedClock(
+  ms: number,
+  timeZone: string,
+): { year: number; month: number; day: number; hour: number; minute: number } | null {
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
       hourCycle: "h23",
     }).formatToParts(new Date(ms));
-    const hour = Number.parseInt(parts.find((part) => part.type === "hour")?.value ?? "", 10);
-    const minute = Number.parseInt(parts.find((part) => part.type === "minute")?.value ?? "", 10);
-    if (![hour, minute].every(Number.isFinite)) return null;
-    return { hour, minute };
+    const read = (type: Intl.DateTimeFormatPartTypes) =>
+      Number.parseInt(parts.find((part) => part.type === type)?.value ?? "", 10);
+    const clock = { year: read("year"), month: read("month"), day: read("day"), hour: read("hour"), minute: read("minute") };
+    return Object.values(clock).every(Number.isFinite) ? clock : null;
   } catch {
     return null;
   }

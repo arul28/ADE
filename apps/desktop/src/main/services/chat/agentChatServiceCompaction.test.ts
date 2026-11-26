@@ -913,6 +913,102 @@ describe("createAgentChatService", () => {
         expect(close).not.toHaveBeenCalled();
       });
 
+      // A limit that arrives with no rejected `rate_limit_event` and no
+      // `errors[]`: Claude Code turns the 429 into a `<synthetic>` assistant
+      // message carrying `error: "rate_limit"`, then ends the turn with an
+      // `is_error` success result whose `result` is the same text. ADE-285.
+      const resetEpochSeconds = Math.floor((Date.now() + 2 * 3_600_000) / 1000);
+      it.each([
+        {
+          label: "current CLI wording with a clock reset",
+          text: "You've hit your 5-hour limit · resets 3pm (America/New_York) · progress saved",
+          synthetic: true,
+          exactResetMs: null as number | null,
+        },
+        {
+          label: "the wording the issue quotes",
+          text: "5-hour limit reached ∙ resets 3:40pm",
+          synthetic: true,
+          exactResetMs: null as number | null,
+        },
+        {
+          label: "the legacy pipe-epoch form, result frame only",
+          text: `Claude AI usage limit reached|${resetEpochSeconds}`,
+          synthetic: false,
+          exactResetMs: resetEpochSeconds * 1000,
+        },
+      ])("a limit reported only as the result text arms auto-resume ($label)", async ({ text, synthetic, exactResetMs }) => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const close = vi.fn();
+        const send = vi.fn().mockResolvedValue(undefined);
+        let streamCall = 0;
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            return;
+          }
+          if (synthetic) {
+            yield {
+              type: "assistant",
+              error: "rate_limit",
+              message: {
+                model: "<synthetic>",
+                content: [{ type: "text", text }],
+                usage: { input_tokens: 0, output_tokens: 0 },
+              },
+            };
+          }
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: true,
+            result: text,
+            terminal_reason: "api_error",
+            api_error_status: 429,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-result-limit",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send, stream, close, sessionId: "sdk-session-result-limit",
+        } as any);
+
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+        await service.runSessionTurn({
+          sessionId: session.id,
+          text: "keep going",
+          timeoutMs: 15_000,
+        });
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([
+            expect.objectContaining({ id: `auto-resume:${session.id}`, status: "scheduled" }),
+          ]);
+        });
+        const summary = await service.getSessionSummary(session.id);
+        expect(summary?.usageLimitResume).toMatchObject({ state: "armed", provider: "claude" });
+        const resetAt = Date.parse(summary?.usageLimitResume?.resetAt ?? "");
+        expect(resetAt).toBeGreaterThan(Date.now());
+        if (exactResetMs != null) expect(resetAt).toBe(exactResetMs);
+        // The limit text is the provider's, not the agent's: no reply bubble.
+        expect(events.some((event) =>
+          event.event.type === "text" && String((event.event as any).text ?? "").includes("limit"))).toBe(false);
+        // The query is reaped so the resume starts a fresh one.
+        expect(close).toHaveBeenCalled();
+      });
+
       it("stale park with no structured limit heals on hydration", async () => {
         const { service } = createService();
         const session = await service.createSession({

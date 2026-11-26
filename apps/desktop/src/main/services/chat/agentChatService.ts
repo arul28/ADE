@@ -2204,6 +2204,29 @@ function isClaudeSyntheticImageErrorMessage(assistantMsg: Record<string, unknown
   return /\bimages?\b/i.test(text) && /exceed|resize|dimension|too large/i.test(text);
 }
 
+/**
+ * The plan-limit text of an assistant message Claude Code fabricated for a
+ * rejected request, or null. Claude Code turns a usage-limit 429 into an
+ * assistant message carrying a structured `error` ("rate_limit", or
+ * "billing_error" for credit and spend limits) whose text is the limit line
+ * ("You've hit your 5-hour limit · resets 3pm"). The structured `error` is what
+ * makes it the provider's: the agent's own prose never carries one, so prose
+ * quoting a limit is still never read as one.
+ */
+function claudeUsageLimitAssistantText(assistantMsg: Record<string, unknown>): string | null {
+  if (assistantMsg.error !== "rate_limit" && assistantMsg.error !== "billing_error") return null;
+  const message = asRecord(assistantMsg.message);
+  const content = Array.isArray(message?.content) ? message.content : [];
+  const text = content
+    .map((block) => {
+      const record = asRecord(block);
+      return record?.type === "text" && typeof record.text === "string" ? record.text : "";
+    })
+    .join(" ")
+    .trim();
+  return text && isClaudeUsageLimitResultError(text) ? text : null;
+}
+
 /** Claude Code refused an attached image and ended the turn. */
 function isClaudeImageErrorResult(result: Record<string, unknown>): boolean {
   return stringOrNull(result.terminal_reason) === "image_error";
@@ -5982,6 +6005,19 @@ type ManagedChatSession = {
    */
   compactFirstHold?: "holding" | "kept";
   /**
+   * A usage limit holds this chat's queued messages (ADE-289). Set when a
+   * limit arms, cleared when any turn starts. While set, a turn boundary does
+   * not send the queue into the limited account and a failed turn does not
+   * cancel it: it waits for the resume, the user, or a switch away from the
+   * limit. A stored `usageLimitResume` holds it too, so a restart keeps it.
+   */
+  usageLimitQueueHold?: boolean;
+  /**
+   * Queued messages lifted off a runtime a switch away from a limit tore
+   * down. The next turn boundary on the new runtime sends them, in order.
+   */
+  usageLimitCarriedSteers?: QueuedSteer[];
+  /**
    * One-shot: the next Cursor send may expire a still-active persisted run
    * (SDK `local.force`). Session-scoped rather than runtime-scoped, because the
    * runtime that observed the abandonment can be torn down (idle TTL, budget,
@@ -7725,9 +7761,28 @@ function normalizeCodexRateLimits(value: unknown): CodexRateLimits | null {
   return {
     remaining: numberOrNull(record.remaining),
     limit: numberOrNull(record.limit),
-    resetAt: stringOrNull(record.resetAt ?? record.reset_at),
+    resetAt: stringOrNull(record.resetAt ?? record.reset_at) ?? codexExhaustedWindowResetAt(record),
     ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
   };
+}
+
+/**
+ * When a Codex limit lifts, from its windows (`RateLimitSnapshot.primary` /
+ * `secondary`, `resetsAt` in epoch seconds): the latest reset among the
+ * windows that are used up, since the limit holds until each of them resets.
+ * The snapshot has no top-level reset, so this is the only place it is.
+ */
+function codexExhaustedWindowResetAt(snapshot: Record<string, unknown>): string | null {
+  let latest: number | null = null;
+  for (const key of ["primary", "secondary"] as const) {
+    const window = asRecord(snapshot[key]);
+    const usedPercent = numberOrNull(window?.usedPercent ?? window?.used_percent);
+    const resetsAt = numberOrNull(window?.resetsAt ?? window?.resets_at);
+    if (usedPercent == null || usedPercent < 100 || resetsAt == null || resetsAt <= 0) continue;
+    const ms = resetsAt > 1_000_000_000_000 ? resetsAt : resetsAt * 1000;
+    if (latest == null || ms > latest) latest = ms;
+  }
+  return latest == null ? null : new Date(latest).toISOString();
 }
 
 function normalizeCodexMcpToolSource(item: Record<string, unknown>): AgentChatMcpToolSource {
@@ -24744,6 +24799,127 @@ export function createAgentChatService(args: {
     });
   };
 
+  const usageLimitHoldsQueue = (managed: ManagedChatSession): boolean =>
+    managed.usageLimitQueueHold === true || managed.usageLimitResume != null;
+
+  /**
+   * Lifts a held queue off the runtime a switch is about to tear down, so the
+   * teardown's cancel does not drop it. Runs only while a limit holds the
+   * queue: an ordinary switch still cancels its queue as before.
+   */
+  const liftUsageLimitHeldSteers = (managed: ManagedChatSession): void => {
+    if (!usageLimitHoldsQueue(managed)) return;
+    const runtime = managed.runtime;
+    if (!runtime || !runtime.pendingSteers.length) return;
+    const lifted = runtime.pendingSteers.splice(0);
+    if (runtime.kind === "claude") {
+      for (const steer of lifted) runtime.knownQueuedMessages.delete(steer.uuid);
+    }
+    managed.usageLimitCarriedSteers = [...(managed.usageLimitCarriedSteers ?? []), ...lifted];
+    persistChatState(managed);
+  };
+
+  /**
+   * Puts carried messages at the head of the new runtime's queue, ahead of
+   * anything queued since: they were sent first. OpenCode's inbox owns its own
+   * queue, so it gets them as sends instead (`kickUsageLimitRelease`).
+   */
+  const adoptUsageLimitCarriedSteers = (
+    managed: ManagedChatSession,
+    runtime: Exclude<ChatRuntime, OpenCodeRuntime>,
+  ): void => {
+    const carried = managed.usageLimitCarriedSteers;
+    if (!carried?.length) return;
+    delete managed.usageLimitCarriedSteers;
+    runtime.pendingSteers.unshift(...carried);
+  };
+
+  /** How long a switch waits for the user's own send before it starts the chat itself. */
+  const USAGE_LIMIT_RELEASE_KICK_MS = 750;
+
+  /**
+   * A switch away from a usage limit (another model, another account): the
+   * limit no longer holds this chat, so its pause, its scheduled resume and its
+   * queue hold all go, and the queue runs on the new model (ADE-289).
+   *
+   * Whatever turn starts next on the new runtime sends the carried queue when
+   * it ends. When nothing starts one — the user only switched — this starts
+   * it: the first queued message, or `continueText` when nothing was queued.
+   * The short wait lets a send that came with the switch (the composer applies
+   * a picked model just before it sends) go first instead of racing it.
+   */
+  const releaseUsageLimitQueue = async (
+    managed: ManagedChatSession,
+    args: { reason: string; continueText: string | null },
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    // A runtime the switch kept (a live Codex or Muse model change) still has it.
+    liftUsageLimitHeldSteers(managed);
+    managed.usageLimitQueueHold = false;
+    await autoResume.cancelForSession(sessionId, args.reason);
+    setUsageLimitResume(managed, null);
+    const carried = managed.usageLimitCarriedSteers?.length ?? 0;
+    if (!carried && !args.continueText) return;
+    const kick = setTimeout(() => {
+      void kickUsageLimitRelease(managed, args.continueText).catch((error) => {
+        logger.warn("agent_chat.usage_limit_release_failed", {
+          sessionId,
+          reason: args.reason,
+          error: getErrorMessage(error),
+        });
+      });
+    }, USAGE_LIMIT_RELEASE_KICK_MS);
+    kick.unref?.();
+  };
+
+  const kickUsageLimitRelease = async (
+    managed: ManagedChatSession,
+    continueText: string | null,
+  ): Promise<void> => {
+    if (managed.closed) return;
+    // Something started a turn meanwhile; its end sends the carried queue.
+    if (runtimeMidTurn(managed) || managed.session.status === "active") return;
+    // A new limit came in first: the queue waits for that one.
+    if (usageLimitHoldsQueue(managed)) return;
+    const sessionId = managed.session.id;
+    const [first, ...rest] = managed.usageLimitCarriedSteers ?? [];
+    if (!first) {
+      if (continueText) await sendMessage({ sessionId, text: continueText });
+      return;
+    }
+    managed.usageLimitCarriedSteers = rest;
+    if (!rest.length) delete managed.usageLimitCarriedSteers;
+    const sendCarried = async (steer: QueuedSteer, routeActiveToSteer: boolean): Promise<void> => {
+      // The row the message was queued on reads as delivered, as a turn
+      // boundary's delivery marks it (`deliverNextQueuedSteerInner`).
+      claimSteerSettlement(managed, steer.steerId);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId: steer.steerId,
+        message: "Delivering your queued message...",
+      });
+      const sendArgs: AgentChatSendArgs = {
+        sessionId,
+        text: steer.text,
+        ...(steer.displayText != null ? { displayText: steer.displayText } : {}),
+        attachments: steer.attachments,
+        contextAttachments: steer.contextAttachments,
+        ...(steer.metadata ? { metadata: steer.metadata } : {}),
+        ...(steer.executionMode ? { executionMode: steer.executionMode } : {}),
+        ...(steer.interactionMode ? { interactionMode: steer.interactionMode } : {}),
+      };
+      if (routeActiveToSteer) await sendMessage(sendArgs, { awaitDispatch: true, routeActiveToSteer: true });
+      else await sendMessage(sendArgs, { awaitDispatch: true });
+    };
+    await sendCarried(first, false);
+    const runtime = managed.runtime;
+    if (!rest.length || !runtime || runtime.kind !== "opencode") return;
+    // OpenCode takes the rest into its inbox behind the running turn.
+    delete managed.usageLimitCarriedSteers;
+    for (const steer of rest) await sendCarried(steer, true);
+  };
+
   /**
    * Chats created to continue a limited chat, so a limit on the new chat
    * offers the move again instead of hopping forever between two accounts.
@@ -24824,7 +25000,8 @@ export function createAgentChatService(args: {
     // Stop the runtime first, so nothing writes the thread while it is copied.
     // The kept resume pointer still serves the old account if the copy fails.
     // A chat with no thread yet still stops: a warmed runtime holds the old
-    // account's config home.
+    // account's config home. A queue a limit holds goes with the chat.
+    liftUsageLimitHeldSteers(managed);
     teardownRuntime(managed, "paused_run");
     if (threadIds.length) {
       const moves = [];
@@ -24879,13 +25056,18 @@ export function createAgentChatService(args: {
       message: `Continuing on ${alternate.label}.`,
       detail: `The ${from.label || from.id} account hit its usage limit. ADE moved this chat to ${alternate.label} and resumes the same thread there.`,
     });
+    if (provider === "claude") dismissClaudeSessionQuota(managed);
+    const continueText = compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`;
+    const carried = managed.usageLimitCarriedSteers?.length ?? 0;
+    if (carried) {
+      // The queue the limit held runs on the new account in place of a bare continue.
+      await releaseUsageLimitQueue(managed, { reason: "usage_limit_account_handoff", continueText: null });
+      return { ok: true };
+    }
+    managed.usageLimitQueueHold = false;
     await autoResume.cancelForSession(managed.session.id, "usage_limit_account_handoff");
     setUsageLimitResume(managed, null);
-    if (provider === "claude") dismissClaudeSessionQuota(managed);
-    await sendMessage({
-      sessionId: managed.session.id,
-      text: compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
-    });
+    await sendMessage({ sessionId: managed.session.id, text: continueText });
     return { ok: true };
   };
 
@@ -25181,6 +25363,9 @@ export function createAgentChatService(args: {
     turnId?: string | null,
     options?: { allowAccountHandoff?: boolean },
   ): void => {
+    // Set before anything below can return: every path here is a live limit,
+    // and the failed turn's cancel runs right after this.
+    managed.usageLimitQueueHold = true;
     if (usageLimitHandedOffTargets.has(managed.session.id)) return;
     if (pendingUsageLimitMoves.has(managed.session.id) || usageLimitMoveInFlight.has(managed.session.id)) return;
     if (turnId && usageLimitMovedTurnIds.has(turnId)) return;
@@ -25363,9 +25548,9 @@ export function createAgentChatService(args: {
         fromInstanceId: from.id,
         toInstanceId: to.id,
       });
-      // A limit on the old account no longer holds this chat.
-      await autoResume.cancelForSession(normalizedSessionId, "account_switch");
-      setUsageLimitResume(managed, null);
+      // A limit on the old account no longer holds this chat; its queue runs
+      // on the new one.
+      await releaseUsageLimitQueue(managed, { reason: "account_switch", continueText: null });
       if (to.provider === "claude") dismissClaudeSessionQuota(managed);
       const accountLabel = (instance: ProviderInstance): string => instance.account?.email?.trim() || instance.label || instance.id;
       emitChatEvent(managed, {
@@ -26940,6 +27125,9 @@ export function createAgentChatService(args: {
       mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
     }
     if (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started") {
+      // A running turn means the limit no longer holds the queue: this turn's
+      // end sends it (a limit this turn hits sets the hold again).
+      managed.usageLimitQueueHold = false;
       // "Cleared when the next turn starts" is the contract of
       // `last_turn_failed_at`, and a turn can start without the user typing:
       // an auto-resume, a scheduled wake, a peer/coordinator message, restart
@@ -33011,6 +33199,8 @@ export function createAgentChatService(args: {
      * assistant message); the tracker must apply exactly once, with the FULL
      * input — content_block_stop, not content_block_start's empty args. */
     emittedTodoToolIds: Set<string>;
+    /** This idle turn already hit a plan limit and armed its resume. */
+    usageLimitNoted?: boolean;
   };
 
   /** Clears what one idle turn's `result` told the reader, before the next idle turn. */
@@ -34171,6 +34361,16 @@ export function createAgentChatService(args: {
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       // The turn stays open here; the result frame settles it and shows the notice.
       if (isClaudeSyntheticImageErrorMessage(assistantMsg)) return;
+      // A plan limit Claude Code wrote as a reply: pause, no bubble. The result
+      // frame settles the turn (see `settleClaudeQuotaRejectedIdleTurn`).
+      const limitText = claudeUsageLimitAssistantText(assistantMsg);
+      if (limitText) {
+        if (!state.usageLimitNoted) {
+          state.usageLimitNoted = true;
+          noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId);
+        }
+        return;
+      }
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
       // Text-block citations the answer makes (web_search_result_location, …).
@@ -34507,6 +34707,20 @@ export function createAgentChatService(args: {
       }
       if (usage && metadata.cacheWrite1hTokens != null) {
         state.usage = { ...state.usage, cacheWrite1hTokens: metadata.cacheWrite1hTokens };
+      }
+      // A plan limit in the result frame (its `errors[]`, or only its text)
+      // ends this idle turn the way a rejected rate-limit event does.
+      const resultText = typeof resultMsg.result === "string" ? resultMsg.result.trim() : "";
+      const limitText = resultIsError
+        ? [...resultErrors.userFacing, resultText].find((text) => isClaudeUsageLimitResultError(text)) ?? null
+        : null;
+      if (limitText || state.usageLimitNoted) {
+        if (!state.usageLimitNoted && limitText) {
+          state.usageLimitNoted = true;
+          noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId ?? undefined);
+        }
+        await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
+        return;
       }
       // An image_error turn is explained by its failure notice alone; emitting
       // the raw SDK error strings too would show the same failure twice.
@@ -36551,6 +36765,19 @@ export function createAgentChatService(args: {
             failClaudeTurnUnauthenticated("authentication_failed");
           }
           if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
+          const limitText = claudeUsageLimitAssistantText(assistantMsg);
+          if (limitText) {
+            // The limit is the provider's notice, not a reply: it goes to the
+            // pause (`noteClaudeSessionQuota`), never into a reply bubble.
+            if (!quotaTrippedThisTurn) {
+              quotaTrippedThisTurn = true;
+              noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId);
+            }
+            if (onBackendDispatched) {
+              throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
+            }
+            continue;
+          }
           if (assistantMsg.error && onBackendDispatched) {
             throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
           }
@@ -37085,6 +37312,16 @@ export function createAgentChatService(args: {
                 message: err,
                 turnId,
               });
+            }
+          }
+          // A usage limit reported only as the result text: an `is_error`
+          // success result, no `errors[]`, and no rejected rate-limit event
+          // (ADE-285). Same pause as the structured paths above.
+          if (!quotaTrippedThisTurn && resultMsg.is_error === true) {
+            const resultText = typeof resultMsg.result === "string" ? resultMsg.result.trim() : "";
+            if (isClaudeUsageLimitResultError(resultText)) {
+              quotaTrippedThisTurn = true;
+              noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(resultText), turnId);
             }
           }
           const failureNotice = claudeResultFailureNotice({
@@ -42158,7 +42395,8 @@ export function createAgentChatService(args: {
   ): void => {
     const record = asRecord(payload);
     const rateLimits = normalizeCodexRateLimits(record?.rateLimits ?? payload);
-    if (rateLimits) runtime.rateLimits = rateLimits;
+    // A rolling update is sparse: a window it leaves out keeps its last reset.
+    if (rateLimits) runtime.rateLimits = { ...rateLimits, resetAt: rateLimits.resetAt ?? runtime.rateLimits?.resetAt ?? null };
     // Only written when the payload actually carries the key: the
     // `account/rateLimits/updated` notification does not, and clearing a real
     // banked credit on every push would make the "Use reset" affordance blink.
@@ -50167,6 +50405,8 @@ export function createAgentChatService(args: {
     const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
     runtime.preserveQueuedSteersOnInterrupt = false;
     if (reason === "interrupted" && preserveQueuedSteers) return;
+    // A usage limit keeps the queue for the resume or a switch (ADE-289).
+    if (reason !== "disposed" && usageLimitHoldsQueue(managed)) return;
     // A failed Compact first turn keeps the messages it was compacting for.
     if (managed.compactFirstHold === "holding") {
       if (reason === "failed") {
@@ -50706,6 +50946,10 @@ export function createAgentChatService(args: {
     // queued turn, so it carries directives from the new epoch.
     flushPendingDirectiveEpochReset(managed);
     if (managed.closed) return false;
+    // Never into a limited account: the resume, the user or a switch sends it.
+    if (usageLimitHoldsQueue(managed)) return false;
+    // Messages carried over a switch away from a limit go first.
+    if (runtime.kind !== "opencode") adoptUsageLimitCarriedSteers(managed, runtime);
     // A user-selected priority dispatch owns the staged queue while its SDK
     // message is being built. Do not auto-deliver another row at the parent
     // turn boundary; the idle reader will consume the explicit dispatch, then
@@ -80561,6 +80805,8 @@ export function createAgentChatService(args: {
       || requestedAcpPermissionMode !== undefined;
     let modelHandoff: AgentChatModelHandoff | null = null;
     let modelSwitched = false;
+    /** The model changed while a usage limit held the chat (ADE-289). */
+    let releasesUsageLimit = false;
 
     // Every check the model switch and the server replacement make runs here,
     // before either commits anything: a refused update must leave the old
@@ -80770,6 +81016,10 @@ export function createAgentChatService(args: {
         && !launchRouteChanged
         && managed.runtime?.kind === "muse";
 
+      // A switch away from a usage limit takes the queue the limit held to the
+      // new model; the teardown below would otherwise cancel it.
+      releasesUsageLimit = modelChanged && usageLimitHoldsQueue(managed);
+      if (releasesUsageLimit) liftUsageLimitHeldSteers(managed);
       if (managed.runtime && modelChanged && !liveCodexSettings && !liveMuseSettings) {
         if (managed.runtime.kind === "cursor" && managed.runtime.busy) {
           managed.runtime.pendingModelSwitchReset = true;
@@ -81557,6 +81807,13 @@ export function createAgentChatService(args: {
       emitSessionModeMeta(managed);
     }
     persistChatState(managed);
+    if (releasesUsageLimit) {
+      if (modelHandoff?.fromProvider === "claude") dismissClaudeSessionQuota(managed);
+      await releaseUsageLimitQueue(managed, {
+        reason: "model_switch",
+        continueText: "Continue where you stopped. The last turn ended at a usage limit, and this chat now runs on a different model. Do not redo work that already completed.",
+      });
+    }
     return managed.session;
   };
 
