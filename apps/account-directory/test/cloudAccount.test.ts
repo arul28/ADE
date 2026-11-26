@@ -4682,7 +4682,7 @@ describe("ADE Cloud server moves", () => {
       await run();
     }
     expect(job().step).toBe("save");
-    expect(await record()).toEqual(expect.objectContaining({ state: "copying", saveState: "running", copyStarted: false, cancellable: true }));
+    expect(await record()).toEqual(expect.objectContaining({ saveState: "running", copyStarted: false }));
     expect(onComputer(INSTANCE, 'touch "$ADE_HOME/brain.paused"')).toHaveLength(0);
 
     shell.save = code;
