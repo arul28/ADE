@@ -6,27 +6,32 @@
  *
  * Today it reads ADE MCP, whose status already reports each computer (one
  * account-level call through this desktop's brain, no pin, read once when the
- * page opens; the ADE MCP page owns refreshing). A stuck computer there is
- * what ADE-237 looked like from the outside.
+ * page opens; the ADE MCP page owns refreshing). A failed read shows nothing:
+ * the web client and a brain still starting refuse it by design, and the ADE
+ * MCP page explains its own errors.
  */
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { RemoteMcpStatus } from "../../../../shared/types/remoteMcp";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { useBannerDismissals } from "../../../lib/bannerDismiss";
 import { Banner } from "../../ui/notice/Banner";
 import { machinesNeedingAttention, type MachineNeedingAttention } from "../adeMcp/adeMcpState";
 
 /** How many computers the line names before it says "and N more". */
 const NAMED_MAX = 3;
 
-function machineName(entry: MachineNeedingAttention): string {
-  return entry.machine.isThisMachine ? "this computer" : entry.machine.name;
+const DISMISS_KEY = "integrations-machine-warning";
+
+function machineName(entry: MachineNeedingAttention, startOfSentence = false): string {
+  if (!entry.machine.isThisMachine) return entry.machine.name;
+  return startOfSentence ? "This computer" : "this computer";
 }
 
 export function MachineIntegrationWarning() {
   const navigate = useNavigate();
+  const dismissals = useBannerDismissals();
   const [needing, setNeeding] = useState<MachineNeedingAttention[]>([]);
-  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     const call = window.ade?.remoteMcpCall;
@@ -34,12 +39,13 @@ export function MachineIntegrationWarning() {
     let cancelled = false;
     call<RemoteMcpStatus>("getStatus", undefined, null)
       .then((status) => { if (!cancelled) setNeeding(machinesNeedingAttention(status)); })
-      // Nothing to warn about when the status can't be read; the ADE MCP page says why.
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
 
-  if (dismissed || needing.length === 0) return null;
+  // Dismissed until a different computer, or a different trouble, shows up.
+  const fingerprint = needing.map((entry) => `${entry.machine.machineKey}:${entry.state.label}`).sort().join("|");
+  if (needing.length === 0 || dismissals.isDismissed(DISMISS_KEY, fingerprint)) return null;
 
   const [first] = needing;
   const title = needing.length === 1
@@ -47,23 +53,27 @@ export function MachineIntegrationWarning() {
     : `ADE MCP isn't working on ${needing.length} of your computers`;
   const detail = needing.length === 1
     ? `${first.state.label}. ${first.state.detail}`
-    : needing.slice(0, NAMED_MAX).map((entry) => `${entry.machine.isThisMachine ? "This computer" : entry.machine.name}: ${entry.state.label}`).join(" · ")
+    : needing.slice(0, NAMED_MAX).map((entry) => `${machineName(entry, true)}: ${entry.state.label}`).join(" · ")
       + (needing.length > NAMED_MAX ? ` · and ${needing.length - NAMED_MAX} more` : "");
 
   return (
-    <Banner
-      layout="inline"
-      testId="integrations-machine-warning"
-      model={{
-        id: "integrations-machine-warning",
-        tone: needing.some((entry) => entry.state.tone === "crit") ? "error" : "warning",
-        title,
-        detail,
-        // A computer's state, not a failure of this page: no "Report".
-        report: false,
-        actions: [{ label: "Open ADE MCP", onClick: () => navigate("/settings?tab=ade-mcp") }],
-        dismiss: { onDismiss: () => setDismissed(true) },
-      }}
-    />
+    // Hidden during a Settings search, which is looking for something else.
+    <div className="ade-ix-machine-warning">
+      <Banner
+        layout="inline"
+        testId="integrations-machine-warning"
+        onDurableDismiss={({ key, fingerprint: shown }) => dismissals.dismiss(key, shown)}
+        model={{
+          id: DISMISS_KEY,
+          tone: needing.some((entry) => entry.state.tone === "crit") ? "error" : "warning",
+          title,
+          detail,
+          // A computer's state, not a failure of this page: no "Report".
+          report: false,
+          actions: [{ label: "Open ADE MCP", onClick: () => navigate("/settings?tab=ade-mcp") }],
+          dismiss: { key: DISMISS_KEY, fingerprint },
+        }}
+      />
+    </div>
   );
 }

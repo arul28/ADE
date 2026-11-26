@@ -339,16 +339,18 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
         return getStatus();
       }
 
-      // Ask before touching webhooks: a member would otherwise get Linear's
-      // own refusal from listWebhooks. Unknown (an older client, a failed
-      // read) carries on and lets Linear answer.
-      const identity = await client.getConnectionIdentity?.().catch(() => null);
-      if (identity?.viewerIsAdmin === false) throw new AdeExpectedError(LINEAR_WEBHOOK_NEEDS_ADMIN_MESSAGE, "user");
-
       const webhookUrl = `${relayBaseUrl}/linear/webhook`;
       const persisted = readLinearRelayPersistedState(deps.db);
       const storedSecret = readLinearWebhookSecret(deps.db, deps.credentialStore);
-      const webhooks = await client.listWebhooks();
+      const webhooks = await client.listWebhooks().catch(async (error: unknown) => {
+        // Linear answers a member who asks for webhooks with its own refusal.
+        // Linear stays the judge; when the person is not an admin, say that
+        // in plain words instead. Unknown (an older client, a failed read)
+        // keeps Linear's error.
+        const identity = await client.getConnectionIdentity?.().catch(() => null);
+        if (identity?.viewerIsAdmin === false) throw new AdeExpectedError(LINEAR_WEBHOOK_NEEDS_ADMIN_MESSAGE, "user");
+        throw error;
+      });
       const matching = webhooks.filter((webhook) => normalizeUrl(webhook.url) === normalizeUrl(webhookUrl));
       let webhook = matching.find((entry) => entry.id === persisted.webhookId && entry.enabled) ?? null;
       let secret = webhook ? storedSecret : null;

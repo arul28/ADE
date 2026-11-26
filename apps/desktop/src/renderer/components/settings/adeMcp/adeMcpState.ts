@@ -144,7 +144,9 @@ export function machinesNeedingAttention(status: RemoteMcpStatus | null): Machin
   for (const machine of status.machines) {
     if (!machine.included || isAnswering(machine) || servingIsAGuess(machine)) continue;
     if (machine.isThisMachine && status.relayTurnedOff === true) continue;
-    if (machine.notServingReason === "offline" || machine.notServingReason === "off_for_account") continue;
+    // Offline first: an offline computer on an older ADE reports "older_ade",
+    // which can wait until it is back.
+    if (machine.online === false || machine.notServingReason === "offline" || machine.notServingReason === "off_for_account") continue;
     const state = machineState(machine, status.relayTurnedOff === true);
     if (state.tone !== "warn" && state.tone !== "crit") continue;
     // Still inside the usual minute or so: getting ready, not stuck.

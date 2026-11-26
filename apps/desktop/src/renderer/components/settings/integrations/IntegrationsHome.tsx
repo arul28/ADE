@@ -18,7 +18,7 @@ import { CaretRight, DownloadSimple, MagnifyingGlass, Plugs, Plus } from "@phosp
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { captureError } from "../../../../shared/sentry/capture";
 import { connectProviderSpec } from "../../../../shared/integrationConnect";
-import { MCP_CATALOGUE, matchMcpCatalogue, mcpCatalogueEntry, type McpCatalogueCategory, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
+import { MCP_CATALOGUE, matchMcpCatalogue, mcpCatalogueEntry, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
 import { mcpCatalogueAnchor, mcpCatalogueIdFromAnchor, settingsEntryById } from "../settingsManifest";
 import { decodeSettingsHash } from "../settingsHash";
 import type { McpRegistryServer } from "../../../../shared/mcpRegistry";
@@ -35,6 +35,7 @@ import "./integrationPage.css";
 import { MessagesIntegrationCard } from "./MessagesIntegrationCard";
 import { requirePin } from "../../../state/repositoryScope";
 import { MachineIntegrationWarning } from "./MachineIntegrationWarning";
+import { useCatalogueFilter } from "./useCatalogueFilter";
 
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
 export type IntegrationsPageId = IntegrationId | "mcp";
@@ -135,25 +136,6 @@ function useIntegrationSummaries(
   return summaries;
 }
 
-/** Tiles the MCP grid shows before "Show all": the start of the catalogue, which is ordered by use. */
-const POPULAR_COUNT = 12;
-
-const CATEGORY_LABELS: Record<McpCatalogueCategory, string> = {
-  dev: "Dev tools",
-  data: "Data",
-  productivity: "Productivity",
-  docs: "Docs",
-  search: "Search",
-  observability: "Monitoring",
-  payments: "Payments",
-  design: "Design",
-  browser: "Browser",
-  reference: "Reference",
-};
-
-/** Which quick setups the grid shows: the popular few, all, or one category. */
-type CatalogueFilter = "popular" | "all" | McpCatalogueCategory;
-
 function matches(query: string, ...fields: Array<string | undefined>): boolean {
   if (!query) return true;
   return fields.some((field) => field?.toLowerCase().includes(query));
@@ -208,7 +190,6 @@ export function IntegrationsHome({
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState<McpCatalogueEntry | null>(null);
   const [addingOwn, setAddingOwn] = useState(false);
-  const [filter, setFilter] = useState<CatalogueFilter>("popular");
   const needle = query.trim().toLowerCase();
 
   const connectedIntegrations = integrations.filter((id) => summaries[id].tone === "ok");
@@ -228,25 +209,7 @@ export function IntegrationsHome({
     && !addedEntryIds.has(entry.id)
     && matches(needle, entry.name, entry.description, entry.publisher, entry.category)), [addedEntryIds, needle]);
   const builtIn = integrations.filter((id) => matches(needle, integrationBrand(id).label, DESCRIPTIONS[id]));
-  // Every tile stays mounted, so Settings search (which filters what is on
-  // the page) still finds a server the grid has folded away; the filter only
-  // marks the rest `data-folded`, which CSS hides outside a settings search.
-  // Typing in the Add search shows every match, whatever the filter.
-  const categories = useMemo(() => {
-    const counts = new Map<McpCatalogueCategory, number>();
-    for (const entry of catalogue) counts.set(entry.category, (counts.get(entry.category) ?? 0) + 1);
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  }, [catalogue]);
-  // A category whose every server is now added falls back to the popular few.
-  const activeFilter: CatalogueFilter = needle
-    ? "all"
-    : filter === "popular" || filter === "all" || categories.some(([category]) => category === filter) ? filter : "popular";
-  const shownIds = useMemo(() => {
-    if (activeFilter === "all") return null;
-    if (activeFilter === "popular") return new Set(catalogue.slice(0, POPULAR_COUNT).map((entry) => entry.id));
-    return new Set(catalogue.filter((entry) => entry.category === activeFilter).map((entry) => entry.id));
-  }, [activeFilter, catalogue]);
-  const foldedCount = shownIds ? catalogue.length - shownIds.size : 0;
+  const { chips, activeFilter, setFilter, shownIds, foldedCount } = useCatalogueFilter(catalogue, needle.length > 0);
   const canAdd = registry.phase === "ready";
 
   // `#add-mcp-<id>` (a settings search result, a chat card's gear) opens that
@@ -430,23 +393,21 @@ export function IntegrationsHome({
             </span>
           </div>
           <p className="ade-ix-mcp-lead">Any MCP server works, by command or URL. Below are quick setups for popular ones.</p>
-          {!needle && catalogue.length > POPULAR_COUNT ? (
+          {chips.length ? (
             <div className="ade-ix-filters" role="group" aria-label="Show quick setups">
-              {([["popular", "Popular", null], ["all", "All", catalogue.length]] as Array<[CatalogueFilter, string, number | null]>)
-                .concat(categories.map(([category, count]) => [category, CATEGORY_LABELS[category], count]))
-                .map(([id, label, count]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className="ade-ix-filter"
-                    aria-pressed={activeFilter === id}
-                    data-testid={`integrations-catalogue-filter-${id}`}
-                    onClick={() => setFilter(id)}
-                  >
-                    {label}
-                    {count != null ? <span className="ade-ix-filter-count">{count}</span> : null}
-                  </button>
-                ))}
+              {chips.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className="ade-ix-filter"
+                  aria-pressed={activeFilter === chip.id}
+                  data-testid={`integrations-catalogue-filter-${chip.id}`}
+                  onClick={() => setFilter(chip.id)}
+                >
+                  {chip.label}
+                  {chip.count != null ? <span className="ade-ix-filter-count">{chip.count}</span> : null}
+                </button>
+              ))}
             </div>
           ) : null}
           <div className="ade-ix-grid">

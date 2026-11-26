@@ -739,7 +739,8 @@
 .ade-ix-grid > .ade-ix-tile[data-folded="true"] { display: none; }
 [data-settings-searching] .ade-ix-grid > .ade-ix-tile[data-folded="true"] { display: flex; }
 [data-settings-searching] .ade-ix-filters,
-[data-settings-searching] .ade-ix-show-all { display: none; }
+[data-settings-searching] .ade-ix-show-all,
+[data-settings-searching] .ade-ix-machine-warning { display: none; }
 .ade-ix-show-all {
   align-self: flex-start;
   padding: 4px 0;
