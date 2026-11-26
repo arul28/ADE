@@ -834,7 +834,29 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
   function personWrote(area: LineArea, before?: string): void {
     const content = readLineFile(area);
     if (baseline) {
-      baseline[area] = before == null ? content : rebaseLines(baseline[area], before, content);
+      if (before == null) {
+        baseline[area] = content;
+      } else {
+        baseline[area] = rebaseLines(baseline[area], before, content);
+        // The person edited or dropped a line the CTO wrote as a replacement:
+        // the line it replaced is theirs to settle too, so it leaves the
+        // baseline. Otherwise the turn would list it as removed, and Undo
+        // would bring back what the person already replaced.
+        const links = replacedThisTurn.get(area);
+        if (links?.size) {
+          const now = new Set(parseNoteLines(content));
+          const settled = new Set<string>();
+          for (const line of parseNoteLines(before)) {
+            const previous = now.has(line) ? undefined : links.get(line);
+            if (previous == null) continue;
+            settled.add(stripBullet(previous));
+            links.delete(line);
+          }
+          if (settled.size) {
+            baseline[area] = baseline[area].split("\n").filter((line) => !settled.has(stripBullet(line))).join("\n");
+          }
+        }
+      }
       saveBaseline(baseline);
     }
     forgiveLineFile(area, content);
@@ -997,16 +1019,21 @@ export function createCtoLearningService(args: CtoLearningServiceArgs) {
         }
         current = null;
       }
-      if (left && Object.hasOwn(left, change.text) && current !== left[change.text]) {
+      const was = record.before.skills?.[change.text];
+      // Already put back: an earlier Undo restored the file but couldn't save
+      // the undone list, so this retry only finishes that.
+      const restored = current === (was ?? null);
+      if (!restored && left && Object.hasOwn(left, change.text) && current !== left[change.text]) {
         // Someone edited it after that turn; putting the old file back would drop their edit.
         return { ok: false, error: "This skill changed after that turn. Edit it in Settings › Memory." };
       }
-      const was = record.before.skills?.[change.text];
-      if (was != null && !fs.existsSync(skillPath(change.text)) && readSkillNames().length >= CTO_SKILLS_MAX) {
+      if (!restored && was != null && current == null && readSkillNames().length >= CTO_SKILLS_MAX) {
         return { ok: false, error: `Skills are full (${CTO_SKILLS_MAX}). Delete one in Settings › Memory, then undo.` };
       }
-      if (was == null) removeSkillDir(change.text);
-      else writeSkillFile(change.text, was);
+      if (!restored) {
+        if (was == null) removeSkillDir(change.text);
+        else writeSkillFile(change.text, was);
+      }
       if (baseline) {
         if (was == null) baseline.skills.delete(change.text);
         else baseline.skills.set(change.text, was);

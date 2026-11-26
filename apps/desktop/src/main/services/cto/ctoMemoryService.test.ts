@@ -271,6 +271,16 @@ describe("ctoMemoryService learning: rules, skills, Learned rows and Undo", () =
       "added:Tag releases from main — the changelog reads tags.",
     ]);
 
+    // The person rewrites a rule the CTO replaced this turn: neither the line it
+    // replaced nor theirs is the CTO's to show or undo.
+    const { service: rewritten } = createFixture();
+    rewritten.addRule({ rule: "Ship on Thursdays", why: "reviews are on Wednesday" });
+    rewritten.beginLearningTurn();
+    expect(rewritten.addRule({ rule: "Freeze deploys over holidays", why: "nobody is on call", replaces: "Ship on Thursdays" }).ok)
+      .toBe(true);
+    rewritten.writeNotes("rules", "- Freeze deploys in December — nobody is on call.\n");
+    expect(rewritten.finishLearningTurn({})).toBeNull();
+
     service.beginLearningTurn();
     service.addRule({ rule: "Run the linter before review", why: "CI fails on lint" });
     const learned = service.finishLearningTurn({})!;

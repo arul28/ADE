@@ -23679,6 +23679,9 @@ export function createAgentChatService(args: {
     const entry = turnsShownBeforeRuntime.get(managed.session.id);
     if (!entry || entry.stopped) return;
     entry.stopped = true;
+    // A stopped turn starts no hidden review: drop its correction before the
+    // idle mark, which is where the review is scheduled.
+    if (managed.ctoTurn) managed.ctoTurn.correction = null;
     setSessionIdle(managed);
     emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: entry.turnId });
     emitChatEvent(managed, {
