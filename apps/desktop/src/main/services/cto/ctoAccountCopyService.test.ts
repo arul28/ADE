@@ -175,6 +175,8 @@ describe("ctoAccountCopyService across machines", () => {
     await c.service.adopt({ home: homeC });
     expect(c.memory.readNotes("project")).not.toContain("The staging cluster is eu-west-2");
     expect(texts(c)).toContain("The staging cluster is eu-west-2");
+    // A new entry, above any travel cut C's copy keeps: it travels on from C.
+    expect(c.memory.searchArchive({ query: "staging cluster" }).entries[0]!.id).toBeGreaterThan(staging!.id);
     account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
     await a.service.adopt({ home });
 

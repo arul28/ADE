@@ -292,8 +292,13 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     const archivedAt = record.archivedAt?.trim() || nowIso();
     // A note archived again now is a new entry (new id, new reason): the
     // account copy carries rows by id, and an old id may sit below its travel
-    // cut. An import (it brings its own time) keeps the row this machine has.
-    if (record.kind === "note" && !record.archivedAt?.trim()) {
+    // cut. An import (it brings its own time) keeps the row this machine has,
+    // unless this machine pinned that row: the other home archived it again,
+    // so it is a new entry here too (the caller pins back the ones the notes
+    // here still hold).
+    if (record.archivedAt?.trim()) {
+      handle.prepare("DELETE FROM entries WHERE text_key = ? AND pinned_at IS NOT NULL").run(key);
+    } else if (record.kind === "note") {
       handle.prepare("DELETE FROM entries WHERE text_key = ?").run(key);
     }
     // ON CONFLICT: another process may have added the same text since.
@@ -313,12 +318,6 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       key,
     );
     if (result.changes > 0) return Number(result.lastInsertRowid);
-    // An import carries only rows the other home holds out of the notes: a
-    // row this machine pinned long ago is archived again (the caller pins
-    // back the ones the notes here still hold).
-    if (record.archivedAt?.trim()) {
-      handle.prepare("UPDATE entries SET pinned_at = NULL WHERE text_key = ? AND pinned_at IS NOT NULL").run(key);
-    }
     return (handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined)?.id ?? null;
   };
 
