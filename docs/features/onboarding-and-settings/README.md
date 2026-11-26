@@ -758,7 +758,20 @@ steps and the time of the check.
     have servers, the catalogue's quick setups via `McpCatalogueAddDialog.tsx`,
     which signs in a browser-auth server, and **Not listed?**).
     `mcpCatalogueBrand.tsx` gives logos and accents; `McpRunsLine.tsx` shows
-    the command or URL.
+    the command or URL. The quick setups show 12 popular tiles, then **Show
+    all**, with filter chips (Popular, All, each category with its count;
+    `useCatalogueFilter.ts`). Typing in the Add search shows every match.
+    Folded tiles stay mounted and carry `data-folded`, so Settings search,
+    which filters what is on the page, still finds them: `SettingsPage.tsx`
+    sets `data-settings-searching` on its content while a search runs.
+  - **A stuck computer** (`MachineIntegrationWarning.tsx`): one line above
+    Connected when a computer that should answer ADE MCP is stuck (signed out,
+    no relay, account sync failing, waiting for its key past 10 minutes, too
+    old an ADE). It reads ADE MCP's status once when the page opens (account
+    level, no pin) and picks computers with `machinesNeedingAttention`
+    (`adeMcpState.ts`); offline, left out, getting ready and never-reported
+    computers are not counted. Dismissing it lasts until a different computer
+    or trouble shows up; it hides during a Settings search.
   - `?integration=<github|linear|jira|mcp>` or a settings `#hash` opens one
     page; the hash wins (`openIntegrationFromUrl`, `settingsTabContent.tsx`).
     Only one page mounts, so search lists matches elsewhere as "On other
@@ -770,6 +783,13 @@ steps and the time of the check.
   - **Links on GitHub** checks repository access before offering **Add**.
     Repository admins can add the links. Other collaborators can copy the commands
     to share with an admin.
+  - **ADE agent** (Linear page) reads `viewerIsAdmin` from the Linear connection
+    status (Linear's `viewer.admin`, asked in the same identity query on every
+    route: this computer, a pinned machine, the CLI, ADE Cloud and the web
+    client). Linear lets only workspace admins add the agent, so a member sees
+    why and **Copy a note for an admin** (the note also shows under the button)
+    in place of **Add to workspace**. Unknown (null, an older brain) keeps
+    **Add to workspace**.
   - Each page (`IntegrationChrome.tsx`) has a banner in the maker's colours
     (`SolidLogo`, state, a sign-in panel with main actions, a facts strip with
     the top-bar switch), then two equal cards or one.
