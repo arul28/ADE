@@ -294,6 +294,12 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       key,
     );
     if (result.changes > 0) return Number(result.lastInsertRowid);
+    // An import carries only rows the other home holds out of the notes: a
+    // row this machine pinned long ago is archived again (the caller pins
+    // back the ones the notes here still hold).
+    if (record.archivedAt?.trim()) {
+      handle.prepare("UPDATE entries SET pinned_at = NULL WHERE text_key = ? AND pinned_at IS NOT NULL").run(key);
+    }
     return (handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined)?.id ?? null;
   };
 

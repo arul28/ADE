@@ -104,6 +104,37 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
 /** What the host kept after a save, and its hash. */
 export type AutosaveHostAnswer = { text: string; hash?: string };
 
+/**
+ * Puts the edit made from `base` to `draft` onto `host`, the text the host
+ * kept of `base` (lines moved out, secrets scrubbed). The edited lines, with
+ * their line breaks, must still be whole at the end or the start of `host`,
+ * so the edit never joins a line the host changed. Null when they are not.
+ */
+function rebaseDraft(base: string, draft: string, host: string): string | null {
+  if (host === base) return draft;
+  const max = Math.min(base.length, draft.length);
+  let start = 0;
+  while (start < max && base[start] === draft[start]) start += 1;
+  let end = 0;
+  while (end < max - start && base[base.length - 1 - end] === draft[draft.length - 1 - end]) end += 1;
+  // The edit, widened to whole lines of `base`: base[from, to).
+  const from = start === 0 ? 0 : base.lastIndexOf("\n", start - 1) + 1;
+  const lineEnd = base.indexOf("\n", base.length - end);
+  const to = lineEnd < 0 ? base.length : lineEnd;
+  const tail = base.slice(to);
+  const replacement = draft.slice(from, draft.length - tail.length);
+  // The lines from the edit on, at the end of `host` and starting a line there.
+  const at = host.length - (base.length - from);
+  if (at >= 0 && host.endsWith(base.slice(from)) && (at === 0 || host[at - 1] === "\n")) {
+    return host.slice(0, at) + replacement + tail;
+  }
+  // The lines up to the end of the edit, at the start of `host` and ending a line there.
+  if (host.startsWith(base.slice(0, to)) && (to === host.length || host[to] === "\n")) {
+    return base.slice(0, from) + replacement + host.slice(to);
+  }
+  return null;
+}
+
 export function AutosaveTextArea({
   value,
   hash,
@@ -196,7 +227,15 @@ export function AutosaveTextArea({
         hostHashRef.current = answer.hash;
         savedRef.current = answer.text;
         savedHashRef.current = answer.hash;
-        if (draftRef.current === text) setDraft(answer.text);
+        if (draftRef.current === text) {
+          setDraft(answer.text);
+        } else {
+          // Keystrokes from during the save go onto what the host kept; a
+          // draft that still holds the lines it moved out would save them back.
+          const rebased = rebaseDraft(text, draftRef.current, answer.text);
+          if (rebased == null) setConflict(true);
+          else setDraft(rebased);
+        }
       } else {
         savedRef.current = text;
         if (draftRef.current === text && hostRef.current !== text) adoptHost();

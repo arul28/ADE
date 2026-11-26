@@ -166,6 +166,18 @@ describe("ctoAccountCopyService across machines", () => {
     expect(texts(a)).not.toContain("The staging cluster is eu-west-2");
     expect(texts(a)).toContain("PR #4182 moved billing to the new queue");
 
+    // A forgets that note again; back on C, where it was pinned, the archive
+    // shows it again (it left C's notes with the restore).
+    expect(a.memory.forget({ note: "staging cluster" }).ok).toBe(true);
+    tick();
+    await a.service.save("turn_ended");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, homeC);
+    await c.service.adopt({ home: homeC });
+    expect(c.memory.readNotes("project")).not.toContain("The staging cluster is eu-west-2");
+    expect(texts(c)).toContain("The staging cluster is eu-west-2");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
+    await a.service.adopt({ home });
+
     // B is not the home any more: its saves leave the copy alone.
     b.memory.writeNotes("project", "- Written on the old home after the move");
     tick();
