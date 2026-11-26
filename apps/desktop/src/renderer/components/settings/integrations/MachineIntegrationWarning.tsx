@@ -33,15 +33,23 @@ export function MachineIntegrationWarning() {
   const dismissals = useBannerDismissals();
   const [needing, setNeeding] = useState<MachineNeedingAttention[]>([]);
 
+  const { clear: clearDismissal } = dismissals;
   useEffect(() => {
     const call = window.ade?.remoteMcpCall;
     if (!isAdeAvailable(call)) return;
     let cancelled = false;
     call<RemoteMcpStatus>("getStatus", undefined, null)
-      .then((status) => { if (!cancelled) setNeeding(machinesNeedingAttention(status)); })
+      .then((status) => {
+        if (cancelled) return;
+        const next = machinesNeedingAttention(status);
+        setNeeding(next);
+        // Every computer recovered: forget the dismissal, so the same trouble
+        // coming back later is shown again. A failed read keeps it.
+        if (next.length === 0) clearDismissal(DISMISS_KEY);
+      })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, []);
+  }, [clearDismissal]);
 
   // Dismissed until a different computer, or a different trouble, shows up.
   const fingerprint = needing.map((entry) => `${entry.machine.machineKey}:${entry.state.label}`).sort().join("|");
