@@ -1469,8 +1469,22 @@ describe("cloud push-work tally reasons", () => {
       ["main:failed:github_unreachable", "lane-1:failed:github_unreachable"],
     ],
     [
-      "another remote refuses the fetch",
-      { fetch: new Error("fatal: unable to access 'https://gitlab.com/o/r.git/': The requested URL returned error: 403") },
+      "GitHub answers but another remote refuses the fetch",
+      {
+        fetch: new Error([
+          "Fetching origin",
+          "From https://github.com/o/r",
+          "   1a2b3c4..5d6e7f8  main       -> origin/main",
+          "Fetching mirror",
+          "fatal: unable to access 'https://gitlab.com/o/r.git/': The requested URL returned error: 403",
+          "error: could not fetch mirror",
+        ].join("\n")),
+      },
+      ["main:failed:-", "lane-1:failed:-"],
+    ],
+    [
+      "ssh can't find another remote's host",
+      { fetch: new Error("ssh: Could not resolve hostname git.example.com: nodename nor servname provided, or not known\nfatal: Could not read from remote repository.") },
       ["main:failed:-", "lane-1:failed:-"],
     ],
     [

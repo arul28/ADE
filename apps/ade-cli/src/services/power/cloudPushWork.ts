@@ -52,8 +52,13 @@ export type CloudPushWorkResult = { readsRemotes: true; pushed: number; failed: 
 
 const GITHUB_REFUSED_KINDS: ReadonlySet<string> = new Set(["auth_failed", "permission_denied", "repository_not_found"]);
 const GITHUB_UNREACHABLE = /could not resolve host|failed to connect|connection (timed out|refused|reset)|timed out|network is unreachable/i;
-/** The host of each remote URL git names in its error (`https://`, `ssh://`, `git@`), past any user part. */
-const REMOTE_HOST = /(?:https?:\/\/|ssh:\/\/|git@)(?:[^@\s/'"]+@)?([a-z0-9.-]+)/gi;
+/**
+ * A host git names in its error: a remote URL (`https://`, `ssh://`, `git@`,
+ * past any user part), or ssh's and curl's own words for a host they couldn't find or reach.
+ */
+const REMOTE_HOST = /(?:https?:\/\/|ssh:\/\/|git@)(?:[^@\s/'"]+@)?([a-z0-9.-]+)|could not resolve host(?:name)?:?\s+([a-z0-9.-]+)|connect to host\s+([a-z0-9.-]+)/gi;
+/** `git fetch --all` names each remote it reads, the ones that worked too: "Fetching origin", "From <url>", a ref line. */
+const PROGRESS_LINE = /^(?:Fetching \S|From \S|To \S|\s)/;
 
 const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -63,14 +68,14 @@ const errorText = (error: unknown): string => (error instanceof Error ? error.me
  * names only other hosts (a GitLab remote's 403) is not GitHub's to fix.
  */
 function githubFailReason(error: unknown): CloudPushWorkFailReason | undefined {
-  const text = errorText(error);
-  const hosts = Array.from(text.matchAll(REMOTE_HOST), (match) => match[1]!.toLowerCase());
+  const failure = errorText(error).split("\n").filter((line) => !PROGRESS_LINE.test(line)).join("\n");
+  const hosts = Array.from(failure.matchAll(REMOTE_HOST), (match) => (match[1] ?? match[2] ?? match[3])!.toLowerCase());
   if (hosts.length > 0 && !hosts.some((host) => host === "github.com" || host.endsWith(".github.com"))) return undefined;
-  const kind = classifyGitPushFailure(text)?.kind;
+  const kind = classifyGitPushFailure(failure)?.kind;
   if (kind && GITHUB_REFUSED_KINDS.has(kind)) return "github_refused";
   const name = error instanceof Error ? error.name : "";
   if (name === "AbortError" || name === "TimeoutError" || name === "GitTimeoutError") return "github_unreachable";
-  return GITHUB_UNREACHABLE.test(text) ? "github_unreachable" : undefined;
+  return GITHUB_UNREACHABLE.test(failure) ? "github_unreachable" : undefined;
 }
 
 type Logger = { info(event: string, data?: unknown): void; warn(event: string, data?: unknown): void };
