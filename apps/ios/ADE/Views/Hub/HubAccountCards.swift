@@ -159,7 +159,12 @@ func hubAccountCardPass(
   var icons: [String: AccountProjectDisplay] = [:]
   for presentation in shown {
     guard let accountId = join.accountIdByCardId[presentation.project.id] else { continue }
-    icons[accountId] = AccountProjectDisplay(iconDataUrl: presentation.project.iconDataUrl)
+    // A machine that sends no icon (an older brain that cannot make one) must
+    // not erase the icon another machine showed: the cache is what the card
+    // falls back to below, and what an offline project shows.
+    icons[accountId] = AccountProjectDisplay(
+      iconDataUrl: presentation.project.iconDataUrl ?? display[accountId]?.iconDataUrl
+    )
   }
   let projectsById = Dictionary(live.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   var main: [HubProjectPresentation] = []
