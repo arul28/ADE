@@ -546,8 +546,11 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
       entry.attempts += 1;
       entry.nextAttemptAt = now() + Math.min(MAX_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.max(0, entry.attempts - 1));
     } else {
-      forgetEntry(entry.key);
+      // Kept on disk until the child has handed the report on (a relink to a
+      // live ancestor queues its replacement): a save meanwhile, or a restart,
+      // must not lose it. Still in flight here, so the pump leaves it alone.
       await noteOnChild(entry, result === "parent_gone" || result === "refused" ? result : "gave_up");
+      forgetEntry(entry.key);
       logger?.info("cross_scope_chats.dropped", { key: entry.key, reason: result });
     }
     saveOutbox();

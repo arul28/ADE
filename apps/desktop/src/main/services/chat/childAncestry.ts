@@ -117,7 +117,9 @@ export function createChildAncestry(deps: ChildAncestryDeps) {
       const next = links[cursor]?.parentSessionId?.trim() || deps.ownParentOf(cursor);
       if (!next || seen.has(next)) break;
       seen.add(next);
-      if (deps.takesReports(next)) return { sessionId: next, goneTitle };
+      // A chat re-parented under the child since (set-parent while the link
+      // still pointed up) would make the two report to each other forever.
+      if (deps.takesReports(next) && !isBelow(next, childSessionId, links)) return { sessionId: next, goneTitle };
       goneTitle ||= links[next]?.title || "";
       cursor = next;
     }

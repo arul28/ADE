@@ -93,6 +93,16 @@ describe("childAncestry.nearestLiveAncestor", () => {
       expected: { sessionId: "cto-ok", goneTitle: "Gone" },
     },
     {
+      name: "never picks an ancestor that was re-parented under the child since",
+      spec: {
+        parents: { grand: "child" },
+        live: ["grand", "cto"],
+        ctos: ["cto"],
+        deleted: [{ id: "mid", parent: "grand", title: "Middle", daysAgo: 1 }],
+      },
+      expected: { sessionId: "cto", goneTitle: "Middle" },
+    },
+    {
       name: "ignores an expired link at once, instead of following it until the next delete",
       spec: {
         parents: {},
