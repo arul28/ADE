@@ -10,6 +10,8 @@ export type LinearCatalogUser = {
   email: string | null;
   avatarUrl?: string | null;
   active: boolean;
+  /** An app or agent user (Codex, ADE), not a person. */
+  app?: boolean;
 };
 
 export type LinearCatalogLabel = {

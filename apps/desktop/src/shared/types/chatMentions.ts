@@ -1,9 +1,10 @@
 // Composer @-mention pointers to other ADE entities (chats, lanes, terminals,
-// pull requests, account machines).
+// pull requests, account machines, MCP servers) and to people (Linear members,
+// GitHub users of the project's repository).
 //
 // A mention is a POINTER, not an attachment: the composer inserts a chip whose
 // serialized form is `@chat:<id>` / `@lane:<id>` / `@term:<id>` / `@pr:<id>` /
-// `@mac:<id>`, and the chat service expands it into a compact `<ade-mention>`
+// `@mac:<id>` / `@mcp:<name>` / `@person:<source>.<id>`, and the chat service expands it into a compact `<ade-mention>`
 // block at SEND time. The block carries identity metadata, a small
 // deterministic preview, and the exact `ade` CLI commands the agent can use to
 // read more.
@@ -11,7 +12,10 @@
 import type { PrChecksStatus, PrState } from "./prs";
 import type { McpRegistryState, McpRegistryTransport } from "../mcpRegistry";
 
-export type ChatMentionKind = "chat" | "lane" | "terminal" | "pr" | "machine" | "mcp";
+export type ChatMentionKind = "chat" | "lane" | "terminal" | "pr" | "machine" | "mcp" | "person";
+
+/** Where a person row comes from. A new source adds a value here. */
+export type ChatMentionPersonSource = "linear" | "github";
 
 /** One row in the @-menu. Cheap: no transcript reads happen to build these. */
 export type ChatMentionSuggestion = {
@@ -31,6 +35,11 @@ export type ChatMentionSuggestion = {
   pr?: { number: number; state: PrState; checks: PrChecksStatus } | null;
   /** Machine rows only: directory presence, and whether it is the caller's own machine. */
   machine?: { online: boolean; isThisMachine: boolean } | null;
+  /**
+   * Person rows only: the integration the person comes from, and their handle
+   * there (Linear display name, GitHub login). Never an email.
+   */
+  person?: { source: ChatMentionPersonSource; handle: string | null } | null;
   /** MCP registry row data; contains names and status only, never secrets. */
   mcp?: {
     /** A newer brain may send a state this build does not know; render it as-is. */

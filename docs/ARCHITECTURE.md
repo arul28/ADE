@@ -1038,7 +1038,7 @@ and iOS re-implements it in Swift because it cannot import any of it.
 
 `shared/chips.ts` is the current example. One `Chip`
 (`{ kind, token, label, detail, source }`) combines chat mentions
-(`@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` / `@mcp:`), model and
+(`@chat:` / `@lane:` / `@term:` / `@pr:` / `@mac:` / `@mcp:` / `@person:`), model and
 permission mentions, URL-shaped smart links, file paths, and folders. It routes
 `ade://` URLs through the real `deeplinks.ts` parser instead of one opaque kind.
 The canonical `token` travelling next to the display `label` is what lets a

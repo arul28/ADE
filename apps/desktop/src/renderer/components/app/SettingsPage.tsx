@@ -58,6 +58,7 @@ import {
   isAccountOnlyTab,
   isMachineSelectableSettingsTab,
   isMachineSettingsTab,
+  isMostlyAccountTab,
   isProjectSettingsTab,
   isThisComputerOnlyTab,
   legacyTabAnchor,
@@ -833,8 +834,11 @@ export function SettingsPage({
         {FLASH_STYLES}
         {/* Computer pages name their own machine below; the remote banner is
             for You and Project pages, which follow the tab's binding. Account-
-            only pages follow no binding, so they get none. */}
-        {isWebClientMode() || namesOwnMachine || isAccountOnlyTab(section) ? null : <RemoteSettingsBanner />}
+            only pages follow no binding, so they get none; nor do pages whose
+            settings mostly follow the account (Chat), where it would mislead. */}
+        {isWebClientMode() || namesOwnMachine || isAccountOnlyTab(section) || isMostlyAccountTab(section)
+          ? null
+          : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
         {/* Pages built on the centred settings column get a page wrapper of the

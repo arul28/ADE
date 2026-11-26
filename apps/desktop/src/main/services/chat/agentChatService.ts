@@ -1141,6 +1141,7 @@ import {
 } from "../../../shared/chatContextAttachments";
 import { carryChatMentionBlocks } from "../../../shared/chatMentions";
 import type {
+  ChatMentionPersonSource,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
 } from "../../../shared/types/chatMentions";
@@ -1153,7 +1154,12 @@ import {
   type EvictableRuntime,
   type RuntimeBudgetParticipant,
 } from "./chatRuntimeBudget";
-import { createChatMentionService, markChatMentionsExpanded, type ChatMentionServiceDeps } from "./chatMentionService";
+import {
+  createChatMentionService,
+  markChatMentionsExpanded,
+  type ChatMentionPeopleReader,
+  type ChatMentionServiceDeps,
+} from "./chatMentionService";
 import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
@@ -12466,7 +12472,8 @@ export function createAgentChatService(args: {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearIssueTracker?: IssueTracker | null;
-  githubService?: Pick<GithubService, "getIssue" | "getStatus"> | null;
+  /** `detectRepo` and `apiRequest` list the repository's people for the @ menu. */
+  githubService?: (Pick<GithubService, "getIssue" | "getStatus"> & Partial<Pick<GithubService, "detectRepo" | "apiRequest">>) | null;
   jiraService?: Pick<ReturnType<typeof createJiraService>, "getConnectionStatus" | "getIssue"> | null;
   /** The brain's one tracker layer; built from the three services above when absent. */
   issueTrackerService?: Pick<IssueTrackerService, "isConnected" | "get"> | null;
@@ -85268,7 +85275,50 @@ ${schedule.prompt}`
   // never point at another project's chats/lanes/terminals.
   const listTerminalsForMentions = ptyService?.listTerminals?.bind(ptyService);
   const previewTerminalForMentions = ptyService?.previewTerminal?.bind(ptyService);
+  // People for the @ menu, read through this brain's own connections: the
+  // Linear workspace's active members, and the users who can be assigned in
+  // the project's GitHub repository. Names and handles only, never emails.
+  const mentionLinear = args.linearIssueTracker ?? null;
+  const githubForMentions = args.githubService;
+  const mentionGithub = githubForMentions?.detectRepo && githubForMentions.apiRequest
+    ? {
+        detectRepo: () => githubForMentions.detectRepo!(),
+        apiRequest: <T,>(request: Parameters<GithubService["apiRequest"]>[0]) => githubForMentions.apiRequest!<T>(request),
+      }
+    : null;
+  const mentionPeople: Partial<Record<ChatMentionPersonSource, ChatMentionPeopleReader>> = {
+    ...(mentionLinear
+      ? {
+          linear: async () => {
+            if (!(await linkedIssueTrackerService.isConnected("linear"))) return null;
+            return (await mentionLinear.listUsers())
+              // App users (Codex, ADE, Linear) are agents, not people.
+              .filter((user) => user.active !== false && user.app !== true)
+              .map((user) => ({ source: "linear" as const, key: user.id, name: user.name, handle: user.displayName }));
+          },
+        }
+      : {}),
+    ...(mentionGithub
+      ? {
+          github: async () => {
+            const repo = await mentionGithub.detectRepo();
+            if (!repo) return null;
+            const { data } = await mentionGithub.apiRequest<Array<{ login?: unknown; type?: unknown }>>({
+              method: "GET",
+              path: `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/assignees`,
+              query: { per_page: 100 },
+              repo,
+            });
+            const slug = `${repo.owner}/${repo.name}`;
+            return (Array.isArray(data) ? data : [])
+              .filter((user) => typeof user?.login === "string" && user.login && user.type !== "Bot")
+              .map((user) => ({ source: "github" as const, key: user.login as string, name: user.login as string, handle: user.login as string, repo: slug }));
+          },
+        }
+      : {}),
+  };
   const chatMentionService = createChatMentionService({
+    listPeople: mentionPeople,
     listChatSessions: () => listSessions(undefined, { includeArchived: false }),
     readChatTranscript: (args) => getChatTranscript(args),
     listLanes: () => laneService.list({ includeArchived: false, includeStatus: false }),

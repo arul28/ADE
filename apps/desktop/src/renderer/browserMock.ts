@@ -9080,6 +9080,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           pr: [],
           machine: machines,
           mcp: [],
+          person: [],
         };
         // Same shape as chatMentionService: a kind word narrows, an empty
         // query browses per kind, anything else is one best-match list.

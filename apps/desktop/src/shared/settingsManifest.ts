@@ -173,6 +173,22 @@ export function isAccountOnlyTab(tab: SettingsTabId): boolean {
   return ACCOUNT_ONLY_TAB_IDS.includes(tab);
 }
 
+/**
+ * A page where most settings follow the account (Chat, Notifications), so a
+ * "settings for <remote>" banner would claim the opposite of the truth. The
+ * few machine cards on such a page name their own machine.
+ */
+export function isMostlyAccountTab(tab: SettingsTabId): boolean {
+  let account = 0;
+  let machine = 0;
+  for (const entry of SETTINGS_ENTRIES) {
+    if (entry.tab !== tab) continue;
+    if (entry.scope === "account" || entry.scope === "account-repo") account += 1;
+    else machine += 1;
+  }
+  return account > machine;
+}
+
 /** A page that follows the picked machine (`?machine=`): Providers and Machines. */
 export function isMachineSelectableSettingsTab(tab: SettingsTabId): boolean {
   return isMachineSettingsTab(tab);

@@ -1,5 +1,5 @@
 // Grammar + send-time expansion for composer @-mentions of ADE chats, lanes,
-// terminals, pull requests, and account machines. Pure and surface-agnostic on purpose: the desktop composer
+// terminals, pull requests, account machines, MCP servers and people. Pure and surface-agnostic on purpose: the desktop composer
 // and iOS both serialize the same chip tokens, and the chat
 // service expands them in exactly one place (see `prepareChatMentionExpansion`
 // callers in agentChatService).
@@ -12,7 +12,12 @@
 //   - The user-visible transcript keeps the raw `@chat:<id>` chip; only the
 //     provider-bound prompt text carries the expanded blocks.
 
-import type { ChatMentionDetail, ChatMentionKind, ChatMentionSuggestion } from "./types/chatMentions";
+import type {
+  ChatMentionDetail,
+  ChatMentionKind,
+  ChatMentionPersonSource,
+  ChatMentionSuggestion,
+} from "./types/chatMentions";
 import type { LaneSummary } from "./types/lanes";
 import type { PrSummary } from "./types/prs";
 
@@ -47,6 +52,7 @@ const CHAT_MENTION_TOKEN_PREFIX: Record<ChatMentionKind, string> = {
   pr: "pr",
   machine: "mac",
   mcp: "mcp",
+  person: "person",
 };
 
 // Derived from the prefix table above so the grammar has exactly one source of
@@ -135,6 +141,7 @@ const KIND_FILTER_WORDS: Record<string, ChatMentionKind> = {
   machines: "machine",
   server: "mcp",
   servers: "mcp",
+  people: "person",
 };
 
 /**
@@ -504,6 +511,39 @@ export function prMentionSuggestion(pr: PrSummary, laneName: string | null | und
   };
 }
 
+/* ── People ─────────────────────────────────────────────────────────── */
+
+const PERSON_MENTION_SOURCES: readonly ChatMentionPersonSource[] = ["linear", "github"];
+
+const PERSON_SOURCE_LABEL: Record<ChatMentionPersonSource, string> = {
+  linear: "Linear",
+  github: "GitHub",
+};
+
+export function personMentionSourceLabel(source: ChatMentionPersonSource): string {
+  return PERSON_SOURCE_LABEL[source];
+}
+
+/**
+ * A person's mention id: `<source>.<id in that source>` (`linear.<uuid>`,
+ * `github.<login>`), so one person in two sources is two rows, each saying
+ * where it comes from. Null when the id cannot ride in a token.
+ */
+export function personMentionId(source: ChatMentionPersonSource, key: string): string | null {
+  const trimmed = key.trim();
+  const id = `${source}.${trimmed}`;
+  return trimmed && isChatMentionId(id) ? id : null;
+}
+
+/** The source and per-source key a person mention id names, or null. */
+export function parsePersonMentionId(id: string): { source: ChatMentionPersonSource; key: string } | null {
+  const dot = id.indexOf(".");
+  if (dot <= 0) return null;
+  const source = PERSON_MENTION_SOURCES.find((candidate) => candidate === id.slice(0, dot));
+  const key = id.slice(dot + 1);
+  return source && key ? { source, key } : null;
+}
+
 /**
  * Marker used when a mention token cannot be resolved (deleted chat, archived
  * lane, terminal from another machine). Kept explicit so the agent does not
@@ -515,7 +555,10 @@ export function renderUnresolvedChatMentionBlock(
   /** Why it did not resolve, when the resolver knows better than "not found". */
   reason?: string | null,
 ): string {
-  const defaultHint = kind === "machine"
+  const defaultHint = kind === "person"
+    ? "This person is not in the Linear workspace or the GitHub repository this machine can read right now. "
+      + "The integration may be disconnected. Do not guess who they are."
+    : kind === "machine"
     ? "No machine with this id is in the ADE account directory right now. The account may be signed out, "
       + "the directory unreachable, or the machine removed. Do not guess its state."
     : kind === "pr"

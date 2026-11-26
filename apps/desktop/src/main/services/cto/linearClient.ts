@@ -353,6 +353,7 @@ export function createLinearClient(args: LinearClientArgs) {
               email
               avatarUrl
               active
+              app
             }
           }
         }
@@ -373,6 +374,7 @@ export function createLinearClient(args: LinearClientArgs) {
           email: asString(node.email),
           avatarUrl: asString(node.avatarUrl),
           active: node.active !== false,
+          ...(node.app === true ? { app: true } : {}),
         };
       })
       .filter((entry): entry is LinearCatalogUser => entry != null)

@@ -24,6 +24,9 @@ import {
   mentionEpoch,
   mentionFirstLine,
   parseChatMentionKindFilter,
+  parsePersonMentionId,
+  personMentionId,
+  personMentionSourceLabel,
   prMentionSuggestion,
   rankChatMentionMenu,
   renderChatMentionBlock,
@@ -47,6 +50,7 @@ import {
 import type {
   ChatMentionDetail,
   ChatMentionKind,
+  ChatMentionPersonSource,
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
   ChatMentionSuggestion,
@@ -83,6 +87,28 @@ const MACHINE_CACHE_TTL_MS = 30_000;
 const MACHINE_READ_TIMEOUT_MS = 4_000;
 /** How long one menu query waits for a cold machine read before answering without it. */
 const MACHINE_MENU_WAIT_MS = 800;
+/**
+ * People change rarely, and each source is a network read (Linear, GitHub),
+ * so one good read is reused for minutes. A failed or disconnected source is
+ * asked again only after a pause, so typing never fans out into API calls.
+ */
+const PEOPLE_CACHE_TTL_MS = 5 * 60_000;
+const PEOPLE_RETRY_PAUSE_MS = 60_000;
+
+/** One person a mention can name. Never carries an email. */
+export type ChatMentionPerson = {
+  source: ChatMentionPersonSource;
+  /** The source's own id: the Linear user id, the GitHub login. */
+  key: string;
+  name: string;
+  /** Linear display name, GitHub login. */
+  handle: string | null;
+  /** GitHub only: `owner/name` of the repository they can be assigned in. */
+  repo?: string | null;
+};
+
+/** One source's people, or null when the integration is not connected here. */
+export type ChatMentionPeopleReader = () => Promise<ChatMentionPerson[] | null>;
 
 export type ChatMentionServiceDeps = {
   /** Project-scoped chat roster. Archived/personal rows are filtered here. */
@@ -124,6 +150,11 @@ export type ChatMentionServiceDeps = {
    * expand as unavailable, which tells the agent to ask instead of guess.
    */
   describeModel?: ((modelId: string) => ModelMentionModelInfo | null) | null;
+  /**
+   * People per source, read on this brain through its own Linear and GitHub
+   * connections. A source left out offers no person rows.
+   */
+  listPeople?: Partial<Record<ChatMentionPersonSource, ChatMentionPeopleReader>> | null;
   /** MCP servers as configured on this brain. Never returns secret values. */
   listMcpServers?: (() => Array<{
     server: McpRegistryServer;
@@ -396,6 +427,77 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       },
     }));
 
+  // ---- People (network, per source; separate caches so one slow source never holds another) ----
+
+  type PeopleRead = { ok: true; people: ChatMentionPerson[] } | { ok: false; reason: "disconnected" | "failed" };
+  const peopleCache = new Map<ChatMentionPersonSource, { at: number; ttl: number; promise: Promise<PeopleRead> }>();
+
+  const peopleSources = (): Array<[ChatMentionPersonSource, ChatMentionPeopleReader]> =>
+    Object.entries(deps.listPeople ?? {}).filter(
+      (entry): entry is [ChatMentionPersonSource, ChatMentionPeopleReader] => typeof entry[1] === "function",
+    );
+
+  const loadPeople = (source: ChatMentionPersonSource, read: ChatMentionPeopleReader): Promise<PeopleRead> => {
+    const now = Date.now();
+    const cached = peopleCache.get(source);
+    if (cached && now - cached.at < cached.ttl) return cached.promise;
+    const entry = { at: now, ttl: PEOPLE_CACHE_TTL_MS, promise: Promise.resolve<PeopleRead>({ ok: false, reason: "failed" }) };
+    entry.promise = withTimeout(read(), `${source} people read`).then(
+      (people): PeopleRead => {
+        if (people) return { ok: true, people };
+        entry.ttl = PEOPLE_RETRY_PAUSE_MS;
+        return { ok: false, reason: "disconnected" };
+      },
+      (error: unknown): PeopleRead => {
+        entry.ttl = PEOPLE_RETRY_PAUSE_MS;
+        deps.logger?.warn?.("chat mention people read failed", { source, error });
+        return { ok: false, reason: "failed" };
+      },
+    );
+    peopleCache.set(source, entry);
+    return entry.promise;
+  };
+
+  const personSuggestion = (person: ChatMentionPerson): ChatMentionSuggestion | null => {
+    const id = personMentionId(person.source, person.key);
+    const title = mentionFirstLine(person.name) ?? mentionFirstLine(person.handle);
+    if (!id || !title) return null;
+    const handle = mentionFirstLine(person.handle);
+    return {
+      kind: "person",
+      id,
+      title,
+      // The source is always in the subtitle, so `@linear` or `@github` finds
+      // that source's people and every row says where it comes from.
+      subtitle: [handle && handle !== title ? handle : null, personMentionSourceLabel(person.source), person.repo]
+        .filter(Boolean)
+        .join(" · "),
+      person: { source: person.source, handle },
+    };
+  };
+
+  const buildPersonCandidates = async (): Promise<ChatMentionSuggestion[]> => {
+    const sources = peopleSources();
+    if (!sources.length) return [];
+    // Like machines: a cold source gets a short wait, then fills the cache for
+    // the next keystroke instead of holding the other rows back. Each source
+    // waits on its own, so a warm Linear list never waits on a cold GitHub one.
+    const reads = await Promise.all(sources.map(async ([source, read]) => {
+      let budgetTimer: ReturnType<typeof setTimeout> | null = null;
+      return await Promise.race([
+        loadPeople(source, read),
+        new Promise<null>((resolve) => {
+          budgetTimer = setTimeout(() => resolve(null), MACHINE_MENU_WAIT_MS);
+        }),
+      ]).finally(() => {
+        if (budgetTimer) clearTimeout(budgetTimer);
+      });
+    }));
+    return reads.flatMap((read) => (read?.ok ? read.people : []))
+      .map(personSuggestion)
+      .filter((row): row is ChatMentionSuggestion => row != null);
+  };
+
   const candidateBuildersByKind: Record<
     ChatMentionKind,
     (args: ChatMentionSuggestArgs) => Promise<ChatMentionSuggestion[]>
@@ -406,6 +508,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     pr: () => buildPrCandidates(),
     machine: () => buildMachineCandidates(),
     mcp: () => buildMcpCandidates(),
+    person: () => buildPersonCandidates(),
   };
 
   /**
@@ -730,8 +833,64 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     };
   };
 
+  /**
+   * A person, from their source's cached roster: people change rarely, so a
+   * send reuses the menu's read. Context only: the hint tells the agent that
+   * a mention by itself asks it to do nothing.
+   */
+  const resolvePersonDetail = async (
+    id: string,
+    unresolvedReasons: Map<string, string>,
+  ): Promise<ChatMentionDetail | null> => {
+    const parsed = parsePersonMentionId(id);
+    const read = parsed ? deps.listPeople?.[parsed.source] : null;
+    if (!parsed || !read) return null;
+    const roster = await loadPeople(parsed.source, read);
+    const label = personMentionSourceLabel(parsed.source);
+    if (!roster.ok) {
+      unresolvedReasons.set(
+        `person:${id}`,
+        roster.reason === "disconnected"
+          ? `${label} is not connected on this machine, so this person cannot be looked up.`
+          : `${label} could not be reached, so this person cannot be looked up.`,
+      );
+      return null;
+    }
+    const person = roster.people.find((entry) => entry.key === parsed.key);
+    if (!person) return null;
+    const title = mentionFirstLine(person.name) ?? person.key;
+    const context = "This names a person for context only. It is not a request: "
+      + "do not assign, comment, review-request or notify anyone unless the user asks.";
+    if (person.source === "linear") {
+      return {
+        kind: "person",
+        id,
+        title,
+        attributes: [
+          ["source", "linear"],
+          ["displayName", person.handle ?? ""],
+          ["linearUserId", person.key],
+        ].filter((pair): pair is [string, string] => pair[1].length > 0),
+        hint: `A member of the user's Linear workspace. ${context} `
+          + `To assign a Linear issue to them when asked: \`ade linear assign <issue> ${person.key}\`.`,
+      };
+    }
+    return {
+      kind: "person",
+      id,
+      title,
+      attributes: [
+        ["source", "github"],
+        ["login", person.key],
+        ["repo", person.repo ?? ""],
+      ].filter((pair): pair is [string, string] => pair[1].length > 0),
+      hint: `A GitHub user who can be assigned in ${person.repo ?? "this project's repository"}. ${context} `
+        + `Writing @${person.key} in a GitHub issue, pull request or comment notifies them, so write it only when the user wants them notified.`,
+    };
+  };
+
   const detailResolversByKind: Record<
-    Exclude<ChatMentionKind, "machine" | "mcp">,
+    Exclude<ChatMentionKind, "machine" | "mcp" | "person">,
     (id: string, roster: MentionRoster) => Promise<ChatMentionDetail | null>
   > = {
     chat: resolveChatDetail,
@@ -778,6 +937,8 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
           out.set(key, await resolveMachineDetail(target.id, await machines, reasons));
         } else if (target.kind === "mcp") {
           out.set(key, await resolveMcpDetail(target.id));
+        } else if (target.kind === "person") {
+          out.set(key, await resolvePersonDetail(target.id, reasons));
         } else {
           out.set(key, await detailResolversByKind[target.kind](target.id, roster));
         }

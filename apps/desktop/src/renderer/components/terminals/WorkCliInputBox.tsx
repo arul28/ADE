@@ -39,7 +39,7 @@ import { ensureRuntimeCatalogDescriptors } from "../shared/ModelPicker/modelCata
 import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { rememberMentionSuggestionLabels } from "../chat/mentionChipLabels";
-import { formatChatMentionToken } from "../../../shared/chatMentions";
+import { formatChatMentionToken, parsePersonMentionId } from "../../../shared/chatMentions";
 import { formatModelMentionToken, type ComposerModelSuggestion } from "../../../shared/modelMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
@@ -460,6 +460,13 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
       insertion = `/${item.name}${argumentHint} `;
     } else if (item.type === "file") {
       insertion = pathMention(item.path);
+    } else if (item.type === "mention" && item.mention.kind === "person" && item.mention.person) {
+      // A CLI gets the typed text with no expansion, so a person goes in as
+      // something it can read: the GitHub login, or the name with its Linear id.
+      const person = parsePersonMentionId(item.mention.id);
+      insertion = item.mention.person.source === "github"
+        ? `@${person?.key ?? item.mention.title} `
+        : `${item.mention.title} (Linear user ${person?.key ?? item.mention.id}) `;
     } else if (item.type === "mention") {
       insertion = `${formatChatMentionToken(item.mention.kind, item.mention.id)} `;
     } else if (item.type === "pr") {
