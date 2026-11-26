@@ -10849,9 +10849,11 @@ export function createPrService({
 
     /**
      * A PR's state on the repo ("open", "draft", "merged", "closed") from
-     * what ADE already stored: a lane's PR row first, else the repo's PR list.
-     * Both only for the project's repo: a lane may link a same-numbered PR on
-     * another repo. Null when ADE has never seen it. No network.
+     * what ADE already stored: a lane's PR row and the repo's PR list. Either
+     * one saying merged or closed wins, because a lane's row stops updating
+     * once its lane is gone. Both only for the project's repo: a lane may link
+     * a same-numbered PR on another repo. Null when ADE has never seen it. No
+     * network.
      */
     getRepoPullRequestState(prNumber: number): string | null {
       const repo = activeRepoSqlFilter();
@@ -10859,13 +10861,15 @@ export function createPrService({
         `select state from pull_requests where project_id = ? and github_pr_number = ?${repo.clause}
           order by updated_at desc limit 1`,
         [projectId, prNumber, ...repo.params],
-      );
-      if (linked?.state) return linked.state;
+      )?.state || null;
       const projected = db.get<{ state: string }>(
         `select state from github_pr_projections where project_id = ? and github_pr_number = ?${repo.clause} limit 1`,
         [projectId, prNumber, ...repo.params],
-      );
-      return projected?.state ?? null;
+      )?.state || null;
+      for (const terminal of ["merged", "closed"]) {
+        if (linked === terminal || projected === terminal) return terminal;
+      }
+      return linked ?? projected;
     },
 
     async listPrsByLane(): Promise<PrLaneSummary[]> {

@@ -2736,7 +2736,7 @@ the dashboard spec is untouched.
 
 The brain that owns the CTO's open work records one coarse fact when an open
 item closes itself because the chat or PR it was linked to finished
-(`cto/ctoMemoryService.ts` `reconcileLinkedWork` calls `onLinkedWorkClosed`,
+(`cto/ctoOpenWork.ts` `reconcileLinkedWork` calls `onLinkedWorkClosed`,
 reported by `reportCtoWorkAutoClosed` in
 `analytics/ctoLearningProductAnalytics.ts`): `ade_feature_used` with
 `feature: "cto"`, `action: "cto_work_auto_closed"`, `surface: "api"`,
