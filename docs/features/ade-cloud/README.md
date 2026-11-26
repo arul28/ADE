@@ -265,9 +265,11 @@ are in
   and tool-result files, the Codex rollout, the OpenCode export) is redacted
   the same way, string by string, so JSON stays JSON and the provider still
   resumes from it. Opaque values the provider reads back as they are (a
-  thinking signature, encrypted reasoning, image data) stay as they are. A
-  move between the person's own computers is not redacted: it goes from
-  computer to computer, and the account server does not keep it.
+  thinking signature, encrypted reasoning, image data) stay as they are, but
+  only under their own field names. Numbers keep their own text. A capsule
+  saved before this redaction is sent again once (its mark lacks
+  `redacted-1`). A move between the person's own computers is not redacted:
+  it goes from computer to computer, and the account server does not keep it.
 - A saved CLI or shell copy opens read-only. The person's own computers that
   are offline are hidden in Work, Lanes and the welcome page.
 
