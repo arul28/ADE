@@ -224,7 +224,14 @@ import {
 } from "../../../shared/permissionLadder";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
-import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import {
+  collectAgentChatPromptHistory,
+  getSentPromptsSnapshot,
+  mergePromptHistory,
+  recordSentPrompt,
+  subscribeSentPrompts,
+  type AgentChatPromptHistoryEntry,
+} from "./chatPromptHistory";
 import { ChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -4658,6 +4665,12 @@ export function AgentChatPane({
   // PRs, lanes). The boolean the pane's hooks gate on: stable for the pane's
   // life, so it joins a dependency list without re-running anything.
   const isBoundScopePane = chatScope != null;
+  // A chat with no project keeps its own launch memory (its newest chat, then
+  // its last launch here). The machine's and account's launch defaults are
+  // what project chats last launched with; no-project launches never write
+  // them, so letting them seed this draft reopened it on a project chat's
+  // model and effort every time (ADE-202).
+  const keepsOwnLaunchMemory = chatScope?.kind === "personal";
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
   // The originating project's binding, captured per launch so detached draft
@@ -4678,7 +4691,7 @@ export function AgentChatPane({
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const chatChromeTint = useAppStore((s) => s.chatChromeTint);
   const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
-  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
+  const launchPromptClipboardEnabled = useAppStore((s) => s.promptClipboardCopyEnabled);
   const launchPromptClipboardNoticeEnabled = useAppStore((s) => s.launchPromptClipboardNoticeEnabled);
   const chatAppearanceRootStyle = useMemo(
     () => buildChatAppearanceRootStyle({ chatFontSizePx, transcriptDensity: chatTranscriptDensity }),
@@ -4747,7 +4760,10 @@ export function AgentChatPane({
   const openLaunchPromptClipboardSettings = useCallback(() => {
     navigate(settingsRouteFor("appearance.launch-prompt"));
   }, [navigate]);
+  // Every send and launch passes here: it is where a prompt joins this
+  // computer's history, and where the optional clipboard copy happens.
   const copyPromptForLaunch = useCallback(async (promptText: string) => {
+    recordSentPrompt(promptText);
     if (!launchPromptClipboardEnabled) return;
     await copyLaunchPromptToClipboard(promptText);
   }, [launchPromptClipboardEnabled]);
@@ -6827,7 +6843,7 @@ export function AgentChatPane({
     requestId: number;
   } | null>(null);
   const handlePromptHistoryNavigate = useCallback((entry: AgentChatPromptHistoryEntry | null) => {
-    if (!entry) {
+    if (!entry || entry.fromOtherChat) {
       setPromptHistoryJumpRequest(null);
       return;
     }
@@ -7022,13 +7038,13 @@ export function AgentChatPane({
     [selectedEventsForDisplay, selectedSession?.provider],
   );
   const selectedChatHasSources = chatActionsOpen && selectedChatSources.total > 0;
-  // Keep keyboard recall scoped to the transcript currently selected in Work.
-  // The sidebar contains other sessions, but none of those prompts belong in
-  // this composer's history.
+  // ↑ walks this chat's prompts first, then every other prompt sent from
+  // this computer (a new chat has only those).
+  const sentPrompts = useSyncExternalStore(subscribeSentPrompts, getSentPromptsSnapshot);
   const promptHistory = useStableIdentity(
     useMemo<AgentChatPromptHistoryEntry[]>(
-      () => collectAgentChatPromptHistory(selectedEventsForDisplay),
-      [selectedEventsForDisplay],
+      () => mergePromptHistory(collectAgentChatPromptHistory(selectedEventsForDisplay), sentPrompts),
+      [selectedEventsForDisplay, sentPrompts],
     ),
     samePromptHistory,
   );
@@ -19757,7 +19773,7 @@ export function AgentChatPane({
   // A draft reads the launch defaults of the machine it will launch on, again
   // whenever that machine changes, a chat is created, or the window regains
   // focus (another client may have launched since).
-  const launchDefaultsBindingKey = selectedSessionId ? null : (draftExecutionBinding?.key ?? "local");
+  const launchDefaultsBindingKey = selectedSessionId || keepsOwnLaunchMemory ? null : (draftExecutionBinding?.key ?? "local");
   const newestSessionKey = `${sessions[0]?.sessionId ?? ""}:${sessions[0]?.modelId ?? ""}`;
   const launchDefaultsLoadedForKeyRef = useRef<string | null>(null);
   useEffect(() => {

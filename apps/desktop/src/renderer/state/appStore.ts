@@ -189,6 +189,18 @@ export const CHAT_TRANSCRIPT_DENSITY_IDS: ChatTranscriptDensity[] = ["compact", 
 export type ChatChromeTint = "neutral" | "colored";
 export const CHAT_CHROME_TINT_IDS: ChatChromeTint[] = ["neutral", "colored"];
 
+/**
+ * The user message bubble's fill. A gradient lightens one corner toward
+ * white, which on a light page put white text on a pale edge; solid is one
+ * darker shade of the same colour.
+ */
+export type ChatUserBubbleFill = "gradient" | "solid";
+export const CHAT_USER_BUBBLE_FILL_IDS: ChatUserBubbleFill[] = ["gradient", "solid"];
+
+function normalizeChatUserBubbleFill(value: unknown): ChatUserBubbleFill {
+  return value === "solid" ? "solid" : "gradient";
+}
+
 /** @deprecated Lane-accent presets were replaced by `CHAT_CHROME_TINT_IDS` / `ChatChromeTint`. Kept exported so stale importers (e.g. HMR) do not crash. */
 export const CHAT_LANE_ACCENT_EMPHASIS_IDS = ["subtle", "standard", "strong"] as const;
 /** @deprecated Use `ChatChromeTint`. */
@@ -1295,7 +1307,12 @@ type PersistedUserPreferences = {
   interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
-  launchPromptClipboardEnabled: boolean;
+  /**
+   * Copy each sent prompt to the clipboard. Off unless chosen. Stored under a
+   * new name: under the old one it was on by default and saved as on for
+   * nearly everyone, so a new key is what turns it off once for all.
+   */
+  promptClipboardCopyEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
@@ -1308,6 +1325,7 @@ type PersistedUserPreferences = {
   chatUserMinimapEnabled: boolean;
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
+  chatUserBubbleFill: ChatUserBubbleFill;
   chatShellGeometry: ChatShellGeometry;
   /**
    * The size a new ADE Cloud lane starts with (the composer's size button).
@@ -1381,7 +1399,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
     return {
       ...parseStoredAppearance(parsed as Record<string, unknown>),
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
-      launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
+      promptClipboardCopyEnabled: parsed.promptClipboardCopyEnabled === true,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       // The setting was `promptStashButtonEnabled` before drafts replaced
       // stashes; keep honoring a value persisted under the old key so an
@@ -1397,6 +1415,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatUserMinimapEnabled: normalizeChatUserMinimapEnabled(parsed.chatUserMinimapEnabled),
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
+      chatUserBubbleFill: normalizeChatUserBubbleFill(parsed.chatUserBubbleFill),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
       cloudDefaultTier: normalizeCloudDefaultTier(parsed.cloudDefaultTier),
       harnessPresets: readHarnessPresetList(parsed.harnessPresets),
@@ -1441,7 +1460,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     interfacePreferences: normalizeInterfacePreferences({}),
     terminalPreferences,
     smartTooltipsEnabled,
-    launchPromptClipboardEnabled: true,
+    promptClipboardCopyEnabled: false,
     launchPromptClipboardNoticeEnabled: true,
     draftsButtonEnabled: true,
     voiceInputEnabled: true,
@@ -1454,6 +1473,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatUserMinimapEnabled: true,
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
+    chatUserBubbleFill: "gradient",
     chatShellGeometry: "default",
     cloudDefaultTier: DEFAULT_CLOUD_TIER,
     harnessPresets: [],
@@ -1485,7 +1505,7 @@ function persistUserPreferencesFrom(state: {
   interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
-  launchPromptClipboardEnabled: boolean;
+  promptClipboardCopyEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
   voiceInputEnabled: boolean;
@@ -1498,6 +1518,7 @@ function persistUserPreferencesFrom(state: {
   chatUserMinimapEnabled: boolean;
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
+  chatUserBubbleFill: ChatUserBubbleFill;
   chatShellGeometry: ChatShellGeometry;
   cloudDefaultTier: CloudTierId;
   harnessPresets: HarnessPreset[];
@@ -1513,7 +1534,7 @@ function persistUserPreferencesFrom(state: {
     interfacePreferences: state.interfacePreferences,
     terminalPreferences: state.terminalPreferences,
     smartTooltipsEnabled: state.smartTooltipsEnabled,
-    launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
+    promptClipboardCopyEnabled: state.promptClipboardCopyEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
     draftsButtonEnabled: state.draftsButtonEnabled,
     voiceInputEnabled: state.voiceInputEnabled,
@@ -1526,6 +1547,7 @@ function persistUserPreferencesFrom(state: {
     chatUserMinimapEnabled: state.chatUserMinimapEnabled,
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
+    chatUserBubbleFill: state.chatUserBubbleFill,
     chatShellGeometry: state.chatShellGeometry,
     cloudDefaultTier: state.cloudDefaultTier,
     // Stored with the rows this build cannot read; the loader normalizes and
@@ -1870,6 +1892,7 @@ export type AppState = {
   chatUserMinimapEnabled: boolean;
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
+  chatUserBubbleFill: ChatUserBubbleFill;
   chatShellGeometry: ChatShellGeometry;
   /** Saved harness presets, newest edit last. See `shared/harnessPresets.ts`. */
   harnessPresets: HarnessPreset[];
@@ -1887,7 +1910,7 @@ export type AppState = {
   terminalAttention: TerminalAttentionSnapshot;
   ctoAttention: CtoAttentionState;
   smartTooltipsEnabled: boolean;
-  launchPromptClipboardEnabled: boolean;
+  promptClipboardCopyEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   draftsButtonEnabled: boolean;
   cloudDefaultTier: CloudTierId;
@@ -2059,6 +2082,7 @@ export type AppState = {
   setChatUserMinimapEnabled: (enabled: boolean) => void;
   setChatTranscriptDensity: (density: ChatTranscriptDensity) => void;
   setChatChromeTint: (tint: ChatChromeTint) => void;
+  setChatUserBubbleFill: (fill: ChatUserBubbleFill) => void;
   setChatShellGeometry: (geometry: ChatShellGeometry) => void;
   /**
    * Replace the whole preset list. Whole-list rather than per-preset because
@@ -2082,7 +2106,7 @@ export type AppState = {
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   /** Sync calls this too; a person's pick is counted in `lib/cloudDefaultTier.ts`. */
   setCloudDefaultTier: (tier: CloudTierId) => void;
-  setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
+  setPromptClipboardCopyEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setDraftsButtonEnabled: (enabled: boolean) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
@@ -2603,6 +2627,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   chatUserMinimapEnabled: initialUserPreferences.chatUserMinimapEnabled,
   chatTranscriptDensity: initialUserPreferences.chatTranscriptDensity,
   chatChromeTint: initialUserPreferences.chatChromeTint,
+  chatUserBubbleFill: initialUserPreferences.chatUserBubbleFill,
   chatShellGeometry: initialUserPreferences.chatShellGeometry,
   harnessPresets: initialUserPreferences.harnessPresets,
   appleDevice: initialUserPreferences.appleDevice,
@@ -2615,7 +2640,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
   ctoAttention: EMPTY_CTO_ATTENTION,
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
-  launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
+  promptClipboardCopyEnabled: initialUserPreferences.promptClipboardCopyEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   draftsButtonEnabled: initialUserPreferences.draftsButtonEnabled,
   cloudDefaultTier: initialUserPreferences.cloudDefaultTier,
@@ -3261,6 +3286,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, chatTranscriptDensity: value });
       return { chatTranscriptDensity: value };
     }),
+  setChatUserBubbleFill: (fill) =>
+    set((prev) => {
+      const value = normalizeChatUserBubbleFill(fill);
+      persistUserPreferencesFrom({ ...prev, chatUserBubbleFill: value });
+      return { chatUserBubbleFill: value };
+    }),
   setChatChromeTint: (tint) =>
     set((prev) => {
       const value = normalizeChatChromeTint(tint);
@@ -3333,10 +3364,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
       return { smartTooltipsEnabled: enabled };
     }),
-  setLaunchPromptClipboardEnabled: (enabled) =>
+  setPromptClipboardCopyEnabled: (enabled) =>
     set((prev) => {
-      persistUserPreferencesFrom({ ...prev, launchPromptClipboardEnabled: enabled });
-      return { launchPromptClipboardEnabled: enabled };
+      persistUserPreferencesFrom({ ...prev, promptClipboardCopyEnabled: enabled });
+      return { promptClipboardCopyEnabled: enabled };
     }),
   setLaunchPromptClipboardNoticeEnabled: (enabled) =>
     set((prev) => {
@@ -4490,12 +4521,13 @@ export function createProjectAppStore(
     chatUserMinimapEnabled: rootState.chatUserMinimapEnabled,
     chatTranscriptDensity: rootState.chatTranscriptDensity,
     chatChromeTint: rootState.chatChromeTint,
+    chatUserBubbleFill: rootState.chatUserBubbleFill,
     chatShellGeometry: rootState.chatShellGeometry,
     harnessPresets: rootState.harnessPresets,
     appleDevice: rootState.appleDevice,
     androidDevice: rootState.androidDevice,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
-    launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
+    promptClipboardCopyEnabled: rootState.promptClipboardCopyEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
     draftsButtonEnabled: rootState.draftsButtonEnabled,
     voiceInputEnabled: rootState.voiceInputEnabled,
@@ -4514,13 +4546,14 @@ export function createProjectAppStore(
     setChatUserMinimapEnabled: rootState.setChatUserMinimapEnabled,
     setChatTranscriptDensity: rootState.setChatTranscriptDensity,
     setChatChromeTint: rootState.setChatChromeTint,
+    setChatUserBubbleFill: rootState.setChatUserBubbleFill,
     setChatShellGeometry: rootState.setChatShellGeometry,
     setHarnessPresets: rootState.setHarnessPresets,
     setAppleDevicePreferences: rootState.setAppleDevicePreferences,
     setAndroidDevicePreferences: rootState.setAndroidDevicePreferences,
     resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
-    setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
+    setPromptClipboardCopyEnabled: rootState.setPromptClipboardCopyEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setDraftsButtonEnabled: rootState.setDraftsButtonEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,

@@ -3797,6 +3797,14 @@ button, [role="button"] {
       linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 76%, #ffffff 6%) 0%, color-mix(in srgb, var(--chat-accent) 60%, #7c3aed 40%) 50%, color-mix(in srgb, var(--chat-accent) 58%, #4c1d95 42%) 100%));
 }
 
+/* Settings › Chat › Message bubble › Solid: one shade, no lightened corner,
+   on every theme. The shade already gives white text 4.5 : 1, so the light
+   page's scrim is not needed. */
+[data-chat-bubble-fill="solid"] .ade-chat-message-card-user,
+[data-theme="light"] [data-chat-bubble-fill="solid"] .ade-chat-message-card-user {
+  background: var(--chat-user-bubble-solid, color-mix(in srgb, var(--chat-accent) 65%, #000000 35%));
+}
+
 /* A chip takes the theme accent; on the accent-coloured bubble that tint is
    lost, so there it is white glass instead. */
 .ade-chat-message-card-user [data-chip-kind] {

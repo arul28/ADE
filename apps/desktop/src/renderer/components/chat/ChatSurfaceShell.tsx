@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type DragEventHandler, type ReactNode, type Ref } from "react";
-import type { ChatChromeTint, ChatShellGeometry } from "../../state/appStore";
+import { useAppStore, type ChatChromeTint, type ChatShellGeometry } from "../../state/appStore";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { ChatChromeTintContext } from "./chatAppearance";
@@ -154,6 +154,10 @@ export function ChatSurfaceShell({
     </>
   );
 
+  // A display preference with no per-chat answer, so the shell reads it
+  // itself rather than every caller (the chat, the Settings preview) passing it.
+  const bubbleFill = useAppStore((s) => s.chatUserBubbleFill);
+
   const geometryAttr =
     shellGeometry !== "default"
       ? ({ "data-chat-shell-geometry": shellGeometry } as const)
@@ -165,6 +169,7 @@ export function ChatSurfaceShell({
         ref={containerRef}
         data-chat-shell-layout={layoutVariant}
         data-chat-chrome-tint={chromeTint}
+        data-chat-bubble-fill={bubbleFill}
         // ⌘F anywhere in the chat — composer included — finds in its transcript.
         data-ade-find-scope="chat-pane"
         {...geometryAttr}

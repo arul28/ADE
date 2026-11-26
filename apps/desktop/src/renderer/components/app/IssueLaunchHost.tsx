@@ -53,7 +53,7 @@ export function IssueLaunchHost() {
   const lanes = useAppStore((state) => state.lanes);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const selectLane = useAppStore((state) => state.selectLane);
-  const launchPromptClipboardEnabled = useAppStore((state) => state.launchPromptClipboardEnabled);
+  const launchPromptClipboardEnabled = useAppStore((state) => state.promptClipboardCopyEnabled);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const [request, setRequest] = useState<PendingIssueLaunchRequest | null>(null);
   const [states, setStates] = useState<Map<string, BatchLaunchItemState>>(new Map());

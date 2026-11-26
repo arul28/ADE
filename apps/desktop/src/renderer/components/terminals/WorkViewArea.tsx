@@ -80,6 +80,7 @@ import type {
 } from "./importSessions/contract";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
+import { recordSentPrompt } from "../chat/chatPromptHistory";
 import { isImeComposing } from "../../lib/imeComposition";
 import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
 import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
@@ -444,7 +445,7 @@ function WorkCliContinuationComposer({
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
+  const launchPromptClipboardEnabled = useAppStore((s) => s.promptClipboardCopyEnabled);
 
   useEffect(() => {
     let cancelled = false;
@@ -547,6 +548,7 @@ function WorkCliContinuationComposer({
     setSending(true);
     setSubmitError(null);
     try {
+      recordSentPrompt(text);
       if (launchPromptClipboardEnabled) {
         void copyLaunchPromptToClipboard(text);
       }

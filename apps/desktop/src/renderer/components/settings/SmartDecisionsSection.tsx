@@ -319,7 +319,7 @@ function ModelHintRow() {
       title={<GroupTitle icon={Gauge}>Model and effort hint</GroupTitle>}
       hint={mode == null
         ? "Loading…"
-        : "Suggests a model and effort beside the composer's pickers for a new chat, from how you picked for your last few similar ones. Sends the prompt and the first line of those chats. It never moves a model you picked to a weaker one."}
+        : "Suggests a model and effort beside the composer's pickers for a new chat, from how you picked for your last few similar ones, and the context window on a model that offers a choice (Copilot's long context). Sends the prompt and the first line of those chats. It never moves a model you picked to a weaker one."}
       control={(
         <SettingsToggle
           label="Model and effort hint"

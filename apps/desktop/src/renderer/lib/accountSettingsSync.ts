@@ -133,7 +133,9 @@ function pref<Value>(
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
-  pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),
+  // A new account key, not `launchPromptClipboardEnabled`: that one holds the
+  // old on-by-default value for nearly everyone (see `promptClipboardCopyEnabled`).
+  pref("promptClipboardCopyEnabled", (state) => state.promptClipboardCopyEnabled, (state, value) => state.setPromptClipboardCopyEnabled(value)),
   pref("launchPromptClipboardNoticeEnabled", (state) => state.launchPromptClipboardNoticeEnabled, (state, value) => state.setLaunchPromptClipboardNoticeEnabled(value)),
   // The account field keeps its original name on purpose. It is an opaque key
   // in the account store, not a label, and renaming it would orphan the value
@@ -150,6 +152,7 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("chatUserMinimapEnabled", (state) => state.chatUserMinimapEnabled, (state, value) => state.setChatUserMinimapEnabled(value)),
   pref("chatTranscriptDensity", (state) => state.chatTranscriptDensity, (state, value) => state.setChatTranscriptDensity(value)),
   pref("chatChromeTint", (state) => state.chatChromeTint, (state, value) => state.setChatChromeTint(value)),
+  pref("chatUserBubbleFill", (state) => state.chatUserBubbleFill, (state, value) => state.setChatUserBubbleFill(value)),
   pref("chatShellGeometry", (state) => state.chatShellGeometry, (state, value) => state.setChatShellGeometry(value)),
   // The size a new ADE Cloud lane starts with. A tier name this build cannot
   // read (a newer ADE's) keeps the local choice.

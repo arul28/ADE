@@ -7000,6 +7000,20 @@ function catalogDescriptorInfoKey(
   return `${group}:${providerKey}:${descriptorId}`;
 }
 
+/**
+ * Whether a Copilot model offers the long context tier. The live model list
+ * knows. With none in this process yet (a brain restart, a remote host) the id
+ * resolves to a bare descriptor with no tiers, and every pick was quietly put
+ * back to the default tier, so the saved catalog answers then.
+ */
+function copilotModelOffersLongContext(descriptor: ModelDescriptor | null | undefined): boolean {
+  if (!descriptor) return false;
+  if (descriptor.supportedContextTiers) return descriptor.supportedContextTiers.includes("long_context");
+  const saved = readCopilotModelCatalogCache()?.descriptors.find((row) =>
+    row.id === descriptor.id || row.providerModelId === descriptor.providerModelId);
+  return saved?.supportedContextTiers?.includes("long_context") === true;
+}
+
 function resolveSessionModelDescriptor(session: AgentChatSession): ModelDescriptor | null {
   if (session.modelId) {
     return getModelById(session.modelId) ?? resolveModelAlias(session.modelId) ?? null;
@@ -54280,7 +54294,7 @@ export function createAgentChatService(args: {
           ? { devinCloud: normalizeDevinCloudConfig(requestedDevinCloud), devinRuntime: "cloud" as const }
           : {}),
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
-        ...(effectiveProvider === "copilot" ? { copilotContextTier: resolvedDescriptor?.supportedContextTiers?.includes("long_context") ? normalizeCopilotContextTier(requestedCopilotContextTierArg) : "default" as const } : {}),
+        ...(effectiveProvider === "copilot" ? { copilotContextTier: copilotModelOffersLongContext(resolvedDescriptor) ? normalizeCopilotContextTier(requestedCopilotContextTierArg) : "default" as const } : {}),
         ...(effectiveProvider === "copilot" ? { copilotAutoTier: (resolvedDescriptor?.providerModelId ?? normalizedModel) === "auto" ? normalizeCopilotAutoTier(requestedCopilotAutoTierArg) : null } : {}),
           ...(initialFastMode ? { fastMode: true } : {}),
           // Ultrafast is a Codex tier; never stored for another provider, or
@@ -80870,12 +80884,12 @@ export function createAgentChatService(args: {
       }
 
       if (managed.session.provider === "copilot") {
-        if (modelChanged && !descriptor?.supportedContextTiers?.includes("long_context")) {
+        if (modelChanged && !copilotModelOffersLongContext(descriptor)) {
           managed.session.copilotContextTier = "default";
         }
         if (copilotContextTier !== undefined) {
           const selected = resolveSessionModelDescriptor(managed.session);
-          managed.session.copilotContextTier = selected?.supportedContextTiers?.includes("long_context")
+          managed.session.copilotContextTier = copilotModelOffersLongContext(selected)
             ? normalizeCopilotContextTier(copilotContextTier)
             : "default";
         }
@@ -81255,9 +81269,28 @@ export function createAgentChatService(args: {
     }
     if (copilotContextTier !== undefined && managed.session.provider === "copilot") {
       const descriptor = resolveSessionModelDescriptor(managed.session);
-      managed.session.copilotContextTier = descriptor?.supportedContextTiers?.includes("long_context")
+      managed.session.copilotContextTier = copilotModelOffersLongContext(descriptor)
         ? normalizeCopilotContextTier(copilotContextTier)
         : "default";
+      // Between turns the Copilot session is already open, and it reads the
+      // tier only when it opens or the model changes. A tier-only change was
+      // saved and never sent, so the next turn ran on the old window (ADE-214).
+      const runtime = managed.runtime;
+      const tier = managed.session.copilotContextTier ?? "default";
+      if (runtime?.kind === "copilot" && runtime.contextTier !== tier) {
+        try {
+          await runtime.sdk.setModel(managed.session.id, runtime.modelId, managed.session.reasoningEffort, { contextTier: tier });
+          runtime.contextTier = tier;
+        } catch (error) {
+          logger.warn("agent_chat.copilot_sdk_set_context_tier_failed", {
+            sessionId,
+            contextTier: tier,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          reportCopilotProblem("setting_failed", { error, model: runtime.modelId, tags: { "copilot.setting": "context_tier" } });
+          reopenCopilotForSettings(managed, "the new context window", error);
+        }
+      }
     }
     if (copilotAutoTier !== undefined && managed.session.provider === "copilot") {
       managed.session.copilotAutoTier = normalizeCopilotAutoTier(copilotAutoTier);

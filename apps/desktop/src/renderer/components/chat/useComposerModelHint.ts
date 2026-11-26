@@ -6,12 +6,15 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { HARNESS_LABELS } from "../../../shared/modelMentions";
 import {
   buildModelHintRequest,
+  contextTierFromAnswer,
   hintChoices,
   hintFromAnswer,
   isModelHintPrompt,
   makerOf,
   resolveCurrentModel,
   shortName,
+  type ContextTier,
+  type ContextWindowChoice,
   type HintChoice,
   type ModelHint,
   type ModelHintAnswers,
@@ -72,10 +75,13 @@ function changeShare(a: string, b: string): number {
 
 type Answered = {
   text: string;
-  catalog: UserModelCatalog;
+  /** Null when only the context question was asked (a model the catalogue lacks). */
+  catalog: UserModelCatalog | null;
   choices: HintChoice[];
   answers: ModelHintAnswers | null;
   fromHistory: boolean;
+  /** The model the context question was about; its answer means nothing for another. */
+  contextModelId: string | null;
 };
 
 export type ComposerModelHintArgs = {
@@ -102,8 +108,12 @@ export type ComposerModelHintArgs = {
    * the prompt being typed, so the chip stays down until the text moves on.
    */
   effortPickedByHand: number;
+  /** The current model's context window choice, when it offers one (Copilot's tiers). */
+  contextChoice: ContextWindowChoice | null;
+  contextTier: ContextTier;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (effort: string | null) => void;
+  onContextTierChange: ((tier: ContextTier) => void) | null;
 };
 
 export type ComposerModelHint = {
@@ -132,8 +142,11 @@ export function useComposerModelHint({
   ownerBinding,
   hidden,
   effortPickedByHand,
+  contextChoice,
+  contextTier,
   onModelChange,
   onReasoningEffortChange,
+  onContextTierChange,
 }: ComposerModelHintArgs): ComposerModelHint {
   const [answered, setAnswered] = useState<Answered | null>(null);
   /** The prompt a hint was taken or dismissed on; it stays down until the text moves on. */
@@ -144,14 +157,18 @@ export function useComposerModelHint({
   pinRef.current = pin;
   const ownerKeyRef = useRef("");
   ownerKeyRef.current = ownerBinding?.key ?? "";
-  const contextRef = useRef({ attachments, laneName, modelId, allowedModelIds });
-  contextRef.current = { attachments, laneName, modelId, allowedModelIds };
+  // Asked only where the composer can switch the tier.
+  const askableContext = onContextTierChange ? contextChoice : null;
+  const contextRef = useRef({ attachments, laneName, modelId, allowedModelIds, askableContext });
+  contextRef.current = { attachments, laneName, modelId, allowedModelIds, askableContext };
   // The machine's catalogue, for the history entry a send records.
   const catalogRef = useRef<UserModelCatalog | null>(null);
   const text = draft.trim();
   const active = !hidden && !chatHasHistory && isModelHintPrompt(text);
   // Jev chose among one provider's and maker's models; another model is another question.
-  const outsideChoices = answered != null && !answered.choices.some((choice) => choice.modelId === modelId);
+  const outsideChoices = answered != null
+    && !answered.choices.some((choice) => choice.modelId === modelId)
+    && answered.contextModelId !== modelId;
 
   // A new machine reads another catalogue and Jev.
   useEffect(() => {
@@ -170,16 +187,35 @@ export function useComposerModelHint({
       askedTextRef.current = text;
       const target = pinRef.current;
       const scopeKey = target?.key ?? ownerKeyRef.current;
-      const { attachments: files, laneName: lane, modelId: currentModelId, allowedModelIds: allowed } = contextRef.current;
+      const { attachments: files, laneName: lane, modelId: currentModelId, allowedModelIds: allowed, askableContext: context } = contextRef.current;
       const imageCount = files.filter((file) => file.type === "image" || file.type === "image-url").length;
       void (async () => {
         const mode = await hintMode(target, scopeKey);
         if (mode === "off") return;
         const catalog = await loadCatalog(target, scopeKey);
-        if (!catalog || seq !== seqRef.current) return;
+        if (seq !== seqRef.current) return;
         catalogRef.current = catalog;
-        const current = resolveCurrentModel(catalog, currentModelId);
-        if (!current) return;
+        const current = catalog ? resolveCurrentModel(catalog, currentModelId) : null;
+        if (!current) {
+          // A model the catalogue lacks (Copilot) still gets the context question.
+          if (!context) return;
+          const answers = await window.ade.ai.jevDecide(buildModelHintRequest({
+            prompt: text,
+            laneName: lane,
+            fileCount: files.length - imageCount,
+            imageCount,
+            provider: context.displayName,
+            maker: context.displayName,
+            history: [],
+            outcomes: [],
+            choices: [],
+            context,
+          }), target);
+          if (seq !== seqRef.current) return;
+          setAnswered({ text, catalog: null, choices: [], answers, fromHistory: false, contextModelId: currentModelId });
+          return;
+        }
+        if (!catalog) return;
         const maker = makerOf(current);
         const history = readModelHintHistory(current.harness, maker);
         const outcomes = readCheaperHintOutcomes(current.harness, maker);
@@ -191,7 +227,7 @@ export function useComposerModelHint({
           effortOnly: mode === "effort_only",
           needsImages: imageCount > 0,
         });
-        if (choices.length < 2) return;
+        if (choices.length < 2 && !context) return;
         const answers = await window.ade.ai.jevDecide(buildModelHintRequest({
           prompt: text,
           laneName: lane,
@@ -201,15 +237,17 @@ export function useComposerModelHint({
           maker,
           history,
           outcomes,
-          choices,
+          choices: choices.length >= 2 ? choices : [],
+          context,
         }), target);
         if (seq !== seqRef.current) return;
         setAnswered({
           text,
           catalog,
-          choices,
+          choices: choices.length >= 2 ? choices : [],
           answers,
           fromHistory: history.some((entry) => choices.some((choice) => choice.modelId === entry.modelId)),
+          contextModelId: context ? currentModelId : null,
         });
       })().catch(() => {});
     }, DEBOUNCE_MS);
@@ -225,19 +263,40 @@ export function useComposerModelHint({
     effortPicksSeenRef.current = effortPickedByHand;
     if (textRef.current) setDismissedFor(textRef.current);
   }, [effortPickedByHand]);
-  const hint = useMemo(() => {
+  const hint = useMemo((): ModelHint | null => {
     if (!answered || !modelId || outsideChoices) return null;
-    const current = resolveCurrentModel(answered.catalog, modelId);
-    if (!current) return null;
-    return hintFromAnswer({
-      answers: answered.answers,
-      choices: answered.choices,
-      catalog: answered.catalog,
-      current,
-      currentEffort: reasoningEffort,
-      fromHistory: answered.fromHistory,
-    });
-  }, [answered, modelId, reasoningEffort, outsideChoices]);
+    const tier = answered.contextModelId === modelId
+      ? contextTierFromAnswer(answered.answers?.context, contextTier)
+      : null;
+    const current = answered.catalog && answered.choices.length ? resolveCurrentModel(answered.catalog, modelId) : null;
+    const modelHint = current && answered.catalog
+      ? hintFromAnswer({
+        answers: answered.answers,
+        choices: answered.choices,
+        catalog: answered.catalog,
+        current,
+        currentEffort: reasoningEffort,
+        fromHistory: answered.fromHistory,
+      })
+      : null;
+    // The window belongs to the current model: it rides along with an effort
+    // change, never with a move to another model.
+    if (modelHint) return tier && modelHint.effortOnly ? { ...modelHint, contextTier: tier } : modelHint;
+    if (!tier) return null;
+    return {
+      modelId,
+      displayName: contextChoice?.displayName ?? modelId,
+      effort: reasoningEffort,
+      effortOnly: false,
+      contextTier: tier,
+      contextOnly: true,
+      cheaper: false,
+      direction: tier === "long_context" ? "up" : "down",
+      reason: tier === "long_context"
+        ? "Jev's read of this prompt: it needs more room than the standard window"
+        : "Jev's read of this prompt: the standard window holds it, for less",
+    };
+  }, [answered, contextChoice?.displayName, contextTier, modelId, reasoningEffort, outsideChoices]);
 
   // An answer about other text never shows under this text.
   const fresh = answered != null && changeShare(answered.text, text) < MIN_CHANGE_SHARE;
@@ -257,12 +316,15 @@ export function useComposerModelHint({
       fromEffort: shown.from.effort,
       toModel: shown.hint.modelId,
       toEffort: shown.hint.effort,
+      toContextTier: shown.hint.contextTier ?? null,
       effortOnly: shown.hint.effortOnly,
       fromHistory: answered?.fromHistory ?? false,
     });
     if (outcome !== "ignore") {
       // Product analytics: the kind of chip and the answer, once per kind and answer a day.
-      const action = shown.hint.cheaper ? "hint_cheaper" : shown.hint.effortOnly ? "hint_effort" : "hint_model";
+      const action = shown.hint.cheaper
+        ? "hint_cheaper"
+        : shown.hint.contextOnly ? "hint_context" : shown.hint.effortOnly ? "hint_effort" : "hint_model";
       const result = outcome === "accept" ? "hint_accepted" : "hint_dismissed";
       void window.ade?.analytics?.capture({
         event: "ade_feature_used",
@@ -272,7 +334,7 @@ export function useComposerModelHint({
       }).catch(() => undefined);
     }
     // Jev reads what the user did with cheaper-model chips; a chip left alone says nothing.
-    const current = answered ? resolveCurrentModel(answered.catalog, shown.from.modelId) : null;
+    const current = answered?.catalog ? resolveCurrentModel(answered.catalog, shown.from.modelId) : null;
     if (shown.hint.cheaper && outcome !== "ignore" && current) {
       recordCheaperHintOutcome({
         harness: current.harness,
@@ -325,6 +387,8 @@ export function useComposerModelHint({
     logOutcome("accept");
     // Taken: like a dismissal, it stays down for the rest of this prompt.
     setDismissedFor(text);
+    if (hint.contextTier) onContextTierChange?.(hint.contextTier);
+    if (hint.contextOnly) return;
     if (hint.effortOnly) {
       onReasoningEffortChange(hint.effort);
       return;

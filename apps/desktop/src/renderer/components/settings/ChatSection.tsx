@@ -1,14 +1,16 @@
 import React, { useState } from "react";
-import { Check, Code, Copy, MapTrifold, Palette, Rows, Square, TextAa } from "@phosphor-icons/react";
+import { ChatTeardropText, Check, Code, Copy, MapTrifold, Palette, Rows, Square, TextAa } from "@phosphor-icons/react";
 import {
   CHAT_FONT_SIZE_MAX_PX,
   CHAT_FONT_SIZE_MIN_PX,
   CHAT_CHROME_TINT_IDS,
   CHAT_SHELL_GEOMETRY_IDS,
   CHAT_TRANSCRIPT_DENSITY_IDS,
+  CHAT_USER_BUBBLE_FILL_IDS,
   CODE_BLOCK_COPY_POSITION_IDS,
   useAppStore,
   type ChatChromeTint,
+  type ChatUserBubbleFill,
   type ChatShellGeometry,
   type ChatTranscriptDensity,
   type CodeBlockCopyButtonPosition,
@@ -77,6 +79,8 @@ export function ChatSection() {
   const setChatTranscriptDensity = useAppStore((s) => s.setChatTranscriptDensity);
   const chatChromeTint = useAppStore((s) => s.chatChromeTint);
   const setChatChromeTint = useAppStore((s) => s.setChatChromeTint);
+  const chatUserBubbleFill = useAppStore((s) => s.chatUserBubbleFill);
+  const setChatUserBubbleFill = useAppStore((s) => s.setChatUserBubbleFill);
   const chatShellGeometry = useAppStore((s) => s.chatShellGeometry);
   const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
@@ -156,6 +160,23 @@ export function ChatSection() {
                     label={(id) => CHAT_CHROME_TINT_LABEL[id]}
                     onChange={setChatChromeTint}
                     art={(id) => <TintArt tint={id} />}
+                    columns={2}
+                  />
+                </ModernRow>
+                <ModernRow
+                  anchor="chat-bubble-fill"
+                  icon={<ChatTeardropText size={15} weight="bold" />}
+                  tone="violet"
+                  title="Message bubble"
+                  hint="Your messages. Solid drops the gradient, which can be hard to read on a light theme."
+                >
+                  <ChoiceGrid
+                    ariaLabel="Message bubble fill"
+                    value={chatUserBubbleFill}
+                    options={CHAT_USER_BUBBLE_FILL_IDS}
+                    label={(id) => USER_BUBBLE_FILL_LABEL[id]}
+                    onChange={setChatUserBubbleFill}
+                    art={(id) => <BubbleArt fill={id} />}
                     columns={2}
                   />
                 </ModernRow>
@@ -361,6 +382,32 @@ function CornersArt({ geometry }: { geometry: ChatShellGeometry }) {
       <span className="ade-cs-window-head" />
       <span className="ade-cs-line" style={{ width: "60%" }} />
       <span className="ade-cs-line" style={{ width: "42%" }} />
+    </div>
+  );
+}
+
+const USER_BUBBLE_FILL_LABEL: Record<ChatUserBubbleFill, string> = {
+  gradient: "Gradient",
+  solid: "Solid",
+};
+
+function BubbleArt({ fill }: { fill: ChatUserBubbleFill }) {
+  const accent = PROVIDER_CHAT_ACCENTS.claude ?? "var(--color-accent)";
+  return (
+    <div className="ade-cs-tints">
+      <div
+        className="ade-cs-tint"
+        style={{
+          marginLeft: "auto",
+          width: "70%",
+          borderColor: "transparent",
+          background: fill === "solid"
+            ? `color-mix(in srgb, ${accent} 65%, #000000 35%)`
+            : `linear-gradient(135deg, color-mix(in srgb, ${accent} 76%, #ffffff 6%) 0%, color-mix(in srgb, ${accent} 60%, #7c3aed 40%) 50%, color-mix(in srgb, ${accent} 58%, #4c1d95 42%) 100%)`,
+        }}
+      >
+        <span className="ade-cs-line" style={{ width: "70%", background: "rgba(255,255,255,0.85)" }} />
+      </div>
     </div>
   );
 }

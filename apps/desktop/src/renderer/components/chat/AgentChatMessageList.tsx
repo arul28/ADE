@@ -3414,7 +3414,8 @@ function renderEvent(
                 carries that time (`sentAt`); the row's own is when it got there. */}
             {envelope.timestampSynthetic === true && !event.sentAt
               ? null
-              : <RowHoverTimestamp iso={event.sentAt ?? envelope.timestamp} className="mr-0.5" />}
+              // On the accent bubble: the page's text colour is dark on a light theme.
+              : <RowHoverTimestamp iso={event.sentAt ?? envelope.timestamp} className="mr-0.5 text-white/60" />}
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"

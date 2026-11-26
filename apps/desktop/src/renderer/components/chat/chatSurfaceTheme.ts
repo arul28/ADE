@@ -207,6 +207,17 @@ const CHAT_USER_BUBBLE_GRADIENT_ACCENT =
 const CHAT_USER_BUBBLE_GRADIENT_DEEP =
   "linear-gradient(135deg, color-mix(in srgb, var(--chat-accent) 74%, #ffffff 26%) 0%, color-mix(in srgb, var(--chat-accent) 86%, #ffffff 14%) 52%, var(--chat-accent) 100%)";
 
+/**
+ * The bubble's "Solid" fill (Settings › Chat › Message bubble): one shade of
+ * the accent, dark enough that white text measures at least 4.5 : 1 on every
+ * provider accent (the yellowest, Gemini, is about 4.8 : 1).
+ */
+const CHAT_USER_BUBBLE_SOLID_ACCENT = "color-mix(in srgb, var(--chat-accent) 65%, #000000 35%)";
+/** Codex/OpenAI's near-white accent: the light gradient's middle stop. */
+const CHAT_USER_BUBBLE_SOLID_LIGHT = "color-mix(in srgb, var(--chat-accent) 18%, #6d4c9a 82%)";
+/** Near-black accents (Cursor, Pi): lifted, as their gradient is. */
+const CHAT_USER_BUBBLE_SOLID_DEEP = "color-mix(in srgb, var(--chat-accent) 86%, #ffffff 14%)";
+
 /** Provider-colored chrome (default) — former “standard” lane accent strength. */
 function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | null): CSSProperties {
   const accent = resolveChatSurfaceAccent(mode, accentColor);
@@ -224,6 +235,11 @@ function coloredChatSurfaceVars(mode: ChatSurfaceMode, accentColor?: string | nu
       : deep
         ? CHAT_USER_BUBBLE_GRADIENT_DEEP
         : CHAT_USER_BUBBLE_GRADIENT_ACCENT,
+    ["--chat-user-bubble-solid" as string]: light
+      ? CHAT_USER_BUBBLE_SOLID_LIGHT
+      : deep
+        ? CHAT_USER_BUBBLE_SOLID_DEEP
+        : CHAT_USER_BUBBLE_SOLID_ACCENT,
     ...sharedSurfaceTokens(accent, m),
   };
 }
@@ -236,6 +252,7 @@ function neutralChatSurfaceVars(): CSSProperties {
     ["--chat-user-border-accent-mix" as string]: "20%",
     ["--chat-user-shadow-accent-mix" as string]: "24%",
     ["--chat-user-bubble-gradient" as string]: CHAT_USER_BUBBLE_GRADIENT_DEFAULT,
+    ["--chat-user-bubble-solid" as string]: CHAT_USER_BUBBLE_SOLID_ACCENT,
     ...sharedSurfaceTokens(accent, m),
   };
 }
