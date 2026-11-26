@@ -2824,8 +2824,11 @@ export function createMultiProjectRpcRequestHandler(
     const targetService = targetProjectId
       ? scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null
       : resolveReadySyncServiceForRead();
-    // A project the caller named answers as itself, viewer or not.
-    const syncService = requestedProjectId ? targetService : machineWideSyncService(targetService);
+    // Status describes the machine, so it follows the same rule as the PIN and
+    // devices below, whether or not the caller named a project (the desktop
+    // always does): otherwise one panel mixes a viewer's role with this
+    // machine's pairing code.
+    const syncService = machineWideSyncService(targetService);
     if (syncService) await applyPendingLanePresence();
     return syncService;
   };
@@ -2960,6 +2963,8 @@ export function createMultiProjectRpcRequestHandler(
   const readSyncService = async <TService, TFallback>(
     run: (syncService: ActiveSyncService) => TService | Promise<TService>,
     machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
+    /** A per-project setting (the runtime name): read from the scope even when it is a viewer. */
+    projectScoped = false,
   ): Promise<TFallback | TService> => {
     const hostProjectId = scopeRegistry.getActiveSyncHostProjectId?.()
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.()
@@ -2967,7 +2972,8 @@ export function createMultiProjectRpcRequestHandler(
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;
-    const runningSyncService = machineWideSyncService(readySyncService ?? resolveReadySyncServiceForRead());
+    const scopeSyncService = readySyncService ?? resolveReadySyncServiceForRead();
+    const runningSyncService = projectScoped ? scopeSyncService : machineWideSyncService(scopeSyncService);
     if (runningSyncService) {
       await applyPendingLanePresence();
       return await run(runningSyncService);
@@ -4976,6 +4982,7 @@ export function createMultiProjectRpcRequestHandler(
         // The runtime name is a per-project setting. A machine with no project
         // has none, which is what the projectless snapshot already reports.
         () => ({ runtimeName: null }),
+        true,
       );
     }
 

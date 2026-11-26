@@ -4,6 +4,7 @@ import type { DemoArtifactMetadata, DemoEngine, DemoRect, DemoTrack, DemoTrackEv
 import type { AndroidRecordingSegment } from "../../../shared/types/androidEmulator";
 import { readDemoMp4 } from "../demoVideo/demoMp4Source";
 import { DemoRecordingUnusableError, demoLengths, produceDemoVideo } from "../demoVideo/demoRenderService";
+import { isStuckMediaProcessError } from "../demoVideo/demoChildStop";
 import { ensureFfmpegTools, ffmpegDownloadable, resolveFfmpegTools, runFfmpeg } from "../demoVideo/ffmpegDemoEngine";
 import { planPlainDemo } from "../../../shared/demoVideo/demoPlanner";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
@@ -414,6 +415,13 @@ export async function produceAndroidRecordingVideo(args: {
       ? `the demo took longer than ${Math.round((args.budgetMs ?? ANDROID_DEMO_BUDGET_MS) / 1000)} s`
       : getErrorMessage(error).replace(/^The demo video could not be made: /u, "");
     logger.warn("android.recording_demo_fallback", { reason });
+    // The recording's drive stopped answering mid-render: no synchronous call
+    // may touch it again, or this whole process freezes with it. The raw file
+    // is filed where it is, size unknown.
+    if (isStuckMediaProcessError(error)) {
+      const segment: AndroidRecordingSegment = { path: rawPath, width: rawSize.width, height: rawSize.height, durationMs: wallMs, bytes: 0, frames };
+      return androidRawVideoFallback([segment], wallMs, reason);
+    }
     if (fs.existsSync(rawPath)) {
       fs.rmSync(outputPath, { force: true });
       fs.renameSync(rawPath, outputPath);

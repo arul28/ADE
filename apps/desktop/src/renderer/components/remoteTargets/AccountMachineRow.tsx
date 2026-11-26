@@ -72,6 +72,8 @@ type AccountMachineRowProps = {
   error?: string | null;
   /** The failure card's ✕: forget that failed attempt. */
   onDismissError?: (() => void) | null;
+  /** Told when the rename form opens or closes, so the list keeps the row on screen meanwhile. */
+  onRenamingChange?: ((renaming: boolean) => void) | null;
   /** Structured failure for the machine's saved target, when one exists. Feeds
    * the collapsed route list; the headline stays the plain-language `error`. */
   errorInfo?: RemoteRuntimeConnectErrorInfo | null;
@@ -156,6 +158,7 @@ export function AccountMachineRow({
   connected = false,
   error = null,
   onDismissError = null,
+  onRenamingChange = null,
   errorInfo = null,
   stageLabel = null,
   successLabel = null,
@@ -186,6 +189,11 @@ export function AccountMachineRow({
   useEffect(() => {
     if (!renaming) setRenameValue(displayName);
   }, [displayName, renaming]);
+  useEffect(() => {
+    if (!renaming || !onRenamingChange) return;
+    onRenamingChange(true);
+    return () => onRenamingChange(false);
+  }, [renaming, onRenamingChange]);
   const connectionState = accountMachineConnectionState(machine, relayBaseUrls);
   // Presence is resolved once, here, and passed down. Never re-derive it from
   // `online` / `lastSeenAt` further in — that is the disagreement this helper

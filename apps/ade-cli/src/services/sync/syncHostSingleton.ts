@@ -81,6 +81,12 @@ export type SyncHostSingletonDeps = {
 // HAVING a listener, so a secondary brain with an ephemeral fallback listener
 // happily dialed the relay and evicted the real host in a ~4s loop.
 const heldLeaseIds = new Set<string>();
+/**
+ * Every lease this process holds, by owner id, with its lock file. A process
+ * can hold two for a moment (the brain's machine-level lease beside a project
+ * scope's own); the lock file names one of them.
+ */
+const heldLeases = new Map<string, { owner: SyncHostSingletonOwner; lockPath: string; platform?: NodeJS.Platform }>();
 const authorityHandlers = new Set<(held: boolean) => void>();
 const acquiredHandlers = new Set<(ownerId: string) => void>();
 
@@ -1035,6 +1041,7 @@ export function acquireSyncHostSingleton(
   }
   const hadAuthority = holdsSyncHostSingleton();
   heldLeaseIds.add(owner.id);
+  heldLeases.set(owner.id, { owner, lockPath, platform: deps.platform });
   if (!hadAuthority) notifyAuthorityChanged(true);
   if (acquiredHandlers.size > 0) {
     queueMicrotask(() => {
@@ -1063,8 +1070,13 @@ export function acquireSyncHostSingleton(
     },
     dispose() {
       const lock = safeReadLock(lockPath, deps.platform);
+      heldLeases.delete(owner.id);
       if (lock?.owner.id === owner.id && lock.owner.pid === process.pid) {
-        unlinkLock(lockPath);
+        // Another lease of this process still holds sync: the file names it
+        // instead of disappearing, so other brains still see an owner.
+        const remaining = [...heldLeases.values()].find((held) => held.lockPath === lockPath);
+        if (remaining) writeLock(lockPath, remaining.owner, "w");
+        else unlinkLock(lockPath);
       }
       if (heldLeaseIds.delete(owner.id) && !holdsSyncHostSingleton()) {
         notifyAuthorityChanged(false);

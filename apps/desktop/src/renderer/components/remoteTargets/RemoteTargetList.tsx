@@ -301,6 +301,23 @@ export function RemoteTargetList({
   // A person's open/close of a folded section wins over the automatic choice
   // for as long as this list is open.
   const [sectionOpenOverride, setSectionOpenOverride] = useState<Partial<Record<MachineSection, boolean>>>({});
+  // Account rows with a rename form open; their section stays open meanwhile.
+  const [renamingMachineKeys, setRenamingMachineKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const renamingChangeHandlers = useRef(new Map<string, (renaming: boolean) => void>());
+  const onRenamingChangeFor = useCallback((machineKey: string) => {
+    let handler = renamingChangeHandlers.current.get(machineKey);
+    if (!handler) {
+      handler = (renaming: boolean) => setRenamingMachineKeys((current) => {
+        if (current.has(machineKey) === renaming) return current;
+        const next = new Set(current);
+        if (renaming) next.add(machineKey);
+        else next.delete(machineKey);
+        return next;
+      });
+      renamingChangeHandlers.current.set(machineKey, handler);
+    }
+    return handler;
+  }, []);
 
   const clearAccountConnectionToast = useCallback((machineKey: string) => {
     const timer = accountConnectionToastTimers.current.get(machineKey);
@@ -1203,6 +1220,7 @@ export function RemoteTargetList({
     testingId,
     formTargetId: formPrefill?.targetId ?? null,
     hostKeyTargetId: hostKeyTrust?.targetId ?? null,
+    renamingMachineKeys,
     focusMachineKey,
     accountMachineForTarget,
     savedRowUserAttempted: (target) => {
@@ -1392,6 +1410,7 @@ export function RemoteTargetList({
           connected={isMachineConnected(row.machine, connectedIds)}
           error={accountRowErrors[row.machine.machineKey] ?? null}
           onDismissError={() => setAccountRowErrors((current) => removeKey(current, row.machine.machineKey))}
+          onRenamingChange={onRenamingChangeFor(row.machine.machineKey)}
           errorInfo={
             row.matchedTargetId
               ? statusById.get(row.matchedTargetId)?.lastErrorInfo ?? null

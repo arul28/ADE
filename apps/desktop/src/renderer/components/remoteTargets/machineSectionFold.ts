@@ -23,6 +23,9 @@ export type MachineFoldContext = {
   testingId: string | null;
   formTargetId: string | null;
   hostKeyTargetId: string | null;
+  /** Account rows with a rename form open: folding would discard the name being typed. */
+  renamingMachineKeys: ReadonlySet<string>;
+  /** A machine a caller asked to show: an account machine key or a saved target id. */
   focusMachineKey: string | null;
   accountMachineForTarget: (target: RemoteRuntimeTarget) => AdeAccountMachine | null;
   /**
@@ -58,7 +61,7 @@ export function machineRowNeedsAttention(row: MachineRow, ctx: MachineFoldContex
       || ctx.hostKeyTargetId === id
       || row.status?.hostStorageWait != null
       || row.status?.hostStall != null
-      || (ctx.focusMachineKey != null && machineKey === ctx.focusMachineKey);
+      || (ctx.focusMachineKey != null && (machineKey === ctx.focusMachineKey || id === ctx.focusMachineKey));
   }
   if (row.kind === "account") {
     const machineKey = row.machine.machineKey;
@@ -68,6 +71,7 @@ export function machineRowNeedsAttention(row: MachineRow, ctx: MachineFoldContex
       || ctx.accountRowErrors[machineKey] != null
       || ctx.accountRowStages[machineKey] != null
       || ctx.testingId === row.id
+      || ctx.renamingMachineKeys.has(machineKey)
       || machineKey === ctx.focusMachineKey;
   }
   return true;

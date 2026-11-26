@@ -33673,16 +33673,28 @@ async function runServe(
       // a different project (Mac Studio, 2026-11-26: the most recently
       // opened project followed another machine).
       const { acquireSyncHostSingletonAsync, onSyncHostSingletonLeaseAcquired } = await import("./services/sync/syncHostSingleton");
-      brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
       // The viewer scope can start hosting by itself later (it stops following
       // the other machine, or reclaims a stale draft) and takes its own lease.
       // Keeping this one then leaves two leases and two relay gates, and the
       // scope's later release deletes the lock file this one still counts on.
+      // Subscribed before the acquire below: on Windows its listener probes
+      // take seconds, and a scope that takes its lease meanwhile must count.
+      let scopeTookLeaseDuringAcquire = false;
       stopWatchingScopeHostLease ??= onSyncHostSingletonLeaseAcquired((ownerId) => {
-        if (!brainSyncHostLease || ownerId === brainSyncHostLease.owner.id) return;
+        if (!brainSyncHostLease) {
+          scopeTookLeaseDuringAcquire = true;
+          return;
+        }
+        if (ownerId === brainSyncHostLease.owner.id) return;
         headlessProjectLogger.info("sync.projectless_lease_handed_to_scope", {});
         releaseProjectlessHostLease();
       });
+      brainSyncHostLease ??= await acquireSyncHostSingletonAsync({ projectRoot: null });
+      if (scopeTookLeaseDuringAcquire && activeScope?.runtime.syncService?.getHostService()) {
+        headlessProjectLogger.info("sync.projectless_lease_handed_to_scope", { duringAcquire: true });
+        releaseProjectlessHostLease();
+        return activeScope;
+      }
       const listenerPort = await sharedSyncListener.ensureListening(
         Array.from(
           { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
