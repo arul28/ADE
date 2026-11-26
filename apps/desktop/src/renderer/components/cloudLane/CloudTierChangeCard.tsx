@@ -1,10 +1,10 @@
 import { useMemo, useState } from "react";
 import { ArrowRight } from "@phosphor-icons/react";
-import { capitalizeCloudPhrase, cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../shared/adeCloud";
+import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneJobSnapshot, CloudLaneTierTiming } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
-import { cloudTierHoldsDisk, cloudTierHoursAt, cloudTierRateLabel, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
-import { CLOUD_CREDIT_WORDS, cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
+import { cloudTierChangeRateText, cloudTierHoldsDisk, cloudTierHoursOnText, cloudTiers, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import { cloudUnitWords, type CloudUnitWords } from "../../../shared/cloudUnitWords";
 import { ipcErrorMessage } from "../../lib/format";
 import { CloudMark, CloudSizeIcon } from "../remoteTargets/cloudBrand";
 import { CloudSizeCards } from "../settings/cloudDashboard/CloudSizeCards";
@@ -45,18 +45,13 @@ function waitText(move: boolean): string {
     : "About 2 minutes: the computer restarts at the new size. Your files and chats stay.";
 }
 
-function rateText(tier: CloudTier | null, words: CloudUnitWords = CLOUD_CREDIT_WORDS): string {
-  return tier ? cloudTierRateLabel(tier, words) : "";
-}
-
 /** The hours left, the plan's and the earned ones (as the ADE Cloud page counts them); null before the account is read. */
 function hoursLeftOf(account: CloudAccountState | null): number | null {
   return account?.hours ? cloudHoursLeftMilli(account) : null;
 }
 
 function hoursText(leftMilli: number | null, tier: CloudTier | null, words: CloudUnitWords): string | null {
-  if (leftMilli == null || !tier || tier.multiplierMilli <= 0) return null;
-  return `${words.milli(leftMilli)} left is about ${cloudTierHoursAt(tier, leftMilli)} awake at this size.`;
+  return leftMilli == null || !tier ? null : cloudTierHoursOnText(tier, leftMilli, words);
 }
 
 export function CloudTierChangeCard({
@@ -187,7 +182,7 @@ export function CloudTierChangeCard({
             {to.label}
           </span>
           <span className="adecl-tier-rate kit-num">
-            {from ? `${capitalizeCloudPhrase(rateText(from, words))}, then ${rateText(to, words)}` : capitalizeCloudPhrase(rateText(to, words))}
+            {cloudTierChangeRateText(from, to, words)}
           </span>
         </div>
       ) : null}

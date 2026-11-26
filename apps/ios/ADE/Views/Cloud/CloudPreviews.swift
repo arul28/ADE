@@ -13,10 +13,11 @@ import SwiftUI
 /// - `duo-cloud-limits`: what agents may do alone;
 /// - `duo-cloud-machine`: one computer (what uses its disk);
 /// - `duo-providers-cloud`: Settings › Providers with ADE Cloud as the place;
-/// - `duo-provider-signin`: the sign-in sheet at its approve step.
+/// - `duo-provider-signin`: the sign-in sheet at its approve step;
+/// - `duo-cloud-tier-request`: an agent's size request in its chat, with its buttons.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-plans", "duo-cloud-sizes", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-computer-limit", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin", "duo-cloud-tier-request",
     "duo-cloud-sponsored-consent", "duo-cloud-sponsored-small", "duo-cloud-sponsored-notice", "duo-cloud-sponsored-again", "duo-cloud-sponsored-ad", "duo-cloud-sponsored-pick", "duo-cloud-sponsored-settings", "duo-cloud-sponsored-settings-gpc", "duo-cloud-sponsored-settings-lapsed", "duo-cloud-sponsored-settings-abroad",
     "duo-cloud-sponsored-ad-below", "duo-cloud-sponsored-ad-above-prompt", "duo-cloud-sponsored-ad-inline",
   ]
@@ -44,6 +45,8 @@ enum CloudPreviews {
         deviceCode: "WXYZ-1234"
       )
       return AnyView(ProviderSignInSheet(fixture: controller, machineName: "Mac Studio", expected: "arul@example.com"))
+    case "duo-cloud-tier-request":
+      return AnyView(CloudTierRequestChatFixture())
     default:
       break
     }
@@ -596,6 +599,52 @@ private struct ProvidersCloudFixture: View {
         )
         ProviderCloudPlace(syncService: syncService, model: model)
       }
+    }
+  }
+}
+/// An agent's size request in its chat (sample data, as `cloud.tier_request`
+/// writes it): an X-Large computer the agent asks to move down to Medium.
+private struct CloudTierRequestChatFixture: View {
+  private let sessionId = "fixture-chat"
+
+  private var card: WorkAdeCardModel {
+    workAdeCardModel(from: [
+      "cardId": "cloud-tier-request:fixture-1",
+      "variant": "cloud_tier_request",
+      "state": "live",
+      "title": "Change fix-login-redirect to Medium?",
+      "subtitle": "The agent asks. It changes nothing until you confirm.",
+      "rows": [
+        ["key": "tier_request_computer", "icon": "info", "text": "fix-login-redirect", "detail": "zodqsue74s"],
+        ["key": "tier_request_size", "icon": "info", "text": "1 credit an hour on Medium (4 now)", "detail": "medium"],
+        ["key": "tier_request_to_label", "icon": "info", "text": "Medium"],
+        ["key": "tier_request_from", "icon": "info", "text": "Now X-Large", "detail": "xlarge"],
+        ["key": "tier_request_reason", "icon": "info", "text": "The build is done; the tests run fine on a Medium."],
+      ],
+      "actions": [
+        ["id": "cloud_tier_change_idle", "label": "Change when the agent is idle", "kind": "primary"],
+        ["id": "cloud_tier_change_now", "label": "Do it now", "kind": "default"],
+        ["id": "cloud_tier_request_dismiss", "label": "Keep the size", "kind": "default"],
+      ],
+      "fallbackText": "The agent asks to change fix-login-redirect to Medium: The build is done; the tests run fine on a Medium. Change it in ADE (Settings › ADE Cloud).",
+    ], sessionId: sessionId, timestamp: "2026-11-26T10:00:00Z", sequence: 1, turnId: "turn-1")
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 14) {
+          Text("The tests pass. I don't need the big computer any more, so I asked to go back to Medium.")
+            .font(.system(size: 15))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+          WorkCloudTierRequestCard(card: card, sessionId: sessionId)
+        }
+        .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle("fix-login-redirect")
+      .navigationBarTitleDisplayMode(.inline)
     }
   }
 }

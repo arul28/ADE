@@ -491,6 +491,30 @@ struct CloudBalanceWords: Equatable {
     return "Uses \(spelled(tier.multiplierMilli)) an hour"
   }
 
+  /// A rate, short and lowercase, for a before → after line (`CloudUnitWords.hourly`):
+  /// "no credits", "1 credit an hour", "2.5 credits an hour".
+  func hourly(milli: Int) -> String {
+    milli > 0 ? "\(spelled(milli)) an hour" : "no credits"
+  }
+
+  /// A size change's rates, now → after (`cloudTierChangeRateText`): "4 credits
+  /// an hour now → 1 credit an hour on Medium"; with no size now "1 credit an
+  /// hour on Medium"; the size it is already "Medium now · 1 credit an hour".
+  func changeRates(from: CloudPhoneTier?, to: CloudPhoneTier) -> String {
+    let after = hourly(milli: to.multiplierMilli)
+    guard let from else { return cloudCapitalized("\(after) on \(to.label)") }
+    if from.id == to.id { return "\(to.label) now · \(after)" }
+    return "\(cloudCapitalized(hourly(milli: from.multiplierMilli))) now → \(after) on \(to.label)"
+  }
+
+  /// How long the credits left last at a size (`cloudTierHoursOnText`): "418
+  /// credits last about 418 h on Medium."; nil on a size that uses none.
+  func hoursOn(_ tier: CloudPhoneTier, leftMilli: Int) -> String? {
+    guard tier.usesHours else { return nil }
+    let left = amount(leftMilli)
+    return "\(left) \(left.hasSuffix(" credit") ? "lasts" : "last") about \(tier.hoursLeftLabel(leftMilli)) on \(tier.label)."
+  }
+
   /// The offer, as every surface says it (`CLOUD_SMALL_UNLIMITED_SENTENCE`). Never "0 credits".
   var smallUnlimitedSentence: String { "Unlimited Small computers. \(theyNeverUse)." }
 
@@ -781,4 +805,9 @@ extension AccountMachine {
   var presentedName: String {
     CloudLaneComputerLabels.label(machineKey: machineKey, hostName: name) ?? displayName
   }
+}
+
+/// The phrase with its first letter in capitals: "no credits now" → "No credits now".
+func cloudCapitalized(_ phrase: String) -> String {
+  phrase.prefix(1).uppercased() + phrase.dropFirst()
 }

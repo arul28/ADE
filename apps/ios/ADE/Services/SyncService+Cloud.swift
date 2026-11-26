@@ -581,6 +581,25 @@ extension SyncService {
     )
   }
 
+  /// The person's answer to an agent's size request card, and later how the
+  /// change ended (`cloud.tier_request_answer`), on the CHAT's own machine:
+  /// that machine marks the card answered for every surface and tells the
+  /// agent. Routed by the chat (`chatCommandScope`), never the focused machine.
+  func answerCloudTierRequest(chatSessionId: String, requestId: String, answer: String, outcome: String? = nil, error: String? = nil) async throws {
+    var args: [String: Any] = ["chatSessionId": chatSessionId, "requestId": requestId, "answer": answer]
+    if let outcome { args["outcome"] = outcome }
+    if let error, !error.isEmpty { args["error"] = error }
+    let scope = chatCommandScope(for: chatSessionId)
+    _ = try await sendDecodableCommand(
+      action: "cloud.write",
+      args: ["action": "tier_request_answer", "args": args],
+      timeoutNanoseconds: 30 * 1_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: CloudPhoneAck.self
+    )
+  }
+
   /// Whether the account pays for ADE Cloud, or nil while that can't be read
   /// (ADE Cloud is off for the account, an older machine, no connection).
   /// One account read, no computers: the CTO's home chooser needs only the
