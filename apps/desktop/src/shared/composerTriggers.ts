@@ -3,6 +3,8 @@
 // `/command` or `@` query that ends exactly at the cursor, so suggestion menus
 // can open anywhere in the draft — not just at position 0.
 
+import { parseChatMentionKindFilter } from "./chatMentions";
+
 export type ComposerTriggerType = "slash" | "at" | "hash";
 
 export type ComposerTrigger = {
@@ -59,7 +61,10 @@ export function detectComposerTrigger(text: string, cursorPos: number): Composer
  * A trigger the user dismissed (Escape) or whose query settled with no matches
  * at all. Recorded so continued typing does not immediately reopen the menu.
  */
-export type ComposerTriggerDismissal = Pick<ComposerTrigger, "type" | "start" | "query">;
+export type ComposerTriggerDismissal = Pick<ComposerTrigger, "type" | "start" | "query"> & {
+  /** Recorded because the query matched nothing, not because the user pressed Escape. */
+  noMatch?: boolean;
+};
 
 /**
  * True when `trigger` is still covered by an earlier dismissal. Suggestion
@@ -74,7 +79,17 @@ export function isComposerTriggerDismissed(
 ): boolean {
   if (!dismissal) return false;
   if (trigger.type !== dismissal.type || trigger.start !== dismissal.start) return false;
-  return trigger.query.startsWith(dismissal.query);
+  if (!trigger.query.startsWith(dismissal.query)) return false;
+  // Finishing a kind word (`@peop` → `@people`) turns a search into a
+  // section browse, which can list rows the half word never matched. Only a
+  // no-match dismissal gives way; an Escape still holds.
+  if (
+    dismissal.noMatch
+    && trigger.type === "at"
+    && parseChatMentionKindFilter(trigger.query).kind
+    && !parseChatMentionKindFilter(dismissal.query).kind
+  ) return false;
+  return true;
 }
 
 /**

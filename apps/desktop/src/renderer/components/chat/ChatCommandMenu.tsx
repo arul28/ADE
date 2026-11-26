@@ -18,12 +18,14 @@ import {
   File,
   GitBranch,
   GitPullRequest,
+  GithubLogo,
   Globe,
   MagnifyingGlass,
   Plus,
   Sparkle,
   SpinnerGap,
   Terminal as TerminalIcon,
+  User,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { composerFileSearchQuery, type ComposerTrigger } from "../../../shared/composerTriggers";
@@ -34,8 +36,10 @@ import {
   CHAT_MENTION_SECTION_LIMIT,
   compareChatMentionRanks,
   parseChatMentionKindFilter,
+  personMentionSourceLabel,
   scoreChatMentionCandidate,
 } from "../../../shared/chatMentions";
+import { LinearMark } from "../lanes/linearBrand";
 import {
   rankComposerModelMatches,
   type ComposerModelSuggestion,
@@ -153,6 +157,7 @@ const SECTION_ACCENT: Record<string, string> = {
   commands: "text-violet-300/80",
   skills: "text-emerald-300/80",
   mcp: "text-teal-300/80",
+  persons: "text-rose-300/80",
 };
 
 // ---------------------------------------------------------------------------
@@ -280,6 +285,7 @@ const MENTION_SECTION_ICON: Record<ChatMentionKind, PhosphorIcon> = {
   pr: GitPullRequest,
   machine: Desktop,
   mcp: GearSix,
+  person: User,
 };
 
 const MENTION_SECTION_LABEL: Record<ChatMentionKind, string> = {
@@ -289,10 +295,11 @@ const MENTION_SECTION_LABEL: Record<ChatMentionKind, string> = {
   pr: "Pull requests",
   machine: "Machines",
   mcp: "MCP servers",
+  person: "People",
 };
 
 /** The fixed section order after the best-match section leads. */
-const AT_SECTION_ORDER = ["models", "chats", "lanes", "files", "terminals", "prs", "machines", "mcp"];
+const AT_SECTION_ORDER = ["models", "chats", "lanes", "files", "terminals", "prs", "persons", "machines", "mcp"];
 
 /** Checks rollup as one glyph: passing, pending, failing. Nothing for "none"/"not run". */
 function prChecksGlyph(checks: PrChecksStatus): { glyph: string; className: string; label: string } | null {
@@ -748,7 +755,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
               // workspace genuinely had nothing to list, not "type first".
               ? (items.length === 0
                   ? (onMentionSearch
-                      ? "Nothing to browse yet — type to search files, chats, lanes, PRs, and machines"
+                      ? "Nothing to browse yet — type to search files, chats, lanes, PRs, people, and machines"
                       : "No files to browse — type to search")
                   : null)
               : isHashTrigger
@@ -786,8 +793,8 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                       ? atFilter.kind
                         ? MENTION_SECTION_LABEL[atFilter.kind]
                         : atQuery
-                          ? "Best match · models, files, chats, lanes, terminals, PRs, machines"
-                          : "Recent · type pr, mac, chat, lane, or term to narrow"
+                          ? "Best match · models, files, chats, lanes, terminals, PRs, people, machines"
+                          : "Recent · type pr, people, mac, chat, lane, or term to narrow"
                       : "File search"}
                   </span>
                 </>
@@ -954,6 +961,31 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
                               {item.mention.subtitle}
                             </span>
                           ) : null}
+                        </MenuRow>
+                      );
+                    }
+
+                    if (item.type === "mention" && item.mention.kind === "person" && item.mention.person) {
+                      const source = item.mention.person.source;
+                      return (
+                        <MenuRow
+                          key={`person:${item.mention.id}`}
+                          index={index}
+                          selected={isSelected}
+                          onHover={setSelectedIndex}
+                          onSelect={handleSelect}
+                        >
+                          {source === "linear"
+                            ? <LinearMark size={12} className={iconClass} />
+                            : <GithubLogo size={13} weight="fill" className={iconClass} />}
+                          <span className={cn("truncate", labelClass)}>{item.mention.title}</span>
+                          {item.mention.person.handle && item.mention.person.handle !== item.mention.title ? (
+                            <span className="truncate text-fg/40">{item.mention.person.handle}</span>
+                          ) : null}
+                          {/* Where the person comes from, so two rows for one person read apart. */}
+                          <span className="ml-auto shrink-0 rounded-sm bg-fg/[0.05] px-1 py-px text-[9px] text-fg/40">
+                            {personMentionSourceLabel(source)}
+                          </span>
                         </MenuRow>
                       );
                     }

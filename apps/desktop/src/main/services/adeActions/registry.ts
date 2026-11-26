@@ -128,6 +128,7 @@ import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
 } from "../../../shared/types/chatMentions";
+import { isChatMentionId } from "../../../shared/chatMentions";
 import type {
   AdeChatSessionSummaryActionResult,
   AgentChatFileSearchArgs,
@@ -1529,15 +1530,20 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     // here, so this is safe at keystroke rate.
     listMentionSuggestions: (args?: unknown): Promise<ChatMentionSuggestResult> => {
       // Action args cross a process boundary, so narrow rather than cast: only
-      // the two string fields of the contract are forwarded.
+      // the fields of the contract are forwarded, and `ids` only as a short
+      // list of token-safe strings.
       const record = (args ?? {}) as Record<string, unknown>;
       const query = typeof record.query === "string" ? record.query : "";
       const excludeSessionId = typeof record.excludeSessionId === "string"
         ? record.excludeSessionId
         : undefined;
+      const ids = Array.isArray(record.ids)
+        ? record.ids.filter((id): id is string => typeof id === "string" && isChatMentionId(id)).slice(0, 64)
+        : [];
       const suggestArgs: ChatMentionSuggestArgs = {
         query,
         ...(excludeSessionId ? { excludeSessionId } : {}),
+        ...(ids.length ? { ids } : {}),
       };
       return agentChatService.listMentionSuggestions(suggestArgs);
     },

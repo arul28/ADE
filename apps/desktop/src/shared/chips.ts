@@ -33,7 +33,7 @@
 //     differs. That is what lets one renderer serve every surface.
 
 import { parseBrowserTabMentions, type BrowserTabMentionTarget } from "./browserTabMention";
-import { formatChatMentionToken, parseChatMentions } from "./chatMentions";
+import { formatChatMentionToken, parseChatMentions, parsePersonMentionId } from "./chatMentions";
 import { parseAttachmentTokens, type AttachmentLabelKind } from "./attachmentLabels";
 import { looksLikeAdeDeeplink, parseDeeplink, type DeeplinkTarget } from "./deeplinks";
 import { openPlaceById } from "./openPlaces";
@@ -75,6 +75,8 @@ export type ChipKind =
   | "machine"
   /** A configured MCP server, from an `@mcp:` mention. */
   | "mcp"
+  /** A Linear member or GitHub user, from an `@person:` mention. */
+  | "person"
   /** A chat attachment, from an `[Image #k]` / `[File #k: name]` token. */
   | "attachment"
   /** A built-in browser tab the user attached to a message (`<ade-browser-tab …>`). */
@@ -146,6 +148,7 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
   ade_link: "A",
   machine: "▢",
   mcp: "⚙",
+  person: "@",
   attachment: "▣",
   browser_tab: "🌐",
   setting: "⚙",
@@ -230,6 +233,11 @@ function defaultMentionLabel(mentionKind: ChatMentionKind, id: string): string {
   if (mentionKind === "pr") return `PR ${shortId(id)}`;
   if (mentionKind === "machine") return `Machine ${shortId(id)}`;
   if (mentionKind === "mcp") return `MCP ${id}`;
+  if (mentionKind === "person") {
+    // A GitHub login is the person's name there; a Linear id is opaque.
+    const person = parsePersonMentionId(id);
+    return person?.source === "github" ? `@${person.key}` : "Person";
+  }
   return `Terminal ${shortId(id)}`;
 }
 
