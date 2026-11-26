@@ -95,10 +95,15 @@ export async function ensurePlayableVideo(args: {
   const extension = path.extname(sourcePath).toLowerCase();
   if (PLAYABLE_VIDEO_EXTENSIONS.has(extension)) {
     // An MP4 is a container: HEVC or VP9 inside one fails in most browsers.
-    // Probed only with an ffmpeg already here (any build reads a codec);
-    // with none it passes as it is.
-    const local = resolveExecutableFromKnownLocations("ffmpeg")?.path ?? resolveFfmpegTools()?.ffmpegPath;
-    const codec = local ? await videoCodec(local, sourcePath) : null;
+    // Probed with any ffmpeg here (any build reads a codec), else the one
+    // conversion would use, downloaded where ADE ships one. With none at
+    // all (a Mac without ffmpeg) it passes as it is.
+    const probe = resolveExecutableFromKnownLocations("ffmpeg")?.path
+      ?? await ffmpegPath().catch((error) => {
+        logger?.warn("proof.video_convert_ffmpeg_unavailable", { error: getErrorMessage(error) });
+        return null;
+      });
+    const codec = probe ? await videoCodec(probe, sourcePath) : null;
     if (!codec || codec === "h264") return { path: sourcePath, converted: false };
   } else if (!CONVERTIBLE_VIDEO_EXTENSIONS.has(extension)) {
     return { path: sourcePath, converted: false };

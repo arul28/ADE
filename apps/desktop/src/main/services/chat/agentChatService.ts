@@ -52227,7 +52227,11 @@ export function createAgentChatService(args: {
   }): Promise<string | null> => {
     const machineName = args.spawnCompletion.childMachineName?.trim();
     if (machineName) {
-      return `It ran on ${machineName}. If its work shows on screen, getChatProof({ sessionId: "${args.childSessionId}", machine: ${JSON.stringify(machineName)} }) brings its screenshots and videos here to show.`;
+      // This machine cannot tell a chat (proof stamped by turn) from a CLI
+      // there, so a real turn id is named with a way out.
+      const reportTurn = args.spawnCompletion.childTurnId?.trim();
+      const byTurn = reportTurn && !/^event-\d+$/.test(reportTurn) ? `, turnId: ${JSON.stringify(reportTurn)}` : "";
+      return `It ran on ${machineName}. If its work shows on screen, getChatProof({ sessionId: "${args.childSessionId}", machine: ${JSON.stringify(machineName)}${byTurn} }) brings this report's screenshots and videos here to show${byTurn ? "; if that finds none, call it without turnId" : ""}.`;
     }
     const broker = computerUseArtifactBrokerRef;
     if (!broker) return null;

@@ -109,8 +109,10 @@ export function selectChatProof(
   if (selection === "all") {
     pool = showable;
   } else if (selection === "latest") {
-    const newestTurn = showable.map(turnIdOf).find((id) => id != null) ?? null;
-    pool = newestTurn ? showable.filter((artifact) => turnIdOf(artifact) === newestTurn) : showable;
+    // The newest proof decides: its turn, or, when it carries none (a CLI
+    // run), every proof without one.
+    const newestTurn = showable[0] ? turnIdOf(showable[0]) : null;
+    pool = showable.filter((artifact) => turnIdOf(artifact) === newestTurn);
   } else {
     pool = showable.filter((artifact) => turnIdOf(artifact) === selection.turnId);
   }
@@ -290,12 +292,13 @@ export async function shareChatProofWithCto(args: {
   let listed = args.broker.listArtifacts({
     ownerKind: "chat_session",
     ownerId: args.chatSessionId,
-    limit: 200,
+    limit: CTO_OWNED_LIST_LIMIT,
     ...PROOF_LISTING_ARTIFACT_FILTER,
   });
   if (args.onlyUnshared) {
     const copiedFrom = new Set(
       args.broker.listArtifacts({ ownerKind: "chat_session", ownerId: args.ctoSessionId, limit: CTO_OWNED_LIST_LIMIT, ...PROOF_LISTING_ARTIFACT_FILTER })
+        .filter((row) => row.availability !== "missing_file")
         .map((row) => row.metadata?.convertedFrom)
         .filter((id): id is string => typeof id === "string"),
     );
@@ -389,6 +392,9 @@ async function pullRemoteFile(args: {
       if (!isRecord(slice) || typeof slice.data !== "string" || typeof slice.totalSize !== "number") {
         throw new Error(`${args.machine.name} answered the read without the file's bytes.`);
       }
+      if (Number.isFinite(total) && slice.totalSize !== total) {
+        throw new Error(`the file changed on ${args.machine.name} while it was being copied; ask again`);
+      }
       total = slice.totalSize;
       if (total > CTO_REMOTE_PROOF_MAX_BYTES) {
         throw new Error(`it is ${Math.round(total / (1024 * 1024))} MB, over the ${CTO_REMOTE_PROOF_MAX_BYTES / (1024 * 1024)} MB a copy may be; ask for a shorter recording`);
@@ -444,7 +450,7 @@ export async function importRemoteChatProof(args: {
     listed = asArtifactRows(await args.runAction(args.machine, {
       domain: "computer_use_artifacts",
       action: "listArtifacts",
-      args: { ownerKind: "chat_session", ownerId: args.chatSessionId, limit: 200, ...PROOF_LISTING_ARTIFACT_FILTER },
+      args: { ownerKind: "chat_session", ownerId: args.chatSessionId, limit: CTO_OWNED_LIST_LIMIT, ...PROOF_LISTING_ARTIFACT_FILTER },
     }));
   } catch (error) {
     const cached = copiesPulledBefore(args);
@@ -479,6 +485,9 @@ function copiesPulledBefore(args: {
   limit?: number;
   skip?: number;
 }): CtoProofShareResult | null {
+  // The listing is newest first, so a retried conversion's copy wins over
+  // the one it replaced: one copy per source proof.
+  const seen = new Set<unknown>();
   const copies = args.broker.listArtifacts({
     ownerKind: "chat_session",
     ownerId: args.ctoSessionId,
@@ -487,7 +496,8 @@ function copiesPulledBefore(args: {
   }).flatMap((row) => {
     const from = isRecord(row.metadata?.importedFrom) ? row.metadata.importedFrom : null;
     if (from?.machineId !== args.machine.machineId || from?.chatSessionId !== args.chatSessionId) return [];
-    if (row.availability === "missing_file") return [];
+    if (row.availability === "missing_file" || seen.has(from.artifactId)) return [];
+    seen.add(from.artifactId);
     // Selected by the source turn, which the copy keeps in `importedFrom`.
     const filedThere = typeof from.createdAt === "string" ? from.createdAt : row.createdAt;
     return [{ ...row, createdAt: filedThere, metadata: { ...row.metadata, turnId: typeof from.turnId === "string" ? from.turnId : undefined } }];
@@ -505,6 +515,47 @@ function copiesPulledBefore(args: {
     more,
     note: `${args.machine.name} is unreachable, so these are the copies pulled from it before; anything it filed since is not here.`,
   };
+}
+
+/**
+ * A pulled video whose conversion failed: try again from the copy here. A new
+ * MP4 copy replaces it for later calls (the newest match wins); when it still
+ * fails, the original is shown with why.
+ */
+async function retryConversion(args: {
+  broker: CtoProofBroker;
+  ctoSessionId: string;
+  existing: ComputerUseArtifactView;
+  artifact: ComputerUseArtifactView;
+  scratchDir: string;
+  logger?: Logger | null;
+}): Promise<CtoShownProof> {
+  const sourcePath = args.broker.resolveArtifactFilePath(args.existing);
+  if (!sourcePath) return shown(args.existing, { sourceArtifactId: args.artifact.id });
+  let playablePath: string | null = null;
+  try {
+    const playable = await ensurePlayableVideo({ sourcePath, outputDir: args.scratchDir, logger: args.logger ?? null });
+    if (!playable.converted) return shown(args.existing, { sourceArtifactId: args.artifact.id });
+    playablePath = playable.path;
+    const { conversionFailed: _failed, ...metadata } = args.existing.metadata ?? {};
+    const view = await fileAsCto({
+      broker: args.broker,
+      ctoSessionId: args.ctoSessionId,
+      filePath: playable.path,
+      kind: args.existing.kind,
+      title: args.existing.title,
+      description: args.existing.description,
+      metadata,
+      toolName: "getChatProof",
+    });
+    return shown(view, { sourceArtifactId: args.artifact.id });
+  } catch (error) {
+    const note = getErrorMessage(error);
+    args.logger?.warn("cto.proof_convert_failed", { artifactId: args.artifact.id, error: note });
+    return shown(args.existing, { sourceArtifactId: args.artifact.id, note });
+  } finally {
+    if (playablePath) await fs.promises.rm(playablePath, { force: true }).catch(() => undefined);
+  }
 }
 
 /** One remote record: the CTO's copy (pulled now or before), or why it could not be shown. */
@@ -525,7 +576,11 @@ async function importOne(args: {
     const from = isRecord(metadata.importedFrom) ? metadata.importedFrom : null;
     return from?.artifactId === artifact.id && from?.machineId === args.machine.machineId;
   });
-  if (existing) return shown(existing, { sourceArtifactId: artifact.id });
+  if (existing) {
+    return existing.metadata?.conversionFailed === true
+      ? await retryConversion({ ...args, existing })
+      : shown(existing, { sourceArtifactId: artifact.id });
+  }
   if (artifact.availability && artifact.availability !== "available") {
     return { artifactId: artifact.id, title: artifact.title, reason: `its file is gone on ${args.machine.name}` };
   }
@@ -561,6 +616,8 @@ async function importOne(args: {
           ...(turnIdOf(artifact) ? { turnId: turnIdOf(artifact) } : {}),
           ...(typeof artifact.createdAt === "string" ? { createdAt: artifact.createdAt } : {}),
         },
+        // A later call tries the conversion again (ffmpeg may be here by then).
+        ...(note ? { conversionFailed: true } : {}),
       },
       toolName: "getChatProof",
     });
