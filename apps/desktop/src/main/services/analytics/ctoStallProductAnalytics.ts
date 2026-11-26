@@ -18,7 +18,8 @@ export function reportCtoStall(
   analytics?.captureInternal({
     event: "ade_feature_used",
     surface: "api",
-    properties: { feature: "cto", action, outcome },
+    // The judge and the CTO act unattended: measured, never counted as a person using ADE.
+    properties: { feature: "cto", action, outcome, mode: "automatic" },
     dedupeKey: `${action}:${outcome}`,
     minimumIntervalMs: CTO_STALL_ANALYTICS_DEDUPE_MS,
   });

@@ -2648,7 +2648,8 @@ are whether nudges happen and how often the CTO hands a stall to the person
 instead of fixing it. Never the chat, its title, the line, the stall kind, or
 the child's words. Nudges are at least five minutes apart per CTO, and a
 per-outcome one-hour deduplication key bounds each to 24 accepted events a day;
-the realistic number is a few a day while a CTO runs children. No ceiling was
+the realistic number is a few a day while a CTO runs children. Both carry
+`mode: "automatic"`, so they never count as a person using ADE. No ceiling was
 raised, and the dashboard spec is untouched.
 
 ### Native iOS
