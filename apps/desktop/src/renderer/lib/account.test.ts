@@ -134,19 +134,34 @@ describe("account machines cache", () => {
     message: null,
   };
 
-  it("keeps the last known list when a later fetch fails", async () => {
+  it("keeps the last known list when a later fetch fails, but never another account's", async () => {
+    const unavailable = { state: "unavailable" as const, machines: [], message: null };
+    const oldAccountRead = deferred<unknown>();
     const listMachines = vi
       .fn()
       .mockResolvedValueOnce(okResult)
-      .mockResolvedValueOnce({ state: "unavailable", machines: [], message: null });
+      .mockResolvedValueOnce(unavailable)
+      .mockReturnValueOnce(oldAccountRead.promise)
+      .mockResolvedValue(unavailable);
     installBridge(listMachines as () => Promise<unknown>);
 
-    const { fetchAccountMachines } = await import("./account");
+    const { fetchAccountMachines, publishAccountStatus } = await import("./account");
+    publishAccountStatus(publishedSignedInStatus);
 
     await expect(fetchAccountMachines({ force: true })).resolves.toBe(okResult);
     // A failed refresh must not become "no computers yet".
     await expect(fetchAccountMachines({ force: true })).resolves.toBe(okResult);
-    expect(listMachines).toHaveBeenCalledTimes(2);
+
+    // Another account signs in while a read for the first one is still out.
+    const stale = fetchAccountMachines({ force: true });
+    publishAccountStatus({ ...publishedSignedInStatus, userId: "user-2" });
+    // Its failed read shows nothing of the first account's list.
+    await expect(fetchAccountMachines({ force: true })).resolves.toBe(unavailable);
+    // The first account's late answer goes to its own caller and fills no cache.
+    oldAccountRead.resolve(okResult);
+    await expect(stale).resolves.toBe(okResult);
+    await expect(fetchAccountMachines()).resolves.toBe(unavailable);
+    expect(listMachines).toHaveBeenCalledTimes(5);
   });
 
   it("lets an authoritative signed-out result clear the cache", async () => {

@@ -232,10 +232,12 @@ export function savedChatHistoryPage(page: CloudSavedChatPage, sessionId: string
  */
 export function savedChatSummary(location: SavedChatLocation): AgentChatSessionSummary {
   const row = location.row;
-  const sent = sentChatPicks.get(location.chatId);
-  // Sent picks show until the computer saves a newer row (it applied them before the message).
-  const sentPicks = sent && row.updatedAt < sent.sentAtMs && Date.now() - sent.sentAtMs < SENT_PICKS_MAX_MS ? sent.picks : null;
-  const picks: QueuedChatPicks = { ...sentPicks, ...queuedChatPicks.get(location.chatId) };
+  const nowMs = Date.now();
+  // Each send's picks show until the computer saves a newer row (it applied them before the message).
+  const sentPicks = (sentChatPicks.get(location.chatId) ?? [])
+    .filter((sent) => row.updatedAt < sent.sentAtMs && nowMs - sent.sentAtMs < SENT_PICKS_MAX_MS)
+    .map((sent) => sent.picks);
+  const picks: QueuedChatPicks = Object.assign({}, ...sentPicks, queuedChatPicks.get(location.chatId));
   const fields: Partial<AgentChatSessionSummary> = { ...savedChatSettingsSummaryFields(row) };
   if (picks.modelId) fields.modelId = picks.modelId;
   // A null preset pick leaves the preset: the saved one must not show beside the new model.
@@ -283,10 +285,16 @@ export function clearQueuedChatPicks(chatId: string): void {
   queuedChatPicks.delete(chatId);
 }
 
-/** Picks a queued send carried, by chat id, with when it went (`savedChatSummary` shows them). */
-const sentChatPicks = new Map<string, { picks: QueuedChatPicks; sentAtMs: number }>();
+/**
+ * The picks each queued send carried, oldest first, by chat id, with when it
+ * went (`savedChatSummary` shows them). One entry per send: a saved row newer
+ * than a send replaces that send's picks, never a later send's.
+ */
+const sentChatPicks = new Map<string, Array<{ picks: QueuedChatPicks; sentAtMs: number }>>();
 /** A computer that never saved a newer row: its sent picks stop showing after a day. */
 const SENT_PICKS_MAX_MS = 24 * 60 * 60 * 1000;
+/** The sends kept per chat; an older one's picks are long applied or long gone. */
+const SENT_PICKS_MAX_SENDS = 8;
 
 /**
  * The account's queue took a send that carries the picks: drop them, but
@@ -297,7 +305,9 @@ export function noteQueuedChatPicksSent(chatId: string): void {
   const picks = queuedChatPicks.get(chatId);
   queuedChatPicks.delete(chatId);
   if (!picks) return;
-  sentChatPicks.set(chatId, { picks: { ...sentChatPicks.get(chatId)?.picks, ...picks }, sentAtMs: Date.now() });
+  const nowMs = Date.now();
+  const kept = (sentChatPicks.get(chatId) ?? []).filter((sent) => nowMs - sent.sentAtMs < SENT_PICKS_MAX_MS);
+  sentChatPicks.set(chatId, [...kept, { picks, sentAtMs: nowMs }].slice(-SENT_PICKS_MAX_SENDS));
 }
 
 /** This chat's picks, once (a direct send applies them); null when none. */
