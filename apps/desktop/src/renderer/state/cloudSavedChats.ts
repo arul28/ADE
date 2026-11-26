@@ -18,7 +18,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatUpdateSessionArgs,
 } from "../../shared/types/chat";
-import { SAVED_CHAT_STOPPED_STATUS, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, savedChatSettingsSummaryFields, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
 import type { LaneSummary } from "../../shared/types/lanes";
@@ -225,13 +225,33 @@ export function savedChatHistoryPage(page: CloudSavedChatPage, sessionId: string
   };
 }
 
+/**
+ * The chat as its saved copy knows it, with the settings the computer saved
+ * (thinking level, Fast, preset, access mode) and the picks this window made
+ * since, so the composer shows the chat's own settings while it rests.
+ */
 export function savedChatSummary(location: SavedChatLocation): AgentChatSessionSummary {
   const row = location.row;
+  const nowMs = Date.now();
+  // Each send's picks show until the computer saves a newer row (it applied them before the message).
+  const sentPicks = (sentChatPicks.get(location.chatId) ?? [])
+    .filter((sent) => row.updatedAt < sent.sentAtMs && nowMs - sent.sentAtMs < SENT_PICKS_MAX_MS)
+    .map((sent) => sent.picks);
+  const picks: QueuedChatPicks = Object.assign({}, ...sentPicks, queuedChatPicks.get(location.chatId));
+  const fields: Partial<AgentChatSessionSummary> = { ...savedChatSettingsSummaryFields(row) };
+  if (picks.modelId) fields.modelId = picks.modelId;
+  // A null preset pick leaves the preset: the saved one must not show beside the new model.
+  if (typeof picks.presetId === "string") fields.presetId = picks.presetId;
+  else if (picks.presetId === null) delete fields.presetId;
+  if (picks.reasoningEffort !== undefined) fields.reasoningEffort = picks.reasoningEffort;
+  if (picks.fastMode !== undefined) fields.fastMode = picks.fastMode;
+  if (picks.fastTier !== undefined) fields.fastTier = picks.fastTier;
   return {
+    ...fields,
     sessionId: location.chatId,
     laneId: row.laneId ?? "unknown",
     provider: row.provider ?? "claude",
-    model: row.model ?? "",
+    model: picks.modelId ?? row.model ?? "",
     title: row.title,
     status: "idle",
     startedAt: row.lastActivityAt ?? "",
@@ -263,6 +283,38 @@ export function peekQueuedChatPicks(chatId: string): QueuedChatPicks | null {
 /** A send carried the picks: drop them. */
 export function clearQueuedChatPicks(chatId: string): void {
   queuedChatPicks.delete(chatId);
+}
+
+/**
+ * The picks each queued send carried, oldest first, by chat id, with when it
+ * went (`savedChatSummary` shows them). One entry per send: a saved row newer
+ * than a send replaces that send's picks, never a later send's.
+ */
+const sentChatPicks = new Map<string, Array<{ picks: QueuedChatPicks; sentAtMs: number }>>();
+/** A computer that never saved a newer row: its sent picks stop showing after a day. */
+const SENT_PICKS_MAX_MS = 24 * 60 * 60 * 1000;
+/** The sends kept apart per chat: as many as a chat's queue holds open (`CLOUD_CHAT_MESSAGES_OPEN_PER_CHAT`). */
+const SENT_PICKS_MAX_SENDS = 20;
+
+/**
+ * The account's queue took a send that carries the picks: drop them, but
+ * show them until the computer saves a newer row, which has them applied.
+ * Without this the composer goes back to the older saved settings meanwhile.
+ */
+export function noteQueuedChatPicksSent(chatId: string): void {
+  const picks = queuedChatPicks.get(chatId);
+  queuedChatPicks.delete(chatId);
+  if (!picks) return;
+  const nowMs = Date.now();
+  const sends = (sentChatPicks.get(chatId) ?? []).filter((sent) => nowMs - sent.sentAtMs < SENT_PICKS_MAX_MS);
+  sends.push({ picks, sentAtMs: nowMs });
+  // Past the cap, the oldest send folds into the next one, so each field keeps its latest choice.
+  while (sends.length > SENT_PICKS_MAX_SENDS) {
+    const oldest = sends.shift();
+    const next = sends[0];
+    if (oldest && next) next.picks = { ...oldest.picks, ...next.picks };
+  }
+  sentChatPicks.set(chatId, sends);
 }
 
 /** This chat's picks, once (a direct send applies them); null when none. */
@@ -304,19 +356,19 @@ function notePicks(chatId: string, args: AgentChatUpdateSessionArgs): QueuedChat
   return next;
 }
 
-/** The chat as its saved copy knows it, with the picks the next send carries. */
-function savedChatSessionAfterPick(location: SavedChatLocation, picks: QueuedChatPicks): AgentChatSession {
+/** The chat as its saved copy knows it, with the picks the next send carries (`notePicks` stored them). */
+function savedChatSessionAfterPick(location: SavedChatLocation): AgentChatSession {
   const summary = savedChatSummary(location);
   return {
     id: summary.sessionId,
     laneId: summary.laneId,
     provider: summary.provider,
-    model: picks.modelId ?? summary.model,
-    ...(picks.modelId ? { modelId: picks.modelId } : {}),
-    ...(typeof picks.presetId === "string" ? { presetId: picks.presetId } : {}),
-    ...(picks.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
-    ...(picks.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
-    ...(picks.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
+    model: summary.model,
+    ...(summary.modelId ? { modelId: summary.modelId } : {}),
+    ...(typeof summary.presetId === "string" ? { presetId: summary.presetId } : {}),
+    ...(summary.reasoningEffort !== undefined ? { reasoningEffort: summary.reasoningEffort } : {}),
+    ...(summary.fastMode !== undefined ? { fastMode: summary.fastMode } : {}),
+    ...(summary.fastTier !== undefined ? { fastTier: summary.fastTier } : {}),
     status: "idle",
     createdAt: summary.startedAt,
     lastActivityAt: summary.lastActivityAt,
@@ -626,7 +678,8 @@ export function withSavedChatReads(
       // changes still reach the computer.
       if (location && reach?.queueSend && updateCarriedByQueue(args)
         && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
-        return savedChatSessionAfterPick(location, notePicks(location.chatId, args));
+        notePicks(location.chatId, args);
+        return savedChatSessionAfterPick(location);
       }
       // This change reaches the computer now: older waiting picks of the same keys must not follow it.
       dropPicksSetBy(args.sessionId, args);

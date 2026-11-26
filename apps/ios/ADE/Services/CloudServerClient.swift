@@ -194,10 +194,13 @@ struct CloudSavedChatRow: Decodable, Equatable {
   /// The chat a subagent chat belongs to, and how it was made (newer servers).
   let parentChatId: String?
   let spawnKind: String?
+  /// The chat's composer settings as its computer last saved them (thinking
+  /// level, Fast, preset, access mode). Nil from an older server or computer.
+  let settings: [String: RemoteJSONValue]?
 
   private enum CodingKeys: String, CodingKey {
     case machineKey, chatId, instanceId, title, laneId, laneName, status, toolType, provider, model
-    case projectKey, projectId, projectRoot, lastActivityAt, lastSeq, updatedAt, computer, parentChatId, spawnKind
+    case projectKey, projectId, projectRoot, lastActivityAt, lastSeq, updatedAt, computer, parentChatId, spawnKind, settings
   }
 
   init(from decoder: Decoder) throws {
@@ -222,6 +225,7 @@ struct CloudSavedChatRow: Decodable, Equatable {
     savedByNoCloudComputer = c.contains(.computer) && ((try? c.decodeNil(forKey: .computer)) ?? false)
     parentChatId = c.lenient(String.self, forKey: .parentChatId)
     spawnKind = c.lenient(String.self, forKey: .spawnKind)
+    settings = c.lenient([String: RemoteJSONValue].self, forKey: .settings)
   }
 }
 

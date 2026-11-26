@@ -1250,7 +1250,8 @@ extension SyncService {
           // As on desktop: a turn its computer's sleep or delete cut reads
           // Stopped, and a turn that died on an error reads Failed.
           lastTurnFailedAt: row.status == "failed" ? activity : nil,
-          stoppedForRest: row.status == "interrupted" ? true : nil
+          stoppedForRest: row.status == "interrupted" ? true : nil,
+          savedSettings: row.settings
         ))
       }
       projects[origin] = entry

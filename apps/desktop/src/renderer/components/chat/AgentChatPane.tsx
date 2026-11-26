@@ -515,7 +515,9 @@ import { releaseHeldAttachments, releaseSentHeldAttachments } from "./heldChatAt
 import { prepareDeviceHeldForSend } from "./deviceHeldSend";
 import { newClientSendId } from "../../../shared/adeCloud/chatQueue";
 import { adeCloudQueueHoldsMessage, markAdeCloudQueuedMessageDelivered, noteAdeCloudQueuedSend, peekNewComputerSize, pickNewComputerSize, useAdeCloudChatQueue } from "../../state/adeCloudChatQueue";
-import { CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
+import { CloudQueuedBubbleContext, CloudQueuedMessages, draftWithPutBack } from "./CloudQueuedMessages";
+import { cloudQueueWaitLine, useCloudQueuedBubbles } from "./useCloudQueuedBubbles";
+import { chatMentionMenu } from "./chatMentionClientRows";
 import { CloudQueueSendCard, type CloudQueueSend } from "./CloudQueueSendCard";
 import { isAdeCloudComputer, useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
@@ -3378,6 +3380,8 @@ const MUSE_PERMISSION_MODES: readonly AgentChatMusePermissionMode[] = AGENT_CHAT
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
 const APP_CONTROL_PROVIDERS: readonly AppControlContextItem["provider"][] = ["cdp", "os-accessibility", "computer-use", "external", "coordinate-fallback"];
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
+/** A resting computer with no Work slice here: the menu still asks it nothing. */
+const NO_WORK_SLICE = { sessions: [], lanes: [], prs: [] };
 const EMPTY_REASONING_TIERS: string[] = [];
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 
@@ -6067,6 +6071,16 @@ export function AgentChatPane({
   const chatComputerResting = chatMachineEntry != null && machineIsCloudResting(chatMachineEntry, chatCloudLaneComputers);
   const chatComputerRestingRef = useRef(chatComputerResting);
   chatComputerRestingRef.current = chatComputerResting;
+  // The chat's ADE Cloud computer was deleted, so no turn runs there either.
+  // A turn that ran when it went (an agent that deleted its own lane) has no
+  // end in its saved copy: without this it read "working" forever, with Stop.
+  const chatComputerGone = selectedSessionId != null
+    && (chatMachineEntry?.computerGone === true || savedChatComputerGone(chatForeignPin, selectedSessionId));
+  // Read by the @-menu: its rows come from this slice while the computer rests.
+  const chatMachineEntryRef = useRef(chatMachineEntry);
+  chatMachineEntryRef.current = chatMachineEntry;
+  const chatComputerAwayRef = useRef(false);
+  chatComputerAwayRef.current = chatComputerResting || chatComputerGone;
   // A size change or a move of the chat's ADE Cloud lane, while it runs: ADE
   // on the lane's computer stops for minutes (a move replaces the computer),
   // so a direct send then would fail, or start a turn the change cuts. The
@@ -6087,7 +6101,7 @@ export function AgentChatPane({
     && rowSaysTurnEnded(eventsBySession[selectedSessionId], selectedChatRow)
     ? selectedSessionId
     : null;
-  const restingChatSessionId = chatComputerResting ? selectedSessionId : null;
+  const restingChatSessionId = chatComputerResting || chatComputerGone ? selectedSessionId : null;
   const idleChatSessionId = restingChatSessionId ?? rowEndedChatSessionId;
   const turnActiveBySession = useMemo(
     () => (idleChatSessionId && turnActiveBySessionState[idleChatSessionId]
@@ -6589,6 +6603,15 @@ export function AgentChatPane({
   const followedCloudLaunchId = cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching"
     ? cloudQueueSend.launchId
     : null;
+  // The queued messages the chat shows as its own sent bubbles, oldest first
+  // (the launch card shows the followed launch's).
+  const cloudQueuedBubbles = useCloudQueuedBubbles({
+    messages: cloudQueue.messages,
+    followedLaunchId: followedCloudLaunchId,
+    sessionId: renderedSessionId === selectedSessionId ? renderedSessionId : null,
+    events: selectedEvents,
+  });
+  const noteCloudQueuedSendBubble = cloudQueuedBubbles.noteSendBubble;
   // A queued row goes when its message arrives in the transcript. The user
   // message carries the `clientSendId` of its send, which is the row's
   // `messageId`, so a row matches by id first. An older host writes no id:
@@ -6598,9 +6621,10 @@ export function AgentChatPane({
   // the same words go one at a time. A message with an id never counts as a
   // text match, so words typed in the live chat never clear a queued row.
   const queuedTextBaselineRef = useRef(new Map<string, number>());
+  const transcriptSentIds = cloudQueuedBubbles.sentIds;
   useEffect(() => {
     if (cloudQueue.messages.length === 0 || renderedSessionId !== selectedSessionId) return;
-    const sentIds = new Set<string>();
+    const sentIds = transcriptSentIds;
     const counts = new Map<string, number>();
     // A steer writes its row twice (queued, then delivered); only the first
     // carries the id, so each steer counts once.
@@ -6612,10 +6636,8 @@ export function AgentChatPane({
         if (seenSteers.has(steerId)) continue;
         seenSteers.add(steerId);
       }
-      if (envelope.event.clientSendId) {
-        sentIds.add(envelope.event.clientSendId);
-        continue;
-      }
+      // A message with an id is matched by it (`sentIds`), never by its words.
+      if (envelope.event.clientSendId) continue;
       const text = envelope.event.text.trim();
       counts.set(text, (counts.get(text) ?? 0) + 1);
     }
@@ -6641,7 +6663,7 @@ export function AgentChatPane({
         }
       }
     }
-  }, [cloudQueue.messages, renderedSessionId, selectedEvents, selectedSessionId]);
+  }, [cloudQueue.messages, renderedSessionId, selectedEvents, selectedSessionId, transcriptSentIds]);
   // A failed message whose words reached this chat later (the person sent
   // them again) is no longer missing: its row goes, as a Dismiss would. Only
   // a user message after the failed one was queued counts.
@@ -6681,13 +6703,19 @@ export function AgentChatPane({
   // Shared with the live transcript list, which applies it to streamed text the
   // pane has not committed yet.
   const buildEventsForDisplay = useCallback((events: AgentChatEventEnvelope[]) => {
+    // Queued ADE Cloud messages come after the transcript, as sent bubbles.
+    const queued = cloudQueuedBubbles.envelopes;
+    const withQueued = queued.length ? [...events, ...queued] : events;
+    // A queued bubble stands for its own send only: it takes that send's time
+    // (`noteSendBubble`), so a new message with the same words still shows.
     const shouldRenderOptimistic =
       optimisticOutgoingMessage
       && optimisticOutgoingMessage.sessionId === renderedSessionId
-      && !hasMatchingCommittedUserMessage(events, optimisticOutgoingMessage.envelope);
+      && !hasMatchingCommittedUserMessage(events, optimisticOutgoingMessage.envelope)
+      && !queued.some((envelope) => envelope.timestamp === optimisticOutgoingMessage.envelope.timestamp);
     const baseEvents = shouldRenderOptimistic
-      ? [...events, optimisticOutgoingMessage.envelope]
-      : events;
+      ? [...withQueued, optimisticOutgoingMessage.envelope]
+      : withQueued;
     const displayEvents = chatDisplayEvents(baseEvents);
     // A launching chat shows its prompt, setup card and queued messages until
     // the real transcript carries them (each stand-in yields to its real row).
@@ -6704,7 +6732,7 @@ export function AgentChatPane({
       return buildChatLaunchThreadEvents(chatLaunch, displayEvents);
     }
     return displayEvents;
-  }, [chatLaunch, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId]);
+  }, [chatLaunch, cloudQueuedBubbles.envelopes, launchQueuesComposer, optimisticOutgoingMessage, renderedSessionId]);
   const selectedEventsForDisplay = useMemo(
     () => buildEventsForDisplay(selectedEvents),
     [buildEventsForDisplay, selectedEvents],
@@ -11080,6 +11108,14 @@ export function AgentChatPane({
   // another window or the CLI started. The first connection needs none: the
   // read above covers it.
   const chatConnectionMark = useRemoteConnectionMark(chatRuntimePin?.kind === "remote" ? chatRuntimePin.targetId : null);
+  // While queued messages wait, the working line under the chat says for what.
+  const cloudQueueWait = useMemo(() => cloudQueueWaitLine(cloudQueuedBubbles.open, {
+    laneChange: chatLaneChangeKind,
+    wake: cloudQueue.wake?.state,
+    waking: cloudQueue.waking,
+    connected: Boolean(chatConnectionMark),
+    agentLabel: providerDisplayLabel(selectedSession?.provider, "the agent"),
+  }), [chatConnectionMark, chatLaneChangeKind, cloudQueue.wake?.state, cloudQueue.waking, cloudQueuedBubbles.open, selectedSession?.provider]);
   const lastChatConnectionMarkRef = useRef(chatConnectionMark);
   useEffect(() => {
     const previous = lastChatConnectionMarkRef.current;
@@ -12219,27 +12255,44 @@ export function AgentChatPane({
   // Entity @-mention suggestions (chats / lanes / terminals) for the active
   // project. Daemon-routed through the chat action domain; an unbound runtime
   // yields an empty list rather than an error, so the file section still works.
+  // The account's machines also come from this window (no pin), so the menu
+  // lists them when the machine's own read is slow or empty. A chat whose ADE
+  // Cloud computer rests (or is gone) asks it nothing, since a read must
+  // never wake it: its saved chats, lanes and PRs come from its Work slice.
   const searchMentions = useCallback(async (query: string): Promise<ChatMentionSuggestion[]> => {
     const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
     if (!pin) return [];
-    try {
-      // Optional call: the webclient adapter's agentChat surface may not
-      // implement this yet, and a missing method must degrade to "no rows".
-      const result = await agentChatApiRef.current.listMentionSuggestions?.(
-        {
-          query: query.trim(),
-          // A chat never suggests itself.
-          ...(selectedSessionId ? { excludeSessionId: selectedSessionId } : {}),
-        },
-        pin,
-      );
-      const suggestions = result?.suggestions ?? [];
-      // Sent `@pr:` / `@mac:` chips reuse these titles instead of a short id.
-      rememberMentionSuggestionLabels(suggestions);
-      return suggestions;
-    } catch {
-      return [];
-    }
+    const away = selectedSessionId != null && chatComputerAwayRef.current
+      ? chatMachineEntryRef.current ?? NO_WORK_SLICE
+      : null;
+    const suggestions = await chatMentionMenu({
+      query,
+      away,
+      excludeSessionId: selectedSessionId,
+      localMachineKey: selectedSessionId
+        ? chatQueueMachineKey(pin, savedChatLocation(pin, selectedSessionId, () => false))
+        : null,
+      machineRows: async () => {
+        try {
+          // Optional call: the webclient adapter's agentChat surface may not
+          // implement this yet, and a missing method must degrade to "no rows".
+          const result = await agentChatApiRef.current.listMentionSuggestions?.(
+            {
+              query: query.trim(),
+              // A chat never suggests itself.
+              ...(selectedSessionId ? { excludeSessionId: selectedSessionId } : {}),
+            },
+            pin,
+          );
+          return result?.suggestions ?? [];
+        } catch {
+          return [];
+        }
+      },
+    });
+    // Sent `@pr:` / `@mac:` chips reuse these titles instead of a short id.
+    rememberMentionSuggestionLabels(suggestions);
+    return suggestions;
   }, [selectedSessionId]);
 
   const claimDraftAttachmentOwner = useCallback(() => {
@@ -17453,14 +17506,17 @@ export function AgentChatPane({
         optimisticDisplayText = text;
       }
     }
+    // Kept for the queued bubble that may take this bubble's place (`useCloudQueuedBubbles`).
+    let optimisticTimestamp: string | null = null;
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
       sendTiming.attach(selectedSessionId);
       sendTiming.markBubblePaintedAfterFrame();
+      optimisticTimestamp = new Date().toISOString();
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
         envelope: {
           sessionId: selectedSessionId,
-          timestamp: new Date().toISOString(),
+          timestamp: optimisticTimestamp,
           event: {
             type: "user_message",
             text: optimisticDisplayText,
@@ -17707,6 +17763,7 @@ export function AgentChatPane({
         },
       };
       handedOff = { sessionId, submittedAt, texts: sentTexts, alreadyThere, identityKey: sendIdentity.identityKey, clientSendId: sendIdentity.record.clientSendId };
+      if (optimisticTimestamp) noteCloudQueuedSendBubble(sendIdentity.record.clientSendId, optimisticTimestamp);
       // The bubble and the cleared composer draw first. Re-sorting the list
       // and marking the chat as running re-render every surface that reads
       // the list, so that waits for the task after the frame: one frame later.
@@ -17779,7 +17836,7 @@ export function AgentChatPane({
           }, chatPin));
           sendTiming.mark("sendResolved");
           // The account's queue took it (an asleep ADE Cloud computer): its
-          // queued row shows it, and a bubble would read as sent, also after a Cancel.
+          // queued bubble takes this one's place, and goes with a Cancel.
           if (adeCloudQueueHoldsMessage(sendIdentity?.record.clientSendId ?? "")) setOptimisticOutgoingMessageSynced(null);
           // The answer confirms it: this message is not waiting to be retried.
           forgetUnconfirmedSend(identityKey, sendIdentity?.record.clientSendId ?? "");
@@ -18036,6 +18093,7 @@ export function AgentChatPane({
     return steerResult;
   }, [
     countSentMessages,
+    noteCloudQueuedSendBubble,
     putUnsentSendInSavedDraft,
     startFreedLaneChat,
     sendThroughCloudQueue,
@@ -22872,12 +22930,8 @@ export function AgentChatPane({
         ) : null}
         {renderedSessionId === selectedSessionId ? (
           <CloudQueuedMessages
-            messages={cloudQueue.messages.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
             failed={cloudQueue.failed.filter((message) => !message.launchId || message.launchId !== followedCloudLaunchId)}
-            state={chatLaneChangeKind
-              ?? (cloudQueue.waking && !(cloudQueueSend?.chatId === selectedSessionId && cloudQueueSend.wake === "launching") ? "waking" : "waiting")}
             style={RUNTIME_BANNER_STYLE}
-            onCancel={cloudQueue.cancel}
             onPutBack={(message) => {
               setDraft((current) => draftWithPutBack(current, message.text));
               cloudQueue.dismiss(message.messageId);
@@ -23075,6 +23129,7 @@ export function AgentChatPane({
                       <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
                       <ChatTerminalRevealContext.Provider value={subagentView ? false : chatTerminalVisible ? revealCodeBlockTerminal : null}>
                       <SponsoredOutletsContext.Provider value={isSubagentView ? null : sponsoredOutlets}>
+                      <CloudQueuedBubbleContext.Provider value={subagentView ? null : cloudQueue.cancel}>
                       <LiveChatMessageList
                         liveTranscript={subagentView ? null : liveTranscript}
                         key={renderedSessionId ?? "chat-draft"}
@@ -23086,10 +23141,14 @@ export function AgentChatPane({
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
                         trailing={sponsoredSlot}
-                        wakingSinceMs={!subagentView && cloudWakingSince ? Date.parse(cloudWakingSince) : null}
+                        // A send waking the computer, or messages the account's
+                        // queue holds for it (their bubbles sit just above).
+                        wakingSinceMs={subagentView ? null : cloudWakingSince ? Date.parse(cloudWakingSince) : cloudQueueWait?.sinceMs ?? null}
                         // Connected again: the computer is awake (the header
                         // says so too), and the send waits on the agent.
-                        wakingLabel={chatConnectionMark ? `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…` : null}
+                        wakingLabel={!cloudWakingSince && cloudQueueWait
+                          ? cloudQueueWait.label
+                          : chatConnectionMark ? `Starting ${providerDisplayLabel(selectedSession?.provider, "the agent")}…` : null}
                         usageLimitResumeActive={usageLimitResume != null}
                         // Only a limit ADE is waiting out reads "Paused"; one with no
                         // reset or with auto-resume off reads "Usage limit".
@@ -23174,6 +23233,7 @@ export function AgentChatPane({
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
                         onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
+                      </CloudQueuedBubbleContext.Provider>
                       </SponsoredOutletsContext.Provider>
                       </ChatTerminalRevealContext.Provider>
                       </SceneReplyContext.Provider>

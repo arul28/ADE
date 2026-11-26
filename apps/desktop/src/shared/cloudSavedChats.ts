@@ -3,9 +3,34 @@
  * computer can't answer. The shapes are the `/cloud/chats` routes' own.
  */
 
-import type { CloudChatComputer, CloudChatRow, CloudChatRowInput, CloudChatTranscriptPage, CloudComputerDeleteReason } from "../../../account-directory/src/cloud/contract";
+import {
+  cloudChatRowSettingsOf,
+  type CloudChatComputer,
+  type CloudChatRow,
+  type CloudChatRowInput,
+  type CloudChatRowSettings,
+  type CloudChatTranscriptPage,
+  type CloudComputerDeleteReason,
+} from "../../../account-directory/src/cloud/contract";
+import type { AgentChatSessionSummary } from "./types/chat";
 
-export type { CloudChatComputer, CloudComputerDeleteReason };
+export type { CloudChatComputer, CloudChatRowSettings, CloudComputerDeleteReason };
+/**
+ * The composer settings of a chat (from its summary), for its saved row: the
+ * computer sends them with each part, and a client shows them while the
+ * computer rests. Null when the chat has none.
+ */
+export { cloudChatRowSettingsOf };
+
+/**
+ * A saved row's settings as summary fields, checked again: a client never
+ * trusts a stored copy's shape. The check keeps known keys and short tokens
+ * only, not each field's own union: a value this ADE does not know (a newer
+ * computer's mode) reaches the composer, whose pickers show what they know.
+ */
+export function savedChatSettingsSummaryFields(row: Pick<CloudChatRow, "settings">): Partial<AgentChatSessionSummary> {
+  return (cloudChatRowSettingsOf(row.settings) ?? {}) as Partial<AgentChatSessionSummary>;
+}
 
 /**
  * The machine id (and pin target id) a window gives a saved chat's computer

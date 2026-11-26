@@ -12,7 +12,9 @@
 //   - The user-visible transcript keeps the raw `@chat:<id>` chip; only the
 //     provider-bound prompt text carries the expanded blocks.
 
-import type { ChatMentionDetail, ChatMentionKind } from "./types/chatMentions";
+import type { ChatMentionDetail, ChatMentionKind, ChatMentionSuggestion } from "./types/chatMentions";
+import type { LaneSummary } from "./types/lanes";
+import type { PrSummary } from "./types/prs";
 
 /**
  * Drag payload a chat or terminal row carries, so dropping it on a composer
@@ -417,6 +419,89 @@ export function rankChatMentionSuggestions<
   }
   scored.sort(compareChatMentionRanks);
   return scored.slice(0, Math.max(0, limit)).map((entry) => entry.item);
+}
+
+/**
+ * The @-menu's rows from each kind's candidates, ranked the one way every
+ * source ranks them:
+ *
+ * - A leading kind word (`pr`, `mac`, `chat`, `lane`, `term`) narrows the
+ *   result to that kind and searches the rest of the query.
+ * - An empty query is a browse: each kind's most recent rows, capped per
+ *   kind, so one busy kind can't crowd the others out.
+ * - Otherwise every row is ranked as one list by match quality (not by
+ *   kind). Each kind is still capped before the mix.
+ *
+ * `perKind` holds one candidate list per kind (any order of kinds).
+ */
+export function rankChatMentionMenu<
+  T extends { kind: ChatMentionKind; id: string; title: string; subtitle?: string; lastActivityAt?: number | null },
+>(perKind: T[][], rawQuery: string): T[] {
+  const filter = parseChatMentionKindFilter(rawQuery);
+  const lists = filter.kind
+    ? [perKind.flat().filter((candidate) => candidate.kind === filter.kind)]
+    : perKind;
+  const ranked = lists.map((candidates) => rankChatMentionSuggestions(
+    candidates,
+    filter.rest,
+    filter.kind ? CHAT_MENTION_MAX_RESULTS : CHAT_MENTION_MAX_PER_KIND,
+  ));
+  if (filter.kind || !filter.rest.trim()) return ranked.flat();
+  return rankChatMentionSuggestions(ranked.flat(), filter.rest, CHAT_MENTION_MAX_RESULTS);
+}
+
+/* ── Menu rows: one builder for the brain and the window ─────────────── */
+
+/** A title or preview as one menu line: whitespace folded, cut at `max`. */
+export function mentionFirstLine(value: string | null | undefined, max = 120): string | null {
+  if (!value) return null;
+  const line = value.replace(/\s+/g, " ").trim();
+  if (!line.length) return null;
+  return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
+}
+
+/** An ISO time as epoch ms; null when missing or unreadable. */
+export function mentionEpoch(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** A chat row's title: its title, goal, or last output, else a short id. */
+export function chatMentionTitle(chat: { id: string; title?: string | null; goal?: string | null; lastOutputPreview?: string | null }): string {
+  return (
+    mentionFirstLine(chat.title)
+    ?? mentionFirstLine(chat.goal)
+    ?? mentionFirstLine(chat.lastOutputPreview, 60)
+    ?? `Chat ${chat.id.slice(0, 8)}`
+  );
+}
+
+/** A lane row. Lanes have no last activity on the list shape: creation time stands in. */
+export function laneMentionSuggestion(lane: Pick<LaneSummary, "id" | "name" | "branchRef" | "createdAt">): ChatMentionSuggestion {
+  return { kind: "lane", id: lane.id, title: lane.name, subtitle: lane.branchRef, lastActivityAt: mentionEpoch(lane.createdAt) };
+}
+
+/** Open and draft PRs are the ones worth pointing an agent at. */
+export function isMentionablePr(pr: Pick<PrSummary, "id" | "state">): boolean {
+  return (pr.state === "open" || pr.state === "draft") && isChatMentionId(pr.id);
+}
+
+function prMentionTitle(pr: Pick<PrSummary, "githubPrNumber" | "title">): string {
+  return `#${pr.githubPrNumber} ${mentionFirstLine(pr.title) ?? "Untitled pull request"}`;
+}
+
+/** A PR row (local row only: no GitHub call). `laneName` is its lane's, when known. */
+export function prMentionSuggestion(pr: PrSummary, laneName: string | null | undefined): ChatMentionSuggestion {
+  const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : null;
+  return {
+    kind: "pr",
+    id: pr.id,
+    title: prMentionTitle(pr),
+    subtitle: [repo, laneName, pr.state === "draft" ? "draft" : null].filter(Boolean).join(" · "),
+    lastActivityAt: mentionEpoch(pr.updatedAt) ?? mentionEpoch(pr.createdAt),
+    pr: { number: pr.githubPrNumber, state: pr.state, checks: pr.checksStatus },
+  };
 }
 
 /**

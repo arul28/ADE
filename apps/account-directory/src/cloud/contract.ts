@@ -1284,7 +1284,82 @@ export type CloudChatRowInput = {
   parentChatId?: string | null;
   /** How the chat came from its parent: `subagent`, `cto_child`, `fork` or another short word. */
   spawnKind?: string | null;
+  /**
+   * The chat's settings as its composer shows them (thinking level, Fast,
+   * preset, access mode), so a client shows the same ones while the computer
+   * rests. Older computers leave it out; older servers drop it.
+   */
+  settings?: CloudChatRowSettings | null;
 };
+
+/** The text settings a saved chat row carries: each a short plain word or id. */
+const CLOUD_CHAT_ROW_TEXT_SETTINGS = [
+  "modelId",
+  "presetId",
+  "reasoningEffort",
+  "executionMode",
+  "interactionMode",
+  "permissionMode",
+  "claudePermissionMode",
+  "codexApprovalPolicy",
+  "codexSandbox",
+  "codexConfigSource",
+  "opencodePermissionMode",
+  "droidPermissionMode",
+  "copilotPermissionMode",
+  "copilotContextTier",
+  "copilotAutoTier",
+  "musePermissionMode",
+  "acpPermissionMode",
+  "cursorModeId",
+  "cursorCloudServiceTier",
+] as const;
+
+type CloudChatRowTextSetting = (typeof CLOUD_CHAT_ROW_TEXT_SETTINGS)[number];
+
+/**
+ * A chat's composer settings in its saved row (`CloudChatRowInput.settings`).
+ * A key is absent when the chat has no value; null is an explicit "none"
+ * (for example `reasoningEffort: null` is the model's default level).
+ */
+export type CloudChatRowSettings = Partial<Record<CloudChatRowTextSetting, string | null>> & {
+  fastMode?: boolean;
+  fastTier?: "ultrafast" | null;
+};
+
+/**
+ * One token: no space or control character. Model ids carry much more than
+ * words: `[1m]`, `%2F` (OpenCode), `(xhigh)` (a Droid custom model). At most
+ * 300 characters, as the queue takes a model id; a preset id up to 1,024 (a
+ * harness route's id is its whole route, encoded).
+ */
+const ROW_SETTING_TOKEN = /^[^\s\p{C}]+$/u;
+const ROW_SETTING_MAX_CHARS = 300;
+const ROW_PRESET_ID_MAX_CHARS = 1_024;
+
+/**
+ * The composer settings of a chat summary (or a row's `settings`), checked:
+ * known keys only, single-token strings, booleans and nulls. Anything else is
+ * left out. Null when nothing is left. The computer passes its whole chat
+ * summary; the server checks what the computer sent again.
+ */
+export function cloudChatRowSettingsOf(value: unknown): CloudChatRowSettings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const settings: CloudChatRowSettings = {};
+  for (const key of CLOUD_CHAT_ROW_TEXT_SETTINGS) {
+    const entry = record[key];
+    if (entry === null) settings[key] = null;
+    else if (
+      typeof entry === "string"
+      && entry.length <= (key === "presetId" ? ROW_PRESET_ID_MAX_CHARS : ROW_SETTING_MAX_CHARS)
+      && ROW_SETTING_TOKEN.test(entry)
+    ) settings[key] = entry;
+  }
+  if (typeof record.fastMode === "boolean") settings.fastMode = record.fastMode;
+  if (record.fastTier === "ultrafast" || record.fastTier === null) settings.fastTier = record.fastTier;
+  return Object.keys(settings).length > 0 ? settings : null;
+}
 
 /**
  * Why a computer was deleted, as a person reads it: `you` (a delete the person

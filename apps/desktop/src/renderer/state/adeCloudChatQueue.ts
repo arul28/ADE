@@ -25,7 +25,7 @@ import type { CloudChatSendAnswer } from "../../shared/adeCloudMachine";
 import type { CloudTierId } from "../../shared/cloudTiers";
 import type { AgentChatSendArgs } from "../../shared/types/chat";
 import type { OpenProjectBinding } from "../../shared/types/core";
-import { clearQueuedChatPicks, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatQueueTarget } from "./cloudSavedChats";
+import { noteQueuedChatPicksSent, peekQueuedChatPicks, savedChatLocation, savedChatLocationForSession, type SavedChatQueueTarget } from "./cloudSavedChats";
 
 export type AdeCloudChatQueueState = {
   /** Messages the chat shows as its own rows: queued, sending, or waiting for a sign-in. Oldest first. */
@@ -278,7 +278,7 @@ export const sendThroughAdeCloudQueue: SavedChatQueueSend = async (location, arg
   });
   if (answer.state === "unsupported") return "unsupported";
   if (answer.state === "refused") throw new Error(answer.message);
-  clearQueuedChatPicks(location.chatId);
+  noteQueuedChatPicksSent(location.chatId);
   noteAdeCloudQueuedSend({ machineKey: location.machineKey, chatId: location.chatId }, answer, { text, provider, modelId: pickedModel ?? location.row.model ?? null });
   return "sent";
 };

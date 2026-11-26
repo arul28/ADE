@@ -335,7 +335,7 @@ import {
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { cloudChatStoppedForRest, createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { cloudDeleteFreezeRefusal } from "./services/power/cloudDeleteFreeze";
-import { SAVED_CHAT_STOPPED_STATUS } from "../../desktop/src/shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, cloudChatRowSettingsOf } from "../../desktop/src/shared/cloudSavedChats";
 import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
@@ -3176,7 +3176,10 @@ export async function createAdeRuntime(args: {
           readChatRow: async (sessionId) => {
             const row = sessionService.get(sessionId);
             if (!row) return null;
-            const summary = await agentChatService?.getSessionSummary(sessionId).catch(() => null);
+            const summary = await agentChatService?.getSessionSummary(sessionId).catch((error: unknown) => {
+              logger.warn("cloud.chat_row_summary_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+              return null;
+            });
             const projectKey = normalizeGitRemoteIdentity(readGitOriginUrl(projectRoot));
             const liveStatus = summary?.status ?? row.status ?? null;
             return {
@@ -3206,6 +3209,9 @@ export async function createAdeRuntime(args: {
               // the saved Work tree nests it under its parent.
               parentChatId: summary?.orchestrationParentSessionId ?? row.orchestrationParentSessionId ?? null,
               spawnKind: summary?.spawnKind ?? row.spawnKind ?? null,
+              // The composer's settings (thinking level, Fast, access mode):
+              // a client shows them while this computer rests.
+              settings: cloudChatRowSettingsOf(summary),
             };
           },
           flushTranscript: () => flushAllQueuedTranscriptWrites(),

@@ -63,6 +63,7 @@ import type {
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
 import { CLAUDE_ROOT_FULL_ACCESS_NOTICE_STATUS, CTO_CONTEXT_REFRESHED_STATUS, SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS, assistantMessageReactionKey } from "../../../shared/types/chat";
+import { CloudQueuedBubbleStatus } from "./CloudQueuedMessages";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -3533,6 +3534,7 @@ function renderEvent(
           onDismissUnprocessedMessage={options?.onDismissUnprocessedMessage}
           quiet={options?.surfaceProfile === "persistent_identity"}
         />
+        <CloudQueuedBubbleStatus event={event} />
       </motion.div>
     );
   }

@@ -16,17 +16,21 @@
 import { maskBrowserTabMentions } from "../../../shared/browserTabMention";
 import {
   CHAT_MENTION_KINDS,
-  CHAT_MENTION_MAX_PER_KIND,
-  CHAT_MENTION_MAX_RESULTS,
   appendChatMentionBlocks,
+  chatMentionTitle,
   collectChatMentionTargets,
-  isChatMentionId,
+  isMentionablePr,
+  laneMentionSuggestion,
+  mentionEpoch,
+  mentionFirstLine,
   parseChatMentionKindFilter,
-  rankChatMentionSuggestions,
+  prMentionSuggestion,
+  rankChatMentionMenu,
   renderChatMentionBlock,
   renderUnresolvedChatMentionBlock,
 } from "../../../shared/chatMentions";
 import {
+  accountMachineMentionSuggestion,
   buildAccountMachineSnapshot,
   describeAccountMachinePresence,
   findMachineByMentionId,
@@ -135,19 +139,6 @@ export type ChatMentionServiceDeps = {
 /** Cap on model blocks per message, like `CHAT_MENTION_MAX_PER_MESSAGE`. */
 const MODEL_MENTION_MAX_PER_MESSAGE = 6;
 
-function toEpoch(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function firstLine(value: string | null | undefined, max = 120): string | null {
-  if (!value) return null;
-  const line = value.replace(/\s+/g, " ").trim();
-  if (!line.length) return null;
-  return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
-}
-
 /** A chat is mentionable when it belongs to this project and is not archived. */
 function isMentionableSession(session: AgentChatSessionSummary): boolean {
   if (session.archivedAt) return false;
@@ -157,16 +148,11 @@ function isMentionableSession(session: AgentChatSessionSummary): boolean {
 }
 
 function sessionTitle(session: AgentChatSessionSummary): string {
-  return (
-    firstLine(session.title)
-    ?? firstLine(session.goal)
-    ?? firstLine(session.lastOutputPreview, 60)
-    ?? `Chat ${session.sessionId.slice(0, 8)}`
-  );
+  return chatMentionTitle({ id: session.sessionId, title: session.title, goal: session.goal, lastOutputPreview: session.lastOutputPreview });
 }
 
 function terminalTitle(terminal: ChatTerminalSession): string {
-  return firstLine(terminal.title) ?? firstLine(terminal.goal) ?? `Terminal ${terminal.terminalId.slice(0, 8)}`;
+  return mentionFirstLine(terminal.title) ?? mentionFirstLine(terminal.goal) ?? `Terminal ${terminal.terminalId.slice(0, 8)}`;
 }
 
 /**
@@ -209,15 +195,6 @@ type MachineRoster = {
   /** Null when Activity could not be read (unknown, not empty). */
   activity: AttentionSnapshot["items"] | null;
 };
-
-/** Open and draft PRs are the ones worth pointing an agent at. */
-function isMentionablePr(pr: PrSummary): boolean {
-  return (pr.state === "open" || pr.state === "draft") && isChatMentionId(pr.id);
-}
-
-function prMentionTitle(pr: PrSummary): string {
-  return `#${pr.githubPrNumber} ${firstLine(pr.title) ?? "Untitled pull request"}`;
-}
 
 export function createChatMentionService(deps: ChatMentionServiceDeps) {
   // Single in-flight roster read shared by every caller inside the TTL: a burst
@@ -342,7 +319,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
           id: session.sessionId,
           title: sessionTitle(session),
           subtitle: parts.join(" · "),
-          lastActivityAt: toEpoch(session.lastActivityAt) ?? toEpoch(session.startedAt),
+          lastActivityAt: mentionEpoch(session.lastActivityAt) ?? mentionEpoch(session.startedAt),
         };
       });
   };
@@ -350,17 +327,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
   const buildLaneCandidates = async (): Promise<ChatMentionSuggestion[]> => {
     const roster = await loadRoster();
     if (roster.lanesError) throw roster.lanesError;
-    return roster.lanes
-      .filter((lane) => !lane.archivedAt)
-      .map((lane) => ({
-        kind: "lane" as const,
-        id: lane.id,
-        title: lane.name,
-        subtitle: lane.branchRef,
-        // Lanes have no lastActivityAt; createdAt is the only monotonic field
-        // on the cheap list shape, and recency of creation is a fine proxy.
-        lastActivityAt: toEpoch(lane.createdAt),
-      }));
+    return roster.lanes.filter((lane) => !lane.archivedAt).map(laneMentionSuggestion);
   };
 
   const buildTerminalCandidates = async (): Promise<ChatMentionSuggestion[]> => {
@@ -375,7 +342,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         .join(" · "),
       // Running terminals sort above ended ones of the same age.
       lastActivityAt:
-        (toEpoch(terminal.endedAt) ?? toEpoch(terminal.startedAt) ?? 0)
+        (mentionEpoch(terminal.endedAt) ?? mentionEpoch(terminal.startedAt) ?? 0)
         + (terminal.active ? 1 : 0),
     }));
   };
@@ -386,18 +353,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     // Local DB rows only: the menu never waits on GitHub.
     const prs = listPrs().filter(isMentionablePr);
     const roster = prs.length ? await loadRoster() : null;
-    return prs.map((pr) => {
-      const lane = roster?.lanesById.get(pr.laneId);
-      const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : null;
-      return {
-        kind: "pr" as const,
-        id: pr.id,
-        title: prMentionTitle(pr),
-        subtitle: [repo, lane?.name, pr.state === "draft" ? "draft" : null].filter(Boolean).join(" · "),
-        lastActivityAt: toEpoch(pr.updatedAt) ?? toEpoch(pr.createdAt),
-        pr: { number: pr.githubPrNumber, state: pr.state, checks: pr.checksStatus },
-      };
-    });
+    return prs.map((pr) => prMentionSuggestion(pr, roster?.lanesById.get(pr.laneId)?.name));
   };
 
   const buildMachineCandidates = async (): Promise<ChatMentionSuggestion[]> => {
@@ -416,30 +372,12 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     });
     if (!roster || roster.state !== "ok") return [];
     const localKey = localMachineKey();
-    const now = Date.now();
-    return roster.machines.map((machine) => {
-      const snapshot = buildAccountMachineSnapshot({
-        machine,
-        activityItems: roster.activity,
-        localMachineKey: localKey,
-      });
-      const projects = snapshot.activityAvailable && snapshot.projects.length
-        ? `${snapshot.projects.length} project${snapshot.projects.length === 1 ? "" : "s"}`
-        : null;
-      return {
-        kind: "machine" as const,
-        id: snapshot.mentionId,
-        title: snapshot.name,
-        subtitle: [
-          snapshot.isThisMachine ? "this machine" : null,
-          describeAccountMachinePresence(snapshot, now),
-          projects,
-        ].filter(Boolean).join(" · "),
-        // Online machines first (all "now"), then by last heartbeat.
-        lastActivityAt: machine.online ? now : machine.lastSeenAt,
-        machine: { online: machine.online, isThisMachine: snapshot.isThisMachine },
-      };
-    });
+    const nowMs = Date.now();
+    return roster.machines.map((machine) => accountMachineMentionSuggestion(machine, {
+      activityItems: roster.activity,
+      localMachineKey: localKey,
+      nowMs,
+    }));
   };
 
   const buildMcpCandidates = async (): Promise<ChatMentionSuggestion[]> =>
@@ -491,24 +429,17 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
   ): Promise<ChatMentionSuggestResult> => {
     const rawQuery = typeof args.query === "string" ? args.query : "";
     const filter = parseChatMentionKindFilter(rawQuery);
-    const query = filter.rest;
     const kinds = filter.kind ? [filter.kind] : CHAT_MENTION_KINDS;
     const perKind = await Promise.all(kinds.map(async (kind) => {
       try {
-        const candidates = await candidateBuildersByKind[kind](args);
-        return rankChatMentionSuggestions(
-          candidates,
-          query,
-          filter.kind ? CHAT_MENTION_MAX_RESULTS : CHAT_MENTION_MAX_PER_KIND,
-        );
+        return await candidateBuildersByKind[kind](args);
       } catch (error) {
         // One failing roster must not blank the whole menu.
         deps.logger?.warn?.("chat mention suggestions failed for kind", { kind, error });
         return [] as ChatMentionSuggestion[];
       }
     }));
-    if (filter.kind || !query.trim()) return { suggestions: perKind.flat() };
-    return { suggestions: rankChatMentionSuggestions(perKind.flat(), query, CHAT_MENTION_MAX_RESULTS) };
+    return { suggestions: rankChatMentionMenu(perKind, rawQuery) };
   };
 
   // -------------------------------------------------------------------------
@@ -691,7 +622,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     return {
       kind: "pr",
       id: pr.id,
-      title: firstLine(pr.title) ?? `Pull request #${pr.githubPrNumber}`,
+      title: mentionFirstLine(pr.title) ?? `Pull request #${pr.githubPrNumber}`,
       attributes: [
         ["number", `#${pr.githubPrNumber}`],
         ["repo", pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : ""],

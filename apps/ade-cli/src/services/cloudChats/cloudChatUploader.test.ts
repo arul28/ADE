@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 describe("the saved copy of a cloud chat", () => {
-  it("gets a title set after the last turn, with no new transcript text, before the computer sleeps", async () => {
+  it("gets a title or a setting changed after the last turn, with no new transcript text, before the computer sleeps", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-uploader-"));
     dirs.push(root);
     const transcripts = path.join(root, "transcripts");
@@ -20,7 +20,8 @@ describe("the saved copy of a cloud chat", () => {
     fs.writeFileSync(path.join(transcripts, `${sessionId}.jsonl`), `${JSON.stringify({ sessionId, timestamp: "2026-11-18T00:00:00.000Z", event: { type: "user_message", text: "hi" } })}\n`);
 
     let title = "";
-    const puts: Array<{ url: string; text: string; title: string | null }> = [];
+    let settings: CloudSavedChatRowInput["settings"] = { reasoningEffort: "high" };
+    const puts: Array<{ url: string; text: string; title: string | null; settings?: unknown }> = [];
     const uploader = createCloudChatUploader({
       env: { ADE_CLOUD_INSTANCE_ID: "inst1" },
       adeDir: path.join(root, ".ade"),
@@ -28,12 +29,12 @@ describe("the saved copy of a cloud chat", () => {
       directoryBaseUrl: () => "https://account.test",
       getAccessToken: async () => "token",
       getMachineKey: () => "machine1",
-      readChatRow: async () => ({ title, laneId: "lane1", laneName: "lane", status: "idle" } as CloudSavedChatRowInput),
+      readChatRow: async () => ({ title, laneId: "lane1", laneName: "lane", status: "idle", settings } as CloudSavedChatRowInput),
       flushTranscript: async () => {},
       redactSecrets: (text) => text,
       fetch: (async (url: string, init?: RequestInit) => {
-        const body = JSON.parse(String(init?.body ?? "{}")) as { text: string; row: { title: string | null } };
-        puts.push({ url, text: body.text, title: body.row.title });
+        const body = JSON.parse(String(init?.body ?? "{}")) as { text: string; row: { title: string | null; settings?: unknown } };
+        puts.push({ url, text: body.text, title: body.row.title, settings: body.row.settings });
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }) as typeof fetch,
     });
@@ -50,6 +51,18 @@ describe("the saved copy of a cloud chat", () => {
     expect(puts).toHaveLength(2);
     expect(puts[1]).toMatchObject({ text: "", title: "Ready Reply Check" });
     expect(puts[1]!.url).toMatch(/\/parts\/2$/);
+
+    // A thinking level picked with nothing sent: no signal, found at the next rest save.
+    settings = { reasoningEffort: "xhigh" };
+    await uploader.uploadPending(5_000);
+    expect(puts).toHaveLength(3);
+    expect(puts[2]).toMatchObject({ text: "", settings: { reasoningEffort: "xhigh" } });
+    expect(puts[2]!.url).toMatch(/\/parts\/3$/);
+    // The same settings again send nothing; settings that went away are an unread summary, not a change.
+    await uploader.uploadPending(5_000);
+    settings = null;
+    await uploader.uploadPending(5_000);
+    expect(puts).toHaveLength(3);
     uploader.dispose();
   });
 });

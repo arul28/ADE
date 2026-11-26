@@ -348,11 +348,18 @@ holds the lane's messages and answers `wake.state: "moving"`:
   its ADE starts again after the restart. The server does not hold them
   before the resize is asked; the client waits until then (below).
 
-On the phone a held message looks like any sent message: the person's own
-bubble at the end of the thread and the working line, with a quiet Cancel
-while it is queued. Only a failed message (Put back, Dismiss) and one waiting
-for a sign-in say so. The bubble stays until the chat's transcript shows the
-message with the same `clientSendId`. See
+On the desktop, in ADE Web and on the phone, a held message looks like any
+sent message: the person's own bubble at the end of the thread and the
+working line, with a quiet Cancel while it is queued. Only a failed message
+(Put back, Dismiss) and one waiting for a sign-in say so. The bubble stays
+until the chat's transcript shows the message with the same `clientSendId`.
+On the desktop and ADE Web the bubble is `cloudQueuedMessageEnvelope`
+(`CloudQueuedMessages.tsx`). It takes the send's own bubble's place at the
+same time, so the row does not move. The working line says what the messages
+wait for: "Waking the computer…", "Moving to the new computer…", "Changing
+the computer's size…", "Starting a new computer…" or "Starting <agent>…". A
+message that waits for a sign-in gets no working line. Only the failed
+messages show in a banner. See
 [iOS companion › Held messages](../sync-and-multi-device/ios-companion.md).
 
 ### Continue a chat whose computer is gone (fork-continue)
@@ -2029,6 +2036,24 @@ One busy list, `decideCloudBusy` in
   tab shows Wake; at 0 hours (a size that uses hours) it shows the lane's
   saved work instead (`CloudLaneSavedWork`, no wake). A connect from ADE Web to an asleep computer wakes
   it first, then retries the connect for up to two minutes.
+- **The chat's settings while it rests.** The computer puts the chat's
+  settings in each saved row: model, preset, thinking level, Fast and the
+  access modes (`settings`, `readChatRow` in `bootstrap.ts`). A setting that
+  changed with no new transcript part goes at the next rest save, after the
+  new turns (`markChangedSettings` in `cloudChatUploader.ts`). The server checks each
+  field (`cloudChatRowSettingsOf`), seals them in the copy's summary and
+  returns them in `GET /cloud/chats`. The desktop and ADE Web show them in
+  the composer (`savedChatSummary`); a pick since the last send wins, and a
+  pick a queued send carried shows until the computer saves a newer row. The
+  phone shows the model, thinking level and Fast (`rosterChatSummary`) and
+  still hides the access mode of a saved chat.
+- **The @ menu while it rests.** The menu never asks a resting or deleted
+  computer, since a read must not wake it. It shows the account's machines
+  (an account read, kept 15 s) and the computer's saved chats, lanes and open
+  PRs from its Work slice (`chatMentionClientRows.ts`). While the computer is
+  awake, its own answer comes first, and the account's machines fill the
+  menu only when that answer has no machine rows.
+- **A deleted computer's chat** shows no running turn: nothing runs there.
 - **Comments wait on the device.** A thread comment written in a chat whose
   computer rests stays on the device that wrote it (desktop and ADE Web,
   localStorage), because a create is a write and would wake the computer. So
