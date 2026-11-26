@@ -84,6 +84,7 @@ import { useSentPromptHistory } from "../chat/chatPromptHistory";
 import { isImeComposing } from "../../lib/imeComposition";
 import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
 import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
+import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -994,7 +995,7 @@ function SessionSurfaceBody({
     return (
       <AgentChatPane
         laneId={session.laneId}
-        laneLabel={session.laneName}
+        laneLabel={sessionLaneDisplayName(session)}
         lockSessionId={session.id}
         // The row knows the provider on the switch frame; the pane does not (see
         // AgentChatPane's `lockSessionProvider` doc).

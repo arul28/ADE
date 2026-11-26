@@ -64,6 +64,7 @@ import {
 import { cn } from "../ui/cn";
 import { highlightRanges, highlightTitle } from "./commandPaletteSearch";
 import { clipCaption, paletteCaption } from "./commandPaletteMarks";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 /**
  * Rows rendered in the Recent threads group. The palette can be opened against
@@ -139,7 +140,7 @@ function makeEntry(args: {
   binding: OpenProjectBinding | null;
   subagentBusy: boolean;
 }): ThreadIndexEntry {
-  const laneName = args.lane?.name ?? args.session.laneName ?? "";
+  const laneName = (args.lane ? laneDisplayName(args.lane) : sessionLaneDisplayName(args.session)) ?? "";
   const branch = args.lane?.branchRef?.trim() || null;
   const provider = workToolFamily(args.session.toolType);
   return {

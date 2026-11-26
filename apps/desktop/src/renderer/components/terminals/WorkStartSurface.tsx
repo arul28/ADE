@@ -17,6 +17,7 @@ import type {
   ExternalSessionSource,
   ExternalSessionSummary,
 } from "./importSessions/contract";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -209,7 +210,7 @@ export function WorkStartSurface({
       <div className="flex w-full min-h-0 flex-1 flex-col overflow-hidden">
         <AgentChatPane
           laneId={launchLaneId}
-          laneLabel={selectedLane?.name ?? launchLaneId}
+          laneLabel={selectedLane ? laneDisplayName(selectedLane) : launchLaneId}
           hideSessionTabs
           hideLaneToolDrawers
           forceDraftMode

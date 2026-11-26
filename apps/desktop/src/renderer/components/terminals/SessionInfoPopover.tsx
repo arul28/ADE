@@ -22,6 +22,7 @@ import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
+import { sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 /**
  * The raw PROCESS column, not a session status. This is a different axis from
@@ -258,7 +259,7 @@ export function SessionInfoPopover({
               {(
                 [
                   ["Title", (session.goal ?? session.title).trim() || "—"],
-                  ["Lane", session.laneName || "—"],
+                  ["Lane", sessionLaneDisplayName(session) || "—"],
                   // The one row that carries a hue, and it comes from the
                   // shared tone table — never from a colour picked here.
                   ["State", statusLabel, statusToneClass],
