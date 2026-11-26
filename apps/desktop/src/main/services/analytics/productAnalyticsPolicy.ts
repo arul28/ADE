@@ -209,6 +209,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "connection_removed",
   "maintenance_run",
   "header_opened",
+  // Settings › Needs attention (feature "attention"): a folder the person
+  // stopped checking, a line hidden until it changes, and Show again.
+  "attention_folder_ignored",
+  "attention_hidden",
+  "attention_shown_again",
   "preferences_changed",
   // Settings › About › Update track: a switch to the other track started
   // (feature "updates"; outcome to_stable | to_beta).

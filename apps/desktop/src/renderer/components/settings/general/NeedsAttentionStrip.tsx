@@ -6,7 +6,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
 import { AgentLaunchSetup } from "../../shared/AgentLaunchSetup";
 import { useProjectFix } from "../health/ProjectIssues";
-import { hideUntilChangedChoice, IgnoreButton, IgnoredList, useProjectIgnore, type IgnoreChoice, type IgnoredEntry } from "../health/ProjectIgnore";
+import { captureAttentionIgnore, hideUntilChangedChoice, IgnoreButton, IgnoredList, useProjectIgnore, type IgnoreChoice, type IgnoredEntry } from "../health/ProjectIgnore";
 import type { SettingsTabId } from "../settingsManifest";
 // Read only while rendering, so the import cycle with the tab table is safe.
 import { STANDALONE_TAB_IDS } from "../settingsTabContent";
@@ -133,7 +133,10 @@ export function NeedsAttentionStrip({
       note: "Hidden on this computer until it changes",
       kind: "hide",
       where: entry.where || undefined,
-      showAgain: () => attention.unhide(entry.id),
+      showAgain: () => {
+        attention.unhide(entry.id);
+        captureAttentionIgnore("attention_shown_again");
+      },
     })),
   ];
   const ignoreChoicesFor = (item: AttentionItem): IgnoreChoice[] => {
@@ -142,6 +145,7 @@ export function NeedsAttentionStrip({
     if (!canHideAttention(item)) return [];
     return [hideUntilChangedChoice(() => {
       attention.hide(item);
+      captureAttentionIgnore("attention_hidden");
       showToast({
         id: "settings-attention-hide",
         tone: "success",

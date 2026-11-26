@@ -48,6 +48,20 @@ export type IgnoredEntry = {
 
 const IGNORE_TOAST_ID = "settings-project-ignore";
 
+/**
+ * One coarse fact per decision (`ade_feature_used`, feature "attention"): which
+ * kind of ignore, never the folder, the line or the project. Deduped per
+ * action for an hour, so at most 72 a day per installation.
+ */
+export function captureAttentionIgnore(action: "attention_folder_ignored" | "attention_hidden" | "attention_shown_again"): void {
+  void window.ade?.analytics?.capture({
+    event: "ade_feature_used",
+    properties: { feature: "attention", action, outcome: "completed", source: "renderer_route" },
+    dedupeKey: `attention_ignore:${action}`,
+    minimumIntervalMs: 60 * 60_000,
+  }).catch(() => undefined);
+}
+
 /** "Hide until it changes", the one choice every hideable row offers, wherever it is stored. */
 export function hideUntilChangedChoice(run: () => void): IgnoreChoice {
   return { id: "hide", label: "Hide until it changes", hint: "It comes back if anything about it changes", kind: "hide", run };
@@ -68,6 +82,7 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
     setBusy(true);
     try {
       onReport(await window.ade.projectHealth.unignore({ key }, pin));
+      captureAttentionIgnore("attention_shown_again");
       if (!quiet) showToast({ id: IGNORE_TOAST_ID, tone: "success", title: "Showing it again" });
     } catch (err) {
       showToast({ id: IGNORE_TOAST_ID, tone: "error", title: "Couldn't show it again", message: err instanceof Error ? err.message : String(err) });
@@ -86,6 +101,7 @@ export function useProjectIgnore(pin: OpenProjectBinding | null, onReport: (repo
         ...(folder ? { path: folder } : { seen: { title: issue.title, items: issue.items ?? [], ignorablePaths: issue.ignorablePaths ?? [] } }),
       }, pin);
       onReport(report);
+      captureAttentionIgnore(folder ? "attention_folder_ignored" : "attention_hidden");
       const key = projectHealthIgnoreKey(issue.id, folder);
       showToast({
         id: IGNORE_TOAST_ID,
