@@ -3734,6 +3734,10 @@ describe("update tracks", () => {
     await expect(first.service.quitAndInstall()).resolves.toBe(false);
     expect(first.service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.128" });
     expect(first.updater.quitAndInstall).not.toHaveBeenCalled();
+    first.setOffer("1.2.126");
+    await expect(first.service.startGoBack("1.2.126")).resolves.toEqual({ ok: true });
+    await vi.waitFor(() => expect(first.service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.126" }));
+    await expect(first.service.quitAndInstall()).resolves.toBe(true);
     // Nothing is saved before the install lands: quitting now changes nothing.
     expect(readSavedUpdateTrack(first.env)).toBeNull();
     first.service.dispose();

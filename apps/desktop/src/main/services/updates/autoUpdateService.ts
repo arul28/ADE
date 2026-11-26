@@ -2904,6 +2904,7 @@ export function createAutoUpdateService({
       cleanupUpdaterCacheDir({ updaterCacheDir, logger, reason: "go_back" });
       patchSnapshot({ ...createEmptyAutoUpdateSnapshot(currentVersion), recentlyInstalled: snapshot.recentlyInstalled });
     }
+    approvedTrackSwitchVersion = undefined;
     trackFeed.beginGoBack(version, `https://github.com/${releaseRepository}/releases/download/v${version}/`);
     patchSnapshot(trackPatch());
     logger.info("autoUpdate.go_back_started", { version, currentVersion });
