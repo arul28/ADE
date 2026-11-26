@@ -1166,8 +1166,14 @@ account switch.
 ## ADE Cloud reads
 
 A project tab binds to ADE Cloud when no own computer with a copy is online
-(`openAdeCloudProject`). A cloud lane whose computer sleeps is read through a
-`cloud-saved:<machineKey>` pin. Both are account-answered pins:
+(`openAdeCloudProject`). Opening a tab whose copy is on an ADE Cloud computer
+that sleeps (a reload, a tab switch, a Home row, a link) never wakes it: the
+federated adapter's `openProject` asks the account server, and binds the tab
+to its repository's ADE Cloud tab instead. The tab moves to the copy when the
+computer is back (`useAdeCloudTabFollowsCopy`). A folder with no repository
+does not open and says the computer is asleep. A cloud lane whose computer
+sleeps is read through a `cloud-saved:<machineKey>` pin. Both are
+account-answered pins:
 
 | Surface | Source while the computer sleeps |
 |---|---|

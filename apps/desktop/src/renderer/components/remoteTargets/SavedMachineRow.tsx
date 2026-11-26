@@ -36,6 +36,7 @@ import {
   autoConnectOffReason,
   connectionStateLabel,
   formatLastSeen,
+  connectNeverReachedMachine,
   isVersionSkewWarning,
   machineColorKey,
   relativeLastSeenPhrase,
@@ -214,6 +215,12 @@ type SavedMachineRowProps = {
   accountOnline?: boolean | null;
   /** When the account directory last saw this computer online; null when it does not list it. */
   accountLastSeenAt?: number | null;
+  /**
+   * This computer is offline (`deriveThisComputerOffline`). A failure to reach
+   * the machine is then this computer's, not the machine's: the row drops its
+   * "may be asleep" card and its red dot, and the list says it once.
+   */
+  thisComputerOffline?: boolean;
 };
 
 export function SavedMachineRow({
@@ -260,6 +267,7 @@ export function SavedMachineRow({
   sessionLimit = null,
   accountOnline = null,
   accountLastSeenAt = null,
+  thisComputerOffline = false,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const cloudIndex = useAdeCloudLaneComputers();
@@ -312,11 +320,20 @@ export function SavedMachineRow({
     : (status?.compatibilityWarnings ?? []);
   // Version skew is the chip's job now; the rest are real warnings.
   const warnings = compatibilityWarnings.filter((warning) => !isVersionSkewWarning(warning));
-  const errorCard = selectMachineErrorCard({
+  const selectedErrorCard = selectMachineErrorCard({
     errorInfo: status?.state === "error" ? status.lastErrorInfo : null,
     rawError: status?.state === "error" ? status.lastError : null,
     overrideMessage: selected ? error : null,
   });
+  // Offline, "can't reach it" is no news about the machine. Any other failure
+  // (a refused pairing, a host key) is still the machine's and still shows.
+  const errorCard = thisComputerOffline
+    && connectNeverReachedMachine(
+      selectedErrorCard?.failure,
+      status?.state === "error" ? status.lastErrorInfo?.attempts : null,
+    )
+    ? null
+    : selectedErrorCard;
   const activeRoute = connected?.target.id === target.id
     ? connected.route
     : status?.route;

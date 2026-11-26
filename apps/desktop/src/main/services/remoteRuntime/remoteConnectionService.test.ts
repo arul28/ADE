@@ -2043,6 +2043,9 @@ describe("RemoteConnectionService", () => {
     });
     const service = new RemoteConnectionService(registry, pool, { asleepForUse, wakeForUse });
     const read = () => service.callAction(computer.id, "project-1", { domain: "lane", action: "list" });
+    // Opening one of its projects is a person reading: that connect never asks for a wake.
+    await service.connect(computer.id, { explicit: true, wake: false });
+    expect(wakeForUse).not.toHaveBeenCalled();
     await read();
 
     // Awake and slow: one timed-out read leaves the connection as it was.

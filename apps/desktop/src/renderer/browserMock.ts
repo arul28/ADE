@@ -466,7 +466,7 @@ const resolvedArg2 =
     v;
 
 /**
- * A storage snapshot shaped like a real project for Settings → Project → Storage & cleanup in the
+ * A storage snapshot shaped like a real project for Settings → Project → Disk space in the
  * browser preview: a few lanes (one archived, one left over), history, caches,
  * build staging, proof and the database, with a cleanup history.
  */
@@ -3545,6 +3545,7 @@ function createBrowserMockDemoChat(args: any): any {
     chatSessionId: id,
     laneId: lane?.id ?? "",
     laneName: lane?.name ?? "",
+    laneType: lane?.laneType ?? null,
     ptyId: null,
     tracked: true,
     pinned: false,
@@ -3751,7 +3752,7 @@ function listMockAgentChatSummaries(args: any = {}): any[] {
 }
 
 /**
- * Settings → Storage & cleanup → Recently deleted in the preview: a few chats
+ * Settings → Deleted & Archived → Recently deleted in the preview: a few chats
  * deleted on their own or with their lane, newest first. Reopen and Remove
  * take them off the list, like the brain does.
  */
@@ -3769,7 +3770,39 @@ let MOCK_DELETED_CHATS: Array<{
   createdAt: string | null;
   lastActiveAt: string | null;
   deletedAt: string;
+  withLane?: boolean;
 }> = [
+  // These two went with the deleted "Thread Sharing Links" lane.
+  {
+    id: "deleted-chat-tsl-links",
+    title: "Share a thread as a link",
+    provider: "claude",
+    sourceProvider: "claude",
+    modelId: DEFAULT_BROWSER_MOCK_CLAUDE_MODEL,
+    laneId: "lane-tsl",
+    laneName: "Thread Sharing Links",
+    laneColor: "#a78bfa",
+    laneExists: false,
+    createdAt: mockDeletedChatHoursAgo(6),
+    lastActiveAt: mockDeletedChatHoursAgo(0.5),
+    deletedAt: mockDeletedChatHoursAgo(0.24),
+    withLane: true,
+  },
+  {
+    id: "deleted-chat-tsl-review",
+    title: "Review the share page copy",
+    provider: "codex",
+    sourceProvider: "codex",
+    modelId: DEFAULT_BROWSER_MOCK_CODEX_MODEL,
+    laneId: "lane-tsl",
+    laneName: "Thread Sharing Links",
+    laneColor: "#a78bfa",
+    laneExists: false,
+    createdAt: mockDeletedChatHoursAgo(5),
+    lastActiveAt: mockDeletedChatHoursAgo(1),
+    deletedAt: mockDeletedChatHoursAgo(0.24),
+    withLane: true,
+  },
   {
     id: "deleted-chat-onboarding",
     title: "Tighten the onboarding copy",
@@ -8045,7 +8078,21 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           { id: "1794000000000-lane-docs", laneId: "lane-docs", laneName: "docs refresh", branchName: "ade/docs-refresh-91aa", commit: "c0ffee2", baseCommit: "decade2", uncommitted: true, kind: "freed" as const, deletedAt: iso(9), expiresAt: iso(-21) },
         ];
       },
-      restoreDeleted: async () => { throw new Error("Not available in the browser preview."); },
+      // A restore brings the lane back with the chats that went with it.
+      restoreDeleted: async (args: { id?: string } = {}) => {
+        const laneId = String(args?.id ?? "").replace(/^\d+-/, "");
+        const chats = MOCK_DELETED_CHATS.filter((chat) => chat.withLane && chat.laneId === laneId);
+        MOCK_DELETED_CHATS = MOCK_DELETED_CHATS.filter((chat) => !chats.includes(chat));
+        return {
+          lane: { ...MOCK_LANES[0], id: `${laneId}-restored`, name: chats[0]?.laneName ?? laneId },
+          branchName: "ade/thread-sharing-links",
+          restoredUncommitted: true,
+          warning: null,
+          extraBranches: [],
+          reopenedChats: chats.map((chat) => ({ chatSessionId: chat.id, title: chat.title })),
+          chatsNotReopened: 0,
+        };
+      },
       removeDeleted: async () => ({ removed: true }),
       // `?mockLaneTemplate` previews the lane template suggestion: a repo with
       // packages and no default template. Without it the call fails, as it
@@ -11192,8 +11239,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     projectConfig: {
       get: resolved(BROWSER_MOCK_PROJECT_CONFIG_SNAPSHOT),
       validate: resolvedArg({ ok: true, issues: [] as any[] }),
-      // Keeps the lane cleanup rules a save writes, so Settings → Storage &
-      // cleanup → Rules shows them after its reload in the preview.
+      // Keeps the lane cleanup rules a save writes, so Settings → Disk space →
+      // Rules shows them after its reload in the preview.
       save: async (args: any) => {
         if (args?.local && "laneCleanup" in args.local) {
           const laneCleanup = args.local.laneCleanup ?? {};

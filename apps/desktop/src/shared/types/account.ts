@@ -303,6 +303,12 @@ export type MachineTailscaleStatus = {
   httpsCertsEnabled: boolean | null;
   /** When this computer's Tailscale sign-in expires, ISO. Null when it never does. */
   keyExpiry: string | null;
+  /** The sign-in (node key) has expired: Tailscale is off until someone signs in again. */
+  keyExpired: boolean;
+  /** Tailscale's own warnings (its `Health` list), as it wrote them. Empty from an older ADE. */
+  health: string[];
+  /** Why ADE couldn't read Tailscale (state `unknown`): a timeout or Tailscale's own error line. */
+  readError: string | null;
   checkedAt: string;
 };
 

@@ -541,6 +541,32 @@ const SYNC_ACCOUNT_DIRECTORY_STATES: readonly SyncAccountDirectoryState[] = [
   "transport_error",
 ];
 
+const ACCOUNT_DIRECTORY_TIMEOUT_OR_TRANSPORT_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
+  "http_timeout",
+  "timeout",
+  "transport_error",
+]);
+
+/**
+ * The publish request to the account directory got no reply at all: a timeout
+ * or a transport error on the HTTP leg, never an HTTP answer. The directory
+ * sits on Cloudflare's edge, which answers even when the service behind it is
+ * down, so silence almost always means this computer is offline. The advice
+ * table words this case that way, and the desktop's offline check reads it.
+ *
+ * Not the token leg: `transport_error` there also covers a sign-in service
+ * that answered 429 or 5xx, or another process holding the refresh. Not the
+ * setup leg either: that is the publisher failing on this computer. A brain
+ * built before `failedLeg` sends none, and its timeout states are the HTTP
+ * leg's (`token_timeout` is its own state).
+ */
+export function isAccountDirectoryNoReply(
+  health: Pick<SyncAccountDirectoryHealth, "state" | "failedLeg"> | null | undefined,
+): boolean {
+  if (!health || !ACCOUNT_DIRECTORY_TIMEOUT_OR_TRANSPORT_STATES.has(health.state)) return false;
+  return health.failedLeg == null || health.failedLeg === "http";
+}
+
 /**
  * Narrows a publisher state that arrived over RPC as an untyped string.
  *
@@ -605,6 +631,12 @@ export function readCompetingSyncHostOwner(
   if (!Number.isFinite(pid) || pid <= 0) return null;
   return { appName: match[1]!.trim() || null, pid };
 }
+
+/**
+ * A sign-in refresh that failed for a reason that clears on its own: no reply,
+ * a sign-in service answering 429 or 5xx, or another process mid-refresh.
+ */
+const SIGN_IN_REFRESH_RETRYING = "can't refresh your ADE sign-in right now, retrying";
 
 /** The one next step that ends a competing sync host: quit the other ADE app. */
 export const QUIT_COMPETING_SYNC_HOST_ADVICE = "Quit that ADE to let this one host sync.";
@@ -717,19 +749,30 @@ export function describeUnpublishedAccountDirectory(
           nextAction: "Confirm it's you",
         };
       }
+      // The directory answered, just not with a yes (a 5xx, or a 4xx with no
+      // refusal code). The network is fine; the service is not.
       return {
-        summary: "can't reach your ADE account right now, retrying",
+        summary: "ADE's account service is having trouble right now, retrying",
         nextAction: null,
       };
     }
-    case "http_timeout":
     case "token_timeout":
+      return { summary: SIGN_IN_REFRESH_RETRYING, nextAction: null };
+    case "http_timeout":
     case "timeout":
-    case "transport_error":
-      return {
-        summary: "can't reach your ADE account right now, retrying",
-        nextAction: null,
-      };
+    case "transport_error": {
+      // Nothing came back from the directory (see `isAccountDirectoryNoReply`).
+      // Saying "can't reach your ADE account" read like the account was broken.
+      // A caller with only the state (the CLI) gets the directory's wording.
+      const failedLeg = health?.failedLeg ?? null;
+      if (isAccountDirectoryNoReply({ state, failedLeg })) {
+        return { summary: "no internet connection, retrying", nextAction: null };
+      }
+      if (failedLeg === "token" || failedLeg === "token_refresh_401") {
+        return { summary: SIGN_IN_REFRESH_RETRYING, nextAction: null };
+      }
+      return { summary: "ADE couldn't publish this computer to your account, retrying", nextAction: null };
+    }
     case "snapshot_failed":
     case "invalid_directory_url":
       return {
@@ -804,6 +847,17 @@ export function thisComputerAction(
   return { label: "Retry", ...none, retry: true };
 }
 
+/** Which step of a publish attempt failed. */
+export type SyncAccountDirectoryFailedLeg = "setup" | "snapshot" | "token" | "token_refresh_401" | "http";
+
+export const SYNC_ACCOUNT_DIRECTORY_FAILED_LEGS: readonly SyncAccountDirectoryFailedLeg[] = [
+  "setup",
+  "snapshot",
+  "token",
+  "token_refresh_401",
+  "http",
+];
+
 export type SyncAccountDirectoryLegDurations = {
   snapshot: number | null;
   token: number | null;
@@ -822,6 +876,13 @@ export type SyncAccountDirectoryHealth = {
   reachableEndpointCount: number;
   lastLegDurations: SyncAccountDirectoryLegDurations;
   failingSinceMs: number | null;
+  /**
+   * The step the current failure happened on; null when nothing failed. The
+   * state alone can name the wrong one: `transport_error` is recorded for a
+   * failed sign-in refresh as well as for a directory request that got no
+   * reply. Optional because brains built before this field never send it.
+   */
+  failedLeg?: SyncAccountDirectoryFailedLeg | null;
   /**
    * When the account removed this machine (ISO), while the directory refuses
    * it. The desktop names the date in its banner. Optional because brains

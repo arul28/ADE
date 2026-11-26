@@ -2868,6 +2868,12 @@ export type AgentChatEventEnvelope = {
      */
     timestampSynthetic?: boolean;
   };
+  /**
+   * Set by the renderer on a row read from an ADE Cloud chat's saved copy,
+   * which redacts and cuts what it stores. Such a row gives way to the live
+   * row it was copied from (`reconcileAgentChatSavedCopies`). Never on the wire.
+   */
+  savedCopy?: true;
 };
 
 export type AgentChatEventHistorySnapshot = {

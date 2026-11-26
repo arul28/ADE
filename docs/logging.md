@@ -1036,8 +1036,10 @@ Account directory (`apps/account-directory/src/cloud/`, Worker logs):
   (status), `cloud.linear_renewal_publish_failed`. Sentry:
   `cloud.linear_renewal_failed`, `cloud.linear_lease_claim_failed`,
   `cloud.linear_renewal_seal_failed`, `cloud.linear_renewal_cron_failed`.
-- Event wakes: `cloud.event_wakes_set` (instanceId, count), `cloud.event_wake`
-  (userId, instanceId, topicKind, outcome). Sentry: `cloud.event_wake_failed`.
+- Event wakes: `cloud.event_wakes_set` (instanceId, count, leftOut),
+  `cloud.event_wake` (userId, instanceId, topicKind, outcome),
+  `cloud.linear_org_check_refused` (status, authMode),
+  `cloud.linear_org_check_failed`. Sentry: `cloud.event_wake_failed`.
 
 Webhook relay (`apps/webhook-relay/`): `cloud_event_wake_sent`,
 `cloud_event_wake_refused`, `cloud_event_wake_failed`; forwarded custom
@@ -2572,7 +2574,7 @@ pattern: ADE's `ade/` prefix, the git user name, none, or custom; never the
 text), `start_default_changed` (the default branch, the primary lane's branch,
 or a named branch; never its name), `branch_renamed` from the lane menu,
 `auto_archive_changed` / `auto_free_up_changed` / `auto_delete_changed` when a
-save in Settings › Storage & cleanup › Rules turns that automatic rule on or off
+save in Settings › Disk space › Rules turns that automatic rule on or off
 (never a day count), and `space_freed` for Free up space on an archived lane.
 The archive scan's own automatic archive, free up and delete record nothing:
 they are a timer with no person's action behind them, like the idle sweep. With

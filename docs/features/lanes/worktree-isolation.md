@@ -150,12 +150,13 @@ the directory first:
    Archive-and-reclaim with `forceDirty` saves the same way, as kind `freed`:
    the lane stays, so `unarchive` puts its newest freed save back when it
    rebuilds the folder, and Restore goes into that lane instead of a copy.
-   Saves are listed in Settings › Storage & cleanup › Recently deleted, on the
+   Saves are listed in Settings › Deleted & Archived › Recently deleted, on the
    phone under Lanes › Archived (each machine's own list, routed to it), and by
    `ade lanes deleted list`; Restore (`ade lanes deleted restore <id>`) makes a
    new lane on the old branch name (or `<name>-restored`), at the saved HEAD,
    never pushed, and applies the uncommitted files back as uncommitted
-   changes. Commits the lane's branch does not hold (the deleted remote's, or
+   changes. It also reopens the chats the delete put in Recently deleted into
+   the new lane (`reopenedChats` in the result). Commits the lane's branch does not hold (the deleted remote's, or
    the old branch's when the folder had moved) go on sibling branches such as
    `<name>-remote`. Saves older than 30 days are pruned after each save and by
    the lifecycle scan.

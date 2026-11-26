@@ -1837,7 +1837,7 @@ export function createComputerUseArtifactBrokerService(args: {
 
     /**
      * Drop records whose stored file lived at or under `removedPath`. Called
-     * after Settings → Storage removes proof files so the rows never outlive
+     * after Settings → Disk space removes proof files so the rows never outlive
      * the bytes.
      */
     purgeArtifactRecordsUnder(removedPath: string): ComputerUseArtifactDeleteResult {

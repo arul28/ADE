@@ -581,6 +581,51 @@ extension SyncService {
     )
   }
 
+  /// The person's answer to an agent's size request card, and later how the
+  /// change ended (`cloud.tier_request_answer`), on the CHAT's own machine:
+  /// that machine marks the card answered for every surface and tells the
+  /// agent. Routed by the chat (`chatCommandScope`), never the focused machine.
+  func answerCloudTierRequest(chatSessionId: String, requestId: String, answer: String, outcome: String? = nil, error: String? = nil) async throws {
+    var args: [String: Any] = ["chatSessionId": chatSessionId, "requestId": requestId, "answer": answer]
+    if let outcome { args["outcome"] = outcome }
+    if let error, !error.isEmpty { args["error"] = error }
+    let scope = chatCommandScope(for: chatSessionId)
+    _ = try await sendDecodableCommand(
+      action: "cloud.write",
+      args: ["action": "tier_request_answer", "args": args],
+      timeoutNanoseconds: 30 * 1_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      // `cloud.write` is machine-wide, but the card is read from the chat's project there.
+      keepsProjectForRuntimeAction: true,
+      as: CloudPhoneAck.self
+    )
+  }
+
+  /// The asking chat as a move's record keeps it (`requestedByChatPin`): a
+  /// saved-chat pin that names the chat's ADE Cloud computer by its account
+  /// key (`cloud-saved:<key>`), as the desktop and ADE Web read it. Whoever
+  /// follows the move there tells the chat on the new computer, after the
+  /// phone closes too. Nil for a chat on no ADE Cloud computer or with no project.
+  func cloudTierRequestChatPin(sessionId: String) -> [String: String]? {
+    guard let key = chatThreadKey(for: sessionId), isCloudFleetKey(key.machineKey),
+          let accountKey = cloudAccountMachineKey(fleetKey: key.machineKey).flatMap({ nonEmptyTrimmed($0) }) else { return nil }
+    let projectId: String
+    let rootPath: String?
+    switch key.scope {
+    case .crossProject(let id, let root):
+      projectId = id
+      rootPath = root
+    case .project(let id):
+      projectId = id
+      rootPath = activeProjectRootPath
+    case .personal:
+      return nil
+    }
+    guard let projectId = nonEmptyTrimmed(projectId), let rootPath = rootPath.flatMap({ nonEmptyTrimmed($0) }) else { return nil }
+    return ["kind": "remote", "targetId": "cloud-saved:\(accountKey)", "projectId": projectId, "rootPath": rootPath]
+  }
+
   /// Whether the account pays for ADE Cloud, or nil while that can't be read
   /// (ADE Cloud is off for the account, an older machine, no connection).
   /// One account read, no computers: the CTO's home chooser needs only the

@@ -24,6 +24,7 @@ import type { PrDetailRouteTab } from "../prsRouteState";
 import "./PrDetailHeader.css";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { usePrRuntimePin } from "../state/prMachines";
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
 
 type DetailTab = PrDetailRouteTab;
 
@@ -285,7 +286,7 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
           <PrHeaderChangeStat summary={changeSummary} />
           {lane ? (
             <LaneChip
-              laneName={lane.name}
+              laneName={laneDisplayName(lane)}
               laneColor={lane.color}
               maxWidth="100%"
               onClick={onOpenLane ?? undefined}

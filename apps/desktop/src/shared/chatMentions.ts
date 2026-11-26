@@ -20,6 +20,7 @@ import type {
 } from "./types/chatMentions";
 import type { LaneSummary } from "./types/lanes";
 import type { PrSummary } from "./types/prs";
+import { laneDisplayName } from "./laneDisplayName";
 
 /**
  * Drag payload a chat or terminal row carries, so dropping it on a composer
@@ -485,8 +486,8 @@ export function chatMentionTitle(chat: { id: string; title?: string | null; goal
 }
 
 /** A lane row. Lanes have no last activity on the list shape: creation time stands in. */
-export function laneMentionSuggestion(lane: Pick<LaneSummary, "id" | "name" | "branchRef" | "createdAt">): ChatMentionSuggestion {
-  return { kind: "lane", id: lane.id, title: lane.name, subtitle: lane.branchRef, lastActivityAt: mentionEpoch(lane.createdAt) };
+export function laneMentionSuggestion(lane: Pick<LaneSummary, "id" | "name" | "branchRef" | "createdAt"> & { laneType?: string | null }): ChatMentionSuggestion {
+  return { kind: "lane", id: lane.id, title: laneDisplayName(lane), subtitle: lane.branchRef, lastActivityAt: mentionEpoch(lane.createdAt) };
 }
 
 /** Open and draft PRs are the ones worth pointing an agent at. */

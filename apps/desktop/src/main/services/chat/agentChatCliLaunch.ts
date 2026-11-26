@@ -12,7 +12,7 @@ import type {
 } from "../../../shared/types/chat";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPtyService } from "../pty/ptyService";
-import { providerLoginGate } from "../providerLogins/providerLoginHooks";
+import { awaitCliProviderLogin } from "../providerLogins/providerLoginHooks";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveTrackedCliPreset } from "./harnessPresetLaunch";
 import { readPresetLaunchTarget } from "./chatLaunchRoute";
@@ -91,12 +91,7 @@ export async function launchAgentChatCli(
   }
   // On a cloud computer, the account's sign-in for this provider is written
   // before the CLI starts (P5 §4.4). Null everywhere else: no await.
-  const loginGate = providerLoginGate(providerKey);
-  const loginOutcome = loginGate ? await loginGate : null;
-  // A terminal has no card: the lines a chat would show (owner_off) are logged only.
-  if (loginOutcome?.notices?.length) {
-    deps.logger?.info("agentChat.launchCli.provider_login", { provider: providerKey, result: loginOutcome.result, notices: loginOutcome.notices.map((notice) => notice.providerLogin.kind) });
-  }
+  await awaitCliProviderLogin(providerKey, { event: "agentChat.launchCli.provider_login", logger: deps.logger });
   const kickoffPrompt =
     typeof arg?.kickoffPrompt === "string" ? arg.kickoffPrompt : "";
   if (!kickoffPrompt.trim().length) {

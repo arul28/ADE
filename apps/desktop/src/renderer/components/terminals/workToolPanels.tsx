@@ -52,6 +52,7 @@ import type { ToolMachine, ToolMachines } from "./useToolMachines";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { macDesktopWebApi } from "../chat/macDesktopWebStream";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 /** App Control loads when its tool is first opened; the chat pane shares the chunk. */
 const ChatAppControlPanel = lazy(() => import("../chat/ChatAppControlPanel")
@@ -717,7 +718,7 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
         use={target?.use ?? null}
         testId="android-target-switcher"
         renderLane={() => (laneId
-          ? <WorkAndroidDevice {...props} laneName={props.activeLane?.name ?? null} />
+          ? <WorkAndroidDevice {...props} laneName={props.activeLane ? laneDisplayName(props.activeLane) : null} />
           : <NoLaneEmptyLine />)}
         renderRemote={(use, remotePin) => (
           <RemoteWorkAndroid
@@ -823,7 +824,7 @@ function WorkAppControlTool(props: WorkToolPanelProps) {
             key={key}
             sessionId={panelSessionId}
             laneId={args.laneId}
-            laneName={activeLane?.name ?? null}
+            laneName={activeLane ? laneDisplayName(activeLane) : null}
             runtimePin={args.pin}
             projectRoot={args.projectRoot}
             controlDisabledReason={null}
@@ -927,7 +928,7 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
           key={`work-${tool}:${mountScope}`}
           desktopTool={tool}
           laneId={laneId}
-          laneName={activeLane?.name ?? null}
+          laneName={activeLane ? laneDisplayName(activeLane) : null}
           sessionId={panelSessionId}
           runtimePin={runtimePin}
           hostPlatform={toolContext.hostPlatform ?? null}
@@ -953,7 +954,7 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
               key={`work-${tool}:${pin.key}:${use.workCopyLaneId}`}
               desktopTool={tool}
               laneId={use.workCopyLaneId}
-              laneName={activeLane?.name ?? null}
+              laneName={activeLane ? laneDisplayName(activeLane) : null}
               sessionId={panelSessionId}
               runtimePin={pin}
               hostPlatform={remoteMachineHostPlatform(use.machinePlatform)}

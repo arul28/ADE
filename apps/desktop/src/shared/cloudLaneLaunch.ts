@@ -150,7 +150,7 @@ export function cloudLaneStartBlock(
   if (!options.newLane) return null;
   const detail = cloudComputerLimitReached(account) ? cloudComputerLimitDetailOf(account) : null;
   if (detail) {
-    return { code: "computer_limit", message: computerLimitSentence(detail), short: `All ${detail.limit} cloud computers in use.` };
+    return { code: "computer_limit", message: computerLimitSentence(detail), short: `You're using all ${detail.limit} cloud computers.` };
   }
   return null;
 }

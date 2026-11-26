@@ -30,6 +30,7 @@ import type {
   SyncRoleSnapshot,
   SyncRouteHealth,
 } from "../../../shared/types";
+import { isAccountDirectoryNoReply } from "../../../shared/types/sync";
 import {
   eventMatchesBinding,
   getEffectiveBinding,
@@ -508,6 +509,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // sync host already emits whenever route health changes. No polling — the
   // banner host arms a single timer for the outage grace window instead.
   const [syncRelayHealth, setSyncRelayHealth] = useState<SyncRouteHealth["relay"] | null>(null);
+  // The account-directory leg, reduced to the one fact the offline banner
+  // needs, so a fresh snapshot object never re-renders the shell.
+  const [accountDirectoryNoReply, setAccountDirectoryNoReply] = useState(false);
   useEffect(() => {
     const syncApi = window.ade.sync;
     if (!syncApi) return;
@@ -515,6 +519,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const apply = (snapshot: SyncRoleSnapshot | null | undefined) => {
       if (cancelled) return;
       const next = snapshot?.routeHealth?.relay ?? null;
+      setAccountDirectoryNoReply(isAccountDirectoryNoReply(snapshot?.routeHealth?.accountDirectory));
       // getStatus rebuilds routeHealth.relay as a fresh object every call, so
       // committing it unconditionally would re-render the whole shell on every
       // peer/status push. Only the fields the banner reads matter here.
@@ -1226,6 +1231,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           freeModelsReady={freeModelsReady}
           aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
           relayHealth={syncRelayHealth}
+          accountDirectoryNoReply={accountDirectoryNoReply}
           navigate={navigate}
         />
       ) : null}

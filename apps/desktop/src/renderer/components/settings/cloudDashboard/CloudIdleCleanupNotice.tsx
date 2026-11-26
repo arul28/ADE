@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  CLOUD_BACKUP_NOT_SAVED_SENTENCE,
   formatCloudDate,
   idleCleanupHeldNext,
   idleCleanupWhen,
@@ -33,6 +34,23 @@ export function idleEntryName(entry: CloudIdleCleanupEntry): string {
 /** "pricing-page's computer": the idle cleanup deletes the computer; the lane stays. */
 function idleSubject(entry: CloudIdleCleanupEntry): string {
   return entry.laneName ? `${entry.laneName}'s computer` : idleEntryName(entry);
+}
+
+/**
+ * Why the save failed, without what the title already says. The server's
+ * reason opens with "ADE couldn't save this lane's work." and names each lane
+ * ("pricing-page: …"); a computer holds one lane, the one the notice names.
+ */
+function idleHeldReason(laneName: string | null | undefined, held: { reason: string }): string {
+  let reason = held.reason.trim();
+  if (reason.startsWith(CLOUD_BACKUP_NOT_SAVED_SENTENCE)) reason = reason.slice(CLOUD_BACKUP_NOT_SAVED_SENTENCE.length).trim();
+  if (laneName && reason.startsWith(`${laneName}: `)) reason = reason.slice(laneName.length + 2);
+  return reason;
+}
+
+/** A computer kept after a failed save: why, then what to do and when ADE checks again (Settings and the lane's chat say the same). */
+export function idleHeldDetail(entry: Pick<CloudIdleCleanupEntry, "laneName" | "deletesAt"> & { held: NonNullable<CloudIdleCleanupEntry["held"]> }, now: number): string {
+  return [idleHeldReason(entry.laneName, entry.held), idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)].filter(Boolean).join(" ");
 }
 
 /** What happens before the delete and what is lost, in two short sentences. */
@@ -102,7 +120,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
                 id: `cloud-idle-held-${entry.instanceId}`,
                 tone: "warning",
                 title: `${idleSubject(entry)} wasn't deleted: ADE couldn't save its work`,
-                detail: `${entry.held.reason} ${idleCleanupHeldNext(entry.held.retryAt ?? entry.deletesAt, now)}${ignoredDetail(entry)}`,
+                detail: `${idleHeldDetail({ ...entry, held: entry.held }, now)}${ignoredDetail(entry)}`,
                 actions: [action],
                 report: false,
               }}

@@ -198,6 +198,7 @@ describe("account machine publisher health", () => {
         http: 25,
       },
       failingSinceMs: null,
+      failedLeg: null,
     });
   });
 
@@ -598,9 +599,11 @@ describe("account machine publisher health", () => {
       fetchImpl: vi.fn(async () => { throw new TypeError("offline"); }),
     });
     await transport.publishNow();
+    // No reply from the directory itself: the desktop calls this offline.
     expect(transport.getPublisherHealth()).toMatchObject({
       state: "transport_error",
       lastHttpStatus: null,
+      failedLeg: "http",
     });
 
     vi.useFakeTimers();
@@ -841,7 +844,9 @@ describe("account machine publisher health", () => {
 
     service.start();
     await vi.advanceTimersByTimeAsync(0);
-    expect(service.getPublisherHealth()).toMatchObject({ state: "transport_error" });
+    // Same state as a directory that never replied, but the token leg: the
+    // desktop must not call a 429/5xx or a held refresh "no internet".
+    expect(service.getPublisherHealth()).toMatchObject({ state: "transport_error", failedLeg: "token" });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(getAccessToken).toHaveBeenCalledTimes(1);
 

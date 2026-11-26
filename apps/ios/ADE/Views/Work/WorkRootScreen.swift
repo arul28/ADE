@@ -2086,6 +2086,15 @@ struct WorkRootListScreen: View, Equatable {
               workSessionGroupSection(group)
             }
           }
+          // A deleted chat is not archived: one quiet way to where it is.
+          if selectedStatus == .archived, inputs.activeProjectId != nil {
+            WorkRecentlyDeletedChatsLink {
+              syncService.presentDeletedArchived(.recentlyDeleted, filter: .chats)
+            }
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
         }
       }
       .listStyle(.plain)
@@ -2964,5 +2973,33 @@ private extension View {
     } else {
       self
     }
+  }
+}
+
+/// The last row of Work's Archived filter: Settings › Deleted & Archived,
+/// on Recently deleted, showing chats.
+struct WorkRecentlyDeletedChatsLink: View {
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 8) {
+        Image(systemName: "clock.arrow.circlepath")
+          .font(.footnote.weight(.semibold))
+          .accessibilityHidden(true)
+        Text("Recently deleted chats")
+          .font(.footnote.weight(.medium))
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .accessibilityHidden(true)
+      }
+      .foregroundStyle(ADEColor.textSecondary)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityHint("Opens Settings, Deleted and archived")
   }
 }

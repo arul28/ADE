@@ -346,7 +346,7 @@ after 14 days. See
 `docs/features/storage-and-recovery/README.md` ("Build output in idle lanes").
 
 Policy enforced by the lane cleanup service. UI lives in
-`settings/health/HealthCleanups.tsx` (Project → Storage & cleanup), not
+`settings/health/HealthCleanups.tsx` (Project → Disk space), not
 `NewLaneSettingsSection.tsx`, which owns start defaults and templates.
 
 ## Port allocation and proxy

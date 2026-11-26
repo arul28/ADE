@@ -860,6 +860,7 @@ export function readLocalRuntimeInfo(value: unknown): {
             lastLegDurations: parsedPublishHealth.lastLegDurations,
             lastHttpStatus: parsedPublishHealth.lastHttpStatus ?? null,
             lastHttpReason: parsedPublishHealth.lastHttpReason ?? null,
+            failedLeg: parsedPublishHealth.failedLeg ?? null,
           }
         : null,
     lastWedge: parseRuntimeLastWedge(info.lastWedge),

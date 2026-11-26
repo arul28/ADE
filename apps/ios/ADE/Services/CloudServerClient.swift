@@ -657,9 +657,16 @@ struct CloudServerClient {
   /// old one deleted. The same `moveId` again answers the same move, so a
   /// lost answer is safe to send again. A server older than the route answers
   /// 404 (`.noAccess`): only ADE on a computer can move it then.
-  func startMove(instanceId: String, to kind: String, sizeId: String?, moveId: String) async throws -> CloudServerMove {
+  /// `request`: the agent's size request the move answers, kept on its record
+  /// so the desktop and ADE Web tell that chat how it ended.
+  func startMove(instanceId: String, to kind: String, sizeId: String?, moveId: String, request: CloudMoveChatRequest? = nil) async throws -> CloudServerMove {
     var payload: [String: Any] = ["moveId": moveId, "to": kind]
     if let sizeId { payload["sizeId"] = sizeId }
+    if let request {
+      payload["requestId"] = request.requestId
+      payload["requestedByChat"] = request.chatSessionId
+      payload["requestedByChatPin"] = request.pin
+    }
     let body = try JSONSerialization.data(withJSONObject: payload)
     return try decode(
       CloudServerMove.self,
@@ -814,6 +821,15 @@ struct CloudServerFree: Decodable, Equatable {
   let message: String
   let error: String?
   let laneKept: Bool?
+}
+
+/// The agent's size request a move answers, as the move's record keeps it:
+/// the card's id, the asking chat, and that chat's pin
+/// (`SyncService.cloudTierRequestChatPin`).
+struct CloudMoveChatRequest {
+  let requestId: String
+  let chatSessionId: String
+  let pin: [String: String]
 }
 
 struct CloudServerMove: Decodable, Equatable, Identifiable {
@@ -1223,7 +1239,7 @@ extension CloudServerClient {
 }
 
 /// A sentence without its last full stop, to go inside another one.
-private func cloudWithoutStop(_ text: String) -> String {
+func cloudWithoutStop(_ text: String) -> String {
   text.hasSuffix(".") ? String(text.dropLast()) : text
 }
 

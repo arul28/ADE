@@ -284,6 +284,39 @@
 
 /* ── Archive ────────────────────────────────────────────────────────── */
 
+/*
+ * The one row above an Archive or Recently deleted list: the kind filter, then
+ * search on the right. The tab above names the list, so there is no title.
+ * In a narrow column the search drops under the filter at full width.
+ */
+.ade-ar-toolbar {
+  container-type: inline-size;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 30px;
+}
+.ade-ar-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 200px;
+  max-width: 280px;
+  margin-left: auto;
+}
+.ade-ar-search > svg {
+  position: absolute;
+  left: 9px;
+  color: var(--kit-text-3);
+  pointer-events: none;
+}
+.ade-ar-search > .kit-input { width: 100%; padding-left: 28px; }
+@container (max-width: 540px) {
+  .ade-ar-search { flex-basis: 100%; max-width: none; margin-left: 0; }
+}
+.ade-ar-count { margin-left: 6px; opacity: 0.6; font-size: 10.5px; }
+
 .ade-ar-table { display: flex; flex-direction: column; gap: 20px; }
 .ade-ar-block { display: flex; flex-direction: column; gap: 8px; }
 .ade-ar-group { display: flex; align-items: center; gap: 10px; min-height: 24px; padding: 0 2px; }
@@ -302,10 +335,20 @@
 .ade-ar-row:hover { background: var(--kit-hover); }
 .ade-ar-row[data-selected] { background: var(--kit-active); }
 .ade-ar-title { font-size: 13px; font-weight: 500; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ade-ar-meta { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 2px; font-size: 11.5px; color: var(--kit-text-3); }
+/*
+ * A row's meta line (`MetaLine.tsx`). In a narrow column it wraps instead of
+ * running under the row's buttons. Each item draws its "·" in front; the items
+ * start 13px left of the line, so the line's clip hides the "·" that begins
+ * each visual line.
+ */
+.ade-ar-meta { display: block; min-width: 0; margin-top: 2px; overflow: hidden; font-size: 11.5px; line-height: 17px; color: var(--kit-text-3); }
+.ade-ar-meta-items { display: flex; flex-wrap: wrap; align-items: center; margin-left: -13px; }
+.ade-ar-meta-item { display: inline-flex; align-items: center; min-width: 0; white-space: nowrap; }
+.ade-ar-meta-item::before { content: "·"; flex: none; width: 13px; text-align: center; opacity: 0.5; }
 .ade-ar-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: 10.5px; }
 .ade-ar-mark {
   display: inline-grid;
+  flex: none;
   place-items: center;
   width: 32px;
   height: 32px;

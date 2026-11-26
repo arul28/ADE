@@ -14,7 +14,7 @@ import { listProviderCopiesOfChats, type ProviderCopy, type ProviderSessionRef }
  * Deleting a lane deletes its chats' session rows (`laneService` removes
  * `terminal_sessions where lane_id = ?`) but leaves their transcript files,
  * which nothing in ADE lists or opens again. These are offered for removal
- * in Settings › Storage, review-first: never removed automatically.
+ * in Settings › Disk space, review-first: never removed automatically.
  */
 
 export type DeletedLaneChat = {

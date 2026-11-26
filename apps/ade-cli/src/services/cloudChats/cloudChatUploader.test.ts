@@ -65,4 +65,53 @@ describe("the saved copy of a cloud chat", () => {
     expect(puts).toHaveLength(3);
     uploader.dispose();
   });
+
+  it("sends a line written after the turn ended (a diff summary, a notice) before the computer rests, and counts it until it is sent", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-uploader-"));
+    dirs.push(root);
+    const transcripts = path.join(root, "transcripts");
+    fs.mkdirSync(transcripts);
+    const sessionId = "chat-1";
+    const file = path.join(transcripts, `${sessionId}.jsonl`);
+    const line = (event: unknown) => `${JSON.stringify({ sessionId, timestamp: "2026-11-26T00:00:00.000Z", event })}\n`;
+    fs.writeFileSync(file, line({ type: "user_message", text: "hi" }) + line({ type: "done", turnId: "t1", status: "completed" }));
+
+    let failPuts = false;
+    const sent: string[] = [];
+    const uploader = createCloudChatUploader({
+      env: { ADE_CLOUD_INSTANCE_ID: "inst1" },
+      adeDir: path.join(root, ".ade"),
+      chatTranscriptsDir: transcripts,
+      directoryBaseUrl: () => "https://account.test",
+      getAccessToken: async () => "token",
+      getMachineKey: () => "machine1",
+      readChatRow: async () => ({ title: "t", laneId: "lane1", laneName: "lane", status: "idle" } as CloudSavedChatRowInput),
+      flushTranscript: async () => {},
+      redactSecrets: (text) => text,
+      fetch: (async (_url: string, init?: RequestInit) => {
+        if (failPuts) return new Response("{}", { status: 503 });
+        sent.push((JSON.parse(String(init?.body ?? "{}")) as { text: string }).text);
+        return new Response("{}", { status: 200 });
+      }) as typeof fetch,
+    });
+
+    uploader.noteTurnEnded(sessionId, "completed");
+    await uploader.uploadPending(5_000);
+    expect(sent.join("")).toContain("user_message");
+
+    // The diff summary lands after `done`; nothing marks the chat.
+    fs.appendFileSync(file, line({ type: "turn_diff_summary", turnId: "t1", files: [{ path: "a.ts" }] }));
+    failPuts = true;
+    expect(await uploader.uploadPending(5_000)).toMatchObject({ remaining: 1, timedOut: false });
+
+    failPuts = false;
+    expect(await uploader.uploadPending(5_000)).toMatchObject({ uploaded: 1, remaining: 0 });
+    expect(sent.join("")).toContain("turn_diff_summary");
+
+    // Nothing new: nothing sent.
+    const before = sent.length;
+    expect(await uploader.uploadPending(5_000)).toMatchObject({ remaining: 0 });
+    expect(sent).toHaveLength(before);
+    uploader.dispose();
+  });
 });
