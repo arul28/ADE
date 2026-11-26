@@ -316,6 +316,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.derivedDataList", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.derivedDataDelete", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["ios_simulator.xcodeRunFirstLaunch", IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   // `foreground --wait` asks for up to 30s; the replay-safe 25s default ended it early.
   ["ios_simulator.getForegroundApp", 60_000],

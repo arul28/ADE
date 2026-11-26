@@ -1176,6 +1176,10 @@ import type {
   AppleRuntimeInstallState,
   AppleRuntimeInventory,
   AppleRuntimePruneArgs,
+  XcodeDerivedDataArgs,
+  XcodeDerivedDataDeleteArgs,
+  XcodeDerivedDataDeleteResult,
+  XcodeDerivedDataResult,
   AppleXcodeStatus,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
@@ -11108,6 +11112,20 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<AppleXcodeStatus> =>
       callIosSimulatorMutation(pin, "xcodeRunFirstLaunch", args, IPC.iosSimulatorXcodeRunFirstLaunch),
+    /** Xcode's DerivedData folders on the pinned machine; sizes only with `measure` (walks every file). */
+    derivedDataList: (
+      args: XcodeDerivedDataArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<XcodeDerivedDataResult> =>
+      callIosSimulatorActionOr<XcodeDerivedDataResult>(pin, "derivedDataList", { args }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorDerivedDataList, args),
+      ),
+    /** Delete the DerivedData folders the person picked. Refused while Xcode or xcodebuild runs. */
+    derivedDataDelete: (
+      args: XcodeDerivedDataDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<XcodeDerivedDataDeleteResult> =>
+      callIosSimulatorMutation(pin, "derivedDataDelete", args, IPC.iosSimulatorDerivedDataDelete),
 
     /**
      * One decoded frame from the running stream.

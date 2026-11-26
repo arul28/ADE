@@ -2616,6 +2616,15 @@ or the project. A persisted one-hour deduplication key per action limits it to
 72 accepted events per installation per UTC day, inside the existing
 `ade_feature_used` limits; no ceiling was raised.
 
+Removing a developer tool from Settings (Apple devices, Android devices)
+records `ade_feature_used` with `feature: "storage_doctor"`,
+`source: "renderer_route"`, `outcome` `completed`, `partial` or `failed`, the numeric
+`bytes_freed` when known, and one of `simulator_deleted`, `runtime_removed`,
+`build_data_deleted` or `emulator_deleted`. No name, path, udid or machine.
+A persisted one-hour deduplication key per action and outcome limits it to
+288 accepted events per installation per UTC day, inside the existing
+`ade_feature_used` limits; no ceiling was raised.
+
 Sending a custom notification — `ade notify`, an agent, or an automation's
 **Send notification to mobile app** step — records the same `ade_feature_used`
 event at the brain's `attention.sendNotification` / `notify.send` boundary

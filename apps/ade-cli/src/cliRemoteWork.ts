@@ -46,7 +46,7 @@ export type MachineWorkCopy = {
  * work copy there, so it is made (at this commit) when missing.
  */
 const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set([
-  "getStatus", "runtimeList", "listDevices", "deviceList", "getStreamStatus",
+  "getStatus", "runtimeList", "derivedDataList", "listDevices", "deviceList", "getStreamStatus",
 ]);
 
 /**

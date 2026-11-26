@@ -214,6 +214,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "attention_folder_ignored",
   "attention_hidden",
   "attention_shown_again",
+  // Settings' developer-tools cleanups (feature "storage_doctor"): a simulator,
+  // runtime, Xcode build data or Android emulator the person removed.
+  "simulator_deleted",
+  "runtime_removed",
+  "build_data_deleted",
+  "emulator_deleted",
   "preferences_changed",
   // Settings › About › Update track: a switch to the other track started
   // (feature "updates"; outcome to_stable | to_beta).

@@ -20,7 +20,7 @@ import { showToast } from "../app/toast/toastStore";
 /** The Mac App Store page for Xcode. */
 // https, not macappstore://: external links allow only http(s) and mailto,
 // and macOS hands an apps.apple.com link to the App Store anyway.
-const XCODE_APP_STORE_URL = "https://apps.apple.com/app/xcode/id497799835";
+export const XCODE_APP_STORE_URL = "https://apps.apple.com/app/xcode/id497799835";
 const XCODE_UPDATE_BANNER_KEY = "apple-xcode-update";
 
 /**
@@ -50,7 +50,7 @@ function simulatorsLabel(entry: AppleRuntimeEntry): string {
  * runtime that runs its model; it is on by default. ADE's lane devices always
  * move, so the checkbox speaks only for the person's own simulators.
  */
-async function confirmRemoval(input: {
+export async function confirmRemoval(input: {
   title: string;
   entries: AppleRuntimeEntry[];
   /** Every installed runtime, to tell which simulators have somewhere to go. */

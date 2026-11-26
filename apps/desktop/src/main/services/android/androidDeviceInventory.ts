@@ -407,6 +407,13 @@ export function createAndroidDeviceInventory<S extends AndroidInventoryLaneState
         if (running) throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", `${avdName} is running. Stop it before deleting it.`);
         // Again after the await: a lane may have attached it meanwhile.
         assertNotHeldElsewhere(null, avdName);
+        // One ADE made for a lane this project doesn't have is that project's, as the list says
+        // (`madeForOtherLane`); refuse here too, so a list that went stale can't reach it.
+        const avd = listAndroidAvds(ready.avdHome).find((entry) => sameAvdName(entry.name, avdName));
+        const madeFor = avd?.adeCreated ? readAdeAvdLaneId(avd) : null;
+        if (madeFor !== null && deps.laneLiveness(madeFor) === "missing") {
+          throw new AndroidEmulatorFailure("ANDROID_AVD_HELD_BY_OTHER_LANE", `ADE made ${avdName} for another project. Delete it from that project.`);
+        }
         deleteAdeAndroidAvd(ready.avdHome, avdName, []);
         logger?.info("android.device_deleted", { avdName });
         emit({ type: "android.inventory.changed" });

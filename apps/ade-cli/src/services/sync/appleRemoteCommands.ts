@@ -358,10 +358,26 @@ export function assertAppleInputAllowed(
  * guard — including the ones that only *look* passive, like `startStream`,
  * which changes the encoder settings for every viewer.
  */
+/**
+ * Mutations that belong to the Mac, not a lane: Settings' cleanups. Each is
+ * the person's (user-only at the policy, `confirmedByUser` where it deletes)
+ * and guards itself (a lane's simulator is refused), so it needs no lane and
+ * takes no device lock.
+ */
+const APPLE_MACHINE_MUTATIONS: ReadonlySet<string> = new Set([
+  "derivedDataDelete",
+  "deviceDeleteInstalled",
+  "deviceCleanup",
+  "runtimeDelete",
+  "runtimePrune",
+  "xcodeRunFirstLaunch",
+]);
+
 const APPLE_UNGUARDED_METHODS: ReadonlySet<string> = new Set([
   // Machine-wide reads: the Mac's simulator runtimes and Xcode's Duo model
   // belong to no lane.
   "runtimeList",
+  "derivedDataList",
   "getDuoModel",
   "getStatus",
   "listDevices",
@@ -645,7 +661,7 @@ export function createAppleRemoteCommandHandlers(deps: {
         // A guarded (mutating) method must name its lane. Without one it used to
         // run against whatever device was active, bypassing the cooperative chat
         // lock entirely; unguarded reads may still omit it.
-        const guardedMethod = !APPLE_UNGUARDED_METHODS.has(method);
+        const guardedMethod = !APPLE_UNGUARDED_METHODS.has(method) && !(APPLE_MACHINE_MUTATIONS.has(method) && !asString(payload.laneId));
         const laneId = guardedMethod
           ? requireString(payload.laneId, `apple.invoke '${method}' requires laneId.`)
           : asString(payload.laneId);

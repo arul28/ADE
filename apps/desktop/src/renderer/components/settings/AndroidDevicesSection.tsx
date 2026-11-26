@@ -25,6 +25,7 @@ import {
   TapRingsArt,
 } from "./deviceSettingsCards";
 import { ModernSection } from "./primitives";
+import { AndroidEmulatorsSection } from "./devices/AndroidEmulatorsSection";
 
 /** Whole GiB for the warning field, clamped to the field's range. */
 function warnGib(bytes: number): number {
@@ -62,6 +63,7 @@ export function AndroidDevicesSection() {
   return (
     <div className="ade-as">
       <AndroidSdkSection />
+      <AndroidEmulatorsSection />
 
       <ModernSection
         group="Android Development"

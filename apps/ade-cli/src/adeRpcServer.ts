@@ -5248,6 +5248,8 @@ const APPLE_LANE_FREE_ACTIONS = new Set<string>([
   "listLaunchTargets",
   "deviceList",
   "getStreamStatus",
+  // Machine-wide: Xcode's DerivedData belongs to the Mac, not a lane.
+  "derivedDataList",
 ]);
 
 function appleMissingLaneMessage(action: string): string | null {

@@ -14,6 +14,8 @@ import type {
   AppleDeviceAnalyticsOutcome,
   AppleRuntimeInstallArgs,
   AppleRuntimePruneArgs,
+  XcodeDerivedDataArgs,
+  XcodeDerivedDataDeleteArgs,
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
   AppleDeviceStartDeviceAction,
@@ -178,6 +180,7 @@ import {
 } from "./appleSimulatorCatalog";
 import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
+import { createXcodeDerivedData, type XcodeDerivedData } from "./xcodeDerivedData";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
 
 import { appleAppOnDevice, appleLaneDerivedDataPath, healMovedDerivedData } from "./laneDeviceRelease";
@@ -8270,6 +8273,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
     return runtimeManagerInstance;
   };
+  let xcodeDerivedDataInstance: XcodeDerivedData | null = null;
+  /** Xcode's DerivedData folders. Off macOS the list says `supported: false` and a delete refuses. */
+  const xcodeDerivedData = (): XcodeDerivedData => {
+    xcodeDerivedDataInstance ??= createXcodeDerivedData({
+      run: (command, commandArgs, options) => run(command, commandArgs, options),
+      logger: args.logger,
+    });
+    return xcodeDerivedDataInstance;
+  };
+
   /** Every runtime action is macOS-only, and runs against the machine's one manager. */
   const darwinRuntimeManager = (): AppleRuntimeManager => {
     assertDarwin();
@@ -8531,6 +8544,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     runtimePrune: async (pruneArgs: AppleRuntimePruneArgs) => darwinRuntimeManager().runtimePrune(pruneArgs),
     xcodeRunFirstLaunch: async (setupArgs: { confirmedByUser?: boolean } = {}) =>
       darwinRuntimeManager().xcodeRunFirstLaunch(setupArgs),
+
+    /* Xcode's DerivedData: list (sizes only with `measure`), and delete what the person picked. */
+    derivedDataList: async (listArgs?: XcodeDerivedDataArgs) => xcodeDerivedData().list(listArgs ?? {}),
+    derivedDataDelete: async (deleteArgs: XcodeDerivedDataDeleteArgs) => xcodeDerivedData().remove(deleteArgs),
     /** The lane is being archived or deleted: let go of its device in this process. */
     stopForLane,
 

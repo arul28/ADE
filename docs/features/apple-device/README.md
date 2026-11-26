@@ -209,10 +209,47 @@ that runs that model.
   (CoreSimulator unmounts it a moment after the command returns).
 - The Xcode note: `xcodebuild -version`, `-checkFirstLaunchStatus` (with **Run
   setup**, user-only `xcodeRunFirstLaunch`), and Apple's releases RSS read at
-  most once a day per machine (betas hidden).
+  most once a day per machine (betas hidden). `developerDir` is
+  `xcode-select -p` and `appPath` the `.app` that holds it (null for the
+  Command Line Tools alone); both are optional, so an older brain omits them.
 
 CLI: `ade apple runtimes [list|install [--version x.y]|cancel]`. Removing is the
 person's call, from the panel.
+
+### Xcode build data (DerivedData)
+
+`xcodeDerivedData.ts` lists and deletes the folders in Xcode's own
+DerivedData on the lane's machine (Xcode's custom location from
+`defaults read com.apple.dt.Xcode IDECustomDerivedDataLocation` when it is
+an absolute path, else `~/Library/Developer/Xcode/DerivedData`). This is
+Xcode's machine-wide folder, not a lane's `.ade/cache/ios-simulator/DerivedData`.
+Both calls go to the machine by the lane's pin, like the runtimes.
+
+- `derivedDataList` (read, agents may call it, no lane needed): one entry per
+  folder Xcode made, newest first: a project folder whose `info.plist` names
+  its `WorkspacePath` (flagged `workspaceMissing` when that project is gone),
+  or one of Xcode's caches by its exact name (`ModuleCache.noindex`, the
+  shared module cache, `SymbolCache.noindex`, `SDKStatCaches.noindex`,
+  `CompilationCache.noindex`); a person's own `*.noindex` folder is left alone.
+  Any other folder in a custom location is the person's and is never listed. Sizes only with `measure: true`, through
+  `storage/diskUsage.ts` (allocated blocks, links never followed), three
+  folders at a time; the answer is kept a minute and dropped after a delete.
+  It can walk tens of GB, so nothing measures on a timer. `buildRunning` is
+  `pgrep -x Xcode` or `xcodebuild`. Off macOS: `supported: false`.
+- `derivedDataDelete` (person-only, `APPLE_USER_ONLY_ACTIONS`): needs
+  `confirmedByUser: true`, and refuses while Xcode or xcodebuild runs. Each
+  path must be a real folder (not a link) directly inside the root and one
+  Xcode made (the list's rule); anything else comes back in `errors`, never
+  deleted. Every folder is first renamed to ADE's `.ade-deleting-` trash beside
+  it (fast, so a build that starts now no longer finds it), then the trash
+  folders are measured under one 20-second deadline (they are gone already, so
+  the person does not wait on a walk) and removed in the background
+  (`shared/deletingTrash.ts`). A size cut off by the deadline sets
+  `freedIsLowerBound`; Settings then shows the sizes its confirm listed. A leftover trash folder is
+  finished on the next list. Xcode rebuilds what it needs on the next build.
+
+CLI: `ade apple derived-data [--measure]` (read only). Deleting is the
+person's call, from Settings.
 
 `origin` on the lane row is `created` for a device ADE made, `clone` for one
 made before this change (treated exactly the same), and `attached` for the

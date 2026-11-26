@@ -611,6 +611,8 @@ export const IPC = {
   iosSimulatorRuntimeInstallCancel: "ade.iosSimulator.runtimeInstallCancel",
   iosSimulatorRuntimeDelete: "ade.iosSimulator.runtimeDelete",
   iosSimulatorRuntimePrune: "ade.iosSimulator.runtimePrune",
+  iosSimulatorDerivedDataList: "ade.iosSimulator.derivedDataList",
+  iosSimulatorDerivedDataDelete: "ade.iosSimulator.derivedDataDelete",
   iosSimulatorXcodeRunFirstLaunch: "ade.iosSimulator.xcodeRunFirstLaunch",
   iosSimulatorFrame: "ade.iosSimulator.frame",
   iosSimulatorRecordStart: "ade.iosSimulator.recordStart",

@@ -126,8 +126,8 @@ export function MachineSettings({
           <MachineRow
             icon={<AppleLogo size={14} />}
             title="Apple devices"
-            value="Simulators and recordings"
-            control={isThis ? <RowLink onClick={() => openTab("apple")} /> : elsewhere}
+            value="Xcode, simulators and their disk space"
+            control={reach ? <RowLink onClick={() => openMachine(scope.machineId, "apple")} /> : elsewhere}
           />
         ) : null}
         {/* Every machine can run the Android emulator, and its page follows the machine. */}

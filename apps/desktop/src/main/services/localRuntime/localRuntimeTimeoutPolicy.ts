@@ -435,6 +435,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // A render folds the Duo per pose and records a turntable.
   ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   ["ios_simulator.runtimePrune", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
+  // Measuring DerivedData walks every file (tens of GB); a delete measures first.
+  ["ios_simulator.derivedDataList", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
+  ["ios_simulator.derivedDataDelete", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   ["ios_simulator.xcodeRunFirstLaunch", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // See IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS.
   ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS],
