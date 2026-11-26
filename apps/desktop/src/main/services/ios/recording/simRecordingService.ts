@@ -1118,6 +1118,14 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           return dropped;
         }
         record = { ...record, path: moviePathFromHelper };
+        if (isStuckMediaProcessError(error)) {
+          // The drive stopped answering: filing writes to it and would freeze
+          // this process. The raw recording stays where it is.
+          warn("apple.recording.drive_stuck_not_filed", { laneId: record.laneId });
+          const stuck = { ...record, lastError: record.lastError ?? "The recording's drive stopped answering, so the video was not filed." };
+          notify(stuck.laneId, "stopped", stuck);
+          return stuck;
+        }
       }
     }
     const filed = fileAsProof(record);
