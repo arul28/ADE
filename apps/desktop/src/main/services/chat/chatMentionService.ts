@@ -479,12 +479,13 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
   const buildPersonCandidates = async (args: ChatMentionSuggestArgs): Promise<ChatMentionSuggestion[]> => {
     const sources = peopleSources();
     if (!sources.length) return [];
-    // A bare browse gives a cold source a short wait, like machines, and the
-    // rows join on the next keystroke. A typed search or an exact lookup waits
-    // for the read itself (bounded by its timeout): an answer without people
-    // there would read as "no matches", and the composer closes the menu on
-    // that and keeps it closed while the user finishes the name.
-    const fullRead = Boolean(args.ids?.length) || parseChatMentionKindFilter(args.query ?? "").rest.length > 0;
+    // Only a bare `@` gives a cold source a short wait, like machines: an
+    // empty query is a browse the composer never dismisses, and the rows join
+    // on the next keystroke. Anything typed (`@people`, a name) or an exact
+    // lookup waits for the read itself (bounded by its timeout): an answer
+    // without people there would read as "no matches", and the composer closes
+    // the menu on that and keeps it closed while the user keeps typing.
+    const fullRead = Boolean(args.ids?.length) || (args.query ?? "").trim().length > 0;
     const reads = await Promise.all(sources.map(async ([source, read]) => {
       if (fullRead) return await loadPeople(source, read);
       let budgetTimer: ReturnType<typeof setTimeout> | null = null;

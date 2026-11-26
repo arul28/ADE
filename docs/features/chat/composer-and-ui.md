@@ -586,8 +586,8 @@ a handoff that sees no frames in 1.5 s gives up and restores the composer.
   `@github` matches a source through the subtitle. Each source is read once
   and kept 5 minutes; a disconnected or failing source is retried after a
   minute. A bare `@` browse waits at most 800 ms for a cold read (the rows
-  join on the next keystroke); a typed search waits for the read itself (4 s
-  cap), because an answer without people would read as no matches and the
+  join on the next keystroke); anything typed, `@people` included, waits for
+  the read itself (4 s cap), because an answer without people would read as no matches and the
   composer closes the menu on that. Finishing a kind word (`@peop` →
   `@people`) reopens a menu that a no-match closed; an Escape still holds. No email is read into a row. A
   person mention is **context only**: its block (`kind="person"`) gives the
