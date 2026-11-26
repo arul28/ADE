@@ -745,7 +745,7 @@ export function ActivityMachinesSection({ model }: { model: ActivitySettingsMode
           <ModernRow
             icon={<DeviceMobile size={14} />}
             title="Couldn’t load your phones"
-            hint="Your computers above still work. Try again in a moment."
+            hint={machines.length > 0 ? "Your computers above still work. Try again in a moment." : "Try again in a moment."}
             control={<button type="button" className="ade-modern-btn" onClick={model.retryLoad}>Retry</button>}
           />
         ) : null}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { RemoteRuntimeUpdateAndRestartResult } from "../../../shared/types";
-import { extractError } from "../../lib/format";
+import { ipcErrorMessage } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
@@ -226,7 +226,8 @@ async function runMachineCall(
   } catch (error) {
     attempt = {
       ok: false,
-      message: extractError(error),
+      // Without Electron's "Error invoking remote method" wrapper: the row shows this.
+      message: ipcErrorMessage(error) || `ADE couldn't reach ${machine.name}. Try again.`,
       pendingVersion: null,
       downloading: false,
       startedAtMs: Date.now(),
