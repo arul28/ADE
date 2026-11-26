@@ -1223,8 +1223,10 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     const read = readIgnoredStrict();
     const list = withoutChangedHides(read, allIssues);
     for (const entry of read) if (!list.includes(entry)) dropIgnore(entry.key);
-    // Counted as the person can see them here: folders, and this copy's own line hides (another copy's are not listed here).
-    if (list.filter((entry) => entry.kind === "folder" || ownCopy(entry)).length >= MAX_IGNORED) {
+    // Counted as the person can see them here, so Show again can always get under it: folders, and this
+    // copy's hides of lines present now (a hide whose line is absent, or another copy's, is not listed).
+    const showable = new Set(hiddenIssueIds(list, allIssues));
+    if (list.filter((entry) => entry.kind === "folder" || (ownCopy(entry) && showable.has(entry.issueId))).length >= MAX_IGNORED) {
       throw new Error("This project already ignores 200 things. Show some again first.");
     }
     const ignoredAt = new Date().toISOString();
