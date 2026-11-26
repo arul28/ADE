@@ -18,6 +18,8 @@ import {
   tailscaleKeyExpiryDays,
 } from "../../../shared/machineConnectionRoutes";
 import { openExternalUrl } from "../../lib/openExternal";
+import { rendererRuntimeTarget } from "../../lib/platform";
+import { showToast } from "../app/toast/toastStore";
 import { formatTime } from "../../lib/format";
 import { ModernRow, ModernRows, ModernSection, type SettingsTone } from "../settings/primitives";
 import { TailscaleMark } from "./MachineRoutes";
@@ -71,10 +73,37 @@ const TAILSCALE_OFF_HINT: Record<Exclude<MachineConnectionRoutes["tailscale"]["s
   unknown: "Tailscale didn't answer. Open the Tailscale app and make sure it's connected, then press Check again.",
 };
 
-/** Opens the Tailscale app on this computer, where the bridge can. */
+/**
+ * Opens the Tailscale app on this computer. Only offered where the app has a
+ * known install path (macOS, Windows); elsewhere the step keeps its link.
+ */
 function openTailscaleAction(): StepAction | undefined {
   const open = window.ade?.app?.openTailscale;
-  return open ? { label: "Open Tailscale", run: () => void open().catch(() => undefined) } : undefined;
+  const platform = rendererRuntimeTarget().platform;
+  if (!open || (platform !== "darwin" && platform !== "win32")) return undefined;
+  return { label: "Open Tailscale", run: () => void runOpenTailscale(open) };
+}
+
+/** A launch that didn't happen says why, with Tailscale's Machines page as the way on. */
+async function runOpenTailscale(open: () => Promise<{ opened: boolean; message?: string }>): Promise<void> {
+  let message: string;
+  let failed: unknown = null;
+  try {
+    const result = await open();
+    if (result.opened) return;
+    message = result.message ?? "ADE couldn't open the Tailscale app.";
+  } catch (err) {
+    failed = err;
+    message = err instanceof Error ? err.message : "ADE couldn't open the Tailscale app.";
+  }
+  showToast({
+    tone: "error",
+    title: "Tailscale didn't open",
+    message: `${/[.!?]$/.test(message.trim()) ? message.trim() : `${message.trim()}.`} Open it yourself, or renew the sign-in on Tailscale's Machines page.`,
+    actions: [{ label: "Machines", href: TAILSCALE_MACHINES_ADMIN_URL }],
+    // A missing app is the person's to fix; a broken bridge call is ADE's to hear about.
+    report: failed ? { surface: "connections_open_tailscale", code: "open_tailscale_failed" } : false,
+  });
 }
 
 /**
@@ -87,7 +116,7 @@ function tailscaleStep(routes: MachineConnectionRoutes): SetupStep {
   const ts = routes.tailscale;
   const running = ts.state === "running";
   const installed = ts.state !== "not_installed";
-  const says = !running && ts.health?.[0] ? <> Tailscale says: <q>{ts.health[0]}</q></> : null;
+  const says = ts.health?.[0] ? <> Tailscale says: <q>{ts.health[0]}</q></> : null;
   if (!running && ts.keyExpired) {
     return {
       id: "installed",
@@ -106,7 +135,7 @@ function tailscaleStep(routes: MachineConnectionRoutes): SetupStep {
     id: "installed",
     title: running ? "Tailscale is on" : installed ? "Turn Tailscale on" : "Install Tailscale",
     hint: running
-      ? <>This computer is <span className="ade-net-mono">{ts.dnsName ?? "on your tailnet"}</span></>
+      ? <>This computer is <span className="ade-net-mono">{ts.dnsName ?? "on your tailnet"}</span>{says ? <>.{says}</> : null}</>
       : !installed
         ? "Free for personal use. Install it on each computer and your phone, signed in to the same account."
         : <>{offHint}{says}</>,
