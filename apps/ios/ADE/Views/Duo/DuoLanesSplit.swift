@@ -71,7 +71,7 @@ extension LanesTabView {
         RecentlyDeletedSections(
           store: recentlyDeletedStore,
           syncService: syncService,
-          machines: recentlyDeletedMachines,
+          machines: ProjectCopyMachine.everyLiveCopy(sync: syncService),
           style: .flat,
           query: searchText,
           canRunLiveActions: canRunLiveActions,

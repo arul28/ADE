@@ -156,6 +156,16 @@ export function isProjectSettingsTab(tab: SettingsTabId): boolean {
 }
 
 /**
+ * Project pages that read every online copy of the project at once, in one
+ * list (Deleted & Archived), so they pick no one copy and show no picker.
+ */
+export const EVERY_COPY_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["deleted"];
+
+export function isEveryCopySettingsTab(tab: SettingsTabId): boolean {
+  return EVERY_COPY_SETTINGS_TAB_IDS.includes(tab);
+}
+
+/**
  * Pages about This computer and only it: its screen (Appearance), its habits
  * (Behaviour), its simulators (Apple devices), its service (Advanced) and its
  * overview (General). Another machine's own settings are on its Machines page.

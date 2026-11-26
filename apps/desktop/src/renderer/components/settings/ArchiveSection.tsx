@@ -1,5 +1,5 @@
 import React from "react";
-import { Archive as ArchiveIcon, ArrowCounterClockwise, Broom, Check, MagnifyingGlass, Trash, X } from "@phosphor-icons/react";
+import { Archive as ArchiveIcon, ArrowCounterClockwise, Broom, Check, Trash, X } from "@phosphor-icons/react";
 import type {
   ArchiveActionResult,
   ArchiveItemKind,
@@ -9,22 +9,22 @@ import type {
 import { DEFAULT_ARCHIVE_STALE_DAYS } from "../../../shared/types/archive";
 import { archiveKindCountParts, archiveKindPlural, emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 import type { TerminalToolType } from "../../../shared/types/sessions";
-import { relativeWhen } from "../../lib/format";
+import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { useStorageBytes } from "./storage/useStorageBytes";
 import { confirmDialog } from "../ui/dialog";
-import { showToast } from "../app/toast/toastStore";
-import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
+import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
+import { LaneChip } from "../terminals/LaneChip";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { useLaneReclaim } from "./lanes/useLaneReclaim";
 import { SettingsColumn } from "./primitives";
-import { Banner } from "../ui/notice";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
 import { groupByMachine } from "../../state/repositoryScope";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { useEveryCopyRead } from "../../state/everyCopyRead";
+import { CopyReadErrors, CopyReadsPending, KindFilterSearchBar, LaneColorMark, machineHint } from "./EveryCopyList";
 import { MetaLine } from "./MetaLine";
 import { NoProjectCopyNotice } from "./ProjectCopyScope";
-import { useEveryCopyRead } from "./useEveryCopyRead";
 
 /**
  * Settings → Deleted & Archived → Archive: every lane, chat and shell you
@@ -32,10 +32,10 @@ import { useEveryCopyRead } from "./useEveryCopyRead";
  *
  * Archive only hides a thing; it stays on disk until you free up its space or
  * delete it here, or a rule under Disk space → Rules does. The weekly reminder
- * banner points back to this page. The list splits at the same line the
- * reminder uses (the "Free up space after" setting, two weeks by default), so
- * "Older" is exactly what the banner was asking about, with one button to
- * clear it.
+ * banner points back to this page. Each row splits at the line its machine's
+ * reminder uses (that machine's "Free up space after" setting, two weeks by
+ * default), so "Older" is exactly what the banner was asking about, with one
+ * button to clear it.
  *
  * A lane's Free up space is Archive & reclaim's own confirm and flow: the
  * folder goes, the branch and chats stay, and Restore recreates the folder
@@ -74,20 +74,7 @@ function totalBytes(items: ArchivedItem[]): number {
 
 /** The square mark at the start of a row: the lane's own colour, or the agent's logo. */
 function ItemMark({ item }: { item: ArchivedItem }) {
-  if (item.kind === "lane") {
-    const color = laneDisplayColor(item.laneColor);
-    return (
-      <span
-        className="ade-ar-mark"
-        style={{
-          background: `color-mix(in srgb, ${color} 16%, transparent)`,
-          boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 28%, transparent)`,
-        }}
-      >
-        <LaneLogoMark color={color} size={15} />
-      </span>
-    );
-  }
+  if (item.kind === "lane") return <LaneColorMark color={item.laneColor} />;
   return (
     <span className="ade-ar-mark">
       <ToolLogo toolType={(item.toolType ?? "shell") as TerminalToolType} size={15} />
@@ -204,7 +191,7 @@ function ArchiveRow({
       <MarkOrSelect item={item} checked={selected} selecting={selecting} onToggle={onToggle} />
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="ade-ar-title">{item.title}</div>
-        <MetaLine items={[where, ...meta.map((part) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{part}</span>)]} />
+        <MetaLine items={[where, ...meta.map((part) => <span className="kit-num">{part}</span>)]} />
       </div>
       {/* While selecting, the selection bar is the only place to act: the
           row's own actions leave the tab order too, not just the screen. */}
@@ -290,21 +277,38 @@ function rowKey(pin: OpenProjectBinding, ref: ArchiveItemRef): string {
   return `${pin.key}\n${refKey(ref)}`;
 }
 
+/** An archive action's answer from several machines: each item keeps the machine (`pinKey`) it is on. */
+type MachinesResult = {
+  done: Array<ArchiveItemRef & { pinKey: string }>;
+  failed: Array<ArchiveActionResult["failed"][number] & { pinKey: string }>;
+};
+
+/** The key of an item on its machine: two machines can hold the same id. */
+function pinnedKey(item: ArchiveItemRef & { pinKey: string }): string {
+  return `${item.pinKey}\n${refKey(item)}`;
+}
+
 /** Runs one archive action on each machine its rows are on, and adds the answers up. */
 async function onEachMachine(
   rows: readonly Row[],
   run: (pin: OpenProjectBinding, refs: ArchiveItemRef[]) => Promise<ArchiveActionResult>,
-): Promise<ArchiveActionResult> {
-  const total: ArchiveActionResult = { done: [], failed: [] };
+): Promise<MachinesResult> {
+  const total: MachinesResult = { done: [], failed: [] };
   const { groups } = groupByMachine(rows, (row) => row.pin);
   const answers = await Promise.all(groups.map(async (group) => {
     const refs = group.items.map((row) => toRef(row.item));
+    let answer: ArchiveActionResult;
     try {
-      return await run(group.pin, refs);
+      answer = await run(group.pin, refs);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Something went wrong.";
-      return { done: [], failed: refs.map((ref) => ({ ...ref, error: message })) } satisfies ArchiveActionResult;
+      const message = ipcErrorMessage(error) || "Something went wrong.";
+      answer = { done: [], failed: refs.map((ref) => ({ ...ref, error: message })) };
     }
+    const pinKey = group.pin.key;
+    return {
+      done: answer.done.map((item) => ({ ...item, pinKey })),
+      failed: answer.failed.map((item) => ({ ...item, pinKey })),
+    };
   }));
   for (const answer of answers) {
     total.done.push(...answer.done);
@@ -335,12 +339,13 @@ export function ArchiveSection() {
     return out.sort((a, b) => Date.parse(b.item.archivedAt) - Date.parse(a.item.archivedAt));
   }, [machines]);
   const loaded = machines.some((machine) => machine.done);
-  const pending = machines.filter((machine) => !machine.done);
-  const failed = machines.filter((machine) => machine.error);
-  // The line between recent and old: the "Free up space after" setting of the
-  // first machine that answered (the tab's copy comes first).
-  const staleDays = machines.find((machine) => machine.value?.staleAfterDays != null)?.value?.staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS;
-  const severalMachines = machines.length > 1;
+  const allDone = machines.every((machine) => machine.done);
+  // The line between recent and old is each machine's own "Free up space
+  // after" setting, the one its reminder uses.
+  const staleDaysByPin = React.useMemo(() => new Map(machines.map((machine) => [
+    machine.pin.key,
+    machine.value?.staleAfterDays ?? DEFAULT_ARCHIVE_STALE_DAYS,
+  ])), [machines]);
 
   // A selection keeps only rows still listed.
   React.useEffect(() => {
@@ -356,8 +361,9 @@ export function ArchiveSection() {
   }, [reload]);
 
   // Free up space on the row's machine, where the lane's folder is.
-  const reclaimRows = React.useRef<Row[]>([]);
-  const reclaim = useLaneReclaim(null, () => reloadRows(reclaimRows.current), { alreadyArchived: true });
+  const reclaim = useLaneReclaim(null, (pin) => {
+    if (pin) reload(pin.key);
+  }, { alreadyArchived: true });
 
   const counts = React.useMemo(() => {
     const byKind = emptyArchiveCounts();
@@ -375,16 +381,20 @@ export function ArchiveSection() {
     });
   }, [filter, query, rows]);
 
-  const { recent, older } = React.useMemo(() => {
+  const { recent, older, staleDays } = React.useMemo(() => {
     const nowMs = Date.now();
     const groups = { recent: [] as Row[], older: [] as Row[] };
+    const lines = new Set<number>();
     for (const row of visible) {
-      (isArchiveStale(row.item.archivedAt, staleDays, nowMs) ? groups.older : groups.recent).push(row);
+      const days = staleDaysByPin.get(row.pin.key) ?? DEFAULT_ARCHIVE_STALE_DAYS;
+      lines.add(days);
+      (isArchiveStale(row.item.archivedAt, days, nowMs) ? groups.older : groups.recent).push(row);
     }
-    return groups;
-  }, [staleDays, visible]);
+    // One line for every row shown names its days; machines that differ do not.
+    return { ...groups, staleDays: lines.size === 1 ? [...lines][0]! : null };
+  }, [staleDaysByPin, visible]);
 
-  const report = React.useCallback((verb: "Restored" | "Deleted", result: ArchiveActionResult) => {
+  const report = React.useCallback((verb: "Restored" | "Deleted", result: MachinesResult) => {
     const [firstFailure] = result.failed;
     if (result.done.length > 0) {
       showToast({
@@ -395,7 +405,7 @@ export function ArchiveSection() {
               message: `${result.failed.length} couldn't be ${verb.toLowerCase()} — ${firstFailure.error}`,
               tone: "warning" as const,
               // A partial result is worth reading (docs/design/notices.md).
-              durationMs: 18_000,
+              durationMs: READABLE_TOAST_DURATION_MS,
             }
           : { tone: "success" as const }),
       });
@@ -439,7 +449,8 @@ export function ArchiveSection() {
       const dirtyLanes = result.failed.filter(
         (item) => item.kind === "lane" && /enable force delete/i.test(item.error),
       );
-      const dirtyRows = targets.filter((row) => row.item.kind === "lane" && dirtyLanes.some((item) => item.id === row.item.id));
+      const dirtyKeys = new Set(dirtyLanes.map(pinnedKey));
+      const dirtyRows = targets.filter((row) => dirtyKeys.has(pinnedKey({ ...toRef(row.item), pinKey: row.pin.key })));
       if (dirtyRows.length > 0) {
         const names = dirtyRows.map((row) => row.item.title).join(", ");
         const force = await confirmDialog({
@@ -453,10 +464,9 @@ export function ArchiveSection() {
         });
         if (force) {
           const retry = await onEachMachine(dirtyRows, (pin, items) => deleteInBatches(items, pin, true));
-          const retried = new Set(dirtyLanes.map(refKey));
           result = {
             done: [...result.done, ...retry.done],
-            failed: [...result.failed.filter((item) => !retried.has(refKey(item))), ...retry.failed],
+            failed: [...result.failed.filter((item) => !dirtyKeys.has(pinnedKey(item))), ...retry.failed],
           };
         }
       }
@@ -485,52 +495,30 @@ export function ArchiveSection() {
       <ArchiveRow
         key={row.key}
         item={row.item}
-        machineHint={severalMachines ? `On ${row.machineName}` : undefined}
+        machineHint={machineHint(machines.length, row.machineName)}
         selected={selected.has(row.key)}
         selecting={selecting}
         busy={busy}
         onToggle={() => toggle(row.key)}
         onRestore={() => void restore([row])}
-        onFreeUp={() => {
-          reclaimRows.current = [row];
-          void reclaim.open(row.item.id, row.pin);
-        }}
+        onFreeUp={() => void reclaim.open(row.item.id, row.pin)}
         onDelete={() => void remove([row])}
       />
     ));
 
   const filterBar = (
-    <div role="radiogroup" aria-label="Show" className="kit-seg" data-case="sentence">
-      {FILTERS.map((option) => {
-        const count = option.value === "all" ? rows.length : counts[option.value];
-        const active = filter === option.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            onClick={() => setFilter(option.value)}
-          >
-            {option.label}
-            <span className="kit-num ade-ar-count">{count}</span>
-          </button>
-        );
-      })}
-    </div>
-  );
-
-  const searchField = (
-    <label className="ade-ar-search">
-      <MagnifyingGlass size={13} aria-hidden="true" />
-      <input
-        className="kit-input"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        placeholder="Search the archive"
-        aria-label="Search archived lanes, chats and shells"
-      />
-    </label>
+    <KindFilterSearchBar
+      options={FILTERS.map((option) => ({
+        ...option,
+        count: option.value === "all" ? rows.length : counts[option.value],
+      }))}
+      value={filter}
+      onChange={setFilter}
+      query={query}
+      onQueryChange={setQuery}
+      placeholder="Search the archive"
+      searchLabel="Search archived lanes, chats and shells"
+    />
   );
 
   const selectionBar = (
@@ -543,7 +531,7 @@ export function ArchiveSection() {
       >
         <X size={13} />
       </button>
-      <span className="ade-ar-title" style={{ fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{selectedRows.length} selected</span>
+      <span className="ade-ar-title kit-num" style={{ fontSize: 12.5 }}>{selectedRows.length} selected</span>
       <span style={{ flex: 1 }} />
       <button
         type="button"
@@ -574,27 +562,15 @@ export function ArchiveSection() {
           {/* A selection takes the toolbar's place, so the list never jumps. */}
           {selecting ? (
             <div className="ade-ar-toolbar">{selectionBar}</div>
-          ) : rows.length > 0 ? (
-            <div className="ade-ar-toolbar">
-              {filterBar}
-              {searchField}
-            </div>
-          ) : null}
+          ) : rows.length > 0 ? filterBar : null}
 
-          {failed.map((machine) => (
-            <Banner
-              key={machine.pin.key}
-              layout="inline"
-              model={{
-                id: `archive-load-error-${machine.pin.key}`,
-                tone: "error",
-                title: `Couldn't open ${machine.machineName}'s archive`,
-                actions: [{ label: "Try again", onClick: () => reload(machine.pin.key) }],
-                detail: machine.error ?? undefined,
-                report: { surface: "archive_load", technicalDetail: machine.error ?? "" },
-              }}
-            />
-          ))}
+          <CopyReadErrors
+            machines={machines}
+            reload={reload}
+            idPrefix="archive-load-error"
+            surface="archive_load"
+            title={(name) => `Couldn't open ${name}'s archive`}
+          />
 
           {noCopy ? (
             <NoProjectCopyNotice />
@@ -602,7 +578,7 @@ export function ArchiveSection() {
             <p className="ade-modern-muted">Loading the archive…</p>
           ) : visible.length === 0 && query.trim() ? (
             <p className="ade-modern-muted">Nothing archived matches “{query.trim()}”.</p>
-          ) : visible.length === 0 && pending.length === 0 ? (
+          ) : visible.length === 0 && allDone ? (
             <div className="ade-ar-empty">
               <ArchiveIcon size={22} weight="light" />
               <div className="ade-ap-rowtitle">{filter === "all" ? "Nothing archived" : `No archived ${archiveKindPlural(filter)}`}</div>
@@ -612,14 +588,14 @@ export function ArchiveSection() {
             <div role="table" aria-label="Archived items" className="ade-ar-table">
               {recent.length > 0 ? (
                 <div className="ade-ar-block">
-                  <GroupHeader title={`Last ${staleDays} days`} items={recent.map((row) => row.item)} />
+                  <GroupHeader title={staleDays != null ? `Last ${staleDays} days` : "Recent"} items={recent.map((row) => row.item)} />
                   <div className="ade-modern-rows ade-ar-list">{renderRows(recent)}</div>
                 </div>
               ) : null}
               {older.length > 0 ? (
                 <div className="ade-ar-block">
                   <GroupHeader
-                    title={`Older than ${staleDays} days`}
+                    title={staleDays != null ? `Older than ${staleDays} days` : "Older"}
                     items={older.map((row) => row.item)}
                     action={
                       <button
@@ -640,9 +616,7 @@ export function ArchiveSection() {
               ) : null}
             </div>
           )}
-          {loaded && pending.length > 0 ? (
-            <p className="ade-modern-muted">Still reading {pending.map((machine) => machine.machineName).join(", ")}…</p>
-          ) : null}
+          <CopyReadsPending machines={machines} />
         </div>
       </section>
       {reclaim.dialog}

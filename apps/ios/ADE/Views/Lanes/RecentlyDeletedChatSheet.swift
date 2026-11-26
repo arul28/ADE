@@ -17,7 +17,7 @@ struct RecentlyDeletedChatSheet: View {
   @State private var confirmingRemove = false
 
   private var chat: DeletedChat { entry.chat }
-  private var machine: LaneRecentlyDeletedMachine { entry.machine }
+  private var machine: ProjectCopyMachine { entry.machine }
   private var needsLane: Bool { !chat.laneExists }
   private var reopening: Bool { store.running == RecentlyDeletedStore.Running(key: entry.id, kind: .reopen) }
   private var removing: Bool { store.running == RecentlyDeletedStore.Running(key: entry.id, kind: .remove) }
@@ -72,7 +72,7 @@ struct RecentlyDeletedChatSheet: View {
   private var header: some View {
     HStack(alignment: .center, spacing: 10) {
       DeletedChatLogo(chat: chat, size: 24)
-      DeletedMetaLine(parts: headerMeta)
+      ADEMetaLine(parts: headerMeta)
         .font(.caption)
         .foregroundStyle(ADEColor.textSecondary)
       Spacer(minLength: 0)
@@ -90,7 +90,7 @@ struct RecentlyDeletedChatSheet: View {
   }
 
   private var headerMeta: [String] {
-    deletedChatMetaParts(chat) + (store.machines.count > 1 ? [machine.name] : [])
+    deletedChatMetaParts(chat) + (store.reads.machines.count > 1 ? [machine.name] : [])
   }
 
   // MARK: Footer
@@ -269,10 +269,4 @@ struct RecentlyDeletedChatSheet: View {
       lanesError = "Couldn’t read \(machine.name)’s lanes."
     }
   }
-}
-
-func deletedChatRemoveMessage(_ chat: DeletedChat) -> String {
-  let keeper = workExternalSessionProviderName(chat.sourceProvider)
-  let copy = chat.isCli && chat.resumable != true ? "its own copy, if it made one" : "its own copy"
-  return "You won’t be able to reopen “\(deletedChatTitle(chat))” in ADE anymore. \(keeper) keeps \(copy)."
 }

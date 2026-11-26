@@ -712,8 +712,8 @@ export type RestoreDeletedLaneResult = {
   /**
    * The chats the lane delete put in Recently deleted, reopened into the
    * restored lane (as copies: the lane has a new folder). Absent from an
-   * older ADE, which leaves them in Recently deleted; a client then reopens
-   * them itself.
+   * older ADE, and when the restore ran with no chat service; the chats
+   * then stay in Recently deleted.
    */
   reopenedChats?: RestoredLaneChat[];
   /** How many of those chats could not be reopened; they stay in Recently deleted. */
@@ -723,6 +723,16 @@ export type RestoreDeletedLaneResult = {
 export type RestoredLaneChat = {
   chatSessionId: string;
   title: string | null;
+};
+
+/** A deleted lane came back as a new lane: the old lane's chats go to the new one. */
+export type RestoredLaneChatsArgs = { fromLaneId: string; toLaneId: string };
+
+/** What came of a restored lane's chats. */
+export type RestoredLaneChats = {
+  reopened: RestoredLaneChat[];
+  /** The chats that could not come back; they stay in Recently deleted. */
+  failed: number;
 };
 
 export type LaneDeleteStepName =

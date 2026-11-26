@@ -890,6 +890,7 @@ import type {
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
   EffectiveProjectConfig,
+  RestoredLaneChatsArgs,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { MODEL_CATALOG_REFRESH_PROVIDERS, PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
@@ -86467,7 +86468,7 @@ ${schedule.prompt}`
     getDeletedChatDetail: (detailArgs: DeletedChatDetailArgs) => deletedChats.detail(detailArgs),
     reopenDeletedChat: (reopenArgs: DeletedChatReopenArgs) => deletedChats.reopen(reopenArgs),
     /** A deleted lane came back as `toLaneId`: its chats go back into it. Host-wired, not an action. */
-    reopenDeletedChatsWithLane: (restoreArgs: { fromLaneId: string; toLaneId: string }) => deletedChats.reopenWithRestoredLane(restoreArgs),
+    reopenDeletedChatsWithLane: (restoreArgs: RestoredLaneChatsArgs) => deletedChats.reopenWithRestoredLane(restoreArgs),
     removeDeletedChats: (removeArgs: DeletedChatRemoveArgs) => deletedChats.remove(removeArgs),
     archiveSession,
     unarchiveSession,

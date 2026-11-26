@@ -50,7 +50,7 @@ func archiveIsStale(_ archivedAt: String, days: Int, now: Date = Date()) -> Bool
 
 /// One archived thing, and the machine it is archived on.
 struct ArchiveEntry: Identifiable, Equatable {
-  let machine: LaneRecentlyDeletedMachine
+  let machine: ProjectCopyMachine
   let item: ArchivedItem
   var id: String { "\(machine.id)\n\(item.kind):\(item.id)" }
   var at: Date { parseLaneTimestamp(item.archivedAt) ?? .distantPast }
@@ -90,112 +90,76 @@ func archiveFiltered(_ entries: [ArchiveEntry], kind: ArchiveKindFilter, query: 
 
 /// The archive of every live machine with the project, read and acted on per
 /// machine, merged newest first. Restore and Delete go to the row's own
-/// machine. One slow or failed machine never holds up the others.
+/// machine.
 @Observable
 @MainActor
 final class ArchiveEverywhereStore {
-  struct Read: Equatable {
+  /// One machine's archive, and its "Free up space after" setting.
+  struct Rows: Equatable {
     var items: [ArchivedItem] = []
     var staleAfterDays: Int?
-    var done = false
-    var error: String?
-    /// The machine runs an ADE with no archive to list.
-    var outdated = false
+  }
+
+  typealias Read = EveryMachineReads<Rows>.Read
+
+  /// A lane Delete refused for unsaved work, waiting for "Delete anyway".
+  struct PendingForce: Identifiable {
+    let entry: ArchiveEntry
+    let message: String
+    var id: String { entry.id }
   }
 
   static let defaultStaleDays = 14
 
-  private(set) var machines: [LaneRecentlyDeletedMachine] = []
-  private(set) var reads: [String: Read] = [:]
+  let reads: EveryMachineReads<Rows>
   private(set) var entries: [ArchiveEntry] = []
   /// The row an action is running on.
   var running: String?
   var toast: ADEToastMessage?
   var pendingDelete: ArchiveEntry?
-  /// A lane Delete refused for unsaved work, waiting for "Delete anyway".
-  var pendingForce: (entry: ArchiveEntry, message: String)?
+  var pendingForce: PendingForce?
 
-  @ObservationIgnored private var loadedKey: String?
-  @ObservationIgnored private var loadedProjectId: String?
-  @ObservationIgnored private var readTasks: [String: Task<Void, Never>] = [:]
-  @ObservationIgnored private var generation = 0
-  /// A preview's fixture: it never reads a machine.
-  @ObservationIgnored private let frozen: Bool
-
-  init(machines: [LaneRecentlyDeletedMachine] = [], reads: [String: Read] = [:], frozen: Bool = false) {
-    self.machines = machines
-    self.reads = reads
-    self.frozen = frozen
+  /// `frozen` is a preview's fixture: it never reads a machine.
+  init(machines: [ProjectCopyMachine] = [], reads: [String: Read] = [:], frozen: Bool = false) {
+    self.reads = EveryMachineReads(machines: machines, reads: reads, frozen: frozen, fetch: Self.fetch)
     rebuild()
+    self.reads.onChange = { [weak self] in self?.rebuild() }
   }
 
   var isBusy: Bool { running != nil }
-  var anyDone: Bool { machines.contains { reads[$0.id]?.done == true } }
-  var pending: [LaneRecentlyDeletedMachine] { machines.filter { reads[$0.id]?.done != true } }
-  var failed: [(machine: LaneRecentlyDeletedMachine, message: String)] {
-    machines.compactMap { machine in reads[machine.id]?.error.map { (machine, $0) } }
-  }
-  var outdated: [LaneRecentlyDeletedMachine] { machines.filter { reads[$0.id]?.outdated == true } }
 
-  /// The line between recent and old: the "Free up space after" setting of
-  /// the first machine that answered (the focused one comes first).
-  var staleDays: Int {
-    machines.lazy.compactMap { self.reads[$0.id]?.staleAfterDays }.first ?? Self.defaultStaleDays
+  /// A machine's line between recent and old: its "Free up space after"
+  /// setting, or `defaultStaleDays` when it sent none. Each machine keeps its
+  /// own setting, so each row splits at its own machine's line.
+  func staleDays(on machineId: String) -> Int {
+    reads.byMachine[machineId]?.value.staleAfterDays ?? Self.defaultStaleDays
   }
 
-  func load(machines: [LaneRecentlyDeletedMachine], key: String, sync: SyncService) {
-    guard !frozen, key != loadedKey else { return }
-    loadedKey = key
-    let projectId = sync.activeProjectId
-    if loadedProjectId != projectId {
-      for task in readTasks.values { task.cancel() }
-      readTasks = [:]
-      reads = [:]
-      generation += 1
-    }
-    loadedProjectId = projectId
-    self.machines = machines
-    let ids = Set(machines.map(\.id))
-    reads = reads.filter { ids.contains($0.key) }
-    rebuild()
-    for machine in machines { read(machine, sync: sync) }
-  }
-
-  func reload(_ machineId: String, sync: SyncService) {
-    guard !frozen, let machine = machines.first(where: { $0.id == machineId }) else { return }
-    if reads[machineId]?.error != nil { reads[machineId]?.error = nil }
-    read(machine, sync: sync)
-  }
-
-  private func read(_ machine: LaneRecentlyDeletedMachine, sync: SyncService) {
-    readTasks[machine.id]?.cancel()
-    let runGeneration = generation
-    readTasks[machine.id] = Task { @MainActor [weak self] in
-      var next: Read
-      do {
-        let result = try await sync.listArchive(targetProjectId: machine.projectId, targetProjectRootPath: machine.rootPath)
-        next = Read(items: result.items, staleAfterDays: result.staleAfterDays, done: true)
-      } catch {
-        next = Read(done: true)
-        if syncChatLaunchErrorIsUnsupportedCommand(error) {
-          next.outdated = true
-        } else {
-          next.error = SyncUserFacingError.message(for: error)
-          // A failed re-read keeps the rows it had.
-          next.items = self?.reads[machine.id]?.items ?? []
-        }
+  private static func fetch(_ machine: ProjectCopyMachine, sync: SyncService) async -> (Read?) -> Read {
+    do {
+      let result = try await sync.listArchive(targetProjectId: machine.projectId, targetProjectRootPath: machine.rootPath)
+      let next = Read(value: Rows(items: result.items, staleAfterDays: result.staleAfterDays), done: true)
+      return { _ in next }
+    } catch {
+      if syncChatLaunchErrorIsUnsupportedCommand(error) {
+        return { _ in Read(value: Rows(), done: true, outdated: true) }
       }
-      guard let self, !Task.isCancelled, runGeneration == self.generation else { return }
-      self.reads[machine.id] = next
-      self.readTasks[machine.id] = nil
-      self.rebuild()
+      let message = SyncUserFacingError.message(for: error)
+      // A failed re-read keeps the rows it had, and the line they split at.
+      return { previous in
+        Read(
+          value: Rows(items: previous?.value.items ?? [], staleAfterDays: previous?.value.staleAfterDays),
+          done: true,
+          error: message
+        )
+      }
     }
   }
 
   private func rebuild() {
     var next: [ArchiveEntry] = []
-    for machine in machines {
-      for item in reads[machine.id]?.items ?? [] {
+    for machine in reads.machines {
+      for item in reads.byMachine[machine.id]?.value.items ?? [] {
         next.append(ArchiveEntry(machine: machine, item: item))
       }
     }
@@ -205,8 +169,7 @@ final class ArchiveEverywhereStore {
 
   private func forget(_ refs: [ArchiveItemRef], on machineId: String) {
     let gone = Set(refs.map { "\($0.kind):\($0.id)" })
-    reads[machineId]?.items.removeAll { gone.contains("\($0.kind):\($0.id)") }
-    rebuild()
+    reads.update(machineId) { rows in rows.items.removeAll { gone.contains("\($0.kind):\($0.id)") } }
   }
 
   // MARK: Actions
@@ -228,7 +191,7 @@ final class ArchiveEverywhereStore {
       ADEHaptics.error()
       toast = ADEToastMessage(text: "Couldn’t restore \(entry.item.title)", kind: .failure, detail: SyncUserFacingError.message(for: error))
     }
-    reload(entry.machine.id, sync: sync)
+    reads.reload(entry.machine.id, sync: sync)
   }
 
   /// Deletes for good. A lane with unsaved work is refused unless forced: the
@@ -247,9 +210,12 @@ final class ArchiveEverywhereStore {
       forget(result.done, on: entry.machine.id)
       if !force, entry.item.kind == "lane",
          let dirty = result.failed.first(where: { $0.kind == "lane" && $0.error.range(of: "enable force delete", options: .caseInsensitive) != nil }) {
-        pendingForce = (entry, dirty.error.range(of: "^Lane has uncommitted changes\\.", options: [.regularExpression, .caseInsensitive]) != nil
-          ? "Deleting loses it. Commits on the lane’s branch stay."
-          : "Deleting also removes files and commits that exist only in this lane’s folders.")
+        pendingForce = PendingForce(
+          entry: entry,
+          message: dirty.error.range(of: "^Lane has uncommitted changes\\.", options: [.regularExpression, .caseInsensitive]) != nil
+            ? "Deleting loses it. Commits on the lane’s branch stay."
+            : "Deleting also removes files and commits that exist only in this lane’s folders."
+        )
       } else {
         report("Deleted", result)
       }
@@ -258,7 +224,7 @@ final class ArchiveEverywhereStore {
       ADEHaptics.error()
       toast = ADEToastMessage(text: "Couldn’t delete \(entry.item.title)", kind: .failure, detail: SyncUserFacingError.message(for: error))
     }
-    reload(entry.machine.id, sync: sync)
+    reads.reload(entry.machine.id, sync: sync)
   }
 
   private func report(_ verb: String, _ result: ArchiveActionResult) {
@@ -285,80 +251,40 @@ final class ArchiveEverywhereStore {
 
 /// Settings › Deleted & Archived › Archive as List sections: every live
 /// machine's archive merged newest first, in two groups (recent, and older
-/// than the "Free up space after" setting). Restore and Delete per row.
+/// than each row's machine's "Free up space after" setting). Restore and
+/// Delete per row.
 struct ArchiveEverywhereSections: View {
   let store: ArchiveEverywhereStore
   let syncService: SyncService
-  let machines: [LaneRecentlyDeletedMachine]
+  let machines: [ProjectCopyMachine]
   var query = ""
   var filter: ArchiveKindFilter = .all
   var canRunLiveActions = true
   var reloadToken = ""
   var onChanged: (() -> Void)?
 
-  private var loadKey: String {
-    let machineKeys = machines.map { "\($0.id)|\($0.projectId ?? "")" }.joined(separator: ",")
-    return "\(syncService.activeProjectId ?? "")|\(machineKeys)|\(reloadToken)"
-  }
-
   var body: some View {
-    ForEach(store.failed, id: \.machine.id) { failure in
-      ADEFlatInlineNotice(
-        message: "Couldn’t open \(failure.machine.name)’s archive.",
-        tint: ADEColor.danger,
-        technicalDetail: failure.message,
-        retry: { store.reload(failure.machine.id, sync: syncService) }
-      )
-      .listRowBackground(Color.clear)
-      .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
-      .listRowSeparator(.hidden)
-    }
-    ForEach(store.outdated) { machine in
-      Text("\(machine.name) runs an older ADE. Update it there to see its archive.")
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textMuted)
-        .fixedSize(horizontal: false, vertical: true)
-        .listRowBackground(Color.clear)
-        .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
-        .listRowSeparator(.hidden)
-    }
-    // Always at least one row (loading, empty, rows), each running the same
-    // idempotent load.
-    content
-      .task(id: loadKey) { store.load(machines: machines, key: loadKey, sync: syncService) }
-    if store.anyDone, !store.pending.isEmpty {
-      Section {
-        Text("Still reading \(store.pending.map(\.name).joined(separator: ", "))…")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textMuted)
-          .listRowBackground(Color.clear)
-          .task(id: loadKey) { store.load(machines: machines, key: loadKey, sync: syncService) }
-      }
+    EveryMachineStatusRows(
+      reads: store.reads,
+      syncService: syncService,
+      machines: machines,
+      style: .settings,
+      reloadToken: reloadToken,
+      failedMessage: { "Couldn’t open \($0.name)’s archive." },
+      outdatedMessage: { "\($0.name) runs an older ADE. Update it there to see its archive." },
+      noMachinesMessage: "Connect a computer to see what you archived.",
+      loadingMessage: "Loading the archive…"
+    ) {
+      content
     }
   }
 
+  /// The rows once a machine answered.
   @ViewBuilder
   private var content: some View {
     let rows = archiveFiltered(store.entries, kind: filter, query: query)
     let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-    if machines.isEmpty {
-      Section {
-        ADESettingsNotice(message: "Connect a computer to see what you archived.")
-          .listRowBackground(Color.clear)
-          .listRowInsets(EdgeInsets())
-      }
-    } else if !store.anyDone {
-      Section {
-        HStack(spacing: 10) {
-          ProgressView().controlSize(.small)
-          Text("Loading the archive…")
-            .font(.subheadline)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .adeSettingsListRow()
-      }
-    } else if rows.isEmpty && !trimmed.isEmpty {
+    if rows.isEmpty && !trimmed.isEmpty {
       Section {
         Text("Nothing archived matches “\(trimmed)”.")
           .font(.subheadline)
@@ -367,7 +293,7 @@ struct ArchiveEverywhereSections: View {
           .adeSettingsListRow()
       }
     } else if rows.isEmpty {
-      if store.pending.isEmpty {
+      if store.reads.pending.isEmpty {
         Section {
           ADEEmptyStateView(
             symbol: "archivebox",
@@ -379,13 +305,29 @@ struct ArchiveEverywhereSections: View {
         }
       }
     } else {
-      let days = store.staleDays
-      let now = Date()
-      let recent = rows.filter { !archiveIsStale($0.item.archivedAt, days: days, now: now) }
-      let older = rows.filter { archiveIsStale($0.item.archivedAt, days: days, now: now) }
-      if !recent.isEmpty { group("Last \(days) days", recent) }
-      if !older.isEmpty { group("Older than \(days) days", older) }
+      let split = staleSplit(rows)
+      if !split.recent.isEmpty { group(split.days.map { "Last \($0) days" } ?? "Recent", split.recent) }
+      if !split.older.isEmpty { group(split.days.map { "Older than \($0) days" } ?? "Older", split.older) }
     }
+  }
+
+  /// The rows split at each row's own machine's line. `days` is that line
+  /// when every row's machine uses the same one, else nil.
+  private func staleSplit(_ rows: [ArchiveEntry]) -> (recent: [ArchiveEntry], older: [ArchiveEntry], days: Int?) {
+    let now = Date()
+    var recent: [ArchiveEntry] = []
+    var older: [ArchiveEntry] = []
+    var lines = Set<Int>()
+    for entry in rows {
+      let days = store.staleDays(on: entry.machine.id)
+      lines.insert(days)
+      if archiveIsStale(entry.item.archivedAt, days: days, now: now) {
+        older.append(entry)
+      } else {
+        recent.append(entry)
+      }
+    }
+    return (recent, older, lines.count == 1 ? lines.first : nil)
   }
 
   private func group(_ title: String, _ rows: [ArchiveEntry]) -> some View {
@@ -413,10 +355,7 @@ struct ArchiveEverywhereSections: View {
     // On the row, so the popover on a wide screen points at it.
     .confirmationDialog(
       "Delete “\(entry.item.title)”?",
-      isPresented: Binding(
-        get: { store.pendingDelete?.id == entry.id },
-        set: { if !$0, store.pendingDelete?.id == entry.id { store.pendingDelete = nil } }
-      ),
+      isPresented: pendingBinding(store, \.pendingDelete, id: entry.id),
       titleVisibility: .visible
     ) {
       Button("Delete", role: .destructive) {
@@ -430,10 +369,7 @@ struct ArchiveEverywhereSections: View {
     }
     .confirmationDialog(
       "\(entry.item.title) has unsaved work",
-      isPresented: Binding(
-        get: { store.pendingForce?.entry.id == entry.id },
-        set: { if !$0, store.pendingForce?.entry.id == entry.id { store.pendingForce = nil } }
-      ),
+      isPresented: pendingBinding(store, \.pendingForce, id: entry.id),
       titleVisibility: .visible
     ) {
       Button("Delete anyway", role: .destructive) {
@@ -531,7 +467,7 @@ struct ArchiveRow: View {
           .lineLimit(1)
           .truncationMode(.middle)
       }
-      DeletedMetaLine(parts: entry.metaParts + (machineName.map { [$0] } ?? []))
+      ADEMetaLine(parts: entry.metaParts + (machineName.map { [$0] } ?? []))
         .font(.caption)
         .foregroundStyle(item.kind == "lane" && item.freeUpError != nil ? ADEColor.warning : ADEColor.textMuted)
     }

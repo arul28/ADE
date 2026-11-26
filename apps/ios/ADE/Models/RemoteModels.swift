@@ -9824,8 +9824,9 @@ struct RestoreDeletedLaneResult: Decodable, Equatable {
   /// Other branches made for commits the lane's branch does not hold.
   var extraBranches: [String]?
   /// The chats the lane's delete put in Recently deleted, reopened into the
-  /// restored lane. Absent from an older ADE, which leaves them there; the
-  /// phone then reopens them itself.
+  /// restored lane. Absent when the host's restore hook is missing or failed;
+  /// the phone then reopens them itself. An older ADE never marks a chat as
+  /// gone with its lane, so it has none to reopen.
   var reopenedChats: [RestoredLaneChat]?
   /// How many of those chats could not come back; they stay in Recently deleted.
   var chatsNotReopened: Int?

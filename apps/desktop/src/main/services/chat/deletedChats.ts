@@ -10,6 +10,7 @@ import type {
   DeletedChatReopenArgs,
   DeletedChatReopenResult,
 } from "../../../shared/types/deletedChats";
+import type { RestoredLaneChats, RestoredLaneChatsArgs } from "../../../shared/types/lanes";
 import type { AgentChatImportExternalSessionArgs, AgentChatImportExternalSessionResult } from "../../../shared/types/chat";
 import type { TerminalResumeMetadata } from "../../../shared/types/sessions";
 import type { ExternalSessionDetail } from "../../../shared/types/externalSessionDetail";
@@ -18,17 +19,14 @@ import {
   EXTERNAL_SESSION_PROVIDERS,
   type ExternalSessionProvider,
 } from "../../../shared/types/externalSessions";
-import { PROVIDER_INSTANCE_ENV_KEY, isProviderInstanceProvider } from "../../../shared/types/providerInstances";
 import type { AdeDb } from "../state/kvDb";
-import { discoverExternalSessionRecord } from "../externalSessions/events";
 import { providerPointersFromChatRecord } from "../externalSessions/liveChatProviderRefs";
 import { isWellFormedExternalSessionId } from "../externalSessions/sessionIds";
-import { machineProviderUsageHomes } from "../usage/providerUsageHomes";
-import { providerThreadIsInHome } from "./providerThreadMove";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { hasTable, openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { assertStorageAnswering } from "../state/unansweringRoots";
+import { createDeletedChatLocator, type DeletedChatSource, type LoggerLike } from "./deletedChatLocator";
 
 /**
  * Settings › Recently deleted. Deleting a chat removes ADE's own files for it,
@@ -343,6 +341,18 @@ export function readLaneChatRecords(db: DeletedChatsDb, args: {
 }
 
 /**
+ * `current` over `before`, field by field. An empty field in `current` (null
+ * or "", as a stop may leave an agent id) keeps the value `before` held.
+ */
+function overBefore(before: Record<string, unknown>, current: Record<string, unknown> | null): Record<string, unknown> {
+  const out = { ...before };
+  for (const [key, value] of Object.entries(current ?? {})) {
+    if (value !== null && value !== undefined && value !== "") out[key] = value;
+  }
+  return out;
+}
+
+/**
  * Deleting a lane removes its chats' rows in one statement, not through the
  * chat delete. Called just before that statement, so those chats can still be
  * reopened (as a copy, in a lane the user picks). `recordsBeforeStop` holds
@@ -360,7 +370,7 @@ export function recordChatsDeletedWithLane(db: DeletedChatsDb, args: {
     const current = readPersistedChatRecord(path.join(args.chatSessionsDir, `${row.id}.json`));
     const before = args.recordsBeforeStop?.get(row.id) ?? null;
     // The newer record wins, field by field; an id it no longer holds comes from before the stop.
-    const record = before && !deletedChatSourceFromRecord(current) ? { ...before, ...current } : current;
+    const record = before && !deletedChatSourceFromRecord(current) ? overBefore(before, current) : current;
     if (!record) continue;
     // Subagents and side chats go with their parent; only chats the user had are listed.
     if (asText(record.spawnKind) === "subagent" || asText(record.sideChatParentSessionId)) continue;
@@ -461,6 +471,15 @@ function getDeletedChatRow(db: DeletedChatsDb, id: string): DeletedChatRow | nul
   return row && isExternalProvider(row.externalProvider) ? row : null;
 }
 
+/** Whether a chat is still in Recently deleted; true when the check itself fails. */
+function stillListed(db: DeletedChatsDb, id: string): boolean {
+  try {
+    return getDeletedChatRow(db, id) != null;
+  } catch {
+    return true;
+  }
+}
+
 function hideDeletedChats(
   db: DeletedChatsDb,
   ids: readonly string[],
@@ -484,120 +503,6 @@ function hideDeletedChats(
     hidden += 1;
   }
   return hidden;
-}
-
-// ── Where the agent's copy is ─────────────────────────────────────────────
-
-type DeletedChatSource = {
-  /** The account folder holding the copy (Claude / Codex); null for the others. */
-  configHome: string | null;
-  /** The env the session readers need to look in that folder. */
-  env: NodeJS.ProcessEnv | undefined;
-};
-
-/** Every Claude transcript on this machine by session id, built once per list. */
-type ClaudeIndex = Map<string, { configHome: string; mtimeMs: number }>;
-
-async function buildClaudeIndex(homes: readonly string[]): Promise<ClaudeIndex> {
-  const index: ClaudeIndex = new Map();
-  for (const home of homes) {
-    const projectsDir = path.join(home, "projects");
-    let projects: fs.Dirent[];
-    try {
-      projects = await fs.promises.readdir(projectsDir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    await Promise.all(projects.filter((entry) => entry.isDirectory()).map(async (project) => {
-      let files: string[];
-      try {
-        files = await fs.promises.readdir(path.join(projectsDir, project.name));
-      } catch {
-        return;
-      }
-      for (const name of files) {
-        if (!name.endsWith(".jsonl")) continue;
-        const id = name.slice(0, -".jsonl".length);
-        let mtimeMs = 0;
-        try {
-          mtimeMs = (await fs.promises.stat(path.join(projectsDir, project.name, name))).mtimeMs;
-        } catch {
-          continue;
-        }
-        // A moved chat leaves its old copy behind; the newest one is the live one.
-        const existing = index.get(id);
-        if (!existing || existing.mtimeMs < mtimeMs) index.set(id, { configHome: home, mtimeMs });
-      }
-    }));
-  }
-  return index;
-}
-
-function accountEnv(provider: ExternalSessionProvider, configHome: string | null): NodeJS.ProcessEnv | undefined {
-  if (!configHome || !isProviderInstanceProvider(provider)) return undefined;
-  return { ...process.env, [PROVIDER_INSTANCE_ENV_KEY[provider]]: configHome };
-}
-
-type LoggerLike = { warn: (message: string, fields?: Record<string, unknown>) => void };
-
-/** Rows whose copy no agent folder holds still exist; this reports them as gone. */
-function createDeletedChatLocator(logger: LoggerLike) {
-  let claudeIndex: { builtAt: number; index: Promise<ClaudeIndex> } | null = null;
-  const CLAUDE_INDEX_TTL_MS = 5_000;
-  const otherCache = new Map<string, { at: number; found: boolean }>();
-  const OTHER_TTL_MS = 30_000;
-
-  const homesFor = (provider: "claude" | "codex", preferred: string | null): string[] => {
-    const machine = machineProviderUsageHomes()[provider];
-    const ordered = preferred ? [preferred, ...machine] : machine;
-    return [...new Set(ordered.map((home) => path.resolve(home)))];
-  };
-
-  const claude = (): Promise<ClaudeIndex> => {
-    const now = Date.now();
-    if (!claudeIndex || now - claudeIndex.builtAt > CLAUDE_INDEX_TTL_MS) {
-      claudeIndex = { builtAt: now, index: buildClaudeIndex(homesFor("claude", null)) };
-    }
-    return claudeIndex.index;
-  };
-
-  const locate = async (row: DeletedChatRow): Promise<DeletedChatSource | null> => {
-    if (row.externalProvider === "claude") {
-      const hit = (await claude()).get(row.externalId);
-      return hit ? { configHome: hit.configHome, env: accountEnv("claude", hit.configHome) } : null;
-    }
-    if (row.externalProvider === "codex") {
-      const home = homesFor("codex", row.configHome)
-        .find((candidate) => providerThreadIsInHome("codex", row.externalId, candidate));
-      return home ? { configHome: home, env: accountEnv("codex", home) } : null;
-    }
-    const key = `${row.externalProvider}:${row.externalId}`;
-    const cached = otherCache.get(key);
-    if (cached && Date.now() - cached.at < OTHER_TTL_MS) {
-      return cached.found ? { configHome: null, env: undefined } : null;
-    }
-    const record = await discoverExternalSessionRecord(row.externalProvider, row.externalId, { includeAdeOwned: true })
-      .catch((error: unknown) => {
-        // Reported as gone (the row stays hidden), but said, so a reader
-        // failure is not mistaken for the agent clearing its copy.
-        logger.warn("deleted_chats.locate_failed", {
-          provider: row.externalProvider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return null;
-      });
-    otherCache.set(key, { at: Date.now(), found: record != null });
-    return record ? { configHome: null, env: undefined } : null;
-  };
-
-  return {
-    locate,
-    /** After a reopen or a Claude thread move, look again instead of trusting the cache. */
-    invalidate: () => {
-      claudeIndex = null;
-      otherCache.clear();
-    },
-  };
 }
 
 /** Runs `fn` over `items` at most `limit` at a time, keeping order. */
@@ -951,11 +856,8 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
    * do chats whose conversation the agent no longer has or a live chat holds.
    * Never throws: a chat that fails stays here and is counted.
    */
-  const reopenWithRestoredLane = async (args: { fromLaneId: string; toLaneId: string }): Promise<{
-    reopened: Array<{ chatSessionId: string; title: string | null }>;
-    failed: number;
-  }> => {
-    const out = { reopened: [] as Array<{ chatSessionId: string; title: string | null }>, failed: 0 };
+  const reopenWithRestoredLane = async (args: RestoredLaneChatsArgs): Promise<RestoredLaneChats> => {
+    const out: RestoredLaneChats = { reopened: [], failed: 0 };
     const db = deps.db();
     if (!db || !args.fromLaneId || !args.toLaneId) return out;
     let rows: DeletedChatRow[];
@@ -973,14 +875,21 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
       return out;
     }
     if (rows.length === 0) return out;
-    const live = await liveRefKeys().catch(() => new Set<string>());
+    // Without the live list each reopen still checks for a live chat itself.
+    const live = await liveRefKeys().catch((error: unknown) => {
+      deps.logger.warn("deleted_chats.restored_lane_live_refs_failed", { laneId: args.fromLaneId, error: error instanceof Error ? error.message : String(error) });
+      return new Set<string>();
+    });
     for (const row of rows) {
       if (live.has(`${row.externalProvider}:${row.externalId}`)) continue;
-      if (!(await locator.locate(row).catch(() => null))) continue;
       try {
+        // The agent no longer has this conversation: it stays here, as listed.
+        if (!(await locator.locate(row))) continue;
         const result = await reopen({ id: row.id, laneId: args.toLaneId });
         out.reopened.push({ chatSessionId: result.chatSessionId, title: row.title });
       } catch (error) {
+        // Reopened or removed by another client while this ran: not a failure.
+        if (!stillListed(db, row.id)) continue;
         out.failed += 1;
         deps.logger.warn("deleted_chats.restored_lane_reopen_failed", {
           sessionId: row.id,

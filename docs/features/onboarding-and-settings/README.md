@@ -179,11 +179,12 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   is user-only, restore CTO-only (`ADE_ACTION_USER_ONLY` /
   `ADE_ACTION_CTO_ONLY`, `adeActions/actionPolicy.ts`). `shared/archive.ts`,
   `shared/types/archive.ts`: one vocabulary (`isArchiveStale`).
-  `settings/ArchiveSection.tsx`: the list split at `staleAfterDays` ("Free up
-  space after", 14 when off), selection bar, restore, Free up space (Archive &
-  reclaim through `useLaneReclaim` on the settings machine's pin), and delete
-  (non-lane items together, at most five lanes a request, then one forced
-  retry by name for dirty lanes). `app/useArchiveReminderBanner.tsx`: at most
+  `settings/ArchiveSection.tsx`: every online copy's archive in one list, each
+  row split at its own machine's `staleAfterDays` ("Free up space after", 14
+  when off), selection bar, restore, Free up space (Archive & reclaim through
+  `useLaneReclaim` on the row's machine pin), and delete (non-lane items
+  together, at most five lanes a request, then one forced retry by name for
+  dirty lanes, matched by machine). `app/useArchiveReminderBanner.tsx`: at most
   once per project per `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something
   passes the host's line; a summary that lands after a snooze is dropped.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts`: this
@@ -1934,7 +1935,7 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear. Legacy `?tab=integrations`, `github`, `linear`, and `?integration=github|linear`; `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute, and delivery switches for iPhones and iPads registered to the account. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
 | Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `PasswordDialogs.tsx`, `passwordsFormat.ts` | One end-to-end encrypted vault (logins, passkeys, secrets), on by default; secrets for every or one project, in the account or this computer only, `.env` import and export. `?tab=secrets` / `secret` open Secrets. See [Passwords & Secrets](../passwords/README.md). |
-| Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `useDeletedEverywhere.ts`, `useEveryCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep ADE Cloud computer is not read). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `EveryCopyList.tsx`, `state/everyCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep ADE Cloud computer is not read, and neither is the ADE Cloud account itself). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Disk space (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, idle-archive rules, session lifecycle, project files, for the copy picked on the page. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives with spend) and the `usage/` components | The one-page usage dashboard (see the source map); scope `account` / `machine` / `project`. Legacy `?tab=usage`, `ade-usage`. |
 

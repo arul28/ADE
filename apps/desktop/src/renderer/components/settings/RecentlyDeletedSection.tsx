@@ -1,34 +1,35 @@
 import React from "react";
-import { ArrowCounterClockwise, CircleNotch, ClockCounterClockwise, MagnifyingGlass, X } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, CircleNotch, ClockCounterClockwise, X } from "@phosphor-icons/react";
 import type {
   DeletedChat,
   DeletedLaneSnapshot,
   ExternalSessionProvider,
   LaneSummary,
   OpenProjectBinding,
-  RestoreDeletedLaneResult,
-  RestoredLaneChat,
   TerminalToolType,
 } from "../../../shared/types";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
-import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
-import { openChatInWork, restoredLaneOpeners, restoredLaneToast } from "../app/toast/restoredLaneToast";
+import { openChatInWork } from "../../lib/workSessionRequests";
+import { isAdeCloudLaneComputerMachine } from "../../state/adeCloudLaneIndex";
+import { useEveryCopyRead, type CopyRead } from "../../state/everyCopyRead";
+import { restoreDeletedLane } from "../app/toast/restoreDeletedLane";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
 import { Dialog, confirmDialog } from "../ui/dialog";
-import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
+import { LaneChip } from "../terminals/LaneChip";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "../terminals/importSessions/contract";
 import { modelDisplayName } from "../terminals/importSessions/importBrowserModel";
 import { SessionTranscriptPane } from "../terminals/importSessions/ImportSessionPreview";
 import { sessionDateGroup } from "../terminals/importSessions/sessionPresentation";
+import { CopyReadErrors, CopyReadsPending, KindFilterSearchBar, LaneColorMark, machineHint } from "./EveryCopyList";
 import { MetaLine } from "./MetaLine";
 import { NoProjectCopyNotice } from "./ProjectCopyScope";
 import { SettingsColumn } from "./primitives";
 import { useDeletedChatTranscript } from "./useDeletedChatTranscript";
-import { useDeletedEverywhere, type DeletedSource, type MachineDeleted } from "./useDeletedEverywhere";
 import "../terminals/importSessions/importSessions.css";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
@@ -52,13 +53,47 @@ const TOAST_ID = "settings-recently-deleted";
 /** Entries drawn before "Show more"; the rest wait for the click. */
 const PAGE_ROWS = 25;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Locating each chat's conversation can take a while on a machine with many. */
+const DELETED_READ_TIMEOUT_MS = 20_000;
 
 type KindFilter = "all" | "lanes" | "chats";
+
+/** One machine's Recently deleted. */
+type Deleted = {
+  lanes: DeletedLaneSnapshot[];
+  chats: DeletedChat[];
+  /** Why (part of) the machine's list could not be read. */
+  error: string | null;
+  /** The machine runs an ADE with no Recently deleted chats. */
+  outdated: boolean;
+};
+
+/** The machine a row is on. */
+type Source = Pick<CopyRead<Deleted>, "pin" | "machineName">;
+
+/**
+ * A lane and its chats live on the machine that ran them, so one machine's
+ * list is never the whole answer: each machine is read on its own.
+ */
+async function readDeleted(pin: OpenProjectBinding, timed: <R>(call: Promise<R>) => Promise<R>): Promise<Deleted> {
+  const [lanes, chats] = await Promise.allSettled([
+    timed(window.ade.lanes.listDeleted(pin)),
+    timed(window.ade.agentChat.listDeleted({}, pin)),
+  ]);
+  const out: Deleted = { lanes: [], chats: [], error: null, outdated: false };
+  if (lanes.status === "fulfilled") out.lanes = lanes.value;
+  // A machine on an older ADE simply has no saved lanes to list.
+  else if (!isUnsupportedAdeActionError(lanes.reason)) out.error = ipcErrorMessage(lanes.reason) || "Something went wrong.";
+  if (chats.status === "fulfilled") out.chats = chats.value.chats;
+  else if (isUnsupportedAdeActionError(chats.reason)) out.outdated = true;
+  else out.error ??= ipcErrorMessage(chats.reason) || "Something went wrong.";
+  return out;
+}
 
 type LaneEntry = {
   kind: "lane";
   key: string;
-  source: DeletedSource;
+  source: Source;
   lane: DeletedLaneSnapshot;
   /** The chats that went with the lane's delete: Restore brings them back. */
   chats: DeletedChat[];
@@ -68,7 +103,7 @@ type LaneEntry = {
 type ChatEntry = {
   kind: "chat";
   key: string;
-  source: DeletedSource;
+  source: Source;
   chat: DeletedChat;
   at: number;
 };
@@ -103,8 +138,8 @@ function daysLeft(lane: DeletedLaneSnapshot): string {
   return days <= 1 ? "kept 1 more day" : `kept ${days} more days`;
 }
 
-function chatKey(source: DeletedSource, chat: DeletedChat): string {
-  return `${source.pin.key}\nchat\n${chat.id}`;
+function chatEntryOf(source: Source, chat: DeletedChat): ChatEntry {
+  return { kind: "chat", key: `${source.pin.key}\nchat\n${chat.id}`, source, chat, at: timeOf(chat.deletedAt) };
 }
 
 function chatMatches(chat: DeletedChat, needle: string): boolean {
@@ -118,22 +153,22 @@ function chatMatches(chat: DeletedChat, needle: string): boolean {
  * delete sits under that lane when the lane's work was kept; otherwise it is
  * its own row.
  */
-function buildEntries(machines: readonly MachineDeleted[]): Entry[] {
+function buildEntries(machines: ReadonlyArray<CopyRead<Deleted>>): Entry[] {
   const entries: Entry[] = [];
   for (const machine of machines) {
-    const source: DeletedSource = { pin: machine.pin, machineName: machine.machineName };
+    const source: Source = { pin: machine.pin, machineName: machine.machineName };
     const lanes = new Map<string, LaneEntry>();
-    for (const lane of machine.lanes ?? []) {
+    for (const lane of machine.value?.lanes ?? []) {
       const entry: LaneEntry = { kind: "lane", key: `${machine.pin.key}\nlane\n${lane.id}`, source, lane, chats: [], at: timeOf(lane.deletedAt) };
       entries.push(entry);
       // A freed lane is still here (archived); its chats were never deleted.
       const held = lanes.get(lane.laneId);
       if (lane.kind !== "freed" && (!held || held.at < entry.at)) lanes.set(lane.laneId, entry);
     }
-    for (const chat of machine.chats ?? []) {
+    for (const chat of machine.value?.chats ?? []) {
       const owner = chat.withLane && !chat.laneExists && chat.laneId ? lanes.get(chat.laneId) : undefined;
       if (owner) owner.chats.push(chat);
-      else entries.push({ kind: "chat", key: chatKey(source, chat), source, chat, at: timeOf(chat.deletedAt) });
+      else entries.push(chatEntryOf(source, chat));
     }
   }
   for (const entry of entries) {
@@ -155,9 +190,7 @@ function filterEntries(entries: readonly Entry[], kind: KindFilter, query: strin
     if (kind === "chats") {
       // The lane's chats on their own, each a row.
       for (const chat of entry.chats) {
-        if (!needle || chatMatches(chat, needle)) {
-          out.push({ kind: "chat", key: chatKey(entry.source, chat), source: entry.source, chat, at: timeOf(chat.deletedAt) });
-        }
+        if (!needle || chatMatches(chat, needle)) out.push(chatEntryOf(entry.source, chat));
       }
       continue;
     }
@@ -191,22 +224,6 @@ function ChatMeta({ chat, model }: { chat: DeletedChat; model?: string | null })
         model,
       ]}
     />
-  );
-}
-
-/** The square at the start of a lane row: the lane mark on the lane colour. */
-function LaneMark() {
-  const color = laneDisplayColor(null);
-  return (
-    <span
-      className="ade-ar-mark"
-      style={{
-        background: `color-mix(in srgb, ${color} 16%, transparent)`,
-        boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 28%, transparent)`,
-      }}
-    >
-      <LaneLogoMark color={color} size={15} />
-    </span>
   );
 }
 
@@ -298,7 +315,7 @@ const DeletedLaneRow = React.memo(function DeletedLaneRow({
     <div role="listitem" className="ade-rd-lane" title={machineHint}>
       <div className="ade-ar-row ade-rd-row">
         <div className="ade-rd-open ade-rd-info">
-          <LaneMark />
+          <LaneColorMark color={null} />
           <span className="ade-rd-text">
             <span className="ade-ar-title">{lane.laneName}</span>
             <MetaLine
@@ -336,21 +353,24 @@ const DeletedLaneRow = React.memo(function DeletedLaneRow({
       </div>
       {chats.length > 0 ? (
         <div role="list" aria-label={`Chats of ${lane.laneName}`} className="ade-rd-lane-chats">
-          {chats.map((chat) => (
-            <button
-              key={chat.id}
-              type="button"
-              role="listitem"
-              className="ade-rd-lane-chat"
-              onClick={() => onOpenChat({ kind: "chat", key: chatKey(entry.source, chat), source: entry.source, chat, at: timeOf(chat.deletedAt) })}
-              aria-label={`Open ${chatTitle(chat)}`}
-              data-deleted-chat-row={chat.id}
-            >
-              <ToolLogo toolType={deletedChatToolType(chat)} size={13} />
-              <span className="ade-rd-lane-chat-title">{chatTitle(chat)}</span>
-              {modelDisplayName(chat.modelId) ? <span className="ade-rd-lane-chat-meta">{modelDisplayName(chat.modelId)}</span> : null}
-            </button>
-          ))}
+          {chats.map((chat) => {
+            const model = modelDisplayName(chat.modelId);
+            return (
+              <button
+                key={chat.id}
+                type="button"
+                role="listitem"
+                className="ade-rd-lane-chat"
+                onClick={() => onOpenChat(chatEntryOf(entry.source, chat))}
+                aria-label={`Open ${chatTitle(chat)}`}
+                data-deleted-chat-row={chat.id}
+              >
+                <ToolLogo toolType={deletedChatToolType(chat)} size={13} />
+                <span className="ade-rd-lane-chat-title">{chatTitle(chat)}</span>
+                {model ? <span className="ade-rd-lane-chat-meta">{model}</span> : null}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>
@@ -389,10 +409,6 @@ function DeletedChatDialog({
   const model = modelDisplayName(transcript.detail?.model ?? chat.modelId);
   const busy = reopening || removing;
   const needsLane = !chat.laneExists;
-  const laneOptions = React.useMemo(
-    () => (lanes ?? []).map((lane) => ({ id: lane.id, name: lane.name, color: lane.color ?? null, branchRef: lane.branchRef ?? null })),
-    [lanes],
-  );
   const canReopen = !busy && (!needsLane || Boolean(targetLaneId));
 
   return (
@@ -416,7 +432,7 @@ function DeletedChatDialog({
             <>
               <span>Reopen in</span>
               <LaneCombobox
-                lanes={laneOptions}
+                lanes={lanes ?? []}
                 value={targetLaneId}
                 onChange={onTargetLaneChange}
                 placeholder={lanes ? "Pick a lane" : "Loading lanes…"}
@@ -462,30 +478,8 @@ function DeletedChatDialog({
   );
 }
 
-/**
- * Reopens a restored lane's chats from this client, for a machine whose ADE
- * restores the lane alone (no `reopenedChats` in its answer). Oldest first,
- * so the newest chat is the newest in the lane again.
- */
-async function reopenChatsHere(
-  chats: readonly DeletedChat[],
-  laneId: string,
-  pin: OpenProjectBinding,
-): Promise<{ reopened: RestoredLaneChat[]; failed: number }> {
-  const out = { reopened: [] as RestoredLaneChat[], failed: 0 };
-  for (const chat of [...chats].reverse()) {
-    try {
-      const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, laneId }, pin);
-      out.reopened.push({ chatSessionId: result.chatSessionId, title: chat.title });
-    } catch {
-      out.failed += 1;
-    }
-  }
-  return out;
-}
-
 export function RecentlyDeletedSection() {
-  const { machines, noCopy, reload } = useDeletedEverywhere();
+  const { machines, noCopy, reload } = useEveryCopyRead(readDeleted, DELETED_READ_TIMEOUT_MS);
   const [query, setQuery] = React.useState("");
   const [kind, setKind] = React.useState<KindFilter>("all");
   const [shownRows, setShownRows] = React.useState(PAGE_ROWS);
@@ -523,15 +517,14 @@ export function RecentlyDeletedSection() {
   }, [shownRows, visible]);
 
   // The machine is named on hover only when the list holds more than one.
-  const severalMachines = machines.length > 1;
-  const machineHint = (source: DeletedSource) => (severalMachines ? `On ${source.machineName}` : undefined);
+  const hintFor = (source: Source) => machineHint(machines.length, source.machineName);
 
   // The open chat, read again from its machine's list so a reload updates it.
   const openKey = open?.key ?? null;
   const openChat = React.useMemo(() => {
     if (!open) return null;
     const machine = machines.find((entry) => entry.pin.key === open.source.pin.key);
-    return machine?.chats?.find((chat) => chat.id === open.chat.id) ?? null;
+    return machine?.value?.chats.find((chat) => chat.id === open.chat.id) ?? null;
   }, [machines, open]);
 
   // Lanes are needed only to reopen a chat whose lane was deleted, on its machine.
@@ -543,9 +536,14 @@ export function RecentlyDeletedSection() {
     setTargetLaneId("");
     if (!lanesPin) return;
     let cancelled = false;
+    // An ADE Cloud lane computer exists for its one lane: its main checkout is
+    // only the clone the lane came from, so the list leaves it out.
+    const cloudLaneComputer = lanesPin.kind === "remote"
+      && isAdeCloudLaneComputerMachine({ hostname: lanesPin.hostname, targetId: lanesPin.targetId });
     void window.ade.lanes.list({ includeArchived: false, includeStatus: false }, lanesPin)
       .then((list) => {
-        if (!cancelled) setLanes(list.filter((lane) => !lane.archivedAt));
+        if (cancelled) return;
+        setLanes(list.filter((lane) => !lane.archivedAt && !(cloudLaneComputer && lane.laneType === "primary")));
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -624,15 +622,8 @@ export function RecentlyDeletedSection() {
     const { lane, source } = entry;
     setRunning({ key: entry.key, kind: "restore" });
     try {
-      let result: RestoreDeletedLaneResult = await window.ade.lanes.restoreDeleted({ id: lane.id }, source.pin);
-      if (result.reopenedChats === undefined && entry.chats.length > 0) {
-        const chats = await reopenChatsHere(entry.chats, result.lane.id, source.pin);
-        result = { ...result, reopenedChats: chats.reopened, chatsNotReopened: chats.failed };
-      }
-      captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: result.restoredUncommitted ? "completed" : "failed" });
-      showToast({ id: TOAST_ID, ...restoredLaneToast(lane, result, restoredLaneOpeners(result, source.pin)) });
+      showToast({ id: TOAST_ID, ...(await restoreDeletedLane(lane, source.pin, entry.chats)) });
     } catch (error) {
-      captureLaneSetupAnalytics({ action: "deleted_lane_restored", outcome: "failed" });
       showToast({
         id: TOAST_ID,
         tone: "error",
@@ -671,46 +662,37 @@ export function RecentlyDeletedSection() {
     }
   }, [reload, running]);
 
-  const loaded = machines.filter((machine) => machine.lanes != null && machine.chats != null);
-  const pending = machines.filter((machine) => machine.lanes == null || machine.chats == null);
-  const failed = loaded.filter((machine) => machine.error);
-  const outdated = loaded.filter((machine) => machine.outdated);
+  const anyDone = machines.some((machine) => machine.done);
+  const allDone = machines.every((machine) => machine.done);
+  // A machine's list can fail in part (its lanes or its chats).
+  const errors = React.useMemo(
+    () => machines.map((machine) => ({ ...machine, error: machine.error ?? machine.value?.error ?? null })),
+    [machines],
+  );
+  const outdated = machines.filter((machine) => machine.value?.outdated);
   const hidden = Math.max(0, visible.length - shownRows);
   const busy = running != null;
 
   const toolbar = counts.all > 0 ? (
-    <div className="ade-ar-toolbar">
-      <div role="radiogroup" aria-label="Show" className="kit-seg" data-case="sentence">
-        {([["all", "All"], ["lanes", "Lanes"], ["chats", "Chats"]] as const).map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            role="radio"
-            aria-checked={kind === value}
-            onClick={() => {
-              setKind(value);
-              setShownRows(PAGE_ROWS);
-            }}
-          >
-            {label}
-            <span className="kit-num ade-ar-count">{counts[value]}</span>
-          </button>
-        ))}
-      </div>
-      <label className="ade-ar-search">
-        <MagnifyingGlass size={13} aria-hidden="true" />
-        <input
-          className="kit-input"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setShownRows(PAGE_ROWS);
-          }}
-          placeholder="Search lanes and chats"
-          aria-label="Search deleted lanes and chats"
-        />
-      </label>
-    </div>
+    <KindFilterSearchBar
+      options={[
+        { value: "all", label: "All", count: counts.all },
+        { value: "lanes", label: "Lanes", count: counts.lanes },
+        { value: "chats", label: "Chats", count: counts.chats },
+      ]}
+      value={kind}
+      onChange={(value) => {
+        setKind(value);
+        setShownRows(PAGE_ROWS);
+      }}
+      query={query}
+      onQueryChange={(value) => {
+        setQuery(value);
+        setShownRows(PAGE_ROWS);
+      }}
+      placeholder="Search lanes and chats"
+      searchLabel="Search deleted lanes and chats"
+    />
   ) : null;
 
   return (
@@ -724,20 +706,13 @@ export function RecentlyDeletedSection() {
         <div className="ade-ap-section">
           {toolbar}
 
-          {failed.map((machine) => (
-            <Banner
-              key={machine.pin.key}
-              layout="inline"
-              model={{
-                id: `recently-deleted-load-error-${machine.pin.key}`,
-                tone: "error",
-                title: `Couldn't read ${machine.machineName}`,
-                detail: machine.error,
-                actions: [{ label: "Try again", onClick: () => reload(machine.pin.key) }],
-                report: { surface: "recently_deleted_load", technicalDetail: machine.error ?? "" },
-              }}
-            />
-          ))}
+          <CopyReadErrors
+            machines={errors}
+            reload={reload}
+            idPrefix="recently-deleted-load-error"
+            surface="recently_deleted_load"
+            title={(name) => `Couldn't read ${name}`}
+          />
           {outdated.map((machine) => (
             <p key={machine.pin.key} className="ade-modern-muted">
               {machine.machineName} runs an older ADE — update it there to see its deleted chats.
@@ -746,9 +721,9 @@ export function RecentlyDeletedSection() {
 
           {noCopy ? (
             <NoProjectCopyNotice />
-          ) : loaded.length === 0 ? (
+          ) : !anyDone ? (
             <p className="ade-modern-muted">Looking for deleted lanes and chats…</p>
-          ) : counts.all === 0 && pending.length === 0 ? (
+          ) : counts.all === 0 && allDone ? (
             <div className="ade-ar-empty">
               <ClockCounterClockwise size={22} weight="light" />
               <div className="ade-ap-rowtitle">Nothing deleted</div>
@@ -771,7 +746,7 @@ export function RecentlyDeletedSection() {
                         entry={entry}
                         busy={busy}
                         restoring={running?.key === entry.key && running.kind === "restore"}
-                        machineHint={machineHint(entry.source)}
+                        machineHint={hintFor(entry.source)}
                         onRestore={(target) => void restore(target)}
                         onDrop={(target) => void drop(target)}
                         onOpenChat={openEntry}
@@ -782,7 +757,7 @@ export function RecentlyDeletedSection() {
                         entry={entry}
                         busy={busy}
                         reopening={running?.key === entry.key && running.kind === "reopen"}
-                        machineHint={machineHint(entry.source)}
+                        machineHint={hintFor(entry.source)}
                         onOpen={openEntry}
                         onReopen={(target) => void reopen(target)}
                         onRemove={(target) => void remove(target)}
@@ -804,9 +779,7 @@ export function RecentlyDeletedSection() {
               ) : null}
             </div>
           )}
-          {loaded.length > 0 && pending.length > 0 ? (
-            <p className="ade-modern-muted">Still reading {pending.map((machine) => machine.machineName).join(", ")}…</p>
-          ) : null}
+          <CopyReadsPending machines={machines} />
         </div>
       </section>
       {open && openChat ? (

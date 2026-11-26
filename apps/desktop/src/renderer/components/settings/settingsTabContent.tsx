@@ -76,6 +76,7 @@ import { NoProjectCopyNotice, ProjectCopyBar, ProjectCopyScopeProvider, settings
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
+  isEveryCopySettingsTab,
   isProjectSettingsTab,
   mcpCatalogueIdFromAnchor,
   sectionHasAvailableEntries,
@@ -701,7 +702,7 @@ export function TabContent({
   standalone?: boolean;
 }) {
   // Deleted & Archived reads every online copy itself: no picker, no one copy.
-  if (!standalone && tab === "deleted") return <MachineTabContent tab={tab} machine={null} standalone={false} />;
+  if (!standalone && isEveryCopySettingsTab(tab)) return <MachineTabContent tab={tab} machine={null} standalone={false} />;
   // A project page reads one copy of the project, picked on the page.
   if (!standalone && isProjectSettingsTab(tab)) return <ProjectCopyTabContent tab={tab} />;
   return <MachineTabContent tab={tab} machine={machine} standalone={standalone} />;

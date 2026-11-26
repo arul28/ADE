@@ -2089,7 +2089,7 @@ struct WorkRootListScreen: View, Equatable {
           // A deleted chat is not archived: one quiet way to where it is.
           if selectedStatus == .archived, inputs.activeProjectId != nil {
             WorkRecentlyDeletedChatsLink {
-              DeletedArchivedLink.openRecentlyDeleted(.chats, sync: syncService)
+              syncService.presentDeletedArchived(.recentlyDeleted, filter: .chats)
             }
             .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
             .listRowBackground(Color.clear)

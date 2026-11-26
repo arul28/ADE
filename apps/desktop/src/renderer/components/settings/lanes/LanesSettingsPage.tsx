@@ -97,73 +97,43 @@ export function StorageSettingsPage() {
   return <ProjectViewsPage allViews={STORAGE_VIEWS} label="Disk space settings" />;
 }
 
-/**
- * Settings → Project → Deleted & Archived: what you deleted or archived, from
- * every computer with a copy of the project, to bring back. It reads no disk
- * sizes or health, so it loads none.
- */
-export function DeletedArchivedPage() {
-  return <ProjectViewsPage allViews={DELETED_VIEWS} label="Deleted and archived" loadsHealth={false} />;
+/** The views of a page the client can reach: the hosted web client reaches fewer. */
+function useReachableViews(allViews: readonly View[]): readonly View[] {
+  const web = isWebClientMode();
+  return React.useMemo(() => (web ? allViews.filter((view) => WEB_VIEWS.has(view.id)) : allViews), [web, allViews]);
 }
 
 /**
- * One project page as views under a tab strip. One view shows at a time, so
- * the page is never a long scroll of folded sections; a link or a settings
- * search that names a card switches to the view that holds it. A page left
- * with one view (the hosted web client) drops the strip.
+ * Settings → Project → Deleted & Archived: what you deleted or archived, from
+ * every computer with a copy of the project, to bring back. Each section reads
+ * every copy itself (`useEveryCopyRead`), so the page has no machine scope and
+ * loads no disk sizes or health.
+ */
+export function DeletedArchivedPage() {
+  const views = useReachableViews(DELETED_VIEWS);
+  return (
+    <SettingsViewsTabs
+      views={views}
+      label="Deleted and archived"
+      renderView={(id) => (id === "archive" ? <ArchiveSection /> : <RecentlyDeletedSection />)}
+    />
+  );
+}
+
+/**
+ * One project page with health data, as views under a tab strip.
  *
  * Remote machines: the page always acts on the machine that owns the project
  * (`useSettingsMachineScope().pin`), and so does every section in it.
  */
-function ProjectViewsPage({ allViews, label, loadsHealth = true }: { allViews: readonly View[]; label: string; loadsHealth?: boolean }) {
+function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; label: string }) {
   const { pin, isThisMachine } = useSettingsMachineScope();
-  const location = useLocation();
   const navigate = useNavigate();
-  const searchAnchors = useSettingsSearchAnchors();
   const web = isWebClientMode();
-  const data = useHealthData(pin, isThisMachine, web || !loadsHealth ? {} : { storage: true, report: true });
+  const data = useHealthData(pin, isThisMachine, web ? {} : { storage: true, report: true });
   const fix = useProjectFix(pin, data.setReport);
   const ignore = useProjectIgnore(pin, data.setReport);
-  const views = React.useMemo(() => (web ? allViews.filter((view) => WEB_VIEWS.has(view.id)) : allViews), [web, allViews]);
-
-  const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
-  const [view, setView] = React.useState<ViewId>(() => viewForAnchor(views, hashAnchor) ?? views[0]!.id);
-
-  // A link that names a card shows its view, then lands on the card once the
-  // view is drawn (and again once the lane list and storage have loaded and
-  // moved it).
-  React.useEffect(() => {
-    const target = viewForAnchor(views, hashAnchor);
-    if (target) setView(target);
-  }, [hashAnchor, views]);
-  const settled = !data.report.loading && !data.storage.loading;
-  React.useEffect(() => {
-    if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(views, hashAnchor) !== view) return;
-    let flashTimer: number | null = null;
-    const frame = window.requestAnimationFrame(() => {
-      const card = document.getElementById(hashAnchor);
-      if (!card) return;
-      card.scrollIntoView({ block: "start" });
-      // A row deep in the details reads like any other row; one flash points at it.
-      if (HEALTH_DETAIL_ANCHORS.has(hashAnchor)) {
-        card.classList.add("ade-settings-flash");
-        flashTimer = window.setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
-      }
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      if (flashTimer != null) window.clearTimeout(flashTimer);
-    };
-  }, [hashAnchor, view, settled, views]);
-
-  // A search shows the view that holds its best match (the anchors come best
-  // first), so "settle" opens the chat rule rather than a card that only
-  // mentions settled chats.
-  React.useEffect(() => {
-    if (!searchAnchors || searchAnchors.length === 0) return;
-    const best = searchAnchors.map((anchor) => viewForAnchor(views, anchor)).find((id): id is ViewId => id != null);
-    if (best) setView(best);
-  }, [searchAnchors, views]);
+  const views = useReachableViews(allViews);
 
   const { report, loading: reportLoading, checking, error: reportError, available } = data.report;
   const laneIssues = issuesForPage(report, "lanes").filter((issue) => issue.id !== "stale-lanes");
@@ -177,7 +147,9 @@ function ProjectViewsPage({ allViews, label, loadsHealth = true }: { allViews: r
     void data.loadStorage({ force: true, silent: true });
   }, [data]);
 
-  const badge = (id: ViewId): { text: string; tone?: "warn" } | null => {
+  const settled = !data.report.loading && !data.storage.loading;
+
+  const badge = (id: ViewId): ViewBadge | null => {
     if (id === "lanes" && report?.lanes) return staleCount > 0 ? { text: `${staleCount} stale`, tone: "warn" } : { text: String(report.lanes.length) };
     if (id === "space" && snapshot) return { text: formatMeasuredBytes(snapshot.totalAdeBytes, snapshot.truncated, snapshot.platform) };
     return null;
@@ -255,10 +227,6 @@ function ProjectViewsPage({ allViews, label, loadsHealth = true }: { allViews: r
             {isAdeAvailable(window.ade.project?.getSnapshot) ? <ProjectSection /> : null}
           </>
         );
-      case "archive":
-        return <ArchiveSection />;
-      case "recently-deleted":
-        return <RecentlyDeletedSection />;
       case "new-lanes":
         return (
           <div className="ade-nl-flow">
@@ -288,11 +256,79 @@ function ProjectViewsPage({ allViews, label, loadsHealth = true }: { allViews: r
   return (
     // Disk sizes on every view print in the units of the machine measured.
     <StoragePlatformContext.Provider value={snapshot?.platform}>
+      <SettingsViewsTabs views={views} label={label} badge={badge} settled={settled} renderView={renderView} />
+    </StoragePlatformContext.Provider>
+  );
+}
+
+type ViewBadge = { text: string; tone?: "warn" };
+
+/**
+ * A project page as views under a tab strip. One view shows at a time, so the
+ * page is never a long scroll of folded sections; a link or a settings search
+ * that names a card switches to the view that holds it. A page left with one
+ * view (the hosted web client) drops the strip. `settled` goes true once the
+ * page's data has loaded, so a link lands on its card again after the card
+ * moved.
+ */
+function SettingsViewsTabs({
+  views,
+  label,
+  renderView,
+  badge,
+  settled = true,
+}: {
+  views: readonly View[];
+  label: string;
+  renderView: (id: ViewId) => React.ReactNode;
+  badge?: (id: ViewId) => ViewBadge | null;
+  settled?: boolean;
+}) {
+  const location = useLocation();
+  const searchAnchors = useSettingsSearchAnchors();
+  const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
+  const [view, setView] = React.useState<ViewId>(() => viewForAnchor(views, hashAnchor) ?? views[0]!.id);
+
+  // A link that names a card shows its view, then lands on the card once the
+  // view is drawn (and again once the page's data has loaded and moved it).
+  React.useEffect(() => {
+    const target = viewForAnchor(views, hashAnchor);
+    if (target) setView(target);
+  }, [hashAnchor, views]);
+  React.useEffect(() => {
+    if (!hashAnchor || hashAnchor === "lane-list" || viewForAnchor(views, hashAnchor) !== view) return;
+    let flashTimer: number | null = null;
+    const frame = window.requestAnimationFrame(() => {
+      const card = document.getElementById(hashAnchor);
+      if (!card) return;
+      card.scrollIntoView({ block: "start" });
+      // A row deep in the details reads like any other row; one flash points at it.
+      if (HEALTH_DETAIL_ANCHORS.has(hashAnchor)) {
+        card.classList.add("ade-settings-flash");
+        flashTimer = window.setTimeout(() => card.classList.remove("ade-settings-flash"), 1_200);
+      }
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (flashTimer != null) window.clearTimeout(flashTimer);
+    };
+  }, [hashAnchor, view, settled, views]);
+
+  // A search shows the view that holds its best match (the anchors come best
+  // first), so "settle" opens the chat rule rather than a card that only
+  // mentions settled chats.
+  React.useEffect(() => {
+    if (!searchAnchors || searchAnchors.length === 0) return;
+    const best = searchAnchors.map((anchor) => viewForAnchor(views, anchor)).find((id): id is ViewId => id != null);
+    if (best) setView(best);
+  }, [searchAnchors, views]);
+
+  return (
     <div className="ade-lanes-page">
       {views.length > 1 ? (
         <div className="ade-lanes-tabs" role="tablist" aria-label={label}>
           {views.map((entry) => {
-            const count = badge(entry.id);
+            const count = badge?.(entry.id) ?? null;
             return (
               <button
                 key={entry.id}
@@ -323,6 +359,5 @@ function ProjectViewsPage({ allViews, label, loadsHealth = true }: { allViews: r
         {renderView(view)}
       </div>
     </div>
-    </StoragePlatformContext.Provider>
   );
 }

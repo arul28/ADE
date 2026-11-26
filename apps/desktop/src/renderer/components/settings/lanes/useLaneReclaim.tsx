@@ -3,6 +3,7 @@ import type { LaneReclaimRisk, OpenProjectBinding } from "../../../../shared/typ
 import { showToast } from "../../app/toast/toastStore";
 import { ReclaimConfirmDialog } from "../storage/ReclaimConfirmDialog";
 import { useStorageBytes } from "../storage/useStorageBytes";
+import { ipcErrorMessage } from "../../../lib/format";
 import { captureLaneSetupAnalytics } from "../../../lib/laneSetupAnalytics";
 import { requirePin } from "../../../state/repositoryScope";
 
@@ -15,13 +16,14 @@ const RECLAIM_TOAST_ID = "settings-lane-reclaim";
  * need a separate acknowledgement. Every call goes to `pin`'s machine, or to
  * the machine `open` names (a list that holds several machines' lanes).
  *
- * Returns `open(laneId, at?)` and the dialog to render. `alreadyArchived`: the
- * lanes are in the archive (Settings → Deleted & Archived → Archive's Free up space), so the
- * result says what was freed rather than that the lane was archived.
+ * Returns `open(laneId, at?)` and the dialog to render. `onDone` gets the
+ * machine the lane was on. `alreadyArchived`: the lanes are in the archive
+ * (Settings → Deleted & Archived → Archive's Free up space), so the result
+ * says what was freed rather than that the lane was archived.
  */
 export function useLaneReclaim(
   pin: OpenProjectBinding | null,
-  onDone: () => void,
+  onDone: (pin: OpenProjectBinding | null) => void,
   opts: { alreadyArchived?: boolean } = {},
 ) {
   const alreadyArchived = opts.alreadyArchived === true;
@@ -42,7 +44,7 @@ export function useLaneReclaim(
       setRiskPin(target);
       setRisk(next);
     } catch (err) {
-      showToast({ id: RECLAIM_TOAST_ID, tone: "error", title: err instanceof Error ? err.message : "Could not review this lane" });
+      showToast({ id: RECLAIM_TOAST_ID, tone: "error", title: ipcErrorMessage(err) || "Could not review this lane" });
     }
   }, [pin]);
 
@@ -74,10 +76,10 @@ export function useLaneReclaim(
       setRisk(null);
       setConfirm("");
       setDiscardDirty(false);
-      onDone();
+      onDone(riskPin);
     } catch (err) {
       if (alreadyArchived) captureLaneSetupAnalytics({ action: "space_freed", outcome: "failed" });
-      showToast({ id: RECLAIM_TOAST_ID, tone: "error", title: err instanceof Error ? err.message : "Could not archive this lane" });
+      showToast({ id: RECLAIM_TOAST_ID, tone: "error", title: ipcErrorMessage(err) || "Could not archive this lane" });
     } finally {
       setBusy(false);
     }

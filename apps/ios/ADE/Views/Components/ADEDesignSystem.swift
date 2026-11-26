@@ -682,11 +682,15 @@ final class ADEImageCache {
 
 struct ADENoticeCard: View {
   let title: String
-  let message: String
+  /// Nil for a notice whose title says it all.
+  let message: String?
   let icon: String
   let tint: Color
   let actionTitle: String?
   let action: (() -> Void)?
+  /// A second, plain button beside the action.
+  var secondaryActionTitle: String?
+  var secondaryAction: (() -> Void)?
   /// The action is running: its button shows progress and takes no taps.
   var isBusy = false
   /// Adds a close button, for a notice the person may just dismiss.
@@ -700,15 +704,18 @@ struct ADENoticeCard: View {
           .foregroundStyle(tint)
           .frame(width: 32, height: 32)
           .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+          .accessibilityHidden(true)
 
         VStack(alignment: .leading, spacing: 4) {
           Text(title)
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text(message)
-            .font(.subheadline)
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+          if let message {
+            Text(message)
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
         }
 
         Spacer(minLength: 0)
@@ -725,18 +732,35 @@ struct ADENoticeCard: View {
         }
       }
 
-      if let actionTitle, let action {
-        Button(action: action) {
-          if isBusy { ProgressView().controlSize(.small) } else { Text(actionTitle) }
+      if (actionTitle != nil && action != nil) || hasSecondaryAction {
+        // Side by side when they fit; one above the other at large text sizes.
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 8) { buttons }
+          VStack(alignment: .leading, spacing: 8) { buttons }
         }
-        .buttonStyle(ADEKitButtonStyle(prominent: true))
-        .disabled(isBusy)
       }
     }
     .adeKitCard()
-    // A close button beside the action needs its own element.
-    .accessibilityElement(children: onDismiss == nil ? .combine : .contain)
-    .accessibilityLabel("\(title). \(message)")
+    // A close button or a second button beside the action needs its own element.
+    .accessibilityElement(children: onDismiss == nil && !hasSecondaryAction ? .combine : .contain)
+    .accessibilityLabel(message.map { "\(title). \($0)" } ?? title)
+  }
+
+  private var hasSecondaryAction: Bool { secondaryActionTitle != nil && secondaryAction != nil }
+
+  @ViewBuilder
+  private var buttons: some View {
+    if let actionTitle, let action {
+      Button(action: action) {
+        if isBusy { ProgressView().controlSize(.small) } else { Text(actionTitle) }
+      }
+      .buttonStyle(ADEKitButtonStyle(prominent: true))
+      .disabled(isBusy)
+    }
+    if let secondaryActionTitle, let secondaryAction {
+      Button(secondaryActionTitle, action: secondaryAction)
+        .buttonStyle(ADEKitButtonStyle())
+    }
   }
 }
 

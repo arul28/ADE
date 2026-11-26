@@ -119,7 +119,8 @@ import type {
   RemoveDeletedLaneArgs,
   RestoreDeletedLaneArgs,
   RestoreDeletedLaneResult,
-  RestoredLaneChat,
+  RestoredLaneChats,
+  RestoredLaneChatsArgs,
   LaneDeleteEvent,
   LaneDeleteLeftoverWorktree,
   LaneLifecycleEvent,
@@ -1712,10 +1713,7 @@ export function createLaneService({
   // delete put in Recently deleted. Set via `setOnDeletedLaneRestored` because
   // the chat service is constructed after the lane service. Null where no chat
   // service runs; the restore then leaves the chats in Recently deleted.
-  let onDeletedLaneRestored: ((args: { fromLaneId: string; toLaneId: string }) => Promise<{
-    reopened: RestoredLaneChat[];
-    failed: number;
-  }>) | null = null;
+  let onDeletedLaneRestored: ((args: RestoredLaneChatsArgs) => Promise<RestoredLaneChats>) | null = null;
 
   const resolveSessionTitle = (sessionId: string): string | null => {
     const id = sessionId.trim();
