@@ -163,6 +163,7 @@ function parseProject(value: unknown): AttentionProjectRef | null {
     || typeof candidate.projectId !== "string"
     || typeof candidate.name !== "string"
     || !optionalString(candidate.rootPath)
+    || !optionalString(candidate.settingsKey)
   ) return null;
   return candidate as AttentionProjectRef;
 }
@@ -392,13 +393,14 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
 
 function parseAttentionPreferences(value: unknown): AttentionPreferences {
   const candidate = record(value);
-  const account = record(candidate?.account);
+  const account = candidate?.account === undefined ? DEFAULT_ATTENTION_PREFERENCES.account : record(candidate.account);
   const normalizedAccount = account && account.dockBadgeScope === undefined
     ? { ...account, dockBadgeScope: "local" }
     : account;
-  const devices = record(candidate?.devices);
+  const devices = candidate?.devices === undefined ? {} : record(candidate.devices);
   const machines = candidate?.machines === undefined ? {} : record(candidate.machines);
-  const projects = record(candidate?.projects);
+  const projects = candidate?.projects === undefined ? {} : record(candidate.projects);
+  const mutedSessionIds = candidate?.mutedSessionIds === undefined ? [] : candidate.mutedSessionIds;
   if (
     !candidate
     || !isPreferenceScope(normalizedAccount)
@@ -408,8 +410,8 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
     || !Object.values(machines).every((scope) => isPreferenceScope(scope, true))
     || !projects
     || !Object.values(projects).every((scope) => isPreferenceScope(scope, true))
-    || !Array.isArray(candidate.mutedSessionIds)
-    || !candidate.mutedSessionIds.every((id) => typeof id === "string")
+    || !Array.isArray(mutedSessionIds)
+    || !mutedSessionIds.every((id) => typeof id === "string")
   ) {
     throw new Error(
       "Activity preferences were incompatible. Update ADE and retry.",
@@ -418,7 +420,10 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
   return {
     ...candidate,
     account: normalizedAccount,
+    devices,
     machines,
+    projects,
+    mutedSessionIds,
   } as AttentionPreferences;
 }
 
@@ -812,6 +817,7 @@ export function createAttentionNamespace(
         machines: _machineOverrides,
         projects: _projectOverrides,
         relayFeatures: _relayFeatures,
+        relayUpdatedAt: _relayUpdatedAt,
         ...accountPreferences
       } = preferences;
       await request(

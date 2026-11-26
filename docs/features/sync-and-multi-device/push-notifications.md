@@ -641,8 +641,9 @@ can override. Turning notifications off at any of those levels stops delivery.
 Event policies merge per event (`resolveScopedDeliveryPreferences` on the relay,
 `resolveAttentionScope` on the desktop): a project, machine or phone that sets
 one event keeps the account's choice for every other event. A project scope is
-keyed by the machine-independent project id (`project.canonicalId`); the relay
-also reads a scope saved under the publisher's own project id.
+keyed by the normalized Git repository identity so different checkout paths
+share settings. Folders without an origin use their checkout identity. The relay
+and desktop also read existing overrides under earlier project ids.
 
 The three scope routes take the same patch (`AttentionScopePatch`): any scope
 field, plus `eventPolicies` that merges into the scope's map. `null`, for a
@@ -651,8 +652,9 @@ again; a scope left empty is removed. Unknown events or levels answer 400.
 Settings › Notifications › Events edits them: a scope switcher (Everywhere,
 Project, Computer, Phone) above the matrix, and "Choose events" on each
 computer and phone under Machines. A phone scope is what reaches that phone.
-An older relay answers 404 on the project route; Settings then drops the
-Project choice and says so.
+Settings shows the scope switcher when the relay advertises support for scoped
+events. If a project save returns 404, Settings hides the Project choice and
+explains why.
 
 Besides the agent and PR events, three events have a setting:
 `agent_message` (messages from `ade notify`, agents and automations; Notify by
@@ -828,22 +830,16 @@ Run outside a chat, `ade notify` keeps the plain account push described next.
 
 ## Desktop notifications
 
-`desktopAlertPresenter.ts` (Electron main) turns Needs you, failures, goal
-outcomes and agent messages into system notifications. Two sources feed it:
-this computer's brain announces its own chats at once (`attention_alert`
-events on the machine event bridge, which works while every window is hidden),
-and the account snapshots the windows already poll carry other machines'
-chats, at no extra request. Each state entry notifies once, whichever source
-reports it first. It obeys the same settings as a push, layered the same way
-(account, project, owning machine by its push key, then this desktop's device):
-notifications on, chat and machine not muted, the event set to notify (messages
-and goals always count), and Hide details, which cuts a system notification to
-"Agent: Needs you" or a message's title alone. It only fires while no ADE window
-is focused. Goal outcomes are not Activity items, so they pop up only on the
-computer that runs the chat. In a focused
-window a message becomes an in-app toast instead (`useAgentMessageToasts`);
-Needs you is already on the header badge. Clicking opens the chat, through
-Activity's cross-machine open for another machine's chat.
+A fresh, unseen Activity event set to Notify can raise a desktop notification
+when ADE is in the background. The local brain reports questions, failures,
+goals and messages immediately. Account snapshots carry events from all
+machines, including pull requests. The same event only alerts once when both
+sources report it. Clicking opens the associated chat or pull request.
+
+Desktop alerts respect the event's project and computer settings, chat mutes,
+quiet hours and Hide previews. The phone delivery switch applies to phones.
+Goal and background service outcomes are desktop notices. A message received
+while ADE is focused appears as an in-app toast.
 
 ## Custom notifications
 

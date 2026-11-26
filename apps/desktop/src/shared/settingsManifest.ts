@@ -1870,6 +1870,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Events",
   },
   {
+    id: "notifications.pull-requests",
+    label: "Pull request notifications",
+    keywords: ["pull request", "pr", "ci", "review", "merge"],
+    tab: "notifications",
+    anchor: "pull-request-notifications",
+    scope: "account",
+    web: "account",
+    group: "Events",
+  },
+  {
     id: "notifications.focus-suppression",
     label: "Quiet while ADE is focused",
     keywords: ["focus", "quiet", "suppress", "do not disturb", "dnd", "mute"],

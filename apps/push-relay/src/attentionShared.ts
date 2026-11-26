@@ -94,6 +94,7 @@ export type ParsedAttentionItem = Record<string, unknown> & {
   preview: string;
   privacyPreview: string;
   updatedAt: string;
+  statusSince?: string | null;
   expiresAt: string | null;
   machine: Record<string, unknown> & { machineKey: string; name: string };
   project: {
@@ -107,6 +108,11 @@ export type ParsedAttentionItem = Record<string, unknown> & {
      * Optional because an older publisher omits it.
      */
     canonicalId: string | null;
+    /**
+     * The key project notification settings use (the repository, or
+     * `canonicalId` without an origin). Absent from an older publisher.
+     */
+    settingsKey?: string;
     name: string;
     rootPath: string | null;
   };

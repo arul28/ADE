@@ -59,8 +59,8 @@ import "./NotificationsSection.css";
  */
 
 const POLICY_OPTIONS: { value: AttentionDeliveryPolicy; label: string; hint: string }[] = [
-  { value: "off", label: "Off", hint: "Not shown anywhere" },
-  { value: "ambient", label: "Activity", hint: "Listed quietly in Activity" },
+  { value: "off", label: "Off", hint: "Disables alerts for this event" },
+  { value: "ambient", label: "Activity", hint: "Keeps the event in Activity without an alert" },
   { value: "notify", label: "Notify", hint: "Listed, and interrupts you" },
 ];
 
@@ -236,7 +236,13 @@ export function NotificationsSection() {
     const rows = events.filter((event) => event.group === group.id);
     if (rows.length === 0) return null;
     return (
-      <div key={group.id} className="ade-nt-matrix" data-scope-off={!scopeOn || undefined}>
+      <div
+        key={group.id}
+        id={group.id === "pull_requests" ? "pull-request-notifications" : undefined}
+        data-settings-anchor={group.id === "pull_requests" ? "pull-request-notifications" : undefined}
+        className="ade-nt-matrix"
+        data-scope-off={!scopeOn || undefined}
+      >
         <div className="ade-nt-mhead" aria-hidden>
           <span className="kit-eyebrow">{group.label}</span>
           {POLICY_OPTIONS.map((option) => (

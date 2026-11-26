@@ -1,6 +1,7 @@
 import {
   BALANCED_ATTENTION_EVENT_POLICIES,
   DEFAULT_ATTENTION_PREFERENCES,
+  upgradeAttentionEventPolicies,
   type AttentionDeliveryPolicy,
   type AttentionPolicyEventKind,
   type AttentionPreferenceScope,
@@ -37,7 +38,11 @@ export type AttentionScopeTarget = {
 export function resolveAttentionScope(
   preferences: AttentionPreferences,
   target: AttentionScopeTarget,
-): { scope: AttentionPreferenceScope; scopedOff: boolean } {
+): {
+  scope: AttentionPreferenceScope;
+  scopedOff: boolean;
+  quietHours: Array<AttentionPreferenceScope["quietHours"] | undefined>;
+} {
   const layers: Partial<AttentionPreferenceScope>[] = [];
   const seenProjects = new Set<string>();
   for (const projectId of target.projectIds ?? []) {
@@ -47,11 +52,12 @@ export function resolveAttentionScope(
     const layer = preferences.projects?.[id];
     if (layer) layers.push(layer);
   }
+  layers.reverse();
   const machine = target.machineKey ? preferences.machines?.[target.machineKey] : undefined;
   if (machine) layers.push(machine);
   const device = target.deviceId ? preferences.devices?.[target.deviceId] : undefined;
   if (device) layers.push(device);
-  const account = preferences.account ?? DEFAULT_ATTENTION_PREFERENCES.account;
+  const account = upgradeAttentionEventPolicies(preferences.account ?? DEFAULT_ATTENTION_PREFERENCES.account);
   const scope: AttentionPreferenceScope = Object.assign(
     {},
     DEFAULT_ATTENTION_PREFERENCES.account,
@@ -64,13 +70,10 @@ export function resolveAttentionScope(
     account.eventPolicies,
     ...layers.map((layer) => layer.eventPolicies ?? {}),
   );
-  // The account's quiet hours stay the account's; a scope adds its own window
-  // on top (see `attentionQuietHoursActive`), it never clears the account's.
-  scope.quietHours = account.quietHours ?? DEFAULT_ATTENTION_PREFERENCES.account.quietHours;
   scope.notificationsEnabled = account.notificationsEnabled !== false;
   const scopedOff = layers.some((layer) =>
     layer.notificationsEnabled === false || layer.deviceDeliveryEnabled === false);
-  return { scope, scopedOff };
+  return { scope, scopedOff, quietHours: [account.quietHours, ...layers.map((layer) => layer.quietHours)] };
 }
 
 /** This event's delivery level in a resolved scope, or its catalog default. */

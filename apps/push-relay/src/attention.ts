@@ -200,7 +200,7 @@ const EVENT_POLICIES = new Set(["off", "ambient", "notify"]);
  * shows them (a goal outcome, the background service). Scope patches may
  * carry them; delivery never reads them.
  */
-const COMPUTER_ONLY_POLICY_EVENT_KINDS = new Set(["agent_goal", "ade_service"]);
+const COMPUTER_ONLY_POLICY_EVENT_KINDS = new Set(["agent_goal", "agent_usage_limit_resumed", "ade_service"]);
 
 /**
  * Events that notified by default before policy-defaults version 2. A saved
@@ -953,8 +953,8 @@ async function enforceActivityAccountItemCap(
  *
  * Event policies merge per event: a project that sets one event to Notify
  * keeps the account's choice for every other event. A project is looked up by
- * its machine-independent id first (what Settings writes), then by the
- * publishing machine's own id. Mirrors `resolveAttentionScope` in the desktop
+ * its settings key first (its repository, what Settings writes), then by its
+ * folder's canonical id and the publishing machine's own id. Mirrors `resolveAttentionScope` in the desktop
  * shared types.
  */
 export function resolveScopedDeliveryPreferences(
@@ -980,7 +980,9 @@ export function resolveScopedDeliveryPreferences(
   const explicitDevice = isRecord(devices[device.device_id])
     ? devices[device.device_id] as Record<string, unknown>
     : {};
-  const layers = [registered, account, ...projectLayers, machine, explicitDevice];
+  projectLayers.reverse();
+  const scopeLayers = [...projectLayers, machine, explicitDevice];
+  const layers = [registered, account, ...scopeLayers];
   const merged: Record<string, unknown> = Object.assign({}, ...layers);
   // A "notify" the account saved under the version-1 defaults was that
   // default, not a choice (`effectiveEventPolicy`). Settle it on the account's
@@ -1001,8 +1003,7 @@ export function resolveScopedDeliveryPreferences(
     {},
     accountPolicies(registered),
     accountPolicies(account),
-    ...[...projectLayers, machine, explicitDevice]
-      .map((layer) => (isRecord(layer.eventPolicies) ? layer.eventPolicies : {})),
+    ...scopeLayers.map((layer) => (isRecord(layer.eventPolicies) ? layer.eventPolicies : {})),
   );
   merged.eventPolicyDefaultsVersion = CURRENT_EVENT_POLICY_DEFAULTS_VERSION;
   // Notifications off is a veto, not a default a later scope can undo. Older
@@ -1024,7 +1025,11 @@ function resolveActivityDeliveryPreferences(
   return resolveScopedDeliveryPreferences(
     device,
     {
-      projectIds: [requiredString(item.project.canonicalId), item.project.projectId],
+      projectIds: [
+        requiredString(item.project.settingsKey),
+        requiredString(item.project.canonicalId),
+        item.project.projectId,
+      ],
       machineKey: item.machine.machineKey,
     },
     preferences,
@@ -1286,8 +1291,62 @@ async function deliverAttentionNotifications(
   let notificationAttempts = 0;
 
   for (const item of items) {
-    if (item.activityTier && item.activityTier !== "signal") continue;
-    if (nowMs - Date.parse(item.updatedAt) > MAX_ALERT_AGE_MS) continue;
+    if (item.activityTier === "idle" || item.phase === "stale") continue;
+    // Preview updates must not turn an old ambient event into a new alert.
+    const alertAt = Date.parse(item.activityTier === "signal" ? item.updatedAt : item.statusSince ?? item.updatedAt);
+    if (nowMs - alertAt > MAX_ALERT_AGE_MS) continue;
+    // Give the computer the first chance: while someone is using one of the
+    // user's computers, the phone waits until they stop (idle, locked,
+    // asleep). Otherwise, while ADE is in front of the user (a foreground
+    // window), or a visible Activity surface already shows this exact item,
+    // the phone waits out the desktop-first delay. The machine heartbeat
+    // republishes every 30s; an item still unseen then escalates to the phone.
+    if (
+      desktopFirstEnabled
+      && (
+        desktop.userActive
+        || (
+          (desktop.attended || desktop.visibleItemIds.has(item.id))
+          && nowMs - alertAt < desktopFirstDelayMs
+        )
+      )
+    ) {
+      continue;
+    }
+
+    const eligibleDevices = devicesResult.results.flatMap((device) => {
+      if (!device.apns_token) return [];
+      const override = resolveActivityDeliveryPreferences(
+        device,
+        item,
+        preferences,
+      );
+      const eventPolicies = isRecord(override.eventPolicies)
+        ? override.eventPolicies
+        : {};
+      // A message is a push the user asked an agent for, so its event
+      // ("Messages from agents") notifies unless the user turned it down.
+      const policy = effectiveEventPolicy(item.eventKind, eventPolicies, override);
+      if (policy !== "notify") return [];
+      const notificationsEnabled = preferenceBoolean(
+        override,
+        {},
+        "notificationsEnabled",
+        typeof override.enabled === "boolean" ? override.enabled : true,
+      );
+      if (
+        !notificationsEnabled
+        || quietHoursActive(override, accountPreferences, nowMs)
+        || stringListIncludes(
+          resolvedMutedSessionIds(device, preferences, devicePreferences),
+          itemSessionId(item),
+        )
+      ) {
+        return [];
+      }
+      return [{ device, override, apnsToken: device.apns_token }];
+    });
+    if (eligibleDevices.length === 0) continue;
     const current = await env.DB
       .prepare(`
         select source_revision, fingerprint,
@@ -1319,57 +1378,10 @@ async function deliverAttentionNotifications(
     ) {
       continue;
     }
-    // Give the computer the first chance: while someone is using one of the
-    // user's computers, the phone waits until they stop (idle, locked,
-    // asleep). Otherwise, while ADE is in front of the user (a foreground
-    // window), or a visible Activity surface already shows this exact item,
-    // the phone waits out the desktop-first delay. The machine heartbeat
-    // republishes every 30s; an item still unseen then escalates to the phone.
-    if (
-      desktopFirstEnabled
-      && (
-        desktop.userActive
-        || (
-          (desktop.attended || desktop.visibleItemIds.has(item.id))
-          && nowMs - Date.parse(item.updatedAt) < desktopFirstDelayMs
-        )
-      )
-    ) {
-      continue;
-    }
 
     const deepLink = deepLinkForItem(item);
-    for (const device of devicesResult.results) {
+    for (const { device, override, apnsToken } of eligibleDevices) {
       if (notificationAttempts >= MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH) return;
-      if (!device.apns_token) continue;
-      const override = resolveActivityDeliveryPreferences(
-        device,
-        item,
-        preferences,
-      );
-      const eventPolicies = isRecord(override.eventPolicies)
-        ? override.eventPolicies
-        : {};
-      // A message is a push the user asked an agent for, so its event
-      // ("Messages from agents") notifies unless the user turned it down.
-      const policy = effectiveEventPolicy(item.eventKind, eventPolicies, override);
-      if (policy !== "notify") continue;
-      const notificationsEnabled = preferenceBoolean(
-        override,
-        {},
-        "notificationsEnabled",
-        typeof override.enabled === "boolean" ? override.enabled : true,
-      );
-      if (
-        !notificationsEnabled
-        || quietHoursActive(override, accountPreferences, nowMs)
-        || stringListIncludes(
-          resolvedMutedSessionIds(device, preferences, devicePreferences),
-          itemSessionId(item),
-        )
-      ) {
-        continue;
-      }
       const receiptState = `alert:${item.alertFingerprint.slice(0, 48)}`;
       const existing = await env.DB.prepare(`
         select 1 as found from (
@@ -1411,7 +1423,7 @@ async function deliverAttentionNotifications(
       try {
         result = await sendPush(config, {
           environment: device.aps_environment as ApnsEnvironment,
-          deviceToken: device.apns_token,
+          deviceToken: apnsToken,
           topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
           pushType: "alert",
           priority: 10,
@@ -1795,6 +1807,10 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   const canonicalId = value.project.canonicalId == null
     ? null
     : requiredString(value.project.canonicalId);
+  // The key project notification settings use; dropped like canonicalId when unusable.
+  const settingsKey = value.project.settingsKey == null
+    ? null
+    : requiredString(value.project.settingsKey, 128);
   if (!projectId || !projectName || (value.project.rootPath != null && !rootPath)) return null;
 
   let destination: Record<string, unknown>;
@@ -1992,6 +2008,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     project: {
       projectId,
       canonicalId,
+      ...(settingsKey ? { settingsKey } : {}),
       name: projectName,
       rootPath,
     },
@@ -3512,9 +3529,9 @@ async function handlePreferences(
   if (!isRecord(payload)) return json({ ok: false, error: "invalid preferences" }, { status: 400 });
   // What a client was told on read, never stored.
   delete payload.relayFeatures;
+  delete payload.relayUpdatedAt;
   const preservesDevices = !Object.prototype.hasOwnProperty.call(payload, "devices");
   const preservesMachines = !Object.prototype.hasOwnProperty.call(payload, "machines");
-  const preservesProjects = !Object.prototype.hasOwnProperty.call(payload, "projects");
   const result = await mutateAttentionPreferences(env, userId, (current) => ({
     ...payload,
     // Only the per-chat route writes the account mute list. A whole-document
@@ -3527,9 +3544,10 @@ async function handlePreferences(
     ...(preservesMachines && isRecord(current.machines)
       ? { machines: current.machines }
       : {}),
-    ...(preservesProjects && isRecord(current.projects)
-      ? { projects: current.projects }
-      : {}),
+    // Project PATCH is the only writer once the collection exists. Older
+    // clients still serialize the project map they loaded on account saves.
+    projects: isRecord(current.projects) ? current.projects : payload.projects ?? {},
+    ...(!preservesDevices || isRecord(current.devices) ? {} : { devices: {} }),
   }));
   if ("response" in result) return result.response;
   await deliverAccountLiveActivity(env, userId);
@@ -3550,9 +3568,9 @@ async function mutateAttentionPreferences(
 > {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const row = await env.DB
-      .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
+      .prepare("select payload_json, updated_at from attention_preferences where user_id = ? limit 1")
       .bind(userId)
-      .first<{ payload_json: string }>();
+      .first<{ payload_json: string; updated_at: string }>();
     let current: Record<string, unknown> = {};
     if (row) {
       try {
@@ -3600,14 +3618,18 @@ async function mutateAttentionPreferences(
         ),
       };
     }
-    const updatedAt = new Date().toISOString();
+    // The timestamp also orders receipts that reach clients out of order.
+    const previousTime = row ? Date.parse(row.updated_at) : NaN;
+    const updatedAt = new Date(
+      Math.max(Date.now(), Number.isFinite(previousTime) ? previousTime + 1 : 0),
+    ).toISOString();
     const committed = row
       ? await env.DB.prepare(`
           update attention_preferences
           set payload_json = ?, updated_at = ?
-          where user_id = ? and payload_json = ?
+          where user_id = ? and updated_at = ? and payload_json = ?
           returning payload_json
-        `).bind(serialized, updatedAt, userId, row.payload_json)
+        `).bind(serialized, updatedAt, userId, row.updated_at, row.payload_json)
         .first<{ payload_json: string }>()
       : await env.DB.prepare(`
           insert into attention_preferences(user_id, payload_json, updated_at)
@@ -3638,6 +3660,7 @@ export function applyAttentionScopePatch(
 ): { scope: Record<string, unknown> } | { error: string } {
   const next: Record<string, unknown> = { ...existing };
   for (const [key, value] of Object.entries(patch)) {
+    if (key === "__proto__") return { error: "invalid preference field" };
     if (key === "eventPolicies") {
       if (value === null) {
         delete next.eventPolicies;
@@ -3677,7 +3700,7 @@ async function handleScopePreferences(
   id: string,
 ): Promise<Response> {
   const noun = collection === "devices" ? "device" : collection === "machines" ? "machine" : "project";
-  if (!requiredString(id, 128)) {
+  if (!requiredString(id, 128) || id === "__proto__") {
     return json({ ok: false, error: `invalid ${noun} ${collection === "machines" ? "key" : "id"}` }, { status: 400 });
   }
   let payload: unknown;
@@ -3759,6 +3782,7 @@ type CustomNotificationRequest = {
   body: string | null;
   deepLink: string | null;
   machineKey: string | null;
+  projectSettingsKey: string | null;
 };
 
 function parseCustomNotification(
@@ -3799,7 +3823,11 @@ function parseCustomNotification(
     machineKey = requiredString(payload.machineKey, 128);
     if (!machineKey) return { error: "invalid machine key" };
   }
-  return { title, body, deepLink, machineKey };
+  const projectSettingsKey = requiredString(payload.projectSettingsKey, 128);
+  if (payload.projectSettingsKey != null && !projectSettingsKey) {
+    return { error: "invalid project settings key" };
+  }
+  return { title, body, deepLink, machineKey, projectSettingsKey };
 }
 
 /**
@@ -3870,7 +3898,7 @@ async function handleCustomNotification(
     if (!device.apns_token) continue;
     const override = resolveScopedDeliveryPreferences(
       device,
-      { machineKey: parsed.machineKey },
+      { projectIds: [parsed.projectSettingsKey], machineKey: parsed.machineKey },
       preferences,
     );
     const notificationsEnabled = preferenceBoolean(

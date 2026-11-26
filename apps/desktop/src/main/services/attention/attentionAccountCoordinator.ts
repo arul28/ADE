@@ -786,7 +786,8 @@ export class AttentionAccountCoordinator {
           await this.options.accountAttentionClient.getAttentionPreferences(accountOwnerId)
           ?? DEFAULT_ATTENTION_PREFERENCES;
         this.noteRelayAvailable();
-        this.options.onPreferences?.(accountOwnerId, preferences);
+        this.requireCurrentAccountOwner(accountOwnerId);
+        this.observePreferences(accountOwnerId, preferences);
         return preferences;
       } catch (error) {
         if (!isRelayUnavailable(error)) throw error;
@@ -815,7 +816,7 @@ export class AttentionAccountCoordinator {
     }
     const accountOwnerId = this.requireCurrentAccountOwner(request.accountOwnerId);
     if (this.options.accountAttentionClient) {
-      this.noteSavedPreferences(
+      this.observePreferences(
         accountOwnerId,
         await this.options.accountAttentionClient.putAttentionPreferences(
           accountOwnerId,
@@ -864,7 +865,7 @@ export class AttentionAccountCoordinator {
     ) {
       throw accountActivityNotReadyError();
     }
-    this.noteSavedPreferences(
+    this.observePreferences(
       accountOwnerId,
       await this.options.accountAttentionClient.putActivityMachinePreferences(
         accountOwnerId,
@@ -892,7 +893,7 @@ export class AttentionAccountCoordinator {
     if (!this.options.accountAttentionClient?.putAttentionProjectPreferences) {
       throw accountActivityNotReadyError();
     }
-    this.noteSavedPreferences(
+    this.observePreferences(
       accountOwnerId,
       await this.options.accountAttentionClient.putAttentionProjectPreferences(
         accountOwnerId,
@@ -903,15 +904,14 @@ export class AttentionAccountCoordinator {
   }
 
   /**
-   * A save answers with the document the relay now holds. Hand it to the
-   * desktop's notification check at once, so a change made in Settings
-   * applies to the next alert instead of the next time a window loads them.
+   * Hand the relay document to the desktop notification check so settings
+   * take effect as soon as a save succeeds.
    */
-  private noteSavedPreferences(
+  private observePreferences(
     accountOwnerId: string,
     preferences: AttentionPreferences | null | undefined,
   ): void {
-    if (!preferences || !isRecord(preferences)) return;
+    if (!preferences || !isRecord(preferences) || this.currentAccountOwnerId() !== accountOwnerId) return;
     try {
       this.options.onPreferences?.(accountOwnerId, preferences);
     } catch (error) {
@@ -950,7 +950,7 @@ export class AttentionAccountCoordinator {
     if (!this.options.accountAttentionClient?.putAttentionDevicePreferences) {
       throw accountActivityNotReadyError();
     }
-    this.noteSavedPreferences(
+    this.observePreferences(
       accountOwnerId,
       await this.options.accountAttentionClient.putAttentionDevicePreferences(
         accountOwnerId,
@@ -983,12 +983,17 @@ export class AttentionAccountCoordinator {
     if (!this.options.accountAttentionClient?.setAttentionSessionMuted) {
       throw accountActivityNotReadyError();
     }
-    await this.options.accountAttentionClient.setAttentionSessionMuted(
+    const preferences = await this.options.accountAttentionClient.setAttentionSessionMuted(
       accountOwnerId,
       normalizedSessionId,
       muted,
     );
-    // Desktop notifications read the last loaded preferences; apply the mute
+    if (preferences) {
+      this.observePreferences(accountOwnerId, preferences);
+      return;
+    }
+    if (this.currentAccountOwnerId() !== accountOwnerId) return;
+    // Older relays may omit the saved document. Apply the mute
     // to them now so a message arriving right after it stays quiet. A throw
     // here must not fail a mute the relay already saved — the renderer would
     // roll back and say it could not mute a chat that is muted.

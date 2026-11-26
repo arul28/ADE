@@ -73,6 +73,7 @@ export const ATTENTION_POLICY_EVENT_KINDS = [
   ...ATTENTION_EVENT_KINDS,
   ATTENTION_MESSAGE_EVENT_KIND,
   "agent_goal",
+  "agent_usage_limit_resumed",
   "ade_service",
 ] as const;
 export type AttentionPolicyEventKind = (typeof ATTENTION_POLICY_EVENT_KINDS)[number];
@@ -108,6 +109,14 @@ export type AttentionProjectRef = {
    * on `rootPath`, and only then on `projectId`.
    */
   canonicalId?: string | null;
+  /**
+   * The key notification settings use for this project: its repository
+   * (`repo_<hash of the canonical git origin>`), so one choice holds for every
+   * checkout of it on every machine; `canonicalId` for a folder with no
+   * origin. Optional because an older publisher omits it; readers fall back to
+   * `canonicalId`.
+   */
+  settingsKey?: string | null;
   name: string;
   rootPath?: string | null;
 };
@@ -311,8 +320,8 @@ export type AttentionDesktopAlert = {
   /** The Activity item this alert is about; both sources name it the same way. */
   itemId: string;
   /** `goal`: a chat reached, or got blocked on, the goal the user gave it. */
-  kind: "needs_you" | "failed" | "goal" | "message";
-  sessionId: string;
+  kind: "needs_you" | "failed" | "goal" | "message" | "activity";
+  sessionId: string | null;
   title: string;
   body: string | null;
   /** When the state began; stale alerts are dropped. */
@@ -326,8 +335,10 @@ export type AttentionDesktopAlert = {
    */
   machineKey?: string | null;
   projectId?: string | null;
-  /** The project's machine-independent id, which Settings keys project settings by. */
+  /** The project's machine-independent id. */
   canonicalProjectId?: string | null;
+  /** The key project notification settings use (`AttentionProjectRef.settingsKey`). */
+  projectSettingsKey?: string | null;
   /** The Activity alert identity, so marking it seen cannot clear a newer one. */
   alertFingerprint?: string | null;
   /** Set for alerts read from an account snapshot: opening goes through Activity. */
@@ -438,6 +449,8 @@ export type AttentionPreferences = {
    * (`features` on the GET). Never saved: every writer strips it.
    */
   relayFeatures?: string[];
+  /** Revision of the account document returned by the relay. */
+  relayUpdatedAt?: string | null;
 };
 
 /** The account service merges scoped event policies per event and has the projects route. */
@@ -669,9 +682,19 @@ export function upgradeAttentionEventPolicies<T extends Partial<AttentionPrefere
   };
 }
 
+/**
+ * The defaults a saved document holds: the item events only. The newer events
+ * are written once the user changes one, because a web client from before them
+ * refuses a document that names them; readers take their default from
+ * `BALANCED_ATTENTION_EVENT_POLICIES`.
+ */
+const SAVED_EVENT_POLICY_DEFAULTS = Object.fromEntries(
+  ATTENTION_EVENT_KINDS.map((kind) => [kind, BALANCED_ATTENTION_EVENT_POLICIES[kind]]),
+) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
+
 export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   account: {
-    eventPolicies: BALANCED_ATTENTION_EVENT_POLICIES,
+    eventPolicies: SAVED_EVENT_POLICY_DEFAULTS,
     eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
     notificationsEnabled: true,
     liveActivitiesEnabled: true,

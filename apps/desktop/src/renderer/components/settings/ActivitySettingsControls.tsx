@@ -9,7 +9,6 @@ import {
 } from "@phosphor-icons/react";
 
 import {
-  ATTENTION_EVENT_KINDS,
   ATTENTION_SCOPE_EVENT_POLICIES_FEATURE,
   DEFAULT_ATTENTION_PREFERENCES,
   upgradeAttentionEventPolicies,
@@ -64,7 +63,7 @@ export type ActivityMachineOption = {
 };
 
 export type ActivityProjectOption = {
-  /** The machine-independent id (`project_<hash>`) project settings are keyed by. */
+  /** The key project settings use (`AttentionProjectRef.settingsKey`). */
   projectId: string;
   name: string;
 };
@@ -74,10 +73,6 @@ export type NotificationScopeCollection = "projects" | "machines" | "devices";
 
 export type ActivitySettingsModel = ReturnType<typeof useActivitySettings>;
 
-
-const ITEM_EVENT_POLICY_DEFAULTS = Object.fromEntries(
-  ATTENTION_EVENT_KINDS.map((kind) => [kind, DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies[kind]]),
-);
 
 /**
  * Account fields an older build may still carry. The notch that read them is
@@ -92,13 +87,11 @@ function normalizeActivityPreferences(
   const account: AttentionPreferences["account"] & Record<string, unknown> = {
     ...DEFAULT_ATTENTION_PREFERENCES.account,
     ...saved,
-    // Defaults fill only the item events. The newer events (messages, goals,
-    // the background service) are saved only once the user changes one: a web
-    // client from before them refuses a document that names them.
+    // The defaults hold only the item events (see DEFAULT_ATTENTION_PREFERENCES).
     eventPolicies: {
-      ...ITEM_EVENT_POLICY_DEFAULTS,
+      ...DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies,
       ...saved.eventPolicies,
-    } as AttentionPreferenceScope["eventPolicies"],
+    },
     quietHours: {
       ...DEFAULT_ATTENTION_PREFERENCES.account.quietHours,
       ...saved.quietHours,
@@ -351,12 +344,13 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
     return [...byKey.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [itemsById]);
 
-  // Projects the account has Activity for, by their machine-independent id,
-  // plus any project that already has its own settings.
+  // Projects the account has Activity for, by their settings key (the
+  // repository, so every checkout of it is one choice), plus any project that
+  // already has its own settings.
   const projects = useMemo<ActivityProjectOption[]>(() => {
     const byId = new Map<string, ActivityProjectOption>();
     for (const item of Object.values(itemsById)) {
-      const projectId = item.project.canonicalId?.trim();
+      const projectId = item.project.settingsKey?.trim() || item.project.canonicalId?.trim();
       if (!projectId || byId.has(projectId)) continue;
       byId.set(projectId, { projectId, name: item.project.name });
     }

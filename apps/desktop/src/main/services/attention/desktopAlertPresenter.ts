@@ -1,9 +1,11 @@
+import { ACTIVITY_EVENT_BY_KIND } from "../../../shared/activityCatalog";
 import {
   attentionEventPolicy,
   attentionQuietHoursActive,
   resolveAttentionScope,
 } from "../../../shared/attention/attentionScope";
 import {
+  DEFAULT_ATTENTION_PREFERENCES,
   type AttentionPolicyEventKind,
   type AttentionItem,
   type AttentionPreferences,
@@ -53,47 +55,44 @@ const MAX_REMEMBERED = 256;
  */
 const MAX_WAITING_FOR_PREFERENCES = 16;
 
-const EVENT_BY_KIND: Record<DesktopAlert["kind"], AttentionPolicyEventKind> = {
+const EVENT_BY_KIND: Record<Exclude<DesktopAlert["kind"], "activity">, AttentionPolicyEventKind> = {
   needs_you: "agent_needs_you",
   failed: "agent_failed",
   goal: "agent_goal",
   message: "agent_message",
 };
 
-const HIDDEN_DETAIL_TITLE: Record<Exclude<DesktopAlert["kind"], "message">, string> = {
+const HIDDEN_DETAIL_TITLE: Record<Exclude<DesktopAlert["kind"], "activity" | "message">, string> = {
   needs_you: "Needs you",
   failed: "Failed",
   goal: "Goal update",
 };
 
-function alertKey(alert: Pick<DesktopAlert, "itemId" | "kind">): string {
-  return `${alert.itemId}\u0000${alert.kind}`;
+function alertKey(alert: DesktopAlert): string {
+  return `${alert.itemId}\u0000${alertEvent(alert) ?? alert.kind}`;
 }
 
-/**
- * The alert an account item would raise now, or null. Agents raise one on
- * Needs you and on failure; a message always does. Seen, dismissed and
- * non-signal items never do.
- */
+function alertEvent(alert: DesktopAlert): AttentionPolicyEventKind | undefined {
+  return alert.kind === "activity" ? alert.item?.eventKind : EVENT_BY_KIND[alert.kind];
+}
+
+/** A fresh, unseen event can alert independently of its Activity tier. */
 export function desktopAlertFromItem(item: AttentionItem): DesktopAlert | null {
-  if (item.seenAt || item.dismissedAt) return null;
-  if (item.activityTier && item.activityTier !== "signal") return null;
-  if (item.destination.kind !== "session") return null;
-  const kind: DesktopAlert["kind"] | null = item.kind === "message"
+  if (item.seenAt || item.dismissedAt || item.activityTier === "idle" || item.phase === "stale") return null;
+  const kind: DesktopAlert["kind"] = item.kind === "message"
     ? "message"
-    : item.kind === "agent" && item.phase === "needs_you"
+    : item.eventKind === "agent_needs_you"
       ? "needs_you"
-      : item.kind === "agent" && item.phase === "failed"
+      : item.eventKind === "agent_failed"
         ? "failed"
-        : null;
-  if (!kind) return null;
+        : "activity";
   const body = kind === "message"
     ? (item.preview.trim() && item.preview.trim() !== item.title.trim() ? item.preview.trim() : null)
-    : `${kind === "failed" ? "Failed" : "Needs you"} · ${item.project.name}`;
+    : `${ACTIVITY_EVENT_BY_KIND[item.eventKind]?.label ?? "Update"} · ${item.project.name}`;
   return {
     itemId: item.id,
     kind,
-    sessionId: item.destination.sessionId,
+    sessionId: item.destination.kind === "session" ? item.destination.sessionId : null,
     title: item.title,
     body,
     at: item.statusSince ?? item.updatedAt,
@@ -101,6 +100,7 @@ export function desktopAlertFromItem(item: AttentionItem): DesktopAlert | null {
     machineKey: item.machine.machineKey,
     projectId: item.project.projectId,
     canonicalProjectId: item.project.canonicalId ?? null,
+    projectSettingsKey: item.project.settingsKey ?? null,
     alertFingerprint: item.alertFingerprint ?? null,
     item,
   };
@@ -145,22 +145,25 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
    */
   const resolvedScope = (preferences: AttentionPreferences, alert: DesktopAlert) =>
     resolveAttentionScope(preferences, {
-      projectIds: [alert.canonicalProjectId, alert.projectId],
+      projectIds: [alert.projectSettingsKey, alert.canonicalProjectId, alert.projectId],
       machineKey: alert.machineKey,
       deviceId: deps.getDeviceId?.() ?? null,
     });
 
   const allowedByPreferences = (alert: DesktopAlert): boolean => {
     const preferences = deps.getPreferences();
-    if (!preferences) return true;
+    const event = alertEvent(alert);
+    if (!event) return false;
+    if (!preferences) return attentionEventPolicy(DEFAULT_ATTENTION_PREFERENCES.account, event) === "notify";
     // The account's own switch is "Phone notifications": it is about the
     // phone, so this computer does not read it. A project, machine or device
     // turned off is a veto.
-    const { scope, scopedOff } = resolvedScope(preferences, alert);
+    const { scope, scopedOff, quietHours } = resolvedScope(preferences, alert);
     if (scopedOff) return false;
-    if ((preferences.mutedSessionIds ?? []).includes(alert.sessionId)) return false;
-    if (attentionQuietHoursActive(scope.quietHours, now())) return false;
-    return attentionEventPolicy(scope, EVENT_BY_KIND[alert.kind]) === "notify";
+    if (alert.sessionId && (preferences.mutedSessionIds ?? []).includes(alert.sessionId)) return false;
+    const nowMs = now();
+    if (quietHours.some((window) => attentionQuietHoursActive(window, nowMs))) return false;
+    return attentionEventPolicy(scope, event) === "notify";
   };
 
   /**
@@ -173,6 +176,10 @@ export function createDesktopAlertPresenter(deps: DesktopAlertPresenterDeps) {
     const preferences = deps.getPreferences();
     if (!preferences || resolvedScope(preferences, alert).scope.hideDetails !== true) return alert;
     if (alert.kind === "message") return { ...alert, body: null };
+    if (alert.kind === "activity") {
+      const event = alertEvent(alert);
+      return { ...alert, title: event ? ACTIVITY_EVENT_BY_KIND[event]?.label ?? "ADE update" : "ADE update", body: null };
+    }
     return { ...alert, title: `Agent: ${HIDDEN_DETAIL_TITLE[alert.kind]}`, body: null };
   };
 
@@ -270,6 +277,7 @@ export function readDesktopAlertEvent(payload: unknown): DesktopAlert | null {
     machineKey: text(value.machineKey),
     projectId: text(value.projectId),
     canonicalProjectId: text(value.canonicalProjectId),
+    projectSettingsKey: text(value.projectSettingsKey),
     alertFingerprint: text(value.alertFingerprint),
   };
 }

@@ -296,6 +296,14 @@ const NO_ACCOUNT_TOKEN_REASONS = {
 } as const;
 const NO_ACCOUNT_TOKEN_REASON_SET: ReadonlySet<string> = new Set(Object.values(NO_ACCOUNT_TOKEN_REASONS));
 
+function readAttentionPreferenceReceipt(body: Record<string, unknown>): AttentionPreferences | null {
+  if (!body.preferences || typeof body.preferences !== "object" || Array.isArray(body.preferences)) return null;
+  const preferences = body.preferences as AttentionPreferences;
+  return typeof body.updatedAt === "string"
+    ? { ...preferences, relayUpdatedAt: body.updatedAt }
+    : preferences;
+}
+
 export class PushRelayRequestError extends Error {
   constructor(
     readonly action: string,
@@ -985,6 +993,7 @@ export function createPushRelayClient(args: {
       body?: string | null;
       deepLink?: string | null;
       machineKey?: string | null;
+      projectSettingsKey?: string | null;
     }): Promise<AccountNotificationResult> {
       const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
       if (!args.getAccountAccessToken || !expectedAccountUserId) {
@@ -996,6 +1005,7 @@ export function createPushRelayClient(args: {
           ...(notification.body ? { body: notification.body } : {}),
           ...(notification.deepLink ? { deepLink: notification.deepLink } : {}),
           ...(notification.machineKey ? { machineKey: notification.machineKey } : {}),
+          ...(notification.projectSettingsKey ? { projectSettingsKey: notification.projectSettingsKey } : {}),
         },
         accountAuthorized: true,
         expectedAccountUserId,
@@ -1031,12 +1041,12 @@ export function createPushRelayClient(args: {
         return null;
       }
       const body = requireOk("getAttentionPreferences", response);
-      const preferences = (body.preferences ?? null) as AttentionPreferences | null;
+      const preferences = readAttentionPreferenceReceipt(body);
       // An older relay sends no `features`; the answer stays as it was.
       if (!Array.isArray(body.features)) return preferences;
       const relayFeatures = body.features.filter((feature): feature is string => typeof feature === "string");
       // An account that never saved has no document; the features still count.
-      return { ...(preferences ?? DEFAULT_ATTENTION_PREFERENCES), relayFeatures };
+      return { ...(preferences ?? DEFAULT_ATTENTION_PREFERENCES), relayUpdatedAt: preferences?.relayUpdatedAt ?? null, relayFeatures };
     },
 
     /** Returns the document as the relay stored it, or null when it sent none. */
@@ -1053,6 +1063,7 @@ export function createPushRelayClient(args: {
         machines: _machineOverrides,
         projects: _projectOverrides,
         relayFeatures: _relayFeatures,
+        relayUpdatedAt: _relayUpdatedAt,
         ...accountPreferences
       } = preferences;
       const response = await request("PUT", "/attention/account/preferences", {
@@ -1063,7 +1074,7 @@ export function createPushRelayClient(args: {
       });
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") return null;
       const body = requireOk("putAttentionPreferences", response);
-      return (body.preferences ?? null) as AttentionPreferences | null;
+      return readAttentionPreferenceReceipt(body);
     },
 
     /**
@@ -1123,7 +1134,7 @@ export function createPushRelayClient(args: {
         return null;
       }
       const body = requireOk("putActivityMachinePreferences", response);
-      return (body.preferences ?? null) as AttentionPreferences | null;
+      return readAttentionPreferenceReceipt(body);
     },
 
     /** The account's phones and tablets (display fields only, never tokens). */
@@ -1155,7 +1166,7 @@ export function createPushRelayClient(args: {
         },
       );
       const body = requireOk("putAttentionDevicePreferences", response);
-      return (body.preferences ?? null) as AttentionPreferences | null;
+      return readAttentionPreferenceReceipt(body);
     },
 
     /**
@@ -1179,7 +1190,7 @@ export function createPushRelayClient(args: {
         },
       );
       const body = requireOk("putAttentionProjectPreferences", response);
-      return (body.preferences ?? null) as AttentionPreferences | null;
+      return readAttentionPreferenceReceipt(body);
     },
 
     /**
@@ -1190,7 +1201,7 @@ export function createPushRelayClient(args: {
       expectedAccountUserId: string,
       sessionId: string,
       muted: boolean,
-    ): Promise<void> {
+    ): Promise<AttentionPreferences | null> {
       const response = await request(
         "PATCH",
         `/attention/account/preferences/sessions/${encodeURIComponent(sessionId)}`,
@@ -1201,7 +1212,7 @@ export function createPushRelayClient(args: {
           deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
         },
       );
-      requireOk("setAttentionSessionMuted", response);
+      return readAttentionPreferenceReceipt(requireOk("setAttentionSessionMuted", response));
     },
 
     /**

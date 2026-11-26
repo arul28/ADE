@@ -369,7 +369,9 @@ import {
   attentionEventPolicy,
   attentionQuietHoursActive,
   resolveAttentionScope,
+  type AttentionScopeTarget,
 } from "../shared/attention/attentionScope";
+import { deriveProjectSettingsKey } from "../../../ade-cli/src/services/push/projectSettingsKey";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
@@ -2816,15 +2818,22 @@ app.whenReady().then(async () => {
    * the account set its event to Off or quiet hours are on. Unknown settings
    * (signed out, not loaded yet) allow it.
    */
-  const computerNoticeAllowed = (kind: "ade_service" | "agent_goal"): boolean => {
+  const computerNoticeAllowed = (
+    kind: "ade_service" | "agent_goal" | "agent_usage_limit_resumed",
+    target: AttentionScopeTarget = {},
+    sessionId?: string,
+  ): boolean => {
     const ownerId = readAccountOwnerId();
     const preferences = ownerId && attentionPreferencesForAlerts?.ownerId === ownerId
       ? attentionPreferencesForAlerts.preferences
       : null;
     if (!preferences) return true;
-    const { scope } = resolveAttentionScope(preferences, {});
-    return attentionEventPolicy(scope, kind) === "notify"
-      && !attentionQuietHoursActive(scope.quietHours, Date.now());
+    if (sessionId && preferences.mutedSessionIds?.includes(sessionId)) return false;
+    const { scope, scopedOff, quietHours } = resolveAttentionScope(preferences, target);
+    const nowMs = Date.now();
+    return !scopedOff
+      && attentionEventPolicy(scope, kind) === "notify"
+      && !quietHours.some((window) => attentionQuietHoursActive(window, nowMs));
   };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   // As Sentry decides it: a package that did not come from a release workflow is `development`.
@@ -5481,11 +5490,39 @@ app.whenReady().then(async () => {
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
 
-    /**
-     * An OS notification about one chat that opens it on click. Skipped while
-     * any ADE window is focused: there is no per-window "which chat is open"
-     * signal in main, and the chat's own transcript already says what happened.
-     */
+    /** This project's notification settings keys, read on the first chat notice. */
+    let chatNoticeProjectIdsCache: string[] | null = null;
+    const chatNoticeProjectIds = (): string[] => {
+      if (chatNoticeProjectIdsCache) return chatNoticeProjectIdsCache;
+      try {
+        const folderId = deriveProjectId(projectRoot);
+        chatNoticeProjectIdsCache = [deriveProjectSettingsKey(projectRoot, folderId), folderId, projectId]
+          .filter((id): id is string => Boolean(id));
+      } catch (error) {
+        logger.warn("agent_chat.notice_project_key_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        chatNoticeProjectIdsCache = [projectId];
+      }
+      return chatNoticeProjectIdsCache;
+    };
+    let chatNoticePushStore: ReturnType<typeof createPushRegistrationStore> | undefined;
+    const chatNoticeTarget = (): AttentionScopeTarget => {
+      let machineKey: string | null = null;
+      try {
+        chatNoticePushStore ??= createPushRegistrationStore({
+          filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
+        });
+        machineKey = chatNoticePushStore.getOrCreateIdentity().machineKey;
+      } catch (error) {
+        logger.warn("agent_chat.notice_machine_key_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return { projectIds: chatNoticeProjectIds(), machineKey };
+    };
+
+    /** Show a chat notification when ADE is in the background. */
     const showChatOsNotification = (args: {
       sessionId: string;
       title: string;
@@ -5686,6 +5723,7 @@ app.whenReady().then(async () => {
         provider,
       }),
       onUsageLimitAutoResumed: ({ sessionId, title }) => {
+        if (!computerNoticeAllowed("agent_usage_limit_resumed", chatNoticeTarget(), sessionId)) return;
         showChatOsNotification({
           sessionId,
           title: "Chat resumed",
@@ -5697,7 +5735,7 @@ app.whenReady().then(async () => {
         });
       },
       onGoalEnded: ({ sessionId, title, objective, outcome }) => {
-        if (!computerNoticeAllowed("agent_goal")) return;
+        if (!computerNoticeAllowed("agent_goal", chatNoticeTarget(), sessionId)) return;
         showChatOsNotification({
           sessionId,
           title: outcome === "reached" ? "Goal reached" : "Goal blocked",
@@ -7309,6 +7347,7 @@ app.whenReady().then(async () => {
           ? stampCustomNotificationLinkOwner(rest.deepLink, { accountMachineKey, projectId })
           : null,
         machineKey: automationNotifyRelay.store.getOrCreateIdentity().machineKey,
+        projectSettingsKey: projectId ? chatNoticeProjectIds()[0] ?? projectId : null,
       });
     };
 
@@ -7732,6 +7771,7 @@ app.whenReady().then(async () => {
         }));
       return;
     }
+    if (!alert.sessionId) return;
     handleDeeplinkUrl(
       buildDeeplink({ kind: "session", sessionId: alert.sessionId }, { form: "ade" }),
       "notification:attention",
@@ -11521,13 +11561,16 @@ app.whenReady().then(async () => {
     },
     onAttentionAccountSnapshot: (snapshot) => desktopAlertPresenter.observeSnapshot(snapshot),
     onAttentionPreferences: (ownerId, preferences) => {
+      const cached = attentionPreferencesForAlerts;
+      const updatedAt = cached?.ownerId === ownerId ? cached.preferences.relayUpdatedAt : null;
+      if (updatedAt && (!preferences.relayUpdatedAt || preferences.relayUpdatedAt < updatedAt)) return;
       attentionPreferencesForAlerts = { ownerId, preferences };
       desktopAlertPresenter.preferencesLoaded();
     },
     onAttentionSessionMuted: (ownerId, sessionId, muted) => {
       const cached = attentionPreferencesForAlerts;
       if (!cached || cached.ownerId !== ownerId) return;
-      const others = cached.preferences.mutedSessionIds.filter((id) => id !== sessionId);
+      const others = (cached.preferences.mutedSessionIds ?? []).filter((id) => id !== sessionId);
       attentionPreferencesForAlerts = {
         ownerId,
         preferences: {
