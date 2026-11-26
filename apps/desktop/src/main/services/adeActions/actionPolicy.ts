@@ -549,6 +549,22 @@ export function isSecretBearingAdeAction(domain: string, action: string): boolea
   return SECRET_BEARING_ACTION_NAME.test(name);
 }
 
+/**
+ * Secret-bearing reads another machine's CTO brain may still make, because
+ * its own code (never its model) copies the result. Proof bytes: the CTO
+ * shows a child's screenshot by pulling it home in slices
+ * (`cto/ctoProofShare.ts`). The CTO's `runMachineAction` tool still refuses
+ * these, so the model cannot pull raw slices into its transcript, and an
+ * agent's bridge (role `agent`) is still refused here.
+ */
+const ADE_ACTION_CTO_BRAIN_COPYABLE: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  computer_use_artifacts: ["readArtifactRange"],
+};
+
+export function isCtoBrainCopyableAdeAction(domain: string, action: string): boolean {
+  return ADE_ACTION_CTO_BRAIN_COPYABLE[domain as AdeActionDomain]?.includes(action.trim()) ?? false;
+}
+
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
   const rule = ADE_ACTION_CTO_ONLY[domain];
   if (!rule) return false;
@@ -587,7 +603,11 @@ export function adeActionCallerRefusal(
   if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(caller.role, "cto")) {
     return { kind: "role", message: `Action '${domain}.${action}' requires elevated role.` };
   }
-  if (caller.remoteBrain && isSecretBearingAdeAction(domain, action)) {
+  if (
+    caller.remoteBrain
+    && isSecretBearingAdeAction(domain, action)
+    && !(callerHasRoleAtLeast(caller.role, "cto") && isCtoBrainCopyableAdeAction(domain, action))
+  ) {
     // A caller from another machine's brain is a model whose result lands in
     // a transcript. The CTO's own tool refuses these first; this holds for
     // any caller version.

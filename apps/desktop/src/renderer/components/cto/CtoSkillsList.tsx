@@ -11,7 +11,7 @@ import {
 } from "../../../shared/types";
 import { ipcErrorMessage } from "../../lib/format";
 import { cn } from "../ui/cn";
-import { AutosaveTextArea, CtoEmptyLine } from "./ctoSettingsUi";
+import { AutosaveTextArea, CtoEmptyLine, type AutosaveHostAnswer } from "./ctoSettingsUi";
 
 const ROW = "flex min-w-0 items-center gap-2.5 rounded-md px-2";
 
@@ -60,7 +60,7 @@ export function CtoSkillsList({
     else setFile(null);
   }, [openName, pinKey, load]);
 
-  const save = useCallback(async (name: string, text: string, baseHash?: string) => {
+  const save = useCallback(async (name: string, text: string, baseHash?: string): Promise<AutosaveHostAnswer | void> => {
     let written: CtoSkillFile | undefined;
     try {
       written = (await window.ade.cto!.writeSkill({ name, text, ...(baseHash ? { baseHash } : {}) }, pinRef.current)).skill;
@@ -79,6 +79,9 @@ export function CtoSkillsList({
       await load(name);
     }
     await onChanged();
+    // The editor's next baseHash is this save's, even when the props it gets
+    // from setFile arrive while onChanged is still running.
+    return written ? { text: written.text, hash: written.hash } : undefined;
   }, [load, onChanged]);
 
   const remove = async (name: string) => {
