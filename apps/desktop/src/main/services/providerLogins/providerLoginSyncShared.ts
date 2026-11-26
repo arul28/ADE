@@ -345,7 +345,8 @@ export type ProviderLoginSyncDeps = {
   accountUserId: () => string | null;
   machine: () => ProviderLoginMachine | null;
   /** The account's ADE Cloud answer (cached in `cloudAccess.ts`, asked at most every 10 minutes). */
-  cloudAccess: () => Promise<CloudAccessState>;
+  /** `failureTtlMs`: how long a failed ask is reused (`cloudAccess.ts`); a turn's wait asks sooner. */
+  cloudAccess: (options?: { failureTtlMs?: number }) => Promise<CloudAccessState>;
   /** Hear a change of the cached ADE Cloud answer, whoever asked (`onCloudAccessAnswerChanged`). */
   onCloudAccessChanged?: (listener: () => void) => () => void;
   cloudComputer: boolean;
@@ -543,7 +544,7 @@ export type SyncJobs = {
   ghCliMessage(gh: ProviderLoginGhCliStatus, off: ProviderLoginCaptureOffReason | null, fallback: string): string;
   // the ticks (providerLoginAccess.ts)
   leaveTicks(): void;
-  refreshAccess(): Promise<CloudAccessState | null>;
+  refreshAccess(options?: { failureTtlMs?: number }): Promise<CloudAccessState | null>;
   /** Resolves when the next read of the ADE Cloud answer starts (a sign-in asks one). */
   nextAccessRead(): Promise<void>;
 };

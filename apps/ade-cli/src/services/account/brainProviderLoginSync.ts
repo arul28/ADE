@@ -135,7 +135,7 @@ export async function installBrainProviderLoginSync(args: {
         return null;
       }
     },
-    cloudAccess: () => readCloudAccessState(accessDeps),
+    cloudAccess: (options) => readCloudAccessState(accessDeps, options),
     onCloudAccessChanged: onCloudAccessAnswerChanged,
     cloudComputer: isAdeCloudComputer(),
     logger: args.logger,

@@ -63,13 +63,12 @@ export function createAccess(s: SyncShared) {
     accessRecheck = null;
   }
 
-  /** Read the ADE Cloud answer (free when cached) and join or leave the ticks to match. */
-  function refreshAccess(): Promise<CloudAccessState | null> {
-    return startAccessRead(false);
-  }
-
-  function startAccessRead(fromRecheck: boolean): Promise<CloudAccessState | null> {
-    const pending = readAndMatchAccess(fromRecheck).finally(() => {
+  /**
+   * Read the ADE Cloud answer (free when cached) and join or leave the ticks
+   * to match. `failureTtlMs`: ask the server again once a failed ask is this old.
+   */
+  function refreshAccess(options?: { failureTtlMs?: number }): Promise<CloudAccessState | null> {
+    const pending = readAndMatchAccess(options).finally(() => {
       if (s.accessPending === pending) s.accessPending = null;
     });
     s.accessPending = pending;
@@ -81,25 +80,25 @@ export function createAccess(s: SyncShared) {
     return pending;
   }
 
-  async function readAndMatchAccess(fromRecheck: boolean): Promise<CloudAccessState | null> {
+  async function readAndMatchAccess(options?: { failureTtlMs?: number }): Promise<CloudAccessState | null> {
     if (deps.staticOff) return null;
     const generation = ++accessGeneration;
     const state: CloudAccessState = !deps.accountUserId() || !deps.vault()
       ? "signed_out"
-      : await deps.cloudAccess().catch((): CloudAccessState => "unreadable");
+      : await deps.cloudAccess(options).catch((): CloudAccessState => "unreadable");
     // A newer check (a sign-out during the ask) decides instead.
     if (generation !== accessGeneration) return state;
     s.lastAccess = state;
     if (state === "ready") joinTicks();
     else leaveTicks();
     if (state === "unreadable") {
-      // An extra read (a turn's, a sign-in's) leaves an armed re-check and its back-off as they are.
-      if (accessRecheck && !fromRecheck) return state;
+      // A read between re-checks (a turn's, a sign-in's) leaves the armed one and its back-off as they are.
+      if (accessRecheck) return state;
       // Not an answer about the account: ask again later, backing off, until there is one.
       clearAccessRecheck();
       accessRecheck = setTimeout(() => {
         accessRecheck = null;
-        void startAccessRead(true);
+        void refreshAccess();
       }, accessRecheckDelayMs);
       accessRecheck.unref?.();
       accessRecheckDelayMs = Math.min(accessRecheckDelayMs * 2, ACCESS_RECHECK_MAX_MS);
