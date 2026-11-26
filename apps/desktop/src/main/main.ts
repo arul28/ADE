@@ -369,7 +369,7 @@ import {
   attentionEventPolicy,
   attentionQuietHoursActive,
   resolveAttentionScope,
-} from "../shared/types/attention";
+} from "../shared/attention/attentionScope";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";

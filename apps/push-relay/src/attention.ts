@@ -208,6 +208,9 @@ const COMPUTER_ONLY_POLICY_EVENT_KINDS = new Set(["agent_goal", "ade_service"]);
  * default rather than a choice, so it reads as the new default ("ambient").
  * Mirrors `upgradeAttentionEventPolicies` in the desktop shared types.
  */
+/** Mirrors `ATTENTION_EVENT_POLICY_DEFAULTS_VERSION` in the desktop shared types. */
+const CURRENT_EVENT_POLICY_DEFAULTS_VERSION = 3;
+
 const EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2 = new Set([
   "pr_review_requested",
   "pr_changes_requested",
@@ -979,10 +982,29 @@ export function resolveScopedDeliveryPreferences(
     : {};
   const layers = [registered, account, ...projectLayers, machine, explicitDevice];
   const merged: Record<string, unknown> = Object.assign({}, ...layers);
+  // A "notify" the account saved under the version-1 defaults was that
+  // default, not a choice (`effectiveEventPolicy`). Settle it on the account's
+  // own layers here, so a Notify the user picked for a project, machine or
+  // phone is never mistaken for it.
+  const accountDefaultsVersion = Number(account.eventPolicyDefaultsVersion ?? registered.eventPolicyDefaultsVersion);
+  const accountUnderOldDefaults = !Number.isFinite(accountDefaultsVersion) || accountDefaultsVersion < 2;
+  const accountPolicies = (layer: Record<string, unknown>): Record<string, unknown> => {
+    if (!isRecord(layer.eventPolicies)) return {};
+    if (!accountUnderOldDefaults) return layer.eventPolicies;
+    const policies = { ...layer.eventPolicies };
+    for (const kind of EVENTS_DEMOTED_IN_POLICY_DEFAULTS_V2) {
+      if (policies[kind] === "notify") delete policies[kind];
+    }
+    return policies;
+  };
   merged.eventPolicies = Object.assign(
     {},
-    ...layers.map((layer) => (isRecord(layer.eventPolicies) ? layer.eventPolicies : {})),
+    accountPolicies(registered),
+    accountPolicies(account),
+    ...[...projectLayers, machine, explicitDevice]
+      .map((layer) => (isRecord(layer.eventPolicies) ? layer.eventPolicies : {})),
   );
+  merged.eventPolicyDefaultsVersion = CURRENT_EVENT_POLICY_DEFAULTS_VERSION;
   // Notifications off is a veto, not a default a later scope can undo. Older
   // phone builds write their own switch into the device override on every
   // sync, so with last-wins a phone left on ignored the account's "Phone
@@ -3860,7 +3882,11 @@ async function handleCustomNotification(
     if (
       !notificationsEnabled
       || quietHoursActive(override, accountPreferences, nowMs)
-      || effectiveEventPolicy("agent_message", override.eventPolicies as Record<string, unknown>, override) !== "notify"
+      || effectiveEventPolicy(
+        "agent_message",
+        isRecord(override.eventPolicies) ? override.eventPolicies : {},
+        override,
+      ) !== "notify"
     ) {
       skipped += 1;
       continue;

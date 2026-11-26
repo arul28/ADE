@@ -12,13 +12,13 @@ import {
   ATTENTION_EVENT_KINDS,
   ATTENTION_SCOPE_EVENT_POLICIES_FEATURE,
   DEFAULT_ATTENTION_PREFERENCES,
-  localAttentionTimeZone,
   upgradeAttentionEventPolicies,
   type AttentionAccountDevice,
   type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionScopePatch,
 } from "../../../shared/types";
+import { applyAttentionScopePatchLocally, localAttentionTimeZone } from "../../../shared/attention/attentionScope";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { isMac } from "../../lib/platform";
@@ -74,35 +74,6 @@ export type NotificationScopeCollection = "projects" | "machines" | "devices";
 
 export type ActivitySettingsModel = ReturnType<typeof useActivitySettings>;
 
-/**
- * Apply a scope patch the way the relay does (`applyAttentionScopePatch`):
- * event policies merge per event, and `null` removes an override.
- */
-export function applyScopePatchLocally(
-  existing: Partial<AttentionPreferenceScope> | undefined,
-  patch: AttentionScopePatch,
-): Partial<AttentionPreferenceScope> {
-  const next: Record<string, unknown> = { ...(existing ?? {}) };
-  for (const [key, value] of Object.entries(patch)) {
-    if (key === "eventPolicies") {
-      if (value === null) {
-        delete next.eventPolicies;
-        continue;
-      }
-      const policies: Record<string, unknown> = { ...(existing?.eventPolicies ?? {}) };
-      for (const [kind, policy] of Object.entries(value as Record<string, unknown>)) {
-        if (policy === null) delete policies[kind];
-        else policies[kind] = policy;
-      }
-      if (Object.keys(policies).length > 0) next.eventPolicies = policies;
-      else delete next.eventPolicies;
-      continue;
-    }
-    if (value === null) delete next[key];
-    else next[key] = value;
-  }
-  return next as Partial<AttentionPreferenceScope>;
-}
 
 const ITEM_EVENT_POLICY_DEFAULTS = Object.fromEntries(
   ATTENTION_EVENT_KINDS.map((kind) => [kind, DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies[kind]]),
@@ -334,7 +305,7 @@ export function useActivitySettings({ includeDevices = false }: { includeDevices
       await put(accountOwnerId, id, patch);
       if (!mounted.current || accountScope.current !== account) return;
       setPreferences((current) => {
-        const next = applyScopePatchLocally(current[collection][id], patch);
+        const next = applyAttentionScopePatchLocally(current[collection][id], patch);
         const scopes = { ...current[collection] };
         if (Object.keys(next).length > 0) scopes[id] = next;
         else delete scopes[id];

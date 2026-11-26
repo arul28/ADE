@@ -16,8 +16,8 @@ import {
   Wrench,
 } from "@phosphor-icons/react";
 import type { ActivityEventDescriptor, ActivityIconKey } from "../../../shared/activityCatalog";
+import { attentionEventPolicy, localAttentionTimeZone } from "../../../shared/attention/attentionScope";
 import {
-  attentionEventPolicy,
   type AttentionDeliveryPolicy,
   type AttentionPolicyEventKind,
   type AttentionPreferenceScope,
@@ -149,6 +149,7 @@ export function NotificationsSection() {
   const model = useActivitySettings({ includeDevices: true });
   const { account, accountBusy: busy, signedOut, updateAccount } = model;
   const [scope, setScope] = useState<EventScope>({ collection: "account" });
+  const localTimeZone = useMemo(() => localAttentionTimeZone(), []);
 
   // A scope whose project, computer or phone left the account falls back to Everywhere.
   // An account service that predates per-scope events offers none of them.
@@ -469,9 +470,25 @@ export function NotificationsSection() {
                 <ModernRow
                   anchor="quiet-hours"
                   title="Quiet hours"
-                  hint={account.quietHours.enabled && account.quietHours.timeZone
-                    ? `Nothing notifies during this window (${account.quietHours.timeZone} time). Activity still lists it.`
-                    : "Nothing notifies during this window, on computers or phones. Activity still lists it."}
+                  hint={account.quietHours.enabled && account.quietHours.timeZone ? (
+                    <>
+                      Nothing notifies during this window ({account.quietHours.timeZone} time). Activity still lists it.
+                      {/* Windows saved from a computer before ADE stored the zone read as UTC. */}
+                      {account.quietHours.timeZone !== localTimeZone ? (
+                        <>
+                          {" "}
+                          <button
+                            type="button"
+                            className="ade-nt-inherit"
+                            disabled={busy}
+                            onClick={() => updateAccount({ quietHours: account.quietHours })}
+                          >
+                            Use {localTimeZone}
+                          </button>
+                        </>
+                      ) : null}
+                    </>
+                  ) : "Nothing notifies during this window, on computers or phones. Activity still lists it."}
                   control={(
                     <>
                       {account.quietHours.enabled ? (

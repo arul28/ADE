@@ -787,13 +787,16 @@ export function createAttentionNamespace(
         undefined,
         { userInitiated: true },
       ));
-      const relayFeatures = Array.isArray(result?.features)
-        ? result.features.filter((feature): feature is string => typeof feature === "string")
-        : [];
       const preferences = result?.preferences === undefined || result.preferences === null
         ? DEFAULT_ATTENTION_PREFERENCES
         : parseAttentionPreferences(result.preferences);
-      return { ...preferences, relayFeatures };
+      // An older relay sends no `features`; the answer stays as it was.
+      return Array.isArray(result?.features)
+        ? {
+          ...preferences,
+          relayFeatures: result.features.filter((feature): feature is string => typeof feature === "string"),
+        }
+        : preferences;
     },
 
     async putPreferences(

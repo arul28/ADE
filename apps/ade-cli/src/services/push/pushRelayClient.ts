@@ -1032,12 +1032,11 @@ export function createPushRelayClient(args: {
       }
       const body = requireOk("getAttentionPreferences", response);
       const preferences = (body.preferences ?? null) as AttentionPreferences | null;
-      const features = Array.isArray(body.features)
-        ? body.features.filter((feature): feature is string => typeof feature === "string")
-        : [];
+      // An older relay sends no `features`; the answer stays as it was.
+      if (!Array.isArray(body.features)) return preferences;
+      const relayFeatures = body.features.filter((feature): feature is string => typeof feature === "string");
       // An account that never saved has no document; the features still count.
-      if (!preferences) return features.length > 0 ? { ...DEFAULT_ATTENTION_PREFERENCES, relayFeatures: features } : null;
-      return { ...preferences, relayFeatures: features };
+      return { ...(preferences ?? DEFAULT_ATTENTION_PREFERENCES), relayFeatures };
     },
 
     /** Returns the document as the relay stored it, or null when it sent none. */

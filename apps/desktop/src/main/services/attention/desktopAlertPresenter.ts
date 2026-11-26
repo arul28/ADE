@@ -2,6 +2,8 @@ import {
   attentionEventPolicy,
   attentionQuietHoursActive,
   resolveAttentionScope,
+} from "../../../shared/attention/attentionScope";
+import {
   type AttentionPolicyEventKind,
   type AttentionItem,
   type AttentionPreferences,
