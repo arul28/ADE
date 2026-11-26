@@ -134,7 +134,7 @@ Facts from those docs that ADE's design leans on:
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
 | A lane computer's status menu: the header button and menu, the status hook, the server read, the provider's status webhook (migration `0050`), the brain's activity report | `apps/desktop/src/renderer/components/cloudLane/CloudLaneHeaderButton.tsx`, `CloudLaneComputerPanel.tsx`, `CloudLaneConnectionRow.tsx`, `cloudLaneStatus.ts`, `useCloudComputerStatus.ts`; `registerCloudIpc.ts` (`cloudComputerStatus`); `apps/account-directory/src/cloud/computerStatus.ts`, `apps/account-directory/src/webhookSignature.ts`, `apps/account-directory/scripts/register-agent37-webhook.mjs`; `apps/ade-cli/src/services/account/cloudActivityReporter.ts` |
-| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts`, `apps/ade-cli/src/services/power/cloudRemoteWorkHold.ts` (slow remote work held awake) |
 | Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `planCleanup.ts` (`saveBeforeDelete`), `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
 | Lane backups at rest (save, report, restore, download) | `apps/account-directory/src/cloud/laneBackups.ts`, `apps/ade-cli/src/services/cloudChats/cloudLaneBackup.ts`, `apps/desktop/src/main/services/lanes/cloudLaneRestoreHook.ts`, `apps/desktop/src/main/services/adeCloud/cloudLaneBackupIpc.ts`, `apps/desktop/src/renderer/components/cloudLane/CloudLaneSavedWork.tsx`, `apps/ios/ADE/Views/Cloud/CloudMachineScreen.swift` (`CloudSavedWorkRow`) |
 | CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
@@ -174,6 +174,13 @@ that stops (see Sleep and busy rules).
     rest as "System and other", parts on another disk left out. The computer
     measures it at its idle step at most every 6 hours, so the dashboard wakes
     nothing.
+  - The same idle report says whether the lane has work not on GitHub yet
+    (`cloudComputerReports.ts` `readWork`): an uncommitted file, or a commit
+    no remote has (`readUnsavedWork`). A pushed branch is saved, and so is a
+    branch whose merged PR head is the branch, before the merge is fetched
+    too. A lane git can't read counts as not on GitHub. It reads local refs
+    only, so a branch deleted on GitHub before a merge reads as saved until
+    the next fetch; a delete fetches first, so no work is lost.
   - Clear caches runs on that lane's computer (`cloud.clear_caches`). The
     dashboard confirms first; an agent's call asks with a card, and an
     unwatched agent gets no.
@@ -183,7 +190,8 @@ that stops (see Sleep and busy rules).
   (`cloud.read`). With none online, or a brain too old, the web reads
   `GET /cloud/account` and `GET /cloud/instances` with the browser's own token
   (`webclient/adapter/cloud.ts`); a failed list shows the plan and marks the
-  computers unread (`computersUnread`). Billing goes straight to the server
+  computers unread (`computersUnread`), and the lane list says so with Try
+  again (a server read, no wake). Billing goes straight to the server
   (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`).
   Stripe opens in the same tab with `returnTo: "web"` and comes back to the
   web Settings › ADE Cloud. The website's plan buttons link to
@@ -257,6 +265,20 @@ are in
   `ade cloud prepare-stop` and in `ade cloud save-for-rest`. An unchanged
   copy is not sent again. The text is redacted first. The same save makes
   the lane backups first ([Lane backups at rest](#lane-backups-at-rest)).
+- A chat's copy gets one part when a turn ends. The rest save also sends
+  any chat whose transcript grew after its last part (one file size check per
+  chat): a turn's diff summary lands after `done`, and a notice or card can
+  come while the chat is idle. A diff summary still being worked out counts
+  as busy, so `prepare-stop` waits for it before it saves.
+- A capsule's provider history (the Claude session file and its subagent
+  and tool-result files, the Codex rollout, the OpenCode export) is redacted
+  the same way, string by string, so JSON stays JSON and the provider still
+  resumes from it. Opaque values the provider reads back as they are (a
+  thinking signature, encrypted reasoning, image data) stay as they are, but
+  only under their own field names. Numbers keep their own text. A capsule
+  saved before this redaction is sent again once (its mark lacks
+  `redacted-1`). A move between the person's own computers is not redacted:
+  it goes from computer to computer, and the account server does not keep it.
 - A saved CLI or shell copy opens read-only. The person's own computers that
   are offline are hidden in Work, Lanes and the welcome page.
 
@@ -1102,6 +1124,19 @@ sentence.
   `ADE_MIN_VERSION` from a client's env and drops the rest (`CLIENT_ENV` in
   `cloud/routes.ts`, names logged as `cloud.create_env_dropped`). An older
   computer with keys in its env has them taken out at the first apply.
+- A turn or a CLI start on a cloud computer runs the gate first
+  (`providerLoginGate.ts`): chat sends, `agentChat.launchCli`, Work tab CLI
+  starts (`pty.create` with a runtime CLI launch) and `work.startCliSession`
+  from the web and the phone. Right after a start or a wake, the brain holds
+  turns until the sync has installed its gate (`holdProviderLoginGate`, at
+  most 30 s). Then, until the sync has the account's ADE Cloud answer, the
+  gate waits up to 30 s for the account sign-in and that answer (it asks
+  again every 5 s while the answer is unreadable), pulls the vault and the
+  account settings, and applies the provider before the turn goes. A chat
+  says "Getting this cloud computer's sign-ins from your ADE account…" while
+  it waits. A wait that runs out is logged (`provider_login.gate_cold`), and
+  later turns go at once until the next answer. On a person's own computer
+  the gate is not installed, so a send pays nothing.
 
 Sign-ins also come down to the person's own computers
 (`providerLoginApplyPass.ts`):
@@ -1526,6 +1561,21 @@ account, never a pin.
   lane that can't be read, or a fetch that fails, reads `failed`, never
   `clean`, and the computer is kept. `ade cloud work-state` runs the same
   check.
+  - **When GitHub stopped it.** A `failed` lane carries `reason` when git's
+    error says GitHub stopped the fetch or the push (`classifyGitPushFailure`):
+    `github_refused` (repository not found, a sign-in or a permission
+    refused; trying again won't help) or `github_unreachable` (no answer in
+    time). The server's free, the desktop's, the web's and the phone's delete
+    check then say what GitHub did (`pushWorkGithubProblem`,
+    `pushWorkGithubMessage` in `computerCommands.ts`) instead of "open the
+    lane". A refusal is the person's to fix, so the free logs it and sends no
+    Sentry event. An older ADE on the computer sends no `reason`, and the
+    older sentences stay.
+  - **A lane that isn't on the computer.** A launch that failed before it
+    made the lane (a provider refused its key) leaves a computer with only its
+    main checkout. A free there finds no lane in the tally and no branch, so
+    it says there is no lane to keep and to delete the computer instead
+    (`LANE_NOT_ON_COMPUTER_MESSAGE`).
   - **No wake for a saved computer.** When the computer is not running and
     the server says it saved its lanes at rest (`backups.saved`; any start
     clears it), the check reads the lanes' backups instead
@@ -1949,6 +1999,13 @@ One busy list, `decideCloudBusy` in
   (`projects.clone`, `machines.cloneForAgent`) takes the same hold. A second
   clone into a folder whose clone runs joins it (`cloneRepository`); a folder
   that already holds the same repository is the answer, with no clone.
+- Work another machine sends (a write action, a file copied in) counts as
+  use when it comes. Work still running after 10 seconds (a push with a slow
+  hook, a big copy) is also held as `remote_action` until it answers
+  (`cloudRemoteWorkHold.ts`), so a key typed in a terminal writes no hold. A
+  disk grow's restart waits for every remote request that runs, from its
+  first moment, except the one the grow is asked from (an Android first
+  start).
 - **Idle:** a shell at its prompt, an agent CLI at its prompt or asking
   (`waiting-input`), a chat that waits on approval, and a command or turn with
   no output and no touch for 60 minutes. A shell's prompt state comes from
@@ -2025,6 +2082,16 @@ One busy list, `decideCloudBusy` in
   All of this applies only to a machine the desktop knows as a cloud computer
   (`knowsBox` in `cloudMachines.ts`; an unknown key gets one read, a laptop
   key is not asked again for 10 minutes).
+- **Saved rows give way to live rows.** The saved copy redacts and cuts
+  what it stores, so a row read from it (`savedCopy` on the envelope, set in
+  `cloudSavedChats.ts`) and the same event read from the computer are two
+  payloads. Once the computer answers again, each saved row is replaced by its
+  live row: the history read, the live merge and older pages pair them by
+  chat, time, kind and sequence, equal except where the saved copy wrote
+  `[REDACTED]` or `[truncated]` (`reconcileAgentChatSavedCopies` in
+  `shared/chatHistoryMerge.ts`). Only a saved row gives way, so live text is
+  never replaced, and a live row that differs anywhere else stays its own
+  event. iOS keys its rows by `sequence`, so it needs no pairing.
 - **Waking.** A send from a saved chat wakes its computer (15–30 s). The pane
   shows "Waking the computer…" and the Work row "Waking"
   (`markCloudWakeForSend`, display only). Once the chat's connection is up
@@ -2059,7 +2126,11 @@ One busy list, `decideCloudBusy` in
   (an account read, kept 15 s) and the computer's saved chats, lanes and open
   PRs from its Work slice (`chatMentionClientRows.ts`). While the computer is
   awake, its own answer comes first, and the account's machines fill the
-  menu only when that answer has no machine rows.
+  menu only when that answer has no machine rows. The phone builds the same
+  menu for a chat with no live link to its computer
+  (`restingCloudChatMentionRows`): the saved chats and lanes Work lists for
+  it, and the account's machines. It has no copy of the computer's PRs, so
+  PRs are left out there, and it lists no files.
 - **A deleted computer's chat** shows no running turn: nothing runs there.
 - **Comments wait on the device.** A thread comment written in a chat whose
   computer rests stays on the device that wrote it (desktop and ADE Web,
@@ -2080,6 +2151,16 @@ One busy list, `decideCloudBusy` in
   and keeps the text and files in the box. The phone already holds files
   and sends them with the queued message. See
   [chat › attachments](../chat/composer-and-ui.md#attachments).
+- **What the clients keep is per account.** A computer or a browser can be
+  shared. The desktop keeps the lane index, the lanes kept without a computer
+  and ADE Cloud's on/blocked state in localStorage, each naming the account
+  it was read for (`state/accountScopedStorage.ts`). A window reads a copy
+  back only once the account status names that account; a sign-out or
+  another account drops it, and a read the last account started lands
+  nowhere (`accountScopeGeneration`). ADE Web keeps none of them, and an ADE
+  Web tab's project strip reopens only for the account that kept it
+  (`windowStripStorage.ts`). Held comments are kept by chat id, which no
+  other account holds.
 - **What still wakes a resting computer before a send** (a person's
   explicit action on the chat's machine): a permission or mode change (it
   must reach the computer before any other turn runs there, a scheduled wake
@@ -2274,10 +2355,13 @@ directory wakes it (routes in `apps/account-directory/README.md`):
     first.
 - **Event wakes.** The computer lists the topics that wake it
   (`PUT /cloud/instances/:id/event-wakes`): a Linear organization, a Linear
-  agent account, or the account's custom webhooks. The webhook relay reports
-  each event (`POST /cloud/internal/event-wake`), and the directory wakes each
-  listed computer under the normal checks, at most once in 5 minutes.
-  Repository events wake nothing.
+  agent account, or the account's custom webhooks. A Linear organization is
+  kept only when the lane's own Linear connection is in it, so no one can
+  listen to another team's workspace. The webhook relay reports each event
+  (`POST /cloud/internal/event-wake`), and the directory wakes each listed
+  computer under the normal checks, at most once in 5 minutes. Of the 20
+  listeners one event reads, each account's newest comes first, so one
+  account can't fill them. Repository events wake nothing.
 
 A timed wake and an event wake are use, the same as a person's wake: the time
 awake bills hours, and the wake restarts the idle cleanup's clock.

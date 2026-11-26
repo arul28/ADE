@@ -8,6 +8,7 @@ import { cn } from "../ui/cn";
 import { confirmDialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import { announceProjectMoveChanged, displayPath, formatBytes, formatReminder, REMINDER_CHOICES } from "./projectMoveModel";
+import { plainErrorText } from "../../lib/plainError";
 
 export type OldCopyChoice = "delete" | "keep" | { remindInMs: number };
 
@@ -48,7 +49,7 @@ export async function chooseOldCopy(record: ProjectMoveRecord, choice: OldCopyCh
     });
     return next;
   } catch (cause) {
-    showToast({ tone: "error", title: "That didn't work", message: cause instanceof Error ? cause.message : String(cause) });
+    showToast({ tone: "error", title: "That didn't work", message: plainErrorText(cause, "ADE couldn't update the old copy.") });
     return null;
   }
 }

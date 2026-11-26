@@ -8,6 +8,7 @@ import { streamFileBytes } from "../streamBytes";
 import { formatBytes } from "../../../../../shared/formatting";
 import type { ViewerProps } from "./types";
 import { runPathActionHere } from "../../pathOnThisComputer";
+import { plainErrorText } from "../../../../lib/plainError";
 
 const MAX_MEDIA_STREAM_BYTES = 250 * 1024 * 1024;
 
@@ -37,7 +38,7 @@ export function MediaViewer({ files, workspaceId, rootPath, pathPin, tab, conten
         objectUrl = URL.createObjectURL(blob);
         setSrc(objectUrl);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(plainErrorText(err, "ADE couldn't open the file."));
       }
     })();
     return () => {

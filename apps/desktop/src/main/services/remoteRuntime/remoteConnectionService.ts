@@ -246,6 +246,12 @@ type RemoteConnectionConnectOptions = {
    * sleeping cloud computer nor starts the machine's brain.
    */
   background?: boolean;
+  /**
+   * With `explicit`: false when the person only reads (opening a project). It
+   * may start the machine's brain like any explicit connect, but it never
+   * wakes a sleeping cloud computer: reading never wakes one.
+   */
+  wake?: boolean;
 };
 
 // A machine that restarts for an update is back in one to two minutes; a
@@ -1341,7 +1347,7 @@ export class RemoteConnectionService {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
       // No await without a wake hook: a pending connect's timing is part of the disconnect race.
-      const woke = explicit && !unattended && this.options.wakeForUse ? await this.wakeForUse(target, { via: "connect" }) : false;
+      const woke = explicit && !unattended && options.wake !== false && this.options.wakeForUse ? await this.wakeForUse(target, { via: "connect" }) : false;
       // An explicit connect counts as the person asking for this machine
       // (Connect, Test, Try again, and opening or switching to one of its
       // projects), so it may start the machine's brain. Unattended

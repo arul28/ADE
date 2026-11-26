@@ -699,7 +699,7 @@ export function LinearSection() {
 
       <IntegrationColumns>
         {isConnected ? null : connectCard}
-        <LinearAgentSection connected={isConnected} pin={pin} />
+        <LinearAgentSection connected={isConnected} viewerIsAdmin={connection?.viewerIsAdmin ?? null} pin={pin} />
         {isConnected ? linksCard : null}
       </IntegrationColumns>
     </IntegrationPage>

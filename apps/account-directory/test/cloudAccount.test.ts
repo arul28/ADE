@@ -744,6 +744,7 @@ describe("ADE Cloud account", () => {
       harness.insert("cloud_power_log", { instance_id: INSTANCE, user_id: OWNER, action: "wake", reason: "user", created_at: NOW - HOUR });
       harness.insert("cloud_computer_days", { instance_id: INSTANCE, day: "2026-01-01", user_id: OWNER, multiplier_milli: 1000, metered_ms: HOUR });
       harness.insert("cloud_disk_days", { user_id: OWNER, day: "2026-01-01", peak_gb: 20, plan_gb: 20 });
+      harness.insert("cloud_linear_orgs", { user_id: OWNER, scope: "repo:github.com/acme/widgets", org_id: "org-own", checked_at: NOW - DAY });
       provide(harness);
       harness.insert("cloud_user_keys", { user_id: OWNER, sealed_key: "v1.x.y", created_at: NOW });
       // Its status menu's facts carry no user id: they go with the computer.
@@ -2998,7 +2999,7 @@ describe("ADE Cloud account data and event wakes", () => {
     seedAccount(data, OWNER);
     seedComputer(data, { status: "sleeping", awake_since: null });
     provide(data, INSTANCE, "sleeping");
-    const set = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OWNER}`, "linear-org:org-1"] });
+    const set = await data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics: [`hooks-account:${OWNER}`] });
     expect(set.status).toBe(200);
     const starts = () => providerCalls(data, new RegExp(`POST .*/instances/${INSTANCE}/start$`)).length;
 
@@ -3033,6 +3034,62 @@ describe("ADE Cloud account data and event wakes", () => {
     expect(await (await wake(SECRET)).json()).toEqual({ subscribed: true, woken: 0 });
     data.injectFault(null);
     expect(starts()).toBe(2);
+  });
+
+  it("a computer listens to a Linear workspace only when its lane's own Linear connection is in it, and every account's newest listener wakes first", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedAccount(data, OTHER);
+    seedComputer(data, { status: "sleeping", awake_since: null, lane_project_origin: "https://github.com/acme/widgets" });
+    provide(data, INSTANCE, "sleeping");
+    (data.env as CloudEnv & { CLOUD_EVENT_WAKE_SECRET?: string }).CLOUD_EVENT_WAKE_SECRET = SECRET;
+    let vaultUp = true;
+    let linearCalls = 0;
+    Object.assign(data.env, {
+      PUSH_RELAY_URL: RELAY,
+      ACTIVITY_RELAY: {
+        fetch: async (input: RequestInfo | URL) => {
+          const url = new URL(String(input));
+          if (!vaultUp) return new Response("{}", { status: 503 });
+          if (url.pathname !== "/attention/account/vault/item" || url.searchParams.get("key") !== "linear" || !url.searchParams.get("scope")?.includes("widgets")) return new Response("{}", { status: 404 });
+          const item = { scope: url.searchParams.get("scope"), kind: "integration", key: "linear", value: JSON.stringify({ v: 1, authMode: "manual", token: "lin_api_test" }), updatedAt: "2026-11-01T00:00:00.000Z" };
+          return new Response(JSON.stringify({ ok: true, item }), { status: 200 });
+        },
+      },
+    });
+    const netFetch = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (!String(input instanceof Request ? input.url : input).startsWith("https://api.linear.app/")) return netFetch(input, init);
+      linearCalls += 1;
+      return new Response(JSON.stringify({ data: { organization: { id: "org-own" } } }), { status: 200 });
+    });
+    const put = (topics: string[]) => data.send(OWNER, "PUT", `/cloud/instances/${INSTANCE}/event-wakes`, { topics });
+    const stored = () => data.rows("select topic from cloud_event_wakes where instance_id = ? order by topic", INSTANCE).map((row) => row.topic);
+
+    // Another team's workspace is left out; the lane's own is kept, and the account topic as it is.
+    // Not a success, so the computer sends the list again later instead of recording it as sent.
+    expect((await put([`hooks-account:${OWNER}`, "linear-org:org-own", "linear-org:org-victim"])).status).toBe(409);
+    expect(stored()).toEqual([`hooks-account:${OWNER}`, "linear-org:org-own"]);
+    // A workspace that can't be checked now waits too; one it already listens to stays, and the rest still changes.
+    vaultUp = false;
+    expect((await put(["linear-org:org-other", "linear-org:org-own"])).status).toBe(409);
+    expect(stored()).toEqual(["linear-org:org-own"]);
+    vaultUp = true;
+    // The same account's lane of another project has no Linear connection: it doesn't borrow the first one's workspace.
+    seedComputer(data, { instance_id: SECOND, machine_key: "key-other-lane", status: "sleeping", awake_since: null, lane_project_origin: "https://github.com/acme/gadgets" });
+    expect((await data.send(OWNER, "PUT", `/cloud/instances/${SECOND}/event-wakes`, { topics: ["linear-org:org-own"] })).status).toBe(409);
+    expect(data.rows("select topic from cloud_event_wakes where instance_id = ?", SECOND)).toEqual([]);
+
+    // Twenty newer rows of another account on the topic still leave this computer in a delivery's twenty.
+    for (let n = 0; n < 20; n += 1) {
+      seedComputer(data, { instance_id: `othr${String(n).padStart(6, "0")}`, user_id: OTHER, machine_key: `key-o${n}`, status: "sleeping", awake_since: null });
+      data.insert("cloud_event_wakes", { instance_id: `othr${String(n).padStart(6, "0")}`, topic: "linear-org:org-own", user_id: OTHER, updated_at: NOW + 1 + n });
+    }
+    // Sent again as it rests, the workspace Linear named this week for this project is not asked for again.
+    expect((await put(["linear-org:org-own"])).status).toBe(200);
+    expect(linearCalls).toBe(1);
+    await wake(SECRET, "linear-org:org-own");
+    expect(providerCalls(data, new RegExp(`POST .*/instances/${INSTANCE}/start$`))).toHaveLength(1);
   });
 
   it("refuses an event topic of another account", async () => {
@@ -4522,8 +4579,8 @@ describe("ADE Cloud server moves", () => {
   const TARGET = "madenew12345";
   const ROOT = "/home/node/widgets";
   const SETTING = MACHINE_LAUNCH_MIN_VERSION_SETTING;
-  /** What the computers' shells print for the move's commands. */
-  let shell: { copy: string; serve: string; receive: string };
+  /** What the computers' shells print for the move's commands: `save` and `copy` are exit codes, empty while each runs. */
+  let shell: { save: string; copy: string; serve: string; receive: string };
   let ran: Array<{ id: string; command: string }>;
 
   beforeEach(() => {
@@ -4534,10 +4591,13 @@ describe("ADE Cloud server moves", () => {
     seedComputer(harness, { name: "Widgets", machine_key: "mk_source", lane_id: "lane-1", lane_name: "Fix login" });
     provide(harness, INSTANCE, "running", { ade_machine_key: "mk_source", ade_lane_id: "lane-1", ade_lane_name: "Fix login", ade_former_machine_keys: "mk_older" });
     harness.insert("machines", { user_id: OWNER, machine_key: "mk_source", name: "Widgets", created_at: NOW });
-    shell = { copy: "", serve: "started", receive: "started" };
+    shell = { save: "0", copy: "", serve: "started", receive: "started" };
     ran = [];
     harness.net.hooks.exec = (id, command) => {
       ran.push({ id, command });
+      // The save's start, then its state read (`startMoveSaveCommand`, `moveSaveStateCommand`).
+      if (command.includes("ade cloud prepare-stop")) return { exit_code: 0, stdout: "started" };
+      if (command.includes("/tmp/ade-move-save-")) return { exit_code: 0, stdout: shell.save };
       if (command.includes("not_started")) return { exit_code: 0, stdout: shell.copy };
       if (command.includes('touch "$ADE_HOME/brain.paused"')) return { exit_code: 0, stdout: shell.serve };
       if (command.includes("/tmp/ade-move.started")) return { exit_code: 0, stdout: shell.receive };
@@ -4600,7 +4660,7 @@ describe("ADE Cloud server moves", () => {
     const saved = onSource.findIndex((command) => command.includes("ade cloud prepare-stop"));
     expect(saved).toBeGreaterThan(-1);
     expect(onSource.findIndex((command) => command.includes('touch "$ADE_HOME/brain.paused"'))).toBeGreaterThan(saved);
-    expect(await record()).toEqual(expect.objectContaining({ state: "copying", cancellable: false }));
+    expect(await record()).toEqual(expect.objectContaining({ state: "copying", cancellable: false, saveState: "done" }));
     // Paused, the old computer checks in no more: the minute cron leaves both computers awake.
     clock += 11 * 60_000;
     await harness.tick();
@@ -4662,6 +4722,34 @@ describe("ADE Cloud server moves", () => {
     expect(unpaused()).toBe(paused);
     // The computer is free for another move.
     expect((await start({ moveId: OTHER_MOVE })).status).toBe(201);
+  });
+
+  it.each<[string, "done" | "warning"]>([
+    ["0", "done"],
+    ["1", "warning"],
+  ])("the copy waits for the chats' save started beside the making; one that exits %s ends as %s and the move goes on", async (code, saveState) => {
+    shell.save = "";
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await signIn();
+    await drive("save");
+    // Still saving, within its two minutes: the old computer's ADE keeps running.
+    for (let i = 0; i < 3; i += 1) {
+      clock += 5_000;
+      await run();
+    }
+    expect(job().step).toBe("save");
+    expect(await record()).toEqual(expect.objectContaining({ saveState: "running", copyStarted: false }));
+    expect(onComputer(INSTANCE, 'touch "$ADE_HOME/brain.paused"')).toHaveLength(0);
+
+    shell.save = code;
+    await drive("copy");
+    expect(await record()).toEqual(expect.objectContaining({ saveState, copyStarted: true }));
+    expect(onComputer(INSTANCE, 'touch "$ADE_HOME/brain.paused"')).toHaveLength(1);
+    expect(onComputer(INSTANCE, "ade cloud prepare-stop")).toHaveLength(1);
+    shell.copy = "0";
+    await drive("end");
+    expect((await record()).state).toBe("done");
   });
 
   it("an old computer the provider won't delete is kept with its ADE running again, and the move ends on the new one", async () => {
@@ -5305,6 +5393,18 @@ describe("ADE Cloud server frees (the computer deleted, its lane kept)", () => {
         lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0 }),
       ] });
     }, "ADE couldn't read the work in (main checkout), so nothing was deleted. Try again in a minute; if it fails again, open that lane to see why."],
+    ["GitHub refused the computer's fetch (the repository moved, or GitHub access can't reach it)", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 2, skipped: 0, lanes: [
+        lane("failed", { dirty: false, ahead: 0, reason: "github_refused" }),
+        lane("failed", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true, dirty: false, ahead: 0, reason: "github_refused" }),
+      ] });
+    }, "GitHub refused this computer access to the lane's repository, so nothing was deleted. The repository may have moved, or your GitHub connection (Settings › GitHub) can't reach it. Fix that, then try again."],
+    ["GitHub didn't answer the check after the push", () => {
+      shell.check = JSON.stringify({ pushed: 0, failed: 1, skipped: 0, lanes: [lane("failed", { dirty: false, ahead: 0, reason: "github_unreachable" })] });
+    }, "This computer couldn't reach GitHub to check the lane's work, so nothing was deleted. Try again in a minute."],
+    ["the lane isn't on the computer (a launch that failed before it made the lane)", () => {
+      shell.push = JSON.stringify({ pushed: 0, failed: 0, skipped: 0, lanes: [lane("clean", { laneId: "main", laneName: "Primary", branchRef: "main", primary: true })] });
+    }, "This lane isn't on the computer (its setup didn't finish, or it was removed there), so there is no lane to keep. Delete the computer instead."],
     ["an older ADE's push names no lanes", () => {
       shell.push = JSON.stringify({ pushed: 0, failed: 1, skipped: 0 });
     }, "ADE couldn't push all work on this computer, so it stays. Open the lane to see why, then try again."],

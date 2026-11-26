@@ -25,6 +25,7 @@ import { ViewerModeToggleButton } from "./ViewerModeToggle";
 import { ZoomControls } from "./ZoomControls";
 import { readViewerMode, rememberViewerMode } from "./viewerModeMemory";
 import { isAdeAvailable } from "../../../../lib/adeAvailability";
+import { plainErrorText } from "../../../../lib/plainError";
 
 /** SVG is held whole (as an image and as Source text). */
 const MAX_SVG_BYTES = 25 * 1024 * 1024;
@@ -398,7 +399,7 @@ export function ImageViewer(props: ViewerProps) {
       },
       (err: unknown) => {
         if (!cancelled)
-          setError(err instanceof Error ? err.message : String(err));
+          setError(plainErrorText(err, "ADE couldn't open the picture."));
       },
     );
 
@@ -430,7 +431,7 @@ export function ImageViewer(props: ViewerProps) {
     } catch (err) {
       showToast({
         title: "Could not copy the picture",
-        message: err instanceof Error ? err.message : String(err),
+        message: plainErrorText(err, "ADE couldn't copy the picture."),
         tone: "error",
       });
     }

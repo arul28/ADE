@@ -10,6 +10,7 @@ import {
   type AdeAccountMachineEndpoint,
   type CompetingSyncHostOwner,
   type AdeInstallChannel,
+  type SyncAccountDirectoryFailedLeg,
   type SyncAccountDirectoryHealth,
   type SyncAccountDirectoryLegDurations,
   type SyncRoleSnapshot,
@@ -341,12 +342,7 @@ type BrainAccountMachinePublisherLogger = AccountMachinePublisherLogger & {
   info(message: string, meta?: Record<string, unknown>): void;
 };
 
-type AccountMachinePublishLeg =
-  | "setup"
-  | "snapshot"
-  | "token"
-  | "token_refresh_401"
-  | "http";
+type AccountMachinePublishLeg = SyncAccountDirectoryFailedLeg;
 
 /**
  * Outcome of a deliberate re-pair. `published` is the only field a caller may
@@ -1131,6 +1127,9 @@ export function createAccountMachinePublisherService(options: {
         : failureStates.has(state)
           ? health.failingSinceMs ?? args.attemptAt
           : null,
+      // The desktop tells "no internet" from a sign-in refresh the issuer
+      // answered by this, so it rides the health and not only analytics.
+      failedLeg: failureStates.has(state) ? args.leg ?? failureLegForState(state) : null,
     };
     if (state === "published") recoveryGaveUpAtMs = null;
     // Most skips return without a log line (only some failures warn, once),
@@ -1833,6 +1832,7 @@ export function createAccountMachinePublisherService(options: {
         const attemptAt = now();
         recordOutcome("transport_error", {
           attemptAt,
+          leg: "setup",
           skipReason: "The account-directory publisher failed unexpectedly.",
           directoryOrigin: health.directoryOrigin,
           reachableEndpointCount: health.reachableEndpointCount,

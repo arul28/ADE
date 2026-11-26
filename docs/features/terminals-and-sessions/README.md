@@ -1001,9 +1001,12 @@ lifecycle.
 
 Fields that feed UI and downstream systems:
 
-- identity: `id`, `laneId`, `laneName`, `ptyId`, `tracked`, `pinned`,
-  `manuallyNamed`, `chatSessionId` (the owner of an attached terminal: a chat
-  or a tracked CLI; `chat_session_id`, indexed)
+- identity: `id`, `laneId`, `laneName`, `laneType` (the lane's kind, so a
+  screen names the main checkout "Main checkout" through
+  `sessionLaneDisplayName`; a row from an older brain has none and keeps its
+  stored name), `ptyId`, `tracked`, `pinned`, `manuallyNamed`,
+  `chatSessionId` (the owner of an attached terminal: a chat or a tracked
+  CLI; `chat_session_id`, indexed)
 - title and intent: `title`, `goal`, `toolType`
 - lifecycle: `status`, `startedAt`, `endedAt`, `exitCode`, `runtimeState`
   (derived), `chatIdleSinceAt`, `settledAt`, `statusNote`,

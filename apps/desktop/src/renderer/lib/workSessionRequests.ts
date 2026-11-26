@@ -1,4 +1,5 @@
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../shared/types";
+import { navigateToAppTarget } from "./openExternal";
 
 /**
  * Requests one pane makes of the Work surface: focus a session, or open its
@@ -31,6 +32,17 @@ export function focusWorkSession(
   } catch {
     /* no-op */
   }
+}
+
+/**
+ * Opens a chat in Work on the machine it lives on. The chat can be seconds
+ * old, so Work's list may not hold it yet: the select request loads it first
+ * (a `?sessionId=` link would be dropped as unknown), the route the command
+ * palette takes.
+ */
+export function openChatInWork(chat: { chatSessionId: string; laneId: string }, pin: OpenProjectBinding | null): void {
+  focusWorkSession(chat.chatSessionId, chat.laneId, pin);
+  navigateToAppTarget({ kind: "work" });
 }
 
 /**

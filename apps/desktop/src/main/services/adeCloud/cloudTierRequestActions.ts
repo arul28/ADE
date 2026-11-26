@@ -24,7 +24,7 @@ import {
   isCloudTierRequestOutcome,
   type CloudTierRequestOutcome,
 } from "../../../shared/cloudTierRequest";
-import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId } from "../../../shared/cloudTiers";
+import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRequestRateText, cloudTiers, isCloudTierId } from "../../../shared/cloudTiers";
 import { cloudUnitWords } from "../../../shared/cloudUnitWords";
 import { getErrorMessage } from "../shared/utils";
 import { clipReason, readApproval, record, text } from "./cloudActionArgs";
@@ -93,7 +93,7 @@ export function buildCloudTierRequestActions(deps: CloudTierRequestActionDeps) {
       const computerName = (box as CloudLaneMachine).lane?.laneName ?? box.name ?? box.instanceId;
       const card = buildCloudTierRequestCard(
         { requestId, instanceId: box.instanceId, computerName, fromSizeId: from?.id ?? null, toSizeId: to.id, toLabel: to.label, reason: clipReason(reason), chatSessionId },
-        { from: from?.label ?? null, rate: cloudTierRateLabel(to, cloudUnitWords(all.account)) },
+        { from: from?.label ?? null, rate: cloudTierRequestRateText(from, to, cloudUnitWords(all.account)) },
       );
       await deps.approvals.postCard(chatSessionId, card);
       logger.info?.("cloud.tier_requested", { instanceId: box.instanceId, toSizeId: to.id, fromSizeId: from?.id ?? null });

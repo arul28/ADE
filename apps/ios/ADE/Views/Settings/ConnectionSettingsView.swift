@@ -291,6 +291,7 @@ struct ConnectionSettingsView: View {
     case .appearance:
       ADESettingsPage(route: .appearance) { SettingsAppearanceSection() }
     case .lanes: SettingsLanesPage(syncService: syncService)
+    case .deletedArchived: SettingsDeletedArchivedPage(syncService: syncService)
     case .machines: machinesPage
     case .advanced: advancedPage
     }

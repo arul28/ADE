@@ -4,6 +4,7 @@ import { compactFirstSupportedProvider } from "../../../../shared/compactFirst";
 import { providerSupportsManualCompact } from "../../../../shared/contextCompaction";
 import { ModernRow, ModernRows } from "../primitives/SettingsModern";
 import { showToast } from "../../app/toast/toastStore";
+import { plainErrorText } from "../../../lib/plainError";
 
 const FIELD_CLASS = "rounded border border-border bg-background px-2 py-1 text-xs";
 const NUMBER_INPUT_CLASS = `w-28 ${FIELD_CLASS}`;
@@ -49,7 +50,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
   const save = async (next: ProviderCompactionSettings | null) => {
     setSaving(true);
     try { await onChange(next); }
-    catch (error) { showToast({ tone: "error", title: "Could not save compaction setting", message: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { showToast({ tone: "error", title: "Could not save compaction setting", message: plainErrorText(error, "ADE couldn't save the compaction setting.") }); }
     finally { setSaving(false); }
   };
   if (!supported) return <p className="text-xs text-muted-fg">This provider compacts by itself. ADE cannot change when.</p>;

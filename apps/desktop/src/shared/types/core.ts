@@ -7,6 +7,7 @@ import type { AppPackageChannel } from "../packageChannel";
 import type { UpdateTrack } from "../updateTrack";
 import type { ExternalSessionProvider } from "./externalSessions";
 import type {
+  SyncAccountDirectoryFailedLeg,
   SyncAccountDirectoryLegDurations,
   SyncAccountDirectoryState,
 } from "./sync";
@@ -46,6 +47,8 @@ export type LocalRuntimeStatus = {
      */
     lastHttpStatus?: number | null;
     lastHttpReason?: string | null;
+    /** The step the current failure happened on (`SyncAccountDirectoryHealth.failedLeg`). */
+    failedLeg?: SyncAccountDirectoryFailedLeg | null;
   } | null;
   lastWedge?: {
     lastCommand: string;
@@ -800,7 +803,8 @@ export type AppNavigationTarget =
   | {
       /**
        * A link to an account project that no reachable computer can open
-       * (main resolves the link's `accountProjectId` first). `no-copy` opens
+       * (main resolves the link's `accountProjectId` first), or an Activity
+       * item or link whose copy is on an ADE Cloud computer that sleeps. `no-copy` opens
        * the repository tab with no machine; `removed` and `unknown` say so.
        */
       kind: "account-project";

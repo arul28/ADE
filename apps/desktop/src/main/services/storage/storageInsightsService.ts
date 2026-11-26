@@ -1798,7 +1798,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
 
       // Other filesystem cleanup is review-only. The doctor may identify
       // candidates, but it never removes those without a fresh user preview
-      // and confirmation in Settings > Storage.
+      // and confirmation in Settings > Disk space.
       const recordReviewCandidates = async (targets: StorageCleanupTarget[]) => ({
         itemsAffected: targets.length,
         bytesReclaimed: 0,

@@ -19,6 +19,8 @@ type RemoteErrorCardProps = {
    * than a failure: it warns, and its button says what it does.
    */
   recovery?: RemoteRuntimeConnectionRecovery | null;
+  /** The ✕: the owner forgets this failure (the person has seen it). */
+  onDismiss?: (() => void) | null;
 };
 
 const RETRY_LABEL_BY_RECOVERY: Record<RemoteRuntimeConnectionRecovery, string> = {
@@ -32,7 +34,7 @@ const RETRY_LABEL_BY_RECOVERY: Record<RemoteRuntimeConnectionRecovery, string> =
  * first sentence is the title and the rest its detail line, the raw error sits
  * under them, and "Report" sends it to ADE. Try again re-runs connect.
  */
-export function RemoteErrorCard({ card, onRetry, retrying, action = null, recovery = null }: RemoteErrorCardProps) {
+export function RemoteErrorCard({ card, onRetry, retrying, action = null, recovery = null, onDismiss = null }: RemoteErrorCardProps) {
   const actions: NoticeAction[] = [
     ...(action ? [{ label: action.label, onClick: action.onClick, variant: "secondary" as const }] : []),
     ...(onRetry
@@ -59,6 +61,7 @@ export function RemoteErrorCard({ card, onRetry, retrying, action = null, recove
         detail: rest.length > 0 ? rest.join(" ") : undefined,
         ariaLabel: card.message,
         actions,
+        ...(onDismiss ? { dismiss: { onDismiss } } : {}),
         report: {
           surface: "machine_connection",
           code: card.failure ? `connect_${card.failure}` : null,

@@ -63,6 +63,13 @@ export const ACCESS_RECHECK_MAX_MS = 30 * 60_000;
 export const GATE_MAX_AGE_MS = 30_000;
 /** The gate never holds a turn longer than this. */
 export const GATE_LIMIT_MS = 5_000;
+/**
+ * A cloud computer that just started (or woke): a turn waits this long at most
+ * for the account's sign-in and its ADE Cloud answer, before the gate's own wait.
+ */
+export const COLD_GATE_LIMIT_MS = 30_000;
+/** While that wait reads the ADE Cloud answer as unreadable, it asks again this often (the timer asks after 60 s). */
+export const COLD_ACCESS_RETRY_MS = 5_000;
 /** A copy here with less than this left makes a turn wait for a fresh one (§5.3 steps 1 and 2). */
 export const SHORT_WAIT_LEFT_MS = 60_000;
 /** The owner may be renewing right now while the copy is no more than this past its expiry. */
@@ -338,7 +345,8 @@ export type ProviderLoginSyncDeps = {
   accountUserId: () => string | null;
   machine: () => ProviderLoginMachine | null;
   /** The account's ADE Cloud answer (cached in `cloudAccess.ts`, asked at most every 10 minutes). */
-  cloudAccess: () => Promise<CloudAccessState>;
+  /** `failureTtlMs`: how long a failed ask is reused (`cloudAccess.ts`); a turn's wait asks sooner. */
+  cloudAccess: (options?: { failureTtlMs?: number }) => Promise<CloudAccessState>;
   /** Hear a change of the cached ADE Cloud answer, whoever asked (`onCloudAccessAnswerChanged`). */
   onCloudAccessChanged?: (listener: () => void) => () => void;
   cloudComputer: boolean;
@@ -536,6 +544,9 @@ export type SyncJobs = {
   ghCliMessage(gh: ProviderLoginGhCliStatus, off: ProviderLoginCaptureOffReason | null, fallback: string): string;
   // the ticks (providerLoginAccess.ts)
   leaveTicks(): void;
+  refreshAccess(options?: { failureTtlMs?: number }): Promise<CloudAccessState | null>;
+  /** Resolves when the next read of the ADE Cloud answer starts (a sign-in asks one). */
+  nextAccessRead(): Promise<void>;
 };
 
 /**
@@ -577,6 +588,15 @@ export type SyncShared = {
   appliedLoginHashes: Set<string>;
   /** The ADE Cloud answer being read now, if any. */
   accessPending: Promise<CloudAccessState | null> | null;
+  /** The last ADE Cloud answer read, or null before the first. */
+  lastAccess: CloudAccessState | null;
+  /**
+   * A turn's wait for the account ran out (a cloud computer that stays signed
+   * out): later turns go at once, until the next read of the ADE Cloud answer.
+   */
+  coldWaitSpent: boolean;
+  /** The account settings were pulled once for this account (the gate pulls them until then). */
+  settingsReady: boolean;
   cloudSetting(): CloudSetting;
   captureOffReason(): Promise<ProviderLoginCaptureOffReason | null>;
   setLocal(provider: ProviderLoginProvider, slotId: string, state: ProviderLoginLocalState, key: string | null): void;
@@ -749,6 +769,9 @@ export function createSyncShared(deps: ProviderLoginSyncDeps): SyncShared {
     appliedCache: null,
     appliedLoginHashes: new Set(),
     accessPending: null,
+    lastAccess: null,
+    coldWaitSpent: false,
+    settingsReady: false,
     cloudSetting,
     captureOffReason,
     setLocal,

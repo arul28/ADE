@@ -22,6 +22,9 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
   case notifications
   case appearance
   case lanes
+  /// Recently deleted and the archive, from every live computer with the
+  /// project (the desktop's Deleted & Archived page).
+  case deletedArchived
   case advanced
 
   var id: String { rawValue }
@@ -38,6 +41,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .notifications: return "Notifications"
     case .appearance: return "Appearance"
     case .lanes: return "Lanes"
+    case .deletedArchived: return "Deleted & Archived"
     case .machines: return "Machines"
     case .advanced: return "Advanced"
     }
@@ -55,6 +59,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .notifications: return "What ADE tells you about running work, and where."
     case .appearance: return "How ADE looks on this \(UIDevice.current.model)."
     case .lanes: return "How new lanes start in this project."
+    case .deletedArchived: return "Lanes and chats you deleted or archived, on every computer."
     case .advanced: return "How this phone reaches its machine, delivery checks, and this build."
     }
   }
@@ -71,6 +76,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .notifications: return "bell"
     case .appearance: return "circle.lefthalf.filled"
     case .lanes: return "arrow.triangle.branch"
+    case .deletedArchived: return "clock.arrow.circlepath"
     case .machines: return "desktopcomputer"
     case .advanced: return "wrench.and.screwdriver"
     }
@@ -89,6 +95,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .notifications: return .red
     case .appearance: return .teal
     case .lanes: return .amber
+    case .deletedArchived: return .orange
     case .machines: return .pink
     case .advanced: return .slate
     }
@@ -99,7 +106,7 @@ enum SettingsRoute: String, CaseIterable, Identifiable, Hashable {
     case .machines, .general: return .overview
     case .account, .usage: return .you
     case .chat, .providers, .integrations, .adeCloud, .notifications, .appearance: return .app
-    case .lanes: return .project
+    case .lanes, .deletedArchived: return .project
     case .advanced: return .system
     }
   }

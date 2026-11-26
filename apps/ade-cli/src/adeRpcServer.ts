@@ -2711,6 +2711,7 @@ async function buildCliLinearConnectionStatus(runtime: AdeRuntime): Promise<Line
       organizationName: status.organizationName ?? null,
       organizationUrlKey: status.organizationUrlKey ?? null,
       organizationLogoUrl: status.organizationLogoUrl ?? null,
+      viewerIsAdmin: status.viewerIsAdmin,
       checkedAt: nowIso(),
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,

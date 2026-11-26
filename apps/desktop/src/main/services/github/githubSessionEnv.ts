@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ghConfigDir } from "../../../../../ade-cli/src/services/credentials/ghConfigDir";
 import type { AppGrantReader } from "../../../shared/github/githubAppGrant";
-import { githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim";
+import { GH_TOKEN_USE_UPLOAD, githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim";
 
 /**
  * `GH_TOKEN` for the `gh` CLI in agent shells, CLI sessions and chats, from
@@ -18,7 +18,10 @@ import { githubShellShimEnv, setGithubShellTokenAnswer } from "./githubShellShim
  * Then the token is the account App token when it is current and the owner
  * of the project's repository has an installation of the App that the user
  * can reach. Read rights are enough: on a write the installation refuses,
- * `gh` prints GitHub's own message. With no such installation, the token is
+ * `gh` prints GitHub's own message. A file upload (`gh --attach`) is the one
+ * exception: GitHub refuses App tokens there whatever the App may do, so the
+ * endpoint answers an upload only with the `gh` login copy
+ * (`GH_TOKEN_USE_UPLOAD`). With no such installation, the token is
  * the account's copy of a `gh` login, when the account holds one: the same
  * login `gh` would use on the machine that shared it. This is what makes `gh`
  * work on an ADE Cloud computer for an organization without the App.
@@ -169,9 +172,10 @@ export function createGithubSessionEnv(deps: {
    * token when the owner's installation is reachable, else the account's `gh`
    * login copy, else null (the shim steps aside). Cached answers mostly: the
    * token client and the grant reader keep theirs, so a run costs no request.
+   * An upload gets only the `gh` login copy, with no request at all.
    */
-  const tokenForOwner = async (requestedOwner: string | null): Promise<string | null> =>
-    await appTokenOrCopy(requestedOwner ?? lastOwner);
+  const tokenForOwner = async (requestedOwner: string | null, options?: { use?: typeof GH_TOKEN_USE_UPLOAD }): Promise<string | null> =>
+    options?.use === GH_TOKEN_USE_UPLOAD ? accountGhToken() : await appTokenOrCopy(requestedOwner ?? lastOwner);
   if (deps.answersShells !== false) setGithubShellTokenAnswer(tokenForOwner);
 
   const needsToken = (env: NodeJS.ProcessEnv): boolean => !envHasOwnGithubToken(env) && !hasOwnGhLogin(env);

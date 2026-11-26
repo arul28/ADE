@@ -34,6 +34,8 @@ import "../providers/providerPage.css";
 import "./integrationPage.css";
 import { MessagesIntegrationCard } from "./MessagesIntegrationCard";
 import { requirePin } from "../../../state/repositoryScope";
+import { MachineIntegrationWarning } from "./MachineIntegrationWarning";
+import { useCatalogueFilter } from "./useCatalogueFilter";
 
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
 export type IntegrationsPageId = IntegrationId | "mcp";
@@ -202,11 +204,12 @@ export function IntegrationsHome({
     }
     return ids;
   }, [servers]);
-  const catalogue = MCP_CATALOGUE.filter((entry) =>
+  const catalogue = useMemo(() => MCP_CATALOGUE.filter((entry) =>
     !entry.native
     && !addedEntryIds.has(entry.id)
-    && matches(needle, entry.name, entry.description, entry.publisher, entry.category));
+    && matches(needle, entry.name, entry.description, entry.publisher, entry.category)), [addedEntryIds, needle]);
   const builtIn = integrations.filter((id) => matches(needle, integrationBrand(id).label, DESCRIPTIONS[id]));
+  const { chips, activeFilter, setFilter, shownIds, foldedCount } = useCatalogueFilter(catalogue, needle.length > 0);
   const canAdd = registry.phase === "ready";
 
   // `#add-mcp-<id>` (a settings search result, a chat card's gear) opens that
@@ -250,6 +253,7 @@ export function IntegrationsHome({
 
   return (
     <div className="ade-ig-home ade-ix-home">
+      <MachineIntegrationWarning />
       {connectedIntegrations.length || servers.length ? (
         // Settings search hides the groups (`data-settings-group`) with no
         // matching tile. A server already added has no tile in the grid, so
@@ -389,6 +393,23 @@ export function IntegrationsHome({
             </span>
           </div>
           <p className="ade-ix-mcp-lead">Any MCP server works, by command or URL. Below are quick setups for popular ones.</p>
+          {chips.length ? (
+            <div className="ade-ix-filters" role="group" aria-label="Show quick setups">
+              {chips.map((chip) => (
+                <button
+                  key={chip.id}
+                  type="button"
+                  className="ade-ix-filter"
+                  aria-pressed={activeFilter === chip.id}
+                  data-testid={`integrations-catalogue-filter-${chip.id}`}
+                  onClick={() => setFilter(chip.id)}
+                >
+                  {chip.label}
+                  {chip.count != null ? <span className="ade-ix-filter-count">{chip.count}</span> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <div className="ade-ix-grid">
             {catalogue.map((entry) => {
               const brand = mcpCatalogueBrand(entry);
@@ -397,6 +418,7 @@ export function IntegrationsHome({
                   key={entry.id}
                   id={mcpCatalogueAnchor(entry.id)}
                   data-settings-anchor={mcpCatalogueAnchor(entry.id)}
+                  data-folded={shownIds && !shownIds.has(entry.id) ? "true" : undefined}
                   type="button"
                   className="ade-ix-tile"
                   style={integrationThemeVars(brand.accent)}
@@ -428,6 +450,16 @@ export function IntegrationsHome({
               </span>
             </button>
           </div>
+          {activeFilter === "popular" && foldedCount > 0 ? (
+            <button
+              type="button"
+              className="ade-ix-show-all"
+              data-testid="integrations-catalogue-show-all"
+              onClick={() => setFilter("all")}
+            >
+              Show all {catalogue.length} quick setups
+            </button>
+          ) : null}
         </div>
       </section>
 

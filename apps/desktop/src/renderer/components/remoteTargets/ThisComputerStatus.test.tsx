@@ -186,7 +186,7 @@ describe("ThisComputerStatus", () => {
       lastHttpReason: null,
     });
     render(<ThisComputerStatus accountSignedIn />);
-    expect(await screen.findByText(/Can't reach your ADE account right now/)).toBeTruthy();
+    expect(await screen.findByText(/account service is having trouble right now/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });

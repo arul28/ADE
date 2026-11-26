@@ -70,7 +70,13 @@ type LinearWebhookClient = {
     allPublicTeams?: boolean;
   }) => Promise<LinearWebhookSummary>;
   deleteWebhook: (webhookId: string) => Promise<void>;
+  /** Who is signed in; `viewerIsAdmin` says whether they may make webhooks at all. */
+  getConnectionIdentity?: () => Promise<{ viewerIsAdmin: boolean | null }>;
 };
+
+/** Linear lets only workspace admins read or create webhooks. */
+export const LINEAR_WEBHOOK_NEEDS_ADMIN_MESSAGE =
+  "Linear automations need a webhook, and Linear lets only workspace admins make one. Your Linear account is not an admin of this workspace: ask an admin to make you one, or to connect Linear in ADE with their account.";
 
 type LinearRelayEvent = {
   cursor: string;
@@ -336,7 +342,15 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
       const webhookUrl = `${relayBaseUrl}/linear/webhook`;
       const persisted = readLinearRelayPersistedState(deps.db);
       const storedSecret = readLinearWebhookSecret(deps.db, deps.credentialStore);
-      const webhooks = await client.listWebhooks();
+      const webhooks = await client.listWebhooks().catch(async (error: unknown) => {
+        // Linear answers a member who asks for webhooks with its own refusal.
+        // Linear stays the judge; when the person is not an admin, say that
+        // in plain words instead. Unknown (an older client, a failed read)
+        // keeps Linear's error.
+        const identity = await client.getConnectionIdentity?.().catch(() => null);
+        if (identity?.viewerIsAdmin === false) throw new AdeExpectedError(LINEAR_WEBHOOK_NEEDS_ADMIN_MESSAGE, "user");
+        throw error;
+      });
       const matching = webhooks.filter((webhook) => normalizeUrl(webhook.url) === normalizeUrl(webhookUrl));
       let webhook = matching.find((entry) => entry.id === persisted.webhookId && entry.enabled) ?? null;
       let secret = webhook ? storedSecret : null;

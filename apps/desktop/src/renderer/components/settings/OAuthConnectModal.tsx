@@ -21,6 +21,7 @@ import {
   SignInSteps,
   useEnterOpensSignInPage,
 } from "./providers/signInSheetParts";
+import { plainErrorText } from "../../lib/plainError";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -252,7 +253,7 @@ export function OAuthConnectModal({
       startPendingRef.current = false;
       if (cancelRequestedRef.current) return;
       setPhase("error");
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+      setErrorMessage(plainErrorText(err, "ADE couldn't start that sign-in."));
     }
   };
 

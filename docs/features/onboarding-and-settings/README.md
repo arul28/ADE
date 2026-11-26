@@ -92,9 +92,10 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   (`~/.ade/continue-after-restart.json`, read by that brain), with a machine
   picker when several are reachable.
 - `settings/lanes/LanesSettingsPage.tsx`, `lanes/LaneList.tsx`: Project →
-  Lanes (Your lanes, Rules) and Project → Storage & cleanup (Space, Archive,
-  Rules), one view at a time. The web shows only Rules and Archive; a page
-  with one view has no tab strip; hash links and search switch views. Project
+  Lanes (Your lanes, Rules), Project → Deleted & Archived (Recently deleted,
+  Archive) and Project → Disk space (Space, Rules), one view at a time. The
+  web shows Recently deleted, Archive and Rules; a page with one view has no
+  tab strip; hash links and search switch views. Project
   → Agents is a section list in `settingsTabContent.tsx`.
 - `main/services/account/accountBridge.ts`,
   `apps/ade-cli/src/services/account/accountAuthService.ts`,
@@ -178,11 +179,12 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   is user-only, restore CTO-only (`ADE_ACTION_USER_ONLY` /
   `ADE_ACTION_CTO_ONLY`, `adeActions/actionPolicy.ts`). `shared/archive.ts`,
   `shared/types/archive.ts`: one vocabulary (`isArchiveStale`).
-  `settings/ArchiveSection.tsx`: the list split at `staleAfterDays` ("Free up
-  space after", 14 when off), selection bar, restore, Free up space (Archive &
-  reclaim through `useLaneReclaim` on the settings machine's pin), and delete
-  (non-lane items together, at most five lanes a request, then one forced
-  retry by name for dirty lanes). `app/useArchiveReminderBanner.tsx`: at most
+  `settings/ArchiveSection.tsx`: every online copy's archive in one list, each
+  row split at its own machine's `staleAfterDays` ("Free up space after", 14
+  when off), selection bar, restore, Free up space (Archive & reclaim through
+  `useLaneReclaim` on the row's machine pin), and delete (non-lane items
+  together, at most five lanes a request, then one forced retry by name for
+  dirty lanes, matched by machine). `app/useArchiveReminderBanner.tsx`: at most
   once per project per `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something
   passes the host's line; a summary that lands after a snooze is dropped.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts`: this
@@ -604,7 +606,15 @@ Account Settings shows a named update prompt when a connected computer needs
 a newer ADE version to share its routes or provider inventory. In the
 **Connections** section, **Check again** shows progress and the latest results
 for the local network, Tailscale, and ADE Relay, along with Tailscale setup
-steps and the time of the check.
+steps and the time of the check. This computer's Tailscale reading
+(`tailscaleLocalStatus.ts`) also reports `keyExpired` (Tailscale's
+`Self.Expired`, or a key expiry already past), Tailscale's own `Health`
+warnings, and `readError` (a timeout, or Tailscale's first error line) when
+ADE got no answer it could read. The first step then says "Tailscale sign-in
+expired" with the renew path, or why ADE couldn't read Tailscale, and quotes
+Tailscale's first warning; **Open Tailscale** opens the app on this computer
+(`app.openTailscale`, a fixed list of install paths). The route tiles say
+"Sign-in expired", "Starting" or "Couldn't check" instead of "Not connected".
 
 **Renderer — settings**
 
@@ -758,7 +768,20 @@ steps and the time of the check.
     have servers, the catalogue's quick setups via `McpCatalogueAddDialog.tsx`,
     which signs in a browser-auth server, and **Not listed?**).
     `mcpCatalogueBrand.tsx` gives logos and accents; `McpRunsLine.tsx` shows
-    the command or URL.
+    the command or URL. The quick setups show 12 popular tiles, then **Show
+    all**, with filter chips (Popular, All, each category with its count;
+    `useCatalogueFilter.ts`). Typing in the Add search shows every match.
+    Folded tiles stay mounted and carry `data-folded`, so Settings search,
+    which filters what is on the page, still finds them: `SettingsPage.tsx`
+    sets `data-settings-searching` on its content while a search runs.
+  - **A stuck computer** (`MachineIntegrationWarning.tsx`): one line above
+    Connected when a computer that should answer ADE MCP is stuck (signed out,
+    no relay, account sync failing, waiting for its key past 10 minutes, too
+    old an ADE). It reads ADE MCP's status once when the page opens (account
+    level, no pin) and picks computers with `machinesNeedingAttention`
+    (`adeMcpState.ts`); offline, left out, getting ready and never-reported
+    computers are not counted. Dismissing it lasts until a different computer
+    or trouble shows up; it hides during a Settings search.
   - `?integration=<github|linear|jira|mcp>` or a settings `#hash` opens one
     page; the hash wins (`openIntegrationFromUrl`, `settingsTabContent.tsx`).
     Only one page mounts, so search lists matches elsewhere as "On other
@@ -770,6 +793,13 @@ steps and the time of the check.
   - **Links on GitHub** checks repository access before offering **Add**.
     Repository admins can add the links. Other collaborators can copy the commands
     to share with an admin.
+  - **ADE agent** (Linear page) reads `viewerIsAdmin` from the Linear connection
+    status (Linear's `viewer.admin`, asked in the same identity query on every
+    route: this computer, a pinned machine, the CLI, ADE Cloud and the web
+    client). Linear lets only workspace admins add the agent, so a member sees
+    why and **Copy a note for an admin** (the note also shows under the button)
+    in place of **Add to workspace**. Unknown (null, an older brain) keeps
+    **Add to workspace**.
   - Each page (`IntegrationChrome.tsx`) has a banner in the maker's colours
     (`SolidLogo`, state, a sign-in panel with main actions, a facts strip with
     the top-bar switch), then two equal cards or one.
@@ -1039,7 +1069,7 @@ steps and the time of the check.
   existing `portRange` is kept.
 - `settings/health/HealthSpace.tsx`, `HealthCleanups.tsx`,
   `settings/storage/StorageCleanupDialog.tsx`, `ReclaimConfirmDialog.tsx`,
-  `storageView.ts`, `storageUiConstants.ts`: Project → Storage & cleanup. Plain
+  `storageView.ts`, `storageUiConstants.ts`: Project → Disk space. Plain
   copy on Archive (files stay), Archive & Reclaim (lane, branch and chat stay;
   managed files go) and Delete; a review table of archived lanes, orphaned
   worktrees, DerivedData and build output (size, age, owner, blocked reasons,
@@ -1806,7 +1836,7 @@ saves and who it affects, once per group.
 | **General** | — | Needs attention, You and this machine, ADE version and updates on every machine |
 | **You** | Your ADE account, everywhere | Account, Usage, Sharing (desktop only) |
 | **App** | How ADE behaves for you | Chat, Providers, Android devices and Apple devices (each with a machine picker in its title), MCP servers, ADE MCP, Notifications, Appearance, Behaviour and Keyboard (these three on this computer) |
-| **Project** | The open project (routed to its machine) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Project** | The open project (routed to its machine) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Deleted & Archived (Recently deleted, Archive; every machine at once), Disk space (Space, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
 | **System** | This computer, or the picked machine | Machines (all, and a page each), Advanced (background service, the `ade` command, Send a report, Database copies, Reset) |
 
 **General** opens first:
@@ -1865,12 +1895,18 @@ a project.
   `?machine=` to the tab's machine.
 
 **Project pages.** One-column blocks. Lanes: **Your lanes** (All, Stale, Has
-changes, Running tiles) and **New lanes** (start defaults, templates). Storage
-& cleanup: **Space** (lane and ADE storage, cleanup history), **Archive**
-(lanes, chats, shells), **Rules** (idle archiving, session lifecycle, project
-files). Agents: PR chat transcripts. The web shows only Rules and Archive.
-Links and search switch to the right view; `?tab=storage`, `archive`, `disk`
-and `session-lifecycle` open Storage & cleanup.
+changes, Running tiles) and **New lanes** (start defaults, templates).
+Deleted & Archived: **Recently deleted** (lanes and chats, a lane with its
+chats) and **Archive** (lanes, chats, shells), both read from every online
+machine at once, with no machine picker. Each view has one toolbar (kind
+filter, search) and no second title; row meta lines wrap through
+`MetaLine.tsx`. Disk space: **Space** (lane and ADE
+storage, cleanup history; one machine, picked on the page) and **Rules** (idle
+archiving, session lifecycle, project files). Agents: PR chat transcripts. The
+web shows Recently deleted, Archive and Rules. Links and search switch to the
+right view; `?tab=archive`, `archived`, `recently-deleted` and `trash` open
+Deleted & Archived; `?tab=storage`, `disk` and `session-lifecycle` open Disk
+space.
 
 - Bulk archive re-reads git before the merged-PR exception, then skips dirty,
   active or unpushed lanes.
@@ -1914,7 +1950,7 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `general/GeneralPage.tsx`, `NeedsAttentionStrip.tsx`, `MachineUpdateRows.tsx`, `UpdateTrackControls.tsx`, `AutoUpdatesSection.tsx` | Needs attention, You and This machine, the ADE card. Legacy `?tab=overview`, `health`, `about`, `updates`, `onboarding`, `help`, `tours`, `home`. |
-| Machines (System) | `machines/MachinesPage.tsx`, `MachineSettings.tsx` | Every machine (tile, status, OS, version and track, free disk here) and a page each: updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system, projects. Legacy `?tab=computer`, `computers`, `this-computer`. |
+| Machines (System) | `machines/MachinesPage.tsx`, `MachineSettings.tsx` | Every machine (tile, status, OS, version and track, free disk here) and a page each: updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system, projects. ADE Cloud is one more row, as in the Connections panel: its lanes, how many are awake and the credits left, from memory with no wake; it opens Settings › ADE Cloud and counts as one machine. Each lane computer stays out of the list. Legacy `?tab=computer`, `computers`, `this-computer`. |
 | Advanced (System) | `health/HealthService.tsx`, `BackgroundServiceSection.tsx`, `AdeCliSection.tsx`, `DiagnosticsSharingSection.tsx`, `DatabaseCopiesSection.tsx`, `ResetAdeSection.tsx` | Service status, background service and quit question, the `ade` command (`#ade-cli`), **Send a report to ADE** (`#diagnostics-sharing`, not on hosted web; no consent switch), **Database copies** (`#database-copies`, this computer: one copy per database from the last update, deleted after a day of the update working, Reveal and Delete; restore is the "ADE could not start" window's Go back), **Reset ADE** (`#reset-ade`, last; `#about.reset` lands here). Legacy `?tab=service`, `ade-service`, `diagnostics`, `context`. |
 | Appearance (App, this computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx`, `AppearanceScheduleSettings.tsx` | Per computer, never synced: theme families with search, Auto / Light / Dark, import/export, interface and code faces, reduce motion, Focus grid chats per page, terminal text, **Background** (`#background`: plain, gradient, picture, shuffle with cadence and App colours from the picture), **Schedule**. One page, under This computer. Chat looks are on Chat. |
 | Apple devices (App, follows `?machine=`) | `AppleDevicesSection.tsx`, `devices/AppleMachineSection.tsx`, `devices/AppleToolsSection.tsx`, `devices/useDevToolsStorage.ts` | The picked Mac's Xcode (version, build, app and developer folder, update, first-launch setup), one bar of what simulators, runtimes and Xcode build data (DerivedData) take on its disk, then each list biggest first with its delete: simulators (owner: a lane, ADE, or yours; a lane's or a running one can't be deleted here), runtimes (Remove, Remove replaced), build data (Delete, Delete unused for 30 days or whose project is gone; refused while Xcode builds). Every call carries the page's pin. A Windows or Linux machine shows "The iOS Simulator runs on a Mac" with the ADE Cloud iPhone and the person's Macs. Then this window's simulator and preview choices: 3D body, recording overlays, remote streaming bitrate cap, recordings storage warning, filed in the account store per device (`device.<syncDeviceId>.<key>`). |
@@ -1927,7 +1963,8 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear. Legacy `?tab=integrations`, `github`, `linear`, and `?integration=github|linear`; `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute, and delivery switches for iPhones and iPads registered to the account. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
 | Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `PasswordDialogs.tsx`, `passwordsFormat.ts` | One end-to-end encrypted vault (logins, passkeys, secrets), on by default; secrets for every or one project, in the account or this computer only, `.env` import and export. `?tab=secrets` / `secret` open Secrets. See [Passwords & Secrets](../passwords/README.md). |
-| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, archive, idle-archive rules, session lifecycle, project files. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `archive`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `EveryCopyList.tsx`, `state/everyCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep ADE Cloud computer is not read, and neither is the ADE Cloud account itself). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Disk space (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, idle-archive rules, session lifecycle, project files, for the copy picked on the page. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives with spend) and the `usage/` components | The one-page usage dashboard (see the source map); scope `account` / `machine` / `project`. Legacy `?tab=usage`, `ade-usage`. |
 
 Live quota windows render twice from one snapshot: the top-bar popup
@@ -2500,7 +2537,7 @@ omits the field keeps the two-way behaviour.
 
 Archiving **hides** a lane, chat or shell; ADE never deletes an archived item
 by itself. The only thing ADE deletes on its own is a dead App Control shell.
-Project → Storage & cleanup → Archive, `ade archive` and a weekly desktop banner
+Project → Deleted & Archived → Archive, `ade archive` and a weekly desktop banner
 all read `archive.list` / `archive.summary`.
 
 - **Dead App Control shells are deleted.** An agent-launched shell

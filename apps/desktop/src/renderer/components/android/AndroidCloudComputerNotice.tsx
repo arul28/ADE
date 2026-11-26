@@ -18,6 +18,7 @@ import { changeCloudLaneTier, cloudLaneChangesAvailable } from "../cloudLane/clo
 import type { NoticeAction } from "../ui/notice";
 import { Banner } from "../ui/notice";
 import { cloudBoxContext, cloudPendingLabel, useCloudBoxActions } from "../remoteTargets/useCloudBoxActions";
+import { plainErrorText } from "../../lib/plainError";
 
 /** What the cloud computer lacks for the Android emulator. */
 export type AndroidCloudNeed =
@@ -113,7 +114,7 @@ export function AndroidCloudComputerNotice({
               await changeCloudLaneTier({ instanceId: box.instanceId, sizeId, timing: "now", diskGb: toGb });
               onDismiss?.();
             } catch (error) {
-              actions.reportError(box.instanceId, error instanceof Error ? error.message : String(error));
+              actions.reportError(box.instanceId, plainErrorText(error, "ADE couldn't resize the cloud computer."));
             }
           })()
           : () => void actions.growDisk(ctx, toGb).then((result) => {

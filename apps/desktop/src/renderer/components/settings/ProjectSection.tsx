@@ -6,6 +6,7 @@ import "./machineSettings.css";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { Banner } from "../ui/notice";
 import { requirePin } from "../../state/repositoryScope";
+import { plainErrorText } from "../../lib/plainError";
 
 function basename(filePath: string): string {
   const parts = filePath.split(/[/\\]/);
@@ -91,7 +92,7 @@ export function ProjectSection() {
   useEffect(() => {
     if (!pin) return undefined;
     void refresh().catch((err) => {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't read the project settings."));
     });
     // The change feed of the copy this card shows, on its own machine.
     const unsubscribe = window.ade.project.onStateEvent((event) => {
@@ -113,7 +114,7 @@ export function ProjectSection() {
       await refresh();
       setNotice(formatCleanupNotice(result, kind === "repair" ? "Folder repair" : "Session log repair"));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(plainErrorText(err, "ADE couldn't finish the repair."));
     } finally {
       setBusy(null);
     }

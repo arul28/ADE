@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { plainErrorText } from "../../lib/plainError";
 
 /**
  * A Settings action's state: which action is running and the last failure.
@@ -54,8 +55,5 @@ export function useSettingsAction(): SettingsAction {
  * The person needs the sentence after it ("The download folder is not writable").
  */
 export function settingsErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw
-    .replace(/^Error invoking remote method '[^']+':\s*/, "")
-    .replace(/^Error:\s*/, "");
+  return plainErrorText(error, "That didn't work.");
 }

@@ -890,6 +890,7 @@ import type {
   DeletedChatRemoveArgs,
   DeletedChatReopenArgs,
   EffectiveProjectConfig,
+  RestoredLaneChatsArgs,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { MODEL_CATALOG_REFRESH_PROVIDERS, PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
@@ -21545,7 +21546,26 @@ export function createAgentChatService(args: {
     managed.turnBeforeTree = captureWorkingTreeFingerprint(managed.laneWorktreePath).catch(() => null);
   };
 
+  /**
+   * Chats whose diff summary is still being worked out after their turn
+   * ended. The line lands after `done`, so the cloud busy list counts them
+   * (`listBusyFacts`): a stop's chat save waits for it.
+   */
+  const turnDiffSummariesInFlight = new Map<string, number>();
+
   const emitTurnDiffSummaryIfChanged = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
+    const sessionId = managed.session.id;
+    turnDiffSummariesInFlight.set(sessionId, (turnDiffSummariesInFlight.get(sessionId) ?? 0) + 1);
+    try {
+      await emitTurnDiffSummary(managed, turnId);
+    } finally {
+      const left = (turnDiffSummariesInFlight.get(sessionId) ?? 1) - 1;
+      if (left > 0) turnDiffSummariesInFlight.set(sessionId, left);
+      else turnDiffSummariesInFlight.delete(sessionId);
+    }
+  };
+
+  const emitTurnDiffSummary = async (managed: ManagedChatSession, turnId: string): Promise<void> => {
     const beforeSha = managed.turnBeforeSha;
     const beforeTreePromise = managed.turnBeforeTree;
     managed.turnBeforeSha = null;
@@ -76307,7 +76327,12 @@ export function createAgentChatService(args: {
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted) continue;
       const waitingOnPerson = hasLivePendingInput(managed);
-      if (!waitingOnPerson && managed.session.status !== "active" && !hasRuntimeActiveWorkload(managed.runtime)) continue;
+      if (
+        !waitingOnPerson
+        && managed.session.status !== "active"
+        && !hasRuntimeActiveWorkload(managed.runtime)
+        && !turnDiffSummariesInFlight.has(managed.session.id)
+      ) continue;
       facts.push({ waitingOnPerson, lastActivityAt: managed.lastActivityTimestamp });
     }
     return facts;
@@ -86967,6 +86992,8 @@ ${schedule.prompt}`
     findDeletedChat: (id: string) => deletedChats.find(id),
     getDeletedChatDetail: (detailArgs: DeletedChatDetailArgs) => deletedChats.detail(detailArgs),
     reopenDeletedChat: (reopenArgs: DeletedChatReopenArgs) => deletedChats.reopen(reopenArgs),
+    /** A deleted lane came back as `toLaneId`: its chats go back into it. Host-wired, not an action. */
+    reopenDeletedChatsWithLane: (restoreArgs: RestoredLaneChatsArgs) => deletedChats.reopenWithRestoredLane(restoreArgs),
     removeDeletedChats: (removeArgs: DeletedChatRemoveArgs) => deletedChats.remove(removeArgs),
     archiveSession,
     unarchiveSession,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
@@ -349,6 +349,23 @@ export function subscribeAccountStatus(cb: (status: AdeAccountStatus) => void): 
   return () => {
     listeners.delete(cb);
   };
+}
+
+function subscribeAccountUserId(onChange: () => void): () => void {
+  return subscribeAccountStatus(() => onChange());
+}
+
+function accountUserIdNow(): string | null {
+  return cachedStatus?.value.signedIn ? cachedStatus.value.userId ?? null : null;
+}
+
+/**
+ * The signed-in account's user id as the shared status last said; null until
+ * a status names one, and while signed out. It reads nothing itself: the
+ * always-mounted account surfaces keep the status current.
+ */
+export function useAccountUserId(): string | null {
+  return useSyncExternalStore(subscribeAccountUserId, accountUserIdNow, accountUserIdNow);
 }
 
 /**

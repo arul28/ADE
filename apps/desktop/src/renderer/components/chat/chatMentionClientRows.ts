@@ -24,6 +24,7 @@ import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNe
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { fetchAccountMachines } from "../../lib/account";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
+import { laneDisplayName, sessionLaneDisplayName } from "../../../shared/laneDisplayName";
 
 /** How long one menu query waits for a cold machine read before it answers without it. */
 const MACHINE_MENU_WAIT_MS = 800;
@@ -71,7 +72,7 @@ function restingMachineMentionRows(
   entry: Pick<CrossMachineMachineLanes, "sessions" | "lanes" | "prs">,
   excludeSessionId: string | null,
 ): ChatMentionSuggestion[][] {
-  const laneNames = new Map(entry.lanes.map((lane) => [lane.id, lane.name]));
+  const laneNames = new Map(entry.lanes.map((lane) => [lane.id, laneDisplayName(lane)]));
   const chats: ChatMentionSuggestion[] = entry.sessions
     .filter((session) => isChatToolType(session.toolType) && !session.archivedAt && session.id !== excludeSessionId)
     .map((session) => ({
@@ -79,7 +80,7 @@ function restingMachineMentionRows(
       id: session.id,
       title: chatMentionTitle(session),
       // As the brain writes it: lane · provider · status.
-      subtitle: [laneNames.get(session.laneId) ?? session.laneName, chatToolProvider(session.toolType), session.status].filter(Boolean).join(" · "),
+      subtitle: [laneNames.get(session.laneId) ?? sessionLaneDisplayName(session), chatToolProvider(session.toolType), session.status].filter(Boolean).join(" · "),
       lastActivityAt: mentionEpoch(session.lastActivityAt) ?? mentionEpoch(session.startedAt),
     }));
   const lanes = entry.lanes.filter((lane) => !lane.archivedAt).map(laneMentionSuggestion);

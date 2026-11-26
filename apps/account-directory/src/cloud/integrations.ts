@@ -82,7 +82,7 @@ function filterOf(value: unknown): Record<string, unknown> | null | string {
 
 const LINEAR_DOCUMENTS: Record<CloudLinearOp, LinearDocument> = {
   identity: {
-    query: "query AdeCloudIdentity { viewer { id name displayName email avatarUrl } organization { id name urlKey logoUrl } }",
+    query: "query AdeCloudIdentity { viewer { id name displayName email avatarUrl admin } organization { id name urlKey logoUrl } }",
     vars: () => ({}),
   },
   teams: {
@@ -222,6 +222,45 @@ export function linearToken(raw: string | null, now: number): LinearToken | "not
   // No expiry recorded: Linear says when it is spent (401).
   if (Number.isFinite(expiresAt) && expiresAt <= now + LINEAR_EXPIRY_MARGIN_MS) return "needs_renewal";
   return { authorization: /^bearer\s+/i.test(token) ? token : `Bearer ${token}`, authMode: "oauth" };
+}
+
+/**
+ * The Linear workspace (organization id) of a project's own Linear
+ * connection (its vault `scope`), for an event-wake topic (`eventWakes.ts`).
+ * `null`: the project has no working connection (none stored, or Linear
+ * refused its API key).
+ * `unavailable`: the vault or Linear can't answer now, or the OAuth token is
+ * due for renewal, which its owner does; the caller asks again later.
+ */
+export async function linearOrganizationOf(env: RelayEnv, authorization: string, scope: string | null, now: number): Promise<string | null | "unavailable"> {
+  if (!scope || !authorization) return null;
+  const stored = await readConnection(env, authorization, scope, "linear");
+  if (stored === undefined) return "unavailable";
+  const token = linearToken(stored?.value ?? null, now);
+  if (token === "not_connected") return null;
+  if (token === "needs_renewal") return "unavailable";
+  let response: Response;
+  try {
+    response = await fetch(LINEAR_GRAPHQL_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json", authorization: token.authorization, "user-agent": "ADE" },
+      body: JSON.stringify({ query: "query AdeCloudOrganization { organization { id } }" }),
+      redirect: "manual",
+      signal: AbortSignal.timeout(LINEAR_TIMEOUT_MS),
+    });
+  } catch (error) {
+    logCloud("cloud.linear_org_check_failed", { error: error instanceof Error ? error.name : "unknown" });
+    return "unavailable";
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    logCloud("cloud.linear_org_check_refused", { status: response.status, authMode: token.authMode });
+    // A refused API key is no connection; a refused OAuth token waits for its renewal.
+    return response.status === 401 && token.authMode === "manual" ? null : "unavailable";
+  }
+  const answer = await readUpstream(response) as { data?: { organization?: { id?: unknown } } } | null;
+  const id = answer?.data?.organization?.id;
+  return typeof id === "string" && id ? id : "unavailable";
 }
 
 /* ---- Jira ---- */

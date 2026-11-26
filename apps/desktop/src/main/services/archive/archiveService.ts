@@ -30,6 +30,7 @@ import {
 import { emptyArchiveCounts, isArchiveStale } from "../../../shared/archive";
 import { archiveStaleDays, laneFreeUpStatus, resolveLaneCleanupPolicy } from "../../../shared/laneCleanup";
 import type { LaneCleanupConfig } from "../../../shared/types/config";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
 
 type LaneRuntimeDependencies = Parameters<typeof restoreUnarchivedLaneRuntime>[0];
 
@@ -56,6 +57,7 @@ type ArchivedSessionRow = {
   id: string;
   laneId: string | null;
   laneName: string | null;
+  laneType: string | null;
   laneColor: string | null;
   title: string | null;
   toolType: string | null;
@@ -195,6 +197,7 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
         select s.id as id,
                s.lane_id as laneId,
                l.name as laneName,
+               l.lane_type as laneType,
                l.color as laneColor,
                s.title as title,
                s.tool_type as toolType,
@@ -223,7 +226,8 @@ export function createArchiveService(deps: ArchiveServiceDeps) {
       title,
       ...(cliName ? { toolLabel: cliName } : {}),
       laneId: row.laneId ?? null,
-      laneName: row.laneName ?? null,
+      // The shown name: the main checkout reads "Main checkout", never its stored "Primary".
+      laneName: row.laneName == null ? null : laneDisplayName({ name: row.laneName, laneType: row.laneType }),
       laneColor: row.laneColor ?? null,
       archivedAt: row.archivedAt,
       sizeBytes: await transcriptBytes(row.transcriptPath),

@@ -100,7 +100,7 @@ exits. Normal disposal releases them at once, on Windows too.
 | `apps/desktop/src/main/services/storage/historyCompression.ts` | Finds inactive old history, gzip-compresses it, verifies byte identity, and only then removes the original; also reinflates before append. Exposes `readHistoryFileSync` / `reinflateHistoryFileSync` so transcript, session, and search readers can read a `.gz` generation transparently. The `.gz` keeps the source's modification time. An optional `minAgeMsFor` hook gives finished chats a shorter idle age and lists them first. |
 | `apps/desktop/src/main/services/storage/legacyChatTranscripts.ts` | `resolveChatTranscriptReadPath` maps a chat row's legacy `<id>.chat.jsonl` path to the dedicated `transcripts/chat/<id>.jsonl` (plain or `.gz`). `removeDuplicateLegacyChatTranscripts` is the doctor step that deletes legacy copies once every event line in them is proven to be in the dedicated file. |
 | `apps/desktop/src/main/services/storage/deletedLaneChats.ts` | Lists chats whose session row and lane are both gone (lane delete removes rows, not files), idle for 7 days, with every file they left. Backs the review-first "Chats from deleted lanes" row and its `deleted_lane_chats` cleanup target. `providerSessionsOfDeletedLaneChats` reads each chat's record for the Claude/Codex session ADE started. Imported chats are skipped, and so are sessions a live chat also names. |
-| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx` | Settings › Storage & cleanup › Recently deleted: the `deleted_chats` rows a chat delete, an agent CLI delete (`kind = 'cli'`), or a lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
+| `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx`, `deletedChatLocator.ts`, `renderer/state/everyCopyRead.ts` | Settings › Deleted & Archived › Recently deleted: the `deleted_chats` rows a chat delete, an agent CLI delete (`kind = 'cli'`), or a lane delete writes, the agent-copy lookup that keeps a row only while the conversation still exists on this machine, and Reopen through the external-session import. Machine-local (excluded from CRR); rows are hidden rather than removed. See [Recently deleted chats](../chat/README.md#recently-deleted-chats). |
 | `apps/desktop/src/main/services/storage/providerHistory.ts` | `measureProviderHistory` sizes each provider's own session folders on this machine: Claude and Codex across every config home, plus OpenCode, Droid, Cursor, Copilot, Pi and Grok. `listProviderCopiesOfChats` finds the Claude `projects/<cwd>/<id>.jsonl` (plus its `<id>/` side folder) and the Codex rollout for given session ids. |
 | `apps/desktop/src/renderer/components/app/useDeletedChatsReminderBanner.tsx` | The docked reminder shown when chats from deleted lanes pile up: 25 or more chats, or at least 100 MB. It checks 45 s after open and every 6 h through `storage.deletedLaneChatsSummary`. Every answer snoozes it for two weeks per project, in localStorage. |
 | `apps/desktop/src/renderer/components/app/StoragePressureIndicator.tsx` | Quiet top-right warning/critical/exhausted status and entry point to Storage settings. Mounted in `TopBar.tsx` (enabled only when a workspace project is open). |
@@ -626,15 +626,23 @@ running:
   or more logs `brain.sync_fs_call_slow`.
 - **The project-root monitor** (`projectRootAccessMonitor.ts`) lists one
   project folder per such drive every 5 s with an async call (a pool thread,
-  never the loop). A listing over 3 s marks the drive's project folders as not
-  answering (`main/services/state/unansweringRoots.ts`). Sync `fs` calls under
-  a marked folder then fail with `storage_read_failed` (`existsSync` answers
+  never the loop). A listing over 3 s marks the drive's project folders, and
+  the drive itself, as not answering (`main/services/state/unansweringRoots.ts`):
+  a drive that stops answering stops for every folder on it, including
+  projects not open yet that the registry reads at startup. A drive that holds
+  the home folder or `ADE_HOME`, or the system drive, is never marked as a
+  whole (`canMarkDrive`). Sync `fs` calls under a marked folder then fail
+  with `storage_read_failed` (`existsSync` answers
   "exists", so cleanup never acts on a waiting folder), as do the native
   SQLite openers. The brain contains that error from an unguarded timer. A
   refused listing is `denied` and engages nothing. A finished listing clears
   it all.
 - **After a wedge** in such a call, the restarted brain reads `blockedFsCall`,
-  marks the drive's folders first, and probes the file, then the folder.
+  marks the drive (its folders and the drive itself) first, and probes the
+  file, then the folder. Marking only the project it froze on let the next
+  brain freeze on another project of the same drive: one Mac restarted every
+  2 minutes for seven hours, alternating between two projects on a hung
+  external drive. `resolveActiveSyncHost` skips projects on a marked drive.
   `assertProjectRootReadable` timing out marks the folder too.
 
 Every connected device is told where to look (see
@@ -717,7 +725,7 @@ before append.
 
 ### Developer tools outside the project
 
-Storage & cleanup › Space ends with **Outside this project**
+Disk space › Space ends with **Outside this project**
 (`settings/devices/OutsideProjectStorage.tsx`): one bar and one row each for
 Xcode build data, iOS simulators and simulator runtimes (on a Mac) and Android
 emulators, on the machine the page's project copy is on. Each row's Clean up
@@ -770,7 +778,7 @@ or the XDG cache path) after the first window opens; the brain prunes
 ### Lane lifecycle rules
 
 A lane is active, archived (hidden, nothing deleted, one click to restore) or
-deleted. Project → Storage & cleanup → Rules sets the cleanup, every duration
+deleted. Project → Disk space → Rules sets the cleanup, every duration
 in days (`laneCleanup` in `local.yaml`, read by `resolveLaneCleanupPolicy` in
 `shared/laneCleanup.ts`):
 
@@ -835,7 +843,7 @@ machine has (a folder that is not a checkout is kept).
   (`recordChatsDeletedWithLane`).
 - The free up is `archiveAndReclaim` without the dirty override. A folder in
   use is kept and finished by the retry below; a `failed` removal waits for a
-  person in Settings → Archive.
+  person in Settings → Deleted & Archived → Archive.
 - The primary lane is never deleted or freed.
 
 Each scan's result is kept per lane (`last_run_json`: archived, freed,
@@ -1018,10 +1026,17 @@ lists nothing.
 **Recently deleted chats.** Deleting one chat (not a lane) first writes a
 `deleted_chats` row naming the agent's own copy of the conversation.
 
-- Settings › Storage & cleanup › Recently deleted lists rows whose copy is
-  still on this machine, with a preview, Reopen and Remove from list;
+- Settings › Deleted & Archived › Recently deleted lists rows whose copy is
+  still on the machine, with a preview, Reopen and Remove from list;
   `ade chat deleted list` and `ade chat deleted reopen <id>` use the same
   service.
+- The page reads every online copy of the project at once
+  (`useEveryCopyRead`), one list for all machines, newest first, grouped by
+  day, with search. Each call carries the row's machine pin. An asleep ADE
+  Cloud computer is not read, so the list never wakes it. ADE Cloud itself is
+  the account, not a computer, so it is not read either. One slow or failed
+  machine shows its own notice, keeps the rows it last had, and never holds
+  the others.
 - Reopen continues the conversation in its lane, or copies it into a lane the
   person picks when that lane is gone, and refuses one a live or archived chat
   holds. A row is never deleted, only hidden, so the Claude backfill cannot
@@ -1037,6 +1052,18 @@ lists nothing.
 **Recently deleted lanes.** The same tab lists deleted lanes whose unsaved
 work the delete kept as git refs under `refs/ade/deleted-lanes/`, for 30 days.
 Restore brings one back as a new lane; Drop (the person only) deletes the ref.
+A lane row holds the chats its delete put in Recently deleted
+(`DeletedChat.withLane`, from `origin = 'lane_delete'`). The delete reads its
+chats' records before it stops them (`readLaneChatRecords`): a stopped chat's
+later writes drop its agent's id, and the row needs that id. Restore also reopens
+those chats into the new lane: `laneService.restoreDeletedLane` calls the
+`setOnDeletedLaneRestored` hook (set in `main.ts` and the CLI `bootstrap.ts`),
+which runs `deletedChats.reopenWithRestoredLane` on the lane's machine. The
+result carries `reopenedChats` and `chatsNotReopened`; a chat that cannot come
+back stays in Recently deleted. The phone's `lanes.restoreDeleted` command
+uses the same service. Against an older machine with no `reopenedChats`, the
+desktop reopens the nested chats itself. The toast offers Open lane and Open
+chat.
 Free up space with discard saves the same way ("Space freed"), and Put back
 returns the files. The phone lists them under Lanes › Archived
 ([Saved work](../lanes/worktree-isolation.md)).

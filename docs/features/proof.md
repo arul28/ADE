@@ -264,6 +264,16 @@ ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading 
 - It needs `gh` 2.99.0 or later and refuses an older one with the upgrade
   command. A PR number needs a GitHub remote in the current repository;
   otherwise pass the PR URL.
+- It needs a `gh` login, not the ADE GitHub App's token. GitHub's upload
+  endpoint refuses most App tokens whatever the App's permissions (it answers
+  404, which gh words as "attaching files requires write access"). With a
+  token or `gh` login of the machine's own, `gh` runs as it is. When only ADE
+  gives `gh` a token (an ADE Cloud computer), every `gh` call of the publish
+  uses the account's copy of a `gh` login, asked for from ADE's token
+  endpoint with `use=upload` (`ghUploadEnv`). With no copy, the command
+  refuses before it uploads and says to run `gh auth login` on that computer
+  or on one of the person's own computers, which shares the login with the
+  account.
 - Limits: 10 MB per picture; 10 MB per video on GitHub Free, 100 MB on paid
   plans. A larger item, a trace, or an item with no stored file is skipped
   with the reason; a video over 10 MB posts with a warning.
@@ -436,6 +446,14 @@ is not filed: the stop reports `The recording was not filed. <reason>` and
 deletes it. An `.aderaw` capture cannot be played, so the stop reports the
 failure and files nothing. A demo render that fails is tried once more as a
 plain render first.
+
+A media process that does not exit 10 s after its SIGKILL is stuck in the
+kernel on a drive that stopped answering (`demoChildStop.ts`). The caller is
+answered with an error marked stuck (`isStuckMediaProcessError`), and nothing
+touches that drive again: no partial-file cleanup, no plain retry, no other
+engine, no raw-file fallback, and the iOS and Android recorders file nothing
+(a synchronous call there would freeze the process with the drive). The raw
+recording stays where it is.
 
 Windows and macOS produce the same demo from the same plan: cuts, sped-up
 waits, zoom, the drawn pointer and click rings, step captions, the speed badge,

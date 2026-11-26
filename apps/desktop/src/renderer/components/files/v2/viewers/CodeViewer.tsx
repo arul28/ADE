@@ -9,6 +9,7 @@ import { useActiveResolvedTheme } from "../../../../theme/useActiveTheme";
 import { subscribePendingReveals, takePendingReveal } from "../pendingReveals";
 import { updateCachedFileContentText } from "../useFileContent";
 import type { EditorApi, ViewerProps } from "./types";
+import { plainErrorText } from "../../../../lib/plainError";
 
 /**
  * The code/text editor: a Monaco instance bound to the shared model registry so
@@ -103,7 +104,7 @@ export function CodeViewer({
       // Cmd/Ctrl+S → format + save on the focused editor.
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
         void save().catch((err) => {
-          ctxRef.current.onError?.(err instanceof Error ? err.message : String(err));
+          ctxRef.current.onError?.(plainErrorText(err, "ADE couldn't save the file."));
         });
       });
 

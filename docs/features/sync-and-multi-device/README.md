@@ -93,6 +93,19 @@ and port. A project scope takes it when its sync service starts. A projectless
 brain with the shared listener takes a `projectRoot: null` lease and drops it
 when a scope takes over.
 
+The brain also takes that lease beside a scope that stays a viewer (a project
+saved to follow another machine): the project follows, the machine still
+hosts and publishes. Without it, a machine whose newest project followed
+another one published nothing and left the account. While the brain holds it
+beside a viewer, machine-wide sync calls (status, PIN, devices, relay status)
+answer for the machine even when the caller names the project; the runtime
+name stays per project (`machineWideSyncService` in
+`multiProjectRpcServer.ts`). When the scope later takes its own lease, the
+brain hands its lease back (`onSyncHostSingletonLeaseAcquired`). One process
+can hold two leases for a moment; releasing the one the lock file names
+rewrites the file for the other instead of deleting it. A failed switch no
+longer reads as one in progress: `hasSyncHostOrSwitchInFlight`.
+
 Two subsystems gate on the lease, not on a bound listener:
 
 - the relay tunnel (`syncTunnelClientService`), because the relay keeps one
@@ -1060,17 +1073,47 @@ Desktop connection UI:
 - `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` —
   the Machines tab. A publish refused by the directory names the refusal and
   shows **Reconnect this computer** (`useThisComputerRefusal`,
-  `useReconnectThisComputer`).
+  `useReconnectThisComputer`). A computer that is not connected is one line
+  (name, "Offline · last seen 6h ago", Connect, ···). The full error card
+  appears only after the person pressed Connect, Retry or Reconnect on that
+  row and it failed; ADE's own reconnects stay a word in the state line.
+  "Why offline?", Details and "How to connect" live in the row's ··· menu.
+  "Not connected" and "Not reachable right now" fold to one line with
+  Show/Hide when they hold two or more rows and none is online, updating,
+  failing after a press, renaming, showing a storage or stall note, or asked
+  for by `focusMachineKey` (`machineSectionFold.ts`); a press on Show/Hide
+  wins while the list is open.
 - `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` — the
-  `relay-offline` banner in `AppBannerHost`. `AppShell` seeds
-  `routeHealth.relay` from `sync.getLocalStatus` (this machine's relay) through
-  `localSyncStatusReader`, then follows the `sync-status` broadcast and
-  commits only when a field the banner reads changed.
-  `deriveRelayOutageState` is `"suppressed"` at once (an ownership conflict
-  never recovers alone) and `"down"` after `RELAY_OUTAGE_GRACE_MS` (2 minutes)
-  from `relayControlFailingSinceMs`, with one timer
-  (`relayGraceRemainingMs`). The dismiss key is global and keyed by the outage
+  `relay-offline` and `this-computer-offline` banners in `AppBannerHost`.
+  `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (this
+  machine's relay) through `localSyncStatusReader`, then follows the
+  `sync-status` broadcast and commits only when a field the banner reads
+  changed; from the same snapshot it keeps one boolean,
+  `isAccountDirectoryNoReply(routeHealth.accountDirectory)`.
+- `apps/desktop/src/renderer/lib/thisComputerOffline.ts` — the outage rules
+  both surfaces share. `deriveRelayOutageState` is `"suppressed"` at once (an
+  ownership conflict never recovers alone) and `"down"` after
+  `RELAY_OUTAGE_GRACE_MS` (2 minutes) from `relayControlFailingSinceMs`;
+  `useRelayGraceRerender` arms one timer for that moment.
+  `deriveThisComputerOffline` is true when the relay is `"down"` and the
+  account-directory request gets no reply: then the banner says "This
+  computer is offline" once and drops the relay banner and GitHub's
+  network-failure banner (an unreadable credential store still shows), and
+  the Machines tab (`useThisComputerOffline`) drops each machine's red dot and
+  "may be asleep" card when its connect never reached it
+  (`connectNeverReachedMachine`; a LAN connect that stalled on the handshake
+  keeps its card). Both legs are Cloudflare Workers, so a network that blocks
+  `workers.dev` looks the same; the copy names the VPN, proxy or firewall
+  case. The dismiss keys are global; the relay one is keyed by the outage
   state.
+- `isAccountDirectoryNoReply` (`shared/types/sync.ts`) reads the publisher
+  health's `failedLeg`: only the HTTP leg's timeout or transport error is
+  "no reply" and reads "no internet connection". The same `transport_error`
+  on the token leg (a sign-in service answering 429/5xx, a refresh another
+  process holds) reads "can't refresh your ADE sign-in", and the setup leg
+  (the publisher failing on this computer) "ADE couldn't publish this
+  computer". A brain built before `failedLeg` sends none and is read as the
+  HTTP leg.
 - `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` — the
   top-bar Connections panel (Machines, Phone, Web). It passes the current
   route to the Account page so a sign-in returns there. The control ends with
@@ -2488,7 +2531,7 @@ answers a `403` with a machine-readable code — `machine_revoked` or
 `pairing_authentication_required` — carried on the publisher health's
 `lastHttpReason`. The Connections popover decodes it with
 `readAccountRefusalCode` (in `shared/accountMachineRefusal.ts`) instead of
-showing "can't reach your ADE account right now": the This-machine line and the
+showing an outage line: the This-machine line and the
 publish-failing banner say "this computer was removed from your ADE account" or
 "sign in again to reconnect this computer", and the banner offers a
 **Reconnect this computer** or **Sign in again** button that presses the same
@@ -2496,8 +2539,11 @@ brain repair the Account page does. The shared copy table
 (`describeUnpublishedAccountDirectory` in `shared/types/sync.ts`) and the shared
 reconnect orchestration (`runMachinePairingReconnect`, which escalates to the
 device-flow sign-in only when the refusal demands it) keep the pane, the banner,
-and `ade setup` from drifting; a plain transport or `5xx` failure keeps the
-reachability wording.
+and `ade setup` from drifting. Any other HTTP failure (a `5xx`) says "ADE's
+account service is having trouble right now", and a request that gets no reply
+at all (a timeout or transport error) says "no internet connection": the
+directory sits on Cloudflare's edge, which answers even when the service behind
+it is down, so silence means this computer is offline.
 
 Every refusal the Worker issues is also logged with its wire code, a finer
 `reason`, the correlation id, and 8-character identifier prefixes, because by

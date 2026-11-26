@@ -55,9 +55,10 @@ export async function deleteCloudAccount(
     phoneFailure = error;
   }
   await env.DB.prepare("delete from cloud_wakes where user_id = ?").bind(userId).run();
-  // The topics that wake a computer at rest, their state, and the request counts of the Linear and Jira reads.
+  // The topics that wake a computer at rest, the Linear workspaces checked for them, their state, and the request counts of the Linear and Jira reads.
   await env.DB.batch([
     env.DB.prepare("delete from cloud_event_wakes where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_linear_orgs where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_event_wake_state where user_id = ?").bind(userId),
     // Status-menu facts of any computer whose close above left them (they carry no user id).
     env.DB.prepare("delete from cloud_instance_events where instance_id in (select instance_id from cloud_computers where user_id = ?)").bind(userId),

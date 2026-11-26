@@ -74,6 +74,28 @@ function reportUnavailable(reason: string, cause?: unknown): void {
   });
 }
 
+/**
+ * A sign-up Clerk left short of an account (a requirement this card does not
+ * send). Report the fields it still wants: on 2026-11-24 a Clerk setting made
+ * every new sign-up stop here, and nothing showed it for two days.
+ */
+function reportSignUpIncomplete(signUp: ClerkSignUp, flow: "email" | "oauth"): void {
+  const status = signUp.status ?? "unknown";
+  captureError(new Error(`Clerk sign-up incomplete: ${status}`), {
+    fingerprint: ["web", "clerk_sign_up_incomplete", flow, status],
+    tags: { area: "web_sign_in", flow, status, missing: signUp.missingFields.join(",") || "none" },
+    level: "error",
+    handled: true,
+  });
+}
+
+/**
+ * The card shows "By continuing, you agree to ADE's Terms and Privacy Policy"
+ * above every way in, so a sign-up it creates carries that acceptance. Clerk
+ * requires it while the instance's legal-consent setting is on.
+ */
+const LEGAL_ACCEPTED = { legal_accepted: true } as const;
+
 function emailCodeFactor(signIn: ClerkSignIn): string | null {
   return signIn.supportedFirstFactors.find((factor) => factor.strategy === "email_code" && factor.emailAddressId)
     ?.emailAddressId ?? null;
@@ -143,8 +165,9 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
       const captcha = signUpNeedsCaptcha(env, { captchaBypass: client.captchaBypass, oauthStrategy: strategy })
         ? await runClerkCaptcha(env)
         : {};
-      const created = await api.createSignUp({ transfer: true, ...captcha });
+      const created = await api.createSignUp({ transfer: true, ...LEGAL_ACCEPTED, ...captcha });
       if (created.status === "complete" && created.createdSessionId) return finish(created.createdSessionId);
+      reportSignUpIncomplete(created, "oauth");
       throw new ClerkApiError({
         code: "sign_up_incomplete",
         message: "Your account needs a step this page can't show. Use email instead, or try again.",
@@ -262,7 +285,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
 
   const startSignUp = useCallback(async (email: string): Promise<ClerkSignUp> => {
     const captcha = needsCaptcha(null) && environment ? await runClerkCaptcha(environment) : {};
-    const created = await api.createSignUp({ email_address: email, ...captcha });
+    const created = await api.createSignUp({ email_address: email, ...LEGAL_ACCEPTED, ...captcha });
     return await api.prepareSignUpEmailCode(created.id);
   }, [api, environment, needsCaptcha]);
 
@@ -304,6 +327,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
     }
     const result = await api.attemptSignUpEmailCode(step.attemptId, code);
     if (result.status === "complete" && result.createdSessionId) return finish(result.createdSessionId);
+    reportSignUpIncomplete(result, "email");
     throw new ClerkApiError({ code: "sign_up_incomplete", message: "Your account needs another step. Try Google, GitHub or Apple.", status: 0 });
   }, "That code didn't work. Check it and try again."), [api, finish, handToHostedPage, run, step]);
 

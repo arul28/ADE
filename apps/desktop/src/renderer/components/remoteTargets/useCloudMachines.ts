@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { cloudMachineSettling, type CloudMachinesResult } from "../../../shared/adeCloud";
 import { captureError } from "../../../shared/sentry/capture";
 import { extractError } from "../../lib/format";
+import { accountScopeGeneration, onAccountScopeChange } from "../../state/accountScopedStorage";
 import { cloudLaneIndexFresh, noteCloudLaneMachines } from "../../state/adeCloudLaneIndex";
 import { noteCloudAccountRead, setCloudAccountFed } from "../../state/cloudAccountStore";
 import { chatLaunchStore } from "../../state/chatLaunchStore";
@@ -66,11 +67,18 @@ function load(): void {
   const listMachines = window.ade?.cloud?.listMachines;
   if (!listMachines || listeners.size === 0) return;
   const current = ++generation;
+  const account = accountScopeGeneration();
   lastReadAt = Date.now();
   publish({ loading: true });
   void listMachines().then(
     (result) => {
       if (current !== generation) return;
+      // A read the last account started (before a sign-out or another account)
+      // lands nowhere; the account signed in now is read again.
+      if (account !== accountScopeGeneration()) {
+        load();
+        return;
+      }
       // The lane computers outlive this read, for the composer and chat chips.
       // An unread list (the web app with no computer online) is not "no computers": keep the last index.
       if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
@@ -86,6 +94,13 @@ function load(): void {
     if (current === generation) publish({ loading: false });
   });
 }
+
+// Another account, or none: the last account's computers leave the shared list
+// now, and a surface still open reads the new account's.
+onAccountScopeChange(() => {
+  publish({ result: null, loadError: null });
+  if (listeners.size > 0) load();
+});
 
 function startWatching(): void {
   const off = window.ade?.cloud?.onStatusChanged?.(load);
@@ -145,8 +160,13 @@ export function refreshCloudMachines(): void {
   }
   const listMachines = window.ade?.cloud?.listMachines;
   if (!listMachines) return;
+  const account = accountScopeGeneration();
   void listMachines().then(
     (result) => {
+      if (account !== accountScopeGeneration()) {
+        refreshCloudMachines();
+        return;
+      }
       // An unread list (the web app with no computer online) is not "no computers": keep the last index.
       if (result?.state === "ok" && !result.computersUnread) noteCloudLaneMachines(result.machines);
       noteCloudAccountRead(result);

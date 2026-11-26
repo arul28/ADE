@@ -1490,6 +1490,10 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The real chat with a model tag in the draft and a seeded model catalog,
   /// so the `@` menu's Models section and the tag's part editor can be driven.
   case composerModelChips = "composer-model-chips"
+  /// The real chat routed to an ADE Cloud computer with no live link, with its
+  /// saved chats and lanes and the account's machines seeded, so the `@` menu
+  /// built with no computer to ask can be driven.
+  case composerCloudRestingMentions = "composer-cloud-resting-mentions"
   /// An answer that cites proof inline and as a before/after pair.
   case proofAnswer = "proof-answer"
   /// The real Work tab list seeded with lanes, subagents, CLI rows and PR
@@ -1875,6 +1879,8 @@ struct ADEPreviewScreenHost: View {
       WorkComposerPillsPreviewHost()
     case .composerModelChips:
       WorkComposerModelChipsPreviewHost()
+    case .composerCloudRestingMentions:
+      WorkComposerCloudRestingMentionsPreviewHost()
     case .workList:
       WorkListPreviewHost()
     case .newChat:
@@ -2038,6 +2044,55 @@ private struct WorkComposerPillsPreviewHost: View {
     }
     .task {
       WorkComposerPillsPreviewData.seedDraft()
+      seeded = true
+    }
+  }
+}
+
+/// The fixture chat on an ADE Cloud computer with no live link (the account
+/// lists it, this phone holds no connection), seeded with that computer's
+/// saved chats and lanes and the account's machines. Typing `@` in the real
+/// composer lists them with no host to ask.
+private struct WorkComposerCloudRestingMentionsPreviewHost: View {
+  @State private var seeded = false
+
+  var body: some View {
+    Group {
+      if seeded {
+        NavigationStack {
+          workPreviewChatSessionView()
+        }
+        .environmentObject(WorkPreviewData.syncService)
+        .environmentObject(WorkPreviewData.dictationController)
+      } else {
+        ADEColor.surfaceBackground.ignoresSafeArea()
+      }
+    }
+    .task {
+      let sync = WorkPreviewData.syncService
+      let now = Date().timeIntervalSince1970 * 1000
+      // The computer's saved key (a deleted computer's): it needs no fleet,
+      // and it takes the same menu path as an asleep one (no live link).
+      sync.setRemoteMachineChatScope(
+        sessionId: WorkPreviewData.chatSummary.sessionId,
+        machineKey: ADECloudMachine.savedFleetKeyPrefix + "mk-cloud",
+        projectId: "proj-cloud",
+        projectRootPath: nil
+      )
+      let saved = [
+        (WorkPreviewData.chatSummary.sessionId, "Fix iOS Work tab lag", "lane-upload", "Upload retries", "claude", now - 60_000),
+        ("chat-upload-tests", "Fix flaky upload test", "lane-upload", "Upload retries", "codex", now - 600_000),
+        ("chat-sync-banner", "Tidy the reconnect banner", "lane-banner", "Reconnect banner", "claude", now - 7_200_000),
+      ]
+      sync.cloudSavedChats = saved.map { id, title, laneId, laneName, provider, at in
+        let json = #"{"machineKey":"mk-cloud","chatId":"\#(id)","title":"\#(title)","laneId":"\#(laneId)","laneName":"\#(laneName)","status":"idle","toolType":"\#(provider)-chat","provider":"\#(provider)","projectKey":"github.com/ade-dev/ade","projectId":"proj-cloud","lastSeq":1,"updatedAt":\#(at)}"#
+        return try! JSONDecoder().decode(CloudSavedChatRow.self, from: Data(json.utf8))
+      }
+      let machines = [
+        #"{"machineKey":"mk-cloud","name":"ADE Cloud","platform":"linux","deviceType":"server","online":false,"sleepState":"asleep","lastSeenAt":\#(now - 3_600_000)}"#,
+        #"{"machineKey":"preview-studio","deviceId":"preview-studio-device","name":"Mac Studio","platform":"darwin","deviceType":"desktop","online":true,"lastSeenAt":\#(now)}"#,
+      ]
+      AccountService.shared.seedPreviewMachines(machines.map { try! JSONDecoder().decode(AccountMachine.self, from: Data($0.utf8)) })
       seeded = true
     }
   }

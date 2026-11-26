@@ -32,14 +32,37 @@ export function normalizeTailnetDnsName(value: unknown): string | null {
  * One `tailscale status --json` run. Off the event loop where ADE spawns that
  * way (a Windows spawn on the loop blocked the brain ~100 ms per probe).
  */
-async function runTailscaleStatus(): Promise<{ stdout: string; missing: boolean }> {
+type TailscaleStatusRun = {
+  stdout: string;
+  missing: boolean;
+  /** Why the run gave no answer ADE could read, in one line; null when it answered. */
+  failure: string | null;
+};
+
+const MAX_FAILURE_LENGTH = 200;
+const LINE_BREAK = /\r?\n/;
+
+/** One plain line for a run that failed: a timeout, then Tailscale's own words, then the error. */
+function describeTailscaleRunFailure(args: { timedOut: boolean; stderr: string; error: unknown }): string | null {
+  if (args.timedOut) return `Tailscale didn't answer within ${STATUS_TIMEOUT_MS / 1000} seconds.`;
+  const said = args.stderr.split(LINE_BREAK).map((line) => line.trim()).find(Boolean);
+  if (said) return said.slice(0, MAX_FAILURE_LENGTH);
+  const message = args.error instanceof Error ? args.error.message.split(LINE_BREAK)[0]?.trim() : "";
+  return message ? message.slice(0, MAX_FAILURE_LENGTH) : null;
+}
+
+async function runTailscaleStatus(): Promise<TailscaleStatusRun> {
   const cli = resolveTailscaleCliPath();
   const options = { timeoutMs: STATUS_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 };
   if (offThreadSpawnEnabled()) {
     const result = await execFileOffThread(cli, ["status", "--json"], options);
+    const failed = result.error != null || (result.exitCode != null && result.exitCode !== 0);
     return {
       stdout: result.stdout,
       missing: (result.error as NodeJS.ErrnoException | null)?.code === "ENOENT",
+      failure: failed
+        ? describeTailscaleRunFailure({ timedOut: result.timedOut === true, stderr: result.stderr, error: result.error })
+        : null,
     };
   }
   try {
@@ -51,14 +74,20 @@ async function runTailscaleStatus(): Promise<{ stdout: string; missing: boolean 
       // settle, holding back every later status read and shutdown.
       killSignal: "SIGKILL",
     });
-    return { stdout, missing: false };
+    return { stdout, missing: false, failure: null };
   } catch (error) {
     // A signed-out or stopped Tailscale exits non-zero but still prints the
     // JSON; the caller reads it rather than calling a working install broken.
     const stdout = (error as { stdout?: unknown })?.stdout;
+    const stderr = (error as { stderr?: unknown })?.stderr;
     return {
       stdout: typeof stdout === "string" ? stdout : "",
       missing: (error as NodeJS.ErrnoException | null)?.code === "ENOENT",
+      failure: describeTailscaleRunFailure({
+        timedOut: (error as { killed?: unknown })?.killed === true,
+        stderr: typeof stderr === "string" ? stderr : "",
+        error,
+      }),
     };
   }
 }
@@ -80,6 +109,27 @@ function stateFromBackend(value: unknown): MachineTailscaleState {
   }
 }
 
+const MAX_HEALTH_MESSAGES = 4;
+const MAX_HEALTH_LENGTH = 240;
+
+/**
+ * Tailscale's own warnings (`Health`): "key expired", "not connected to the
+ * coordination server" and the like. Shown as Tailscale wrote them, since
+ * they name the problem and usually the fix.
+ */
+function readTailscaleHealth(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const line = entry.replace(/\s+/g, " ").trim();
+    if (!line || out.includes(line)) continue;
+    out.push(line.slice(0, MAX_HEALTH_LENGTH));
+    if (out.length >= MAX_HEALTH_MESSAGES) break;
+  }
+  return out;
+}
+
 /** Reads what ADE needs from `tailscale status --json`. Tolerates any shape. */
 export function parseTailscaleLocalStatus(
   stdout: string,
@@ -99,6 +149,9 @@ export function parseTailscaleLocalStatus(
       magicDnsEnabled: null,
       httpsCertsEnabled: null,
       keyExpiry: null,
+      keyExpired: false,
+      health: [],
+      readError: "Tailscale answered with something ADE couldn't read.",
       checkedAt,
     };
   }
@@ -120,12 +173,21 @@ export function parseTailscaleLocalStatus(
   const keyExpiry = typeof self?.KeyExpiry === "string" && self.KeyExpiry.trim()
     ? self.KeyExpiry.trim()
     : null;
+  // An expired node key stops Tailscale until someone signs in again. It
+  // says so with `Self.Expired`, and the date has passed.
+  const expiryMs = keyExpiry ? Date.parse(keyExpiry) : Number.NaN;
+  const checkedMs = Date.parse(checkedAt);
+  const keyExpired = self?.Expired === true
+    || (Number.isFinite(expiryMs) && Number.isFinite(checkedMs) && expiryMs <= checkedMs);
   return {
     state,
     dnsName: running ? dnsName : null,
     magicDnsEnabled: running ? magicDnsEnabled : null,
     httpsCertsEnabled: running ? (certDomains?.length ?? 0) > 0 : null,
-    keyExpiry: running ? keyExpiry : null,
+    keyExpiry: running || keyExpired ? keyExpiry : null,
+    keyExpired,
+    health: readTailscaleHealth(parsed.Health),
+    readError: null,
     checkedAt,
   };
 }
@@ -145,7 +207,7 @@ export async function readTailscaleLocalStatus(options?: {
   if (inFlight) return await inFlight;
   const read = (async (): Promise<MachineTailscaleStatus> => {
     const checkedAt = nowIso();
-    const { stdout, missing } = await runTailscaleStatus();
+    const { stdout, missing, failure } = await runTailscaleStatus();
     if (!missing && stdout.trim().startsWith("{")) return parseTailscaleLocalStatus(stdout, checkedAt);
     return {
       state: missing ? "not_installed" : "unknown",
@@ -153,6 +215,9 @@ export async function readTailscaleLocalStatus(options?: {
       magicDnsEnabled: null,
       httpsCertsEnabled: null,
       keyExpiry: null,
+      keyExpired: false,
+      health: [],
+      readError: missing ? null : failure ?? "Tailscale gave no answer.",
       checkedAt,
     };
   })();

@@ -39,6 +39,7 @@ import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { requirePin } from "../../state/repositoryScope";
+import { plainErrorText } from "../../lib/plainError";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -290,7 +291,7 @@ export function LaneTemplatesSection() {
       await refresh();
       refreshNewLaneDefaults();
     } catch (err: unknown) {
-      showToast({ title: "Failed to save template", message: err instanceof Error ? err.message : String(err), tone: "error" });
+      showToast({ title: "Failed to save template", message: plainErrorText(err, "ADE couldn't save the template."), tone: "error" });
     }
   }, [pin, refresh, refreshNewLaneDefaults]);
 
@@ -300,7 +301,7 @@ export function LaneTemplatesSection() {
       await refresh();
       refreshNewLaneDefaults();
     } catch (err: unknown) {
-      showToast({ title: "Failed to delete template", message: err instanceof Error ? err.message : String(err), tone: "error" });
+      showToast({ title: "Failed to delete template", message: plainErrorText(err, "ADE couldn't delete the template."), tone: "error" });
     }
   }, [pin, refresh, refreshNewLaneDefaults]);
 

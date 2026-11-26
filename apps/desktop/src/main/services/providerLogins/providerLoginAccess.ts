@@ -19,6 +19,17 @@ export function createAccess(s: SyncShared) {
   let accessRecheck: ReturnType<typeof setTimeout> | null = null;
   let accessRecheckDelayMs = ACCESS_RECHECK_MIN_MS;
   let accessGeneration = 0;
+  let nextRead: { promise: Promise<void>; resolve: () => void } | null = null;
+
+  /** Resolves when the next read of the ADE Cloud answer starts. No timer: a caller bounds its own wait. */
+  function nextAccessRead(): Promise<void> {
+    if (!nextRead) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      nextRead = { promise, resolve };
+    }
+    return nextRead.promise;
+  }
 
   function joinTicks(): void {
     if (ticks.length) return;
@@ -52,26 +63,37 @@ export function createAccess(s: SyncShared) {
     accessRecheck = null;
   }
 
-  /** Read the ADE Cloud answer (free when cached) and join or leave the ticks to match. */
-  function refreshAccess(): Promise<CloudAccessState | null> {
-    const pending = readAndMatchAccess().finally(() => {
+  /**
+   * Read the ADE Cloud answer (free when cached) and join or leave the ticks
+   * to match. `failureTtlMs`: ask the server again once a failed ask is this old.
+   */
+  function refreshAccess(options?: { failureTtlMs?: number }): Promise<CloudAccessState | null> {
+    const pending = readAndMatchAccess(options).finally(() => {
       if (s.accessPending === pending) s.accessPending = null;
     });
     s.accessPending = pending;
+    // A new answer is coming: a turn that gave up on the account waits for it again.
+    s.coldWaitSpent = false;
+    const waiting = nextRead;
+    nextRead = null;
+    waiting?.resolve();
     return pending;
   }
 
-  async function readAndMatchAccess(): Promise<CloudAccessState | null> {
+  async function readAndMatchAccess(options?: { failureTtlMs?: number }): Promise<CloudAccessState | null> {
     if (deps.staticOff) return null;
     const generation = ++accessGeneration;
     const state: CloudAccessState = !deps.accountUserId() || !deps.vault()
       ? "signed_out"
-      : await deps.cloudAccess().catch((): CloudAccessState => "unreadable");
+      : await deps.cloudAccess(options).catch((): CloudAccessState => "unreadable");
     // A newer check (a sign-out during the ask) decides instead.
     if (generation !== accessGeneration) return state;
+    s.lastAccess = state;
     if (state === "ready") joinTicks();
     else leaveTicks();
     if (state === "unreadable") {
+      // A read between re-checks (a turn's, a sign-in's) leaves the armed one and its back-off as they are.
+      if (accessRecheck) return state;
       // Not an answer about the account: ask again later, backing off, until there is one.
       clearAccessRecheck();
       accessRecheck = setTimeout(() => {
@@ -87,5 +109,5 @@ export function createAccess(s: SyncShared) {
     return state;
   }
 
-  return { refreshAccess, leaveTicks, clearAccessRecheck };
+  return { refreshAccess, nextAccessRead, leaveTicks, clearAccessRecheck };
 }

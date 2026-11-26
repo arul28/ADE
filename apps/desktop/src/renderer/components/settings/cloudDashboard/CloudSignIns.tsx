@@ -4,6 +4,7 @@ import { CaretRight, Key } from "@phosphor-icons/react";
 import { isProviderLoginProvider, type ProviderLoginProvider } from "../../../../shared/types/providerLogins";
 import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
+import { Banner } from "../../ui/notice";
 import { availableProviderDescriptors } from "../providers/descriptors";
 import type { ProviderDescriptor } from "../providers/types";
 import { providerListMark } from "../providers/ProviderTileView";
@@ -87,7 +88,18 @@ export function CloudSignIns() {
       </header>
       <div className="kit-card-body adecd-signins">
         {failed ? (
-          <p className="adecd-empty">ADE couldn't read your sign-ins. It reads them again when they change.</p>
+          // A read of this computer's account status: Try again reads it again and wakes no cloud computer.
+          <Banner
+            layout="inline"
+            model={{
+              id: "cloud-sign-ins-read-failed",
+              tone: "error",
+              title: "ADE couldn't read your sign-ins",
+              detail: "Try again. Your cloud computers keep the sign-ins they have.",
+              actions: [{ label: "Try again", onClick: signIns.refreshAccount }],
+              report: { surface: "cloud_dashboard_sign_ins", code: "cloud_sign_ins_read_failed" },
+            }}
+          />
         ) : loading ? (
           <p className="adecd-empty">Reading your sign-ins…</p>
         ) : !on ? (

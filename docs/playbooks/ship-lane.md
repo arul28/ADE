@@ -932,7 +932,9 @@ summary instead of reporting the bot as clean.
 not (`git rev-list --count "origin/$CURRENT_BRANCH"..HEAD` is non-zero).
 
 `reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. CI is
-running while `ciRunning` lists any check.
+running while `ciRunning` lists any check. It also lists each Actions run on
+the head commit that is not completed: a run GitHub queued behind a full runner
+queue has no checks yet, so `gh pr checks` alone reads it as done.
 Populate `pendingReviewBots` only for bots with explicit current-head in-flight
 evidence. Populate `inactiveReviewBots` when the 12-minute grace window has
 elapsed and every available surface has zero evidence for that bot. Do not infer

@@ -67,6 +67,7 @@ export function ThisComputerStatus({
                 failingSinceMs: health.failingSinceMs,
                 lastHttpStatus: health.lastHttpStatus ?? null,
                 lastHttpReason: health.lastHttpReason ?? null,
+                failedLeg: health.failedLeg ?? null,
               }
             : null,
         );

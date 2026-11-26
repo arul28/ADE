@@ -244,6 +244,7 @@ import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { claudeCodeRefusesBypassHere, claudeRootRuleApplies, rootFullAccessAllowed } from "../chat/claudeRootFullAccess";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
+import { awaitCliProviderLogin } from "../providerLogins/providerLoginHooks";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
   buildTrackedCliResumeCommand,
@@ -6804,6 +6805,10 @@ export function createPtyService({
     });
   };
 
+  /** The sign-in gate before a CLI process starts (`awaitCliProviderLogin`). */
+  const awaitCliLogin = (provider: string | null | undefined): Promise<void> =>
+    awaitCliProviderLogin(provider, { event: "pty.provider_login_gate", logger });
+
   /**
    * The user's own MCP servers for resuming a tracked Claude or Codex CLI:
    * the machine login's servers its account lacks, and `npx` servers without
@@ -7216,6 +7221,7 @@ export function createPtyService({
         runtimeCliLaunch = { ...runtimeCliLaunch, permissionMode: "edit" };
       }
       if (runtimeCliLaunch) {
+        await awaitCliLogin(String(runtimeCliLaunch.provider));
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
         await prepareHarnessLaunch({
@@ -9207,6 +9213,7 @@ export function createPtyService({
           },
         }) ?? resumableSession;
       }
+      await awaitCliLogin(provider);
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
@@ -9322,6 +9329,7 @@ export function createPtyService({
       }
 
       const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
+      await awaitCliLogin(provider);
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
@@ -9812,6 +9820,7 @@ export function createPtyService({
           logger.info("pty.reattach_chat_cli_refused", { chatSessionId, toolType: session.toolType, reason: "sdk_chat" });
           throw markExpected(new Error(`Session '${chatSessionId}' is an agent chat, not a CLI session; it has no terminal to reattach.`), "user");
         }
+        await awaitCliLogin(provider);
         const codexComputerUse = metadata?.provider === "codex"
           ? await resolveCodexComputerUseMcpConfig()
           : null;

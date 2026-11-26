@@ -3,6 +3,7 @@ import {
   competingSyncHostSkipReason,
   createSyncAccountDirectoryHealth,
   describeUnpublishedAccountDirectory,
+  isAccountDirectoryNoReply,
   readCompetingSyncHostOwner,
   thisComputerAction,
 } from "./sync";
@@ -36,20 +37,49 @@ describe("describeUnpublishedAccountDirectory http_error refusal branches", () =
     });
   });
 
-  it("keeps the reachability text for every other HTTP failure", () => {
+  it("calls every other HTTP failure a service problem, not a reachability one", () => {
     const serverError = createSyncAccountDirectoryHealth("http_error", null, {
       lastHttpStatus: 500,
       lastHttpReason: null,
     });
     expect(describeUnpublishedAccountDirectory("http_error", serverError)).toEqual({
-      summary: "can't reach your ADE account right now, retrying",
+      summary: "ADE's account service is having trouble right now, retrying",
       nextAction: null,
     });
     // A caller with only the state (the CLI) keeps the same text.
     expect(describeUnpublishedAccountDirectory("http_error")).toEqual({
-      summary: "can't reach your ADE account right now, retrying",
+      summary: "ADE's account service is having trouble right now, retrying",
       nextAction: null,
     });
+  });
+});
+
+/**
+ * The brain sends this health across the runtime boundary, and the desktop
+ * decides from it whether to say "no internet" and whether this computer is
+ * offline (which hides the relay and GitHub banners). Only the directory
+ * request getting no reply counts: the same `transport_error` on the token leg
+ * is a sign-in service that answered 429/5xx or a refresh another process holds.
+ */
+describe("account directory no-reply contract", () => {
+  const NO_INTERNET = "no internet connection, retrying";
+  const SIGN_IN = "can't refresh your ADE sign-in right now, retrying";
+  it.each([
+    { state: "http_timeout", failedLeg: "http", noReply: true, summary: NO_INTERNET },
+    { state: "transport_error", failedLeg: "http", noReply: true, summary: NO_INTERNET },
+    // A brain built before `failedLeg` sends none.
+    { state: "transport_error", failedLeg: undefined, noReply: true, summary: NO_INTERNET },
+    { state: "transport_error", failedLeg: "token", noReply: false, summary: SIGN_IN },
+    { state: "transport_error", failedLeg: "token_refresh_401", noReply: false, summary: SIGN_IN },
+    { state: "token_timeout", failedLeg: "token", noReply: false, summary: SIGN_IN },
+    { state: "transport_error", failedLeg: "setup", noReply: false, summary: "ADE couldn't publish this computer to your account, retrying" },
+    { state: "http_error", failedLeg: "http", noReply: false, summary: "ADE's account service is having trouble right now, retrying" },
+    { state: "published", failedLeg: null, noReply: false, summary: "published to your ADE account" },
+  ] as const)("$state on the $failedLeg leg: no reply $noReply", ({ state, failedLeg, noReply, summary }) => {
+    const health = createSyncAccountDirectoryHealth(state, null, failedLeg === undefined ? {} : { failedLeg });
+    expect(isAccountDirectoryNoReply(health)).toBe(noReply);
+    expect(describeUnpublishedAccountDirectory(state, health).summary).toBe(summary);
+    expect(describeUnpublishedAccountDirectory(state, health).nextAction).toBeNull();
   });
 });
 

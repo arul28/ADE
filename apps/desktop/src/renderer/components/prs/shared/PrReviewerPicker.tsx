@@ -3,6 +3,7 @@ import type { ReviewerRequest, SearchPrMentionablesResult } from "../../../../sh
 import { isImeComposing } from "../../../lib/imeComposition";
 import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
 import { PrWritingScopeContext } from "./prMarkdownContext";
+import { plainErrorText } from "../../../lib/plainError";
 
 const REVIEWER_SEARCH_DEBOUNCE_MS = 200;
 
@@ -51,7 +52,7 @@ export function PrReviewerPicker({
         .catch((err: unknown) => {
           if (cancelled) return;
           setResults(null);
-          setError(err instanceof Error ? err.message : String(err));
+          setError(plainErrorText(err, "ADE couldn't search for reviewers."));
         });
     }, REVIEWER_SEARCH_DEBOUNCE_MS);
     return () => {

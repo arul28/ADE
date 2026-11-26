@@ -1,0 +1,59 @@
+---
+title: "v1.2.136"
+description: "Release notes for ADE v1.2.136 - November 26, 2026"
+---
+
+ADE 1.2.136 is the launch release: the CTO learns your rules and skills, child chats report back in full, ADE Cloud computers sleep and wake without losing anything, and Settings gains Deleted & Archived and Disk space pages.
+
+## New
+
+- The CTO learns rules and skills from your corrections, shows them in a Learned row with Undo, and reviews corrections quietly (#2523).
+- Child chats report back in full, survive restarts, and reach the CTO when their parent is gone (#2519).
+- The CTO gets nudged about stuck child chats and shows a "Waiting on you" card (#2499).
+- CTO routines can run a check first and wake the CTO only when there is news (#2496).
+- The CTO shows child and helper proof inline, keeps an archive under its notes, and adds quiet "Started a new task" rows (#2522, #2521, #2520).
+- CTO reactions work like a teammate's, and your reactions count as feedback, not a new turn (#2524).
+- Settings has Deleted & Archived and Disk space pages, and restoring a lane brings back its chats (#2638).
+- Settings shows Xcode, simulators and their disk space on each Mac, and dev tools in Storage (#2623).
+- You can ignore a folder or hide a line in Needs attention (#2621).
+- Chat can @ mention Linear and GitHub people (#2619).
+- The composer has prompt history like the terminal agents, chats with no project keep their choices, and bubbles can be solid (#2597).
+- A sleeping ADE Cloud chat shows its settings, a full @ menu, and queued messages as bubbles (#2554).
+- ADE Cloud launch pricing: the iPhone and sponsored cards on the site, Max with 2,000 credits, and extra credits at 4¢ (#2563).
+
+## Improved
+
+- Errors read as plain sentences across ADE instead of raw internal text (#2648).
+- Integrations warns about a stuck computer, folds the MCP grid, and checks Linear admin access first (#2647).
+- MCP settings work with no project open, and Integrations explains write failures in plain words (#2595).
+- Connections say "this computer is offline" once instead of blaming every service, and name an expired Tailscale sign-in (#2646, #2620).
+- Older machines get an update prompt, Check again is always visible, and each machine picks Stable or Beta (#2593).
+- ADE Cloud screens say what is true and never dead-end, and size requests read now → after (#2643, #2636).
+- Opening a project never wakes a sleeping ADE Cloud computer, and a computer sleeps until there is real work (#2614, #2507).
+- "Work not on GitHub yet" says what GitHub is missing, and remote work keeps the computer awake (#2616).
+- The lane delete card says what each choice does (#2575).
+- Screens call the main checkout "Main checkout" (#2637).
+- The free-use cap and daily report count each provider's real bill (#2607).
+- Sponsored cards have a clearer notice, ask first in California, and honor Global Privacy Control (#2510, #2517).
+
+## Fixed
+
+- Freeing a cloud lane says why when GitHub stops it or no lane is found (#2645).
+- A chat sent to another machine no longer vanishes while its lane sets up (#2558).
+- A cloud chat's saved rows no longer show twice after its computer wakes, and its older history still loads (#2640, #2610).
+- A send right after a cloud computer starts waits for its sign-in (#2615).
+- A sleeping ADE Cloud computer's Activity item or link opens the repository on ADE Cloud (#2644).
+- A scheduled check still wakes a cloud computer after its brain restarts (#2594).
+- The rest save keeps every chat line (#2613).
+- ADE Cloud caches are kept per account, and a computer listens only to its own Linear workspace (#2617, #2618).
+- Proof publish works on ADE Cloud computers (#2635).
+- Web preview snapshot export reads GitHub once, with a 30-second limit (#2639).
+- What's new never opens onto an empty page (#2516).
+- Deleting an account also deletes its machine list and computer logs (#2511).
+
+## iOS
+
+- Comments wake a sleeping cloud chat, and the @ menu works while it sleeps (#2649).
+- A resting cloud chat's composer shows its saved settings (#2554).
+- The iPhone can answer an ADE Cloud size request, and says idle cleanup saves your work (#2636, #2650).
+- Simulator snapshots and element search find rows between grid points (#2518).

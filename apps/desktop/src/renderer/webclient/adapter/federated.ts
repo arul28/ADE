@@ -31,8 +31,9 @@ import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
 import { resolveMachinePresence } from "../../../shared/types/power";
 import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
-import { isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
-import { setProjectOpenWaking } from "../../state/projectOpenWaking";
+import { adeCloudLaneIndexKnown, isAdeCloudComputer } from "../../state/adeCloudLaneIndex";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { accountProjectOrigins } from "../../../shared/accountProject";
 import { adeCloudBinding, isAccountAnsweredPin, isAdeCloudBinding, isAdeCloudTargetId } from "../../../shared/adeCloud/binding";
 import { createAdeCloudAccountReader } from "../../../shared/adeCloud/accountReader";
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
@@ -632,24 +633,53 @@ export function createFederatedWebAdapter({
   let restoreFailure: { projectName: string; message: string } | null = null;
 
   /**
-   * A project tab on an ADE Cloud computer that went to sleep: wake it (the
-   * top bar says so) and connect, instead of dialing it until the dial times
-   * out. Any other machine, or one connected here, is left to the open.
+   * Whether this target is an ADE Cloud computer that the account server says
+   * is asleep or stopped, and not connected here. Asks only; never wakes it.
    */
-  const wakeSleepingTarget = async (targetId: string): Promise<void> => {
-    if (manager.getSnapshot().sessions.some((session) => session.targetId === targetId && session.state === "live")) return;
+  const isSleepingCloudTarget = async (targetId: string): Promise<boolean> => {
+    if (manager.getSnapshot().sessions.some((session) => session.targetId === targetId && session.state === "live")) return false;
     const deviceId = manager.listEnvironments().find((environment) => environment.envId === targetId)?.hostDeviceId;
     const machine = deviceId ? accountClient.getSnapshot().machines.find((entry) => entry.deviceId === deviceId) : null;
-    if (!machine?.machineKey || !isAdeCloudComputer({ machineKey: machine.machineKey })) return;
-    if (!await sleepingServerComputer(machine.machineKey)) return;
-    // Never its generated name (an instance id): the person knows it as their ADE Cloud computer.
-    setProjectOpenWaking("your ADE Cloud computer");
+    if (!machine?.machineKey) return false;
+    // A page that just loaded has read no ADE Cloud computer yet (ADE Web keeps
+    // no copy), so a miss is no answer: the server says whether it sleeps.
+    if (adeCloudLaneIndexKnown() && !isAdeCloudComputer({ machineKey: machine.machineKey })) return false;
+    return await sleepingServerComputer(machine.machineKey) != null;
+  };
+
+  /**
+   * The repository's ADE Cloud tab for a copy on a computer that rests: the
+   * open ADE Cloud tab of that repository, else its account project, else the
+   * repository's address. Null for a folder with no repository.
+   */
+  const restingCopyAdeCloudTab = async (targetId: string, projectId: string, given: OpenProjectBinding | null | undefined): Promise<RemoteBinding | null> => {
+    const copy = (given?.kind === "remote" && given.targetId === targetId && given.projectId === projectId ? given : null)
+      ?? workspace.openBindings.find((entry) => entry.key === bindingKey(targetId, projectId))
+      ?? (() => {
+        const project = manager.getSession(targetId)?.projects.find((entry) => entry.id === projectId);
+        return project ? { displayName: project.displayName, gitOriginUrl: gitOriginUrl(project), iconDataUrl: project.iconDataUrl ?? null } : null;
+      })();
+    const origin = normalizeGitRemoteIdentity(copy?.gitOriginUrl ?? null);
+    if (!copy || !origin) return null;
+    const open = workspace.openBindings.find((entry) => isAdeCloudBinding(entry) && normalizeGitRemoteIdentity(entry.gitOriginUrl ?? null) === origin);
+    if (open) return open;
+    let accountProjectId = `repo:${origin}`;
     try {
-      const result = await machinesOverrides.connect(machine.machineKey);
-      if (!result.ok) throw new Error(result.message);
-    } finally {
-      setProjectOpenWaking(null);
+      const list = await accountClient.readAccountProjects();
+      const project = list.state === "ready"
+        ? list.projects.find((entry) => accountProjectOrigins(entry).includes(origin))
+        : undefined;
+      if (project) accountProjectId = project.id;
+    } catch (error) {
+      // The repository's address names the tab until the account answers.
+      console.warn("[ade-web] account projects read failed; the ADE Cloud tab is named by the repository address", error);
     }
+    return adeCloudBinding({
+      accountProjectId,
+      displayName: copy.displayName,
+      gitOriginUrl: copy.gitOriginUrl,
+      iconDataUrl: copy.iconDataUrl ?? null,
+    });
   };
 
   /**
@@ -676,7 +706,17 @@ export function createFederatedWebAdapter({
     if (isAdeCloudTargetId(targetId)) return openAdeCloudProject(projectId, adeCloud);
     activationsInFlight += 1;
     try {
-      await wakeSleepingTarget(targetId);
+      // Opening a project reads it, and reading never wakes an ADE Cloud
+      // computer. One that rests opens as its repository's ADE Cloud tab: the
+      // saved chats, the overview and the Git summary read from the account at
+      // once, a send wakes the computer through the account's queue, and the
+      // tab moves to the copy when the computer is back
+      // (`useAdeCloudTabFollowsCopy`).
+      if (await isSleepingCloudTarget(targetId)) {
+        const resting = await restingCopyAdeCloudTab(targetId, projectId, adeCloud);
+        if (!resting) throw markExpected(new Error("Your ADE Cloud computer is asleep. Send a message to one of its chats to wake it."), "user");
+        return openAdeCloudProject(resting.projectId, resting);
+      }
       const { project } = await manager.openProject(targetId, projectId);
       const info = projectInfo(project);
       const environment = manager.getSession(targetId)?.environment;
@@ -1135,11 +1175,13 @@ export function createFederatedWebAdapter({
       // Cloud computer that reads offline is asked about on the account server.
       // So is one that still reads online with no connection here: the account
       // keeps it "online" for minutes after it went to sleep, and a dial alone
-      // would wait out its timeout.
+      // would wait out its timeout. A person's connect asks too while this page
+      // has read no ADE Cloud computer yet.
       const liveHere = saved != null && manager.getClient(saved.envId)?.getStatus().state === "connected";
       const askServer = machine.sleepState !== "asleep" && (
         (!background && presence === "offline")
-        || (presence === "online" && !liveHere && isAdeCloudComputer({ machineKey: key }))
+        || (presence === "online" && !liveHere
+          && (isAdeCloudComputer({ machineKey: key }) || (!background && !adeCloudLaneIndexKnown())))
       );
       const serverComputer = askServer ? await sleepingServerComputer(key) : null;
       // A background connect never wakes one: it stops here instead of dialing.

@@ -25,7 +25,7 @@ export function deletedChatsWorthReminding(summary: DeletedLaneChatsSummary): bo
 
 export function deletedChatsReminderTitle(summary: DeletedLaneChatsSummary): string {
   const chats = `${summary.chatCount.toLocaleString()} ${summary.chatCount === 1 ? "chat" : "chats"}`;
-  // One short line; where the files live is shown in Storage.
+  // One short line; where the files live is shown in Disk space.
   return `${chats} from deleted lanes (${formatBytes(summary.bytes)}) are no longer tracked`;
 }
 
@@ -62,7 +62,7 @@ export function useDeletedChatsReminderBanner({
     qualifies: deletedChatsWorthReminding,
     icon: <ChatsCircle size={13} weight="bold" />,
     title: deletedChatsReminderTitle,
-    reviewLabel: "Review in Storage",
+    reviewLabel: "Review in Disk space",
     laterLabel: "Remind me in 2 weeks",
     onReview,
   });
