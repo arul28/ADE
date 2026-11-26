@@ -23,6 +23,7 @@ async function openWindow() {
   vi.resetModules();
   const account = await import("../lib/account");
   const index = await import("./adeCloudLaneIndex");
+  const machines = await import("../components/remoteTargets/useCloudMachines");
   const settle = async () => {
     await account.fetchAccountStatus({ force: true });
     await new Promise((done) => setTimeout(done, 0));
@@ -31,6 +32,7 @@ async function openWindow() {
   return {
     laneNames: () => index.adeCloudLaneComputersNow().map((computer) => computer.laneName),
     note: index.noteCloudLaneMachines,
+    readAccountMachines: machines.refreshCloudMachines,
     isCloudComputer: (instanceId: string) => index.isAdeCloudComputer({ hostname: instanceId }),
     signInAs: async (userId: string | null) => {
       signedInAs = userId;
@@ -91,6 +93,19 @@ describe("the ADE Cloud lane index across accounts", () => {
     window3.note([laneMachine("inst-a", "A's private lane")]);
     await window3.signInAs(null);
     expect(window3.laneNames()).toEqual([]);
+    expect(window.localStorage.getItem(LANES_KEY)).toBeNull();
+  });
+
+  it("drops a read of the account's computers that the last account started", async () => {
+    let answer!: (result: unknown) => void;
+    const listMachines = vi.fn(() => new Promise((done) => { answer = done; }));
+    (window.ade as unknown as { cloud: unknown }).cloud = { listMachines };
+    const page = await openWindow();
+    page.readAccountMachines();
+    await page.signInAs("user-b");
+    answer({ state: "ok", machines: [laneMachine("inst-a", "A's private lane")] });
+    await new Promise((done) => setTimeout(done, 0));
+    expect(page.laneNames()).toEqual([]);
     expect(window.localStorage.getItem(LANES_KEY)).toBeNull();
   });
 

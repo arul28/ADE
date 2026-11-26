@@ -2108,6 +2108,16 @@ One busy list, `decideCloudBusy` in
   and keeps the text and files in the box. The phone already holds files
   and sends them with the queued message. See
   [chat › attachments](../chat/composer-and-ui.md#attachments).
+- **What the clients keep is per account.** A computer or a browser can be
+  shared. The desktop keeps the lane index, the lanes kept without a computer
+  and ADE Cloud's on/blocked state in localStorage, each naming the account
+  it was read for (`state/accountScopedStorage.ts`). A window reads a copy
+  back only once the account status names that account; a sign-out or
+  another account drops it, and a read the last account started lands
+  nowhere (`accountScopeGeneration`). ADE Web keeps none of them, and an ADE
+  Web tab's project strip reopens only for the account that kept it
+  (`windowStripStorage.ts`). Held comments are kept by chat id, which no
+  other account holds.
 - **What still wakes a resting computer before a send** (a person's
   explicit action on the chat's machine): a permission or mode change (it
   must reach the computer before any other turn runs there, a scheduled wake
