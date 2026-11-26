@@ -42,8 +42,14 @@ function world(spec: {
   return ancestry;
 }
 
+type Row = {
+  name: string;
+  spec: Parameters<typeof world>[0];
+  expected: { sessionId: string; goneTitle: string } | null;
+};
+
 describe("childAncestry.nearestLiveAncestor", () => {
-  it.each([
+  it.each<Row>([
     {
       name: "walks past a deleted chain to the nearest live chat, naming the deleted parent",
       spec: {

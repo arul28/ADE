@@ -69,22 +69,34 @@ export function boundChildReport(
   const normalized = text.replace(/\r\n/g, "\n").replace(/^(?:[ \t]*\n)+/, "").trimEnd();
   if (normalized.length <= maxChars) return normalized;
   const lines = normalized.split("\n");
-  const kept: string[] = [];
-  let length = 0;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index]!;
-    if (kept.length > 0 && length + line.length + 1 > maxChars) break;
-    kept.unshift(line);
-    length += line.length + 1;
+  // The last lines that fit `budget`; at least one.
+  const tail = (budget: number): string[] => {
+    const kept: string[] = [];
+    let length = 0;
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index]!;
+      if (kept.length > 0 && length + line.length + 1 > budget) break;
+      kept.unshift(line);
+      length += line.length + 1;
+    }
+    return kept;
+  };
+  // The reopened fence counts against the budget, and a smaller budget moves
+  // the cut, which can change which fence is open at it: settle both together.
+  // The fence is always the one open at the final cut, even if it then runs a
+  // few characters over the budget.
+  let opener: string | null = null;
+  let kept = tail(maxChars);
+  for (let round = 0; round < 4; round += 1) {
+    const next = openFenceAtCut(lines.slice(0, lines.length - kept.length));
+    if (next === opener) break;
+    opener = next;
+    kept = tail(maxChars - (opener ? opener.length + 1 : 0));
   }
+  opener = openFenceAtCut(lines.slice(0, lines.length - kept.length));
   // One line longer than the budget: keep its end.
   if (kept.length === 1 && kept[0]!.length > maxChars) kept[0] = `…${kept[0]!.slice(-(maxChars - 1))}`;
-  const opener = openFenceAtCut(lines.slice(0, lines.length - kept.length));
-  if (opener) {
-    // The reopened fence counts against the budget too.
-    while (kept.length > 1 && length + opener.length + 1 > maxChars) length -= kept.shift()!.length + 1;
-    kept.unshift(opener);
-  }
+  if (opener) kept.unshift(opener);
   return [
     `[The start of this reply was cut. Read all of it with: ade chat read ${options.childSessionId}]`,
     ...kept,

@@ -228,16 +228,19 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
    * wrote (only the machine's own brain, the one those builds were), and the
    * file of a brain that has not written for the give-up age (it never came
    * back: a dev brain on its own socket, a renamed endpoint). Taken entries
-   * are tried once more and then given up with the usual note.
+   * are tried once more and then given up with the usual note. Returns the
+   * files taken from; they are deleted only once this brain's file holds
+   * their entries, so a restart in between loses nothing.
    */
-  const adoptOrphanedOutboxes = (): void => {
-    if (!ownerId) return;
+  const adoptOrphanedOutboxes = (): string[] => {
+    if (!ownerId) return [];
     let names: string[] = [];
     try {
       names = fs.readdirSync(deps.stateDir);
     } catch {
-      return;
+      return [];
     }
+    const sources: string[] = [];
     const known = new Set(outbox.map((entry) => entry.key));
     for (const name of names) {
       if (!name.startsWith(OUTBOX_PREFIX) || !name.endsWith(".json")) continue;
@@ -249,14 +252,15 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
         const taken = readOutboxFile(filePath).filter((entry) => !known.has(entry.key));
         for (const entry of taken) known.add(entry.key);
         outbox.push(...taken);
-        fs.rmSync(filePath, { force: true });
+        sources.push(filePath);
         if (taken.length) logger?.info("cross_scope_chats.outbox_adopted", { file: name, entries: taken.length });
       } catch (error) {
         logger?.warn("cross_scope_chats.outbox_adopt_failed", { file: name, error: errorMessage(error) });
       }
     }
+    return sources;
   };
-  adoptOrphanedOutboxes();
+  const adoptedSources = adoptOrphanedOutboxes();
   let remoteChildren: RemoteChildRecord[] = readJsonArray(childrenPath)
     .flatMap((entry) => readRemoteChild(entry) ?? [])
     .filter((record) => now() - record.usedAt < REMOTE_CHILD_UNUSED_MS);
@@ -284,6 +288,17 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     }
     return persist(outboxPath, outbox, "outbox");
   };
+  if (adoptedSources.length && saveOutbox()) {
+    for (const filePath of adoptedSources) {
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch (error) {
+        // Left behind: its entries are already in this brain's file, and a
+        // repeat is deduped by key.
+        logger?.warn("cross_scope_chats.outbox_adopt_cleanup_failed", { error: errorMessage(error) });
+      }
+    }
+  }
   const forgetEntry = (key: string): void => {
     outbox = outbox.filter((candidate) => candidate.key !== key);
   };

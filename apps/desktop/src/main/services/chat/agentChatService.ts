@@ -85932,10 +85932,29 @@ ${schedule.prompt}`
               summary: input.wake.summary,
             }),
           };
-          const routed = parentChatStillExists(target.sessionId)
-            ? router.queueLocal?.(wake) ?? false
-            : router.route(wake);
-          if (!routed) {
+          const targetHere = parentChatStillExists(target.sessionId);
+          const routed = targetHere ? router.queueLocal?.(wake) ?? false : router.route(wake);
+          if (!routed && targetHere) {
+            // The outbox could not take it (its write failed): deliver it
+            // directly, as with no router, rather than lose it.
+            const { childProjectRoot: _root, ...payload } = wake;
+            deliverChildCompletionToParent({
+              ...payload,
+              ctoPrNumber: wake.ctoPrNumber ?? null,
+              onParentGone: (reason) => logger.warn("agent_chat.spawn_relinked_report_unrouted", {
+                childSessionId: child.session.id,
+                parentSessionId: target.sessionId,
+                childTurnId: input.childTurnId,
+                reason,
+              }),
+              onDeliveryFailed: (lastError) => logger.warn("agent_chat.spawn_relinked_report_unrouted", {
+                childSessionId: child.session.id,
+                parentSessionId: target.sessionId,
+                childTurnId: input.childTurnId,
+                error: lastError instanceof Error ? lastError.message : String(lastError),
+              }),
+            });
+          } else if (!routed) {
             // The child already points at a live chat, so no "parent gone"
             // line and no demotion; only this one report is lost.
             logger.warn("agent_chat.spawn_relinked_report_unrouted", {
