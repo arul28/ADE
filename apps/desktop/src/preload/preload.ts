@@ -5706,6 +5706,12 @@ const adeBridge = {
       paneId: SystemSettingsPaneId,
     ): Promise<AppOpenSystemSettingsPaneResult> =>
       ipcRenderer.invoke(IPC.appOpenSystemSettingsPane, { paneId } satisfies AppOpenSystemSettingsPaneArgs),
+    /**
+     * Open the Tailscale app on THIS computer (Settings > Account > Connections,
+     * which shows this computer's own Tailscale). Machine-global: no pin.
+     */
+    openTailscale: async (): Promise<{ opened: boolean; message?: string }> =>
+      ipcRenderer.invoke(IPC.appOpenTailscale),
     revealPath: async (path: string, pin?: OpenProjectBinding | null): Promise<void> => {
       await assertNotRemoteProjectPathAction("Reveal path", [path], pin);
       return ipcRenderer.invoke(IPC.appRevealPath, { path });

@@ -3853,6 +3853,25 @@ export function registerIpc({
    * renderer-supplied string reach `shell.openExternal`. Resolving a small
    * enum to a vetted constant here keeps the allowlist closed.
    */
+  // The Tailscale app on this computer, from a fixed list of install paths:
+  // nothing the renderer sends reaches `shell.openPath`.
+  handle(IPC.appOpenTailscale, async (): Promise<{ opened: boolean; message?: string }> => {
+    const candidates = process.platform === "darwin"
+      ? ["/Applications/Tailscale.app"]
+      : process.platform === "win32"
+        ? [...new Set([process.env.ProgramFiles, "C:\\Program Files"].filter((dir): dir is string => Boolean(dir?.trim())))]
+          .map((dir) => path.win32.join(dir, "Tailscale", "tailscale-ipn.exe"))
+        : [];
+    const target = candidates.find((candidate) => fs.existsSync(candidate));
+    if (!target) return { opened: false, message: "ADE couldn't find the Tailscale app on this computer." };
+    const failure = await shell.openPath(target);
+    if (failure) {
+      getCtx().logger.warn("app.open_tailscale_failed", { reason: failure });
+      return { opened: false, message: `Tailscale didn't open: ${failure}` };
+    }
+    return { opened: true };
+  });
+
   handle(
     IPC.appOpenSystemSettingsPane,
     async (_event, arg: { paneId?: unknown }): Promise<AppOpenSystemSettingsPaneResult> => {

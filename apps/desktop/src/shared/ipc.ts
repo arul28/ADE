@@ -83,6 +83,7 @@ export const IPC = {
   appProjectBindingChanged: "ade.app.projectBindingChanged",
   appOpenExternal: "ade.app.openExternal",
   appOpenSystemSettingsPane: "ade.app.openSystemSettingsPane",
+  appOpenTailscale: "ade.app.openTailscale",
   appRevealPath: "ade.app.revealPath",
   appOpenPath: "ade.app.openPath",
   appWriteClipboardText: "ade.app.writeClipboardText",
