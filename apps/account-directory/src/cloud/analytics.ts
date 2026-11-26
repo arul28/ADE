@@ -307,7 +307,7 @@ export function captureCloudIdleCleanup(env: CloudEnv, waitUntil: CloudWaitUntil
  * - `rate_limited`: too many new computers or launches in an hour.
  * - `creates_paused`: a new computer or launch refused by the owner's kill switch.
  * - `signup_burst`: sign-ups from one address reached the hourly alarm.
- * - `small_cloud_look`: a US look that keeps Free's Small free came from the network of the account's own ADE Cloud computers (`sponsoredSmall.ts`; once a week per account).
+ * - `small_cloud_look`: a US look or yes that keeps Free's Small free came from the network of the account's own ADE Cloud computers (`sponsoredSmall.ts`; once a week per account).
  */
 export type CloudSafetyStep =
   | "first_chat"

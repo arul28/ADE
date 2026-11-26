@@ -15,12 +15,12 @@ import { logCloud, reportCloudFailure, restartStretchStatements, shownPlanIdOf, 
 // `SMALL_NO_CARDS_RATE_MILLI`. `gravity.ts` saves the answers and the looks;
 // this module decides the rate, puts computers on it and tells the clients.
 //
-// The tripwire: a look comes from the person's app, but a script on their own
-// ADE Cloud computer (a US datacenter, signed in to the account) could send
-// one every hour with nobody watching. Such a look still counts; it is caught
-// by its network (the AS number of the computer's own calls) and the owner is
-// told: an email and a Sentry error once a week per account, a PostHog
-// `ade_cloud_safety` step, and a line in the daily report.
+// The tripwire: a look (or a yes) comes from the person's app, but a script on
+// their own ADE Cloud computer (a US datacenter, signed in to the account)
+// could send one every hour with nobody watching. Such a look still counts; it
+// is caught by its network (the AS number of the computer's own calls) and the
+// owner is told: an email and a Sentry error once a week per account, a
+// PostHog `ade_cloud_safety` step, and a line in the daily report.
 
 /**
  * The one country where sponsored cards keep Free's Small computers free.
@@ -121,12 +121,13 @@ export async function noteSmallLook(env: GravityEnv, account: AccountRow, consen
 }
 
 /**
- * The tripwire at a look: one from the network the account's own ADE Cloud
- * computers call from. Told once a week per account (`sendOwnerAlert`: an
- * email, a `cloud_abuse_events` row, a Sentry error and a PostHog step).
- * Never fails the look: a failure here is a Sentry issue of its own.
+ * The tripwire at a US look or yes (`gravity.ts`): one from the network the
+ * account's own ADE Cloud computers call from. Told once a week per account
+ * (`sendOwnerAlert`: an email, a `cloud_abuse_events` row, a Sentry error and
+ * a PostHog step). Never fails the look: a failure here is a Sentry issue of
+ * its own.
  */
-async function smallLookTripwire(env: GravityEnv, account: AccountRow, asn: number | null, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
+export async function smallLookTripwire(env: GravityEnv, account: AccountRow, asn: number | null, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
   // Only Free's Small costs anything without a look.
   if (asn == null || shownPlanIdOf(account) !== "free") return;
   try {
@@ -138,8 +139,8 @@ async function smallLookTripwire(env: GravityEnv, account: AccountRow, asn: numb
       key: `small_cloud_look:${account.user_id}:${Math.floor(now / SMALL_FREE_LOOK_MS)}`,
       kind: "small_cloud_look",
       userId: account.user_id,
-      subject: "ADE Cloud: free Small kept free by a view from its own cloud computer",
-      reason: "A view that keeps this Free account's Small computers free came from the same network as its own ADE Cloud computers, not from a phone or laptop. It may be a script on the computer keeping Small free with nobody watching. Nothing was refused: the view still counts.",
+      subject: "ADE Cloud: free Small kept free from its own cloud computer's network",
+      reason: "A US view of a cloud chat (or a turn-on of sponsored cards) that keeps this Free account's Small computers free came from the same network as its own ADE Cloud computers, not from a phone or laptop. It may be a script on the computer keeping Small free with nobody watching. Nothing was refused: it still counts.",
       counts: { Network: `AS${asn}`, "Its computers on that network": own.computers },
       step: "small_cloud_look",
       abuse: true,

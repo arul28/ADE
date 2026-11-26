@@ -5529,6 +5529,14 @@ describe("sponsored cards", () => {
     clock += HOUR;
     expect(await look(fromWhere({ country: "US", regionCode: "TX", asn: 7922 }))).toEqual({ ok: true });
     expect(await smallCloudLookAlarms(harness.env as never, clock)).toEqual([]);
+    // A yes from the US restarts the week too, so one from the computer's network trips it as well (a new week, a new alert).
+    clock += 7 * DAY;
+    expect((await fromComputer("PUT", "/cloud/sponsored/consent", { consent: "granted", confirmed: true })).status).toBe(200);
+    expect([computer(harness).multiplier_milli, ...tripped()]).toEqual([0, 2, 2]);
+    expect(await smallCloudLookAlarms(harness.env as never, clock)).toHaveLength(1);
+    // A no keeps nothing of where the person looked from: the look's network goes with its time.
+    expect((await harness.send(OWNER, "PUT", "/cloud/sponsored/consent", { consent: "declined" })).status).toBe(200);
+    expect(harness.row("select looked_at, looked_asn from cloud_sponsored_consent where user_id = ?", OWNER)).toEqual({ looked_at: null, looked_asn: null });
 
     // A no from before the rule was a different deal: the question comes back.
     harness.exec("update cloud_sponsored_consent set consent = 'declined', decided_at = ? where user_id = ?", NOW - DAY, OWNER);

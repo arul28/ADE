@@ -893,10 +893,12 @@ card, whatever the plan.
   last changed; until answered it still counts as a no.
 - **Small look tripwire** (watches, never refuses): a person-approved cloud
   computer holds a real session, so a look sent from it keeps Small free like
-  one from a phone. Each computer's activity report saves its network
-  (`cloud_computers.net_asn`, Cloudflare's `cf.asn`) and each look saves its
-  network (`cloud_sponsored_consent.looked_asn`, migration `0066`). A look from
-  the network of one of the account's own computers sends the owner one alert
+  one from a phone, and so does a yes from the US. Each computer's activity
+  report saves its network (`cloud_computers.net_asn`, Cloudflare's `cf.asn`)
+  and each look or US yes that moves `looked_at` saves its network
+  (`cloud_sponsored_consent.looked_asn`, migration `0066`; a no clears it with
+  `looked_at`). One from the network of one of the account's own computers
+  sends the owner one alert
   per account per week (`small_cloud_look`: an email, a Sentry `cloud.abuse`
   issue, a `cloud_abuse_events` row and the `ade_cloud_safety` step) and adds a
   line to the daily report while that look is what keeps Small free

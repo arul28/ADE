@@ -4,8 +4,8 @@
 -- look still counts, and the owner is told (an email, Sentry, the daily report).
 -- `cloud_computers.net_asn`: the network (Cloudflare's AS number) the
 -- computer's brain calls ADE's server from, kept from its activity reports.
--- `cloud_sponsored_consent.looked_asn`: the network of the look that last
--- moved `looked_at`. Neither is a person's address: an AS number names a
+-- `cloud_sponsored_consent.looked_asn`: the network of the look or US yes that
+-- last moved `looked_at`, cleared with it by a no. Neither is a person's address: an AS number names a
 -- network (an ISP, a hosting company), never one connection.
 -- Additive only: apply before the Worker that reads it.
 alter table cloud_computers add column net_asn integer;

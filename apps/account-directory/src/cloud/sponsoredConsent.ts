@@ -115,7 +115,7 @@ export type ConsentRow = {
   country: string | null;
   gpc: number;
   looked_at: number | null;
-  /** The network (AS number) of the look that last moved `looked_at` (Free Small's tripwire, `sponsoredSmall.ts`). */
+  /** The network (AS number) of the look or yes that last moved `looked_at`, cleared with it (Free Small's tripwire, `sponsoredSmall.ts`). */
   looked_asn?: number | null;
 };
 

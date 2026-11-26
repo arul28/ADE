@@ -925,7 +925,7 @@ client version and for work nobody watches
   `free_cap_refused`, `blocked`, `unblocked`, `card_reused`,
   `blocked_returned` (a blocked GitHub account or card on a new account),
   `rate_limited`, `creates_paused`, `signup_burst` or `small_cloud_look` (Free
-  Small's tripwire: a US look that keeps Small free came from the network the
+  Small's tripwire: a US look or yes that keeps Small free came from the network the
   account's own ADE Cloud computers call from; once a week per account, with
   an owner email). One per account, step,
   key (hashed into the uuid, never sent) and hour. Server log lines:

@@ -45,7 +45,7 @@ import {
   type ConsentRow,
   type SponsoredRequester,
 } from "./sponsoredConsent";
-import { noteSmallLook, smallFreeFrom, smallStateOf, syncSmallRates } from "./sponsoredSmall";
+import { noteSmallLook, smallFreeFrom, smallLookTripwire, smallStateOf, syncSmallRates } from "./sponsoredSmall";
 import type { CloudWaitUntil } from "./analytics";
 import { gravitySwitches, isTester, switchReaches, type Switches } from "./sponsoredSwitch";
 import {
@@ -193,7 +193,7 @@ async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow |
   for (let tries = 0; tries < 2 && gpcOverrides(consent, who); tries += 1) {
     const flip = consent
       ? env.DB.prepare(`
-        update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0, looked_at = null
+        update cloud_sponsored_consent set consent = 'declined', email_hash = null, decided_at = ?, source = 'gpc', country = ?, gpc = 0, looked_at = null, looked_asn = null
         where user_id = ? and consent = 'granted' and decided_at = ?
       `).bind(now, who.country, account.user_id, consent.decided_at)
       : env.DB.prepare(`
@@ -212,7 +212,7 @@ async function honorGpc(env: GravityEnv, account: AccountRow, read: ConsentRow |
     }
     logCloud("cloud.sponsored.consent", { consent: "declined", source: "gpc" });
     await syncSmallRates(env, account, now);
-    return { consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0, looked_at: null };
+    return { consent: "declined", email_hash: null, decided_at: now, source: "gpc", country: who.country, gpc: 0, looked_at: null, looked_asn: null };
   }
   return consent;
 }
@@ -597,7 +597,7 @@ async function inlineFavicon(url: string): Promise<string | null> {
 
 /** `/cloud/sponsored/*`, or null for any other path. */
 export async function routeSponsored(request: Request, path: string, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
-  if (path === CLOUD_PATHS.sponsoredConsent) return request.method === "PUT" ? handleConsent(request, env, userId, now) : notFound();
+  if (path === CLOUD_PATHS.sponsoredConsent) return request.method === "PUT" ? handleConsent(request, env, userId, now, waitUntil) : notFound();
   if (path === CLOUD_PATHS.sponsoredSeen) return request.method === "POST" ? handleSeen(request, env, userId, now, waitUntil) : notFound();
   if (path === CLOUD_PATHS.sponsoredAd) return request.method === "POST" ? handleAd(request, env, userId, now) : notFound();
   if (path === CLOUD_PATHS.sponsoredIndex) return request.method === "POST" ? handleIndex(request, env, userId, now) : notFound();
@@ -616,7 +616,7 @@ const notFound = () => fail("not_found", "That ADE Cloud route doesn't exist.", 
  * (`startsOnFor`), and never over an answer that still holds: of two screens,
  * the person's own yes or no wins.
  */
-async function handleConsent(request: Request, env: GravityEnv, userId: string, now: number): Promise<Response> {
+async function handleConsent(request: Request, env: GravityEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const choice = CLOUD_SPONSORED_CHOICES.find((entry) => entry === body.consent);
@@ -658,18 +658,24 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   // say on another screen while the email was read, holds. With no row read, any answer saved
   // meanwhile holds. A no always saves.
   const guard = consent === "declined" ? "" : before ? " where cloud_sponsored_consent.decided_at = ?" : " where 0";
+  // A yes from the US makes Small free from now, like a look, and keeps the network it came from
+  // (Free Small's tripwire). Over a yes, the later of this and the row's look when it is written holds
+  // (a trip's, or one saved while the email was read), with its network: never moved back. A no keeps neither.
+  const lookedAt = consent === "granted" && smallFreeFrom(who.country) ? now : null;
+  const lookedAsn = lookedAt == null ? null : requestNetwork(request);
+  const heldLook = "case when cloud_sponsored_consent.consent = 'granted' then coalesce(cloud_sponsored_consent.looked_at, 0) else 0 end";
   const write = env.DB.prepare(`
-    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at) values (?, ?, ?, ?, ?, ?, ?, ?)
+    insert into cloud_sponsored_consent (user_id, consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
     on conflict (user_id) do update set consent = excluded.consent, email_hash = excluded.email_hash, decided_at = excluded.decided_at,
       source = excluded.source, country = excluded.country, gpc = excluded.gpc,
-      looked_at = case when excluded.consent = 'granted' then nullif(max(coalesce(excluded.looked_at, 0), case when cloud_sponsored_consent.consent = 'granted' then coalesce(cloud_sponsored_consent.looked_at, 0) else 0 end), 0) end${guard}
+      looked_at = case when excluded.consent = 'granted' then nullif(max(coalesce(excluded.looked_at, 0), ${heldLook}), 0) end,
+      looked_asn = case when excluded.consent = 'granted' then
+        case when coalesce(excluded.looked_at, 0) >= ${heldLook} then excluded.looked_asn else cloud_sponsored_consent.looked_asn end end${guard}
   `).bind(
     userId, consent, emailHash, now, choice === "notice" ? "notice" : "answer", who.country,
     // A yes from a browser that sends Global Privacy Control, past the second confirm: it holds there.
     choice === "granted" && gpcOptsOut(who) ? 1 : 0,
-    // A yes from the US makes Small free from now. Over a yes, the later of this and the row's look
-    // when it is written holds (a trip's, or one saved while the email was read): never moved back.
-    consent === "granted" && smallFreeFrom(who.country) ? now : null,
+    lookedAt, lookedAsn,
     ...(guard && before ? [before.decided_at] : []),
   );
   // A no keeps nothing of where the person watched from: their address and device go too, in the same transaction.
@@ -679,6 +685,8 @@ async function handleConsent(request: Request, env: GravityEnv, userId: string, 
   logCloud("cloud.sponsored.consent", { consent: choice });
   // Small's rate follows the answer at once (`smallUsesNoHours`).
   await syncSmallRates(env, account, now);
+  // A yes from the US restarts Small's week, so a script could send yeses instead of looks: the same tripwire.
+  if (lookedAt != null) await smallLookTripwire(env, account, lookedAsn, now, waitUntil);
   return answered();
 }
 
