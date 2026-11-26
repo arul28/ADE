@@ -23,6 +23,14 @@ import { useSettingsMachines } from "./settingsMachinesContext";
 import { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineSettings } from "./MachineSettings";
 import { machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../../state/adeCloudLaneIndex";
+import { useAdeCloudAccess, type AdeCloudAccess } from "../../../state/cloudAccess";
+import { useCloudAccount } from "../../../state/cloudAccountStore";
+import { cloudHoursLeftMilli } from "../../../../shared/adeCloud";
+import { cloudUnitWords } from "../../../../shared/cloudUnitWords";
+import { adeCloudMachineLine } from "../../remoteTargets/cloudMachineModel";
+import { cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
+import { useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
+import { ADE_CLOUD_NAME, CloudMark } from "../../remoteTargets/cloudBrand";
 import "./machinesPage.css";
 
 /**
@@ -58,6 +66,13 @@ function MachinesList() {
   const facts = useMachineFacts(machines, update.currentVersion || null);
   const local = useThisComputerFacts();
   const known = useKnownAdeVersions();
+  // ADE Cloud is one machine every account has, as in the Connections panel:
+  // one row, never a row per computer (`machines` leaves those out). Only a
+  // window with no ADE account leaves it out.
+  const cloudAccess = useAdeCloudAccess();
+  const showCloud = cloudAccess.state !== "signed_out";
+  // Blocked: it can't take work now, so it counts as offline.
+  const cloudOnline = showCloud && cloudAccess.state !== "blocked";
   // Each machine's load, read through its own pin once when the list opens:
   // its copy of this repository, else its machine route.
   const statsRequests = useMemo<MachineStatsRequest[]>(() => machines.flatMap((machine) => {
@@ -67,22 +82,26 @@ function MachinesList() {
   }), [machines]);
   const { stats } = useMachineStatsMap(statsRequests, true);
   const { preferenceOf } = useMachinePlacementPreferences();
-  const online = machines.filter((machine) => machine.online || machine.isThisMachine).length;
+  // ADE Cloud counts as one machine; its computers update themselves, so the
+  // track line counts only the person's own.
+  const total = machines.length + (showCloud ? 1 : 0);
+  const online = machines.filter((machine) => machine.online || machine.isThisMachine).length + (cloudOnline ? 1 : 0);
   const onBeta = machines.filter((machine) => facts.get(machine.machineId)?.track === "beta").length;
   const behind = machines.filter((machine) => {
     const connected = facts.get(machine.machineId)?.connected;
     return connected && machine.online && machineUpdateTargetVersion(connected, known) != null;
   }).length;
   const summary = [
-    online === machines.length ? "All online" : `${online} online — ${machines.length - online} offline`,
+    online === total ? "All online" : `${online} online — ${total - online} offline`,
     onBeta > 0 ? `${machines.length - onBeta} on Stable, ${onBeta} on Beta` : "All on Stable",
   ];
+  const lineup = machines.slice(0, showCloud ? 4 : 5);
   return (
     <div className="ade-mx" id="machines-list" data-settings-anchor="machines-list">
       <section className="ade-mx-hero ade-mx-hero--list">
         <div className="ade-mx-hero-wash" aria-hidden />
         <div className="ade-mx-lineup" aria-hidden>
-          {machines.slice(0, 5).map((machine, index) => {
+          {lineup.map((machine, index) => {
             const fact = facts.get(machine.machineId);
             const name = machineDisplayName(machine, machineNames, thisMachineName, laneComputers);
             return (
@@ -98,9 +117,14 @@ function MachinesList() {
               </span>
             );
           })}
+          {showCloud ? (
+            <span className="ade-mx-lineup-tile" style={{ "--i": lineup.length } as CSSProperties}>
+              <AdeCloudTile size={60} dimmed={!cloudOnline} />
+            </span>
+          ) : null}
         </div>
         <div className="ade-mx-hero-text">
-          <div className="ade-mx-hero-title">{machines.length === 1 ? "1 machine" : `${machines.length} machines`}</div>
+          <div className="ade-mx-hero-title">{total === 1 ? "1 machine" : `${total} machines`}</div>
           <div className="ade-mx-hero-chips">
             {summary.map((line) => <span key={line} className="ade-mx-hero-chip">{line}</span>)}
             {behind > 0 ? (
@@ -128,8 +152,75 @@ function MachinesList() {
             onOpen={() => openMachine(machine.machineId)}
           />
         ))}
+        {showCloud ? <AdeCloudListRow access={cloudAccess} onOpen={() => openTab("ade-cloud")} /> : null}
       </div>
     </div>
+  );
+}
+
+/** ADE Cloud's tile: its logo where another machine shows its device. */
+function AdeCloudTile({ size, dimmed = false }: { size: number; dimmed?: boolean }) {
+  return (
+    <span
+      className="ade-mx-cloud-tile"
+      data-dimmed={dimmed ? "true" : undefined}
+      style={{ "--tile": `${size}px` } as CSSProperties}
+      role="img"
+      aria-label={ADE_CLOUD_NAME}
+    >
+      <CloudMark brand size={Math.round(size * 0.5)} />
+    </span>
+  );
+}
+
+/**
+ * ADE Cloud as one row of the list, the same row as the Connections panel's:
+ * its lanes, how many are awake, and the credits left. It opens Settings ›
+ * ADE Cloud, where each lane's computer is listed by lane. Account-level, so
+ * no pin. It reads the lane index the account reads fill, the lanes kept
+ * without a computer and the account the header's meter keeps: account reads
+ * only, so it never wakes a computer.
+ */
+function AdeCloudListRow({ access, onOpen }: { access: AdeCloudAccess; onOpen: () => void }) {
+  const { computers, known, readAtMs } = useAdeCloudLaneComputers();
+  const kept = useCloudLanesWithoutComputer(cloudLaneLifeAvailable()).lanes;
+  const account = useCloudAccount();
+  const blocked = access.state === "blocked";
+  // A list restored from this computer's copy says nothing about which computers run.
+  const awake = readAtMs == null
+    ? null
+    : computers.filter((computer) => computer.state === "running" || computer.state === "starting").length;
+  const laneIds = [...computers.map((computer) => computer.laneId), ...kept.map((lane) => lane.laneId)];
+  const line = blocked && access.reason ? access.reason : adeCloudMachineLine({ known, laneIds, awake });
+  const left = account ? cloudUnitWords(account).short(cloudHoursLeftMilli(account)) : null;
+  return (
+    <button
+      type="button"
+      role="listitem"
+      className="ade-mx-row"
+      data-offline={blocked ? "true" : undefined}
+      data-ade-cloud-machine=""
+      onClick={onOpen}
+    >
+      <AdeCloudTile size={40} dimmed={blocked} />
+      <span className="ade-mx-row-id">
+        <span className="ade-mx-row-name">
+          <span className="ade-mx-row-name-text">{ADE_CLOUD_NAME}</span>
+        </span>
+        <span className="ade-mx-row-sub">
+          <span className="kit-dot" data-state={blocked ? "crit" : awake != null && awake > 0 ? "ok" : undefined} aria-hidden />
+          <span className="ade-mx-row-sub-text">{line}</span>
+        </span>
+      </span>
+      <span className="ade-mx-row-facts">
+        {left ? (
+          <span className="ade-mx-row-version">
+            <span className="kit-num">{`${left} left`}</span>
+          </span>
+        ) : null}
+      </span>
+      <CaretRight size={13} className="ade-mx-row-caret" aria-hidden />
+    </button>
   );
 }
 

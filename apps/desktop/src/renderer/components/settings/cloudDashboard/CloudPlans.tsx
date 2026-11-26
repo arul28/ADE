@@ -414,7 +414,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                     {tiers.map((tier) => (
                       <tr key={tier.id}>
                         <th scope="row">{tier.label}</th>
-                        <td className="kit-num">{tier.multiplierMilli > 0 ? `${words.count(tier.multiplierMilli / 1000)} an hour` : "No credits"}</td>
+                        <td className="kit-num">{tier.multiplierMilli > 0 ? `${words.count(tier.multiplierMilli / 1000)} an hour` : "Uses no credits"}</td>
                       </tr>
                     ))}
                     {phoneOn ? (

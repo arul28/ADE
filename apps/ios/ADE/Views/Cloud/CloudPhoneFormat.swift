@@ -497,9 +497,9 @@ struct CloudBalanceWords: Equatable {
   }
 
   /// A rate, short and lowercase, for a before → after line (`CloudUnitWords.hourly`):
-  /// "no credits", "1 credit an hour", "2.5 credits an hour".
+  /// "0 credits an hour", "1 credit an hour", "2.5 credits an hour".
   func hourly(milli: Int) -> String {
-    milli > 0 ? "\(spelled(milli)) an hour" : "no credits"
+    "\(spelled(max(0, milli))) an hour"
   }
 
   /// A size change's rates, now → after (`cloudTierChangeRateText`): "4 credits
@@ -812,7 +812,7 @@ extension AccountMachine {
   }
 }
 
-/// The phrase with its first letter in capitals: "no credits now" → "No credits now".
+/// The phrase with its first letter in capitals; one that starts with a number ("0 credits an hour") stays as it is.
 func cloudCapitalized(_ phrase: String) -> String {
   phrase.prefix(1).uppercased() + phrase.dropFirst()
 }
