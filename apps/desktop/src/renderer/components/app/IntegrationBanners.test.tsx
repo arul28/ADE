@@ -119,6 +119,7 @@ function baseProps(overrides: Partial<IntegrationBannersProps> = {}): Integratio
     freeModelsReady: false,
     aiStatusLoaded: true,
     relayHealth: null,
+    accountDirectoryNoReply: false,
     navigate: vi.fn() as unknown as IntegrationBannersProps["navigate"],
     ...overrides,
   };

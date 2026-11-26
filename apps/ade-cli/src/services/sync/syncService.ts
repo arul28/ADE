@@ -2101,9 +2101,11 @@ export function createSyncService(args: SyncServiceArgs) {
           "Account-directory publishing is not enabled in this runtime.",
         );
       } catch {
+        // This computer's own failure, not the network's.
         accountDirectory = createSyncAccountDirectoryHealth(
           "transport_error",
           "Account-directory publisher health is unavailable.",
+          { failedLeg: "setup" },
         );
       }
       // One read of the account and the relay switch for this status: the

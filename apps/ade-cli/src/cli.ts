@@ -29528,7 +29528,7 @@ async function verifyMachinePublished(
       };
     }
     const { describeUnpublishedMachine } = await import("./commands/setup");
-    const described = describeUnpublishedMachine(state, asString(directory?.skipReason));
+    const described = describeUnpublishedMachine(state, asString(directory?.skipReason), directory?.failedLeg);
     return { ok: false, ...described };
   } catch {
     return {
@@ -33507,6 +33507,7 @@ async function runServe(
             lastLegDurations: { ...publishHealth.lastLegDurations },
             lastHttpStatus: publishHealth.lastHttpStatus,
             lastHttpReason: publishHealth.lastHttpReason,
+            failedLeg: publishHealth.failedLeg ?? null,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
           lastUnplannedRestart: brainUnplannedRestart(),

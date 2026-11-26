@@ -922,7 +922,7 @@ describe("accountDirectorySummary", () => {
       "Signed in — this computer isn't registered yet",
     );
     expect(summaryForState("http_error", null).label).toBe(
-      "Signed in — can't reach your ADE account right now, retrying",
+      "Signed in — ADE's account service is having trouble right now, retrying",
     );
   });
 
@@ -975,7 +975,7 @@ describe("accountDirectorySummary", () => {
     // A remote-bound pane shows another machine's snapshot, so its caller
     // passes no refusal.
     expect(accountDirectorySummary(status, "active", null).label).toBe(
-      "Signed in — can't reach your ADE account right now, retrying",
+      "Signed in — ADE's account service is having trouble right now, retrying",
     );
   });
 
