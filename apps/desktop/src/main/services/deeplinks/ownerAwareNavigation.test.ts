@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppNavigationRequest, AppNavigationTarget } from "../../../shared/types";
 import { describeAttentionOpenFailure } from "../attention/attentionOpenErrors";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
+import type { AccountProjectListResult, AccountProjectView } from "../../../shared/accountProject";
 import {
+  adeCloudNavigationForCopy,
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
   ownerNavigationFailureCopy,
@@ -48,6 +50,7 @@ function ownerNavigationDependencies() {
       _projectRoot: string | null,
     ) => ({ windowId: 2 })),
     deliverRemote: vi.fn(async () => undefined),
+    openAsleepOnAdeCloud: vi.fn(async (_error: unknown, _ownership: unknown, _request: AppNavigationRequest) => false),
   };
 }
 
@@ -226,6 +229,60 @@ describe("dispatchOwnerAwareNavigation", () => {
     await expect(dispatchOwnerAwareNavigation(ownedRequest(), deps))
       .rejects.toThrow("Studio Mac is not reachable right now.");
     expect(deps.deliverRemote).not.toHaveBeenCalled();
+  });
+
+  it("shows the repository on ADE Cloud when the copy's cloud computer sleeps", async () => {
+    // Opening never wakes an ADE Cloud computer: the refusal is answered by
+    // the ADE Cloud tab, and the link is not delivered to a window it never opened.
+    const deps = ownerNavigationDependencies();
+    const asleep = new Error("Your ADE Cloud computer is asleep.");
+    deps.openRemote.mockRejectedValueOnce(asleep);
+    deps.openAsleepOnAdeCloud.mockResolvedValueOnce(true);
+    await expect(dispatchOwnerAwareNavigation(ownedRequest("machine-b", PROJECT_ROOT), deps)).resolves.toBe(true);
+    expect(deps.openAsleepOnAdeCloud).toHaveBeenCalledWith(
+      asleep,
+      { accountMachineKey: "machine-b", projectId: "project-1", projectRoot: PROJECT_ROOT },
+      ownedRequest("machine-b", PROJECT_ROOT),
+    );
+    expect(deps.deliverRemote).not.toHaveBeenCalled();
+  });
+});
+
+describe("adeCloudNavigationForCopy", () => {
+  const APP_ID = `ap_${"a".repeat(32)}`;
+  const WEB_ID = `ap_${"b".repeat(32)}`;
+  const project = (id: string, name: string, copy: { machineKey: string; checkoutId: string; rootPath: string }): AccountProjectView => ({
+    id, host: "github.com", repoId: null, repoKey: `github.com/acme/${name}`, owner: "acme", name,
+    defaultBranch: "main", addedAt: 0, removedAt: null, mergedInto: null, aliases: [],
+    copies: [{ projectId: id, ...copy, isMain: true, lastSeenAt: 0 }],
+  });
+  const list: AccountProjectListResult = {
+    state: "ready",
+    cursor: 1,
+    projects: [
+      project(APP_ID, "app", { machineKey: "cloud-1", checkoutId: CANONICAL_ID, rootPath: PROJECT_ROOT }),
+      project(WEB_ID, "web", { machineKey: "cloud-2", checkoutId: "project_web", rootPath: "/home/ade/web" }),
+    ],
+  };
+  const request = (accountProjectId?: string): AppNavigationRequest => ({
+    source: "activity",
+    target: { kind: "chat", sessionId: "s-1", ...(accountProjectId ? { accountProjectId } : {}) },
+  });
+
+  it.each([
+    ["the project the link names", request(WEB_ID), { machineKey: "cloud-1", projectId: CANONICAL_ID }, WEB_ID],
+    ["the project listing that checkout on that machine", request(), { machineKey: "cloud-1", projectId: CANONICAL_ID }, APP_ID],
+    ["the project listing that folder on that machine", request(), { machineKey: "cloud-1", rootPath: PROJECT_ROOT }, APP_ID],
+    ["nothing for the same checkout on another machine", request(), { machineKey: "cloud-2", projectId: CANONICAL_ID }, null],
+  ])("opens %s", (_label, incoming, copy, expected) => {
+    const answer = adeCloudNavigationForCopy(incoming, list, copy);
+    expect(answer?.target ?? null).toEqual(expected
+      ? { kind: "account-project", accountProjectId: expected, name: expected === APP_ID ? "app" : "web", reason: "no-copy" }
+      : null);
+  });
+
+  it("opens nothing before the account list has loaded", () => {
+    expect(adeCloudNavigationForCopy(request(), { state: "not_loaded", projects: [] }, { machineKey: "cloud-1", projectId: CANONICAL_ID })).toBeNull();
   });
 });
 

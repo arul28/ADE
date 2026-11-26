@@ -23,6 +23,12 @@ export type OwnerAwareNavigationDependencies = {
     projectRoot: string | null,
   ): Promise<unknown>;
   deliverRemote(handle: unknown, request: AppNavigationRequest): Promise<void>;
+  /**
+   * `openRemote` failed. When the copy's computer is an ADE Cloud computer
+   * that sleeps (opening never wakes one), show the repository on ADE Cloud
+   * instead and answer true; false leaves the failure to the caller.
+   */
+  openAsleepOnAdeCloud(error: unknown, ownership: DeeplinkOwnership, request: AppNavigationRequest): Promise<boolean>;
 };
 
 export function appNavigationOwnership(
@@ -85,13 +91,66 @@ export async function dispatchOwnerAwareNavigation(
     ownership.projectId,
     ownedProjectRoot,
   );
-  const handle = existing ?? await deps.openRemote(
-    ownership.accountMachineKey,
-    ownership.projectId,
-    ownedProjectRoot,
-  );
+  let handle = existing;
+  if (!handle) {
+    try {
+      handle = await deps.openRemote(
+        ownership.accountMachineKey,
+        ownership.projectId,
+        ownedProjectRoot,
+      );
+    } catch (error) {
+      if (await deps.openAsleepOnAdeCloud(error, ownership, request)) return true;
+      throw error;
+    }
+  }
   await deps.deliverRemote(handle, request);
   return true;
+}
+
+/** A project copy on one machine, as an Activity item or a link names it. */
+export type AccountProjectCopyRef = {
+  machineKey: string;
+  /** The copy's registry id (`checkoutId`), when the caller has it. */
+  projectId?: string | null;
+  rootPath?: string | null;
+};
+
+/**
+ * The request that opens a copy's repository on ADE Cloud, for a copy whose
+ * computer sleeps: an `account-project` request (`no-copy`, since no copy can
+ * be reached without waking one), as a link with no reachable copy gets. The
+ * account project is the one the link named, else the one that lists this
+ * copy (same machine, same checkout id or folder). Null when the account
+ * lists none.
+ */
+export function adeCloudNavigationForCopy(
+  request: AppNavigationRequest,
+  list: AccountProjectListResult,
+  copy: AccountProjectCopyRef,
+): AppNavigationRequest | null {
+  if (list.state !== "ready") return null;
+  const machineKey = copy.machineKey.trim();
+  const checkoutId = copy.projectId?.trim() || null;
+  const rootPath = copy.rootPath?.trim() || null;
+  const named = namedAccountProjectId(request.target);
+  const project = (named ? list.projects.find((entry) => entry.id === named) : undefined)
+    ?? list.projects.find((entry) => entry.copies.some((row) => (
+      row.machineKey === machineKey
+      && ((checkoutId !== null && row.checkoutId === checkoutId) || (rootPath !== null && row.rootPath === rootPath))
+    )));
+  if (!project) return null;
+  return {
+    ...request,
+    target: { kind: "account-project", accountProjectId: project.id, name: project.name, reason: "no-copy" },
+  };
+}
+
+/** The account project a link names: its own `accountProjectId`, else its ownership's (L33). */
+function namedAccountProjectId(target: AppNavigationTarget): string | null {
+  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane" && target.kind !== "automation-run") return null;
+  const id = target.accountProjectId ?? target.ownership?.accountProjectId ?? null;
+  return isAccountProjectId(id) ? id : null;
 }
 
 export type AccountProjectNavigationDependencies = {
@@ -124,9 +183,8 @@ export async function resolveAccountProjectNavigation(
   deps: AccountProjectNavigationDependencies,
 ): Promise<AppNavigationRequest> {
   const target = request.target;
-  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane" && target.kind !== "automation-run") return request;
-  const id = target.accountProjectId ?? target.ownership?.accountProjectId ?? null;
-  if (!isAccountProjectId(id)) return request;
+  const id = namedAccountProjectId(target);
+  if (!id) return request;
   const list = await deps.readAccountList().catch(() => null);
   if (!list || list.state !== "ready") return request;
   const owner = appNavigationOwnership(target);
