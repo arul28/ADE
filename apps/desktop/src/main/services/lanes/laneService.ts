@@ -530,11 +530,13 @@ function stablePathThroughExistingAncestor(targetPath: string): string {
 const STALE_WORKTREE_ROOT_MESSAGE = "Lane worktree is missing or no longer points at its Git worktree root.";
 const CHECKOUT_LEFTOVER_HINT = "The lane folder may hold files from both branches. Open a terminal in the lane and run `git status` before you continue.";
 /**
- * Each git read in `readUnsavedWork`. Only an ADE Cloud free or delete reads
- * it (`ade cloud push-work` / `work-state`), in the background with minutes
- * to spare, and "unreadable" keeps the computer. A big repository's first
- * `git status` on a Small computer just woken or set up (a cold index)
- * measured 5.6 s and ran past 8 s, which refused the free for nothing.
+ * Each git read in `readUnsavedWork`. Only ADE Cloud reads it: a free or a
+ * delete (`ade cloud push-work` / `work-state`) and a computer's idle report
+ * (`cloudComputerReports.ts`), in the background with minutes to spare.
+ * "Unreadable" keeps the computer and shows its work as not on GitHub. A big
+ * repository's first `git status` on a Small computer just woken or set up
+ * (a cold index) measured 5.6 s and ran past 8 s, which refused the free for
+ * nothing.
  */
 const UNSAVED_WORK_GIT_TIMEOUT_MS = 45_000;
 const CHECKOUT_TIMEOUT_MESSAGE = `Git stopped making progress, or did not finish within ${GIT_TREE_WRITE_TIMEOUT_MS / 60_000} minutes, so ADE stopped the checkout. ${CHECKOUT_LEFTOVER_HINT}`;
