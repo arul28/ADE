@@ -789,8 +789,10 @@ move keeps the old disk.
 
 Free is ad-supported through Gravity (`apps/account-directory/src/cloud/gravity.ts`;
 who is told, asked and how a no holds in `sponsoredConsent.ts`; the ad switches in
-`sponsoredSwitch.ts`; what Free's Small costs in `sponsoredSmall.ts`;
-migrations `0054`, `0055`, `0056`, `0062`, `0064`, `0065`). The account server decides everything and holds the partner
+`sponsoredSwitch.ts`; what Free's Small costs, and its tripwire, in `sponsoredSmall.ts`;
+Gravity's answer read into a card in `gravityAd.ts`; the clean-up, the A/B scoreboard and
+the daily report's lines in `sponsoredReport.ts`;
+migrations `0054`, `0055`, `0056`, `0062`, `0064`, `0065`, `0066`). The account server decides everything and holds the partner
 key (`GRAVITY_API_KEY`, a Worker secret): the instant switch `gravity_ads` (`off` |
 `testers` | `all`, starts `off`; `testers` reads `cloud_sponsored_testers`), held
 under the deploy variable `GRAVITY_ADS` (production `all`; `off` there is a hard

@@ -5,7 +5,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
-import { sponsoredReportLines } from "./gravity";
+import { sponsoredReportLines } from "./sponsoredReport";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
