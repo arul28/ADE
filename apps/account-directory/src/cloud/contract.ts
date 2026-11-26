@@ -1284,7 +1284,71 @@ export type CloudChatRowInput = {
   parentChatId?: string | null;
   /** How the chat came from its parent: `subagent`, `cto_child`, `fork` or another short word. */
   spawnKind?: string | null;
+  /**
+   * The chat's settings as its composer shows them (thinking level, Fast,
+   * preset, access mode), so a client shows the same ones while the computer
+   * rests. Older computers leave it out; older servers drop it.
+   */
+  settings?: CloudChatRowSettings | null;
 };
+
+/** The text settings a saved chat row carries: each a short plain word or id. */
+const CLOUD_CHAT_ROW_TEXT_SETTINGS = [
+  "modelId",
+  "presetId",
+  "reasoningEffort",
+  "executionMode",
+  "interactionMode",
+  "permissionMode",
+  "claudePermissionMode",
+  "codexApprovalPolicy",
+  "codexSandbox",
+  "codexConfigSource",
+  "opencodePermissionMode",
+  "droidPermissionMode",
+  "copilotPermissionMode",
+  "copilotContextTier",
+  "copilotAutoTier",
+  "musePermissionMode",
+  "acpPermissionMode",
+  "cursorModeId",
+  "cursorCloudServiceTier",
+] as const;
+
+type CloudChatRowTextSetting = (typeof CLOUD_CHAT_ROW_TEXT_SETTINGS)[number];
+
+/**
+ * A chat's composer settings in its saved row (`CloudChatRowInput.settings`).
+ * A key is absent when the chat has no value; null is an explicit "none"
+ * (for example `reasoningEffort: null` is the model's default level).
+ */
+export type CloudChatRowSettings = Partial<Record<CloudChatRowTextSetting, string | null>> & {
+  fastMode?: boolean;
+  fastTier?: "ultrafast" | null;
+};
+
+/** Ids and words only: a model id can carry `@`, `[`, `]` and `+` (`claude-x[1m]`). */
+const ROW_SETTING_TEXT = /^[A-Za-z0-9._:/@[\]+-]{1,160}$/;
+
+/**
+ * The composer settings of a chat summary (or a row's `settings`), checked:
+ * known keys only, short plain strings, booleans and nulls. Anything else is
+ * left out. Null when nothing is left. The computer passes its whole chat
+ * summary; the server checks what the computer sent again.
+ */
+export function cloudChatRowSettingsOf(value: unknown): CloudChatRowSettings | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const settings: CloudChatRowSettings = {};
+  for (const key of CLOUD_CHAT_ROW_TEXT_SETTINGS) {
+    const entry = record[key];
+    if (entry === null) settings[key] = null;
+    else if (typeof entry === "string" && ROW_SETTING_TEXT.test(entry)) settings[key] = entry;
+  }
+  if (typeof record.fastMode === "boolean") settings.fastMode = record.fastMode;
+  if (record.fastTier === "ultrafast" || record.fastTier === null) settings.fastTier = record.fastTier;
+  return Object.keys(settings).length > 0 ? settings : null;
+}
 
 /**
  * Why a computer was deleted, as a person reads it: `you` (a delete the person

@@ -21,6 +21,7 @@ import { accountMachineDisplayName, accountMachineInstallLabel } from "./account
 import { isChatMentionId } from "./chatMentions";
 import type { AdeAccountMachine } from "./types/account";
 import type { AttentionItem, AttentionMachineRef } from "./types/attention";
+import type { ChatMentionSuggestion } from "./types/chatMentions";
 
 /** Chats listed per machine. The locked design caps a mention at five. */
 export const ACCOUNT_MACHINE_SNAPSHOT_RECENT_CHATS = 5;
@@ -192,6 +193,34 @@ export function buildAccountMachineSnapshot(args: {
 }
 
 /** "online", "asleep · last seen 3h ago", "offline · last seen 2d ago". */
+/**
+ * One machine's row in the @-menu. The same row on a brain (the suggestion
+ * service) and in a window (a chat whose computer rests asks no brain).
+ */
+export function accountMachineMentionSuggestion(
+  machine: AdeAccountMachine,
+  args: { activityItems: readonly AttentionItem[] | null; localMachineKey?: string | null; nowMs?: number },
+): ChatMentionSuggestion {
+  const now = args.nowMs ?? Date.now();
+  const snapshot = buildAccountMachineSnapshot({ machine, activityItems: args.activityItems, localMachineKey: args.localMachineKey ?? null });
+  const projects = snapshot.activityAvailable && snapshot.projects.length
+    ? `${snapshot.projects.length} project${snapshot.projects.length === 1 ? "" : "s"}`
+    : null;
+  return {
+    kind: "machine",
+    id: snapshot.mentionId,
+    title: snapshot.name,
+    subtitle: [
+      snapshot.isThisMachine ? "this machine" : null,
+      describeAccountMachinePresence(snapshot, now),
+      projects,
+    ].filter(Boolean).join(" · "),
+    // Online machines first (all "now"), then by last heartbeat.
+    lastActivityAt: machine.online ? now : machine.lastSeenAt,
+    machine: { online: machine.online, isThisMachine: snapshot.isThisMachine },
+  };
+}
+
 export function describeAccountMachinePresence(
   snapshot: Pick<AccountMachineSnapshot, "online" | "lastSeenAt" | "sleepState">,
   nowMs: number = Date.now(),

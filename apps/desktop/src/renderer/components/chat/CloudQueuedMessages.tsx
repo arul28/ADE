@@ -1,13 +1,7 @@
-import { useState, type CSSProperties } from "react";
+import { createContext, useContext, useState, type CSSProperties } from "react";
 import type { CloudChatQueuedMessage } from "../../../../../account-directory/src/cloud/contract";
+import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
 import { Banner } from "../ui/notice";
-
-/** A queued message's state, in the chat's words. */
-function rowState(message: CloudChatQueuedMessage): string {
-  if (message.state === "sending") return "Sending…";
-  if (message.state === "waiting_for_sign_in") return "Waits for a sign-in";
-  return "Queued";
-}
 
 const FAILED_FALLBACK = "ADE couldn't send this message.";
 
@@ -19,101 +13,110 @@ export function draftWithPutBack(current: string, text: string): string {
 const ROW_BUTTON = "shrink-0 underline-offset-2 hover:underline disabled:opacity-50";
 
 /**
- * Why the messages wait: the lane's computer is moving or changing size (the
- * server holds them until it is done), the computer wakes for them, or it is
- * simply not up yet.
+ * The `user_message.metadata` key of a bubble that stands for a message in the
+ * account's queue (`cloudQueuedMessageEnvelope`). Window only: no host writes it.
  */
-export type CloudQueueState = "move" | "resize" | "waking" | "waiting";
+const CLOUD_QUEUED_METADATA_KEY = "cloudQueuedMessage";
 
-/** The banner's title; `launch`: a row goes to a new computer (its old one was deleted), not a waking one. */
-const QUEUE_TITLE: Record<CloudQueueState | "launch", (count: string) => string> = {
-  launch: (count) => `Starting a new ADE Cloud computer… ${count} for it.`,
-  move: (count) => `Moving this lane to its new ADE Cloud computer… ${count} for it.`,
-  resize: (count) => `Changing your ADE Cloud computer's size… ${count} for it.`,
-  waking: (count) => `Waking your ADE Cloud computer… ${count} for it.`,
-  waiting: (count) => `${count} for your ADE Cloud computer.`,
-};
+type CloudQueuedBubbleFacts = { messageId: string; state: CloudChatQueuedMessage["state"] };
+
+function cloudQueuedBubbleFacts(event: Extract<AgentChatEvent, { type: "user_message" }>): CloudQueuedBubbleFacts | null {
+  const value = event.metadata?.[CLOUD_QUEUED_METADATA_KEY] as Partial<CloudQueuedBubbleFacts> | undefined;
+  return value && typeof value.messageId === "string" && typeof value.state === "string"
+    ? { messageId: value.messageId, state: value.state }
+    : null;
+}
 
 /**
- * The messages an ADE Cloud chat holds in the account's queue while its
- * computer is asleep or a new one is set up (`useAdeCloudChatQueue`). Each
- * one shows here until the live chat has it, and a queued one can be
- * cancelled. A message the server could not send shows below with its
- * sentence until the person acts. Account level, by the chat's machine key:
- * no pin.
+ * A message the account's queue holds for an ADE Cloud chat whose computer
+ * is asleep or being set up, as the chat's own sent bubble. The real message
+ * replaces it once the computer has sent it. `timestamp` is the bubble's
+ * time: the send's own bubble keeps its row (and plays no second entrance)
+ * when the pane passes that bubble's time.
+ */
+export function cloudQueuedMessageEnvelope(
+  message: CloudChatQueuedMessage,
+  sessionId: string,
+  timestamp: string,
+): AgentChatEventEnvelope {
+  const names = message.attachments.map((attachment) => attachment.name).filter(Boolean);
+  const text = message.text.trim() || (names.length ? `Attached: ${names.join(", ")}` : "");
+  return {
+    sessionId,
+    timestamp,
+    event: {
+      type: "user_message",
+      text,
+      deliveryState: "queued",
+      metadata: { [CLOUD_QUEUED_METADATA_KEY]: { messageId: message.messageId, state: message.state } satisfies CloudQueuedBubbleFacts },
+    },
+  };
+}
+
+/** Takes a queued message back (the pane's `useAdeCloudChatQueue().cancel`). Null: the list shows no Cancel. */
+export const CloudQueuedBubbleContext = createContext<((messageId: string) => Promise<void>) | null>(null);
+
+/**
+ * The line under a queued bubble: a quiet Cancel while it waits, or what it
+ * waits for when that is not the computer (a sign-in). The working line under
+ * the chat says that the computer wakes. Nothing for any other bubble.
+ */
+export function CloudQueuedBubbleStatus({ event }: { event: Extract<AgentChatEvent, { type: "user_message" }> }) {
+  const cancel = useContext(CloudQueuedBubbleContext);
+  const facts = cloudQueuedBubbleFacts(event);
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!facts) return null;
+  if (facts.state === "waiting_for_sign_in") {
+    return (
+      <div className="mt-1 flex max-w-[82%] justify-end px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-4 text-amber-200/80" data-testid="cloud-queued-bubble-status">
+        Waits for a sign-in on the computer
+      </div>
+    );
+  }
+  if (facts.state !== "queued" || !cancel) return null;
+  return (
+    <div className="mt-1 flex max-w-[82%] items-center justify-end gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-4 text-fg/45" data-testid="cloud-queued-bubble-status">
+      {error ? <span className="min-w-0 truncate text-amber-200/80" title={error}>{error}</span> : null}
+      <button
+        type="button"
+        className={ROW_BUTTON}
+        disabled={cancelling}
+        onClick={() => {
+          setCancelling(true);
+          setError(null);
+          void cancel(facts.messageId)
+            .catch((err: unknown) => setError(err instanceof Error && err.message ? err.message : "ADE couldn't cancel that message."))
+            .finally(() => setCancelling(false));
+        }}
+      >
+        {cancelling ? "Cancelling…" : "Cancel"}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The messages the account's queue could not send for an ADE Cloud chat
+ * (`useAdeCloudChatQueue().failed`). A message that still waits shows as its
+ * own bubble in the chat (`cloudQueuedMessageEnvelope`), not here. Account
+ * level, by the chat's machine key: no pin.
  */
 export function CloudQueuedMessages({
-  messages,
-  failed = [],
-  state,
+  failed,
   style,
-  onCancel,
   onPutBack,
   onDismiss,
 }: {
-  messages: CloudChatQueuedMessage[];
   /** Messages the server could not send (`state: "failed"`), oldest first. */
-  failed?: CloudChatQueuedMessage[];
-  /** Why they wait. `waking`: the computer wakes for them (not a new computer: the launch card shows that). */
-  state: CloudQueueState;
+  failed: CloudChatQueuedMessage[];
   style?: CSSProperties;
-  onCancel: (messageId: string) => Promise<void>;
   /** Puts a failed message's text back in the box; the caller then drops the row. */
-  onPutBack?: (message: CloudChatQueuedMessage) => void;
-  onDismiss?: (messageId: string) => void;
+  onPutBack: (message: CloudChatQueuedMessage) => void;
+  onDismiss: (messageId: string) => void;
 }) {
-  const [cancelling, setCancelling] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const failedRows = onPutBack && onDismiss && failed.length > 0
-    ? <FailedQueuedMessages failed={failed} style={style} onPutBack={onPutBack} onDismiss={onDismiss} />
-    : null;
-  if (messages.length === 0) return failedRows;
-  const count = messages.length === 1 ? "1 message waits" : `${messages.length} messages wait`;
-  const cancel = (messageId: string) => {
-    if (cancelling) return;
-    setCancelling(messageId);
-    setError(null);
-    void onCancel(messageId)
-      .catch((err: unknown) => setError(err instanceof Error && err.message ? err.message : "ADE couldn't cancel that message."))
-      .finally(() => setCancelling(null));
-  };
-  return (
-    <>
-    <Banner
-      layout="inline"
-      style={style}
-      model={{
-        id: "chat-cloud-queued-messages",
-        tone: "info",
-        busy: state !== "waiting",
-        title: QUEUE_TITLE[messages.some((message) => message.launchId) ? "launch" : state](count),
-        detail: error ?? (state === "move" || state === "resize" ? "ADE Cloud keeps them, and the agent gets them in order once it is done." : "The agent gets them in order when the computer is up."),
-        report: false,
-        extra: (
-          <ul className="mt-1 flex flex-col gap-1" aria-label="Queued messages">
-            {messages.map((message) => (
-              <li key={message.messageId} className="flex items-center gap-2 text-[12px]">
-                <span className="min-w-0 flex-1 truncate" title={message.text}>{message.text}</span>
-                <span className="shrink-0 opacity-70">{rowState(message)}</span>
-                {message.state === "queued" ? (
-                  <button
-                    type="button"
-                    className={ROW_BUTTON}
-                    disabled={cancelling !== null}
-                    onClick={() => cancel(message.messageId)}
-                  >
-                    {cancelling === message.messageId ? "Cancelling…" : "Cancel"}
-                  </button>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        ),
-      }}
-    />
-    {failedRows}
-    </>
-  );
+  if (failed.length === 0) return null;
+  return <FailedQueuedMessages failed={failed} style={style} onPutBack={onPutBack} onDismiss={onDismiss} />;
 }
 
 /**

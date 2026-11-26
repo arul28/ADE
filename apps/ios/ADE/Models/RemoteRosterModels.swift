@@ -142,6 +142,10 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   /// Client-only: the setup rail of a chat launch that still owns this row
   /// (`hubRosterOverlayingChatLaunches`). Hosts never send it.
   var launchRail: [ChatLaunchRailSegment]? = nil
+  /// Client-only: the composer settings an ADE Cloud chat's saved copy
+  /// carries (`CloudSavedChatRow.settings`), for its stand-in summary while
+  /// its computer rests. Hosts never send it.
+  var savedSettings: [String: RemoteJSONValue]? = nil
 }
 
 extension RemoteRosterChat {
@@ -1026,9 +1030,30 @@ extension RemoteRosterChat {
     if let parentId = nonEmptyTrimmed(orchestrationParentSessionId) {
       payload["orchestrationParentSessionId"] = parentId
     }
+    // A resting ADE Cloud chat's saved settings: its own thinking level and
+    // Fast, not the defaults. Only the keys the summary reads as text or a
+    // flag, so an unknown or mistyped value never fails the decode.
+    for (key, value) in savedSettings ?? [:] where rosterSavedSettingKeys.contains(key) {
+      switch value {
+      case .string(let text): payload[key] = text
+      case .bool(let flag) where key == "fastMode": payload[key] = flag
+      case .null: payload[key] = NSNull()
+      default: continue
+      }
+    }
+    if let modelId = payload["modelId"] as? String, !modelId.isEmpty, model.isEmpty { payload["model"] = modelId }
     return rosterDerivedChatSummary(payload)
   }
 }
+
+/// The saved-row settings a stand-in summary takes (`CloudChatRowSettings`).
+/// `fastMode` is the only flag; every other key is text.
+private let rosterSavedSettingKeys: Set<String> = [
+  "modelId", "presetId", "reasoningEffort", "fastMode", "executionMode", "interactionMode", "permissionMode",
+  "claudePermissionMode", "codexApprovalPolicy", "codexSandbox", "codexConfigSource", "opencodePermissionMode",
+  "droidPermissionMode", "copilotPermissionMode", "copilotContextTier", "copilotAutoTier", "musePermissionMode",
+  "cursorModeId",
+]
 
 /// A chat summary built from what this phone already knows (a roster row, or a
 /// side chat's main chat), marked `rosterDerived` so the composer claims no

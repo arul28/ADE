@@ -16,17 +16,16 @@
 import { maskBrowserTabMentions } from "../../../shared/browserTabMention";
 import {
   CHAT_MENTION_KINDS,
-  CHAT_MENTION_MAX_PER_KIND,
-  CHAT_MENTION_MAX_RESULTS,
   appendChatMentionBlocks,
   collectChatMentionTargets,
   isChatMentionId,
   parseChatMentionKindFilter,
-  rankChatMentionSuggestions,
+  rankChatMentionMenu,
   renderChatMentionBlock,
   renderUnresolvedChatMentionBlock,
 } from "../../../shared/chatMentions";
 import {
+  accountMachineMentionSuggestion,
   buildAccountMachineSnapshot,
   describeAccountMachinePresence,
   findMachineByMentionId,
@@ -416,30 +415,12 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
     });
     if (!roster || roster.state !== "ok") return [];
     const localKey = localMachineKey();
-    const now = Date.now();
-    return roster.machines.map((machine) => {
-      const snapshot = buildAccountMachineSnapshot({
-        machine,
-        activityItems: roster.activity,
-        localMachineKey: localKey,
-      });
-      const projects = snapshot.activityAvailable && snapshot.projects.length
-        ? `${snapshot.projects.length} project${snapshot.projects.length === 1 ? "" : "s"}`
-        : null;
-      return {
-        kind: "machine" as const,
-        id: snapshot.mentionId,
-        title: snapshot.name,
-        subtitle: [
-          snapshot.isThisMachine ? "this machine" : null,
-          describeAccountMachinePresence(snapshot, now),
-          projects,
-        ].filter(Boolean).join(" · "),
-        // Online machines first (all "now"), then by last heartbeat.
-        lastActivityAt: machine.online ? now : machine.lastSeenAt,
-        machine: { online: machine.online, isThisMachine: snapshot.isThisMachine },
-      };
-    });
+    const nowMs = Date.now();
+    return roster.machines.map((machine) => accountMachineMentionSuggestion(machine, {
+      activityItems: roster.activity,
+      localMachineKey: localKey,
+      nowMs,
+    }));
   };
 
   const buildMcpCandidates = async (): Promise<ChatMentionSuggestion[]> =>
@@ -491,24 +472,17 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
   ): Promise<ChatMentionSuggestResult> => {
     const rawQuery = typeof args.query === "string" ? args.query : "";
     const filter = parseChatMentionKindFilter(rawQuery);
-    const query = filter.rest;
     const kinds = filter.kind ? [filter.kind] : CHAT_MENTION_KINDS;
     const perKind = await Promise.all(kinds.map(async (kind) => {
       try {
-        const candidates = await candidateBuildersByKind[kind](args);
-        return rankChatMentionSuggestions(
-          candidates,
-          query,
-          filter.kind ? CHAT_MENTION_MAX_RESULTS : CHAT_MENTION_MAX_PER_KIND,
-        );
+        return await candidateBuildersByKind[kind](args);
       } catch (error) {
         // One failing roster must not blank the whole menu.
         deps.logger?.warn?.("chat mention suggestions failed for kind", { kind, error });
         return [] as ChatMentionSuggestion[];
       }
     }));
-    if (filter.kind || !query.trim()) return { suggestions: perKind.flat() };
-    return { suggestions: rankChatMentionSuggestions(perKind.flat(), query, CHAT_MENTION_MAX_RESULTS) };
+    return { suggestions: rankChatMentionMenu(perKind, rawQuery) };
   };
 
   // -------------------------------------------------------------------------

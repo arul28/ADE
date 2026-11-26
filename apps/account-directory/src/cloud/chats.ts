@@ -11,6 +11,7 @@ import {
   type CloudChatTranscriptPage,
   type CloudComputerDeleteReason,
   CLOUD_INSTANCE_ID,
+  cloudChatRowSettingsOf,
 } from "./contract";
 import { ROW_ID, UNREADABLE_REQUEST_MESSAGE, fail, json, pageCursorOf, pageCursorSql, readJson } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
@@ -121,7 +122,9 @@ async function accountBytes(env: CloudEnv, userId: string): Promise<number> {
   return row?.total ?? 0;
 }
 
-const SUMMARY_LIMITS: Record<keyof CloudChatRowInput, number> = {
+/** The row's text fields and their lengths; `settings` is checked on its own (`cloudChatRowSettingsOf`). */
+type RowTextKey = Exclude<keyof CloudChatRowInput, "settings">;
+const SUMMARY_LIMITS: Record<RowTextKey, number> = {
   title: 300,
   laneId: 160,
   laneName: 200,
@@ -140,7 +143,7 @@ const SUMMARY_LIMITS: Record<keyof CloudChatRowInput, number> = {
 function readRowInput(value: unknown): CloudChatRowInput | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const pick = (key: keyof CloudChatRowInput): string | null => {
+  const pick = (key: RowTextKey): string | null => {
     const entry = record[key];
     if (entry == null) return null;
     if (typeof entry !== "string") return null;
@@ -168,6 +171,8 @@ function readRowInput(value: unknown): CloudChatRowInput | null {
     lastActivityAt: lastActivity,
     parentChatId: parentChatId && ROW_ID.test(parentChatId) ? parentChatId : null,
     spawnKind: spawnKind && /^[a-z][a-z0-9_-]{0,39}$/.test(spawnKind) ? spawnKind : null,
+    // Settings that don't check out are left out, never a refused part.
+    settings: cloudChatRowSettingsOf(record.settings),
   };
 }
 
@@ -282,6 +287,7 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     toolType: rowInput.toolType,
     provider: rowInput.provider,
     model: rowInput.model,
+    settings: rowInput.settings,
     lastActivityAt: rowInput.lastActivityAt,
     lastSeq: Math.max(seq, lastSeq),
     updatedAt: now,
@@ -295,6 +301,8 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
     model: row.model,
     projectId: row.projectId,
     projectRoot: row.projectRoot,
+    // Sealed with the rest: they say how the person works, like the title.
+    ...(row.settings ? { settings: row.settings } : {}),
   })));
   const lastActivityMs = rowInput.lastActivityAt ? Date.parse(rowInput.lastActivityAt) : null;
   // The row this part was read against, and only it: a copy deleted or made again since takes
@@ -385,6 +393,7 @@ export function rowToJson(row: CopyRow, summary: Record<string, unknown> | null)
     toolType: text(summary?.toolType),
     provider: text(summary?.provider),
     model: text(summary?.model),
+    settings: cloudChatRowSettingsOf(summary?.settings),
     lastActivityAt: row.last_activity_at != null ? new Date(row.last_activity_at).toISOString() : null,
     lastSeq: row.last_seq,
     updatedAt: row.updated_at,

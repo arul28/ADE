@@ -420,6 +420,35 @@ export function rankChatMentionSuggestions<
 }
 
 /**
+ * The @-menu's rows from each kind's candidates, ranked the one way every
+ * source ranks them:
+ *
+ * - A leading kind word (`pr`, `mac`, `chat`, `lane`, `term`) narrows the
+ *   result to that kind and searches the rest of the query.
+ * - An empty query is a browse: each kind's most recent rows, capped per
+ *   kind, so one busy kind can't crowd the others out.
+ * - Otherwise every row is ranked as one list by match quality (not by
+ *   kind). Each kind is still capped before the mix.
+ *
+ * `perKind` holds one candidate list per kind (any order of kinds).
+ */
+export function rankChatMentionMenu<
+  T extends { kind: ChatMentionKind; id: string; title: string; subtitle?: string; lastActivityAt?: number | null },
+>(perKind: T[][], rawQuery: string): T[] {
+  const filter = parseChatMentionKindFilter(rawQuery);
+  const lists = filter.kind
+    ? [perKind.flat().filter((candidate) => candidate.kind === filter.kind)]
+    : perKind;
+  const ranked = lists.map((candidates) => rankChatMentionSuggestions(
+    candidates,
+    filter.rest,
+    filter.kind ? CHAT_MENTION_MAX_RESULTS : CHAT_MENTION_MAX_PER_KIND,
+  ));
+  if (filter.kind || !filter.rest.trim()) return ranked.flat();
+  return rankChatMentionSuggestions(ranked.flat(), filter.rest, CHAT_MENTION_MAX_RESULTS);
+}
+
+/**
  * Marker used when a mention token cannot be resolved (deleted chat, archived
  * lane, terminal from another machine). Kept explicit so the agent does not
  * silently ignore a token the user clearly meant.

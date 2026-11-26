@@ -335,7 +335,7 @@ import {
 import { redactSecrets, sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { cloudChatStoppedForRest, createCloudChatUploader } from "./services/cloudChats/cloudChatUploader";
 import { cloudDeleteFreezeRefusal } from "./services/power/cloudDeleteFreeze";
-import { SAVED_CHAT_STOPPED_STATUS } from "../../desktop/src/shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, savedChatRowSettings } from "../../desktop/src/shared/cloudSavedChats";
 import { noteAccountLanesChanged } from "./services/account/accountLaneIndexPublisher";
 import { createCloudLaneNameSync, type CloudLaneNameSync } from "../../desktop/src/main/services/adeCloud/cloudLaneNameSync";
 import { createCloudServerProvider } from "../../desktop/src/main/services/adeCloud/cloudServerProvider";
@@ -3206,6 +3206,9 @@ export async function createAdeRuntime(args: {
               // the saved Work tree nests it under its parent.
               parentChatId: summary?.orchestrationParentSessionId ?? row.orchestrationParentSessionId ?? null,
               spawnKind: summary?.spawnKind ?? row.spawnKind ?? null,
+              // The composer's settings (thinking level, Fast, access mode):
+              // a client shows them while this computer rests.
+              settings: savedChatRowSettings(summary),
             };
           },
           flushTranscript: () => flushAllQueuedTranscriptWrites(),

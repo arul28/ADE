@@ -18,7 +18,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatUpdateSessionArgs,
 } from "../../shared/types/chat";
-import { SAVED_CHAT_STOPPED_STATUS, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
+import { SAVED_CHAT_STOPPED_STATUS, savedChatSettingsSummaryFields, savedChatsMachineKey, type CloudSavedChatPage, type CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import { REMOTE_TARGET_NOT_FOUND_MESSAGE } from "../../shared/types/remoteRuntime";
 import { isRemoteMachineAwayError } from "../../shared/runtimeErrors";
 import type { LaneSummary } from "../../shared/types/lanes";
@@ -225,13 +225,25 @@ export function savedChatHistoryPage(page: CloudSavedChatPage, sessionId: string
   };
 }
 
+/**
+ * The chat as its saved copy knows it, with the settings the computer saved
+ * (thinking level, Fast, preset, access mode) and the picks this window made
+ * since, so the composer shows the chat's own settings while it rests.
+ */
 export function savedChatSummary(location: SavedChatLocation): AgentChatSessionSummary {
   const row = location.row;
+  const picks = queuedChatPicks.get(location.chatId);
   return {
+    ...savedChatSettingsSummaryFields(row),
+    ...(picks?.modelId ? { modelId: picks.modelId } : {}),
+    ...(typeof picks?.presetId === "string" ? { presetId: picks.presetId } : {}),
+    ...(picks?.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
+    ...(picks?.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
+    ...(picks?.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
     sessionId: location.chatId,
     laneId: row.laneId ?? "unknown",
     provider: row.provider ?? "claude",
-    model: row.model ?? "",
+    model: picks?.modelId ?? row.model ?? "",
     title: row.title,
     status: "idle",
     startedAt: row.lastActivityAt ?? "",
@@ -304,19 +316,19 @@ function notePicks(chatId: string, args: AgentChatUpdateSessionArgs): QueuedChat
   return next;
 }
 
-/** The chat as its saved copy knows it, with the picks the next send carries. */
-function savedChatSessionAfterPick(location: SavedChatLocation, picks: QueuedChatPicks): AgentChatSession {
+/** The chat as its saved copy knows it, with the picks the next send carries (`notePicks` stored them). */
+function savedChatSessionAfterPick(location: SavedChatLocation): AgentChatSession {
   const summary = savedChatSummary(location);
   return {
     id: summary.sessionId,
     laneId: summary.laneId,
     provider: summary.provider,
-    model: picks.modelId ?? summary.model,
-    ...(picks.modelId ? { modelId: picks.modelId } : {}),
-    ...(typeof picks.presetId === "string" ? { presetId: picks.presetId } : {}),
-    ...(picks.reasoningEffort !== undefined ? { reasoningEffort: picks.reasoningEffort } : {}),
-    ...(picks.fastMode !== undefined ? { fastMode: picks.fastMode } : {}),
-    ...(picks.fastTier !== undefined ? { fastTier: picks.fastTier } : {}),
+    model: summary.model,
+    ...(summary.modelId ? { modelId: summary.modelId } : {}),
+    ...(summary.presetId ? { presetId: summary.presetId } : {}),
+    ...(summary.reasoningEffort !== undefined ? { reasoningEffort: summary.reasoningEffort } : {}),
+    ...(summary.fastMode !== undefined ? { fastMode: summary.fastMode } : {}),
+    ...(summary.fastTier !== undefined ? { fastTier: summary.fastTier } : {}),
     status: "idle",
     createdAt: summary.startedAt,
     lastActivityAt: summary.lastActivityAt,
@@ -626,7 +638,8 @@ export function withSavedChatReads(
       // changes still reach the computer.
       if (location && reach?.queueSend && updateCarriedByQueue(args)
         && (isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
-        return savedChatSessionAfterPick(location, notePicks(location.chatId, args));
+        notePicks(location.chatId, args);
+        return savedChatSessionAfterPick(location);
       }
       // This change reaches the computer now: older waiting picks of the same keys must not follow it.
       dropPicksSetBy(args.sessionId, args);

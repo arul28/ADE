@@ -33,8 +33,16 @@ const REDACTED = "[REDACTED]";
 /** Field names that hold a credential, the same list `redactSecrets` treats as a JSON key. */
 const SENSITIVE_KEY = /^(?:api[_-]?key|secret|token|password|authorization)$/i;
 
-/** `rowStale`: the chat's title, status or lane name changed after its last part; the next upload sends the row even with no new text. */
-type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean };
+/**
+ * `rowStale`: the chat's title, status or lane name changed after its last part; the next upload sends the row even with no new text.
+ * `settings`: the composer settings the saved row last carried (`settingsKey`), so a setting changed with no turn after it still reaches the copy before a rest.
+ */
+type Entry = { offset: number; seq: number; dirty: boolean; laneId: string | null; rowStale?: boolean; settings?: string };
+
+/** The settings of a row as one comparable string; "" when it has none. */
+function settingsKey(row: CloudSavedChatRowInput): string {
+  return row.settings ? JSON.stringify(row.settings) : "";
+}
 type StateFile = {
   v: 1;
   machineKey: string | null;
@@ -456,6 +464,7 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
       entry.laneId = row.laneId;
       // The row went with this part.
       entry.rowStale = false;
+      entry.settings = settingsKey(row);
       persist();
       sent = true;
       if (mode === "turn" || !delta.more) return sent;
@@ -500,8 +509,28 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     entry.rowStale = false;
     entry.dirty = false;
     entry.laneId = row.laneId;
+    entry.settings = settingsKey(row);
     persist();
     return true;
+  }
+
+  /**
+   * Before a rest: a saved copy whose chat's settings changed with no turn
+   * after the change (a thinking level picked, nothing sent) gets its row
+   * again, so a client shows the chat's own settings while this computer
+   * rests. A copy saved before rows carried settings gets them once here.
+   */
+  async function markChangedSettings(): Promise<void> {
+    for (const [sessionId, entry] of Object.entries(state.chats)) {
+      if (disposed) return;
+      if (entry.dirty || entry.seq < 1 || running.has(sessionId) || restoringChats.has(sessionId)) continue;
+      const row = await deps.readChatRow(sessionId).catch(() => null);
+      // No key recorded yet (a copy older than settings): sent once.
+      if (!row || (entry.settings !== undefined && settingsKey(row) === entry.settings)) continue;
+      entry.rowStale = true;
+      entry.dirty = true;
+    }
+    persist();
   }
 
   async function deleteAndRestart(sessionId: string, base: string, machineKey: string, headers: Record<string, string>, entry: Entry): Promise<void> {
@@ -588,11 +617,15 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
     async uploadPending(timeoutMs = 45_000) {
       const started = Date.now();
       const deadline = started + timeoutMs;
-      // Dirty chats plus any upload already running, so a turn that just ended is waited for.
-      const pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
+      let pending: string[] = [];
       let uploaded = 0;
       const drain = (async () => {
         await runDeletes().catch(() => {});
+        await markChangedSettings().catch((error: unknown) => {
+          log?.warn("cloud.chat_settings_check_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
+        // Dirty chats plus any upload already running, so a turn that just ended is waited for.
+        pending = [...new Set([...Object.entries(state.chats).filter(([, entry]) => entry.dirty).map(([id]) => id), ...running.keys()])];
         let index = 0;
         const worker = async () => {
           while (index < pending.length) {
@@ -612,7 +645,8 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         }),
       ]);
       if (timer) clearTimeout(timer);
-      const remaining = pending.filter((id) => state.chats[id]?.dirty).length;
+      // A time-out before the list was made still counts what waits.
+      const remaining = (pending.length ? pending : Object.keys(state.chats)).filter((id) => state.chats[id]?.dirty).length;
       return { uploaded, remaining, timedOut };
     },
     async adoptRestored(sessionId, seq, laneId) {
