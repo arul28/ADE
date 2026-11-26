@@ -31086,6 +31086,12 @@ async function runServe(
   // wake only for an update that check may sleep the computer: read too
   // early, it would tell the server "no timer" first.
   const cloudProjectsOpenWaitMs = 60_000;
+  // A project still opening past that wait: its timers and work are unread,
+  // so it counts as busy ("unknown", as a failed read does) for this long
+  // after the brain's start. A hung open then costs this much awake time
+  // per start, not every hour after it.
+  const cloudProjectsOpeningBusyMs = 10 * 60_000;
+  const cloudBrainStartedAt = Date.now();
   let markCloudProjectsOpened: () => void = () => {};
   const cloudProjectsOpened = !embedded && cloudInstanceId
     ? new Promise<void>((resolve) => {
@@ -31105,7 +31111,11 @@ async function runServe(
         if (cloudProjectsOpened) await cloudProjectsOpened;
         // Only scopes whose boot is done: one still booting past that wait
         // (a hung folder) must not hold every check back. A booting scope runs
-        // no agent work yet; the next check reads it once it is up.
+        // no agent work yet; the next check reads it once it is up, and until
+        // then it keeps the computer awake (below).
+        const opening = Date.now() - cloudBrainStartedAt < cloudProjectsOpeningBusyMs
+          && projectRegistry.list().some((record) =>
+            scopeRegistry.getIfBooted(record.projectId) != null && !scopeRegistry.getIfReady(record.projectId));
         const readyScopes: Pick<InstanceType<typeof ProjectScopeRegistry>, "getIfBooted"> = {
           getIfBooted: (projectId) => {
             const scope = scopeRegistry.getIfReady(projectId);
@@ -31125,7 +31135,13 @@ async function runServe(
         cloudActivityReporter?.noteAgents(facts);
         // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
         // one goes to the account server, which wakes the machine for it.
-        return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
+        return {
+          busy: busy || opening,
+          reasons: opening ? [...reasons, "unknown"] : reasons,
+          nextWakeAt,
+          waitingOnPerson,
+          laneSetups: facts.laneSetups ?? 0,
+        };
       }
     : null;
   // A lane launch's setup filled the disk: grow it now, while nothing else

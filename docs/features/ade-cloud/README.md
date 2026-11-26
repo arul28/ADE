@@ -2261,8 +2261,14 @@ directory wakes it (routes in `apps/account-directory/README.md`):
   - The keep-awake's busy read waits for those opens, for at most a minute
     (`cloud.project_open_at_start_slow`). Its first check can sleep a
     computer that woke only for an update, so that check must already send
-    the timer. The read then counts only projects whose open finished, so a
-    hung folder never holds a check back.
+    the timer. The read never waits on a project still opening after that:
+    such a project counts as busy (`unknown`) for up to 10 minutes after the
+    brain's start, then it is left out. A hung folder never holds a check
+    back, and keeps the computer awake for 10 minutes at most.
+  - The last busy read before a sleep also compares the timer. A timer that
+    changed during the rest save (a project done opening) is not on the
+    server yet, so the computer does not sleep then; the next check sends it
+    first.
 - **Event wakes.** The computer lists the topics that wake it
   (`PUT /cloud/instances/:id/event-wakes`): a Linear organization, a Linear
   agent account, or the account's custom webhooks. The webhook relay reports
