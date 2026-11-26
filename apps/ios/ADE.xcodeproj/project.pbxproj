@@ -31,6 +31,7 @@
 		C15C00000000000000B00003 /* WorkSponsoredPickCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */; };
 		C15C00000000000000B00099 /* WorkCloudTierRequestCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */; };
 		C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A00001 /* CloudServerClient.swift */; };
+		C1AE00000000000000B0000A /* CloudPushWorkTally.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AE00000000000000A0000A /* CloudPushWorkTally.swift */; };
 		C1AD000000000000000B0003 /* SettingsCloudAccountProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */; };
 		C1AD000000000000000B0001 /* AccountCloudLaunches.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AD000000000000000A0001 /* AccountCloudLaunches.swift */; };
 		DV1000000000000000000001 /* LiveInspectModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = DV0000000000000000000001 /* LiveInspectModels.swift */; };
@@ -637,6 +638,7 @@
 		C15C00000000000000A00003 /* WorkSponsoredPickCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSponsoredPickCard.swift; path = ADE/Views/Work/WorkSponsoredPickCard.swift; sourceTree = "<group>"; };
 		C15C00000000000000A00099 /* WorkCloudTierRequestCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCloudTierRequestCard.swift; path = ADE/Views/Work/WorkCloudTierRequestCard.swift; sourceTree = "<group>"; };
 		C1AE00000000000000A00001 /* CloudServerClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudServerClient.swift; path = ADE/Services/CloudServerClient.swift; sourceTree = "<group>"; };
+		C1AE00000000000000A0000A /* CloudPushWorkTally.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CloudPushWorkTally.swift; path = ADE/Services/CloudPushWorkTally.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0003 /* SettingsCloudAccountProviders.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsCloudAccountProviders.swift; path = ADE/Views/Settings/SettingsCloudAccountProviders.swift; sourceTree = "<group>"; };
 		C1AD000000000000000A0001 /* AccountCloudLaunches.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AccountCloudLaunches.swift; path = ADE/Services/AccountCloudLaunches.swift; sourceTree = "<group>"; };
 		DV0000000000000000000001 /* LiveInspectModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveInspectModels.swift; path = ADE/Views/Duo/LiveInspectModels.swift; sourceTree = "<group>"; };
@@ -1783,6 +1785,7 @@
 				C1AE00000000000000A00002 /* AccountCloudStore.swift */,
 				C15C00000000000000A00001 /* CloudSponsored.swift */,
 				C1AE00000000000000A00001 /* CloudServerClient.swift */,
+				C1AE00000000000000A0000A /* CloudPushWorkTally.swift */,
 				C10D000000000000000A0006 /* ProviderLoginsPhoneStatus.swift */,
 				A37A0000000000000000A003 /* SyncService+CloudPhone.swift */,
 				5E77000000000000000A0007 /* SyncService+SettingsPages.swift */,
@@ -2472,6 +2475,7 @@
 				C1AE00000000000000B00002 /* AccountCloudStore.swift in Sources */,
 				C15C00000000000000B00001 /* CloudSponsored.swift in Sources */,
 				C1AE00000000000000B00001 /* CloudServerClient.swift in Sources */,
+				C1AE00000000000000B0000A /* CloudPushWorkTally.swift in Sources */,
 				A37A0000000000000000B002 /* CloudPaneSheet.swift in Sources */,
 				A37A0000000000000000B0F1 /* CloudPreviews.swift in Sources */,
 				C1AE00000000000000B00010 /* CloudAtRestPreviews.swift in Sources */,

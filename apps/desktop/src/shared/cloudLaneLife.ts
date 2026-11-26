@@ -28,6 +28,8 @@ export type CloudLaneWorkLane = {
   /** Files changed and not committed, when the lane's backup counted them; unset from the computer's own check. */
   files?: number;
   state: "clean" | "pushed" | "failed" | "unpushed";
+  /** Why GitHub stopped a failed lane (`github_refused`, `github_unreachable`), from the computer's own check. */
+  reason?: string | null;
 };
 
 /** A work lane's name for people: the primary lane is the "main checkout". */

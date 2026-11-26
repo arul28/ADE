@@ -913,67 +913,6 @@ struct CloudExecResult: Decodable {
 // way, in the same words. Account-level: each names a computer of the
 // account by its ADE Cloud id, never a pin.
 
-/// One lane as `ade cloud push-work` left it (`CloudPushWorkLane`). Older computers leave the list out.
-struct CloudPushWorkLane: Equatable {
-  let laneId: String
-  let laneName: String
-  let branchRef: String
-  let primary: Bool
-  let dirty: Bool
-  let ahead: Int
-  /// `clean`, `pushed`, `failed` or `unpushed` (anything else reads as unpushed).
-  let state: String
-
-  /// "main checkout", else the lane's name, else its branch (`cloudWorkLaneName`).
-  var shownName: String { primary ? "main checkout" : (laneName.isEmpty ? branchRef : laneName) }
-  /// Work that is still only on the computer.
-  var isLeft: Bool { state == "unpushed" || state == "failed" }
-}
-
-/// `ade cloud push-work` / `work-state`'s tally (`CloudPushWorkTally`).
-struct CloudPushWorkTally: Equatable {
-  let pushed: Int
-  let failed: Int
-  let skipped: Int
-  let lanes: [CloudPushWorkLane]?
-
-  /// The command's JSON (`{ result: … }` or the tally itself), or nil when it isn't JSON (`readPushAllTally`).
-  init?(stdout: String) {
-    guard let data = stdout.trimmingCharacters(in: .whitespacesAndNewlines).data(using: .utf8),
-          let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-    let tally = parsed["result"] as? [String: Any] ?? parsed
-    func count(_ key: String) -> Int {
-      if let number = tally[key] as? NSNumber { return number.intValue }
-      if let text = tally[key] as? String { return Int(text) ?? 0 }
-      return 0
-    }
-    pushed = count("pushed")
-    failed = count("failed")
-    skipped = count("skipped")
-    if let raw = tally["lanes"] as? [Any] {
-      let known: Set<String> = ["clean", "pushed", "failed", "unpushed"]
-      lanes = raw.compactMap { entry in
-        guard let lane = entry as? [String: Any], let laneId = lane["laneId"] as? String else { return nil }
-        let state = lane["state"] as? String ?? ""
-        return CloudPushWorkLane(
-          laneId: laneId,
-          laneName: lane["laneName"] as? String ?? "",
-          branchRef: lane["branchRef"] as? String ?? "",
-          primary: lane["primary"] as? Bool == true,
-          dirty: lane["dirty"] as? Bool == true,
-          ahead: (lane["ahead"] as? NSNumber)?.intValue ?? 0,
-          state: known.contains(state) ? state : "unpushed"
-        )
-      }
-    } else {
-      lanes = nil
-    }
-  }
-
-  /// The lanes whose work is still only on the computer (`toWorkLanes`).
-  var leftLanes: [CloudPushWorkLane] { (lanes ?? []).filter(\.isLeft) }
-}
-
 /// How one of these steps went: whether it did it, and the sentence to show.
 struct CloudComputerOutcome {
   let ok: Bool
@@ -1063,6 +1002,7 @@ extension CloudServerClient {
     guard let tally = ran.tally else { return (nil, [], ran.error ?? "ADE couldn't read this computer's work.") }
     guard tally.lanes != nil else { return (nil, [], "This computer's ADE is too old to say what isn't pushed.") }
     let left = tally.leftLanes
+    if let github = cloudPushWorkGithubMessage(left, kept: false) { return (nil, left, github) }
     if tally.failed > 0 { return (nil, left, "ADE couldn't read every project on this computer.") }
     return (!left.isEmpty, left, nil)
   }
@@ -1144,6 +1084,7 @@ extension CloudServerClient {
     }
     let left = tally.leftLanes
     if tally.failed > 0 || !left.isEmpty || (tally.lanes == nil && tally.skipped > 0) {
+      if let github = cloudPushWorkGithubMessage(left, kept: true) { return fail(github) }
       let names = left.map(\.shownName).filter { !$0.isEmpty }
       return fail("ADE couldn't push all work on this computer\(names.isEmpty ? "" : " (\(names.joined(separator: ", ")))"), so it stays. Open the lane to see why, then try again.")
     }
@@ -1157,7 +1098,7 @@ extension CloudServerClient {
     }
     let ownLane = tally.lanes?.first { $0.laneId == laneId } ?? tally.lanes?.first { !$0.primary }
     guard let branchRef = nonEmptyTrimmed(ownLane?.branchRef) ?? box.laneBranch else {
-      return fail("ADE couldn't tell which branch this lane is on, so the computer stays.")
+      return fail(tally.lanes != nil && ownLane == nil ? cloudLaneNotOnComputerMessage : "ADE couldn't tell which branch this lane is on, so the computer stays.")
     }
     // A refusal (the server couldn't read the lane, or knows none) deleted
     // nothing: its sentence is shown as it is, and the lane is not freed.
