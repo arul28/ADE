@@ -287,26 +287,31 @@ export function createCtoOpenWork(args: CtoOpenWorkArgs) {
     const run = (async () => {
       const resolver = linkedWorkResolver;
       if (!resolver) return 0;
-      const closures = new Map<string, string>();
+      // Each closure keeps the link and creation time it was checked against.
+      const linkKey = (item: CtoOpenWorkItem) => `${item.createdAt}|${JSON.stringify(item.link ?? null)}`;
+      const closures = new Map<string, { outcome: string; checked: string }>();
       for (const item of readOpenWork()) {
         if (item.doneAt || !item.link) continue;
         try {
           const outcome = await linkedWorkOutcome(item, resolver);
-          if (outcome) closures.set(item.id, clipText(redactSecrets(outcome), OPEN_WORK_OUTCOME_MAX_CHARS));
+          if (outcome) {
+            closures.set(item.id, { outcome: clipText(redactSecrets(outcome), OPEN_WORK_OUTCOME_MAX_CHARS), checked: linkKey(item) });
+          }
         } catch (error) {
           warn("cto_memory.linked_work_check_failed", error, { id: item.id });
         }
       }
       if (!closures.size) return 0;
-      // Read again: the person may have finished, reopened or removed an item
-      // while the checks ran. Close only what is still open and still linked.
+      // Read again: the person may have finished, reopened or removed an item,
+      // or a restored copy replaced the list, while the checks ran. Close only
+      // what is still open and still linked to what was checked.
       const doneAt = nowIso();
       let closed = 0;
       const next = readOpenWork().map((item) => {
-        const outcome = closures.get(item.id);
-        if (!outcome || item.doneAt || !item.link) return item;
+        const closure = closures.get(item.id);
+        if (!closure || item.doneAt || !item.link || linkKey(item) !== closure.checked) return item;
         closed += 1;
-        return { ...item, doneAt, outcome, closedBy: "auto" as const };
+        return { ...item, doneAt, outcome: closure.outcome, closedBy: "auto" as const };
       });
       if (!closed) return 0;
       writeOpenWork(next);

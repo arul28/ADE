@@ -10865,27 +10865,30 @@ export function createPrService({
 
     /**
      * A PR's state on the repo ("open", "draft", "merged", "closed") from
-     * what ADE already stored: a lane's PR row and the repo's PR list. Either
-     * one saying merged or closed wins, because a lane's row stops updating
-     * once its lane is gone. Both only for the project's repo: a lane may link
-     * a same-numbered PR on another repo. Null when ADE has never seen it. No
-     * network.
+     * what ADE already stored: a lane's PR row and the repo's PR list, the
+     * newer of the two. A lane's row stops updating once its lane is gone, so
+     * the repo list's later merge wins; a reopen writes the lane row first, so
+     * it wins over the list's older close. Both only for the project's repo: a
+     * lane may link a same-numbered PR on another repo. Null when ADE has
+     * never seen it. No network.
      */
     getRepoPullRequestState(prNumber: number): string | null {
       const repo = activeRepoSqlFilter();
-      const linked = db.get<{ state: string }>(
-        `select state from pull_requests where project_id = ? and github_pr_number = ?${repo.clause}
+      const linked = db.get<{ state: string; updated_at: string | null }>(
+        `select state, updated_at from pull_requests where project_id = ? and github_pr_number = ?${repo.clause}
           order by updated_at desc limit 1`,
         [projectId, prNumber, ...repo.params],
-      )?.state || null;
-      const projected = db.get<{ state: string }>(
-        `select state from github_pr_projections where project_id = ? and github_pr_number = ?${repo.clause} limit 1`,
+      );
+      const projected = db.get<{ state: string; updated_at: string | null }>(
+        `select state, updated_at from github_pr_projections where project_id = ? and github_pr_number = ?${repo.clause} limit 1`,
         [projectId, prNumber, ...repo.params],
-      )?.state || null;
-      for (const terminal of ["merged", "closed"]) {
-        if (linked === terminal || projected === terminal) return terminal;
-      }
-      return linked ?? projected;
+      );
+      if (!linked?.state || !projected?.state) return linked?.state || projected?.state || null;
+      const linkedAt = parseIsoMs(linked.updated_at);
+      const projectedAt = parseIsoMs(projected.updated_at);
+      if (linkedAt !== projectedAt) return linkedAt > projectedAt ? linked.state : projected.state;
+      // Same instant: a merge or close is the more final word.
+      return projected.state === "merged" || projected.state === "closed" ? projected.state : linked.state;
     },
 
     async listPrsByLane(): Promise<PrLaneSummary[]> {

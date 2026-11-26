@@ -594,6 +594,7 @@ describe("ctoMemoryService linked open work", () => {
     const restedBeforeLink = track("Review the plan", { kind: "chat", sessionId: "chat-rested-before" });
     const finishedByPerson = track("Ship the beta", { kind: "chat", sessionId: "chat-person-finished" });
     const removedByPerson = track("Old task", { kind: "chat", sessionId: "chat-removed" });
+    const relinked = track("Fix the flake", { kind: "chat", sessionId: "chat-relinked-from" });
 
     // The chat checks answer only when released, so the person edits the list
     // while the reconcile is between its checks and its write.
@@ -604,6 +605,7 @@ describe("ctoMemoryService linked open work", () => {
       "chat-rested-before": { done: false, restedAt: "2000-01-01T00:00:00.000Z", statusLine: null },
       "chat-person-finished": { done: true, restedAt: null, statusLine: "Shipped" },
       "chat-removed": { done: true, restedAt: null, statusLine: null },
+      "chat-relinked-from": { done: true, restedAt: null, statusLine: "Gave up" },
     };
     service.setLinkedWorkResolver({
       prState: (number) => (number === 2641 ? "merged" : "open"),
@@ -617,6 +619,10 @@ describe("ctoMemoryService linked open work", () => {
     service.updateOpenWork({ op: "complete", id: finishedByPerson });
     service.updateOpenWork({ op: "remove", id: removedByPerson });
     service.updateOpenWork({ op: "add", text: "Reply to Harris", owner: "user" });
+    // A restored copy points one item at another chat while its old one is checked.
+    const copy = JSON.parse(service.readOpenWorkText() ?? "{}") as { items: Array<{ id: string; link?: unknown }> };
+    for (const item of copy.items) if (item.id === relinked) item.link = { kind: "chat", sessionId: "chat-relinked-to" };
+    service.replaceOpenWorkText(JSON.stringify(copy));
     release();
     await expect(running).resolves.toBe(2);
 
@@ -632,6 +638,8 @@ describe("ctoMemoryService linked open work", () => {
     expect(byId.get(finishedByPerson)).toMatchObject({ closedBy: "user" });
     expect(byId.get(finishedByPerson)?.outcome).toBeUndefined();
     expect(byId.has(removedByPerson)).toBe(false);
+    // Its old chat's outcome is not its new chat's.
+    expect(byId.get(relinked)).toMatchObject({ doneAt: null, link: { kind: "chat", sessionId: "chat-relinked-to" } });
     expect(items.find((item) => item.text === "Reply to Harris")).toMatchObject({ owner: "user", doneAt: null });
     expect(onLinkedWorkClosed).toHaveBeenCalledWith(2);
     service.close();
