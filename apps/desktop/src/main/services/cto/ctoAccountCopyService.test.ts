@@ -139,10 +139,11 @@ describe("ctoAccountCopyService across machines", () => {
       "PR #4182 moved billing to the new queue",
       "A decided long ago to keep the monorepo",
     ]));
-    // Every live chunk in the account is one C's index names: none are left behind or missing.
+    // Every chunk C's index names is live. Chunks of the index C took over stay:
+    // the old home may still point at them before it hears of the move.
     const index = decodeCtoArchiveCopyIndex(account.value("archive"));
     expect(index?.ownerDeviceId).toBe("device-c");
-    expect(account.liveKeys().filter((key) => key.startsWith("archive:")).sort()).toEqual([...index!.chunks].sort());
+    expect(account.liveKeys()).toEqual(expect.arrayContaining([...index!.chunks]));
     account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
     await a.service.adopt({ home });
 

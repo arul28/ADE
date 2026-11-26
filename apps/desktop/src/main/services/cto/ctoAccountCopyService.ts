@@ -15,9 +15,9 @@
  * rebuilds the thread on one machine.
  *
  * The archive travels beside the copy, in vault items of its own
- * (`ctoArchiveCopy.ts`), written by the home after the copy and taken in by a
- * new home after the notes. A home never writes over another machine's
- * archive before it has taken that one in full.
+ * (`ctoArchiveCopySync.ts`), written by the home after the copy and taken in
+ * by a new home after the notes. A home never writes over another machine's
+ * archive before it has taken that one in.
  */
 
 import fs from "node:fs";
@@ -43,18 +43,7 @@ import { writeTextAtomic } from "../shared/utils";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { CtoMemoryService } from "./ctoMemoryService";
 import type { CtoStoryRecord } from "./ctoStory";
-import {
-  CTO_ARCHIVE_COPY_CHUNK_PREFIX,
-  CTO_ARCHIVE_COPY_FLOOR_META,
-  CTO_ARCHIVE_COPY_INDEX_KEY,
-  decodeCtoArchiveCopyChunk,
-  decodeCtoArchiveCopyIndex,
-  encodeCtoArchiveCopyIndex,
-  packCtoArchiveCopy,
-  readCtoArchiveCopyFloors,
-  type CtoArchiveCopyIndex,
-} from "./ctoArchiveCopy";
-import type { CtoArchiveRecord } from "./ctoMemoryArchive";
+import { createCtoArchiveCopySync } from "./ctoArchiveCopySync";
 
 const ENCODED_PREFIX = "gz1:";
 const SAVE_DEBOUNCE_MS = 3_000;
@@ -391,159 +380,58 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
         lastWrittenHash = null;
       }
     }
+    if (!(await writeCopyIfChanged(scope, existing, reason))) return;
+    archiveSync.save(scope, self, home, reason);
+  };
+
+  /**
+   * Writes the copy when it changed since this machine last wrote it, or the
+   * account holds another machine's. False when it couldn't be written: the
+   * archive then waits for the next save.
+   */
+  const writeCopyIfChanged = async (
+    scope: string,
+    existing: { copy: CtoAccountCopy | null; revision: string | null },
+    reason: string,
+  ): Promise<boolean> => {
     const copy = await build();
-    if (!copy) return;
+    if (!copy || !args.vault) return false;
     const { savedAt: _savedAt, ...stable } = copy;
     const hash = createHash("sha256").update(JSON.stringify(stable)).digest("hex");
-    if (hash !== lastWrittenHash || !existing.copy || !sameDevice(existing.copy.ownerDeviceId, self)) {
-      const encoded = encodeCtoAccountCopy(copy);
-      if (!encoded) {
-        logger.warn("cto.account_copy_too_large", { reason });
-        return;
-      }
-      const answer = args.vault.trySet(
-        scope,
-        CTO_ACCOUNT_COPY_VAULT_KIND,
-        CTO_ACCOUNT_COPY_VAULT_KEY,
-        encoded,
-        // No row here is a claim too: the account may have one this machine has
-        // not pulled yet, and a blind write would replace it.
-        { expectedRevision: existing.revision ?? ACCOUNT_VAULT_NO_REVISION },
-      );
-      if (answer !== "queued") {
-        logger.warn("cto.account_copy_not_saved", { reason, answer });
-        return;
-      }
-      lastWrittenHash = hash;
-      logger.info?.("cto.account_copy_saved", { reason, chars: encoded.length });
+    if (hash === lastWrittenHash && existing.copy && sameDevice(existing.copy.ownerDeviceId, copy.ownerDeviceId)) return true;
+    const encoded = encodeCtoAccountCopy(copy);
+    if (!encoded) {
+      logger.warn("cto.account_copy_too_large", { reason });
+      return false;
     }
-    saveArchive(scope, self, home, reason);
-  };
-
-  /* ── The archive beside the copy (`ctoArchiveCopy.ts`) ── */
-
-  /** The archive stamp last written to the account from here; null: write on the next save. */
-  let lastArchiveStamp: string | null = null;
-  /** The other machine's index this one took in full (`owner|savedAt`). */
-  let archiveTakenFrom: string | null = null;
-
-  type VaultRow = ReturnType<CtoAccountCopyVault["list"]>[number];
-
-  /** The archive index in the account: absent, readable, or there but not readable here. */
-  const readArchiveIndex = (rows: readonly VaultRow[]): { row: VaultRow | null; index: CtoArchiveCopyIndex | null; unreadable: boolean } => {
-    const scope = args.repoScope();
-    const row = rows.find((item) => item.kind === CTO_ACCOUNT_COPY_VAULT_KIND && item.key === CTO_ARCHIVE_COPY_INDEX_KEY) ?? null;
-    if (!row || row.deleted || !scope || !args.vault) return { row, index: null, unreadable: false };
-    const value = args.vault.get(scope, CTO_ACCOUNT_COPY_VAULT_KIND, CTO_ARCHIVE_COPY_INDEX_KEY);
-    const index = decodeCtoArchiveCopyIndex(value);
-    // A value the relay couldn't open, or an index from a newer build, is
-    // still someone's archive: never written over as if there were none.
-    return { row, index, unreadable: index == null };
-  };
-
-  /**
-   * Takes another home's archive into this machine's. True when every chunk
-   * the index names was read and stored; what was readable is stored either
-   * way (the archive dedupes, so a later try adds only what was missing).
-   */
-  const takeArchive = (index: CtoArchiveCopyIndex): boolean => {
-    const scope = args.repoScope();
-    const importer = args.ctoMemory.importArchiveFromCopy;
-    if (!scope || !args.vault || !importer) return false;
-    const records: CtoArchiveRecord[] = [];
-    let missing = 0;
-    for (const key of index.chunks) {
-      const rows = decodeCtoArchiveCopyChunk(args.vault.get(scope, CTO_ACCOUNT_COPY_VAULT_KIND, key));
-      if (rows) records.push(...rows);
-      else missing += 1;
+    const answer = args.vault.trySet(
+      scope,
+      CTO_ACCOUNT_COPY_VAULT_KIND,
+      CTO_ACCOUNT_COPY_VAULT_KEY,
+      encoded,
+      // No row here is a claim too: the account may have one this machine has
+      // not pulled yet, and a blind write would replace it.
+      { expectedRevision: existing.revision ?? ACCOUNT_VAULT_NO_REVISION },
+    );
+    if (answer !== "queued") {
+      logger.warn("cto.account_copy_not_saved", { reason, answer });
+      return false;
     }
-    const stored = importer(records, missing ? [] : index.heat);
-    const complete = stored && missing === 0;
-    if (complete) archiveTakenFrom = `${index.ownerDeviceId}|${index.savedAt}`;
-    const meta = { rows: records.length, chunks: index.chunks.length, missing, stored };
-    if (complete) logger.info?.("cto.archive_copy_taken", meta);
-    else logger.warn("cto.archive_copy_incomplete", meta);
-    return complete;
+    lastWrittenHash = hash;
+    logger.info?.("cto.account_copy_saved", { reason, chars: encoded.length });
+    return true;
   };
 
-  /**
-   * Writes this machine's archive to the account when it changed: the chunks
-   * it lacks, then the index, then tombstones for chunks no index names. Runs
-   * only after the copy was written (or was already current) as the home.
-   */
-  const saveArchive = (scope: string, self: string, home: CtoHomeMachineRecord | null, reason: string): void => {
-    const vault = args.vault;
-    const memory = args.ctoMemory;
-    if (!vault || !memory.archiveStamp || !memory.exportArchiveForCopy) return;
-    try {
-      const stamp = memory.archiveStamp();
-      if (stamp == null) return;
-      const rows = vault.list(scope);
-      const current = readArchiveIndex(rows);
-      if (current.unreadable) {
-        logger.warn("cto.archive_copy_index_unreadable", { reason });
-        return;
-      }
-      const ownIndex = current.index != null && sameDevice(current.index.ownerDeviceId, self);
-      if (stamp === lastArchiveStamp && ownIndex) return;
-      if (current.index && !ownIndex) {
-        // Same rule as the copy: with no home named, never over another machine's.
-        if (!home?.deviceId) return;
-        if (archiveTakenFrom !== `${current.index.ownerDeviceId}|${current.index.savedAt}` && !takeArchive(current.index)) return;
-      }
-      const exported = memory.exportArchiveForCopy();
-      if (!exported) return;
-      const floors = readCtoArchiveCopyFloors(memory.readArchiveMeta?.(CTO_ARCHIVE_COPY_FLOOR_META) ?? null);
-      const pack = packCtoArchiveCopy(exported.rows, floors);
-      if (pack.floors.entries !== floors.entries || pack.floors.story !== floors.story) {
-        memory.writeArchiveMeta?.(CTO_ARCHIVE_COPY_FLOOR_META, JSON.stringify(pack.floors));
-        logger.info?.("cto.archive_copy_trimmed", { leftOut: pack.leftOut, floors: pack.floors });
-      }
-      const byKey = new Map(rows.filter((row) => row.kind === CTO_ACCOUNT_COPY_VAULT_KIND).map((row) => [row.key, row]));
-      let written = 0;
-      for (const chunk of pack.chunks) {
-        const existing = byKey.get(chunk.key);
-        // Named by content: a live row with this key already holds these rows.
-        if (existing && !existing.deleted) continue;
-        const answer = vault.trySet(scope, CTO_ACCOUNT_COPY_VAULT_KIND, chunk.key, chunk.value, {
-          expectedRevision: existing?.revision ?? ACCOUNT_VAULT_NO_REVISION,
-        });
-        if (answer !== "queued") {
-          logger.warn("cto.archive_copy_not_saved", { reason, answer, part: "chunk" });
-          return;
-        }
-        written += 1;
-      }
-      const index: CtoArchiveCopyIndex = {
-        v: 1,
-        ownerDeviceId: self,
-        savedAt: new Date(now()).toISOString(),
-        chunks: pack.chunks.map((chunk) => chunk.key),
-        rows: pack.chunks.reduce((sum, chunk) => sum + chunk.rows, 0),
-        heat: exported.heat,
-      };
-      const answer = vault.trySet(scope, CTO_ACCOUNT_COPY_VAULT_KIND, CTO_ARCHIVE_COPY_INDEX_KEY, encodeCtoArchiveCopyIndex(index), {
-        expectedRevision: current.row?.revision ?? ACCOUNT_VAULT_NO_REVISION,
-      });
-      if (answer !== "queued") {
-        logger.warn("cto.archive_copy_not_saved", { reason, answer, part: "index" });
-        return;
-      }
-      lastArchiveStamp = stamp;
-      archiveTakenFrom = null;
-      // Chunks no index names any more. Only after the new index is queued:
-      // until then the old one still points at them.
-      const keep = new Set(index.chunks);
-      let removed = 0;
-      for (const row of rows) {
-        if (row.kind !== CTO_ACCOUNT_COPY_VAULT_KIND || row.deleted || !row.key.startsWith(CTO_ARCHIVE_COPY_CHUNK_PREFIX) || keep.has(row.key)) continue;
-        if (vault.tryRemove?.(scope, CTO_ACCOUNT_COPY_VAULT_KIND, row.key, { expectedRevision: row.revision }) === "queued") removed += 1;
-      }
-      logger.info?.("cto.archive_copy_saved", { reason, rows: index.rows, chunks: index.chunks.length, written, removed });
-    } catch (error) {
-      logger.warn("cto.archive_copy_save_failed", { reason, error: error instanceof Error ? error.message : String(error) });
-    }
-  };
+  /* ── The archive beside the copy (`ctoArchiveCopySync.ts`) ── */
+
+  const archiveSync = createCtoArchiveCopySync({
+    vault: args.vault,
+    repoScope: args.repoScope,
+    memory: args.ctoMemory,
+    sameDevice,
+    logger,
+    now,
+  });
 
   /** One save at a time; a request during one runs once more after it. */
   const save = (reason: string): Promise<void> => {
@@ -688,17 +576,9 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     }
     if (!complete) return false;
     // The archive, after the notes so the carried heat wins over the restore's
-    // own writes. Not required for the move: the next save takes what is still
-    // missing before it writes this machine's archive over it.
-    const scope = args.repoScope();
-    if (scope && args.vault) {
-      try {
-        const { index } = readArchiveIndex(args.vault.list(scope));
-        if (index && !sameDevice(index.ownerDeviceId, me())) takeArchive(index);
-      } catch (error) {
-        logger.warn("cto.archive_copy_take_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
-    }
+    // own writes. Not required for the move: the next save takes it in before
+    // it writes this machine's archive over it.
+    archiveSync.takeAfterRestore(me());
     writeJson(takenCopyPath, {
       ownerDeviceId: copy.ownerDeviceId,
       savedAt: copy.savedAt,

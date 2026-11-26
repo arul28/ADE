@@ -3,9 +3,6 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import {
   CTO_NOTES_CHANGED_ERROR,
-  type CtoArchivePage,
-  type CtoArchiveQuery,
-  type CtoRecallArchivedArgs,
   CTO_OPEN_WORK_MAX_DONE,
   CTO_OPEN_WORK_MAX_OPEN,
   CTO_PROJECT_NOTES_MAX_BYTES,
@@ -19,14 +16,10 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
 import type { CtoStoryRecord } from "./ctoStory";
-import {
-  createCtoMemoryArchive,
-  ctoNoteKey,
-  type CtoArchiveCarriedRow,
-  type CtoArchiveRecord,
-  type CtoMemoryArchive,
-  type CtoNoteHeatRow,
-} from "./ctoMemoryArchive";
+import { createCtoMemoryArchive, ctoNoteKey, type CtoArchiveRecord, type CtoMemoryArchive } from "./ctoMemoryArchive";
+import { coldestFirst, createCtoMemoryArchiveOps, discoveryRecords } from "./ctoMemoryArchiveOps";
+
+export type { CtoStoryFactRecord } from "./ctoMemoryArchiveOps";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -57,10 +50,11 @@ type CtoMemoryServiceArgs = {
  * - `.ade/cto/open-work.json`: what the CTO has started and not finished.
  *
  * The notes are capped in bytes so the per-turn prefix stays small. They are
- * the pinned tier: a `remember` past the cap moves the coldest notes (least
- * recently written, said again or recalled) to the archive
- * (`ctoMemoryArchive.ts`), and `recallArchived` brings one back. Without an
- * archive on this machine the write is refused instead, so nothing is lost.
+ * the pinned tier: a `remember` past the project cap moves the coldest
+ * project notes (least recently written, said again or recalled) to the
+ * archive (`ctoMemoryArchive.ts`), and `recallArchived` brings one back.
+ * Without an archive on this machine, and always for the notes about the
+ * person, the write is refused instead, so nothing is lost.
  * Nothing here runs a model.
  *
  * The archive also keeps every replaced or forgotten note, every story
@@ -278,52 +272,6 @@ export type CtoForgetResult =
   | { ok: true; forgotten: string; scope: CtoNotesScope }
   | { ok: false; error: string; candidates?: string[] };
 
-/** One fact or decision a story fold pulled out (`ctoStory.ts` `splitCtoStoryAnswer`). */
-export type CtoStoryFactRecord = {
-  kind: "fact" | "decision";
-  text: string;
-  sourceAt: string | null;
-  sourceLabel: string | null;
-  sourceSessionId: string | null;
-};
-
-/** A discovery line (`- <iso> fact [tags]`) as an archive entry. */
-function discoveryRecord(line: string, reason: string): CtoArchiveRecord | null {
-  const body = line.trim().replace(/^-\s+/, "");
-  if (!body) return null;
-  const stamped = /^(\d{4}-\d{2}-\d{2}T\S+)\s+(.+)$/.exec(body);
-  return {
-    kind: "discovery",
-    text: stamped ? stamped[2]! : body,
-    reason,
-    sourceAt: stamped ? stamped[1]! : null,
-    sourceLabel: "Worker discovery",
-  };
-}
-
-function discoveryRecords(lines: readonly string[], reason: string): CtoArchiveRecord[] {
-  return lines.flatMap((line) => {
-    const record = line.trim().startsWith("- ") ? discoveryRecord(line, reason) : null;
-    return record ? [record] : [];
-  });
-}
-
-/** The order pinned notes leave in: never-touched first (oldest line first), then least recently used. */
-function coldestFirst(lines: readonly string[], heat: ReadonlyMap<string, string>, keep: ReadonlySet<number>): number[] {
-  return lines
-    .map((line, index) => ({ index, at: heat.get(ctoNoteKey(line)) ?? null }))
-    .filter((candidate) => !keep.has(candidate.index))
-    .sort((a, b) => {
-      if (a.at === b.at) return a.index - b.index;
-      if (a.at == null) return -1;
-      if (b.at == null) return 1;
-      return a.at.localeCompare(b.at);
-    })
-    .map((candidate) => candidate.index);
-}
-
-const ARCHIVE_IMPORTED_META = "importedFiles";
-
 export type CtoOpenWorkResult =
   | { ok: true; item: CtoOpenWorkItem }
   | { ok: false; error: string };
@@ -332,6 +280,9 @@ export type CtoOpenWorkResult =
 function notesHash(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
+
+/** A write that needed the archive to keep a note, when the archive write failed. */
+const NOT_ARCHIVED_ERROR = "Couldn't save to the archive, so the notes did not change. Try again.";
 
 export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const logger = args.logger ?? null;
@@ -377,31 +328,40 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   /**
    * Moves the coldest of `lines` to the archive until the rest fit the cap,
-   * never one at an index in `keep`. Null when they can't be made to fit (no
-   * archive, an archive write failed, or the kept lines alone are too long):
-   * nothing was written then, so the caller refuses and nothing is lost.
+   * never one at an index in `keep`. A refusal writes nothing, so nothing is
+   * lost: "full" when they can't be made to fit (no archive, or the kept lines
+   * alone are too long), "not_archived" when the archive write failed.
+   *
+   * Only project notes move out. The notes about the person are shared by
+   * every project, and the archive belongs to one: a note moved into it would
+   * leave every other project's CTO without it.
+   *
+   * `alsoArchive` (the old line a write replaces) goes in the same
+   * transaction, so the write is refused when it can't be kept. With no
+   * archive on this machine it is dropped, as before there was one.
    */
   const evictToFit = (
     scope: CtoNotesScope,
     lines: readonly string[],
     keep: ReadonlySet<number>,
-  ): { kept: string[]; archived: string[]; bytes: number } | null => {
+    alsoArchive: readonly CtoArchiveRecord[] = [],
+  ): { kept: string[]; archived: string[]; bytes: number } | "full" | "not_archived" => {
     const limit = notesLimit(scope);
     let bytes = utf8Bytes(renderNotes(lines));
-    if (bytes <= limit) return { kept: [...lines], archived: [], bytes };
-    if (!archive?.available()) return null;
     const drop = new Set<number>();
-    for (const index of coldestFirst(lines, archive.noteHeat(scope), keep)) {
-      if (bytes <= limit) break;
-      drop.add(index);
-      bytes = utf8Bytes(renderNotes(lines.filter((_, kept) => !drop.has(kept))));
+    if (bytes > limit) {
+      if (scope === "user" || !archive?.available()) return "full";
+      for (const index of coldestFirst(lines, archive.noteHeat(scope), keep)) {
+        if (bytes <= limit) break;
+        drop.add(index);
+        bytes = utf8Bytes(renderNotes(lines.filter((_, kept) => !drop.has(kept))));
+      }
+      if (bytes > limit) return "full";
     }
-    if (bytes > limit) return null;
-    const archived: string[] = [];
-    for (const index of drop) {
-      if (archive.add({ kind: "note", scope, text: lines[index]!, reason: "cold" }) == null) return null;
-      archived.push(lines[index]!);
-    }
+    const archived = [...drop].map((index) => lines[index]!);
+    const records = [...alsoArchive, ...archived.map((text): CtoArchiveRecord => ({ kind: "note", scope, text, reason: "cold" }))];
+    // One transaction: all of them reach the archive, or none and the write is refused.
+    if (records.length && archive?.available() && archive.addMany(records) == null) return "not_archived";
     return { kept: lines.filter((_, index) => !drop.has(index)), archived, bytes };
   };
 
@@ -427,7 +387,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const before = new Set(readNoteLines(scope).map(ctoNoteKey));
     const typed = new Set(lines.flatMap((line, index) => (before.has(ctoNoteKey(line)) ? [] : [index])));
     const fit = evictToFit(scope, lines, typed);
-    if (!fit) throw new AdeExpectedError(notesFullMessage(utf8Bytes(renderNotes(lines)), notesLimit(scope)), "user");
+    if (fit === "full") throw new AdeExpectedError(notesFullMessage(utf8Bytes(renderNotes(lines)), notesLimit(scope)), "user");
+    if (fit === "not_archived") throw new AdeExpectedError(NOT_ARCHIVED_ERROR, "user");
     writeNoteLines(scope, fit.kept);
     // A line the person just wrote is not cold, wherever it sits in the file.
     for (const index of typed) archive?.touchNote(scope, lines[index]!);
@@ -481,11 +442,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const limit = notesLimit(scope);
     // Full: the coldest notes move to the archive and the new one stays.
     // With no archive on this machine the write is refused, so nothing is lost.
-    const fit = evictToFit(scope, next, new Set([noteIndex]));
-    if (!fit) return { ok: false, error: notesFullMessage(utf8Bytes(renderNotes(lines)), limit) };
+    const fit = evictToFit(scope, next, new Set([noteIndex]), replaced ? [{ kind: "note", scope, text: replaced, reason: "replaced" }] : []);
+    if (fit === "full") return { ok: false, error: notesFullMessage(utf8Bytes(renderNotes(lines)), limit) };
+    if (fit === "not_archived") return { ok: false, error: NOT_ARCHIVED_ERROR };
     next = fit.kept;
     const { archived, bytes } = fit;
-    if (replaced) archive?.add({ kind: "note", scope, text: replaced, reason: "replaced" });
     writeNoteLines(scope, next);
     archive?.touchNote(scope, note);
     return {
@@ -516,9 +477,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       };
     }
     const forgotten = lines[matches[0]];
+    // Kept first, marked forgotten (a search shows it was dropped, not that it
+    // is true): when the archive can't keep it, the note stays.
+    if (archive?.available() && archive.add({ kind: "note", scope, text: forgotten, reason: "forgotten" }) == null) {
+      return { ok: false, error: NOT_ARCHIVED_ERROR };
+    }
     writeNoteLines(scope, lines.filter((_, index) => index !== matches[0]));
-    // Kept, marked forgotten: a search shows it was dropped, not that it is true.
-    archive?.add({ kind: "note", scope, text: forgotten, reason: "forgotten" });
     return { ok: true, forgotten, scope };
   };
 
@@ -622,6 +586,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     if (record == null) {
       fs.rmSync(storyPath, { force: true });
     } else {
+      // The story on disk goes into the archive first, if no import took it yet.
+      archiveOps.ensureImported();
       fs.mkdirSync(path.dirname(storyPath), { recursive: true });
       const clean: CtoStoryRecord = {
         ...record,
@@ -876,100 +842,22 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     return { lines, text };
   };
 
-  /* ── The archive ── */
+  /* ── The archive (`ctoMemoryArchiveOps.ts`) ── */
 
-  /**
-   * Once per archive: the discovery files and the story written before it
-   * existed. Lazy, so no boot pays for it.
-   */
-  const ensureImported = (): void => {
-    if (!archive?.available() || archive.readMeta(ARCHIVE_IMPORTED_META)) return;
-    const records: CtoArchiveRecord[] = [
-      ...discoveryRecords(readFileOrEmpty(discoveriesArchivePath).split(/\r?\n/), "evicted"),
-      ...discoveryRecords(readFileOrEmpty(discoveriesPath).split(/\r?\n/), "imported"),
-    ];
-    try {
-      const story = readStory();
-      if (story?.summary.trim()) {
-        records.push({ kind: "story", text: story.summary, sourceAt: story.coveredThrough, sourceLabel: story.model });
+  const archiveOps = createCtoMemoryArchiveOps({
+    archive,
+    readFilesBeforeArchive: () => {
+      let story: CtoStoryRecord | null = null;
+      try {
+        story = readStory();
+      } catch {
+        // An unreadable story stays where it is; there is nothing to import.
       }
-    } catch {
-      // An unreadable story stays where it is; there is nothing to import.
-    }
-    archive.addMany(records);
-    archive.writeMeta(ARCHIVE_IMPORTED_META, nowIso());
-  };
-
-  const searchArchive = (query: CtoArchiveQuery = {}): CtoArchivePage => {
-    if (!archive?.available()) {
-      return { available: false, mode: "recent", entries: [], nextBefore: null, counts: { note: 0, fact: 0, decision: 0, discovery: 0, story: 0 } };
-    }
-    ensureImported();
-    return archive.search(query);
-  };
-
-  /**
-   * Pins an archived note, fact or discovery again, as a note. It goes through
-   * `remember`, so a full notes file moves its coldest notes out to make room.
-   */
-  const recallArchived = (input: CtoRecallArchivedArgs): CtoRememberResult => {
-    if (!archive?.available()) return { ok: false, error: "The archive is not available on this machine." };
-    const entry = archive.get(input.id);
-    if (!entry) return { ok: false, error: `No archived entry has id ${input.id}.` };
-    if (entry.kind === "story") {
-      return { ok: false, error: "A story version can't be pinned. Put the part you need in a note with remember." };
-    }
-    const result = remember({ note: entry.text, scope: input.scope ?? entry.scope ?? "project" });
-    if (result.ok) archive.markPinned(entry.id);
-    return result;
-  };
-
-  /** The person's recall from Settings › Memory: a refusal is an error. */
-  const recallArchivedForUser = (input: CtoRecallArchivedArgs): void => {
-    const result = recallArchived(input);
-    if (!result.ok) throw new AdeExpectedError(result.error, "user");
-  };
-
-  /** Facts and decisions a story fold pulled out, with their source turns. */
-  const recordStoryFacts = (facts: readonly CtoStoryFactRecord[]): number =>
-    archive && facts.length ? archive.addMany(facts) ?? 0 : 0;
-
-  /* ── The archive in the account copy (`ctoArchiveCopy.ts`) ── */
-
-  /** Cheap: changes whenever `exportArchiveForCopy` could. Null with no archive. */
-  const archiveStamp = (): string | null => {
-    if (!archive?.available()) return null;
-    ensureImported();
-    return archive.changeStamp();
-  };
-
-  /**
-   * What the account copy carries of the archive: every entry not pinned, and
-   * the heat of the notes in the files now (so the coldest notes stay the
-   * coldest on the next home). Null with no archive.
-   */
-  const exportArchiveForCopy = (): { rows: CtoArchiveCarriedRow[]; heat: CtoNoteHeatRow[] } | null => {
-    if (!archive?.available()) return null;
-    ensureImported();
-    const rows = archive.exportRows();
-    if (!rows) return null;
-    const heat = (["project", "user"] as const).flatMap((scope) =>
-      archive.exportHeat(scope, new Set(readNoteLines(scope).map(ctoNoteKey))));
-    return { rows, heat };
-  };
-
-  /**
-   * Takes in the archive another home carried, after its notes were restored.
-   * Additive: an entry this machine already holds stays one entry. False when
-   * there is no archive here or the write failed.
-   */
-  const importArchiveFromCopy = (records: readonly CtoArchiveRecord[], heat: readonly CtoNoteHeatRow[]): boolean => {
-    if (!archive?.available()) return false;
-    ensureImported();
-    if (records.length && archive.addMany(records) == null) return false;
-    archive.importHeat(heat);
-    return true;
-  };
+      return { evictedDiscoveries: readFileOrEmpty(discoveriesArchivePath), discoveries: readFileOrEmpty(discoveriesPath), story };
+    },
+    readNoteLines,
+    remember,
+  });
 
   /* ── Snapshot and injection ── */
 
@@ -1060,6 +948,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   resetFromV1();
 
   return {
+    ...archiveOps,
     readNotes,
     writeNotes,
     remember,
@@ -1076,17 +965,6 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     readNewDiscoveries,
     getSnapshot,
     buildMemoryContextSections,
-    searchArchive,
-    recallArchived,
-    recallArchivedForUser,
-    recordStoryFacts,
-    archiveStamp,
-    exportArchiveForCopy,
-    importArchiveFromCopy,
-    readArchiveMeta: (key: string): string | null => (archive?.available() ? archive.readMeta(key) : null),
-    writeArchiveMeta: (key: string, value: string): void => {
-      if (archive?.available()) archive.writeMeta(key, value);
-    },
     close: () => archive?.close(),
   };
 }

@@ -156,6 +156,7 @@ import {
   type LaneLinearIssueLink,
   type MergeMethod,
   type AppNavigationRequest,
+  CTO_ARCHIVE_KINDS,
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { LaneEnvInitProgress } from "../../desktop/src/shared/types/config";
@@ -1531,14 +1532,15 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "searchMemory",
-    description: "Search the CTO's archive: notes that left the notes (moved out when full, replaced, forgotten), facts and decisions from past turns and tool results, worker discoveries and every story version. Keyword search, every word must match; without `query`, newest first. Pass `id` to read one entry in full.",
+    description: "Search the CTO's archive: notes that left the notes (moved out when full, replaced, forgotten), facts and decisions from past turns and tool results, worker discoveries and every story version. Keyword search, every word must match (the best matches only); without `query`, newest first, and pass `nextBefore` as `before` for older entries. Pass `id` to read one entry in full.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         query: { type: "string", minLength: 1, maxLength: 200 },
-        kinds: { type: "array", items: { type: "string", enum: ["note", "fact", "decision", "discovery", "story"] } },
+        kinds: { type: "array", items: { type: "string", enum: [...CTO_ARCHIVE_KINDS] } },
         id: { type: "integer", minimum: 1 },
+        before: { type: "integer", minimum: 1 },
         limit: { type: "integer", minimum: 1, maximum: 50 }
       }
     }

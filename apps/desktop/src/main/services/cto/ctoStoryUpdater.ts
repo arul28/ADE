@@ -42,10 +42,12 @@ export type CtoStorySession = {
   id: string;
   /** Closed or deleted: stop between batches. */
   isGone: () => boolean;
-  /** The transcript's recent window, oldest first, with times. */
-  readEntries: () => CtoStoryEntry[];
-  /** What tools returned over the same window, for facts only a tool printed. Read after `readEntries`. */
-  readToolEntries?: () => CtoStoryToolEntry[];
+  /**
+   * One read of the transcript's recent window, oldest first, with times:
+   * the messages, and what tools returned over the same window (for facts
+   * only a tool printed).
+   */
+  readTranscript: () => { entries: CtoStoryEntry[]; toolEntries: CtoStoryToolEntry[] };
   /** The helper model for this chat, or null when there is none. */
   pickModel: () => Promise<string | null>;
   runPrompt: (args: { modelId: string; systemPrompt: string; prompt: string; timeoutMs: number }) => Promise<{ text: string | null | undefined; model?: string | null }>;
@@ -55,8 +57,12 @@ export type CtoStoryUpdaterArgs = {
   /** Throws when the file is there but unreadable (`CtoStoryUnreadableError`). */
   readStory: () => CtoStoryRecord | null;
   writeStory: (record: CtoStoryRecord) => void;
-  /** After a fold is written: the facts and decisions it pulled out, for the archive. */
-  recordFacts?: (facts: CtoStoryFact[], meta: { sessionId: string }) => void;
+  /**
+   * Before a fold is written: the facts and decisions it pulled out, for the
+   * archive. False when the archive is there but couldn't store them: the
+   * story then stays where it is, so the fold (and its facts) runs again.
+   */
+  recordFacts?: (facts: CtoStoryFact[], meta: { sessionId: string }) => boolean;
   /** The person's zone, for the times in the helper's prompt. */
   timeZone: () => string | null;
   logger: Logger;
@@ -91,8 +97,7 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
     const sessionId = session.id;
     if (!request.force && now() < (retryAfter.get(sessionId) ?? 0)) return;
     // One transcript read per run: each batch only moves the cursor through it.
-    const entries = session.readEntries();
-    const toolEntries = session.readToolEntries?.() ?? [];
+    const { entries, toolEntries } = session.readTranscript();
     let modelId: string | null = null;
     for (let batch = 0; batch < CTO_STORY_MAX_BATCHES_PER_RUN; batch += 1) {
       if (session.isGone()) return;
@@ -144,6 +149,22 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
         logger.info("cto.story_superseded", { sessionId });
         return;
       }
+      // Facts ride on the accepted fold only (a rejected answer's facts come
+      // again, cited to the same turns, on the retry), and go in before the
+      // story moves past their turns: the next fold never reads them again.
+      if (split.facts.length && args.recordFacts) {
+        let saved = false;
+        try {
+          saved = args.recordFacts(split.facts, { sessionId });
+        } catch (error) {
+          logger.warn("cto.story_facts_failed", { sessionId, error: errorText(error) });
+        }
+        if (!saved) {
+          backOff(sessionId);
+          logger.warn("cto.story_facts_not_saved", { sessionId, facts: split.facts.length });
+          return;
+        }
+      }
       const coveredThrough = plan?.nextCursor ?? story?.coveredThrough ?? new Date(now()).toISOString();
       args.writeStory({
         v: 1,
@@ -156,15 +177,6 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
         ...(story?.movedAt ? { movedAt: story.movedAt } : {}),
       });
       retryAfter.delete(sessionId);
-      // Facts ride on the accepted fold only: a rejected answer's facts would
-      // come again, cited to the same turns, on the retry.
-      if (split.facts.length && args.recordFacts) {
-        try {
-          args.recordFacts(split.facts, { sessionId });
-        } catch (error) {
-          logger.warn("cto.story_facts_failed", { sessionId, error: errorText(error) });
-        }
-      }
       logger.info("cto.story_updated", {
         sessionId,
         reason: request.reason,

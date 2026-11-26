@@ -133,12 +133,13 @@ export function CtoArchiveList({
       return;
     }
     const target = pinRef.current;
-    if (!target || !entry.truncated) {
+    const bridge = window.ade?.cto;
+    if (!target || !entry.truncated || !bridge?.searchMemoryArchive) {
       setExpanded((current) => ({ ...current, [entry.id]: entry.text }));
       return;
     }
     try {
-      const full = await window.ade.cto!.searchMemoryArchive({ id: entry.id }, target);
+      const full = await bridge.searchMemoryArchive({ id: entry.id }, target);
       setExpanded((current) => ({ ...current, [entry.id]: full.entries[0]?.text ?? entry.text }));
     } catch (err) {
       setError(ipcErrorMessage(err) || "Couldn't open that version.");

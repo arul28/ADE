@@ -5,6 +5,8 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
   CTO_ARCHIVE_KINDS,
+  emptyCtoArchiveCounts,
+  emptyCtoArchivePage,
   type CtoArchiveEntry,
   type CtoArchiveKind,
   type CtoArchivePage,
@@ -139,9 +141,10 @@ function queryWords(query: string): string[] {
   return Array.from(new Set((query.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []).filter((word) => word.length > 0))).slice(0, 12);
 }
 
-function emptyCounts(): Record<CtoArchiveKind, number> {
-  return { note: 0, fact: 0, decision: 0, discovery: 0, story: 0 };
-}
+const UPSERT_HEAT_SQL = `
+  INSERT INTO note_heat(scope, note_key, last_used_at) VALUES (?, ?, ?)
+  ON CONFLICT(scope, note_key) DO UPDATE SET last_used_at = excluded.last_used_at
+`;
 
 function toEntry(row: Row, full: boolean): CtoArchiveEntry {
   const kind = (CTO_ARCHIVE_KINDS as readonly string[]).includes(row.kind) ? (row.kind as CtoArchiveKind) : "fact";
@@ -245,15 +248,16 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   const available = (): boolean => open() != null;
 
   /**
-   * Adds an entry, or refreshes the one that already says it: a note archived
-   * again comes back out of `pinned` with the new reason. Returns the id, or
-   * null when there is no archive.
+   * Adds an entry. One that already says the same thing stays one entry; a
+   * note archived again replaces its old row (out of `pinned`, the new
+   * reason, a new id). Returns the id, or null when there is no archive or
+   * the write failed.
    */
   const add = (record: CtoArchiveRecord): number | null => {
     const handle = open();
     if (!handle) return null;
     try {
-      return write(handle, record);
+      return inTransaction(handle, () => write(handle, record));
     } catch (error) {
       warn("cto_archive.add_failed", error, { kind: record.kind });
       return null;
@@ -267,17 +271,17 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     const scope = record.kind === "note" ? record.scope ?? "project" : null;
     const key = textKey(record.kind, scope, text);
     const archivedAt = record.archivedAt?.trim() || nowIso();
-    const existing = handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined;
-    if (existing) {
-      if (record.kind === "note") {
-        handle.prepare("UPDATE entries SET reason = ?, archived_at = ?, pinned_at = NULL WHERE id = ?")
-          .run(record.reason ?? null, archivedAt, existing.id);
-      }
-      return existing.id;
+    // A note archived again now is a new entry (new id, new reason): the
+    // account copy carries rows by id, and an old id may sit below its travel
+    // cut. An import (it brings its own time) keeps the row this machine has.
+    if (record.kind === "note" && !record.archivedAt?.trim()) {
+      handle.prepare("DELETE FROM entries WHERE text_key = ?").run(key);
     }
+    // ON CONFLICT: another process may have added the same text since.
     const result = handle.prepare(`
       INSERT INTO entries(kind, scope, text, reason, source_session_id, source_at, source_label, archived_at, text_key)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(text_key) DO NOTHING
     `).run(
       record.kind,
       scope,
@@ -289,7 +293,28 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       archivedAt,
       key,
     );
-    return Number(result.lastInsertRowid);
+    if (result.changes > 0) return Number(result.lastInsertRowid);
+    return (handle.prepare("SELECT id FROM entries WHERE text_key = ?").get(key) as { id: number } | undefined)?.id ?? null;
+  };
+
+  /** Runs `fn` in one write transaction, or rolls it all back and rethrows. */
+  const inTransaction = <T>(handle: DatabaseSyncType, fn: () => T): T => {
+    // IMMEDIATE takes the write lock first (waiting on busy_timeout): a read
+    // that later becomes a write fails at once when another process wrote in
+    // between.
+    handle.exec("BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      handle.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        handle.exec("ROLLBACK");
+      } catch {
+        // The failed statement already ended the transaction.
+      }
+      throw error;
+    }
   };
 
   /**
@@ -300,42 +325,68 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     const handle = open();
     if (!handle) return null;
     if (!records.length) return 0;
-    let added = 0;
+    const total = (): number => (handle.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
     try {
-      // IMMEDIATE takes the write lock first (waiting on busy_timeout): a
-      // read that later becomes a write fails at once when another process
-      // wrote in between.
-      handle.exec("BEGIN IMMEDIATE");
-      const before = (handle.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
-      for (const record of records) write(handle, record);
-      added = (handle.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n - before;
-      handle.exec("COMMIT");
+      return inTransaction(handle, () => {
+        const before = total();
+        for (const record of records) write(handle, record);
+        return total() - before;
+      });
     } catch (error) {
-      try {
-        handle.exec("ROLLBACK");
-      } catch {
-        // Nothing was open.
-      }
       warn("cto_archive.add_many_failed", error, { count: records.length });
       return null;
     }
-    return added;
   };
 
   const get = (id: number): CtoArchiveEntry | null => {
     const handle = open();
     if (!handle) return null;
-    const row = handle.prepare("SELECT * FROM entries WHERE id = ? AND pinned_at IS NULL").get(id) as Row | undefined;
-    return row ? toEntry(row, true) : null;
+    try {
+      const row = handle.prepare("SELECT * FROM entries WHERE id = ? AND pinned_at IS NULL").get(id) as Row | undefined;
+      return row ? toEntry(row, true) : null;
+    } catch (error) {
+      warn("cto_archive.get_failed", error, { id });
+      return null;
+    }
   };
 
   /** An entry went back into the notes: it leaves the archive (the row stays for when it comes back). */
   const markPinned = (id: number): void => {
-    open()?.prepare("UPDATE entries SET pinned_at = ? WHERE id = ?").run(nowIso(), id);
+    try {
+      open()?.prepare("UPDATE entries SET pinned_at = ? WHERE id = ?").run(nowIso(), id);
+    } catch (error) {
+      // The note is pinned already; the entry only shows twice until the next recall.
+      warn("cto_archive.mark_pinned_failed", error, { id });
+    }
+  };
+
+  /**
+   * Marks pinned every entry whose text is a note in the files now (keys by
+   * `ctoNoteKey`). After an import: a note the other home recalled travels as
+   * its archived row, but this machine's notes already hold it. How many.
+   */
+  const markPinnedMatching = (noteKeys: ReadonlySet<string>): number => {
+    const handle = open();
+    if (!handle || !noteKeys.size) return 0;
+    try {
+      const rows = handle.prepare("SELECT id, text FROM entries WHERE pinned_at IS NULL AND kind <> 'story'").all() as Array<{ id: number; text: string }>;
+      const ids = rows.filter((row) => noteKeys.has(ctoNoteKey(row.text))).map((row) => row.id);
+      if (!ids.length) return 0;
+      const at = nowIso();
+      const mark = handle.prepare("UPDATE entries SET pinned_at = ? WHERE id = ?");
+      inTransaction(handle, () => {
+        for (const id of ids) mark.run(at, id);
+      });
+      return ids.length;
+    } catch (error) {
+      // The notes hold them already; they only show in the archive too.
+      warn("cto_archive.mark_pinned_failed", error, { count: noteKeys.size });
+      return 0;
+    }
   };
 
   const counts = (handle: DatabaseSyncType): Record<CtoArchiveKind, number> => {
-    const out = emptyCounts();
+    const out = emptyCtoArchiveCounts();
     const rows = handle.prepare("SELECT kind, COUNT(*) AS n FROM entries WHERE pinned_at IS NULL GROUP BY kind").all() as Array<{ kind: string; n: number }>;
     for (const row of rows) if (row.kind in out) out[row.kind as CtoArchiveKind] = row.n;
     return out;
@@ -343,7 +394,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
 
   const search = (query: CtoArchiveQuery = {}): CtoArchivePage => {
     const handle = open();
-    if (!handle) return { available: false, mode: "recent", entries: [], nextBefore: null, counts: emptyCounts() };
+    if (!handle) return emptyCtoArchivePage();
     try {
       if (typeof query.id === "number") {
         const entry = get(query.id);
@@ -383,8 +434,10 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
       }
       return { available: true, mode: "keyword", entries: rows.map((row) => toEntry(row, false)), nextBefore: null, counts: counts(handle) };
     } catch (error) {
+      // Thrown, not an empty page: "nothing found" would hide a failure the
+      // person can retry.
       warn("cto_archive.search_failed", error);
-      return { available: true, mode: "keyword", entries: [], nextBefore: null, counts: emptyCounts() };
+      throw error;
     }
   };
 
@@ -393,10 +446,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   /** A note was written, rewritten, said again or recalled. */
   const touchNote = (scope: CtoNotesScope, text: string): void => {
     try {
-      open()?.prepare(`
-        INSERT INTO note_heat(scope, note_key, last_used_at) VALUES (?, ?, ?)
-        ON CONFLICT(scope, note_key) DO UPDATE SET last_used_at = excluded.last_used_at
-      `).run(scope, ctoNoteKey(text), nowIso());
+      open()?.prepare(UPSERT_HEAT_SQL).run(scope, ctoNoteKey(text), nowIso());
     } catch (error) {
       warn("cto_archive.heat_failed", error);
     }
@@ -419,17 +469,20 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   /* ── The account copy: what a new home machine takes over ── */
 
   /**
-   * Changes whenever what `exportRows` returns could: an entry added, archived
-   * again or pinned. Cheap, so the copy can skip a pack when nothing moved.
+   * Changes whenever what the account copy carries could: an entry added,
+   * archived again or pinned, or a note used (its heat). Cheap, so the copy
+   * can skip a pack when nothing moved.
    */
   const changeStamp = (): string | null => {
     const handle = open();
     if (!handle) return null;
     try {
       const row = handle.prepare(`
-        SELECT COUNT(*) AS n, MAX(id) AS top, MAX(archived_at) AS at FROM entries WHERE pinned_at IS NULL
-      `).get() as { n: number; top: number | null; at: string | null };
-      return `${row.n}|${row.top ?? 0}|${row.at ?? ""}`;
+        SELECT COUNT(*) AS n, MAX(id) AS top, MAX(archived_at) AS at,
+          (SELECT COUNT(*) FROM note_heat) AS heat, (SELECT MAX(last_used_at) FROM note_heat) AS used
+        FROM entries WHERE pinned_at IS NULL
+      `).get() as { n: number; top: number | null; at: string | null; heat: number; used: string | null };
+      return `${row.n}|${row.top ?? 0}|${row.at ?? ""}|${row.heat}|${row.used ?? ""}`;
     } catch (error) {
       warn("cto_archive.stamp_failed", error);
       return null;
@@ -465,37 +518,45 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
   };
 
   /**
-   * Heat from the machine the CTO moved from. It replaces this machine's: the
-   * notes came from there too, so that is when each note was last used.
+   * Heat from the machine the CTO moved from, for the notes it carried. For
+   * each of those notes it replaces this machine's: the notes came from there,
+   * so that is when each was last used. Other notes keep their heat.
    */
   const importHeat = (rows: readonly CtoNoteHeatRow[]): void => {
     const handle = open();
     if (!handle || !rows.length) return;
     try {
-      const upsert = handle.prepare(`
-        INSERT INTO note_heat(scope, note_key, last_used_at) VALUES (?, ?, ?)
-        ON CONFLICT(scope, note_key) DO UPDATE SET last_used_at = excluded.last_used_at
-      `);
-      handle.exec("BEGIN IMMEDIATE");
-      for (const row of rows) upsert.run(row.scope, row.key, row.at);
-      handle.exec("COMMIT");
+      const upsert = handle.prepare(UPSERT_HEAT_SQL);
+      inTransaction(handle, () => {
+        for (const row of rows) upsert.run(row.scope, row.key, row.at);
+      });
     } catch (error) {
-      try {
-        handle.exec("ROLLBACK");
-      } catch {
-        // Nothing was open.
-      }
       warn("cto_archive.heat_import_failed", error, { count: rows.length });
     }
   };
 
+  /** A meta value, or null when there is none or the read failed. */
   const readMeta = (key: string): string | null => {
-    const row = open()?.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
-    return row?.value ?? null;
+    try {
+      const row = open()?.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
+      return row?.value ?? null;
+    } catch (error) {
+      warn("cto_archive.meta_read_failed", error, { key });
+      return null;
+    }
   };
 
-  const writeMeta = (key: string, value: string): void => {
-    open()?.prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  /** False when the write failed (logged). */
+  const writeMeta = (key: string, value: string): boolean => {
+    try {
+      const handle = open();
+      if (!handle) return false;
+      handle.prepare("INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+      return true;
+    } catch (error) {
+      warn("cto_archive.meta_write_failed", error, { key });
+      return false;
+    }
   };
 
   const close = (): void => {
@@ -513,6 +574,7 @@ export function createCtoMemoryArchive(args: { dir: string; logger?: Logger | nu
     addMany,
     get,
     markPinned,
+    markPinnedMatching,
     search,
     touchNote,
     noteHeat,

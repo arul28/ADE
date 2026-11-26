@@ -49,7 +49,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   cto_memory: {
     updateNotes: {
       description:
-        "Replace one notes file, one note per line: scope \"project\" (.ade/cto/MEMORY.md, 4096 bytes) or \"user\" (the person, every project on this machine, 2048 bytes). Over the cap, the coldest of the lines already in the file move to the archive, as with remember; lines this write adds never do. It is refused when there is no archive on this machine or the added lines alone are over the cap. Pass the snapshot's memoryHash/userNotesHash as baseHash to refuse the write when the file changed since it was read. CTO-only.",
+        "Replace one notes file, one note per line: scope \"project\" (.ade/cto/MEMORY.md, 4096 bytes) or \"user\" (the person, every project on this machine, 2048 bytes). Over the cap, the coldest of the project lines already in the file move to the archive, as with remember; lines this write adds never do. It is refused for the user notes (shared by every project, so they never move into one project's archive), when there is no archive on this machine, or when the added lines alone are over the cap. Pass the snapshot's memoryHash/userNotesHash as baseHash to refuse the write when the file changed since it was read. CTO-only.",
       input: "object { scope: \"project\" | \"user\", text: string, baseHash?: string }",
       example: "ade --role cto actions run cto_memory.updateNotes --input-json '{\"scope\":\"project\",\"text\":\"- Deploys go through the release lane\"}' --json",
     },

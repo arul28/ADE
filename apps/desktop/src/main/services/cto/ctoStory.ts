@@ -37,6 +37,17 @@ export type CtoStoryToolEntry = {
   at: string;
 };
 
+/** A tool's result as text for a fold's input (`selectFoldToolEntries` clips it further). */
+export function ctoToolResultText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value).slice(0, 4_000);
+  } catch {
+    return "";
+  }
+}
+
 /** One numbered line of a fold's input: the `#n` a fact cites back. */
 export type CtoFoldSource = {
   n: number;

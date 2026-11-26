@@ -185,7 +185,7 @@ describe("createCtoStoryUpdater", () => {
   const session = (runPrompt: CtoStorySession["runPrompt"]): CtoStorySession => ({
     id: "cto-1",
     isGone: () => false,
-    readEntries: () => entries(50, 2_000),
+    readTranscript: () => ({ entries: entries(50, 2_000), toolEntries: [] }),
     pickModel: async () => "anthropic/claude-haiku-5-5",
     runPrompt,
   });
@@ -242,7 +242,7 @@ describe("createCtoStoryUpdater", () => {
     const updater = createCtoStoryUpdater({
       readStory: store.readStory,
       writeStory: store.writeStory,
-      recordFacts: (facts) => { recorded.push(facts); },
+      recordFacts: (facts) => { recorded.push(facts); return true; },
       timeZone: () => null,
       logger: silent,
     });
@@ -259,8 +259,7 @@ describe("createCtoStoryUpdater", () => {
     const run = (answer: (prompt: string) => string) => updater.update({
       ...session(async ({ prompt }) => { prompts.push(prompt); return { text: answer(prompt) }; }),
       // One batch: 12 messages outside a tail of 18.
-      readEntries: () => entries(30, 2_000),
-      readToolEntries: () => tools,
+      readTranscript: () => ({ entries: entries(30, 2_000), toolEntries: tools }),
     }, { force: true, reason: "test" });
 
     // A refusal keeps no story and no facts, even when it lists some.

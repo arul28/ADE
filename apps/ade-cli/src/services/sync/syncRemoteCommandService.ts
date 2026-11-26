@@ -285,7 +285,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, normalizeCtoArchiveQuery, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, normalizeCtoArchiveQuery, normalizeCtoRecallArgs, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../../desktop/src/shared/types/sync";
 import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
@@ -7303,10 +7303,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   // Not queueable: replayed later, a recall could push out notes written since.
   register("cto.recallArchivedNote", { viewerAllowed: true, queueable: false }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
-    const id = Number(payload.id);
-    if (!Number.isInteger(id) || id <= 0) throw new Error("cto.recallArchivedNote requires a positive integer id.");
-    const scope = payload.scope === "user" || payload.scope === "project" ? payload.scope : undefined;
-    ctoMemoryService.recallArchivedForUser({ id, ...(scope ? { scope } : {}) });
+    ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(payload));
     return ctoMemoryService.getSnapshot();
   });
   // The person moved the CTO here: take it from its account copy. The phone

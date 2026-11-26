@@ -143,9 +143,10 @@ export type CtoOpenWorkItem = {
 export type CtoUpdateNotesArgs = {
   scope: CtoNotesScope;
   /**
-   * The whole notes file, one note per line. Over the cap, the coldest notes
-   * the person did not just type move to the archive; with no archive, or
-   * when the new lines alone are over, the write is refused.
+   * The whole notes file, one note per line. Over the cap, the coldest
+   * project notes the person did not just type move to the archive; the
+   * notes about the person, a machine with no archive, or new lines alone
+   * over the cap are refused.
    */
   text: string;
   /**
@@ -186,9 +187,9 @@ export type CtoUpdateOpenWorkArgs =
  * - `discovery`: a worker discovery, once drained or evicted from the queue.
  * - `story`: one version of the story so far. Every version is kept.
  */
-export type CtoArchiveKind = "note" | "fact" | "decision" | "discovery" | "story";
+export const CTO_ARCHIVE_KINDS = ["note", "fact", "decision", "discovery", "story"] as const;
 
-export const CTO_ARCHIVE_KINDS: readonly CtoArchiveKind[] = ["note", "fact", "decision", "discovery", "story"];
+export type CtoArchiveKind = (typeof CTO_ARCHIVE_KINDS)[number];
 
 export type CtoArchiveEntry = {
   id: number;
@@ -230,6 +231,25 @@ export type CtoArchivePage = {
   /** Archived entries by kind, recalled notes not counted. */
   counts: Record<CtoArchiveKind, number>;
 };
+
+/** No archive entries of any kind. */
+export function emptyCtoArchiveCounts(): Record<CtoArchiveKind, number> {
+  return { note: 0, fact: 0, decision: 0, discovery: 0, story: 0 };
+}
+
+/** The page of a machine with no archive (`available: false`). */
+export function emptyCtoArchivePage(): CtoArchivePage {
+  return { available: false, mode: "recent", entries: [], nextBefore: null, counts: emptyCtoArchiveCounts() };
+}
+
+/** A recall request from any caller (IPC, an action, a phone); throws when it names no entry. */
+export function normalizeCtoRecallArgs(raw: unknown): CtoRecallArchivedArgs {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const id = typeof record.id === "number" ? record.id : Number(record.id);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("A recall needs the archived entry's id (a positive integer).");
+  const scope = record.scope === "user" || record.scope === "project" ? record.scope : undefined;
+  return { id, ...(scope ? { scope } : {}) };
+}
 
 /** An archive query from any caller (IPC, an action, a phone), with the junk dropped. */
 export function normalizeCtoArchiveQuery(raw: unknown): CtoArchiveQuery {
@@ -747,9 +767,11 @@ export type CtoMemorySnapshot = {
   /** Open and recently finished work items, open first. */
   openWork?: CtoOpenWorkItem[];
   /**
-   * True when a notes write over the cap moves the coldest notes to the
-   * archive instead of being refused. Missing from an older host (or with no
-   * archive here): an editor keeps an over-cap text to itself then.
+   * True when a project notes write over the cap moves the coldest notes to
+   * the archive instead of being refused. The notes about the person never
+   * move out (every project shares them; the archive is one project's).
+   * Missing from an older host (or with no archive here): an editor keeps an
+   * over-cap text to itself then.
    */
   notesOverflowArchives?: boolean;
   updatedAt: string | null;

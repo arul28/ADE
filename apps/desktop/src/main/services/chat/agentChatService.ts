@@ -206,6 +206,7 @@ import {
 import { createCtoHistoryReader } from "../cto/ctoHistoryReader";
 import {
   buildCtoHistoryBlock,
+  ctoToolResultText,
   selectCtoHistoryTail,
   type CtoStoryRecord,
   type CtoStoryToolEntry,
@@ -14438,15 +14439,14 @@ export function createAgentChatService(args: {
     ? createCtoStoryUpdater({
       readStory: () => ctoMemoryService.readStory(),
       writeStory: (record) => ctoMemoryService.writeStory(record),
-      recordFacts: (facts, { sessionId }) => {
+      recordFacts: (facts, { sessionId }) =>
         ctoMemoryService.recordStoryFacts(facts.map((fact) => ({
           kind: fact.kind,
           text: fact.text,
           sourceAt: fact.source?.at ?? null,
           sourceLabel: fact.source?.label ?? null,
           sourceSessionId: sessionId,
-        })));
-      },
+        }))) != null,
       timeZone: ctoPersonTimeZone,
       logger,
     })
@@ -14463,16 +14463,15 @@ export function createAgentChatService(args: {
   };
 
   const ctoStorySession = (managed: ManagedChatSession): CtoStorySession => {
-    // One transcript read feeds both: the messages, and what tools returned beside them.
-    const toolEntries: CtoStoryToolEntry[] = [];
     return {
       id: managed.session.id,
       isGone: () => Boolean(managed.closed || managed.deleted),
-      readEntries: () => {
-        toolEntries.length = 0;
-        return collectConversationEntries(managed, { toolSink: toolEntries });
+      readTranscript: () => {
+        // One transcript read feeds both: the messages, and what tools returned beside them.
+        const toolEntries: CtoStoryToolEntry[] = [];
+        const entries = collectConversationEntries(managed, { toolSink: toolEntries });
+        return { entries, toolEntries };
       },
-      readToolEntries: () => toolEntries,
       pickModel: async () => {
         const auth = await detectAuth();
         const availableModels = await getAvailableRegistryModels(auth);
@@ -18503,17 +18502,6 @@ export function createAgentChatService(args: {
       preferred: normalizedSource,
       advertisedDefault: descriptor.defaultReasoningEffort,
     });
-  };
-
-  /** A tool's result as text for the CTO's story fold (`ctoStory.ts` clips it further). */
-  const ctoToolResultText = (value: unknown): string => {
-    if (typeof value === "string") return value.trim();
-    if (value == null) return "";
-    try {
-      return JSON.stringify(value).slice(0, 4_000);
-    } catch {
-      return "";
-    }
   };
 
   const collectConversationEntries = (

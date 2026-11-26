@@ -13,8 +13,11 @@ export type CtoMemoryState = {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  /** Writes a whole notes file. Rejects (and keeps the old snapshot) when the host refuses it. */
-  updateNotes: (args: CtoUpdateNotesArgs) => Promise<void>;
+  /**
+   * Writes a whole notes file and answers the host's snapshot after the write.
+   * Rejects (and keeps the old snapshot) when the host refuses it.
+   */
+  updateNotes: (args: CtoUpdateNotesArgs) => Promise<CtoMemorySnapshot>;
   /** Adds, completes, reopens or removes one open-work item. */
   updateOpenWork: (args: CtoUpdateOpenWorkArgs) => Promise<void>;
   /** Pins an archived note, fact or discovery as a note again. */
@@ -74,7 +77,7 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pin?.key, refresh]);
 
-  const write = useCallback(async (run: (target: OpenProjectBinding) => Promise<CtoMemorySnapshot>) => {
+  const write = useCallback(async (run: (target: OpenProjectBinding) => Promise<CtoMemorySnapshot>): Promise<CtoMemorySnapshot> => {
     const target = pinRef.current;
     if (!target) throw new Error("Home machine unreachable");
     const generation = generationRef.current;
@@ -83,6 +86,7 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
       setMemory(next);
       setError(null);
     }
+    return next;
   }, []);
 
   const updateNotes = useCallback(
@@ -91,12 +95,12 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
   );
 
   const updateOpenWork = useCallback(
-    (args: CtoUpdateOpenWorkArgs) => write((target) => window.ade.cto!.updateOpenWork(args, target)),
+    async (args: CtoUpdateOpenWorkArgs) => { await write((target) => window.ade.cto!.updateOpenWork(args, target)); },
     [write],
   );
 
   const recallArchived = useCallback(
-    (args: CtoRecallArchivedArgs) => write((target) => window.ade.cto!.recallArchivedNote(args, target)),
+    async (args: CtoRecallArchivedArgs) => { await write((target) => window.ade.cto!.recallArchivedNote(args, target)); },
     [write],
   );
 

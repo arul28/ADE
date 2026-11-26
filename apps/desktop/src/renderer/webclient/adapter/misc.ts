@@ -3,6 +3,7 @@ import { WEB_PASSWORDS_SENTENCE } from "../../../shared/adeCloud/accountCalls";
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
+  emptyCtoArchivePage,
   peerToRuntimeDeviceState,
   type AiConfig,
   type CloudAgentArchiveArgs,
@@ -1323,7 +1324,7 @@ function createCtoNamespace(
     searchMemoryArchive: (args: CtoArchiveQuery) => call<CtoArchivePage>(
       "cto.searchMemoryArchive",
       args,
-      { available: false, mode: "recent", entries: [], nextBefore: null, counts: { note: 0, fact: 0, decision: 0, discovery: 0, story: 0 } },
+      emptyCtoArchivePage(),
     ),
     recallArchivedNote: (args: CtoRecallArchivedArgs) => call<CtoMemorySnapshot>(
       "cto.recallArchivedNote",

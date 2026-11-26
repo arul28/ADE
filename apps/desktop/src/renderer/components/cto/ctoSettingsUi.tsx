@@ -101,6 +101,9 @@ export function CopyButton({ value, label = "Copy" }: { value: string; label?: s
  * (`hash`), so a change that lands between the last read and the save is
  * refused by the host and shown as the same "Changed elsewhere" line.
  */
+/** What the host kept after a save, and its hash. */
+export type AutosaveHostAnswer = { text: string; hash?: string };
+
 export function AutosaveTextArea({
   value,
   hash,
@@ -115,7 +118,8 @@ export function AutosaveTextArea({
   value: string;
   /** The host's hash of `value`, sent back on save so a stale write is refused. */
   hash?: string;
-  onSave: (text: string, baseHash?: string) => Promise<void>;
+  /** Answers what the host kept, when the host can change the text (trimmed, lines moved out). */
+  onSave: (text: string, baseHash?: string) => Promise<AutosaveHostAnswer | void>;
   /** Byte cap; shows a meter when set. */
   limit?: number;
   /** Over `limit` still saves: the host makes room (the CTO's notes move their coldest lines to the archive). */
@@ -183,11 +187,20 @@ export function AutosaveTextArea({
     if (!overflowMovesOut && limit != null && utf8Bytes(text) > limit) return;
     savingRef.current = true;
     try {
-      await onSave(text, savedHashRef.current);
-      savedRef.current = text;
-      // The host answers what it kept (secrets scrubbed, lines trimmed): a
-      // clean field shows that, not what was typed.
-      if (draftRef.current === text && hostRef.current !== text) adoptHost();
+      const answer = await onSave(text, savedHashRef.current);
+      if (answer) {
+        // In step with what the host kept (secrets scrubbed, lines moved
+        // out), with its hash, before the new props render: a keystroke that
+        // landed meanwhile then saves against the right base.
+        hostRef.current = answer.text;
+        hostHashRef.current = answer.hash;
+        savedRef.current = answer.text;
+        savedHashRef.current = answer.hash;
+        if (draftRef.current === text) setDraft(answer.text);
+      } else {
+        savedRef.current = text;
+        if (draftRef.current === text && hostRef.current !== text) adoptHost();
+      }
       flash();
     } catch (err) {
       if (isCtoNotesChangedError(err)) setConflict(true);

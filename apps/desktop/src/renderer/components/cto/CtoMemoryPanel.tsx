@@ -8,7 +8,7 @@ import { ModernSection } from "../settings/primitives";
 import { Banner } from "../ui/notice";
 import { CtoArchiveList } from "./CtoArchiveList";
 import { CtoOpenWorkList } from "./CtoOpenWorkList";
-import { AutosaveTextArea, CTO_SETTINGS_GROUP } from "./ctoSettingsUi";
+import { AutosaveTextArea, CTO_SETTINGS_GROUP, type AutosaveHostAnswer } from "./ctoSettingsUi";
 import { useCtoMemory } from "./useCtoMemory";
 
 /**
@@ -29,16 +29,16 @@ export function CtoMemoryPanel({
   const { memory, loading, error, refresh, updateNotes, updateOpenWork, recallArchived } = useCtoMemory(pin);
   // Story folds add facts after a turn without touching the notes: re-read the archive too.
   const [archiveTick, setArchiveTick] = useState(0);
+  const refreshAll = useCallback(() => {
+    void refresh();
+    setArchiveTick((tick) => tick + 1);
+  }, [refresh]);
 
   // The CTO writes notes while you are elsewhere; read them fresh on return.
   useEffect(() => {
-    const onFocus = () => {
-      void refresh();
-      setArchiveTick((tick) => tick + 1);
-    };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [refresh]);
+    window.addEventListener("focus", refreshAll);
+    return () => window.removeEventListener("focus", refreshAll);
+  }, [refreshAll]);
 
   // ...and while this page is open: re-read when a CTO turn ends on its home
   // machine. The editors adopt the new text, or say it changed under them.
@@ -46,19 +46,24 @@ export function CtoMemoryPanel({
     if (!pin || !sessionId) return undefined;
     return window.ade.agentChat.onEvent((envelope) => {
       if (envelope.sessionId !== sessionId || envelope.event.type !== "done") return;
-      void refresh();
-      setArchiveTick((tick) => tick + 1);
+      refreshAll();
     }, pin);
     // Keyed on the pin's key: a rebuilt pin for the same machine re-subscribes nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin?.key, refresh, sessionId]);
+  }, [pin?.key, refreshAll, sessionId]);
 
   const saveProject = useCallback(
-    (text: string, baseHash?: string) => updateNotes({ scope: "project", text, ...(baseHash ? { baseHash } : {}) }),
+    async (text: string, baseHash?: string): Promise<AutosaveHostAnswer> => {
+      const next = await updateNotes({ scope: "project", text, ...(baseHash ? { baseHash } : {}) });
+      return { text: next.memory, hash: next.memoryHash };
+    },
     [updateNotes],
   );
   const saveUser = useCallback(
-    (text: string, baseHash?: string) => updateNotes({ scope: "user", text, ...(baseHash ? { baseHash } : {}) }),
+    async (text: string, baseHash?: string): Promise<AutosaveHostAnswer> => {
+      const next = await updateNotes({ scope: "user", text, ...(baseHash ? { baseHash } : {}) });
+      return { text: next.userNotes ?? "", hash: next.userNotesHash };
+    },
     [updateNotes],
   );
 
@@ -111,7 +116,6 @@ export function CtoMemoryPanel({
           value={memory.userNotes ?? ""}
           hash={memory.userNotesHash}
           limit={memory.userNotesLimitBytes ?? CTO_USER_NOTES_MAX_BYTES}
-          overflowMovesOut={memory.notesOverflowArchives === true}
           rows={6}
           placeholder={"- Prefers short answers\n- Reviews PRs in the morning"}
           onSave={saveUser}

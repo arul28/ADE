@@ -491,7 +491,6 @@ struct CtoMemoryPage: View {
             text: memory.userNotes ?? "",
             hash: memory.userNotesHash,
             limit: memory.userNotesLimitBytes ?? 2048,
-            overflowMovesOut: memory.notesOverflowArchives == true,
             placeholder: "- Prefers short answers",
             accent: live.look.ctoAccent
           )
@@ -673,6 +672,7 @@ struct CtoArchiveSection: View {
     .padding(.vertical, 10)
     .contentShape(Rectangle())
     .opacity(busy ? 0.5 : 1)
+    .accessibilityAddTraits(entry.isStory ? .isButton : [])
     .onTapGesture {
       guard entry.isStory else { return }
       if expanded[entry.id] != nil {
