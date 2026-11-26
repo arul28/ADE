@@ -71,6 +71,9 @@ import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeClo
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloudMachine";
 import "./accountPage.css";
+import { MachineNeedsUpdate } from "../remoteTargets/MachineNeedsUpdate";
+import { isMachineNeedsUpdateError } from "../../../shared/codedError";
+import { ipcErrorMessage } from "../../lib/format";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
 function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
@@ -322,7 +325,7 @@ type ComputerDisplayRow = {
 type MachineInventoryViewState =
   | { status: "loading" }
   | { status: "ready"; detail: MachineInventoryDetail }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; needsUpdate?: boolean };
 
 /**
  * The row's second line, and the ONE place this list decides it.
@@ -723,9 +726,8 @@ export function YourMacsCard({
         ...previous,
         [machine.machineKey]: {
           status: "error",
-          message: error instanceof Error && error.message
-            ? error.message
-            : "Details unavailable right now.",
+          message: ipcErrorMessage(error) || "Details unavailable right now.",
+          needsUpdate: isMachineNeedsUpdateError(error),
         },
       }));
     }
@@ -1222,6 +1224,15 @@ export function YourMacsCard({
                       <div role="status" className="ade-acct-inventory-empty">
                         Loading provider inventory…
                       </div>
+                    ) : inventoryState?.status === "error" && inventoryState.needsUpdate ? (
+                      // One ask per computer: the routes panel above may already make it.
+                      routes.asksForUpdate(row) ? null : (
+                        <MachineNeedsUpdate
+                          machineKey={machine.machineKey}
+                          machineName={row.name}
+                          unlocks="to see what it has installed here."
+                        />
+                      )
                     ) : inventoryState?.status === "error" ? (
                       <div role="status" className="ade-acct-inventory-empty">
                         {inventoryState.message}

@@ -174,7 +174,7 @@ import { startBrainClientUpdateCheck } from "./services/runtime/brainClientUpdat
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
-import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
+import { resolveSelectedUpdateTrack, writeSavedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
@@ -32326,6 +32326,34 @@ async function runServe(
           "../../desktop/src/main/services/native/nativeHelperPaths"
         );
         return readInstalledDesktopApp();
+      },
+      // "Stable / Beta" pressed on another computer (`machine.switchUpdateTrack`).
+      trackSwitch: {
+        check: async (target) => {
+          // An ADE Cloud computer updates itself from the account's server.
+          if (isAdeCloudComputer()) {
+            return { allowed: false, target, reason: "ADE Cloud updates itself, so its track isn't switched from here." };
+          }
+          const { checkTrackSwitch } = await import("../../desktop/src/main/services/updates/trackSwitchGuard");
+          return await checkTrackSwitch({ target, runningVersion: VERSION, logger: headlessProjectLogger });
+        },
+        save: (target) => {
+          writeSavedUpdateTrack(target);
+        },
+        requestDesktopApp: async (target, requestedBy) => {
+          const { requestDesktopAppTrackSwitch } = await import("./services/runtime/desktopAppUpdateBridge");
+          const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+            || resolveReachableMachineDesktopBridgeSocketPath();
+          const routing = await requestDesktopAppTrackSwitch({ socketPath, track: target, requestedBy });
+          headlessProjectLogger.info("brain.remote_track_switch_route", routing.attached
+            ? { route: "desktop_app", target, outcome: routing.result.outcome }
+            : { route: "standalone", target, detail: routing.detail });
+          return routing;
+        },
+        appOwnsBrain: async () => {
+          const { hostAppPath } = await import("./services/runtime/desktopAppUpdateBridge");
+          return hostAppPath() != null;
+        },
       },
     });
   // The phone's "Update & restart" (sync commands), installed before any

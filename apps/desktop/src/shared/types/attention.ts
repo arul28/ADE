@@ -364,6 +364,42 @@ export type AttentionPreferenceScope = {
   };
 };
 
+/**
+ * A phone or tablet registered for notifications on the account (relay
+ * `GET /attention/account/devices`). Display fields only; its notification
+ * switch is `AttentionPreferences.devices[deviceId]`.
+ */
+export type AttentionAccountDevice = {
+  deviceId: string;
+  /** The name iOS reports; `null` when the phone sent none. */
+  name: string | null;
+  kind: "phone" | "tablet";
+  /** When the phone last renewed its registration (ISO). */
+  lastSeenAt: string;
+};
+
+/** Reads the relay's device list; drops any row without an id. */
+export function parseAttentionAccountDevices(value: unknown): AttentionAccountDevice[] {
+  const list = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as { devices?: unknown }).devices
+    : null;
+  if (!Array.isArray(list)) return [];
+  const devices: AttentionAccountDevice[] = [];
+  for (const entry of list) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const deviceId = typeof row.deviceId === "string" ? row.deviceId.trim() : "";
+    if (!deviceId) continue;
+    devices.push({
+      deviceId,
+      name: typeof row.name === "string" && row.name.trim() ? row.name.trim() : null,
+      kind: row.kind === "tablet" ? "tablet" : "phone",
+      lastSeenAt: typeof row.lastSeenAt === "string" ? row.lastSeenAt : "",
+    });
+  }
+  return devices;
+}
+
 export type AttentionPreferences = {
   account: AttentionPreferenceScope;
   devices: Record<string, Partial<AttentionPreferenceScope>>;

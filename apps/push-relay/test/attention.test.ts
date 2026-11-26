@@ -1543,7 +1543,9 @@ describe("account Attention contract", () => {
         "account-a",
         "PATCH",
         "/attention/account/preferences/devices/phone-machine-muted",
-        { soundsEnabled: true },
+        // The phone writes its own switch on every sync; a phone left on
+        // must not undo a muted machine.
+        { soundsEnabled: true, notificationsEnabled: true },
       )).status).toBe(200);
       const storedPreferences = JSON.parse(row<{ payload_json: string }>(database, `
         select payload_json
@@ -5821,6 +5823,42 @@ describe("account Attention contract", () => {
         from attention_devices
         where user_id = 'account-a' and device_id = 'active-phone'
       `)?.lease_expires_at).toBe("2099-09-01T00:00:00.000Z");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("lists only the caller's current phones, never their push tokens", async () => {
+    const database = new SqliteD1Database();
+    try {
+      const ownToken = "aa".repeat(32);
+      const otherToken = "bb".repeat(32);
+      const ownStartToken = "cc".repeat(32);
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "own-phone",
+        apnsToken: ownToken,
+        pushToStartToken: ownStartToken,
+      });
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "own-expired-phone",
+        apnsToken: "dd".repeat(32),
+        leaseExpiresAt: "2020-01-01T00:00:00.000Z",
+      });
+      insertAttentionDevice(database, {
+        userId: "account-b",
+        deviceId: "other-phone",
+        apnsToken: otherToken,
+      });
+      const response = await accountRoute(database, "account-a", "GET", "/attention/account/devices");
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect((JSON.parse(body) as { devices: Array<{ deviceId: string }> }).devices
+        .map((device) => device.deviceId)).toEqual(["own-phone"]);
+      for (const secret of [ownToken, ownStartToken, otherToken, "other-phone", "com.ade.ios", "sandbox"]) {
+        expect(body).not.toContain(secret);
+      }
     } finally {
       database.close();
     }

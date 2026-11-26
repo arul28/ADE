@@ -345,6 +345,31 @@
   color: var(--kit-text-3);
 }
 
+/* "Update ADE on <machine>": a call an older computer could not answer. */
+.ade-machine-needs-update {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--kit-warn) 28%, var(--kit-panel-edge));
+  background: color-mix(in srgb, var(--kit-warn) 6%, transparent);
+}
+.ade-machine-needs-update-icon { flex: none; color: var(--kit-warn); }
+.ade-machine-needs-update-copy { min-width: 0; flex: 1; }
+.ade-machine-needs-update .ade-acct-btn { flex: none; }
+
+/* "Check again": when the last check ran and how it went. */
+.ade-net-checked {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 18px 12px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+.ade-net-checked[data-tone="error"] { color: var(--kit-warn); }
+
 @container modernpage (max-width: 620px) {
   .ade-net-ladder { grid-template-columns: minmax(0, 1fr); }
   .ade-net-rung + .ade-net-rung { border-left: 0; border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }

@@ -109,6 +109,8 @@ export const IPC = {
   attentionGetPreferences: "ade.attention.getPreferences",
   attentionPutPreferences: "ade.attention.putPreferences",
   attentionPutMachinePreferences: "ade.attention.putMachinePreferences",
+  attentionListDevices: "ade.attention.listDevices",
+  attentionPutDevicePreferences: "ade.attention.putDevicePreferences",
   attentionSetSessionMuted: "ade.attention.setSessionMuted",
   /** main -> focused window: an agent's message to show as a toast. */
   attentionAlert: "ade.attention.alert",
@@ -265,6 +267,7 @@ export const IPC = {
   remoteRuntimeCallAction: "ade.remoteRuntime.callAction",
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeUpdateAndRestart: "ade.remoteRuntime.updateAndRestart",
+  remoteRuntimeSwitchUpdateTrack: "ade.remoteRuntime.switchUpdateTrack",
   remoteRuntimeGetUpdateImpact: "ade.remoteRuntime.getUpdateImpact",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
   /**

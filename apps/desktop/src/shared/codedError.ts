@@ -121,7 +121,15 @@ export function parseCodedErrorMessage(error: unknown): ParsedCodedError {
  * wire as a `code: message` prefix (`encodeCodedErrorMessage`) so the sender
  * can act on it, and is not for reading.
  */
-const SENTENCE_REFUSAL_CODES: ReadonlySet<string> = new Set([CLOUD_COMPUTER_MOVING_CODE]);
+/**
+ * Another computer runs an ADE too old to answer a call this one made. The
+ * fix is updating ADE there, so a surface that sees this code offers
+ * "Update ADE on <machine>" with an Update button instead of the raw text
+ * (`isMachineNeedsUpdateError`).
+ */
+export const MACHINE_NEEDS_UPDATE_CODE = "machine_needs_update";
+
+const SENTENCE_REFUSAL_CODES: ReadonlySet<string> = new Set([CLOUD_COMPUTER_MOVING_CODE, MACHINE_NEEDS_UPDATE_CODE]);
 
 /**
  * Error text as a person reads it: a refusal written for the person
@@ -137,6 +145,19 @@ export function withoutRefusalCode(text: string): string {
 
 export function extractCodeFromMessage(error: unknown): string | null {
   return parseCodedErrorMessage(error).code ?? null;
+}
+
+/**
+ * A `machineNeedsUpdateError`, as thrown in main or after it crossed IPC
+ * (Electron keeps only the message, which carries the code).
+ */
+export function isMachineNeedsUpdateError(error: unknown): boolean {
+  return parseCodedErrorMessage(error).code === MACHINE_NEEDS_UPDATE_CODE;
+}
+
+/** The error a call to an older computer fails with; `sentence` is the fallback text. */
+export function machineNeedsUpdateError(sentence: string): Error & { code: typeof MACHINE_NEEDS_UPDATE_CODE } {
+  return codedError(encodeCodedErrorMessage(MACHINE_NEEDS_UPDATE_CODE, sentence), MACHINE_NEEDS_UPDATE_CODE);
 }
 
 /**

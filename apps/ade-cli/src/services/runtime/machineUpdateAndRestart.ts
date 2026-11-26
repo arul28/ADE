@@ -23,6 +23,7 @@ import type {
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
 import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
 import { resolveSelectedUpdateTrack } from "./updateTrackStore";
+import type { TrackSwitchCheckResult } from "../../../../desktop/src/shared/types";
 import type {
   DesktopAppUpdateInstallResult,
   DesktopAppUpdateRouting,
@@ -124,6 +125,23 @@ export type MachineUpdateAndRestartDeps = {
    * track of `currentVersion`.
    */
   selectedTrack?: () => UpdateTrack;
+  /** Backs `machine.switchUpdateTrack` (`runMachineTrackSwitch`). Absent: this machine can't switch from afar. */
+  trackSwitch?: MachineTrackSwitchDeps;
+};
+
+export type MachineTrackSwitchDeps = {
+  /** The database guard Settings › About runs (`checkTrackSwitch`), on this machine's own databases. */
+  check: (target: UpdateTrack) => Promise<TrackSwitchCheckResult>;
+  /** Save the choice in `update-track.json`, for a machine with no app. */
+  save: (target: UpdateTrack) => void;
+  /** Hand the switch to this machine's open app, which owns its update (`requestDesktopAppTrackSwitch`). */
+  requestDesktopApp?: (target: UpdateTrack, requestedBy: UpdateRequestedBy | null) => Promise<DesktopAppUpdateRouting>;
+  /**
+   * This brain is an installed app's own (macOS, Windows). With the app
+   * closed, only the app may switch: a standalone install would be put back
+   * by the app's own build the next time it opens.
+   */
+  appOwnsBrain?: () => boolean | Promise<boolean>;
 };
 
 export type MachineUpdateControlsArgs = {
@@ -150,6 +168,8 @@ export type MachineUpdateControlsArgs = {
    */
   installedApp?: () => Promise<{ name: string; version: string | null; updatable: boolean } | null>;
   updateInstallMode?: MachineUpdateAndRestartDeps["updateInstallMode"];
+  /** See `MachineUpdateAndRestartDeps.trackSwitch`. */
+  trackSwitch?: MachineTrackSwitchDeps;
 };
 
 // One comparator for the whole app. Slightly wider than the old local
@@ -208,8 +228,12 @@ export function createMachineUpdateControls(
         return null;
       };
       // The one thing the host can decide on its own: it will not "update" to
-      // the version it is already running, nor back to an older one.
-      const alreadyCurrent = normalizedTarget ? current(normalizedTarget) : null;
+      // the version it is already running, nor back to an older one. Except
+      // during a track switch (the saved track is not the running build's):
+      // any build on the chosen track is then the move, Beta back to an older
+      // Stable included. The database guard ran before the track was saved.
+      const switching = updateTrackOfVersion(args.version) !== resolveSelectedUpdateTrack(args.version);
+      const alreadyCurrent = normalizedTarget && !switching ? current(normalizedTarget) : null;
       if (alreadyCurrent) return alreadyCurrent;
       // `brain update --version` installs a pinned build as given, with no
       // database check, so a pin from the other track that would install stops
@@ -315,6 +339,7 @@ export function createMachineUpdateControls(
     },
     ...(args.requestDesktopAppUpdate ? { requestDesktopAppUpdate: args.requestDesktopAppUpdate } : {}),
     ...(args.noteAcceptedUpdate ? { noteAcceptedUpdate: args.noteAcceptedUpdate } : {}),
+    ...(args.trackSwitch ? { trackSwitch: args.trackSwitch } : {}),
   };
 }
 
@@ -640,4 +665,114 @@ async function routeMachineUpdateAndRestart(
     }
   }
   return await runStandaloneUpdateAndRestart(deps, targetVersion, { updateRequested: crossesTrack, requestedBy });
+}
+
+/**
+ * "Stable / Beta" for this machine, pressed on another of the owner's
+ * computers: the same guarded switch as Settings › About here, then the
+ * install of that track's build, reported like "Update & restart".
+ *
+ * The database guard runs first, on this machine's own databases. An open app
+ * owns its updates, so it makes the switch and installs; a machine with no app
+ * (a Linux server) saves the choice and updates its runtime. An app that owns
+ * this brain but is closed is not switched from under it.
+ */
+export async function runMachineTrackSwitch(
+  deps: MachineUpdateAndRestartDeps,
+  target: UpdateTrack,
+  requestedBy: UpdateRequestedBy | null = null,
+): Promise<MachineUpdateAndRestartResult> {
+  const ownVersion = deps.currentVersion?.trim() || null;
+  const label = updateTrackLabel(target);
+  const refuse = (message: string, route: RemoteRuntimeUpdateRoute = "standalone"): MachineUpdateAndRestartResult => ({
+    ok: false,
+    updateApplied: false,
+    currentVersion: ownVersion,
+    targetVersion: null,
+    steps: [step("check", "failed", message)],
+    message,
+    route,
+    pendingVersion: null,
+  });
+  const switcher = deps.trackSwitch;
+  if (!switcher) return refuse("This ADE can't change its update track from another computer.");
+  if (deps.updateInstallMode?.()?.updateInstallMode === "manual_download") {
+    return refuse("This Linux package is installed by hand, so its track can't be switched from here.");
+  }
+  let check: TrackSwitchCheckResult;
+  try {
+    check = await switcher.check(target);
+  } catch (error) {
+    return refuse(`ADE couldn't check this computer's projects before switching: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!check.allowed) return refuse(check.reason);
+
+  if (switcher.requestDesktopApp) {
+    let routing: DesktopAppUpdateRouting;
+    try {
+      routing = await switcher.requestDesktopApp(target, requestedBy);
+    } catch (error) {
+      routing = { attached: false, detail: error instanceof Error ? error.message : String(error) };
+    }
+    if (routing.attached) {
+      const answer = routing.result;
+      if (answer.outcome === "unsupported") return refuse(answer.message || "This ADE app can't switch tracks.", "desktop_app");
+      if (answer.outcome === "already_current") {
+        // Back to the track the app runs: the choice is saved, nothing installs.
+        const message = answer.message || `Follows ${label} again. Nothing to install.`;
+        return {
+          ok: true,
+          updateApplied: false,
+          currentVersion: answer.currentVersion ?? ownVersion,
+          targetVersion: answer.currentVersion ?? ownVersion,
+          steps: [step("check", "ok", message), step("apply", "skipped", message), step("restart", "skipped", "Not restarted.")],
+          message,
+          route: "desktop_app",
+          pendingVersion: null,
+        };
+      }
+      if (answer.outcome === "installing" || answer.outcome === "downloading") {
+        deps.noteAcceptedUpdate?.({ targetVersion: answer.version ?? check.targetVersion, requestedBy });
+      }
+      const result = desktopAppResult(answer, check.targetVersion);
+      return result.ok ? { ...result, message: `Switching to ${label}. ${result.message}` } : result;
+    }
+    if (await switcher.appOwnsBrain?.()) {
+      return refuse(`ADE is closed on this computer. Open it there, then switch to ${label} again.`, "desktop_app");
+    }
+  }
+
+  const runningTrack = updateTrackOfVersion(ownVersion);
+  if (target !== runningTrack && !check.targetVersion) {
+    return refuse(`ADE couldn't find the newest ${label} build to install. Try again later.`);
+  }
+  try {
+    switcher.save(target);
+  } catch (error) {
+    return refuse(`ADE couldn't save the choice: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (target === runningTrack) {
+    // Back to the track the running build is on: nothing to install.
+    const message = `Follows ${label} again. Nothing to install.`;
+    return {
+      ok: true,
+      updateApplied: false,
+      currentVersion: ownVersion,
+      targetVersion: ownVersion,
+      steps: [step("check", "ok", message), step("apply", "skipped", message), step("restart", "skipped", "Not restarted.")],
+      message,
+      route: "standalone",
+      pendingVersion: null,
+    };
+  }
+  const result = await runStandaloneUpdateAndRestart(deps, check.targetVersion, { updateRequested: true, requestedBy });
+  if (result.ok) return { ...result, message: `Switching to ${label}. ${result.message}` };
+  // The build never installed: keep following the running build's track, so
+  // this machine's next ordinary update is not a half-made switch.
+  try {
+    switcher.save(runningTrack);
+  } catch {
+    // The failure above is what the person needs to read.
+  }
+  return result;
 }

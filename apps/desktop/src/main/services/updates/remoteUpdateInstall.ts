@@ -1,9 +1,11 @@
 import type {
+  DesktopAppTrackSwitchRequest,
   DesktopAppUpdateInstallRequest,
   DesktopAppUpdateInstallResult,
 } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
-import type { AutoUpdateSnapshot } from "../../../shared/types";
+import type { AutoUpdateSnapshot, TrackSwitchCheckResult, UpdateTrackSwitchResult } from "../../../shared/types";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
+import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -26,10 +28,17 @@ type UpdateService = {
   checkForUpdates(options?: { userInitiated?: boolean }): Promise<void>;
   quitAndInstall(resumeChats?: boolean, options?: { requestedRemotely?: boolean }): Promise<boolean>;
   onStateChange(cb: (snapshot: AutoUpdateSnapshot) => void): () => void;
+  startTrackSwitch?(target: UpdateTrack): UpdateTrackSwitchResult;
 };
 
 export type RemoteUpdateInstaller = {
   install(request: DesktopAppUpdateInstallRequest): Promise<DesktopAppUpdateInstallResult>;
+  /**
+   * "Stable / Beta" pressed on another machine: this app's own guarded switch
+   * (Settings › About), then the install of that track's build, answered as
+   * `install` answers.
+   */
+  switchTrack(request: DesktopAppTrackSwitchRequest): Promise<DesktopAppUpdateInstallResult>;
   dispose(): void;
 };
 
@@ -56,6 +65,8 @@ export function createRemoteUpdateInstaller(args: {
    * that never landed.
    */
   preflightInstall?: () => Promise<{ ok: true } | { ok: false; message: string }>;
+  /** The database guard a track switch runs first (`checkTrackSwitch`). */
+  checkTrackSwitch?: (target: UpdateTrack) => Promise<TrackSwitchCheckResult>;
   logger: Pick<Logger, "info" | "warn">;
   installDelayMs?: number;
   checkTimeoutMs?: number;
@@ -209,7 +220,7 @@ export function createRemoteUpdateInstaller(args: {
     message,
   });
 
-  return {
+  const installer: RemoteUpdateInstaller = {
     async install(request) {
       const targetVersion = request.targetVersion?.trim() || null;
       const service = args.getService();
@@ -287,6 +298,43 @@ export function createRemoteUpdateInstaller(args: {
         return result("failed", null, null, message);
       }
     },
+    async switchTrack(request) {
+      const target = request.track;
+      const label = updateTrackLabel(target);
+      const service = args.getService();
+      if (!service?.startTrackSwitch || !args.supported || disposed) {
+        return result(
+          "unsupported",
+          service?.getSnapshot() ?? null,
+          null,
+          "This ADE app is a development or channel build and can't switch tracks.",
+        );
+      }
+      const snapshot = service.getSnapshot();
+      args.logger.info("autoUpdate.remote_track_switch_requested", {
+        target,
+        requestedByKind: request.requestedBy?.clientKind ?? "unknown",
+        requestedByName: request.requestedBy?.machineName ?? null,
+        currentVersion: snapshot.currentVersion,
+      });
+      try {
+        // Checked here too, not trusted from the brain: this is the app that installs.
+        const check = args.checkTrackSwitch ? await args.checkTrackSwitch(target) : null;
+        if (check && !check.allowed) return result("failed", snapshot, null, check.reason);
+        const started = service.startTrackSwitch(target);
+        if (!started.ok) return result("failed", snapshot, null, started.reason);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        args.logger.warn("autoUpdate.remote_track_switch_failed", { target, error: message });
+        return result("failed", snapshot, null, message);
+      }
+      if (target === updateTrackOfVersion(snapshot.currentVersion)) {
+        return result("already_current", snapshot, snapshot.currentVersion, `Follows ${label} again. Nothing to install.`);
+      }
+      // No version named: the switch makes the feed offer the newest build on
+      // the new track, older or not, and that is the one to install.
+      return await installer.install({ targetVersion: null, requestedBy: request.requestedBy ?? null });
+    },
     dispose() {
       disposed = true;
       clearPendingDownload();
@@ -294,4 +342,5 @@ export function createRemoteUpdateInstaller(args: {
       installTimer = null;
     },
   };
+  return installer;
 }

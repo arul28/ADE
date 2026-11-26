@@ -6,6 +6,7 @@ import {
   ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
+  parseAttentionAccountDevices,
   runAcknowledgmentChunks,
   unreachedOutcomeFields,
   type AttentionAction,
@@ -829,6 +830,42 @@ export function createAttentionNamespace(
         "machine preference update",
         "PATCH",
         `/attention/account/preferences/machines/${encodeURIComponent(key)}`,
+        preferences,
+        { userInitiated: true },
+      );
+    },
+
+    /** The account's phones and tablets (display fields only). */
+    async listDevices(accountOwnerId: string) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before your phones could load.");
+      }
+      return parseAttentionAccountDevices(await request(
+        "device list",
+        "GET",
+        "/attention/account/devices",
+        undefined,
+        { userInitiated: true },
+      ));
+    },
+
+    /** One phone's notification override, on its own atomic relay route. */
+    async putDevicePreferences(
+      accountOwnerId: string,
+      deviceId: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before Activity settings could be saved.");
+      }
+      const id = deviceId.trim();
+      if (!id) throw new Error("A phone is required to change its notifications.");
+      await request(
+        "device preference update",
+        "PATCH",
+        `/attention/account/preferences/devices/${encodeURIComponent(id)}`,
         preferences,
         { userInitiated: true },
       );

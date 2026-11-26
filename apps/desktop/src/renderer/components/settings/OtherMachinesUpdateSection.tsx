@@ -1,23 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
-import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { openExternalUrl } from "../../lib/openExternal";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import {
+  canSwitchMachineTracks,
   canUpdateOtherMachines,
   isMachineUpdateBusy,
+  machineShownTrack,
+  requestMachineTrackSwitch,
   requestMachineUpdates,
+  useConnectedMachines,
   useKnownAdeVersions,
   useMachineUpdates,
   machineUpdateIsManual,
 } from "../remoteTargets/machineUpdates";
 import {
-  connectedMachinesFromSnapshot,
   machineBehindVersion,
   machineUpdateTrack,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
-  type ConnectedMachine,
 } from "../remoteTargets/remoteMachineModel";
 import { describeMachineUpdateAttempt } from "../remoteTargets/machineUpdateStatus";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
@@ -25,37 +25,14 @@ import { useCloudSelfUpdates } from "../remoteTargets/useCloudSelfUpdates";
 import type { CloudMachine } from "../../../shared/adeCloud";
 import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloud/binding";
 import { UpdateTrackChip } from "../app/ChannelBadge";
-import { ModernRow, ModernRows, ModernSection } from "./primitives";
-import { Banner } from "../ui/notice";
+import { ModernRow, ModernRows, ModernSection, SettingsSegmented } from "./primitives";
+import type { UpdateTrack } from "../../../shared/updateTrack";
 
-/**
- * The connected machines, kept current by main's connection snapshot. Null
- * until ADE has read them; `failed` when the read failed and no push has
- * arrived since, so an error never reads as "no machines".
- */
-function useConnectedMachines(): { machines: ConnectedMachine[] | null; failed: boolean } {
-  const [snapshot, setSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    // Whichever arrives later wins; an older read must not replace a newer push.
-    const accept = (next: RemoteRuntimeConnectionSnapshot) => {
-      if (cancelled) return;
-      setFailed(false);
-      setSnapshot((current) => (current && current.updatedAt > next.updatedAt ? current : next));
-    };
-    void window.ade.remoteRuntime.getConnectionSnapshot().then(accept).catch(() => {
-      if (!cancelled) setFailed(true);
-    });
-    const unsubscribe = window.ade.remoteRuntime.onConnectionSnapshotChanged?.(accept);
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, []);
-  const machines = useMemo(() => (snapshot ? connectedMachinesFromSnapshot(snapshot) : null), [snapshot]);
-  return { machines, failed };
-}
+const TRACK_OPTIONS = [
+  { value: "stable", label: "Stable" },
+  { value: "beta", label: "Beta" },
+] as const;
+import { Banner } from "../ui/notice";
 
 /**
  * ADE on the other machines this computer is connected to: the version each
@@ -98,14 +75,19 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // Cloud computers keep themselves current: they leave the machine rows and "Update all",
   // and go into the one ADE Cloud row.
   const ownMachines = machines.filter((machine) => !cloud.boxFor(machine.colorKey));
-  const behind = machinesBehindOnTheirTrack(ownMachines, known);
+  // A machine switching tracks from here is not offered its old track's build.
+  const behind = machinesBehindOnTheirTrack(
+    ownMachines.filter((machine) => machineShownTrack(machine, machineUpdates) === machineUpdateTrack(machine)),
+    known,
+  );
   const automaticBehind = behind.filter((machine) => !machineUpdateIsManual(machine, machineUpdates.attempts[machine.id]));
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
   const anyBusy = automaticBehind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
   // Name tracks once Beta is anywhere in the picture: here, or on a machine.
   const showTracks = updateSnapshot.track?.running === "beta"
     || updateSnapshot.track?.selected === "beta"
-    || machines.some((machine) => machineUpdateTrack(machine) === "beta");
+    || machines.some((machine) => machineShownTrack(machine, machineUpdates) === "beta");
+  const canSwitchTracks = canSwitchMachineTracks();
   const cloudBox = adeCloudRowBox(cloud);
 
   if (compact && ownMachines.length === 0 && !cloudBox) return null;
@@ -151,12 +133,39 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           const updating = machineUpdates.updatingIds.has(machine.id) || status?.inFlight === true;
           const checking = machineUpdates.checkingIds.has(machine.id);
           const track = machineUpdateTrack(machine);
+          const shownTrack = machineShownTrack(machine, machineUpdates);
           const targetVersion = targetById.get(machine.id) ?? null;
           const manual = machineUpdateIsManual(machine, attempt);
           const downloadUrl = machine.downloadUrl ?? attempt?.downloadUrl;
           // Up to date only when this computer knows a build on that track to
           // compare with; otherwise the version stands alone.
           const knowsTrack = newestKnownVersionOnTrack(known, track) != null;
+          // Each machine's own Stable / Beta, switched on that machine. Not for
+          // one whose ADE is installed by hand, or one too old to be updated from here.
+          const trackSwitch = canSwitchTracks && machine.canUpdate !== false && !manual ? (
+            <SettingsSegmented<UpdateTrack>
+              ariaLabel={`Update track for ${machine.name}`}
+              value={shownTrack}
+              options={TRACK_OPTIONS}
+              disabled={updating || checking}
+              onChange={(next) => { void requestMachineTrackSwitch(machine, next); }}
+            />
+          ) : null;
+          const updateControl = shownTrack !== track ? null : targetVersion ? (
+            <button
+              type="button"
+              className="ade-modern-btn"
+              disabled={updating || checking || (manual && !downloadUrl)}
+              onClick={() => manual ? openExternalUrl(downloadUrl) : void requestMachineUpdates([{ ...machine, targetVersion }])}
+            >
+              <ArrowsClockwise size={13} weight="bold" className={updating ? "animate-spin" : undefined} />
+              {manual ? "Download update" : updating ? "Updating…" : checking ? "Checking…" : "Update & restart"}
+            </button>
+          ) : machineBehindVersion(machine, known) ? (
+            <span className="kit-tag">Update it on that machine</span>
+          ) : machine.version && knowsTrack ? (
+            <span className="kit-tag" data-tone="ok">Up to date</span>
+          ) : null;
           return (
             <ModernRow
               key={machine.id}
@@ -169,10 +178,10 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
                   size={30}
                 />
               )}
-              title={showTracks ? (
+              title={showTracks && !trackSwitch ? (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   {machine.name}
-                  <UpdateTrackChip track={track} />
+                  <UpdateTrackChip track={shownTrack} />
                 </span>
               ) : machine.name}
               hint={(
@@ -183,21 +192,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
                     : null}
                 </>
               )}
-              control={targetVersion ? (
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  disabled={updating || checking || (manual && !downloadUrl)}
-                  onClick={() => manual ? openExternalUrl(downloadUrl) : void requestMachineUpdates([{ ...machine, targetVersion }])}
-                >
-                  <ArrowsClockwise size={13} weight="bold" className={updating ? "animate-spin" : undefined} />
-                  {manual ? "Download update" : updating ? "Updating…" : checking ? "Checking…" : "Update & restart"}
-                </button>
-              ) : machineBehindVersion(machine, known) ? (
-                <span className="kit-tag">Update it on that machine</span>
-              ) : machine.version && knowsTrack ? (
-                <span className="kit-tag" data-tone="ok">Up to date</span>
-              ) : undefined}
+              control={trackSwitch || updateControl ? <>{trackSwitch}{updateControl}</> : undefined}
             >
               {status?.ok ? (
                 <div role="status" className="ade-ap-rowhint">

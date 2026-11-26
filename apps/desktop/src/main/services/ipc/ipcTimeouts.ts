@@ -290,6 +290,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // Downloads and installs a build on another machine. On the 30s default the
     // renderer reported a timeout while the update was still going.
     case IPC.remoteRuntimeUpdateAndRestart:
+    case IPC.remoteRuntimeSwitchUpdateTrack:
       return REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS;
     // A lane's delete or free first checks its work on the computer: a wake
     // (a sleeping one takes a minute or two), then the check, which may run 3 minutes.

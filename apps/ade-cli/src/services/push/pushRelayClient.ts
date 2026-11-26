@@ -8,6 +8,7 @@ import {
 import { markExpected } from "../../../../desktop/src/shared/expectedError";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type {
+  AttentionAccountDevice,
   AttentionItem,
   AttentionPreferenceScope,
   AttentionPreferences,
@@ -15,7 +16,10 @@ import type {
   AttentionSnapshot,
   AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
-import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES } from "../../../../desktop/src/shared/types/attention";
+import {
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+  parseAttentionAccountDevices,
+} from "../../../../desktop/src/shared/types/attention";
 import type { PushDeviceRegistration } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import {
@@ -1107,6 +1111,37 @@ export function createPushRelayClient(args: {
         return;
       }
       requireOk("putActivityMachinePreferences", response);
+    },
+
+    /** The account's phones and tablets (display fields only, never tokens). */
+    async listAttentionDevices(
+      expectedAccountUserId: string,
+    ): Promise<AttentionAccountDevice[]> {
+      const response = await request("GET", "/attention/account/devices", {
+        accountAuthorized: true,
+        expectedAccountUserId,
+        deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
+      });
+      return parseAttentionAccountDevices(requireOk("listAttentionDevices", response));
+    },
+
+    /** One phone's override, merged by the relay into `preferences.devices[deviceId]`. */
+    async putAttentionDevicePreferences(
+      expectedAccountUserId: string,
+      deviceId: string,
+      partial: Partial<AttentionPreferenceScope>,
+    ): Promise<void> {
+      const response = await request(
+        "PATCH",
+        `/attention/account/preferences/devices/${encodeURIComponent(deviceId)}`,
+        {
+          body: partial,
+          accountAuthorized: true,
+          expectedAccountUserId,
+          deadlineMs: PUSH_RELAY_FOREGROUND_DEADLINE_MS,
+        },
+      );
+      requireOk("putAttentionDevicePreferences", response);
     },
 
     /**

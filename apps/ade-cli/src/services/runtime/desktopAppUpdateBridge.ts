@@ -3,6 +3,7 @@ import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { electronMacAppBundlePath } from "../../serviceManager/brainExecutable";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
+import type { UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.
@@ -23,6 +24,17 @@ import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/rem
 
 export const DESKTOP_APP_UPDATE_BRIDGE_PREFIX = "app_update.";
 export const DESKTOP_APP_UPDATE_INSTALL_METHOD = `${DESKTOP_APP_UPDATE_BRIDGE_PREFIX}install`;
+/**
+ * Move this machine's app to the other update track, asked from another
+ * machine: the app's own guarded switch (Settings › About), then the install
+ * of that track's build, answered like `install`.
+ */
+export const DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD = `${DESKTOP_APP_UPDATE_BRIDGE_PREFIX}switchTrack`;
+
+export type DesktopAppTrackSwitchRequest = {
+  track: UpdateTrack;
+  requestedBy?: UpdateRequestedBy | null;
+};
 
 export type DesktopAppUpdateInstallRequest = {
   /** What the asking client believes is newest. Null means "whatever is latest". */
@@ -108,6 +120,50 @@ export async function requestDesktopAppUpdate(args: {
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
 }): Promise<DesktopAppUpdateRouting> {
+  return await requestDesktopApp({
+    socketPath: args.socketPath,
+    method: DESKTOP_APP_UPDATE_INSTALL_METHOD,
+    params: { targetVersion: args.targetVersion, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+    connectTimeoutMs: args.connectTimeoutMs,
+    requestTimeoutMs: args.requestTimeoutMs,
+  });
+}
+
+/**
+ * Ask this machine's desktop app to switch to `track` and install that
+ * track's build. An app that answers but predates the switch method is
+ * attached and refuses: the brain must not switch the track under an open
+ * app, which would put its own build back.
+ */
+export async function requestDesktopAppTrackSwitch(args: {
+  socketPath: string;
+  track: UpdateTrack;
+  requestedBy?: UpdateRequestedBy | null;
+}): Promise<DesktopAppUpdateRouting> {
+  const routing = await requestDesktopApp({
+    socketPath: args.socketPath,
+    method: DESKTOP_APP_UPDATE_SWITCH_TRACK_METHOD,
+    params: { track: args.track, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+  });
+  if (routing.attached || !/declined the request/i.test(routing.detail)) return routing;
+  return {
+    attached: true,
+    result: {
+      outcome: "failed",
+      currentVersion: null,
+      version: null,
+      message: "The ADE app on this computer is too old to switch tracks from another computer. Update it, then switch again.",
+    },
+  };
+}
+
+async function requestDesktopApp(args: {
+  socketPath: string;
+  method: string;
+  params: Record<string, unknown>;
+  connectTimeoutMs?: number;
+  requestTimeoutMs?: number;
+}): Promise<DesktopAppUpdateRouting> {
   let client: JsonRpcClient | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -132,8 +188,8 @@ export async function requestDesktopAppUpdate(args: {
     let raw: unknown;
     try {
       raw = await client.request(
-        DESKTOP_APP_UPDATE_INSTALL_METHOD,
-        { targetVersion: args.targetVersion, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+        args.method,
+        args.params,
         { timeoutMs: args.requestTimeoutMs ?? INSTALL_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {

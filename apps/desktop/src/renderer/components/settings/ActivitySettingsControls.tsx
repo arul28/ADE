@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DesktopTower,
+  DeviceMobile,
+  DeviceTablet,
   HourglassMedium,
   LockKey,
   SpeakerHigh,
@@ -9,8 +11,10 @@ import {
 import {
   DEFAULT_ATTENTION_PREFERENCES,
   upgradeAttentionEventPolicies,
+  type AttentionAccountDevice,
   type AttentionPreferences,
 } from "../../../shared/types";
+import { relativeWhen } from "../../lib/format";
 import { isMac } from "../../lib/platform";
 import { useAccountStatus } from "../../lib/account";
 import { useActivityStore } from "../../state/activityStore";
@@ -154,6 +158,24 @@ export function useActivitySettings() {
     return () => { cancelled = true; };
   }, [accountOwnerId, loadAttempt]);
 
+  // The account's phones. A host without the call (or a relay without the
+  // route) lists none rather than failing the page.
+  const [phones, setPhones] = useState<AttentionAccountDevice[]>([]);
+  useEffect(() => {
+    const api = typeof window !== "undefined" ? window.ade?.attention : null;
+    setPhones([]);
+    if (!api?.listDevices || !accountOwnerId) return;
+    let cancelled = false;
+    void api.listDevices(accountOwnerId)
+      .then((next) => {
+        if (!cancelled && mounted.current) setPhones(next);
+      })
+      .catch(() => {
+        // Phones are extra rows; the computers and every other setting still work.
+      });
+    return () => { cancelled = true; };
+  }, [accountOwnerId, loadAttempt]);
+
   const retryLoad = useCallback(() => setLoadAttempt((attempt) => attempt + 1), []);
 
   const flashSaved = useCallback(() => {
@@ -233,6 +255,38 @@ export function useActivitySettings() {
     }
   }, [accountOwnerId, flashSaved, preferences]);
 
+  /**
+   * Whether one phone gets notifications. Written to `devices[deviceId]` on
+   * its own relay route, the same field the phone's own switch writes.
+   */
+  const setPhoneNotificationsEnabled = useCallback(async (deviceId: string, notificationsEnabled: boolean) => {
+    const api = typeof window !== "undefined" ? window.ade?.attention : null;
+    if (!api?.putDevicePreferences || !accountOwnerId) {
+      setError("This ADE build can’t change phone notifications yet.");
+      return;
+    }
+    const next: AttentionPreferences = {
+      ...preferences,
+      devices: {
+        ...preferences.devices,
+        [deviceId]: { ...preferences.devices[deviceId], notificationsEnabled },
+      },
+    };
+    setPreferences(next);
+    try {
+      await api.putDevicePreferences(accountOwnerId, deviceId, { notificationsEnabled });
+      if (!mounted.current) return;
+      setError(null);
+      flashSaved();
+    } catch (saveError) {
+      if (!mounted.current) return;
+      setPreferences(preferences);
+      setError(saveError instanceof Error && saveError.message.trim()
+        ? saveError.message
+        : "ADE couldn’t change notifications for that phone.");
+    }
+  }, [accountOwnerId, flashSaved, preferences]);
+
   // The roster comes from the snapshot on screen, so it can only ever offer
   // machines the account actually has.
   const machines = useMemo<ActivityMachineOption[]>(() => {
@@ -269,6 +323,10 @@ export function useActivitySettings() {
     setMachineMuted,
     machineMuted: (machineKey: string) =>
       preferences.machines[machineKey]?.notificationsEnabled === false,
+    phones,
+    setPhoneNotificationsEnabled,
+    phoneNotificationsEnabled: (deviceId: string) =>
+      preferences.devices[deviceId]?.notificationsEnabled !== false,
   };
 }
 
@@ -554,46 +612,105 @@ export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel
   );
 }
 
-/** One switch per machine. Muted machines still show in Activity. */
+function phoneName(phone: AttentionAccountDevice): string {
+  return phone.name ?? (phone.kind === "tablet" ? "iPad" : "iPhone");
+}
+
+/**
+ * One switch per computer, then one per phone. A computer's switch is about
+ * notifications that come from it; a phone's is about notifications sent to it.
+ * Muted computers still show in Activity.
+ */
 export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
-  const { machines, busy, setMachineMuted, machineMuted } = model;
+  const {
+    machines,
+    phones,
+    busy,
+    account,
+    setMachineMuted,
+    machineMuted,
+    setPhoneNotificationsEnabled,
+    phoneNotificationsEnabled,
+  } = model;
+  const phonesOff = !account.notificationsEnabled;
   return (
-    <ModernSection group="Machines" anchor="activity-machines" title="Machines" hint="Mute a machine to keep it in Activity without notifications.">
+    <ModernSection
+      group="Machines"
+      anchor="activity-machines"
+      title="Machines"
+      hint="Mute a computer to stop notifications about it. Turn off a phone to stop sending notifications to it."
+    >
       <ModernRows>
-        {machines.length === 0 ? (
+        {machines.length === 0 && phones.length === 0 ? (
           <ModernRow title="No machines yet" hint="Machines appear here once they report Activity." />
-        ) : (
-          machines.map((machine) => {
-            const muted = machineMuted(machine.machineKey);
-            return (
-              <ModernRow
-                key={machine.machineKey}
-                title={(
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <DesktopTower size={14} style={{ color: "var(--kit-text-3)" }} />
-                    {machine.name}
-                  </span>
-                )}
-                hint={(
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                    <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
-                    {model.loadFailed
-                      ? "Notification setting didn’t load"
-                      : muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
-                  </span>
-                )}
-                control={
-                  <SettingsToggle
-                    label={`Notify me about ${machine.name}`}
-                    checked={!muted}
-                    disabled={busy}
-                    onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
-                  />
-                }
-              />
-            );
-          })
-        )}
+        ) : null}
+        {machines.map((machine) => {
+          const muted = machineMuted(machine.machineKey);
+          return (
+            <ModernRow
+              key={machine.machineKey}
+              title={(
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <DesktopTower size={14} style={{ color: "var(--kit-text-3)" }} />
+                  {machine.name}
+                </span>
+              )}
+              hint={(
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span className="kit-dot" data-state={machine.online && !muted ? "ok" : undefined} aria-hidden />
+                  {model.loadFailed
+                    ? "Notification setting didn’t load"
+                    : muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+                </span>
+              )}
+              control={
+                <SettingsToggle
+                  label={`Notify me about ${machine.name}`}
+                  checked={!muted}
+                  disabled={busy}
+                  onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
+                />
+              }
+            />
+          );
+        })}
+        {phones.map((phone) => {
+          const name = phoneName(phone);
+          const enabled = phoneNotificationsEnabled(phone.deviceId);
+          const Icon = phone.kind === "tablet" ? DeviceTablet : DeviceMobile;
+          const lastSeen = phone.lastSeenAt ? ` · seen ${relativeWhen(phone.lastSeenAt)}` : "";
+          return (
+            <ModernRow
+              key={phone.deviceId}
+              title={(
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <Icon size={14} style={{ color: "var(--kit-text-3)" }} />
+                  {name}
+                </span>
+              )}
+              hint={(
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span className="kit-dot" data-state={enabled && !phonesOff ? "ok" : undefined} aria-hidden />
+                  {model.loadFailed
+                    ? "Notification setting didn’t load"
+                    : phonesOff
+                      ? "Off · Phone notifications is off"
+                      : enabled
+                        ? `Gets notifications${lastSeen}`
+                        : "Muted · no notifications on this phone"}
+                </span>
+              )}
+              control={
+                <SettingsToggle
+                  label={`Send notifications to ${name}`}
+                  checked={enabled && !phonesOff}
+                  disabled={busy || phonesOff}
+                  onChange={(next) => void setPhoneNotificationsEnabled(phone.deviceId, next)}
+                />
+              }
+            />
+          );
+        })}
       </ModernRows>
     </ModernSection>
   );

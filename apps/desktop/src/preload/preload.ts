@@ -198,6 +198,7 @@ import {
   MAX_CHAT_ATTACHMENT_BYTES,
 } from "../shared/chatAttachmentLimits";
 import {
+  type AttentionAccountDevice,
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
   type AttentionDesktopAlert,
@@ -6220,6 +6221,11 @@ const adeBridge = {
         id,
         targetVersion: targetVersion ?? null,
       }),
+    switchUpdateTrack: async (
+      id: string,
+      track: UpdateTrack,
+    ): Promise<RemoteRuntimeUpdateAndRestartResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeSwitchUpdateTrack, { id, track }),
     getUpdateImpact: async (id: string): Promise<UpdateImpact> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetUpdateImpact, { id }),
     listProjects: async (id: string): Promise<RemoteRuntimeProjectRecord[]> =>
@@ -7635,6 +7641,18 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.attentionPutMachinePreferences, {
         accountOwnerId,
         machineKey,
+        preferences,
+      }),
+    listDevices: async (accountOwnerId: string): Promise<AttentionAccountDevice[]> =>
+      ipcRenderer.invoke(IPC.attentionListDevices, { accountOwnerId }),
+    putDevicePreferences: async (
+      accountOwnerId: string,
+      deviceId: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionPutDevicePreferences, {
+        accountOwnerId,
+        deviceId,
         preferences,
       }),
     setSessionMuted: async (

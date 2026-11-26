@@ -25,6 +25,8 @@ import type { ProviderInstance } from "../../../shared/types/providerInstances";
 import type { ProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { getErrorMessage } from "../shared/utils";
 import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { machineNeedsUpdateError } from "../../../shared/codedError";
+import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 
 export const MACHINE_INVENTORY_MAX_LIVE_MACHINES = 12;
 export const MACHINE_INVENTORY_RATE_FLOOR_MS = 30_000;
@@ -109,7 +111,9 @@ function isMethodNotFound(error: unknown): boolean {
   if (!error) return false;
   const message = getErrorMessage(error);
   if (AUTHORIZATION_DENIAL_MESSAGE.test(message)) return false;
-  return UNKNOWN_METHOD_MESSAGE.test(message);
+  // A brain from before the machine-level `account.getMachineInventory`
+  // routes it as a project method and answers "requires params.projectId".
+  return UNKNOWN_METHOD_MESSAGE.test(message) || isPeerVersionGapMessage(message);
 }
 
 function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
@@ -287,12 +291,9 @@ export function createAccountMachineInventoryFetcher({
       return safe;
     } catch (error) {
       const tooOld = isMethodNotFound(error);
-      const message = tooOld
-        ? "This computer's ADE is too old to share provider inventory."
-        : error instanceof Error && error.message
-          ? error.message
-          : "Details unavailable right now.";
-      const failure = tooOld ? markExpected(new Error(message), "environment") : carryExpected(error, new Error(message));
+      const failure = tooOld
+        ? markExpected(machineNeedsUpdateError("Update ADE on that computer to see what it has installed."), "environment")
+        : carryExpected(error, new Error(error instanceof Error && error.message ? error.message : "Details unavailable right now."));
       failures.set(machineKey, { attemptedAt, error: failure });
       logger?.debug?.("account.machine_inventory_refresh_failed", {
         machineKey,

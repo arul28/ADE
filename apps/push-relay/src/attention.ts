@@ -946,7 +946,15 @@ function resolveScopedDeliveryPreferences(
   const explicitDevice = isRecord(devices[device.device_id])
     ? devices[device.device_id] as Record<string, unknown>
     : {};
-  return { ...registered, ...account, ...project, ...machine, ...explicitDevice };
+  const merged = { ...registered, ...account, ...project, ...machine, ...explicitDevice };
+  // Notifications off is a veto, not a default a later scope can undo. The
+  // phone writes its own switch into its device override on every sync, so
+  // with last-wins a phone left on would ignore the account's "Phone
+  // notifications" switch and every muted machine.
+  if ([account, project, machine, explicitDevice].some((layer) => layer.notificationsEnabled === false)) {
+    merged.notificationsEnabled = false;
+  }
+  return merged;
 }
 
 function resolveActivityDeliveryPreferences(
@@ -3576,6 +3584,44 @@ async function handleDevicePreferences(
   });
 }
 
+/**
+ * The account's phones and tablets, so Settings can choose which of them get
+ * notifications. Only rows with a current lease (an expired one gets nothing
+ * delivered anyway), and only display fields: never a push token, bundle id or
+ * APNs environment.
+ */
+async function handleListAttentionDevices(
+  env: AttentionRelayEnv,
+  userId: string,
+): Promise<Response> {
+  const result = await env.DB.prepare(`
+    select device_id, platform, device_name, updated_at
+    from attention_devices
+    where user_id = ? and lease_expires_at > ?
+    order by updated_at desc
+    limit ?
+  `).bind(userId, new Date().toISOString(), MAX_ATTENTION_DEVICES).all<{
+    device_id: string;
+    platform: string | null;
+    device_name: string | null;
+    updated_at: string;
+  }>();
+  return json({
+    ok: true,
+    devices: result.results.map((device) => {
+      const name = device.device_name?.trim() || null;
+      return {
+        deviceId: device.device_id,
+        name,
+        platform: device.platform ?? null,
+        // iOS reports "iOS" for both; the name is the only hint of an iPad.
+        kind: name && /\bipad\b/i.test(name) ? "tablet" : "phone",
+        lastSeenAt: device.updated_at,
+      };
+    }),
+  });
+}
+
 /** A custom notification's limits. The relay sends the text exactly as written. */
 export const CUSTOM_NOTIFICATION_TITLE_MAX = 64;
 export const CUSTOM_NOTIFICATION_BODY_MAX = 160;
@@ -4702,6 +4748,9 @@ async function handleAuthorizedAttentionAccountRequest(
       userId,
       machineKey,
     );
+  }
+  if (route.length === 1 && route[0] === "devices" && request.method === "GET") {
+    return await handleListAttentionDevices(env, userId);
   }
   if (
     route.length === 2

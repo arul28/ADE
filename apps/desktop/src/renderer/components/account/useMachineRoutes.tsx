@@ -4,11 +4,20 @@ import { machineRouteItems, type MachineRouteItem } from "./machineRouteModel";
 import { MachineRoutesPanel, RelayOffDialog, type RelaySwitchModel } from "./MachineRoutes";
 import { PrivateNetworkSection } from "./PrivateNetworkSection";
 import { Banner } from "../ui/notice";
+import { MachineNeedsUpdate } from "../remoteTargets/MachineNeedsUpdate";
+import { isMachineNeedsUpdateError } from "../../../shared/codedError";
+import { ipcErrorMessage } from "../../lib/format";
 
 export type MachineRoutesState =
   | { status: "loading"; routes: MachineConnectionRoutes | null }
   | { status: "ready"; routes: MachineConnectionRoutes }
-  | { status: "error"; routes: MachineConnectionRoutes | null; message: string };
+  | {
+    status: "error";
+    routes: MachineConnectionRoutes | null;
+    message: string;
+    /** That computer's ADE is too old to answer (`isMachineNeedsUpdateError`). */
+    needsUpdate?: boolean;
+  };
 
 /** The parts of a "Your computers" row the route controls read. */
 export type RoutesRow = {
@@ -28,6 +37,12 @@ export function routesAvailable(): boolean {
 /** This computer's routes are read through its own brain; the key is "local". */
 const LOCAL_ROUTES_KEY = "local";
 const ROUTES_REFRESH_MS = 30_000;
+/**
+ * "Check again" shows every step as checking for at least this long. The
+ * answer is often back in a few milliseconds (the brain reads Tailscale fast),
+ * and a list that never visibly changes reads as a button that did nothing.
+ */
+const RECHECK_MIN_VISIBLE_MS = 800;
 
 function accountApi() {
   return window.ade?.account;
@@ -72,8 +87,9 @@ function useMachineRoutesState() {
       if (isLatest(key, attempt)) setByKey((previous) => ({ ...previous, [key]: { status: "ready", routes } }));
     } catch (error) {
       if (!isLatest(key, attempt)) return;
-      const message = error instanceof Error && error.message ? error.message : "Routes unavailable right now.";
-      setByKey((previous) => ({ ...previous, [key]: { status: "error", routes: previous[key]?.routes ?? null, message } }));
+      const message = ipcErrorMessage(error) || "Routes unavailable right now.";
+      const needsUpdate = isMachineNeedsUpdateError(error);
+      setByKey((previous) => ({ ...previous, [key]: { status: "error", routes: previous[key]?.routes ?? null, message, needsUpdate } }));
     }
   }, [begin]);
 
@@ -121,9 +137,16 @@ export function useMachineRoutesControl(args: {
   /** The last failed relay change, kept with the row it belongs to. */
   const [relayError, setRelayError] = useState<{ key: string; message: string } | null>(null);
   const [pendingOff, setPendingOff] = useState<RoutesRow | null>(null);
+  /** "Check again" on this computer: running, and when the last one finished. */
+  const [recheck, setRecheck] = useState<{ running: boolean; finishedAtMs: number | null }>({ running: false, finishedAtMs: null });
   const timers = useRef<number[]>([]);
-  useEffect(() => () => {
-    for (const timer of timers.current) window.clearTimeout(timer);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      for (const timer of timers.current) window.clearTimeout(timer);
+    };
   }, []);
   const later = useCallback((run: () => void, ms: number) => {
     timers.current.push(window.setTimeout(run, ms));
@@ -185,7 +208,7 @@ export function useMachineRoutesControl(args: {
     } catch (error) {
       setRelayError({
         key: row.key,
-        message: error instanceof Error && error.message ? error.message : "Couldn't change ADE Relay.",
+        message: ipcErrorMessage(error) || "Couldn't change ADE Relay.",
       });
     } finally {
       setBusyKey(null);
@@ -208,7 +231,9 @@ export function useMachineRoutesControl(args: {
         ? "Connect to this computer to change its relay setting."
         : routes
           ? null
-          : state?.status === "error" ? state.message : "Checking this computer…",
+          : state?.status === "error"
+            ? state.needsUpdate ? `Update ADE on ${row.name} to change this here.` : state.message
+            : "Checking this computer…",
       busy: busyKey === row.key,
       onChange: (on) => {
         setRelayError(null);
@@ -222,9 +247,14 @@ export function useMachineRoutesControl(args: {
   const routesPanelFor = useCallback((row: RoutesRow): ReactNode => {
     const items = routeItemsFor(row);
     if (items.length === 0) return null;
-    const live = enabled && stateFor(row)?.routes != null;
+    const state = stateFor(row);
+    const live = enabled && state?.routes != null;
+    const needsUpdateKey = !row.thisMac && state?.status === "error" && state.needsUpdate ? row.accountMachine?.machineKey ?? null : null;
     return (
       <>
+        {needsUpdateKey ? (
+          <MachineNeedsUpdate machineKey={needsUpdateKey} machineName={row.name} unlocks="to see and change its routes here." />
+        ) : null}
         <MachineRoutesPanel
           items={items}
           relay={relaySwitchFor(row)}
@@ -244,13 +274,24 @@ export function useMachineRoutesControl(args: {
     if (enabled && (row.thisMac || row.connected)) void load(routesKey(row) === LOCAL_ROUTES_KEY ? null : row.accountMachine?.machineKey ?? null);
   }, [enabled, load]);
 
+  const recheckThisComputer = useCallback(async () => {
+    setRecheck((previous) => ({ ...previous, running: true }));
+    reloadMachines();
+    await Promise.all([
+      load(null, { refresh: true }),
+      new Promise<void>((resolve) => later(resolve, RECHECK_MIN_VISIBLE_MS)),
+    ]);
+    if (alive.current) setRecheck({ running: false, finishedAtMs: Date.now() });
+  }, [later, load, reloadMachines]);
+
   const privateNetwork = enabled ? (
     <PrivateNetworkSection
       state={byKey[LOCAL_ROUTES_KEY]}
       machines={machines}
+      rechecking={recheck.running}
+      lastRecheckAtMs={recheck.finishedAtMs}
       onRecheck={() => {
-        void load(null, { refresh: true });
-        reloadMachines();
+        if (!recheck.running) void recheckThisComputer();
       }}
     />
   ) : null;
@@ -280,5 +321,10 @@ export function useMachineRoutesControl(args: {
     routesPanelFor,
     onExpand,
     localRoutes: enabled ? byKey[LOCAL_ROUTES_KEY]?.routes ?? null : null,
+    /** The routes panel already asks to update ADE on this computer. */
+    asksForUpdate: (row: RoutesRow) => {
+      const state = stateFor(row);
+      return enabled && !row.thisMac && state?.status === "error" && state.needsUpdate === true;
+    },
   };
 }
