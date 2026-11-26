@@ -4579,8 +4579,8 @@ describe("ADE Cloud server moves", () => {
   const TARGET = "madenew12345";
   const ROOT = "/home/node/widgets";
   const SETTING = MACHINE_LAUNCH_MIN_VERSION_SETTING;
-  /** What the computers' shells print for the move's commands. */
-  let shell: { copy: string; serve: string; receive: string };
+  /** What the computers' shells print for the move's commands: `save` and `copy` are exit codes, empty while each runs. */
+  let shell: { save: string; copy: string; serve: string; receive: string };
   let ran: Array<{ id: string; command: string }>;
 
   beforeEach(() => {
@@ -4591,10 +4591,13 @@ describe("ADE Cloud server moves", () => {
     seedComputer(harness, { name: "Widgets", machine_key: "mk_source", lane_id: "lane-1", lane_name: "Fix login" });
     provide(harness, INSTANCE, "running", { ade_machine_key: "mk_source", ade_lane_id: "lane-1", ade_lane_name: "Fix login", ade_former_machine_keys: "mk_older" });
     harness.insert("machines", { user_id: OWNER, machine_key: "mk_source", name: "Widgets", created_at: NOW });
-    shell = { copy: "", serve: "started", receive: "started" };
+    shell = { save: "0", copy: "", serve: "started", receive: "started" };
     ran = [];
     harness.net.hooks.exec = (id, command) => {
       ran.push({ id, command });
+      // The save's start, then its state read (`startMoveSaveCommand`, `moveSaveStateCommand`).
+      if (command.includes("ade cloud prepare-stop")) return { exit_code: 0, stdout: "started" };
+      if (command.includes("/tmp/ade-move-save-")) return { exit_code: 0, stdout: shell.save };
       if (command.includes("not_started")) return { exit_code: 0, stdout: shell.copy };
       if (command.includes('touch "$ADE_HOME/brain.paused"')) return { exit_code: 0, stdout: shell.serve };
       if (command.includes("/tmp/ade-move.started")) return { exit_code: 0, stdout: shell.receive };
@@ -4657,7 +4660,7 @@ describe("ADE Cloud server moves", () => {
     const saved = onSource.findIndex((command) => command.includes("ade cloud prepare-stop"));
     expect(saved).toBeGreaterThan(-1);
     expect(onSource.findIndex((command) => command.includes('touch "$ADE_HOME/brain.paused"'))).toBeGreaterThan(saved);
-    expect(await record()).toEqual(expect.objectContaining({ state: "copying", cancellable: false }));
+    expect(await record()).toEqual(expect.objectContaining({ state: "copying", cancellable: false, saveState: "done" }));
     // Paused, the old computer checks in no more: the minute cron leaves both computers awake.
     clock += 11 * 60_000;
     await harness.tick();
@@ -4719,6 +4722,34 @@ describe("ADE Cloud server moves", () => {
     expect(unpaused()).toBe(paused);
     // The computer is free for another move.
     expect((await start({ moveId: OTHER_MOVE })).status).toBe(201);
+  });
+
+  it.each<[string, "done" | "warning"]>([
+    ["0", "done"],
+    ["1", "warning"],
+  ])("the copy waits for the chats' save started beside the making; one that exits %s ends as %s and the move goes on", async (code, saveState) => {
+    shell.save = "";
+    expect((await start()).status).toBe(201);
+    await drive("join");
+    await signIn();
+    await drive("save");
+    // Still saving, within its two minutes: the old computer's ADE keeps running.
+    for (let i = 0; i < 3; i += 1) {
+      clock += 5_000;
+      await run();
+    }
+    expect(job().step).toBe("save");
+    expect(await record()).toEqual(expect.objectContaining({ saveState: "running", copyStarted: false }));
+    expect(onComputer(INSTANCE, 'touch "$ADE_HOME/brain.paused"')).toHaveLength(0);
+
+    shell.save = code;
+    await drive("copy");
+    expect(await record()).toEqual(expect.objectContaining({ saveState, copyStarted: true }));
+    expect(onComputer(INSTANCE, 'touch "$ADE_HOME/brain.paused"')).toHaveLength(1);
+    expect(onComputer(INSTANCE, "ade cloud prepare-stop")).toHaveLength(1);
+    shell.copy = "0";
+    await drive("end");
+    expect((await record()).state).toBe("done");
   });
 
   it("an old computer the provider won't delete is kept with its ADE running again, and the move ends on the new one", async () => {
