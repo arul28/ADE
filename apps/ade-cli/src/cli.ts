@@ -31085,7 +31085,7 @@ async function runServe(
         const sources = { projectRegistry, scopeRegistry };
         const [facts, nextWakeAt] = await Promise.all([
           readMachineBusyFacts({ ...sources, personalChatScope }),
-          readMachineNextScheduledWakeAt(sources),
+          readMachineNextScheduledWakeAt({ ...sources, personalChatScope }),
         ]);
         const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
           ...facts,
@@ -32794,24 +32794,25 @@ async function runServe(
     },
   });
 
-  // A lane launch's setup that filled the disk waits through the grow's
-  // restart (`roomMark`): its project opens now, so the launch goes on
-  // (and reads as busy, so the computer stays awake) with nobody watching.
+  // An ADE Cloud computer opens each of its projects when its brain starts.
+  // A chat's timers live in its project and run, and reach the keep-awake
+  // (`readMachineNextScheduledWakeAt`), only while it is open. After a
+  // restart (an update at idle, a disk grow) nothing else opened it before
+  // the computer slept: the new brain told the server it had no timer, and a
+  // check due in 20 minutes ran hours later, at the next message. A fresh
+  // brain has three minutes before it may sleep, and opening a project takes
+  // seconds. A lane launch's setup that waited through a grow's restart
+  // (`roomMark`) goes on the same way, with nobody watching.
   if (!embedded && cloudInstanceId) {
     void (async () => {
-      const [{ hasChatLaunchAwaitingRoom }, { resolveAdeLayout }] = await Promise.all([
-        import("../../desktop/src/main/services/chat/chatLaunchRecords"),
-        import("../../desktop/src/shared/adeLayout"),
-      ]);
       for (const project of projectRegistry.list()) {
-        if (!hasChatLaunchAwaitingRoom(path.join(resolveAdeLayout(project.rootPath).cacheDir, "chat-launches"))) continue;
-        headlessProjectLogger.info("cloud.lane_setup_resume_open", { projectId: project.projectId });
-        await scopeRegistry.get(project.projectId).catch((error: unknown) => {
-          headlessProjectLogger.warn("cloud.lane_setup_resume_open_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) });
-        });
+        await scopeRegistry.get(project.projectId).then(
+          () => headlessProjectLogger.info("cloud.project_open_at_start", { projectId: project.projectId }),
+          (error: unknown) => headlessProjectLogger.warn("cloud.project_open_at_start_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) }),
+        );
       }
     })().catch((error: unknown) => {
-      headlessProjectLogger.warn("cloud.lane_setup_resume_scan_failed", { error: error instanceof Error ? error.message : String(error) });
+      headlessProjectLogger.warn("cloud.project_open_at_start_scan_failed", { error: error instanceof Error ? error.message : String(error) });
     });
   }
 
