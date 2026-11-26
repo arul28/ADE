@@ -392,9 +392,10 @@ async function revylPrices(env: RevylCostEnv): Promise<Map<string, number> | nul
 
 /**
  * Each workspace's charges on each of `days` (UTC) beyond its phones' time,
- * written to `cloud_revyl_days` (a day read again is rewritten). `free` is
- * the plan the account's Revyl phones that day started on, or its plan now
- * on a day it ran none (a build with no phone). Answers how many
+ * written to `cloud_revyl_days` (a day read again gets the new amount and
+ * keeps its first `free`, so a later plan change never moves past use). `free`
+ * is the plan the account's Revyl phones that day started on, or its plan at
+ * the first read on a day it ran none (a build with no phone). Answers how many
  * workspace-days could not be read.
  */
 async function writeWorkspaceDays(env: RevylCostEnv, prices: Map<string, number>, workspaces: CostWorkspace[], days: string[], now: number): Promise<number> {
@@ -426,7 +427,7 @@ async function writeWorkspaceDays(env: RevylCostEnv, prices: Map<string, number>
         ?? (accountRules({ plan: workspace.plan === "paid" ? "paid" : "free", stripe_status: workspace.stripe_status }) === "free" ? 1 : 0);
       statements.push(env.DB.prepare(`
         insert into cloud_revyl_days (user_id, day, cost_micros, free, read_at) values (?, ?, ?, ?, ?)
-        on conflict (user_id, day) do update set cost_micros = excluded.cost_micros, free = excluded.free, read_at = excluded.read_at
+        on conflict (user_id, day) do update set cost_micros = excluded.cost_micros, read_at = excluded.read_at
       `).bind(workspace.user_id, day, Math.round(usd * 1_000_000), free, now));
     }
   }

@@ -5,6 +5,7 @@ import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
+import { REVYL_COST_DAYS_BACK } from "./phoneRevyl";
 import { sponsoredReportLines } from "./sponsoredReport";
 import {
   CLOUD_PLANS,
@@ -303,6 +304,8 @@ type DayAccount = {
   incomeMicros: number;
   extraReportedMilli: number;
   periodStart: number | null;
+  /** The iPhone part of `costMicros` (`cloud_account_days.phone_micros`). */
+  phoneMicros: number;
 };
 
 /**
@@ -447,23 +450,40 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     } else if (planId !== "free" && !before && account.period_start >= dayStart) {
       income += extraHoursIncomeMicros(planId, 0, account.extra_reported_milli);
     }
-    rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start });
+    rows.push({ userId: account.user_id, planId, costMicros: cost, incomeMicros: income, extraReportedMilli: account.extra_reported_milli, periodStart: account.period_start, phoneMicros: phones.get(account.user_id) ?? 0 });
   }
   // Cost with no live account (deleted, its rows re-keyed to a hash): counted, with no income.
   const counted = new Set(rows.map((row) => row.userId));
   for (const userId of new Set([...compute.keys(), ...disk.keys(), ...phones.keys()])) {
     if (counted.has(userId)) continue;
     const cost = (compute.get(userId) ?? 0) + (disk.get(userId)?.peak_gb ?? 0) * DISK_COST_MICROS_PER_GB_DAY + (phones.get(userId) ?? 0);
-    if (cost > 0) rows.push({ userId, planId: "free", costMicros: cost, incomeMicros: 0, extraReportedMilli: 0, periodStart: null });
+    if (cost > 0) rows.push({ userId, planId: "free", costMicros: cost, incomeMicros: 0, extraReportedMilli: 0, periodStart: null, phoneMicros: phones.get(userId) ?? 0 });
   }
   if (rows.length) {
     await env.DB.batch(rows.map((row) => env.DB.prepare(`
-      insert into cloud_account_days (user_id, day, plan_id, cost_micros, income_micros, extra_reported_milli, period_start)
-      values (?, ?, ?, ?, ?, ?, ?)
+      insert into cloud_account_days (user_id, day, plan_id, cost_micros, income_micros, extra_reported_milli, period_start, phone_micros)
+      values (?, ?, ?, ?, ?, ?, ?, ?)
       on conflict (user_id, day) do update set plan_id = excluded.plan_id, cost_micros = excluded.cost_micros,
-        income_micros = excluded.income_micros, extra_reported_milli = excluded.extra_reported_milli, period_start = excluded.period_start
-    `).bind(row.userId, day, row.planId, row.costMicros, row.incomeMicros, row.extraReportedMilli, row.periodStart)));
+        income_micros = excluded.income_micros, extra_reported_milli = excluded.extra_reported_milli, period_start = excluded.period_start,
+        phone_micros = excluded.phone_micros
+    `).bind(row.userId, day, row.planId, row.costMicros, row.incomeMicros, row.extraReportedMilli, row.periodStart, row.phoneMicros)));
   }
+  // The days before it: their phones' costs settle as the phones end, and Revyl's charges come in on later reads
+  // (`recordRevylDayCosts` reads the last few days), so each saved day's iPhone part is brought up to date. Income stays.
+  await env.DB.batch(Array.from({ length: REVYL_COST_DAYS_BACK - 1 }, (_, index) => {
+    const earlier = utcDay(dayStart - (index + 1) * 86_400_000);
+    const from = Date.parse(`${earlier}T00:00:00Z`);
+    return env.DB.prepare(`
+      update cloud_account_days set cost_micros = cost_micros - phone_micros + new_phone, phone_micros = new_phone
+      from (
+        select a.user_id as uid,
+          (select coalesce(sum(p.cost_micros), 0) from cloud_phones p where p.user_id = a.user_id and p.created_at >= ? and p.created_at < ?)
+            + (select coalesce(sum(r.cost_micros), 0) from cloud_revyl_days r where r.user_id = a.user_id and r.day = ?) as new_phone
+        from cloud_account_days a where a.day = ?
+      ) fresh
+      where cloud_account_days.day = ? and cloud_account_days.user_id = fresh.uid and cloud_account_days.phone_micros <> fresh.new_phone
+    `).bind(from, from + 86_400_000, earlier, earlier, earlier);
+  }));
 
   const monthStart = monthStartDay(dayStart);
   const weekStart = utcDay(dayStart - 7 * 86_400_000);

@@ -12,3 +12,7 @@ create table if not exists cloud_revyl_days (
   read_at integer not null,
   primary key (user_id, day)
 );
+-- The iPhone part of each saved report day (phones started that day and
+-- Revyl's other charges), so a later run can refresh a day whose phone costs
+-- settled or whose Revyl read came in late without touching its income.
+alter table cloud_account_days add column phone_micros integer not null default 0;
