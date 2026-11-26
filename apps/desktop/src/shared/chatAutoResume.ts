@@ -12,7 +12,7 @@
  * an ADE-created one).
  */
 
-import { usageLimitTextIdentity } from "./usageLimitResumePresentation";
+import { formatUsageLimitInstant, namesPlanLimitWindow, usageLimitTextIdentity } from "./usageLimitResumePresentation";
 import {
   backgroundCommandLabel,
   deriveBackgroundItems,
@@ -152,10 +152,7 @@ export function isUsageLimitChatError(event: {
   );
   // "outofusage": Cursor's "You're out of usage" carries neither phrase.
   if (identity.includes("usagelimit") || identity.includes("ratelimit") || identity.includes("outofusage")) return true;
-  // Plan windows named on their own: "You've hit your 5-hour limit",
-  // "5-hour limit reached", "weekly limit reached".
-  if (identity.includes("hityour") && identity.includes("limit")) return true;
-  return /\d+hourlimitreached|(?:weekly|opus|sonnet|fable)limitreached/.test(identity);
+  return namesPlanLimitWindow(`${typeof errorInfo === "string" ? errorInfo : ""} ${event.message ?? ""}`);
 }
 
 /**
@@ -190,13 +187,15 @@ export function formatAutoResumeHostClock(fireAtMs: number): string {
  * ADE's buffered fire time; with no reset instant (a same-reset retry) it
  * quotes the fire time.
  */
-export function autoResumeScheduledMessage(fireAtMs: number, resetAtMs?: number | null): string {
-  const resetClock = typeof resetAtMs === "number" && Number.isFinite(resetAtMs) && resetAtMs + AUTO_RESUME_BUFFER_MS >= fireAtMs
-    ? formatAutoResumeHostClock(resetAtMs)
-    : "";
-  return resetClock
-    ? `Paused: limit resets at ${resetClock}`
-    : `Paused: resumes at ${formatAutoResumeHostClock(fireAtMs)}`;
+export function autoResumeScheduledMessage(
+  fireAtMs: number,
+  resetAtMs?: number | null,
+  nowMs: number = Date.now(),
+): string {
+  const quoteReset = typeof resetAtMs === "number" && Number.isFinite(resetAtMs) && resetAtMs + AUTO_RESUME_BUFFER_MS >= fireAtMs;
+  return quoteReset
+    ? `Paused: limit resets at ${formatUsageLimitInstant(resetAtMs, nowMs, { timeZoneName: true })}`
+    : `Paused: resumes at ${formatUsageLimitInstant(fireAtMs, nowMs, { timeZoneName: true })}`;
 }
 
 export const AUTO_RESUME_ARMED_NOTICE_DETAIL =

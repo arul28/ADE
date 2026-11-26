@@ -313,32 +313,41 @@ export function isUsageLimitTurn(
 
 /**
  * Footer copy for a turn that ended at a usage limit: `Paused: limit resets at
- * 3:40 PM` when the provider said when (the reset itself, not ADE's buffered
- * fire time), else `Paused · usage limit`. A reset on another day names it.
+ * 3:40 PM` while the provider's reset is still ahead (the reset itself, not
+ * ADE's buffered fire time), else `Paused · usage limit`.
  */
 export function usageLimitTurnFooterLabel(
   elapsed: string | null,
   resetAtMs: number | null = null,
   nowMs: number = Date.now(),
 ): string {
-  const reset = formatUsageLimitResetInstant(resetAtMs, nowMs);
+  const reset = resetAtMs != null && resetAtMs > nowMs ? formatUsageLimitInstant(resetAtMs, nowMs) : "";
   const lead = reset ? `Paused: limit resets at ${reset}` : "Paused · usage limit";
   return elapsed ? `${lead} · ${elapsed}` : lead;
 }
 
-/** `3:40 PM`, or `Dec 1, 3:40 PM` when the reset is not on the viewer's today. */
-function formatUsageLimitResetInstant(resetAtMs: number | null, nowMs: number): string {
-  if (resetAtMs == null || !Number.isFinite(resetAtMs)) return "";
-  const clock = formatUsageLimitClock(resetAtMs);
-  if (!clock) return "";
-  const reset = new Date(resetAtMs);
-  const now = new Date(nowMs);
-  if (reset.toDateString() === now.toDateString()) return clock;
+/**
+ * A reset instant as people read it: `3:40 PM`, or `Dec 1, 3:40 PM` when it
+ * is not today. The viewer's zone; `timeZoneName` adds the zone's label
+ * (`3:40 PM ET`) for text written once and read in every zone.
+ */
+export function formatUsageLimitInstant(
+  atMs: number,
+  nowMs: number,
+  options: { timeZoneName?: boolean } = {},
+): string {
+  const at = new Date(atMs);
+  if (!Number.isFinite(atMs) || Number.isNaN(at.getTime())) return "";
+  const sameDay = at.toDateString() === new Date(nowMs).toDateString();
   try {
-    const day = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(reset);
-    return `${day}, ${clock}`;
+    return new Intl.DateTimeFormat(undefined, {
+      ...(sameDay ? {} : { month: "short", day: "numeric" }),
+      hour: "numeric",
+      minute: "2-digit",
+      ...(options.timeZoneName ? { timeZoneName: "short" } : {}),
+    }).format(at);
   } catch {
-    return clock;
+    return at.toLocaleTimeString();
   }
 }
 
@@ -355,6 +364,19 @@ function formatUsageLimitResetInstant(resetAtMs: number | null, nowMs: number): 
  */
 export function usageLimitTextIdentity(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Does the text say a plan window ran out? `You've hit your 5-hour limit`,
+ * `You've reached your Fable limit`, `5-hour limit reached`, `weekly limit
+ * reached`. The one owner of that wording: the arm, the row colour and
+ * Claude's quota check all read it from here. Never applied to agent prose.
+ */
+export function namesPlanLimitWindow(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const identity = usageLimitTextIdentity(text);
+  return /(?:hit|reached)your[a-z0-9]{0,40}?limit/.test(identity)
+    || /\d+hourlimitreached|(?:usage|weekly|opus|sonnet|fable)limitreached/.test(identity);
 }
 
 /**
@@ -383,8 +405,7 @@ export function isUsageLimitFailureText(text: string | null | undefined): boolea
   // session limit" / "…your weekly limit". Found in the wild as the last
   // assistant text of a turn that stopped at the limit.
   if (identity.includes("hityour") && identity.includes("limit")) return true;
-  // A plan window named on its own: "5-hour limit reached", "weekly limit reached".
-  if (/\d+hourlimitreached|(?:weekly|opus|sonnet|fable)limitreached/.test(identity)) return true;
+  if (namesPlanLimitWindow(text)) return true;
   if (!identity.includes("429")) return false;
   return identity.includes("rate")
     || identity.includes("usage")

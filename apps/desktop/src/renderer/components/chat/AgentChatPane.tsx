@@ -11812,6 +11812,13 @@ export function AgentChatPane({
   // turn footer on the first paint instead of flashing a red FAILED line until
   // the session list arrives.
   const usageLimitResume = renderedSession?.usageLimitResume ?? null;
+  // The paused turn's footer quotes when the limit resets; parsed once here.
+  const usageLimitPausedResetAtMs = (() => {
+    if (!usageLimitResume?.resetAt) return null;
+    if (usageLimitResume.state !== "armed" && usageLimitResume.state !== "resuming" && usageLimitResume.state !== "paused") return null;
+    const parsed = Date.parse(usageLimitResume.resetAt);
+    return Number.isFinite(parsed) ? parsed : null;
+  })();
 
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
@@ -16836,6 +16843,54 @@ export function AgentChatPane({
     return true;
   }, [projectRoot]);
 
+  /**
+   * The session update a model pick kept local needs: the model (or preset),
+   * and the fast, thinking and native controls that came with it. Send applies
+   * it right before it sends; a chat stopped at a usage limit applies it as
+   * soon as the pick renders (`usageLimitSwitchSessionRef`).
+   */
+  const buildDeferredSessionUpdate = useCallback((sessionId: string) => {
+    // A pick can move the chat onto a preset or off one, which the model id
+    // alone cannot show: the row can already name the model while the
+    // preset decides what launches.
+    const routePick = sessionRoutePickRef.current?.sessionId === sessionId ? sessionRoutePickRef.current : null;
+    const routeChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
+    // With no model known for the chat yet, only a model the person picked
+    // in this chat counts as a change; an empty or stale composer does not.
+    const pickedWithoutSessionModel = !selectedSessionModelId
+      && Boolean(modelId)
+      && deferredComposerSessionIdRef.current === sessionId;
+    const modelChanged = (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
+      || pickedWithoutSessionModel
+      || routeChanged;
+    const fastModeChanged = (selectedSession?.fastMode === true) !== fastMode
+      || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast");
+    const reasoningChanged = (selectedSession?.reasoningEffort ?? null) !== reasoningEffort
+      || (routeChanged && reasoningEffort !== null && reasoningTiers.includes(reasoningEffort));
+    const modelUpdate: { modelId?: string; presetId?: string | null } = !modelChanged
+      ? {}
+      // A preset names its own model.
+      : routePick?.presetId && routeChanged
+        ? { presetId: routePick.presetId }
+        // A plain pick on a preset chat leaves the preset.
+        : routeChanged ? { modelId, presetId: null } : { modelId };
+    return {
+      modelChanged,
+      fastModeChanged,
+      update: {
+        ...modelUpdate,
+        ...(fastModeChanged
+          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
+          : {}),
+        ...(reasoningChanged ? { reasoningEffort } : {}),
+        ...(modelChanged ? summarizeNativeControls(sessionProvider, nativeControlsRef.current) : {}),
+        ...(modelChanged && sessionProvider === "cursor"
+          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
+          : {}),
+      },
+    };
+  }, [fastMode, fastTier, modelId, reasoningEffort, reasoningTiers, selectedSession, selectedSessionModelId, sessionProvider]);
+
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // Logged only for a plain send to a chat (`chatSendTiming.ts`); other branches drop it.
     const sendTiming = beginChatSendTiming();
@@ -17654,34 +17709,9 @@ export function AgentChatPane({
 
       let sessionId = selectedSessionId;
       const shouldPromoteLightSession = shouldPromoteSessionForComputerUse(selectedSession);
-      // A pick can move the chat onto a preset or off one, which the model id
-      // alone cannot show: the row can already name the model while the
-      // preset decides what launches.
-      const routePick = selectedSessionId && sessionRoutePickRef.current?.sessionId === selectedSessionId
-        ? sessionRoutePickRef.current
-        : null;
-      const selectedRouteChanged = routePick !== null && routePick.presetId !== (selectedSession?.presetId ?? null);
-      // With no model known for the chat yet, only a model the person picked
-      // in this chat counts as a change; an empty or stale composer does not.
-      const pickedWithoutSessionModel = !selectedSessionModelId
-        && Boolean(modelId)
-        && deferredComposerSessionIdRef.current === selectedSessionId;
-      const selectedModelChanged =
-        Boolean(selectedSessionId)
-        && (
-          (Boolean(selectedSessionModelId) && selectedSessionModelId !== modelId)
-          || pickedWithoutSessionModel
-          || selectedRouteChanged
-        );
-      const selectedFastModeChanged =
-        Boolean(selectedSessionId)
-        && (
-          (selectedSession?.fastMode === true) !== fastMode
-          || (selectedSession?.fastTier === "ultrafast") !== (fastMode && fastTier === "ultrafast")
-        );
-      const selectedReasoningChanged =
-        Boolean(selectedSessionId)
-        && (selectedSession?.reasoningEffort ?? null) !== reasoningEffort;
+      const deferredUpdate = selectedSessionId ? buildDeferredSessionUpdate(selectedSessionId) : null;
+      const selectedModelChanged = deferredUpdate?.modelChanged === true;
+      const selectedFastModeChanged = deferredUpdate?.fastModeChanged === true;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -17709,39 +17739,10 @@ export function AgentChatPane({
         || shouldPromoteLightSession
       )) {
         setOptimisticIfAllowed(sessionId);
-        const sessionModelUpdate = (): { modelId?: string; presetId?: string | null } => {
-          if (!selectedModelChanged) return {};
-          // A preset names its own model.
-          if (routePick?.presetId && selectedRouteChanged) return { presetId: routePick.presetId };
-          // A plain pick on a preset chat leaves the preset.
-          return selectedRouteChanged ? { modelId, presetId: null } : { modelId };
-        };
-        const modelUpdate = sessionModelUpdate();
-        const fastModeUpdate = selectedFastModeChanged
-          ? { fastMode, fastTier: fastMode && fastTier === "ultrafast" ? "ultrafast" as const : null }
-          : {};
-        const reasoningUpdate = selectedReasoningChanged
-          || (
-            selectedRouteChanged
-            && reasoningEffort !== null
-            && reasoningTiers.includes(reasoningEffort)
-          )
-          ? { reasoningEffort }
-          : {};
-        const pendingNativeUpdate = selectedModelChanged
-          ? summarizeNativeControls(sessionProvider, nativeControlsRef.current)
-          : {};
-        const pendingCursorConfig = selectedModelChanged && sessionProvider === "cursor"
-          ? { cursorConfigValues: nativeControlsRef.current.cursorConfigValues }
-          : {};
         const updateSessionId = sessionId;
         await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.updateSession({
           sessionId: updateSessionId,
-          ...modelUpdate,
-          ...fastModeUpdate,
-          ...reasoningUpdate,
-          ...pendingNativeUpdate,
-          ...pendingCursorConfig,
+          ...deferredUpdate?.update,
         }, chatPin));
         deferredComposerSessionIdRef.current = null;
         setSessionRoutePick(null);
@@ -18158,6 +18159,7 @@ export function AgentChatPane({
     }
     return steerResult;
   }, [
+    buildDeferredSessionUpdate,
     countSentMessages,
     noteCloudQueuedSendBubble,
     putUnsentSendInSavedDraft,
@@ -21952,6 +21954,34 @@ export function AgentChatPane({
     : null;
   // The composer's model pick, also reachable from outside for a draft
   // (`draftModelSeam.ts`, the onboarding tour's first chat).
+  /**
+   * A model picked on a chat stopped at a usage limit, waiting for the pick's
+   * state to render before it is applied. The switch is what moves the chat
+   * off the limit and sends its queue to the new model (ADE-289), and there
+   * may be nothing left to type, so it does not wait for Send. Same update and
+   * pin as Send's.
+   */
+  const usageLimitSwitchSessionRef = useRef<string | null>(null);
+  useEffect(() => {
+    const sessionId = usageLimitSwitchSessionRef.current;
+    if (!sessionId) return;
+    usageLimitSwitchSessionRef.current = null;
+    if (sessionId !== selectedSessionId || turnActive) return;
+    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId);
+    if (!modelChanged) return;
+    void withChatPin(
+      chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current),
+      (chatPin) => agentChatApiRef.current.updateSession({ sessionId, ...update }, chatPin),
+    )
+      .then(() => {
+        if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
+        setSessionRoutePick(null);
+        void refreshSessions().catch(() => {});
+      })
+      // Still deferred, so the next send applies the pick as usual.
+      .catch((switchError: unknown) => setError(errorMessage(switchError)));
+  }, [buildDeferredSessionUpdate, refreshSessions, selectedSessionId, turnActive]);
+
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection): boolean => {
     // A Custom pick is validated by the picker against what its
     // harness can reach; its model is often not in this provider
@@ -22062,33 +22092,11 @@ export function AgentChatPane({
       return true;
     }
 
-    // A chat stopped at a usage limit switches now: the switch is what moves
-    // it off the limit and sends its queue to the new model (ADE-289), and
-    // there may be nothing left to type. Same call and pin as submit's.
+    // A chat stopped at a usage limit applies the pick at once (see
+    // `usageLimitSwitchSessionRef`): the switch is what moves it off the
+    // limit and sends its queue to the new model (ADE-289).
     if (usageLimitResume && renderedSessionId === selectedSessionId) {
-      applyModelSelectionSnapshot(snapshot);
-      const switchSessionId = selectedSessionId;
-      const presetId = options?.presetId ?? null;
-      const routeChanged = presetId !== (selectedSession?.presetId ?? null);
-      void withChatPin(
-        chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current),
-        (chatPin) => agentChatApiRef.current.updateSession({
-          sessionId: switchSessionId,
-          ...(presetId && routeChanged
-            ? { presetId }
-            : routeChanged ? { modelId: nextModelId, presetId: null } : { modelId: nextModelId }),
-        }, chatPin),
-      )
-        .then(() => {
-          setSessionRoutePick(null);
-          void refreshSessions().catch(() => {});
-        })
-        .catch((switchError: unknown) => {
-          // Left deferred, so the next send applies the pick as usual.
-          deferredComposerSessionIdRef.current = switchSessionId;
-          setError(errorMessage(switchError));
-        });
-      return true;
+      usageLimitSwitchSessionRef.current = selectedSessionId;
     }
 
     // Keep the selection local until submit(). Submit applies the
@@ -23272,7 +23280,7 @@ export function AgentChatPane({
                           && (usageLimitResume.state === "armed" || usageLimitResume.state === "resuming" || usageLimitResume.state === "paused")
                           ? usageLimitResume.turnId ?? null
                           : null}
-                        usageLimitResumeResetAt={usageLimitResume?.resetAt ?? null}
+                        usageLimitResumeResetAtMs={usageLimitPausedResetAtMs}
                         // Subagent transcripts are a secondary, plain surface:
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.

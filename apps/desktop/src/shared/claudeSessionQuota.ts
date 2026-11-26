@@ -1,4 +1,5 @@
 import type { AdeCardPayload } from "./adeCard";
+import { namesPlanLimitWindow } from "./usageLimitResumePresentation";
 
 /** Sticky `ade_card` identity per ADE chat. Later ticks merge into this row. */
 export const CLAUDE_SESSION_QUOTA_CARD_VARIANT = "claude_session_quota";
@@ -26,20 +27,6 @@ const COST_LIMIT_RE = /cost limit|spending limit/i;
 const CLOCK_RE = /resets\s+(?:at\s+)?(?:([A-Z][a-z]{2,8})\s+(\d{1,2}),?\s+(?:(\d{4}),?\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)(?:\s*\(([^)]+)\))?/i;
 /** Older Claude Code: `Claude AI usage limit reached|1760000000` (epoch seconds). */
 const PIPE_EPOCH_RE = /limit reached\|(\d{9,13})\b/i;
-/**
- * The limit wordings Claude Code writes as a turn's result text. Each names
- * a plan window, so ordinary 429 or "session limit reached" copy (which is
- * about a chat, not a plan) never matches.
- *   - `You've hit your 5-hour limit · resets 3pm` (and weekly, Opus, Sonnet,
- *     Fable, plain `limit`), `You've reached your Fable limit.`
- *   - `5-hour limit reached ∙ resets 3:40pm`, `usage limit reached`,
- *     `weekly limit reached`.
- */
-const PLAN_LIMIT_TEXT_RES = [
-  /you(?:'|\u2019)?ve (?:hit|reached) your\b.{0,40}?\blimit\b/i,
-  /\b\d+[-\s]?hour limit reached\b/i,
-  /\b(?:usage|weekly|opus|sonnet|fable) limit reached\b/i,
-];
 const WEEKLY_LIMIT_RE = /\b(?:weekly|opus|sonnet|fable|7-day|seven[-\s]day) limit\b/i;
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
@@ -53,7 +40,8 @@ export function isClaudeSessionQuotaText(value: string | null | undefined): bool
   if (COST_LIMIT_RE.test(text)) return true;
   if (SESSION_LIMIT_RE.test(text) && RESETS_RE.test(text)) return true;
   if (PIPE_EPOCH_RE.test(text)) return true;
-  return PLAN_LIMIT_TEXT_RES.some((re) => re.test(text));
+  // `You've hit your 5-hour limit · resets 3pm`, `5-hour limit reached`, …
+  return namesPlanLimitWindow(text);
 }
 
 export function utilizationToPercent(value: unknown): number | null {
@@ -328,11 +316,14 @@ function wallClockOnYmd(
 ): number | null {
   if (!timeZone) {
     const local = new Date(year, month - 1, day, hour24, minute, 0, 0);
-    return Number.isNaN(local.getTime()) ? null : local.getTime();
+    // `Feb 30` rolls into March; it is not a date.
+    if (Number.isNaN(local.getTime()) || local.getMonth() !== month - 1) return null;
+    return local.getTime();
   }
   try {
-    // Walk UTC hours until the zoned clock matches. 15-minute steps cover DST folds.
-    const start = Date.UTC(year, month - 1, day) - 14 * 60 * 60 * 1000;
+    // Walk UTC times until the zoned clock matches. 15-minute steps cover DST
+    // folds; starting on the minute's own quarter lets 3:40 land on a step.
+    const start = Date.UTC(year, month - 1, day, 0, minute % 15) - 14 * 60 * 60 * 1000;
     for (let offset = 0; offset <= 48 * 4; offset += 1) {
       const ms = start + offset * 15 * 60 * 1000;
       const clock = zonedClock(ms, timeZone);

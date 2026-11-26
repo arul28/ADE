@@ -1003,10 +1003,93 @@ describe("createAgentChatService", () => {
         expect(resetAt).toBeGreaterThan(Date.now());
         if (exactResetMs != null) expect(resetAt).toBe(exactResetMs);
         // The limit text is the provider's, not the agent's: no reply bubble.
-        expect(events.some((event) =>
-          event.event.type === "text" && String((event.event as any).text ?? "").includes("limit"))).toBe(false);
+        expect(events.filter((event) => event.event.type === "text")).toEqual([]);
         // The query is reaped so the resume starts a fresh one.
         expect(close).toHaveBeenCalled();
+      });
+
+      // ADE-289: the turn ends at a plan limit with messages (and the thread
+      // comments on them) queued behind it. The limit holds the queue; a
+      // switch to another model releases all of it there, in order.
+      it("a switch away from the limit sends the held queue and its comments to the new model", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const send = vi.fn().mockResolvedValue(undefined);
+        const limitText = `Claude AI usage limit reached|${Math.floor((Date.now() + 2 * 3_600_000) / 1000)}`;
+        let streamCall = 0;
+        let finishActiveTurn!: () => void;
+        const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield { type: "system", subtype: "init", session_id: "sdk-limit-switch", slash_commands: [] };
+            return;
+          }
+          if (streamCall === 2) {
+            yield {
+              type: "assistant",
+              message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+            };
+            await activeTurnGate;
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: true,
+              result: limitText,
+              terminal_reason: "api_error",
+              api_error_status: 429,
+              usage: { input_tokens: 0, output_tokens: 0 },
+            };
+            return;
+          }
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })());
+        const sdkSession = { send, stream, close: vi.fn(), sessionId: "sdk-limit-switch", setPermissionMode: vi.fn() };
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkSession as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkSession as any);
+
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+        const activeTurn = service.runSessionTurn({ sessionId: session.id, text: "Foreground work", timeoutMs: 15_000 });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "text" && event.event.text.includes("Still working"),
+        );
+        await service.createThreadComment({
+          sessionId: session.id,
+          messageKey: "message:1",
+          messageExcerpt: "an earlier reply",
+          anchor: { kind: "text", quote: "the quoted part", prefix: "", suffix: "" },
+          body: "my review note",
+        });
+        expect((await service.steer({ sessionId: session.id, text: "first queued", includeThreadComments: true })).queued).toBe(true);
+        expect((await service.steer({ sessionId: session.id, text: "second queued" })).queued).toBe(true);
+
+        finishActiveTurn();
+        await activeTurn;
+        await vi.waitFor(async () => {
+          expect((await service.getSessionSummary(session.id))?.usageLimitResume).toMatchObject({ state: "armed" });
+        });
+        // Held: nothing went into the limited account.
+        const sentText = () => JSON.stringify(send.mock.calls);
+        expect(sentText()).not.toContain("first queued");
+
+        await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-4-7" });
+
+        // Both go to the new model, in order, the comment with the first.
+        await vi.waitFor(() => {
+          expect(sentText()).toContain("second queued");
+        }, { timeout: 5_000 });
+        const sent = sentText();
+        expect(sent).toContain("my review note");
+        expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        expect((await service.getSessionSummary(session.id))?.usageLimitResume ?? null).toBeNull();
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        service.forceDisposeAll();
       });
 
       it("stale park with no structured limit heals on hydration", async () => {
@@ -1406,7 +1489,7 @@ describe("createAgentChatService", () => {
         const armedNotices = () => events.filter((event) =>
           event.event.type === "system_notice"
           && typeof (event.event as any).message === "string"
-          && /^Resumes at /.test((event.event as any).message));
+          && /^Paused: (?:limit resets|resumes) at /.test((event.event as any).message));
 
         installClaudeLimitStream("sdk-session-cap-1", resetsAt, false);
         let refuseSends = false;
@@ -1545,7 +1628,7 @@ describe("createAgentChatService", () => {
         const armedNotices = () => events.filter((event) =>
           event.event.type === "system_notice"
           && typeof (event.event as any).message === "string"
-          && /^Resumes at /.test((event.event as any).message));
+          && /^Paused: (?:limit resets|resumes) at /.test((event.event as any).message));
         const pausedNotices = () => events.filter((event) =>
           event.event.type === "system_notice"
           && (event.event as any).message === "Paused after 2 tries");
@@ -1937,7 +2020,7 @@ describe("createAgentChatService", () => {
         expect(events.filter((event) =>
           event.event.type === "system_notice"
           && typeof (event.event as any).message === "string"
-          && /^Resumes at /.test((event.event as any).message))).toEqual([]);
+          && /^Paused: (?:limit resets|resumes) at /.test((event.event as any).message))).toEqual([]);
       });
 
       it("a paused row reports no_reset for a chat that is not resident", async () => {

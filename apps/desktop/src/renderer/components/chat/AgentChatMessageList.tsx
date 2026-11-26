@@ -5127,7 +5127,7 @@ function DoneTurnDivider({
   turnDiffSummary = null,
   turnDiffSummaries = null,
   usageLimitResumeTurnId,
-  usageLimitResumeResetAt,
+  usageLimitResumeResetAtMs,
   endedAtUsageLimit = false,
   failureShown = false,
   repeatCount = 1,
@@ -5157,7 +5157,7 @@ function DoneTurnDivider({
    * attach a 429 to the result frame.
    */
   usageLimitResumeTurnId?: string | null;
-  usageLimitResumeResetAt?: string | null;
+  usageLimitResumeResetAtMs?: number | null;
   /** The transcript read this turn's own error as a usage limit (`foldTurnFailureRows`). */
   endedAtUsageLimit?: boolean;
   /** This failed turn's failure line is drawn above (`foldTurnFailureRows`): no second "failed" here. */
@@ -5217,7 +5217,7 @@ function DoneTurnDivider({
   // turn is history and says just what happened.
   const usageLimitLabel = usageLimitPaused
     ? `${usageLimitLive
-      ? usageLimitTurnFooterLabel(usageLimitElapsed, usageLimitResumeResetAt ? Date.parse(usageLimitResumeResetAt) : null)
+      ? usageLimitTurnFooterLabel(usageLimitElapsed, usageLimitResumeResetAtMs)
       : usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${repeatCount > 1 ? ` · ×${repeatCount}` : ""}`
     : null;
   const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
@@ -5599,7 +5599,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   usageLimitResumeActive?: boolean;
   /** Turn that limit is anchored to, when the host reports one. */
   usageLimitResumeTurnId?: string | null;
-  usageLimitResumeResetAt?: string | null;
+  usageLimitResumeResetAtMs?: number | null;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   onNavigateSuggestion?: (suggestion: OperatorNavigationSuggestion) => void;
   onReviewChanges?: () => void;
@@ -5687,7 +5687,7 @@ const EventRow = React.memo(function EventRow({
   sessionEnded,
   usageLimitResumeActive,
   usageLimitResumeTurnId,
-  usageLimitResumeResetAt,
+  usageLimitResumeResetAtMs,
   onOpenWorkspacePath,
   onNavigateSuggestion,
   onReviewChanges,
@@ -5886,7 +5886,7 @@ const EventRow = React.memo(function EventRow({
               : null}
             turnDiffSummaries={turnDiffSummaries}
             usageLimitResumeTurnId={usageLimitResumeTurnId}
-            usageLimitResumeResetAt={usageLimitResumeResetAt}
+            usageLimitResumeResetAtMs={usageLimitResumeResetAtMs}
             endedAtUsageLimit={envelope.endedAtUsageLimit === true}
             failureShown={envelope.failureShown === true}
             repeatCount={envelope.repeatCount ?? 1}
@@ -6456,7 +6456,7 @@ function AgentChatMessageListMain({
   wakingLabel = null,
   usageLimitResumeActive = false,
   usageLimitResumeTurnId = null,
-  usageLimitResumeResetAt = null,
+  usageLimitResumeResetAtMs = null,
   onOpenWorkspacePath,
   respondingApprovalIds,
   pendingApprovalIds,
@@ -6563,8 +6563,8 @@ function AgentChatMessageListMain({
    */
   usageLimitResumeActive?: boolean;
   usageLimitResumeTurnId?: string | null;
-  /** When the live limit resets (ISO), for the paused turn's footer. */
-  usageLimitResumeResetAt?: string | null;
+  /** When the live limit resets (ms), for the paused turn's footer. */
+  usageLimitResumeResetAtMs?: number | null;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
   /** Attaches an image or video from the thread to the next message ("Add to chat" on media). */
@@ -9528,7 +9528,7 @@ function AgentChatMessageListMain({
           sessionEnded={sessionEnded}
           usageLimitResumeActive={usageLimitResumeActive}
           usageLimitResumeTurnId={usageLimitResumeTurnId}
-          usageLimitResumeResetAt={usageLimitResumeResetAt}
+          usageLimitResumeResetAtMs={usageLimitResumeResetAtMs}
           onOpenWorkspacePath={openWorkspacePath}
           onNavigateSuggestion={handleNavigateSuggestion}
           onReviewChanges={handleReviewChanges}
@@ -9608,7 +9608,7 @@ function AgentChatMessageListMain({
         sessionEnded={sessionEnded}
         usageLimitResumeActive={usageLimitResumeActive}
         usageLimitResumeTurnId={usageLimitResumeTurnId}
-        usageLimitResumeResetAt={usageLimitResumeResetAt}
+        usageLimitResumeResetAtMs={usageLimitResumeResetAtMs}
         onOpenWorkspacePath={openWorkspacePath}
         onNavigateSuggestion={handleNavigateSuggestion}
         onReviewChanges={handleReviewChanges}
@@ -9646,7 +9646,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onReactToMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, usageLimitResumeResetAt, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onReactToMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, usageLimitResumeResetAtMs, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

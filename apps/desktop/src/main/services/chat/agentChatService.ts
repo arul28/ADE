@@ -1320,6 +1320,7 @@ import {
   formatClaudeSessionQuotaResetLabel,
   isClaudeSessionQuotaText,
   mergeClaudeSessionQuotaSnapshot,
+  normalizeResetsAtMs,
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
@@ -2734,6 +2735,8 @@ type PersistedChatState = {
   approvalOverrides?: string[];
   /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
   pendingSteers?: PersistedPendingSteer[];
+  /** `ManagedChatSession.usageLimitHeldSteers`, for every provider. */
+  usageLimitHeldSteers?: PersistedPendingSteer[];
   /**
    * Codex async questions still on screen. See {@link PersistedAsyncQuestion}:
    * these are cards, not waiters, and `awaitingInput` is deliberately NOT set
@@ -2948,6 +2951,36 @@ type PersistedAsyncQuestion = {
 
 /** How many async questions one chat may bank before the oldest falls off. */
 const MAX_ASYNC_QUESTIONS = 16;
+
+function toPersistedPendingSteer(s: QueuedSteer): PersistedPendingSteer {
+  return {
+    steerId: s.steerId,
+    uuid: s.uuid,
+    text: s.text,
+    ...(s.displayText != null && s.displayText !== s.text ? { displayText: s.displayText } : {}),
+    ...(s.attachments.length ? { attachments: s.attachments } : {}),
+    ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
+    ...(s.metadata ? { metadata: s.metadata } : {}),
+    ...(s.reasoningEffort != null ? { reasoningEffort: s.reasoningEffort } : {}),
+    ...(s.executionMode ? { executionMode: s.executionMode } : {}),
+    ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
+    ...(s.sentByUser === true ? { sentByUser: true } : {}),
+  };
+}
+
+/** Persisted queue rows that still carry what a send needs. */
+function parsePersistedPendingSteers(value: unknown): PersistedPendingSteer[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value
+    .filter((entry): entry is PersistedPendingSteer => {
+      if (!entry || typeof entry !== "object") return false;
+      const e = entry as PersistedPendingSteer;
+      if (typeof e.steerId !== "string" || !e.steerId.trim().length) return false;
+      if (typeof e.text !== "string" || !e.text.length) return false;
+      return true;
+    })
+    .slice(0, MAX_PENDING_STEERS);
+}
 
 type PersistedPendingSteer = {
   steerId: string;
@@ -6013,10 +6046,13 @@ type ManagedChatSession = {
    */
   usageLimitQueueHold?: boolean;
   /**
-   * Queued messages lifted off a runtime a switch away from a limit tore
-   * down. The next turn boundary on the new runtime sends them, in order.
+   * Queued messages a usage limit holds, kept on the session rather than a
+   * runtime: a held runtime would read as busy for the whole reset window,
+   * and a switch away from the limit tears that runtime down. Persisted. The
+   * next turn start puts them back on its runtime's queue, ahead of anything
+   * queued since, so that turn's end sends them.
    */
-  usageLimitCarriedSteers?: QueuedSteer[];
+  usageLimitHeldSteers?: QueuedSteer[];
   /**
    * One-shot: the next Cursor send may expire a still-active persisted run
    * (SDK `local.force`). Session-scoped rather than runtime-scoped, because the
@@ -7778,8 +7814,8 @@ function codexExhaustedWindowResetAt(snapshot: Record<string, unknown>): string 
     const window = asRecord(snapshot[key]);
     const usedPercent = numberOrNull(window?.usedPercent ?? window?.used_percent);
     const resetsAt = numberOrNull(window?.resetsAt ?? window?.resets_at);
-    if (usedPercent == null || usedPercent < 100 || resetsAt == null || resetsAt <= 0) continue;
-    const ms = resetsAt > 1_000_000_000_000 ? resetsAt : resetsAt * 1000;
+    const ms = normalizeResetsAtMs(resetsAt);
+    if (usedPercent == null || usedPercent < 100 || ms == null) continue;
     if (latest == null || ms > latest) latest = ms;
   }
   return latest == null ? null : new Date(latest).toISOString();
@@ -8992,7 +9028,7 @@ type CursorSdkRecycleReason = "transport_error" | "stale_token" | "quiet_restart
  * transcript entry.
  *
  * Claimed by every emitter that resolves a steer: `cancelQueuedSteers`,
- * `cancelCarriedCursorSteers`, both "Delivering your queued message…" sites,
+ * `cancelCarriedCursorSteers`, every "Delivering your queued message…" site,
  * `cancelSteer`, and `editSteer`'s empty-edit cancel. The two cancel-all
  * emitters also skip ids already claimed; the rest claim to lock the id.
  *
@@ -12084,7 +12120,9 @@ function normalizePersistedInteractionMode(value: unknown): AgentChatInteraction
  * Two structured sources, both from the provider: the SDK's own
  * `USAGE_LIMIT_ERROR_PREFIXES` (which cover the credit/seat/allocation
  * wordings the quota regex never matched) and ADE's existing session-quota
- * regex. Assistant text is deliberately not one of them.
+ * regex. Assistant prose is never passed here: only a result frame's text, or
+ * an assistant message Claude Code fabricated with a structured `error`
+ * (`claudeUsageLimitAssistantText`).
  */
 function isClaudeUsageLimitResultError(value: string | null | undefined): boolean {
   const text = value?.trim() ?? "";
@@ -21981,6 +22019,9 @@ export function createAgentChatService(args: {
       ...(managed.session.autoContinueAtUsageLimit === false ? { autoContinueAtUsageLimit: false } : {}),
       ...(managed.usageLimitParkedUntil ? { usageLimitParkedUntil: managed.usageLimitParkedUntil } : {}),
       ...(managed.usageLimitResume ? { usageLimitResume: managed.usageLimitResume } : {}),
+      ...(managed.usageLimitHeldSteers?.length
+        ? { usageLimitHeldSteers: managed.usageLimitHeldSteers.map(toPersistedPendingSteer) }
+        : {}),
       ...(managed.claudeRetainedMedia ? { claudeRetainedMedia: managed.claudeRetainedMedia } : {}),
       ...(managed.session.codexServiceTier !== undefined ? { codexServiceTier: managed.session.codexServiceTier } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
@@ -22163,19 +22204,7 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "claude"
         ? managed.runtime.pendingSteers.length > 0
           ? {
-              pendingSteers: managed.runtime.pendingSteers.map((s): PersistedPendingSteer => ({
-                steerId: s.steerId,
-                uuid: s.uuid,
-                text: s.text,
-                ...(s.displayText != null && s.displayText !== s.text ? { displayText: s.displayText } : {}),
-                ...(s.attachments.length ? { attachments: s.attachments } : {}),
-                ...(s.contextAttachments.length ? { contextAttachments: s.contextAttachments } : {}),
-                ...(s.metadata ? { metadata: s.metadata } : {}),
-                ...(s.reasoningEffort != null ? { reasoningEffort: s.reasoningEffort } : {}),
-                ...(s.executionMode ? { executionMode: s.executionMode } : {}),
-                ...(s.interactionMode ? { interactionMode: s.interactionMode } : {}),
-                ...(s.sentByUser === true ? { sentByUser: true } : {}),
-              })),
+              pendingSteers: managed.runtime.pendingSteers.map(toPersistedPendingSteer),
             }
           : {}
         : prevPersisted?.pendingSteers?.length
@@ -22731,17 +22760,8 @@ export function createAgentChatService(args: {
             })
             .slice(-MAX_ASYNC_QUESTIONS)
         : undefined;
-      const pendingSteers: PersistedPendingSteer[] | undefined = Array.isArray(record.pendingSteers)
-        ? record.pendingSteers
-            .filter((entry): entry is PersistedPendingSteer => {
-              if (!entry || typeof entry !== "object") return false;
-              const e = entry as PersistedPendingSteer;
-              if (typeof e.steerId !== "string" || !e.steerId.trim().length) return false;
-              if (typeof e.text !== "string" || !e.text.length) return false;
-              return true;
-            })
-            .slice(0, MAX_PENDING_STEERS)
-        : undefined;
+      const pendingSteers = parsePersistedPendingSteers(record.pendingSteers);
+      const usageLimitHeldSteers = parsePersistedPendingSteers(record.usageLimitHeldSteers);
       const hydrated: PersistedChatState = {
         version: 2,
         sessionId,
@@ -22863,6 +22883,7 @@ export function createAgentChatService(args: {
         ...(devinCloud ? { devinCloud } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
+        ...(usageLimitHeldSteers?.length ? { usageLimitHeldSteers } : {}),
         // What the next turn still owes the provider; the restore after a
         // restart reads these back.
         ...(typeof record.pendingTranscriptReplay === "string" && record.pendingTranscriptReplay.trim()
@@ -24803,67 +24824,134 @@ export function createAgentChatService(args: {
     managed.usageLimitQueueHold === true || managed.usageLimitResume != null;
 
   /**
-   * Lifts a held queue off the runtime a switch is about to tear down, so the
-   * teardown's cancel does not drop it. Runs only while a limit holds the
-   * queue: an ordinary switch still cancels its queue as before.
+   * Moves a runtime's queue onto the session while a usage limit holds it
+   * (`usageLimitHeldSteers`). Called wherever the queue would otherwise be
+   * cancelled or sent into the limited account, and before a switch away from
+   * the limit tears the runtime down.
    */
-  const liftUsageLimitHeldSteers = (managed: ManagedChatSession): void => {
+  const liftUsageLimitHeldSteers = (
+    managed: ManagedChatSession,
+    runtime: { pendingSteers: QueuedSteer[] } | null = managed.runtime,
+  ): void => {
     if (!usageLimitHoldsQueue(managed)) return;
-    const runtime = managed.runtime;
     if (!runtime || !runtime.pendingSteers.length) return;
     const lifted = runtime.pendingSteers.splice(0);
-    if (runtime.kind === "claude") {
+    // Claude tracks the messages it was handed; these were not.
+    if ("knownQueuedMessages" in runtime && runtime.knownQueuedMessages instanceof Map) {
       for (const steer of lifted) runtime.knownQueuedMessages.delete(steer.uuid);
     }
-    managed.usageLimitCarriedSteers = [...(managed.usageLimitCarriedSteers ?? []), ...lifted];
+    managed.usageLimitHeldSteers = [...(managed.usageLimitHeldSteers ?? []), ...lifted];
     persistChatState(managed);
   };
 
   /**
-   * Puts carried messages at the head of the new runtime's queue, ahead of
-   * anything queued since: they were sent first. OpenCode's inbox owns its own
-   * queue, so it gets them as sends instead (`kickUsageLimitRelease`).
+   * A message the limit held goes out as a send of its own. Its queued row
+   * reads as delivered, the way a turn boundary's delivery marks it.
    */
-  const adoptUsageLimitCarriedSteers = (
+  const sendUsageLimitHeldSteer = async (
     managed: ManagedChatSession,
-    runtime: Exclude<ChatRuntime, OpenCodeRuntime>,
-  ): void => {
-    const carried = managed.usageLimitCarriedSteers;
-    if (!carried?.length) return;
-    delete managed.usageLimitCarriedSteers;
-    runtime.pendingSteers.unshift(...carried);
+    steer: QueuedSteer,
+    options: { behindRunningTurn: boolean },
+  ): Promise<void> => {
+    claimSteerSettlement(managed, steer.steerId);
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      steerId: steer.steerId,
+      message: "Delivering your queued message...",
+    });
+    const sendArgs: AgentChatSendArgs = {
+      sessionId: managed.session.id,
+      text: steer.text,
+      ...(steer.displayText != null ? { displayText: steer.displayText } : {}),
+      attachments: steer.attachments,
+      contextAttachments: steer.contextAttachments,
+      ...(steer.metadata ? { metadata: steer.metadata } : {}),
+      ...(steer.executionMode ? { executionMode: steer.executionMode } : {}),
+      ...(steer.interactionMode ? { interactionMode: steer.interactionMode } : {}),
+    };
+    try {
+      if (options.behindRunningTurn) await sendMessage(sendArgs, { awaitDispatch: true, routeActiveToSteer: true });
+      else await sendMessage(sendArgs, { awaitDispatch: true });
+    } catch (error) {
+      // Never lost: back on the held queue, its row queued again.
+      reopenSteerSettlement(managed, steer.steerId);
+      managed.usageLimitHeldSteers = [steer, ...(managed.usageLimitHeldSteers ?? [])];
+      emitSteerUserRow(managed, steer, "queued", undefined);
+      persistChatState(managed);
+      throw error;
+    }
+  };
+
+  /** The held queue, minus messages a guest may no longer send. */
+  const takeStartableHeldSteers = (managed: ManagedChatSession): QueuedSteer[] => {
+    const held = managed.usageLimitHeldSteers ?? [];
+    delete managed.usageLimitHeldSteers;
+    const startable: QueuedSteer[] = [];
+    for (const steer of held) {
+      if (queuedSteerMayStart(managed, steer)) startable.push(steer);
+      else finalizeCancelledSteer(managed, steer.steerId, null, { removedSteer: steer });
+    }
+    return startable;
+  };
+
+  /**
+   * A turn started, so the limit no longer holds the queue: it goes back on
+   * this runtime's queue, first, and the turn's end sends it. OpenCode's inbox
+   * owns its queue, so it gets the messages as sends behind the turn.
+   */
+  const restoreUsageLimitHeldSteers = (managed: ManagedChatSession): void => {
+    if (!managed.usageLimitHeldSteers?.length) return;
+    const runtime = managed.runtime;
+    if (!runtime) return;
+    const held = takeStartableHeldSteers(managed);
+    persistChatState(managed);
+    if (!held.length) return;
+    if (runtime.kind !== "opencode") {
+      runtime.pendingSteers.unshift(...held);
+      persistChatState(managed);
+      return;
+    }
+    void (async () => {
+      for (const steer of held) await sendUsageLimitHeldSteer(managed, steer, { behindRunningTurn: true });
+    })().catch((error) => {
+      logger.warn("agent_chat.usage_limit_held_send_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
+    });
   };
 
   /** How long a switch waits for the user's own send before it starts the chat itself. */
   const USAGE_LIMIT_RELEASE_KICK_MS = 750;
 
   /**
-   * A switch away from a usage limit (another model, another account): the
-   * limit no longer holds this chat, so its pause, its scheduled resume and its
-   * queue hold all go, and the queue runs on the new model (ADE-289).
-   *
-   * Whatever turn starts next on the new runtime sends the carried queue when
-   * it ends. When nothing starts one — the user only switched — this starts
-   * it: the first queued message, or `continueText` when nothing was queued.
-   * The short wait lets a send that came with the switch (the composer applies
-   * a picked model just before it sends) go first instead of racing it.
+   * The limit no longer holds this chat (a switch to another model or
+   * account): its pause, its scheduled resume and its queue hold all go.
+   */
+  const clearUsageLimitHold = async (managed: ManagedChatSession, reason: string): Promise<void> => {
+    // Anything queued on the runtime since the hold engaged joins the held queue.
+    liftUsageLimitHeldSteers(managed);
+    managed.usageLimitQueueHold = false;
+    await autoResume.cancelForSession(managed.session.id, reason);
+    setUsageLimitResume(managed, null);
+  };
+
+  /**
+   * After a switch away from a usage limit, the queue runs on the new model
+   * (ADE-289). Whatever turn starts next sends it (`restoreUsageLimitHeldSteers`).
+   * When nothing starts one — the user only switched — this starts it: the
+   * first held message, or `continueText` when nothing was held. The short
+   * wait lets a send that came with the switch (the composer applies a picked
+   * model just before it sends) go first instead of racing it.
    */
   const releaseUsageLimitQueue = async (
     managed: ManagedChatSession,
     args: { reason: string; continueText: string | null },
   ): Promise<void> => {
-    const sessionId = managed.session.id;
-    // A runtime the switch kept (a live Codex or Muse model change) still has it.
-    liftUsageLimitHeldSteers(managed);
-    managed.usageLimitQueueHold = false;
-    await autoResume.cancelForSession(sessionId, args.reason);
-    setUsageLimitResume(managed, null);
-    const carried = managed.usageLimitCarriedSteers?.length ?? 0;
-    if (!carried && !args.continueText) return;
+    await clearUsageLimitHold(managed, args.reason);
+    if (!managed.usageLimitHeldSteers?.length && !args.continueText) return;
     const kick = setTimeout(() => {
       void kickUsageLimitRelease(managed, args.continueText).catch((error) => {
         logger.warn("agent_chat.usage_limit_release_failed", {
-          sessionId,
+          sessionId: managed.session.id,
           reason: args.reason,
           error: getErrorMessage(error),
         });
@@ -24877,47 +24965,19 @@ export function createAgentChatService(args: {
     continueText: string | null,
   ): Promise<void> => {
     if (managed.closed) return;
-    // Something started a turn meanwhile; its end sends the carried queue.
-    if (runtimeMidTurn(managed) || managed.session.status === "active") return;
+    // A send got there first; its turn start already took the held queue.
+    if (managed.turnAcceptedAt || runtimeMidTurn(managed) || managed.session.status === "active") return;
     // A new limit came in first: the queue waits for that one.
     if (usageLimitHoldsQueue(managed)) return;
-    const sessionId = managed.session.id;
-    const [first, ...rest] = managed.usageLimitCarriedSteers ?? [];
-    if (!first) {
-      if (continueText) await sendMessage({ sessionId, text: continueText });
+    const [first, ...rest] = takeStartableHeldSteers(managed);
+    if (rest.length) managed.usageLimitHeldSteers = rest;
+    persistChatState(managed);
+    if (first) {
+      // Its turn start puts the rest on the new runtime's queue.
+      await sendUsageLimitHeldSteer(managed, first, { behindRunningTurn: false });
       return;
     }
-    managed.usageLimitCarriedSteers = rest;
-    if (!rest.length) delete managed.usageLimitCarriedSteers;
-    const sendCarried = async (steer: QueuedSteer, routeActiveToSteer: boolean): Promise<void> => {
-      // The row the message was queued on reads as delivered, as a turn
-      // boundary's delivery marks it (`deliverNextQueuedSteerInner`).
-      claimSteerSettlement(managed, steer.steerId);
-      emitChatEvent(managed, {
-        type: "system_notice",
-        noticeKind: "info",
-        steerId: steer.steerId,
-        message: "Delivering your queued message...",
-      });
-      const sendArgs: AgentChatSendArgs = {
-        sessionId,
-        text: steer.text,
-        ...(steer.displayText != null ? { displayText: steer.displayText } : {}),
-        attachments: steer.attachments,
-        contextAttachments: steer.contextAttachments,
-        ...(steer.metadata ? { metadata: steer.metadata } : {}),
-        ...(steer.executionMode ? { executionMode: steer.executionMode } : {}),
-        ...(steer.interactionMode ? { interactionMode: steer.interactionMode } : {}),
-      };
-      if (routeActiveToSteer) await sendMessage(sendArgs, { awaitDispatch: true, routeActiveToSteer: true });
-      else await sendMessage(sendArgs, { awaitDispatch: true });
-    };
-    await sendCarried(first, false);
-    const runtime = managed.runtime;
-    if (!rest.length || !runtime || runtime.kind !== "opencode") return;
-    // OpenCode takes the rest into its inbox behind the running turn.
-    delete managed.usageLimitCarriedSteers;
-    for (const steer of rest) await sendCarried(steer, true);
+    if (continueText) await sendMessage({ sessionId: managed.session.id, text: continueText });
   };
 
   /**
@@ -25057,17 +25117,11 @@ export function createAgentChatService(args: {
       detail: `The ${from.label || from.id} account hit its usage limit. ADE moved this chat to ${alternate.label} and resumes the same thread there.`,
     });
     if (provider === "claude") dismissClaudeSessionQuota(managed);
-    const continueText = compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`;
-    const carried = managed.usageLimitCarriedSteers?.length ?? 0;
-    if (carried) {
-      // The queue the limit held runs on the new account in place of a bare continue.
-      await releaseUsageLimitQueue(managed, { reason: "usage_limit_account_handoff", continueText: null });
-      return { ok: true };
-    }
-    managed.usageLimitQueueHold = false;
-    await autoResume.cancelForSession(managed.session.id, "usage_limit_account_handoff");
-    setUsageLimitResume(managed, null);
-    await sendMessage({ sessionId: managed.session.id, text: continueText });
+    // A queue the limit held runs on the new account in place of the continue.
+    await releaseUsageLimitQueue(managed, {
+      reason: "usage_limit_account_handoff",
+      continueText: compactOnly ? "/compact" : `Continue where you stopped. The last turn ended at the ${from.label || from.id} account's usage limit, and this chat now runs on the ${alternate.label} account. Do not redo work that already completed.`,
+    });
     return { ok: true };
   };
 
@@ -25303,8 +25357,9 @@ export function createAgentChatService(args: {
       message: `Continuing on ${alternate.label}.`,
       detail: `This chat hit a usage limit, so ADE started a new chat on ${alternate.label}. This chat will not also resume.`,
     });
-    await autoResume.cancelForSession(managed.session.id, "usage_limit_account_handoff");
-    setUsageLimitResume(managed, null);
+    await clearUsageLimitHold(managed, "usage_limit_account_handoff");
+    // The work went on in the new chat; this one's queue does not also run.
+    cancelUsageLimitHeldSteers(managed, "failed");
     if (managed.session.provider === "claude") dismissClaudeSessionQuota(managed);
     return { ok: true, sessionId: createdId };
     } finally {
@@ -25317,6 +25372,9 @@ export function createAgentChatService(args: {
     turnId: string | null | undefined,
     alternateAccount: AgentChatUsageLimitAlternateAccount | null,
   ): void => {
+    // The limit is live from here: the failed turn's cancel and the turn
+    // boundary's delivery both hold the queue (ADE-289).
+    managed.usageLimitQueueHold = true;
     const resetAtMs = usageLimitResetAtMs(managed);
     const providerDetail = usageLimitProviderDetail(managed);
     if (!sessionAutoContinueAtUsageLimit(managed.session)) {
@@ -25363,9 +25421,6 @@ export function createAgentChatService(args: {
     turnId?: string | null,
     options?: { allowAccountHandoff?: boolean },
   ): void => {
-    // Set before anything below can return: every path here is a live limit,
-    // and the failed turn's cancel runs right after this.
-    managed.usageLimitQueueHold = true;
     if (usageLimitHandedOffTargets.has(managed.session.id)) return;
     if (pendingUsageLimitMoves.has(managed.session.id) || usageLimitMoveInFlight.has(managed.session.id)) return;
     if (turnId && usageLimitMovedTurnIds.has(turnId)) return;
@@ -25385,6 +25440,8 @@ export function createAgentChatService(args: {
         ? setTimeout(() => runPendingUsageLimitMove(managed), USAGE_LIMIT_MOVE_WAIT_MS)
         : null;
       fallbackTimer?.unref?.();
+      // The move sends the queue on the other account (`releaseUsageLimitQueue`).
+      managed.usageLimitQueueHold = true;
       pendingUsageLimitMoves.set(managed.session.id, {
         alternate: { instanceId: alternate.instanceId, label: alternate.label },
         turnId: turnId ?? null,
@@ -27125,9 +27182,11 @@ export function createAgentChatService(args: {
       mcpApps.observe(managed.session.id, managed.session.provider, normalizedEvent);
     }
     if (normalizedEvent.type === "status" && normalizedEvent.turnStatus === "started") {
-      // A running turn means the limit no longer holds the queue: this turn's
-      // end sends it (a limit this turn hits sets the hold again).
+      // A running turn means the limit no longer holds the queue: it goes
+      // back on the runtime and this turn's end sends it (a limit this turn
+      // hits holds it again).
       managed.usageLimitQueueHold = false;
+      restoreUsageLimitHeldSteers(managed);
       // "Cleared when the next turn starts" is the contract of
       // `last_turn_failed_at`, and a turn can start without the user typing:
       // an auto-resume, a scheduled wake, a peer/coordinator message, restart
@@ -31947,6 +32006,10 @@ export function createAgentChatService(args: {
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
     managed.awaitingInputAtLoad = persisted?.awaitingInput === true;
+    if (persisted?.usageLimitHeldSteers?.length) {
+      const held = hydratePersistedPendingSteers({ ...persisted, pendingSteers: persisted.usageLimitHeldSteers }, managed);
+      if (held.length) managed.usageLimitHeldSteers = held;
+    }
     if (row.status === "detached") {
       runRestartRecoveryIfPending(managed, {
         reason: "load",
@@ -33205,6 +33268,7 @@ export function createAgentChatService(args: {
 
   /** Clears what one idle turn's `result` told the reader, before the next idle turn. */
   const resetClaudeIdleTurnUsage = (state: ClaudeIdleTurnState): void => {
+    state.usageLimitNoted = false;
     state.usage = undefined;
     state.costUsd = null;
     state.costBasis = undefined;
@@ -34714,11 +34778,11 @@ export function createAgentChatService(args: {
       const limitText = resultIsError
         ? [...resultErrors.userFacing, resultText].find((text) => isClaudeUsageLimitResultError(text)) ?? null
         : null;
-      if (limitText || state.usageLimitNoted) {
-        if (!state.usageLimitNoted && limitText) {
-          state.usageLimitNoted = true;
-          noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId ?? undefined);
-        }
+      if (limitText && !state.usageLimitNoted) {
+        state.usageLimitNoted = true;
+        noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId ?? undefined);
+      }
+      if (state.usageLimitNoted) {
         await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
         return;
       }
@@ -36765,22 +36829,17 @@ export function createAgentChatService(args: {
             failClaudeTurnUnauthenticated("authentication_failed");
           }
           if (isClaudeSyntheticImageErrorMessage(assistantMsg)) continue;
+          // A limit is the provider's notice, not a reply: it pauses the chat
+          // (`noteClaudeSessionQuota`) and never becomes a reply bubble.
           const limitText = claudeUsageLimitAssistantText(assistantMsg);
-          if (limitText) {
-            // The limit is the provider's notice, not a reply: it goes to the
-            // pause (`noteClaudeSessionQuota`), never into a reply bubble.
-            if (!quotaTrippedThisTurn) {
-              quotaTrippedThisTurn = true;
-              noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId);
-            }
-            if (onBackendDispatched) {
-              throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
-            }
-            continue;
+          if (limitText && !quotaTrippedThisTurn) {
+            quotaTrippedThisTurn = true;
+            noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(limitText), turnId);
           }
           if (assistantMsg.error && onBackendDispatched) {
             throw new Error(`Claude rejected the prompt before starting the turn (${assistantMsg.error}).`);
           }
+          if (limitText) continue;
           markBackendDispatched();
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
@@ -41489,6 +41548,14 @@ export function createAgentChatService(args: {
     const settles = (request: PendingInputRequest): boolean => !subagentCardIsLive(managed, request);
     settleOpenCodePendingApprovals(managed, runtime, (pending) => settles(pending.request));
     settleOpenCodePendingForms(managed, runtime, settles);
+    const failure = outcome.status === "interrupted"
+      ? null
+      : classifyOpenCodeError(
+          outcome.error ?? turn.mapper.lastStepError() ?? new Error("OpenCode turn failed."),
+          runtime.modelDescriptor.family,
+          runtime.modelDescriptor.displayName,
+        );
+    if (failure) holdQueueIfUsageLimitFailure(managed, failure);
     cancelOpenCodeInboxRows(managed, runtime, outcome.status === "interrupted" ? "interrupted" : "failed");
     if (outcome.status === "interrupted") {
       emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
@@ -41501,12 +41568,8 @@ export function createAgentChatService(args: {
         ...(doneUsage ? { usage: doneUsage.usage } : {}),
         ...doneCost,
       });
-    } else {
-      const { message, errorInfo } = classifyOpenCodeError(
-        outcome.error ?? turn.mapper.lastStepError() ?? new Error("OpenCode turn failed."),
-        runtime.modelDescriptor.family,
-        runtime.modelDescriptor.displayName,
-      );
+    } else if (failure) {
+      const { message, errorInfo } = failure;
       emitChatEvent(managed, { type: "error", message, turnId, errorInfo });
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, {
@@ -42395,8 +42458,15 @@ export function createAgentChatService(args: {
   ): void => {
     const record = asRecord(payload);
     const rateLimits = normalizeCodexRateLimits(record?.rateLimits ?? payload);
-    // A rolling update is sparse: a window it leaves out keeps its last reset.
-    if (rateLimits) runtime.rateLimits = { ...rateLimits, resetAt: rateLimits.resetAt ?? runtime.rateLimits?.resetAt ?? null };
+    // A rolling update is sparse: one that carries no windows keeps the last
+    // reset; one that does says what is used up now, nothing included.
+    const snapshot = asRecord(record?.rateLimits ?? payload);
+    const carriesWindows = Boolean(snapshot && (snapshot.primary || snapshot.secondary));
+    if (rateLimits) {
+      runtime.rateLimits = carriesWindows || rateLimits.resetAt
+        ? rateLimits
+        : { ...rateLimits, resetAt: runtime.rateLimits?.resetAt ?? null };
+    }
     // Only written when the payload actually carries the key: the
     // `account/rateLimits/updated` notification does not, and clearing a real
     // banked credit on every push would make the "Use reset" affordance blink.
@@ -50406,7 +50476,11 @@ export function createAgentChatService(args: {
     runtime.preserveQueuedSteersOnInterrupt = false;
     if (reason === "interrupted" && preserveQueuedSteers) return;
     // A usage limit keeps the queue for the resume or a switch (ADE-289).
-    if (reason !== "disposed" && usageLimitHoldsQueue(managed)) return;
+    if (reason !== "disposed" && usageLimitHoldsQueue(managed)) {
+      liftUsageLimitHeldSteers(managed, runtime);
+      return;
+    }
+    if (reason === "disposed") cancelUsageLimitHeldSteers(managed, reason);
     // A failed Compact first turn keeps the messages it was compacting for.
     if (managed.compactFirstHold === "holding") {
       if (reason === "failed") {
@@ -50415,9 +50489,37 @@ export function createAgentChatService(args: {
       }
       managed.compactFirstHold = undefined;
     }
-    const cancelled = runtime.pendingSteers.splice(0);
-    if (!cancelled.length) return;
+    settleCancelledQueuedSteers(managed, runtime.pendingSteers.splice(0), reason, runtime.activeTurnId);
+  };
 
+  /**
+   * A failure that is a usage limit holds the queue before its own cancel
+   * runs. Cursor, Droid and OpenCode cancel first and report the error after,
+   * so the arm that the error event triggers would come too late.
+   */
+  const holdQueueIfUsageLimitFailure = (
+    managed: ManagedChatSession,
+    failure: { message?: string | null; errorInfo?: string | { category?: string | null } | null },
+  ): void => {
+    if (isUsageLimitChatError(failure)) managed.usageLimitQueueHold = true;
+  };
+
+  /** A held queue that will never run (the chat closed, or its work moved to another chat). */
+  const cancelUsageLimitHeldSteers = (managed: ManagedChatSession, reason: "failed" | "disposed"): void => {
+    const held = managed.usageLimitHeldSteers;
+    if (!held?.length) return;
+    delete managed.usageLimitHeldSteers;
+    settleCancelledQueuedSteers(managed, held, reason, null);
+    persistChatState(managed);
+  };
+
+  const settleCancelledQueuedSteers = (
+    managed: ManagedChatSession,
+    cancelled: QueuedSteer[],
+    reason: "interrupted" | "failed" | "disposed",
+    activeTurnId: string | null,
+  ): void => {
+    if (!cancelled.length) return;
     const cancelReasons: Record<typeof reason, string> = {
       interrupted: "Queued message cancelled because the current turn was interrupted.",
       failed: "Queued message cancelled because the current turn failed.",
@@ -50433,7 +50535,7 @@ export function createAgentChatService(args: {
         noticeKind: "info",
         steerId: steer.steerId,
         message,
-        turnId: runtime.activeTurnId ?? undefined,
+        turnId: activeTurnId ?? undefined,
       });
     }
   };
@@ -50946,10 +51048,12 @@ export function createAgentChatService(args: {
     // queued turn, so it carries directives from the new epoch.
     flushPendingDirectiveEpochReset(managed);
     if (managed.closed) return false;
-    // Never into a limited account: the resume, the user or a switch sends it.
-    if (usageLimitHoldsQueue(managed)) return false;
-    // Messages carried over a switch away from a limit go first.
-    if (runtime.kind !== "opencode") adoptUsageLimitCarriedSteers(managed, runtime);
+    // Never into a limited account: the queue waits on the session for the
+    // resume, the user or a switch away from the limit.
+    if (usageLimitHoldsQueue(managed)) {
+      liftUsageLimitHeldSteers(managed, runtime);
+      return false;
+    }
     // A user-selected priority dispatch owns the staged queue while its SDK
     // message is being built. Do not auto-deliver another row at the parent
     // turn boundary; the idle reader will consume the explicit dispatch, then
@@ -63911,13 +64015,14 @@ export function createAgentChatService(args: {
         runtime,
         "Cursor tool approval was cancelled because the turn failed.",
       );
+      const classified = runtime.interrupted ? null : classifyCursorTurnFailure(managed, error);
+      if (classified) holdQueueIfUsageLimitFailure(managed, classified);
       cancelQueuedSteers(managed, runtime, runtime.interrupted ? "interrupted" : "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
-      if (runtime.interrupted) {
+      if (!classified) {
         emitCursorTurnInterrupted(managed, { turnId, turnModel, turnModelId });
       } else {
-        const classified = classifyCursorTurnFailure(managed, error);
         emitCursorTurnFailed(managed, { turnId, turnModel, turnModelId }, classified);
       }
       persistChatState(managed);
@@ -67052,6 +67157,7 @@ export function createAgentChatService(args: {
         "Droid tool approval was cancelled because the turn failed.",
       );
 
+      if (!treatAsInterrupt) holdQueueIfUsageLimitFailure(managed, classified);
       cancelQueuedSteers(managed, runtime, treatAsInterrupt ? "interrupted" : "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
@@ -79213,6 +79319,8 @@ export function createAgentChatService(args: {
       cancelQueuedSteers(managed, managed.runtime, "disposed");
       if (managed.runtime.busy) await interruptMuseTurn(managed, managed.runtime);
     }
+    // Whatever runtime this chat has (or none), a queue a limit held ends with it.
+    cancelUsageLimitHeldSteers(managed, "disposed");
 
     await finishSession(managed, terminalStatus, {
       summary: managed.preview ? `Session closed: ${managed.preview}` : "Session closed."
@@ -81811,7 +81919,10 @@ export function createAgentChatService(args: {
       if (modelHandoff?.fromProvider === "claude") dismissClaudeSessionQuota(managed);
       await releaseUsageLimitQueue(managed, {
         reason: "model_switch",
-        continueText: "Continue where you stopped. The last turn ended at a usage limit, and this chat now runs on a different model. Do not redo work that already completed.",
+        // "Don't continue" stands: a switch sends what was queued, never a continue of its own.
+        continueText: sessionAutoContinueAtUsageLimit(managed.session)
+          ? "Continue where you stopped. The last turn ended at a usage limit, and this chat now runs on a different model. Do not redo work that already completed."
+          : null,
       });
     }
     return managed.session;
