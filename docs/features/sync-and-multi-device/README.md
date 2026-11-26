@@ -1062,15 +1062,36 @@ Desktop connection UI:
   shows **Reconnect this computer** (`useThisComputerRefusal`,
   `useReconnectThisComputer`).
 - `apps/desktop/src/renderer/components/app/IntegrationBanners.tsx` — the
-  `relay-offline` banner in `AppBannerHost`. `AppShell` seeds
-  `routeHealth.relay` from `sync.getLocalStatus` (this machine's relay) through
-  `localSyncStatusReader`, then follows the `sync-status` broadcast and
-  commits only when a field the banner reads changed.
-  `deriveRelayOutageState` is `"suppressed"` at once (an ownership conflict
-  never recovers alone) and `"down"` after `RELAY_OUTAGE_GRACE_MS` (2 minutes)
-  from `relayControlFailingSinceMs`, with one timer
-  (`relayGraceRemainingMs`). The dismiss key is global and keyed by the outage
+  `relay-offline` and `this-computer-offline` banners in `AppBannerHost`.
+  `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (this
+  machine's relay) through `localSyncStatusReader`, then follows the
+  `sync-status` broadcast and commits only when a field the banner reads
+  changed; from the same snapshot it keeps one boolean,
+  `isAccountDirectoryNoReply(routeHealth.accountDirectory)`.
+- `apps/desktop/src/renderer/lib/thisComputerOffline.ts` — the outage rules
+  both surfaces share. `deriveRelayOutageState` is `"suppressed"` at once (an
+  ownership conflict never recovers alone) and `"down"` after
+  `RELAY_OUTAGE_GRACE_MS` (2 minutes) from `relayControlFailingSinceMs`;
+  `useRelayGraceRerender` arms one timer for that moment.
+  `deriveThisComputerOffline` is true when the relay is `"down"` and the
+  account-directory request gets no reply: then the banner says "This
+  computer is offline" once and drops the relay banner and GitHub's
+  network-failure banner (an unreadable credential store still shows), and
+  the Machines tab (`useThisComputerOffline`) drops each machine's red dot and
+  "may be asleep" card when its connect never reached it
+  (`connectNeverReachedMachine`; a LAN connect that stalled on the handshake
+  keeps its card). Both legs are Cloudflare Workers, so a network that blocks
+  `workers.dev` looks the same; the copy names the VPN, proxy or firewall
+  case. The dismiss keys are global; the relay one is keyed by the outage
   state.
+- `isAccountDirectoryNoReply` (`shared/types/sync.ts`) reads the publisher
+  health's `failedLeg`: only the HTTP leg's timeout or transport error is
+  "no reply" and reads "no internet connection". The same `transport_error`
+  on the token leg (a sign-in service answering 429/5xx, a refresh another
+  process holds) reads "can't refresh your ADE sign-in", and the setup leg
+  (the publisher failing on this computer) "ADE couldn't publish this
+  computer". A brain built before `failedLeg` sends none and is read as the
+  HTTP leg.
 - `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` — the
   top-bar Connections panel (Machines, Phone, Web). It passes the current
   route to the Account page so a sign-in returns there. The control ends with
