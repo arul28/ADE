@@ -237,6 +237,18 @@ function SimulatorsBlock({ storage, pin }: { storage: DevToolsStorage; pin: Open
   };
 
   const cleanUp = async () => {
+    const ok = await confirmDialog({
+      title: `Clean up ${pluralCount(leftovers.length, "leftover simulator")}?`,
+      message: "ADE made these for lanes that are gone. Deleting them takes their apps and data, and idle ADE simulators are turned off.",
+      children: (
+        <ul className="ade-dev-confirm-list">
+          {leftovers.map((row) => <li key={row.sim.udid}>{row.sim.name}{row.bytes != null ? <span>{formatMac(row.bytes)}</span> : null}</li>)}
+        </ul>
+      ),
+      confirmLabel: "Clean up",
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy("cleanup");
     try {
       showCleanupResult(await window.ade.iosSimulator.deviceCleanup({ powerOffIdle: true }, pin), "apple-settings-cleanup");
@@ -305,6 +317,24 @@ function RuntimesBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenPr
   const leftoverBytes = leftovers.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
   const them = leftovers.length === 1 ? "it" : "them";
 
+  // Exactly the runtimes the dialog listed, one by one: a runtime that became replaced while it was open is not touched.
+  const removeEach = async (entries: AppleRuntimeEntry[], simulators: AppleRuntimeSimulatorDisposition): Promise<AppleRuntimeDeleteResult> => {
+    const merged: AppleRuntimeDeleteResult = { deleted: [], moved: [], erased: [], errors: [] };
+    for (const entry of entries) {
+      if (!entry.id) continue;
+      try {
+        const one = await window.ade.iosSimulator.runtimeDelete({ id: entry.id, simulators, confirmedByUser: true }, pin);
+        merged.deleted.push(...one.deleted);
+        merged.moved.push(...one.moved);
+        merged.erased.push(...one.erased);
+        merged.errors.push(...one.errors);
+      } catch (err) {
+        merged.errors.push({ id: entry.id, udid: null, message: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return merged;
+  };
+
   const run = async (
     work: (disposition: AppleRuntimeSimulatorDisposition) => Promise<AppleRuntimeDeleteResult>,
     entries: AppleRuntimeEntry[],
@@ -341,7 +371,7 @@ function RuntimesBlock({ storage, pin }: { storage: DevToolsStorage; pin: OpenPr
           className="ade-modern-btn"
           data-size="sm"
           disabled={busy}
-          onClick={() => void run((simulators) => window.ade.iosSimulator.runtimePrune({ simulators, confirmedByUser: true }, pin), replaceable, `Remove ${pluralCount(replaceable.length, "replaced runtime")}?`)}
+          onClick={() => void run((simulators) => removeEach(replaceable, simulators), replaceable, `Remove ${pluralCount(replaceable.length, "replaced runtime")}?`)}
         >
           {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
           Remove replaced{replaceableBytes ? ` · ${formatMac(replaceableBytes)}` : ""}

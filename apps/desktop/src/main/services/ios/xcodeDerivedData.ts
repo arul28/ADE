@@ -114,6 +114,8 @@ const measuredCache = new Map<string, MeasuredCache>();
 const measuresInFlight = new Map<string, Promise<XcodeDerivedDataResult>>();
 /** Bumped by every delete: a walk started before it never fills the cache. */
 const rootGenerations = new Map<string, number>();
+/** Trash folders a delete in this process has moved and not measured yet. */
+const trashBeingMeasured = new Set<string>();
 
 async function lstatOrNull(target: string): Promise<fs.Stats | null> {
   try {
@@ -184,12 +186,19 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     return path.join(homedir(), "Library", "Developer", "Xcode", "DerivedData");
   };
 
-  const isRunning = (name: string) =>
-    deps.run("pgrep", ["-x", name], { timeoutMs: 10_000 }).then(({ stdout }) => stdout.trim().length > 0, () => false);
+  /** True or false from `pgrep`; null when it could not tell (a timeout, a spawn error). */
+  const isRunning = (name: string): Promise<boolean | null> =>
+    deps.run("pgrep", ["-x", name], { timeoutMs: 10_000 }).then(
+      ({ stdout }) => stdout.trim().length > 0,
+      // `pgrep` exits 1 when nothing matches: the one failure that means "not running".
+      (error: unknown) => ((error as { code?: unknown } | null)?.code === 1 ? false : null),
+    );
 
-  const buildRunning = async (): Promise<boolean> => {
+  /** A build that may be running counts as running: the delete waits rather than guess. */
+  const buildRunning = async (): Promise<boolean | null> => {
     const [xcode, xcodebuild] = await Promise.all([isRunning("Xcode"), isRunning("xcodebuild")]);
-    return xcode || xcodebuild;
+    if (xcode || xcodebuild) return true;
+    return xcode === false && xcodebuild === false ? false : null;
   };
 
   const readInfoPlist = async (folder: string): Promise<{ workspacePath: string | null; lastAccessedAt: string | null }> => {
@@ -230,8 +239,11 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     let dirents: fs.Dirent[];
     try {
       dirents = await nonAsarFs.promises.readdir(root, { withFileTypes: true });
-    } catch {
-      return { exists: false, entries: [] };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null)?.code;
+      if (code === "ENOENT" || code === "ENOTDIR") return { exists: false, entries: [] };
+      // A folder that is there but unreadable is a failure to say, never an empty list.
+      throw new AdeExpectedError(`ADE couldn't read Xcode's DerivedData folder: ${getErrorMessage(error)}`, "environment");
     }
     const folders = dirents.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && !DELETING_TRASH_NAME.test(entry.name));
     const read = await mapLimit(folders, 8, async (dirent): Promise<XcodeDerivedDataEntry | null> => {
@@ -267,7 +279,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
 
   /** Finishes an earlier delete this process did not get to: ADE's own trash names only. */
   const sweepTrash = (root: string) =>
-    sweepDeletingTrash(root, { keep: async () => false, removeInBackground }).catch(() => undefined);
+    sweepDeletingTrash(root, { keep: async (trashPath) => trashBeingMeasured.has(path.resolve(trashPath)), removeInBackground }).catch(() => undefined);
 
   const measureEntries = async (root: string, entries: XcodeDerivedDataEntry[]): Promise<XcodeDerivedDataResult> => {
     const deadline = Date.now() + MEASURE_BUDGET_MS;
@@ -299,7 +311,9 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     const t0 = Date.now();
     const root = await resolveRoot();
     const measure = args?.measure === true;
-    const [listing, running] = await Promise.all([readEntries(root), buildRunning()]);
+    const [listing, runningAnswer] = await Promise.all([readEntries(root), buildRunning()]);
+    // Unknown shows as busy: the page then waits instead of offering a delete the brain would refuse.
+    const running = runningAnswer !== false;
     if (listing.exists) void sweepTrash(root);
     const cached = measuredCache.get(root);
     const fresh = cached && Date.now() - cached.at < MEASURE_CACHE_MS ? cached : null;
@@ -355,7 +369,9 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
     if (requested.length > MAX_DELETE_PATHS) {
       throw new AdeExpectedError(`At most ${MAX_DELETE_PATHS} folders can be deleted at once.`, "user");
     }
-    if (await buildRunning()) throw new AdeExpectedError(XCODE_DERIVED_DATA_BUILD_RUNNING_MESSAGE, "user");
+    const running = await buildRunning();
+    if (running === true) throw new AdeExpectedError(XCODE_DERIVED_DATA_BUILD_RUNNING_MESSAGE, "user");
+    if (running === null) throw new AdeExpectedError("ADE couldn't check whether Xcode is building, so nothing was deleted. Try again.", "environment");
 
     const root = await resolveRoot();
     const realRoot = await realpathOrNull(root);
@@ -411,6 +427,7 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
         fail(`Could not delete: ${getErrorMessage(error)}`);
         continue;
       }
+      trashBeingMeasured.add(path.resolve(trashPath));
       moved.push({ reported, trashPath });
     }
     measuredCache.delete(root);
@@ -427,6 +444,8 @@ export function createXcodeDerivedData(deps: XcodeDerivedDataDeps) {
         if (tree.truncated) result.freedIsLowerBound = true;
       } catch {
         result.freedIsLowerBound = true;
+      } finally {
+        trashBeingMeasured.delete(path.resolve(trashPath));
       }
       removeInBackground(trashPath);
       result.deleted.push({ path: reported, bytes });

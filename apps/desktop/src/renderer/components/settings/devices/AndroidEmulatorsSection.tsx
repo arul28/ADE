@@ -1,6 +1,6 @@
 import React from "react";
 import { AndroidLogo } from "@phosphor-icons/react";
-import type { AndroidAvd } from "../../../../shared/types/androidEmulator";
+import type { AndroidAvdListing } from "../../../../shared/types/androidEmulator";
 import { formatStorageBytes, pluralCount } from "../../../../shared/formatting";
 import { confirmDialog } from "../../ui/dialog";
 import { showToast } from "../../app/toast/toastStore";
@@ -16,6 +16,15 @@ import { useDevToolsStorage } from "./useDevToolsStorage";
  * that is not running. The Android pane's own storage list does the same for
  * one lane; this is the machine's whole list, from Settings.
  */
+
+/** Why ADE won't delete this emulator from here, matching what the brain refuses. */
+function androidDeleteBlocked(avd: AndroidAvdListing): string | null {
+  if (avd.running) return "It is running. Stop it first.";
+  if (avd.heldByLaneId) return "A lane uses it. Release it from that lane's Android pane first.";
+  if (!avd.adeCreated) return "ADE didn't make it, so ADE leaves it alone. Delete it in Android Studio.";
+  if (avd.madeForOtherLane) return "ADE made it for another project. Delete it from that project.";
+  return null;
+}
 
 // The AVD list carries no platform; 1024-based sizes match the Android tools' own.
 const formatAvd = (value: number) => formatStorageBytes(value, undefined);
@@ -44,7 +53,7 @@ function AndroidEmulatorList({ pin }: { pin: NonNullable<ReturnType<typeof useSe
   const total = avds.reduce((sum, avd) => sum + (avd.sizeBytes ?? 0), 0);
   const running = avds.filter((avd) => avd.running).length;
 
-  const remove = async (avd: AndroidAvd) => {
+  const remove = async (avd: AndroidAvdListing) => {
     const label = avd.displayName || avd.name;
     const size = avd.sizeBytes != null ? formatAvd(avd.sizeBytes) : null;
     const ok = await confirmDialog({
@@ -95,7 +104,7 @@ function AndroidEmulatorList({ pin }: { pin: NonNullable<ReturnType<typeof useSe
                 chips={avd.running ? <span className="ade-dev-chip" data-tone="ok">Running</span> : null}
                 sub={<>{avd.apiLevel ? `Android API ${avd.apiLevel}` : null}<span className="ade-dev-owner" data-owner={avd.adeCreated ? "ade-kept" : "yours"}>{avd.adeCreated ? "Made by ADE" : "Yours"}</span></>}
                 size={<SizeCell value={avd.sizeBytes} format={formatAvd} />}
-                action={<RowAction label="Delete" ariaLabel={`Delete ${label}`} busy={busy === avd.name} disabled={busy != null} blockedWhy={avd.running ? "It is running. Stop it first." : null} onClick={() => void remove(avd)} />}
+                action={<RowAction label="Delete" ariaLabel={`Delete ${label}`} busy={busy === avd.name} disabled={busy != null} blockedWhy={androidDeleteBlocked(avd)} onClick={() => void remove(avd)} />}
               />
             );
           })}

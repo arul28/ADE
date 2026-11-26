@@ -228,6 +228,19 @@ const LONG_RUNNING_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
     "prs.land",
   ].map((action) => [action, 120_000] as const),
 ]);
+/**
+ * `apple.invoke` methods that walk tens of GB on the Mac (Settings' disk
+ * sizes and cleanups). The brain gives them 15 minutes; wait a minute past it.
+ */
+const LONG_RUNNING_APPLE_INVOKE_METHODS: ReadonlySet<string> = new Set(["derivedDataList", "derivedDataDelete", "deviceList", "deviceCleanup", "runtimePrune", "runtimeDelete"]);
+const LONG_RUNNING_APPLE_INVOKE_TIMEOUT_MS = 16 * 60_000;
+
+function longRunningCommandTimeout(action: string, args: Record<string, unknown>): number | undefined {
+  if (action === "apple.invoke" && typeof args.method === "string" && LONG_RUNNING_APPLE_INVOKE_METHODS.has(args.method)) {
+    return LONG_RUNNING_APPLE_INVOKE_TIMEOUT_MS;
+  }
+  return LONG_RUNNING_COMMAND_TIMEOUT_MS.get(action);
+}
 const DEFAULT_RESTORATION_TIMEOUT_MS = 15_000;
 const DEFAULT_TERMINAL_INPUT_ACK_TIMEOUT_MS = 2_000;
 const DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS = 4;
@@ -879,7 +892,7 @@ export class AdeSyncClient {
         timer: setTimeout(() => {
           this.pendingCommands.delete(commandId);
           reject(new AdeSyncError("Timed out waiting for remote command result.", "timeout"));
-        }, opts.timeoutMs ?? LONG_RUNNING_COMMAND_TIMEOUT_MS.get(action) ?? DEFAULT_REQUEST_TIMEOUT_MS),
+        }, opts.timeoutMs ?? longRunningCommandTimeout(action, args) ?? DEFAULT_REQUEST_TIMEOUT_MS),
       };
       this.pendingCommands.set(commandId, pending);
     });

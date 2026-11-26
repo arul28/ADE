@@ -32,11 +32,13 @@ function folder(dir: string, files: Record<string, string> = { "data.bin": "x".r
   return dir;
 }
 
-function service(opts: { building?: boolean } = {}) {
+function service(opts: { building?: boolean; probeFails?: boolean } = {}) {
   const run = vi.fn(async (command: string) => {
     if (command === "pgrep" && opts.building) return { stdout: "4242\n", stderr: "" };
-    // No custom DerivedData location, and nothing running.
-    throw new Error(`${command}: no result`);
+    // A probe that times out or cannot start says nothing about a build.
+    if (command === "pgrep" && opts.probeFails) throw Object.assign(new Error("pgrep: timed out"), { code: "ETIMEDOUT" });
+    // `pgrep` exits 1 when nothing matches; `defaults` has no custom location.
+    throw Object.assign(new Error(`${command}: no result`), { code: 1 });
   });
   return createXcodeDerivedData({
     run,
@@ -104,6 +106,7 @@ describe("xcodeDerivedData", () => {
   it.each([
     ["without the person's confirmation", { building: false }, false],
     ["while Xcode or xcodebuild runs", { building: true }, true],
+    ["when ADE can't tell whether a build runs", { probeFails: true }, true],
   ])("deletes nothing %s", async (_label, opts, confirmed) => {
     const app = path.join(root, "App-abcdefghijklmnopqrstuvwxyz");
     await expect(service(opts).remove({ paths: [app], confirmedByUser: confirmed as true })).rejects.toThrow();

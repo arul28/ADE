@@ -1,6 +1,6 @@
 import React from "react";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import type { AndroidAvd } from "../../../../shared/types/androidEmulator";
+import type { AndroidAvdListing } from "../../../../shared/types/androidEmulator";
 import type {
   AppleDeviceListResult,
   AppleInstalledSimulator,
@@ -52,7 +52,7 @@ export type DevToolsStorage = {
   };
   runtimes: DevToolsPart<AppleRuntimeInventory>;
   buildData: DevToolsPart<XcodeDerivedDataResult>;
-  emulators: DevToolsPart<AndroidAvd[]>;
+  emulators: DevToolsPart<AndroidAvdListing[]>;
   refresh: () => void;
   refreshApple: () => void;
   refreshAndroid: () => void;
@@ -97,7 +97,9 @@ function buildSimulatorRows(list: AppleDeviceListResult, measured: AppleDeviceLi
         owner: simulatorOwner(holder?.laneName ?? null, laneHeld, ownership),
         deleteBlocked: laneHeld
           ? "A lane uses it. Delete it from that lane's Apple pane."
-          : ownership === "ade-other-project"
+          : measured == null
+            ? "Checking who it belongs to first."
+            : ownership === "ade-other-project"
             ? "ADE made it for another project, whose lane may use it. Delete it from that project."
             : booted
               ? "It is running. Turn it off first."
@@ -130,9 +132,11 @@ export function useDevToolsStorage({
   const [simulators, setSimulators] = React.useState<DevToolsStorage["simulators"]>(EMPTY_SIMULATORS);
   const [runtimes, setRuntimes] = React.useState<DevToolsPart<AppleRuntimeInventory>>(EMPTY);
   const [buildData, setBuildData] = React.useState<DevToolsPart<XcodeDerivedDataResult>>(EMPTY);
-  const [emulators, setEmulators] = React.useState<DevToolsPart<AndroidAvd[]>>(EMPTY);
+  const [emulators, setEmulators] = React.useState<DevToolsPart<AndroidAvdListing[]>>(EMPTY);
   // Which machine the parts on screen came from; another one empties them first.
   const appleLoadedFor = React.useRef<string | null | undefined>(undefined);
+  // The last ownership read for this machine, so a list-only refresh never forgets whose a simulator is.
+  const lastMeasured = React.useRef<AppleDeviceListResult | null>(null);
   const androidLoadedFor = React.useRef<string | null | undefined>(undefined);
 
   React.useEffect(() => {
@@ -148,6 +152,7 @@ export function useDevToolsStorage({
     const target = pinRef.current;
     const sameMachine = appleLoadedFor.current === pinKey;
     appleLoadedFor.current = pinKey;
+    if (!sameMachine) lastMeasured.current = null;
     // A refresh keeps the rows (no flash); a new machine starts from nothing.
     setSimulators((current) => (sameMachine ? { ...current, loading: current.data == null, error: null } : { ...EMPTY_SIMULATORS, loading: true }));
     setRuntimes((current) => (sameMachine ? { ...current, loading: current.data == null, error: null } : { ...EMPTY, loading: true }));
@@ -159,7 +164,7 @@ export function useDevToolsStorage({
         if (cancelled) return;
         const walk = measure && list.installed.length > 0;
         setSimulators((current) => ({
-          data: buildSimulatorRows(list, null).map((row) => ({ ...row, bytes: current.data?.find((old) => old.sim.udid === row.sim.udid)?.bytes ?? null })),
+          data: buildSimulatorRows(list, lastMeasured.current),
           loading: false,
           error: null,
           // Nothing installed costs nothing; that is a size, not a wait.
@@ -171,6 +176,7 @@ export function useDevToolsStorage({
         try {
           const measured = await api.deviceList({ installed: false, disk: true }, target);
           if (cancelled) return;
+          lastMeasured.current = measured;
           setSimulators({ data: buildSimulatorRows(list, measured), loading: false, error: null, totalBytes: measured.disk?.totalBytes ?? null, measuring: false, measureFailed: measured.disk == null });
         } catch (error) {
           // A failed walk costs the sizes, never the list.
