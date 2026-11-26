@@ -2635,6 +2635,19 @@ one-hour deduplication key bounds it to 24 accepted events per outcome a day in
 theory; the realistic number is a handful a month. No ceiling was raised, and
 the dashboard spec is untouched.
 
+### The person's reactions on CTO replies
+
+When the person puts an emoji on a CTO reply (`chat.reactToMessage`), the brain
+that stores it records one `ade_feature_used` event (`reactToMessage` in
+`agentChatService.ts` calls `onCtoMessageReaction`, reported by
+`reportCtoMessageReaction` in `analytics/ctoHomeProductAnalytics.ts`), with
+`feature: "cto"`, `action: "cto_message_reaction"`, `surface: "api"` and
+`outcome: "completed"`. The product question is whether people react to the CTO
+at all. Never the emoji, the message, the chat, or the machine. A refused
+reaction and a repeat of the same emoji send nothing. One deduplication key with
+a one-hour interval bounds it to 24 accepted events a day. No ceiling was raised,
+and the dashboard spec is untouched.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.

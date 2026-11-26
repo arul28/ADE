@@ -12727,6 +12727,8 @@ export function createAgentChatService(args: {
     outcome: ChatHandoffReplayOutcome;
     provider: AgentChatProvider;
   }) => void;
+  /** Content-free hook: the person put an emoji on a CTO reply. */
+  onCtoMessageReaction?: () => void;
   /** Content-free hook for side chats: opened, or a send to the main chat delivered or lost. */
   onSideChatOutcome?: (event: { sessionId: string; outcome: ChatSideChatOutcome; provider: string }) => void;
   /**
@@ -12895,6 +12897,7 @@ export function createAgentChatService(args: {
     accountMachineMentions,
     onChatHandoffReplay,
     onSideChatOutcome,
+    onCtoMessageReaction,
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
     onRemoteWorkStarted,
@@ -68248,6 +68251,7 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "assistant_message_reaction", targetKey, emoji });
     addCtoReactionFeedback(feedback.pending, { targetKey, emoji, quote: message.quote });
     persistChatState(managed);
+    onCtoMessageReaction?.();
     return { targetKey, emoji, changed: true };
   };
 

@@ -387,6 +387,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // couldn't read the account yet (`failed`). Never the machine, the
   // repository, the notes, the conversation, or the routines.
   "cto_home_move",
+  // The person put an emoji on a CTO reply. Adoption only: never the emoji,
+  // the message, the chat, or the machine.
+  "cto_message_reaction",
   // What became of a handoff's transcript replay. Cross-provider handoffs carry
   // the conversation as text, and the only product question is whether it
   // arrives: whole, in part, not at all, or only after ADE re-sent the message
