@@ -27,22 +27,9 @@ export function agentChatEventIdentityKey(entry: AgentChatEventEnvelope): string
   return key;
 }
 
-/**
- * What an ADE Cloud chat's saved copy writes in place of what it leaves out
- * (`redactValue` in `cloudChatUploader`): a secret or a credential field
- * becomes `[REDACTED]`, a long string ends in `\n[truncated]`, a value nested
- * too deep becomes `[truncated]`.
- */
-const SAVED_COPY_MARK = /\[(?:REDACTED|truncated)\]/;
-const savedCopyMarkCache = new WeakMap<AgentChatEventEnvelope, boolean>();
-
-/** Whether a row carries a saved copy's mark anywhere, so it may be the saved copy of a live row. */
-function carriesSavedCopyMark(entry: AgentChatEventEnvelope): boolean {
-  const cached = savedCopyMarkCache.get(entry);
-  if (cached !== undefined) return cached;
-  const marked = SAVED_COPY_MARK.test(agentChatEventIdentityKey(entry));
-  savedCopyMarkCache.set(entry, marked);
-  return marked;
+/** A row read from an ADE Cloud chat's saved copy (`savedCopy`). */
+function isSavedCopyRow(entry: AgentChatEventEnvelope): boolean {
+  return entry.savedCopy === true;
 }
 
 /** The parts of a row the saved copy never changes: its chat, time, kind and number. */
@@ -55,11 +42,12 @@ function isSavedCopyMarkedString(value: string): boolean {
 }
 
 /**
- * Whether `copy` is `original` as the saved copy wrote it: the same in every
- * value, except a string the saved copy marked (it stands for any string) and
- * a `[truncated]` that stands for a deep object or array. Any other
- * difference is a different event. Undefined fields don't survive JSON, so
- * they count as absent.
+ * Whether a saved row's `copy` is `original` as the saved copy wrote it
+ * (`redactValue` in `cloudChatUploader`): the same in every value, except a
+ * string with `[REDACTED]` or ending in `\n[truncated]` (it stands for any
+ * string) and a `[truncated]` that stands for a deep object or array. Any
+ * other difference is a different event. Undefined fields don't survive
+ * JSON, so they count as absent.
  */
 function savedCopyValueMatches(copy: unknown, original: unknown): boolean {
   if (copy === original) return true;
@@ -85,19 +73,20 @@ function savedCopyValueMatches(copy: unknown, original: unknown): boolean {
   return true;
 }
 
+/** Only a saved row is ever the copy, so a live row is never replaced by saved text. */
 function isSavedCopyOf(copy: AgentChatEventEnvelope, original: AgentChatEventEnvelope): boolean {
-  return copy !== original
+  return isSavedCopyRow(copy)
+    && !isSavedCopyRow(original)
     && savedCopyKey(copy) === savedCopyKey(original)
-    && agentChatEventIdentityKey(copy) !== agentChatEventIdentityKey(original)
     && savedCopyValueMatches(copy.event, original.event);
 }
 
-/** Where each marked row of a list sits, by `savedCopyKey`. */
+/** Where each saved row of a list sits, by `savedCopyKey`. */
 function savedCopyIndexOf(events: readonly AgentChatEventEnvelope[]): Map<string, number> {
   const index = new Map<string, number>();
   for (let position = 0; position < events.length; position += 1) {
     const entry = events[position]!;
-    if (!carriesSavedCopyMark(entry)) continue;
+    if (!isSavedCopyRow(entry)) continue;
     const key = savedCopyKey(entry);
     if (!index.has(key)) index.set(key, position);
   }
@@ -121,9 +110,10 @@ const NO_MATCHED_INCOMING: ReadonlySet<number> = new Set();
  * it stores. The content identity then sees two events and the pane showed
  * both. Pair each saved row with the live row it was copied from (same chat,
  * time, kind and number; equal but for what the saved copy marked) and keep
- * the live one: it is what the computer wrote, and nothing is lost. A live
+ * the live one: it is what the computer wrote, and nothing is lost. Only a
+ * saved row (`savedCopy`) gives way, so live text is never replaced. A live
  * row that differs in anything else stays a separate event. Lists with no
- * marked row come back as they are.
+ * saved row come back as they are.
  */
 export function reconcileAgentChatSavedCopies(
   held: AgentChatEventEnvelope[],
@@ -132,7 +122,7 @@ export function reconcileAgentChatSavedCopies(
   const unchanged = { held, incoming, matchedIncoming: NO_MATCHED_INCOMING };
   if (!held.length || !incoming.length) return unchanged;
   const heldCopies = savedCopyIndexOf(held);
-  if (!heldCopies.size && !incoming.some(carriesSavedCopyMark)) return unchanged;
+  if (!heldCopies.size && !incoming.some(isSavedCopyRow)) return unchanged;
   let nextHeld = held;
   let nextIncoming = incoming;
   const matched = new Set<number>();
@@ -148,7 +138,7 @@ export function reconcileAgentChatSavedCopies(
       matched.add(position);
       continue;
     }
-    if (!carriesSavedCopyMark(entry)) continue;
+    if (!isSavedCopyRow(entry)) continue;
     if (!heldByKey) {
       heldByKey = new Map();
       for (let index = 0; index < nextHeld.length; index += 1) {
@@ -341,7 +331,7 @@ type LiveMergeIndex = {
   identityKeys: Set<string>;
   /** Null until a tool event first needs it. */
   toolCallIndexByKey: Map<string, number> | null;
-  /** Where each row that may be a saved copy sits (`savedCopyIndexOf`); usually empty. */
+  /** Where each saved row sits (`savedCopyIndexOf`); empty unless the chat showed its saved copy. */
   savedCopies: Map<string, number>;
 };
 
@@ -511,7 +501,6 @@ export function mergeAgentChatLiveEvents(
   let held = existing;
   for (const entry of incoming) {
     const key = agentChatEventIdentityKey(entry);
-    if (seen.has(key)) continue;
     const copyAt = savedCopies.size ? savedCopies.get(savedCopyKey(entry)) : undefined;
     if (copyAt !== undefined && isSavedCopyOf(held[copyAt]!, entry)) {
       if (held === existing) held = [...existing];
@@ -521,6 +510,7 @@ export function mergeAgentChatLiveEvents(
       seen.add(key);
       continue;
     }
+    if (seen.has(key)) continue;
     seen.add(key);
     fresh.push(entry);
   }

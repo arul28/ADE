@@ -176,13 +176,16 @@ describe("a chat's saved rows and the live rows they were copied from", () => {
     { ...live[2]!, event: { type: "command", command: "cat build.log", cwd: "/repo", output: `${longOutput.slice(0, 1000)}\n[truncated]`, itemId: "cmd-1", turnId: "turn-1", status: "completed" } },
     live[3]!,
   ];
-  const page: CloudSavedChatPage = {
+  const savedRead = (lines: AgentChatEventEnvelope[]) => savedChatSnapshot({
     chat: { chatId: "chat-1", machineKey: "machine-key-1", lastSeq: 1 } as CloudSavedChatRow,
-    parts: [{ seq: 1, text: `${savedLines.map((line) => JSON.stringify(line)).join("\n")}\n` }],
+    parts: [{ seq: 1, text: `${lines.map((line) => JSON.stringify(line)).join("\n")}\n` }],
     hasMore: false,
     nextBefore: null,
-  };
-  const saved = savedChatSnapshot(page, "chat-1").events;
+  }, "chat-1").events;
+  const saved = savedRead(savedLines);
+  // A live row that already says `[REDACTED]`; its saved copy redacts more.
+  const literal: AgentChatEventEnvelope = { sessionId: "chat-1", timestamp: at(5), sequence: 5, event: { type: "text", text: "Explain [REDACTED] in the header Bearer demo123" } };
+  const [literalSaved] = savedRead([{ ...literal, event: { type: "text", text: "Explain [REDACTED] in the header [REDACTED]" } }]);
   // The same time, kind and number as the saved line, but a real difference
   // outside what the uploader marks: a different event, never hidden.
   const otherCommand: AgentChatEventEnvelope = { ...live[2]!, event: { type: "command", command: "cat other.log", cwd: "/repo", output: longOutput, itemId: "cmd-1", turnId: "turn-1", status: "completed" } };
@@ -217,6 +220,11 @@ describe("a chat's saved rows and the live rows they were copied from", () => {
       seam: "an older page from the computer loads above saved rows",
       merge: () => prependOlderChatHistoryPage(live.slice(0, 2), saved),
       shows: [live[0]!, live[1]!, saved[2]!, saved[3]!],
+    },
+    {
+      seam: "a saved page repeats a live row that already says [REDACTED]",
+      merge: () => prependOlderChatHistoryPage([literalSaved!], [literal], true),
+      shows: [literal],
     },
   ])("$seam: each event shows once, as the computer wrote it when it has it", ({ merge, shows }) => {
     expect(merge()).toEqual(shows);

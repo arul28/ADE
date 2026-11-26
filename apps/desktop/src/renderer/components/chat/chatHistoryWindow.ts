@@ -365,9 +365,9 @@ export function resolveMergedSnapshotHistoryCursor(args: {
   ) {
     return args.snapshotCursor;
   }
-  // The merge took each saved copy's live row in its place (`reconcileAgentChatSavedCopies`).
-  const existingEvents = reconcileAgentChatSavedCopies(args.existingEvents, args.snapshotEvents).held;
-  const snapshotKeys = new Set(args.snapshotEvents.map(chatEventDedupKey));
+  // The merge paired each saved row with its live row (`reconcileAgentChatSavedCopies`).
+  const { held: existingEvents, incoming: snapshotEvents } = reconcileAgentChatSavedCopies(args.existingEvents, args.snapshotEvents);
+  const snapshotKeys = new Set(snapshotEvents.map(chatEventDedupKey));
   const snapshotOverlaps = existingEvents.some((event) => snapshotKeys.has(chatEventDedupKey(event)));
   const oldestExistingKey = chatEventDedupKey(existingEvents[0]!);
   const keptOldestExisting = args.mergedEvents.some((event) => chatEventDedupKey(event) === oldestExistingKey);
