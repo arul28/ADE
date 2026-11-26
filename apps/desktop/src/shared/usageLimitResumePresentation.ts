@@ -367,6 +367,12 @@ export function usageLimitTextIdentity(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+const PLAN_LIMIT_WINDOW = "(?:[0-9]+[ -]hour|session|weekly|daily|monthly|usage(?: credit)?|opus|sonnet|fable|spend)";
+const PLAN_LIMIT_WINDOW_RE = new RegExp(
+  `\\b(?:hit|reached) your (?:${PLAN_LIMIT_WINDOW} )?limit\\b|\\b(?:[0-9]+[ -]hour|usage|weekly|opus|sonnet|fable) limit reached\\b`,
+  "i",
+);
+
 /**
  * Does the text say a plan window ran out? `You've hit your 5-hour limit`,
  * `You've reached your Fable limit`, `5-hour limit reached`, `weekly limit
@@ -376,10 +382,7 @@ export function usageLimitTextIdentity(text: string): string {
  * colour also reads a failed turn's last text, where a near-miss costs a hue.
  */
 export function namesPlanLimitWindow(text: string | null | undefined): boolean {
-  if (!text) return false;
-  const identity = usageLimitTextIdentity(text);
-  return /(?:hit|reached)your[a-z0-9]{0,40}?limit/.test(identity)
-    || /\d+hourlimitreached|(?:usage|weekly|opus|sonnet|fable)limitreached/.test(identity);
+  return Boolean(text && PLAN_LIMIT_WINDOW_RE.test(text));
 }
 
 /**
@@ -404,12 +407,6 @@ export function isUsageLimitFailureText(text: string | null | undefined): boolea
     || identity.includes("outofusage")) {
     return true;
   }
-  // The wording a provider's own terminal turn leaves behind: "You've hit your
-  // session limit" / "…your weekly limit". Found in the wild as the last
-  // assistant text of a turn that stopped at the limit.
-  // Wider than `namesPlanLimitWindow` on purpose: any distance between the
-  // two, as a failed turn's last text is long ("…hit your weekly limit for…").
-  if (identity.includes("hityour") && identity.includes("limit")) return true;
   if (namesPlanLimitWindow(text)) return true;
   if (!identity.includes("429")) return false;
   return identity.includes("rate")

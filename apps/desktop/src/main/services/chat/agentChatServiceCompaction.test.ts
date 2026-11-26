@@ -1011,7 +1011,10 @@ describe("createAgentChatService", () => {
       // ADE-289: the turn ends at a plan limit with messages (and the thread
       // comments on them) queued behind it. The limit holds the queue; a
       // switch to another model releases all of it there, in order.
-      it("a switch away from the limit sends the held queue and its comments to the new model", async () => {
+      it.each([
+        { provider: "claude", modelId: "anthropic/claude-opus-4-7" },
+        { provider: "droid", modelId: "droid/claude-opus-4-6" },
+      ])("a switch away from the limit sends the held queue and its comments to $provider", async ({ provider, modelId }) => {
         const scheduledWork = createScheduledWorkDb();
         const events: AgentChatEventEnvelope[] = [];
         const send = vi.fn().mockResolvedValue(undefined);
@@ -1078,15 +1081,23 @@ describe("createAgentChatService", () => {
         const sentText = () => JSON.stringify(send.mock.calls);
         expect(sentText()).not.toContain("first queued");
 
-        await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-opus-4-7" });
+        await service.updateSession({ sessionId: session.id, modelId });
 
         // Both go to the new model, in order, the comment with the first.
         await vi.waitFor(() => {
-          expect(sentText()).toContain("second queued");
+          if (provider === "droid") {
+            expect(mockState.droidPromptCalls).toHaveLength(2);
+            expect(mockState.droidPromptCalls[1]?.promptText).toContain("second queued");
+          } else {
+            expect(sentText()).toContain("second queued");
+          }
         }, { timeout: 5_000 });
-        const sent = sentText();
+        const sent = provider === "droid" ? String(mockState.droidPromptCalls[0]?.promptText) : sentText();
         expect(sent).toContain("my review note");
-        expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        expect(sent).toContain("first queued");
+        if (provider === "claude") {
+          expect(sent.indexOf("first queued")).toBeLessThan(sent.indexOf("second queued"));
+        }
         expect((await service.getSessionSummary(session.id))?.usageLimitResume ?? null).toBeNull();
         expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
         service.forceDisposeAll();

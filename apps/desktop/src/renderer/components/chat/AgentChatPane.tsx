@@ -12888,6 +12888,40 @@ export function AgentChatPane({
     () => permissionLadderFamilyForProvider(resolveChatRuntimeProvider(selectedModelDesc)),
     [selectedModelDesc],
   );
+  const currentNativeControls = useMemo<NativeControlState>(() => ({
+    interactionMode,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
+    musePermissionMode,
+    cursorModeId,
+    cursorConfigValues,
+  }), [
+    interactionMode,
+    claudePermissionMode,
+    codexApprovalPolicy,
+    codexSandbox,
+    codexConfigSource,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    copilotContextTier,
+    copilotAutoTier,
+    musePermissionMode,
+    cursorModeId,
+    cursorConfigValues,
+  ]);
+  const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
+  useEffect(() => {
+    nativeControlsRef.current = currentNativeControls;
+  }, [currentNativeControls]);
+
   const previousLadderFamilyRef = useRef<PermissionLadderFamily | null>(null);
   useEffect(() => {
     const next = activeLadderFamily;
@@ -12939,29 +12973,42 @@ export function AgentChatPane({
     // level while applying a stepped one, landing ACP providers a rung above
     // the user's choice.
     const resolved = resolvePermissionLevel(level, next === "acp" ? "opencode" : next);
+    // An immediate usage-limit switch reads the transferred controls in this
+    // commit, before the setters below render the updated picker.
     switch (next) {
       case "claude":
+        nativeControlsRef.current = { ...nativeControlsRef.current, claudePermissionMode: resolved.claudePermissionMode };
         setClaudePermissionMode(resolved.claudePermissionMode);
         break;
       case "codex":
+        nativeControlsRef.current = {
+          ...nativeControlsRef.current,
+          codexApprovalPolicy: resolved.codexApprovalPolicy,
+          codexSandbox: resolved.codexSandbox,
+        };
         setCodexApprovalPolicy(resolved.codexApprovalPolicy);
         setCodexSandbox(resolved.codexSandbox);
         break;
       case "opencode":
+        nativeControlsRef.current = { ...nativeControlsRef.current, opencodePermissionMode: resolved.opencodePermissionMode };
         setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
       case "droid":
+        nativeControlsRef.current = { ...nativeControlsRef.current, droidPermissionMode: resolved.droidPermissionMode };
         setDroidPermissionMode(resolved.droidPermissionMode);
         break;
       case "muse":
+        nativeControlsRef.current = { ...nativeControlsRef.current, musePermissionMode: resolved.musePermissionMode };
         setMusePermissionMode(resolved.musePermissionMode);
         break;
       case "cursor":
+        nativeControlsRef.current = { ...nativeControlsRef.current, cursorModeId: resolved.cursorModeId };
         setCursorModeId(resolved.cursorModeId);
         break;
       case "acp":
         // ACP providers take their level through the shared in-process mode,
         // which OpenCode's control already owns on this surface.
+        nativeControlsRef.current = { ...nativeControlsRef.current, opencodePermissionMode: resolved.opencodePermissionMode };
         setOpenCodePermissionMode(resolved.opencodePermissionMode);
         break;
     }
@@ -12976,40 +13023,6 @@ export function AgentChatPane({
     musePermissionMode,
     opencodePermissionMode,
   ]);
-
-  const currentNativeControls = useMemo<NativeControlState>(() => ({
-    interactionMode,
-    claudePermissionMode,
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
-    opencodePermissionMode,
-    droidPermissionMode,
-    copilotPermissionMode,
-    copilotContextTier,
-    copilotAutoTier,
-    musePermissionMode,
-    cursorModeId,
-    cursorConfigValues,
-  }), [
-    interactionMode,
-    claudePermissionMode,
-    codexApprovalPolicy,
-    codexSandbox,
-    codexConfigSource,
-    opencodePermissionMode,
-    droidPermissionMode,
-    copilotPermissionMode,
-    copilotContextTier,
-    copilotAutoTier,
-    musePermissionMode,
-    cursorModeId,
-    cursorConfigValues,
-  ]);
-  const nativeControlsRef = useRef<NativeControlState>(currentNativeControls);
-  useEffect(() => {
-    nativeControlsRef.current = currentNativeControls;
-  }, [currentNativeControls]);
 
   const flushPendingComposerDraftWrite = useCallback(() => {
     if (composerDraftWriteTimerRef.current != null) {
@@ -16893,6 +16906,41 @@ export function AgentChatPane({
       },
     };
   }, [fastMode, fastTier, modelId, reasoningEffort, reasoningTiers, selectedSession, selectedSessionModelId, sessionProvider]);
+
+  // Apply the pick on a limited chat after its model and controls render.
+  const latestComposerPick = useRef(0);
+  const [usageLimitSwitch, setUsageLimitSwitch] = useState<{ sessionId: string; pick: number } | null>(null);
+  useEffect(() => {
+    if (!usageLimitSwitch) return;
+    const { sessionId, pick } = usageLimitSwitch;
+    setUsageLimitSwitch(null);
+    if (sessionId !== selectedSessionId || turnActive || latestComposerPick.current !== pick) return;
+    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId);
+    if (!modelChanged) return;
+    const routePick = sessionRoutePickRef.current;
+    void withChatPin(
+      chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current),
+      (chatPin) => agentChatApiRef.current.updateSession({
+        sessionId,
+        ...update,
+        ...(sessionProvider === "cursor" ? { cursorCloudServiceTier } : {}),
+      }, chatPin),
+    )
+      .then(() => {
+        if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
+          if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
+          setSessionRoutePick((current) => current === routePick ? null : current);
+        }
+        void refreshSessions().catch(() => {});
+      })
+      .catch((switchError: unknown) => {
+        if (latestComposerPick.current === pick && renderSelectedSessionIdRef.current === sessionId) {
+          setError(errorMessage(switchError));
+        }
+      });
+    // The pick triggers one switch using the model and controls from its render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [usageLimitSwitch]);
 
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
     // Logged only for a plain send to a chat (`chatSendTiming.ts`); other branches drop it.
@@ -21957,37 +22005,6 @@ export function AgentChatPane({
     : null;
   // The composer's model pick, also reachable from outside for a draft
   // (`draftModelSeam.ts`, the onboarding tour's first chat).
-  /**
-   * A model picked on a chat stopped at a usage limit, waiting for the pick's
-   * state to render before it is applied. The switch is what moves the chat
-   * off the limit and sends its queue to the new model (ADE-289), and there
-   * may be nothing left to type, so it does not wait for Send. Same update and
-   * pin as Send's. State, not a ref: the pick renders once and runs this once.
-   */
-  const [usageLimitSwitch, setUsageLimitSwitch] = useState<{ sessionId: string } | null>(null);
-  useEffect(() => {
-    if (!usageLimitSwitch) return;
-    const { sessionId } = usageLimitSwitch;
-    setUsageLimitSwitch(null);
-    if (sessionId !== selectedSessionId || turnActive) return;
-    const { modelChanged, update } = buildDeferredSessionUpdate(sessionId);
-    if (!modelChanged) return;
-    void withChatPin(
-      chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current),
-      (chatPin) => agentChatApiRef.current.updateSession({ sessionId, ...update }, chatPin),
-    )
-      .then(() => {
-        if (deferredComposerSessionIdRef.current === sessionId) deferredComposerSessionIdRef.current = null;
-        // Only this chat's pick: another chat may have one waiting for its Send.
-        setSessionRoutePick((current) => current?.sessionId === sessionId ? null : current);
-        void refreshSessions().catch(() => {});
-      })
-      // Still deferred, so the next send applies the pick as usual.
-      .catch((switchError: unknown) => setError(errorMessage(switchError)));
-    // Runs per pick: `usageLimitSwitch` is the trigger; the rest is read at that render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [usageLimitSwitch]);
-
   const handleComposerModelChange = (nextModelId: string, options?: ModelPickerSelection): boolean => {
     // A Custom pick is validated by the picker against what its
     // harness can reach; its model is often not in this provider
@@ -22017,6 +22034,7 @@ export function AgentChatPane({
     if (isPersistentIdentitySurface && sessionMutationKind) {
       return false;
     }
+    const pick = ++latestComposerPick.current;
     // A model change is the person's; ADE sets the flag again after its own.
     draftKeepsMachineDefaultsRef.current = false;
     const previousFastMode = fastModeRef.current;
@@ -22104,7 +22122,7 @@ export function AgentChatPane({
     // Every limit state holds the queue, "no reset" and "auto-resume off" too,
     // so any of them switches now.
     if (usageLimitResume && renderedSessionId === selectedSessionId) {
-      setUsageLimitSwitch({ sessionId: selectedSessionId });
+      setUsageLimitSwitch({ sessionId: selectedSessionId, pick });
     }
 
     // Keep the selection local until submit(). Submit applies the

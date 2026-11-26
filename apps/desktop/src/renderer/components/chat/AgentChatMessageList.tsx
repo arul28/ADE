@@ -5105,6 +5105,26 @@ export function deriveTurnEndDurations(
  * and opens the drawer narrowed to it. The pictures show on the rows that
  * filed them — the link is a way back, not a second copy.
  */
+function LiveUsageLimitFooterLabel({ elapsed, resetAtMs, repeats }: {
+  elapsed: string | null;
+  resetAtMs: number | null | undefined;
+  repeats: string;
+}) {
+  const [expiredResetAtMs, setExpiredResetAtMs] = useState<number | null>(null);
+  useEffect(() => {
+    if (resetAtMs == null || resetAtMs <= Date.now()) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const expire = () => {
+      const remaining = resetAtMs - Date.now();
+      if (remaining <= 0) setExpiredResetAtMs(resetAtMs);
+      else timer = setTimeout(expire, Math.min(remaining, 2_147_483_647));
+    };
+    expire();
+    return () => clearTimeout(timer);
+  }, [resetAtMs]);
+  return <>{usageLimitTurnFooterLabel(elapsed, expiredResetAtMs === resetAtMs ? null : resetAtMs)}{repeats}</>;
+}
+
 function DoneTurnDivider({
   event,
   timestamp,
@@ -5213,13 +5233,15 @@ function DoneTurnDivider({
   const usageLimitLive = isUsageLimitTurn(event, usageLimitResumeTurnId);
   const usageLimitPaused = !completed && (usageLimitLive || endedAtUsageLimit);
   const usageLimitElapsed = durationMs !== null ? formatTurnDuration(durationMs) : null;
-  // Only the turn the live limit is anchored to is "paused"; an older limited
-  // turn is history and says just what happened.
-  const usageLimitLabel = usageLimitPaused
-    ? `${usageLimitLive
-      ? usageLimitTurnFooterLabel(usageLimitElapsed, usageLimitResumeResetAtMs)
-      : usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${repeatCount > 1 ? ` · ×${repeatCount}` : ""}`
-    : null;
+  const usageLimitRepeats = repeatCount > 1 ? ` · ×${repeatCount}` : "";
+  // Older limited turns keep their historical label.
+  const usageLimitLabel = usageLimitLive
+    ? <LiveUsageLimitFooterLabel
+      elapsed={usageLimitElapsed}
+      resetAtMs={event.turnId === usageLimitResumeTurnId ? usageLimitResumeResetAtMs : null}
+      repeats={usageLimitRepeats}
+    />
+    : `${usageLimitElapsed ? `Usage limit · ${usageLimitElapsed}` : "Usage limit"}${usageLimitRepeats}`;
   const usageLimitDetails = Boolean(usageLimitPaused && tokenLine);
   const content = usageLimitPaused ? (
     <span className="inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
