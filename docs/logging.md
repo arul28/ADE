@@ -2606,6 +2606,16 @@ snapshot refresh, acknowledgements, delivery retries, APNs/ActivityKit frames,
 and native presentation changes remain untracked because they are either
 high-frequency mechanics or can expose work-specific interaction patterns.
 
+Ignoring something in Settings › Needs attention (and the same rows on
+Project › Location and Lanes) records `ade_feature_used` with
+`feature: "attention"`, `outcome: "completed"`, `source: "renderer_route"` and
+one of three actions: `attention_folder_ignored` (a folder the dependencies
+check stops looking at), `attention_hidden` (a line hidden until it changes)
+and `attention_shown_again`. It never carries the folder, the line, the check
+or the project. A persisted one-hour deduplication key per action limits it to
+72 accepted events per installation per UTC day, inside the existing
+`ade_feature_used` limits; no ceiling was raised.
+
 Sending a custom notification — `ade notify`, an agent, or an automation's
 **Send notification to mobile app** step — records the same `ade_feature_used`
 event at the brain's `attention.sendNotification` / `notify.send` boundary

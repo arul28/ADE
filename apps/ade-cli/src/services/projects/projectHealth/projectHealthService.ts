@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,11 +8,15 @@ import type { Logger } from "../../../../../desktop/src/main/services/logging/lo
 import type { LaneSummary } from "../../../../../desktop/src/shared/types";
 import type {
   ProjectHealthFixResult,
+  ProjectHealthIgnore,
+  ProjectHealthIgnoreArgs,
   ProjectHealthIssue,
   ProjectHealthReport,
+  ProjectHealthUnignoreArgs,
   ProjectLaneHealth,
   ProjectLaneStaleReason,
 } from "../../../../../desktop/src/shared/types/projectHealth";
+import { isProjectHealthReadFailure, projectHealthIgnoreKey } from "../../../../../desktop/src/shared/types/projectHealth";
 import { formatBytes } from "../../../../../desktop/src/shared/formatting";
 import { staleLaneDays } from "../../../../../desktop/src/shared/laneCleanup";
 import { isChatToolType } from "../../../../../desktop/src/shared/sessionSpawnNesting";
@@ -146,7 +151,89 @@ type Context = {
   previousSpellings: string[];
   lanes: LaneSummary[];
   checkouts: Checkout[];
+  /** `pathKey` of each main-checkout folder the person ignored. */
+  ignoredFolders: Set<string>;
 };
+
+/**
+ * One `kv` row per ignore, keyed `project_health.ignored:<ignore key>`. `kv`
+ * syncs, so every copy sees them; a row each means two computers adding or
+ * removing different ignores at once never write over each other.
+ */
+export const PROJECT_HEALTH_IGNORED_KV_PREFIX = "project_health.ignored:";
+/** Ignores only grow with clicks; the cap keeps a runaway caller from flooding the table. */
+const MAX_IGNORED = 200;
+
+/**
+ * A line's identity for "hide until it changes": its id, title, items and
+ * the folders it names (a title can say "3 folders" while one of them is
+ * swapped for another). Separators are `/` on every OS, so a Mac copy and a
+ * Windows copy of one project agree on the same line.
+ */
+export function projectHealthIssueFingerprint(issue: Pick<ProjectHealthIssue, "id" | "title" | "items" | "ignorablePaths">): string {
+  return createHash("sha256")
+    .update(projectHealthIssueText(issue))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/** The words a hide compares: the fingerprint's input, and the line the person saw. */
+function projectHealthIssueText(issue: Pick<ProjectHealthIssue, "id" | "title" | "items" | "ignorablePaths">): string {
+  return [issue.id, issue.title, ...(issue.items ?? []), "--", ...(issue.ignorablePaths ?? [])].join("\n").replace(/\\/g, "/");
+}
+
+/**
+ * A folder the person may ignore, as the report names it: relative,
+ * `/`-separated, inside the project. Null for the project root, an absolute
+ * path or anything that climbs out.
+ */
+export function normalizeIgnoredFolder(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().replace(/\\/g, "/");
+  if (!trimmed || trimmed.startsWith("/") || /^[A-Za-z]:/.test(trimmed)) return null;
+  const parts = trimmed.split("/").filter((part) => part && part !== ".");
+  if (parts.length === 0 || parts.some((part) => part === "..")) return null;
+  return parts.join("/");
+}
+
+function parseIgnored(raw: string | null | undefined, logger: Pick<Logger, "warn">, strict = false): ProjectHealthIgnore[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    logger.warn("project_health.ignored_parse_failed", { error: error instanceof Error ? error.message : String(error) });
+    // A change must not write over a list it could not read.
+    if (strict) throw new Error("ADE couldn't read this project's ignored list, so nothing was changed.");
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const seen = new Set<string>();
+  const out: ProjectHealthIgnore[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const value = entry as Record<string, unknown>;
+    const issueId = typeof value.issueId === "string" ? value.issueId : "";
+    const title = typeof value.title === "string" ? value.title : "";
+    const ignoredAt = typeof value.ignoredAt === "string" ? value.ignoredAt : "";
+    if (!issueId || !title) continue;
+    if (value.kind === "folder") {
+      const folder = normalizeIgnoredFolder(value.path);
+      if (!folder) continue;
+      const key = projectHealthIgnoreKey(issueId, folder);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, kind: "folder", issueId, path: folder, title, ignoredAt });
+    } else if (value.kind === "issue" && typeof value.fingerprint === "string" && value.fingerprint) {
+      const copy = typeof value.copy === "string" && value.copy ? value.copy : undefined;
+      const key = projectHealthIgnoreKey(issueId, null, copy);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ key, kind: "issue", issueId, fingerprint: value.fingerprint, ...(copy ? { copy } : {}), title, ignoredAt });
+    }
+  }
+  return out;
+}
 
 function exists(target: string): boolean {
   try {
@@ -360,6 +447,8 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyP
       } catch {
         stat = null;
       }
+      // A folder the person ignored is not checked at all: no install, no link.
+      if (checkout.primary && ctx.ignoredFolders.has(pathKey(unit))) continue;
       const empty = stat?.isDirectory() === true && isEmptyDir(nodeModules);
       if (!stat || empty) {
         // A lane gets packages only from a lane template or its own install;
@@ -376,8 +465,9 @@ function dependencyPlan(ctx: Context, logger: Pick<Logger, "warn">): DependencyP
       }
       const targetRoot = target ? path.dirname(target) : "";
       if (primary && targetRoot && isWithinPath(primary.root, targetRoot, true) && !isWithinPath(path.join(primary.root, ".ade"), targetRoot, true)) {
-        // A link to a folder that installs nothing has nothing to resolve.
-        if (hasPackageInstall(targetRoot, logger)) mark(primary, targetRoot);
+        // A link to a folder that installs nothing has nothing to resolve,
+        // and one into a folder the person ignored is left alone.
+        if (hasPackageInstall(targetRoot, logger) && !ctx.ignoredFolders.has(pathKey(targetRoot))) mark(primary, targetRoot);
       } else {
         brokenLinks.push(nodeModules);
       }
@@ -528,6 +618,41 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     }
   };
   let cached: { at: number; report: Promise<ProjectHealthReport> } | null = null;
+  /** This copy of the project: this computer and this folder. A line hide belongs to one copy. */
+  const copyId = createHash("sha256").update(`${os.hostname()}\n${projectRoot}`).digest("hex").slice(0, 12);
+  const ownCopy = (entry: ProjectHealthIgnore) => entry.kind === "issue" && (!entry.copy || entry.copy === copyId);
+
+  /** For reports: an unreadable list ignores nothing, so every check shows. */
+  function readIgnored(): ProjectHealthIgnore[] {
+    try {
+      return readIgnoredStrict();
+    } catch (error) {
+      deps.logger.warn("project_health.ignored_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [];
+    }
+  }
+
+  /** For changes: throws rather than act on a list it could not read. */
+  function readIgnoredStrict(): ProjectHealthIgnore[] {
+    const rows = deps.db.all<{ value: string }>(
+      "select value from kv where substr(key, 1, ?) = ? order by key",
+      [PROJECT_HEALTH_IGNORED_KV_PREFIX.length, PROJECT_HEALTH_IGNORED_KV_PREFIX],
+    );
+    if (rows.length === 0) return [];
+    // Each row holds one entry; parse them together so the one parser applies its rules.
+    return parseIgnored(`[${rows.map((row) => row.value).join(",")}]`, deps.logger, true);
+  }
+
+  function putIgnore(entry: ProjectHealthIgnore): void {
+    deps.db.run(
+      "insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+      [`${PROJECT_HEALTH_IGNORED_KV_PREFIX}${entry.key}`, JSON.stringify(entry)],
+    );
+  }
+
+  function dropIgnore(key: string): void {
+    deps.db.run("delete from kv where key = ?", [`${PROJECT_HEALTH_IGNORED_KV_PREFIX}${key}`]);
+  }
 
   async function context(): Promise<Context> {
     const previousRoots = previousProjectRoots(projectRoot);
@@ -540,12 +665,17 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
         root: lane.worktreePath,
         primary: lane.laneType === "primary",
       }));
+    // Folders are named relative to the main checkout, the root the check walks.
+    const mainRoot = checkouts.find((checkout) => checkout.primary)?.root ?? projectRoot;
     return {
       projectRoot,
       previousRoots,
       previousSpellings: [...new Set(previousRoots.flatMap((root) => rootSpellings(root)))],
       lanes,
       checkouts,
+      ignoredFolders: new Set(
+        readIgnored().flatMap((entry) => (entry.kind === "folder" ? [pathKey(path.join(mainRoot, ...entry.path.split("/")))] : [])),
+      ),
     };
   }
 
@@ -729,7 +859,12 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     return { lanes, stuckChats, stuckTerminals };
   }
 
+  /** The report, and every line before hides (for `ignore`'s stale-hide pass). */
   async function buildReport(): Promise<ProjectHealthReport> {
+    return (await buildChecked()).report;
+  }
+
+  async function buildChecked(): Promise<{ report: ProjectHealthReport; allIssues: ProjectHealthIssue[] }> {
     const ctx = await context();
     const issues: ProjectHealthIssue[] = [];
     const checks: ProjectHealthReport["checks"] = [];
@@ -871,6 +1006,10 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "dependencies",
           severity: "warning",
           ...dependencyIssueText(plan),
+          // The root is the project itself: hiding the line is the only way to quiet it.
+          ...(plan.missingFolders.some(Boolean)
+            ? { ignorablePaths: plan.missingFolders.filter(Boolean).map((folder) => folder.split(path.sep).join("/")) }
+            : {}),
           items: [
             ...plan.installs.map((install) => `${install.label}: ${install.command}`),
             ...plan.brokenLinks.map((link) => `broken link: ${path.relative(projectRoot, link)}`),
@@ -1004,17 +1143,129 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
 
     const order = { problem: 0, warning: 1, info: 2 } as const;
     issues.sort((a, b) => order[a.severity] - order[b.severity]);
+    const { shown, ignored } = applyIgnored(issues);
     const volume = await readMoveVolume(projectRoot).catch(() => null);
-    return {
+    const report: ProjectHealthReport = {
       projectRoot,
       checkedAt: new Date().toISOString(),
       previousRoots: ctx.previousRoots,
       drive: volume ? { name: volume.name, internal: volume.internal, freeBytes: volume.freeBytes, totalBytes: volume.totalBytes } : null,
-      issues,
+      issues: shown,
       lanes: laneReport?.lanes ?? [],
       staleAfterDays: staleAfterDays(),
       checks: checks.sort((a, b) => a.label.localeCompare(b.label)),
+      ignored,
     };
+    return { report, allIssues: issues };
+  }
+
+  /**
+   * Hides each line this copy hid while it still reads the same. A line that
+   * changed shows again and its hide is retired, so it never hides itself
+   * again when it changes back. Only this copy's hides are read or retired:
+   * another computer's copy reads its own line. A line that is absent keeps
+   * its hide (its check may only have failed). Folder ignores were applied by
+   * the checks themselves.
+   */
+  function applyIgnored(issues: ProjectHealthIssue[]): { shown: ProjectHealthIssue[]; ignored: ProjectHealthIgnore[] } {
+    const list = readIgnored();
+    if (list.length === 0) return { shown: issues, ignored: [] };
+    const kept = withoutChangedHides(list, issues);
+    // Retire this copy's hides whose line changed, one row each: nothing else is rewritten.
+    for (const entry of list) {
+      if (kept.includes(entry)) continue;
+      try {
+        dropIgnore(entry.key);
+      } catch (error) {
+        deps.logger.warn("project_health.ignored_retire_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    const hidden = new Set(hiddenIssueIds(kept, issues));
+    return {
+      shown: hidden.size > 0 ? issues.filter((issue) => !hidden.has(issue.id)) : issues,
+      // Only what still hides something here: a hide whose line is absent has nothing to show again.
+      ignored: kept.filter((entry) => entry.kind === "folder" || (ownCopy(entry) && hidden.has(entry.issueId))),
+    };
+  }
+
+  /** The lines this copy's hides still cover: present and reading the same as when hidden. */
+  function hiddenIssueIds(list: ProjectHealthIgnore[], issues: ProjectHealthIssue[]): string[] {
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    return list.flatMap((entry) => {
+      if (entry.kind !== "issue" || !ownCopy(entry)) return [];
+      const issue = byId.get(entry.issueId);
+      return issue && projectHealthIssueFingerprint(issue) === entry.fingerprint ? [issue.id] : [];
+    });
+  }
+
+  /** The list without this copy's hides whose line is present and now reads differently. */
+  function withoutChangedHides(list: ProjectHealthIgnore[], issues: ProjectHealthIssue[]): ProjectHealthIgnore[] {
+    const byId = new Map(issues.map((issue) => [issue.id, issue]));
+    return list.filter((entry) => {
+      if (entry.kind !== "issue" || !ownCopy(entry)) return true;
+      const issue = byId.get(entry.issueId);
+      return !issue || projectHealthIssueFingerprint(issue) === entry.fingerprint;
+    });
+  }
+
+  /**
+   * Stops checking one folder (`path`, one of the line's `ignorablePaths`),
+   * or hides the whole line until it changes. Reads a fresh report, so the
+   * line being ignored is the one on screen now, and returns the next one.
+   */
+  async function ignore(args: ProjectHealthIgnoreArgs): Promise<ProjectHealthReport> {
+    const issueId = typeof args?.issueId === "string" ? args.issueId.trim() : "";
+    if (!issueId) throw new Error("Name the check to ignore.");
+    const { report, allIssues } = await buildChecked();
+    cached = { at: Date.now(), report: Promise.resolve(report) };
+    const issue = report.issues.find((entry) => entry.id === issueId);
+    // Every line, hidden ones included, tells which hides went stale; retire those as rows.
+    const read = readIgnoredStrict();
+    const list = withoutChangedHides(read, allIssues);
+    for (const entry of read) if (!list.includes(entry)) dropIgnore(entry.key);
+    // Counted as the person can see them here, so Show again can always get under it: folders, and this
+    // copy's hides of lines present now (a hide whose line is absent, or another copy's, is not listed).
+    const showable = new Set(hiddenIssueIds(list, allIssues));
+    if (list.filter((entry) => entry.kind === "folder" || (ownCopy(entry) && showable.has(entry.issueId))).length >= MAX_IGNORED) {
+      throw new Error("This project already ignores 200 things. Show some again first.");
+    }
+    const ignoredAt = new Date().toISOString();
+    if (args.path != null) {
+      const folder = normalizeIgnoredFolder(args.path);
+      if (!folder) throw new Error(`"${String(args.path)}" is not a folder inside this project.`);
+      const key = projectHealthIgnoreKey(issueId, folder);
+      if (!list.some((entry) => entry.key === key)) {
+        // Only a folder the check names right now: a typo must not quietly ignore nothing.
+        if (!issue?.ignorablePaths?.includes(folder)) throw new Error(`${folder} isn't one of the folders this check names.`);
+        putIgnore({ key, kind: "folder", issueId, path: folder, title: folder, ignoredAt });
+      }
+    } else {
+      if (!issue) throw new Error("That check has nothing to hide right now.");
+      if (issue.severity === "problem") throw new Error("A problem stays in view until it is fixed.");
+      if (isProjectHealthReadFailure(issueId)) throw new Error("A check that couldn't run stays in view until it runs.");
+      const seen = args.seen;
+      if (seen && projectHealthIssueText({ id: issue.id, title: seen.title, items: seen.items, ignorablePaths: seen.ignorablePaths }) !== projectHealthIssueText(issue)) {
+        throw new Error("This line changed since you looked. Check it again, then hide it.");
+      }
+      const key = projectHealthIgnoreKey(issueId, null, copyId);
+      // One hide per line per copy; an older hide of this line without a copy is replaced too.
+      for (const entry of list) {
+        if (entry.kind === "issue" && entry.issueId === issueId && ownCopy(entry) && entry.key !== key) dropIgnore(entry.key);
+      }
+      putIgnore({ key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), copy: copyId, title: issue.title, ignoredAt });
+    }
+    deps.logger.info("project_health.ignored", { issueId, kind: args.path != null ? "folder" : "issue" });
+    return getReport({ forceRefresh: true });
+  }
+
+  /** Checks a folder again, or shows a hidden line again. */
+  async function unignore(args: ProjectHealthUnignoreArgs): Promise<ProjectHealthReport> {
+    const key = typeof args?.key === "string" ? args.key : "";
+    if (readIgnoredStrict().some((entry) => entry.key === key)) {
+      dropIgnore(key);
+      deps.logger.info("project_health.unignored", { kind: key.split(":")[0] ?? "" });
+    }
+    return getReport({ forceRefresh: true });
   }
 
   async function getReport(args: { forceRefresh?: boolean } = {}): Promise<ProjectHealthReport> {
@@ -1105,7 +1356,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     return { ok: problems.length === 0, done, problems, report: await getReport({ forceRefresh: true }) };
   }
 
-  return { getReport, fix };
+  return { getReport, fix, ignore, unignore };
 }
 
 export type ProjectHealthService = ReturnType<typeof createProjectHealthService>;

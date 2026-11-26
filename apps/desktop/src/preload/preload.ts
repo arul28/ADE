@@ -288,7 +288,13 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
+import type {
+  ProjectHealthFixArgs,
+  ProjectHealthFixResult,
+  ProjectHealthIgnoreArgs,
+  ProjectHealthReport,
+  ProjectHealthUnignoreArgs,
+} from "../shared/types/projectHealth";
 import type { SetDefaultTerminalShellArgs, TerminalShellSettings } from "../shared/types/terminalShells";
 import type {
   AdeCleanupResult,
@@ -5829,6 +5835,14 @@ const adeBridge = {
     fix: async (args: ProjectHealthFixArgs, pin?: OpenProjectBinding | null): Promise<ProjectHealthFixResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "project_health", "fix", { args }, () =>
         ipcRenderer.invoke(IPC.projectHealthFix, args),
+      ),
+    ignore: async (args: ProjectHealthIgnoreArgs, pin?: OpenProjectBinding | null): Promise<ProjectHealthReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "ignore", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthIgnore, args),
+      ),
+    unignore: async (args: ProjectHealthUnignoreArgs, pin?: OpenProjectBinding | null): Promise<ProjectHealthReport> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "project_health", "unignore", { args }, () =>
+        ipcRenderer.invoke(IPC.projectHealthUnignore, args),
       ),
   },
   archive: {

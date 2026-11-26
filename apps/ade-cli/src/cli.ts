@@ -4926,6 +4926,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade health --text                              Issues, each with its fix id
     $ ade health --refresh --text                    Check again instead of the 30 s cache
     $ ade --role cto health --fix update-paths --text   Run one fix and show the new report
+
+  The report lists what the person ignored. Ignoring and showing again are the
+  person's, in Settings (General, or Project → Location): agents cannot hide a
+  warning from the person, and the runtime cannot tell this terminal from an
+  agent's.
 `,
   storage: `${ADE_BANNER}
   ADE storage insights and disk hygiene
@@ -21776,6 +21781,12 @@ function buildHealthPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.health ?? topLevelHelpText() };
   }
+  if (args.some((arg) => /^--(un)?ignore(=|$)/.test(arg))) {
+    // Person-only at the runtime, which cannot tell this terminal from an agent's.
+    throw new CliUsageError(
+      "Ignore or show a check again in ADE: Settings → General (Needs attention) or Project → Location. The command line lists what is ignored.",
+    );
+  }
   const fixIndex = args.indexOf("--fix");
   if (fixIndex >= 0) {
     const fixId = requireValue(args[fixIndex + 1], "fix id");
@@ -21812,6 +21823,13 @@ function formatProjectHealth(value: unknown): string {
     for (const item of (issue.items ?? []).slice(0, 12)) lines.push(`  - ${item}`);
     if ((issue.items?.length ?? 0) > 12) lines.push(`  - … ${issue.items!.length - 12} more`);
     if (issue.fix) lines.push(`  fix: ${issue.fix.id} (${issue.fix.label}): ${issue.fix.description}`);
+  }
+  const ignored = (report as { ignored?: Array<{ kind: string; title: string }> }).ignored ?? [];
+  if (ignored.length) {
+    lines.push("", `Ignored by the person (${ignored.length}; Show again in Settings):`);
+    for (const entry of ignored) {
+      lines.push(`  - ${entry.kind === "folder" ? `${entry.title}: not checked` : `${entry.title} (hidden until it changes)`}`);
+    }
   }
   return lines.join("\n");
 }

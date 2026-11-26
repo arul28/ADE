@@ -1115,7 +1115,7 @@ import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
 import type { ProjectHealthService } from "../../../../../ade-cli/src/services/projects/projectHealth/projectHealthService";
-import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../../../shared/types/projectHealth";
+import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthIgnoreArgs, ProjectHealthReport, ProjectHealthUnignoreArgs } from "../../../shared/types/projectHealth";
 import type {
   MaintenanceRunReport,
   DeletedLaneChatsSummary,
@@ -4379,6 +4379,16 @@ export function registerIpc({
   ): Promise<ProjectHealthReport> => {
     const service = requireAppContextValue(getCtx(), "projectHealthService");
     return service.getReport(args ?? {});
+  });
+
+  handle(IPC.projectHealthIgnore, async (_event, args: ProjectHealthIgnoreArgs): Promise<ProjectHealthReport> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    return service.ignore(args);
+  });
+
+  handle(IPC.projectHealthUnignore, async (_event, args: ProjectHealthUnignoreArgs): Promise<ProjectHealthReport> => {
+    const service = requireAppContextValue(getCtx(), "projectHealthService");
+    return service.unignore(args);
   });
 
   handle(IPC.projectHealthFix, async (_event, args: ProjectHealthFixArgs): Promise<ProjectHealthFixResult> => {

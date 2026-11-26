@@ -1815,7 +1815,12 @@ saves and who it affects, once per group.
   providers, MCP servers, integrations, Apple), opening in place with Fix
   buttons and "Ask an agent". A failed read is a "couldn't check" row with
   Check again. The header counts problems and warnings ("3 things need
-  attention · 2 notes"); notes sit under "Good to know".
+  attention · 2 notes"); notes sit under "Good to know". Each warning or
+  note has a quiet eye-slash (on hover or focus) to ignore it: a project line
+  can ignore one of its folders or hide until it changes, saved in the project
+  ([project-health.md](./project-health.md#ignoring-a-check)); any other row
+  hides on this computer until it changes. What was ignored sits folded under
+  the rows ("2 ignored items") with Show again.
 - **You** and **This machine** cards.
 - **ADE**: version and track, the one restart action ("Restart and update", or
   "Restart and switch to Stable", the same words as the top bar, floating

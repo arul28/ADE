@@ -65,6 +65,17 @@ export type AttentionItem = {
   fix?: { label: string; run: () => Promise<void>; confirm?: string };
   /** The project check behind the row, when it is one. */
   projectIssue?: ProjectHealthIssue;
+  /**
+   * What "it changed" means for hiding, when not the row's words: a row whose
+   * words carry a live number (free space) would otherwise come back with
+   * every tick of it.
+   */
+  hideFingerprint?: string;
+  /**
+   * The copy a row is about, for a row the same on every project (Linear
+   * signed out): a hide in one project must not hide it in another.
+   */
+  hideScope?: string;
 };
 
 export type OverviewSources = {
@@ -88,6 +99,61 @@ const EMPTY_SOURCES: OverviewSources = {
 };
 
 const SEVERITY_ORDER: Record<AttentionSeverity, number> = { problem: 0, warning: 1, note: 2 };
+
+/** Rows read from the project's integrations copy: a hide covers that copy only. */
+const SCOPED_TO_COPY: ReadonlySet<string> = new Set(["github-auth", "linear-auth", "jira-auth"]);
+
+/**
+ * Rows from outside the project that the person hid on this computer, each
+ * until it reads differently. A project's own rows are ignored in the project
+ * instead (`projectHealth.ignore`), so every computer agrees on those.
+ */
+const HIDDEN_STORAGE_KEY = "ade.settings.attention.hidden.v1";
+
+export type HiddenAttention = { id: string; fingerprint: string; title: string; where: string };
+
+/** The id a hide is stored under: the row's, scoped to its copy when it has one. */
+export function attentionHideId(item: Pick<AttentionItem, "id" | "hideScope">): string {
+  return item.hideScope ? `${item.hideScope}|${item.id}` : item.id;
+}
+
+/** What "it changed" means for a row: its words and the lines under it. */
+export function attentionFingerprint(item: Pick<AttentionItem, "title" | "detail" | "items" | "hideFingerprint">): string {
+  return item.hideFingerprint ?? [item.title, item.detail ?? "", ...(item.items ?? [])].join("\n");
+}
+
+/**
+ * A row this computer can hide. Never a problem (a broken service must stay
+ * in view), never a read that failed, and never a project row: those are
+ * ignored in the project.
+ */
+export function canHideAttention(item: AttentionItem): boolean {
+  return !item.projectIssue && item.severity !== "problem" && item.id !== "overview-read-failed";
+}
+
+function readHidden(): HiddenAttention[] {
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(HIDDEN_STORAGE_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is HiddenAttention => (
+      !!entry && typeof entry === "object"
+      && typeof (entry as HiddenAttention).id === "string"
+      && typeof (entry as HiddenAttention).fingerprint === "string"
+      && typeof (entry as HiddenAttention).title === "string"
+    )).map((entry) => ({ ...entry, where: typeof entry.where === "string" ? entry.where : "" }));
+  } catch {
+    return [];
+  }
+}
+
+function writeHidden(entries: HiddenAttention[]): void {
+  try {
+    if (entries.length === 0) window.localStorage.removeItem(HIDDEN_STORAGE_KEY);
+    else window.localStorage.setItem(HIDDEN_STORAGE_KEY, JSON.stringify(entries.slice(-100)));
+  } catch {
+    // Storage full or blocked: the row stays hidden for this session only.
+  }
+}
 
 /** The read's value, or null when it is missing or fails; a failure adds `label` to `failed`. */
 async function quiet<T>(read: (() => Promise<T>) | null | undefined, failed?: string[], label?: string): Promise<T | null> {
@@ -222,6 +288,8 @@ function pressureItems(pressure: DiskPressureSnapshot | null): AttentionItem[] {
     detail: `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB free.${urgent ? " ADE is pausing heavy work." : ""}`,
     where: THIS_MACHINE_NAME,
     route: settingsRouteFor("storage.usage"),
+    // Hidden while the disk stays in this state, however the free space moves.
+    hideFingerprint: `disk-pressure:${pressure.state}`,
   }];
 }
 
@@ -458,7 +526,7 @@ function projectItems(report: ProjectHealthReport | null): AttentionItem[] {
       const detail = stale.length > 0
         ? `PR merged or closed, or idle. ${safe === stale.length ? "All" : safe} safe to archive.`
         : issue.detail;
-      return [{ id: `project-${issue.id}`, severity: "note", title: issue.title, detail, where: "Project", route }];
+      return [{ id: `project-${issue.id}`, severity: "note", title: issue.title, detail, where: "Project", route, projectIssue: issue }];
     }
     if (issue.severity === "info") return [];
     return [{
@@ -647,6 +715,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
     if (current !== request.current) return;
     const providers = connectedProviders(ai);
     setSources({ info, update, pressure, runtimeHealth, report, usage, providers });
+    const scoped = (rows: AttentionItem[]) => rows.map((item) => (githubPin && SCOPED_TO_COPY.has(item.id) ? { ...item, hideScope: githubPin.key } : item));
     setItems([
       ...projectItems(report),
       ...serviceItems(info, runtimeHealth),
@@ -655,7 +724,7 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       ...cliItems(cli),
       ...providerItems(providers, projectConfig?.effective.ai, usage, providerAccounts ?? []),
       ...usageItems(usage),
-      ...githubItems(github),
+      ...scoped(githubItems(github)),
       ...machineItems(machines, update),
       ...syncItems(sync),
       ...readFailureItem(failed, () => load({ force: true })),
@@ -681,7 +750,8 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
       quiet(() => integrationItems(githubPin, failed), failed, "integrations"),
     ]);
     if (current !== request.current) return;
-    setLateItems(late.flatMap((entry) => entry ?? []));
+    // GitHub, Linear and Jira are read from one copy of the project; their hides belong to it.
+    setLateItems(late.flatMap((entry) => entry ?? []).map((item) => (githubPin && SCOPED_TO_COPY.has(item.id) ? { ...item, hideScope: githubPin.key } : item)));
     setItems((currentItems) => [
       ...currentItems.filter((item) => item.id !== "overview-read-failed"),
       ...readFailureItem(failed, () => load({ force: true })),
@@ -700,5 +770,48 @@ export function useNeedsAttention({ hasProject }: { hasProject: boolean }) {
   }, []);
 
   const all = React.useMemo(() => sortAttention([...items, ...lateItems]), [items, lateItems]);
-  return { items: all, sources, loading, checking, reload: load, setReport, projectPin };
+
+  const [hidden, setHidden] = React.useState<HiddenAttention[]>(readHidden);
+  // A hidden row that now reads differently shows again, and its entry goes.
+  // Only after the reads settle: a row still loading is not a changed row.
+  React.useEffect(() => {
+    if (loading || checking) return;
+    const byId = new Map(all.map((item) => [attentionHideId(item), item]));
+    const kept = hidden.filter((entry) => {
+      const item = byId.get(entry.id);
+      return !item || attentionFingerprint(item) === entry.fingerprint;
+    });
+    if (kept.length !== hidden.length) {
+      setHidden(kept);
+      writeHidden(kept);
+    }
+  }, [all, checking, hidden, loading]);
+  const hide = React.useCallback((item: AttentionItem) => {
+    if (!canHideAttention(item)) return;
+    const id = attentionHideId(item);
+    setHidden((current) => {
+      const next = [...current.filter((entry) => entry.id !== id), { id, fingerprint: attentionFingerprint(item), title: item.title, where: item.where }];
+      writeHidden(next);
+      return next;
+    });
+  }, []);
+  const unhide = React.useCallback((id: string) => {
+    setHidden((current) => {
+      const next = current.filter((entry) => entry.id !== id);
+      writeHidden(next);
+      return next;
+    });
+  }, []);
+  const visible = React.useMemo(() => {
+    if (hidden.length === 0) return all;
+    const hiddenPrints = new Map(hidden.map((entry) => [entry.id, entry.fingerprint]));
+    return all.filter((item) => hiddenPrints.get(attentionHideId(item)) !== attentionFingerprint(item));
+  }, [all, hidden]);
+  // Only the hidden rows that are still there: one that went away has nothing to show again.
+  const hiddenNow = React.useMemo(() => {
+    const present = new Set(all.map((item) => attentionHideId(item)));
+    return hidden.filter((entry) => present.has(entry.id));
+  }, [all, hidden]);
+
+  return { items: visible, hidden: hiddenNow, hide, unhide, sources, loading, checking, reload: load, setReport, projectPin };
 }

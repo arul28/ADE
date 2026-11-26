@@ -1236,7 +1236,13 @@ import type {
   StorageCompressionResult,
   StorageSnapshot,
 } from "../shared/types/storage";
-import type { ProjectHealthFixArgs, ProjectHealthFixResult, ProjectHealthReport } from "../shared/types/projectHealth";
+import type {
+  ProjectHealthFixArgs,
+  ProjectHealthFixResult,
+  ProjectHealthIgnoreArgs,
+  ProjectHealthReport,
+  ProjectHealthUnignoreArgs,
+} from "../shared/types/projectHealth";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type {
   ProjectMoveAttention,
@@ -1507,6 +1513,10 @@ declare global {
       projectHealth: {
         getReport: (args: { forceRefresh?: boolean } | undefined, pin: OpenProjectBinding) => Promise<ProjectHealthReport>;
         fix: (args: ProjectHealthFixArgs, pin: OpenProjectBinding) => Promise<ProjectHealthFixResult>;
+        /** Stop checking one folder, or hide a line until it changes. Returns the next report. */
+        ignore: (args: ProjectHealthIgnoreArgs, pin: OpenProjectBinding) => Promise<ProjectHealthReport>;
+        /** Check a folder again, or show a hidden line again. Returns the next report. */
+        unignore: (args: ProjectHealthUnignoreArgs, pin: OpenProjectBinding) => Promise<ProjectHealthReport>;
       };
       /**
        * One archive across lanes, chats, and shells. Every call takes an

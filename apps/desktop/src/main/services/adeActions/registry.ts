@@ -162,6 +162,7 @@ import {
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
 import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
+import type { ProjectHealthIgnoreArgs, ProjectHealthUnignoreArgs } from "../../../shared/types/projectHealth";
 import { isCtoNotesFile, isTrackedAgentCliToolType, normalizeCtoArchiveQuery, normalizeCtoRecallArgs } from "../../../shared/types";
 import {
   claimDraft,
@@ -5364,6 +5365,8 @@ function buildProjectHealthDomainService(runtime: AdeRuntime): OpaqueService | n
   return {
     getReport: (args?: { forceRefresh?: boolean }) => projectHealthService.getReport(args ?? {}),
     fix: (args: { fixId: string }) => projectHealthService.fix(args),
+    ignore: (args: ProjectHealthIgnoreArgs) => projectHealthService.ignore(args),
+    unignore: (args: ProjectHealthUnignoreArgs) => projectHealthService.unignore(args),
   };
 }
 

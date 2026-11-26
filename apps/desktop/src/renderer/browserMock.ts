@@ -2,6 +2,7 @@ import { createBrowserMockMusic } from "./browserMockMusic";
 import { browserMockProviderContextInventory } from "./browserMockProviderContext";
 import type { GetProviderContextInventoryArgs } from "../shared/types/providerContext";
 import type { TerminalShellSettings } from "../shared/types/terminalShells";
+import type { ProjectHealthIssue } from "../shared/types/projectHealth";
 import { playDemoReply, startManualDemoClock, type DemoChildChat } from "./browserMockDemoReplies";
 import { getAppearanceState } from "./state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES } from "./scene/scenePreferences";
@@ -600,10 +601,11 @@ function createMockProjectHealthReport(now: string) {
         id: "dependencies",
         area: "dependencies" as const,
         severity: "warning" as const,
-        title: "2 checkouts need their dependencies installed",
-        detail: "Builds and tests fail in these lanes until their packages are installed.",
-        items: ["billing-page", "search-index"],
-        fix: { id: "install-dependencies", label: "Install", description: "Opens a terminal in each checkout and runs `npm install` there, where you can watch it.", kind: "terminal" as const },
+        title: "packages/demo and examples/starter have no packages installed",
+        detail: "Building or running them fails until they are installed. The rest of the project has its packages.",
+        items: ["packages/demo: npm install", "examples/starter: pnpm install"],
+        ignorablePaths: ["packages/demo", "examples/starter"],
+        fix: { id: "install-dependencies", label: "Install", description: "Opens a terminal in each folder and runs its install there, where you can watch it: npm install; pnpm install.", kind: "terminal" as const },
       },
       {
         id: "drive-backup",
@@ -6734,15 +6736,52 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dbSizeBytes: 20 * 1024 ** 2,
       }),
     },
-    projectHealth: {
-      getReport: resolvedArg(createMockProjectHealthReport(now)),
+    projectHealth: (() => {
+      // Stateful like the brain: an ignored folder leaves the line, a hidden line leaves the list.
+      type MockIgnore = { key: string; kind: "folder" | "issue"; issueId: string; path?: string; title: string; ignoredAt: string; seen?: string };
+      let ignored: MockIgnore[] = [];
+      const report = () => {
+        const base = createMockProjectHealthReport(now);
+        const folders = new Set(ignored.filter((entry) => entry.kind === "folder").map((entry) => entry.path));
+        const issues = (base.issues as ProjectHealthIssue[]).flatMap((issue): ProjectHealthIssue[] => {
+          const paths = issue.ignorablePaths;
+          const left = paths ? paths.filter((folder) => !folders.has(folder)) : null;
+          if (left && left.length === 0) return [];
+          const line: ProjectHealthIssue = !paths || !left || left.length === paths.length ? issue : {
+            ...issue,
+            title: `${left.join(" and ")} ${left.length === 1 ? "has" : "have"} no packages installed`,
+            items: (issue.items ?? []).filter((item) => left.some((folder) => item.startsWith(`${folder}:`))),
+            ignorablePaths: left,
+          };
+          // Hidden only while it reads as it did when hidden, like the brain.
+          if (ignored.some((entry) => entry.kind === "issue" && entry.issueId === issue.id && entry.seen === line.title)) return [];
+          return [line];
+        });
+        return { ...base, issues, ignored };
+      };
+      return {
+        getReport: async () => report(),
+        ignore: async (args: { issueId: string; path?: string | null }) => {
+          const at = new Date().toISOString();
+          if (args.path) ignored = [...ignored, { key: `folder:${args.issueId}:${args.path}`, kind: "folder", issueId: args.issueId, path: args.path, title: args.path, ignoredAt: at }];
+          else {
+            const issue = report().issues.find((entry) => entry.id === args.issueId);
+            if (issue) ignored = [...ignored.filter((entry) => entry.key !== `issue:${args.issueId}`), { key: `issue:${args.issueId}`, kind: "issue", issueId: args.issueId, title: issue.title, ignoredAt: at, seen: issue.title }];
+          }
+          return report();
+        },
+        unignore: async (args: { key: string }) => {
+          ignored = ignored.filter((entry) => entry.key !== args.key);
+          return report();
+        },
       fix: async (args: { fixId: string }) => ({
         ok: true,
         done: [args.fixId === "update-paths" ? "Updated 14 saved paths." : "Done."],
         problems: [],
-        report: { ...createMockProjectHealthReport(now), issues: createMockProjectHealthReport(now).issues.filter((issue) => issue.fix?.id !== args.fixId) },
+        report: { ...report(), issues: report().issues.filter((issue) => issue.fix?.id !== args.fixId) },
       }),
-    },
+      };
+    })(),
     archive: createMockArchive(),
     project: {
       openRepo: resolved(MOCK_PROJECT),

@@ -14,6 +14,7 @@ import { LaneTemplatesSection } from "../LaneTemplatesSection";
 import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
 import { HealthCleanupHistory, HealthCleanupRules } from "../health/HealthCleanups";
 import { ProjectIssueList, useProjectFix } from "../health/ProjectIssues";
+import { useProjectIgnore } from "../health/ProjectIgnore";
 import { issuesForPage } from "../health/healthModel";
 import { useHealthData } from "../health/useHealthData";
 import { formatMeasuredBytes } from "../storage/storageView";
@@ -106,6 +107,7 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
   const web = isWebClientMode();
   const data = useHealthData(pin, isThisMachine, web ? {} : { storage: true, report: true });
   const fix = useProjectFix(pin, data.setReport);
+  const ignore = useProjectIgnore(pin, data.setReport);
   const views = React.useMemo(() => (web ? allViews.filter((view) => WEB_VIEWS.has(view.id)) : allViews), [web, allViews]);
 
   const hashAnchor = location.hash ? decodeSettingsHash(location.hash) : null;
@@ -205,7 +207,12 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
                 }}
               />
             ) : null}
-            <ProjectIssueList issues={laneIssues} fixingId={fix.fixingId} onFix={(issue) => void fix.runFix(issue)} />
+            <ProjectIssueList
+              issues={laneIssues}
+              fixingId={fix.fixingId}
+              onFix={(issue) => void fix.runFix(issue)}
+              ignore={pin ? ignore.forPage(report, "lanes") : undefined}
+            />
             {reportLoading && !report ? (
               <div className="ade-lanes-skeleton" aria-busy="true">
                 {[0, 1, 2, 3].map((index) => <span key={index} className="ade-st-shimmer" />)}
