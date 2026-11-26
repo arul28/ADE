@@ -1,36 +1,24 @@
 import SwiftUI
 
 extension LanesTabView {
-  /// The focused machine, then every live machine with this repository: the
-  /// places the Archived filter lists deleted lanes from.
-  var recentlyDeletedMachines: [LaneRecentlyDeletedMachine] {
-    var machines = [LaneRecentlyDeletedMachine(id: "", name: focusedMachineName, projectId: nil, rootPath: nil)]
-    for machine in remoteLanes.machines where machine.isLive {
-      machines.append(LaneRecentlyDeletedMachine(
-        id: machine.machineKey,
-        name: machine.name,
-        projectId: machine.markedProjectId,
-        rootPath: machine.rootPath
-      ))
-    }
-    return machines
-  }
-
+  /// The kept-work notice's Restore after a delete: the same restore as
+  /// Recently deleted's, with no chats for the phone to reopen.
   @MainActor
   func restoreKeptLane(_ kept: LaneDeletionKept) async {
     do {
-      let result = try await syncService.restoreDeletedLane(
-        kept.id,
+      let result = try await syncService.restoreDeletedLaneAndChats(
+        kept.snapshot,
+        chats: [],
         targetProjectId: kept.projectId,
         targetProjectRootPath: kept.projectRootPath
       )
       await reload(refreshRemote: true)
       // After the reload, which clears the tab's message when it succeeds.
-      if result.restoredUncommitted {
+      if result.restoredUncommitted, (result.chatsNotReopened ?? 0) == 0 {
         ADEHaptics.success()
       } else {
         ADEHaptics.warning()
-        errorMessage = deletedLaneRestoreMessage(kept.snapshot, result)
+        errorMessage = RecentlyDeletedNotice.restored(kept.snapshot, result, laneId: result.lane.id).summary
       }
     } catch {
       ADEHaptics.error()
@@ -39,292 +27,320 @@ extension LanesTabView {
   }
 }
 
-// MARK: - Recently deleted lanes
+// MARK: - The list
 
-/// One machine's checkout whose deleted lanes the Archived filter lists.
-/// `projectId`/`rootPath` are nil for the focused machine (the default route).
-struct LaneRecentlyDeletedMachine: Equatable, Identifiable {
-  let id: String
-  let name: String
-  let projectId: String?
-  let rootPath: String?
-}
-
-/// "kept 29 more days" from a save's expiry.
-func deletedLaneKeptLabel(_ snapshot: DeletedLaneSnapshot, now: Date = Date()) -> String {
-  guard let expires = parseLaneTimestamp(snapshot.expiresAt) else { return "kept for now" }
-  let days = max(0, Int((expires.timeIntervalSince(now) / 86_400).rounded(.up)))
-  return days <= 1 ? "kept 1 more day" : "kept \(days) more days"
-}
-
-/// "Uncommitted files · Deleted 2 hours ago · kept 29 more days"
-func deletedLaneMetaLine(_ snapshot: DeletedLaneSnapshot) -> String {
-  [
-    snapshot.uncommitted ? "Uncommitted files" : "Unpushed commits",
-    "\(snapshot.isFreed ? "Space freed" : "Deleted") \(relativeTimestamp(snapshot.deletedAt))",
-    deletedLaneKeptLabel(snapshot),
-  ].joined(separator: " · ")
-}
-
-/// What a finished restore says, wherever it was started.
-func deletedLaneRestoreMessage(_ snapshot: DeletedLaneSnapshot, _ result: RestoreDeletedLaneResult) -> String {
-  let extra = (result.extraBranches ?? []).isEmpty ? "" : " Other commits it kept are on \((result.extraBranches ?? []).joined(separator: ", "))."
-  guard result.restoredUncommitted else {
-    return "\(snapshot.laneName) is back on \(result.branchName), but its uncommitted files did not apply and stay in Archived › Recently deleted: \(result.warning ?? "unknown error").\(extra)"
-  }
-  return "\(snapshot.laneName) is back on \(result.branchName)\(snapshot.uncommitted ? ", with its uncommitted files" : "").\(extra)"
-}
-
-/// The Archived filter's "Recently deleted" sections: lanes whose work a
-/// delete (or freeing up space) kept, per machine, with Restore and Drop.
-/// Each call goes to the machine the save lives on.
-struct LaneRecentlyDeletedSections: View {
+/// Recently deleted as List sections, for Settings › Deleted & Archived
+/// (`.settings`: every lane and chat, grouped by day, in settings panels) and
+/// the Lanes tab's Archived filter (`.flat`: lanes only, with the chats that
+/// went with them, under one header). The conversation sheet hangs off the
+/// List (`recentlyDeletedPresentations`), so a row scrolled out of view never
+/// takes it along. Each confirm sits on its row, so the popover on a wide
+/// screen points at that row.
+struct RecentlyDeletedSections: View {
+  let store: RecentlyDeletedStore
   let syncService: SyncService
-  let machines: [LaneRecentlyDeletedMachine]
-  let canRunLiveActions: Bool
+  let machines: [ProjectCopyMachine]
+  let style: EveryMachineListStyle
+  var query = ""
+  var filter: DeletedKindFilter = .all
+  var canRunLiveActions = true
   /// Changes when the list should read again: a pull to refresh, or a delete
   /// or restore elsewhere on the screen.
-  let reloadToken: String
-  let onRestored: () async -> Void
+  var reloadToken = ""
+  var onRestored: (() async -> Void)?
 
-  /// Rows per machine id; a machine whose read fails keeps its last rows.
-  @State private var entries: [String: [DeletedLaneSnapshot]]
-  @State private var loadedProjectId: String?
-  @State private var loadError: String?
-  @State private var attempt = 0
-  @State private var running: String?
-  @State private var message: (text: String, isError: Bool)?
-  @State private var pendingDrop: (machine: LaneRecentlyDeletedMachine, snapshot: DeletedLaneSnapshot)?
+  private var showsMachine: Bool { machines.count > 1 }
 
-  init(
-    syncService: SyncService,
-    machines: [LaneRecentlyDeletedMachine],
-    canRunLiveActions: Bool,
-    reloadToken: String = "",
-    initialEntries: [String: [DeletedLaneSnapshot]] = [:],
-    onRestored: @escaping () async -> Void
-  ) {
-    self.syncService = syncService
-    self.machines = machines
-    self.canRunLiveActions = canRunLiveActions
-    self.reloadToken = reloadToken
-    self.onRestored = onRestored
-    _entries = State(initialValue: initialEntries)
-  }
-
-  /// Nil-routed calls go to the active project, so it is part of what was read.
-  private var loadKey: String {
-    let machineKeys = machines.map { "\($0.id)|\($0.projectId ?? "")" }.joined(separator: ",")
-    return "\(syncService.activeProjectId ?? "")|\(machineKeys)|\(reloadToken)|\(attempt)"
+  private var visible: [DeletedEntry] {
+    let entries = style == .flat
+      ? store.entries.filter { if case .lane = $0 { return true } else { return false } }
+      : store.entries
+    return recentlyDeletedFiltered(entries, kind: style == .flat ? .lanes : filter, query: query)
   }
 
   var body: some View {
-    // A modifier on an empty container never runs, and this view is empty
-    // until the first read comes back, so the load hangs off a row that is
-    // always there.
-    Color.clear
-      .frame(height: 0)
-      .accessibilityHidden(true)
-      .adeFlatRow(insets: EdgeInsets(), separator: .hidden)
-      .task(id: loadKey) { await load() }
-      .confirmationDialog(
-        "Drop this lane's saved work?",
-        isPresented: Binding(get: { pendingDrop != nil }, set: { if !$0 { pendingDrop = nil } }),
-        titleVisibility: .visible,
-        presenting: pendingDrop
-      ) { pending in
-        Button("Drop", role: .destructive) {
-          Task { await drop(pending.snapshot, machine: pending.machine) }
+    if let notice = store.notice {
+      noticeCard(notice)
+        .modifier(EveryMachineNoticeRowChrome(style: style))
+    }
+    EveryMachineStatusRows(
+      reads: store.reads,
+      syncService: syncService,
+      machines: machines,
+      style: style,
+      reloadToken: reloadToken,
+      failedMessage: { "Couldn’t read \($0.name)." },
+      outdatedMessage: { "\($0.name) runs an older ADE. Update it there to see its deleted chats." },
+      noMachinesMessage: "Connect a computer to see what you deleted.",
+      loadingMessage: "Looking for deleted lanes and chats…"
+    ) {
+      switch style {
+      case .flat: flatContent
+      case .settings: settingsContent
+      }
+    }
+  }
+
+  /// A finished action, with the way to what came back: "Open lane" first
+  /// when a lane came back, then the chat.
+  private func noticeCard(_ notice: RecentlyDeletedNotice) -> ADENoticeCard {
+    typealias Action = (title: String, run: () -> Void)
+    let lane: Action? = notice.openLaneId.map { laneId in (title: "Open lane", run: { openLane(laneId) }) }
+    let session: Action? = notice.openSessionId.map { sessionId in
+      (title: notice.openSessionTitle, run: { openSession(sessionId, laneId: notice.openSessionLaneId) })
+    }
+    let primary = lane ?? session
+    let secondary = lane == nil ? nil : session
+    return ADENoticeCard(
+      title: notice.title,
+      message: notice.message,
+      icon: notice.tone.icon,
+      tint: notice.tone.tint,
+      actionTitle: primary?.title,
+      action: primary?.run,
+      secondaryActionTitle: secondary?.title,
+      secondaryAction: secondary?.run,
+      onDismiss: { store.notice = nil }
+    )
+  }
+
+  // MARK: Lanes tab
+
+  @ViewBuilder
+  private var flatContent: some View {
+    let rows = visible
+    if !rows.isEmpty {
+      Section {
+        ForEach(rows) { entry in
+          if case .lane(let lane) = entry {
+            laneRow(lane)
+          }
         }
-        Button("Cancel", role: .cancel) {}
-      } message: { pending in
-        Text(pending.snapshot.isFreed
-          ? "“\(pending.snapshot.laneName)” stays archived, but ADE will no longer be able to put back its uncommitted files."
-          : "ADE will no longer be able to bring back “\(pending.snapshot.laneName)”.")
+      } header: {
+        ADEFlatSectionHeader("Recently deleted", detail: "\(rows.count)")
       }
-    if let loadError {
-      ADEFlatInlineNotice(message: loadError, tint: ADEColor.danger, retry: { attempt += 1 })
-        .adeFlatRow(separator: .hidden)
     }
-    if let message {
-      if message.isError {
-        ADEFlatInlineNotice(message: message.text, tint: ADEColor.danger)
-          .adeFlatRow(separator: .hidden)
-      } else {
-        Label(message.text, systemImage: "checkmark.circle.fill")
-          .font(.footnote)
+  }
+
+  // MARK: Settings
+
+  /// The rows once a machine answered.
+  @ViewBuilder
+  private var settingsContent: some View {
+    let rows = visible
+    if store.entries.isEmpty && store.reads.pending.isEmpty {
+      Section {
+        ADEEmptyStateView(
+          symbol: "clock.arrow.circlepath",
+          title: "Nothing deleted",
+          message: "Lanes and chats you delete show up here, so you can bring them back."
+        )
+        .listRowBackground(Color.clear)
+        .listRowInsets(EdgeInsets())
+      }
+    } else if rows.isEmpty && (!query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || filter != .all) {
+      Section {
+        Text(emptyMatchText)
+          .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
-          .padding(.horizontal, 16)
-          .padding(.vertical, 6)
-          .adeFlatRow(separator: .hidden)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .adeSettingsListRow()
       }
-    }
-    ForEach(machines) { machine in
-      if let rows = entries[machine.id], !rows.isEmpty {
+    } else if !rows.isEmpty {
+      ForEach(dayGroups(rows), id: \.label) { group in
         Section {
-          ForEach(rows) { snapshot in
-            row(snapshot, machine: machine)
+          ForEach(group.rows) { entry in
+            switch entry {
+            case .lane(let lane): laneRow(lane)
+            case .chat(let chat): chatRow(chat)
+            }
           }
         } header: {
-          ADEFlatSectionHeader(
-            machines.count > 1 ? "Recently deleted · \(machine.name)" : "Recently deleted",
-            detail: "\(rows.count)"
-          )
+          ADESettingsHeader(title: group.label, inList: true) {
+            Text("\(group.rows.count)")
+              .font(.adeMono(12))
+              .foregroundStyle(ADEColor.textMuted)
+          }
         }
       }
     }
   }
 
-  private func row(_ snapshot: DeletedLaneSnapshot, machine: LaneRecentlyDeletedMachine) -> some View {
-    let restoring = running == snapshot.id
-    return HStack(alignment: .center, spacing: 12) {
-      Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 30, height: 30)
-        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-      VStack(alignment: .leading, spacing: 3) {
-        Text(snapshot.laneName)
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if let branch = snapshot.branchName, !branch.isEmpty {
-          Text(branch)
-            .font(.system(size: 12, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-        Text(deletedLaneMetaLine(snapshot))
-          .font(.system(size: 12))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(2)
-          .fixedSize(horizontal: false, vertical: true)
+  private var emptyMatchText: String {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmed.isEmpty { return "Nothing deleted matches “\(trimmed)”." }
+    return filter == .lanes ? "No deleted lanes." : "No deleted chats."
+  }
+
+  private func dayGroups(_ rows: [DeletedEntry]) -> [(label: String, rows: [DeletedEntry])] {
+    var groups: [(label: String, rows: [DeletedEntry])] = []
+    for entry in rows {
+      let label = workImportDateGroup(entry.at == .distantPast ? nil : entry.at.timeIntervalSince1970)
+      if groups.last?.label == label {
+        groups[groups.count - 1].rows.append(entry)
+      } else {
+        groups.append((label, [entry]))
       }
-      Spacer(minLength: 8)
-      Button {
-        Task { await restore(snapshot, machine: machine) }
-      } label: {
-        if restoring {
-          ProgressView().controlSize(.small)
-        } else {
-          Text(snapshot.isFreed ? "Put back" : "Restore")
-        }
-      }
-      .buttonStyle(ADEKitButtonStyle(tone: .neutral))
-      .disabled(running != nil || !canRunLiveActions)
-      .accessibilityLabel(snapshot.isFreed ? "Put back \(snapshot.laneName)'s files" : "Restore \(snapshot.laneName)")
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .adeFlatRow(insets: EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 6))
+    return groups
+  }
+
+  // MARK: Rows
+
+  private func laneRow(_ entry: DeletedLaneEntry) -> some View {
+    let disabled = store.isBusy || !canRunLiveActions
+    return DeletedLaneRow(
+      entry: entry,
+      machineName: showsMachine ? entry.machine.name : nil,
+      restoring: store.running == RecentlyDeletedStore.Running(key: entry.id, kind: .restore),
+      disabled: disabled,
+      onRestore: { Task { await store.restore(entry, sync: syncService, onRestored: onRestored) } },
+      onOpenChat: { store.open(entry.chatEntry($0)) }
+    )
+    .confirmationDialog(
+      "Drop this lane’s saved work?",
+      isPresented: pendingBinding(store, \.pendingDrop, id: entry.id),
+      titleVisibility: .visible
+    ) {
+      Button("Drop", role: .destructive) {
+        Task { await store.drop(entry, sync: syncService) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(deletedLaneDropMessage(entry.lane))
+    }
+    .modifier(DeletedRowChrome(style: style))
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
       Button(role: .destructive) {
-        pendingDrop = (machine, snapshot)
+        store.pendingDrop = entry
       } label: {
         Label("Drop", systemImage: "trash")
       }
-      .disabled(running != nil || !canRunLiveActions)
+      .disabled(disabled)
     }
     .contextMenu {
+      Button {
+        Task { await store.restore(entry, sync: syncService, onRestored: onRestored) }
+      } label: {
+        Label(entry.lane.isFreed ? "Put back" : "Restore", systemImage: "arrow.uturn.backward")
+      }
+      .disabled(disabled)
       Button(role: .destructive) {
-        pendingDrop = (machine, snapshot)
+        store.pendingDrop = entry
       } label: {
         Label("Drop saved work", systemImage: "trash")
       }
-      .disabled(running != nil || !canRunLiveActions)
+      .disabled(disabled)
     }
   }
 
-  @MainActor
-  private func load() async {
-    let projectId = syncService.activeProjectId
-    // Another project's rows must not show, or restore into this one.
-    if let loadedProjectId, loadedProjectId != projectId { entries = [:] }
-    loadedProjectId = projectId
-    var results: [String: Result<[DeletedLaneSnapshot], Error>] = [:]
-    await withTaskGroup(of: (String, Result<[DeletedLaneSnapshot], Error>).self) { group in
-      for machine in machines {
-        group.addTask { @MainActor in
-          do {
-            return (machine.id, .success(try await syncService.listDeletedLanes(
-              targetProjectId: machine.projectId,
-              targetProjectRootPath: machine.rootPath
-            )))
-          } catch {
-            return (machine.id, .failure(error))
-          }
+  private func chatRow(_ entry: DeletedChatEntry) -> some View {
+    let disabled = store.isBusy || !canRunLiveActions
+    return DeletedChatRow(
+      entry: entry,
+      machineName: showsMachine ? entry.machine.name : nil,
+      reopening: store.running == RecentlyDeletedStore.Running(key: entry.id, kind: .reopen),
+      disabled: disabled,
+      onOpen: { store.open(entry) },
+      onReopen: {
+        // A chat whose lane is gone needs a lane first: the sheet asks.
+        if entry.chat.laneExists {
+          Task { await store.reopen(entry, laneId: nil, sync: syncService) }
+        } else {
+          store.open(entry)
         }
       }
-      for await (key, result) in group {
-        results[key] = result
+    )
+    .confirmationDialog(
+      "Remove from Recently deleted?",
+      isPresented: pendingBinding(store, \.pendingRemove, id: entry.id),
+      titleVisibility: .visible
+    ) {
+      Button("Remove", role: .destructive) {
+        Task { await store.remove(entry, sync: syncService) }
       }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(deletedChatRemoveMessage(entry.chat))
     }
-    guard !Task.isCancelled else { return }
-    let current = Set(machines.map(\.id))
-    entries = entries.filter { current.contains($0.key) }
-    var failed: [String] = []
-    for machine in machines {
-      switch results[machine.id] {
-      case .success(let rows):
-        entries[machine.id] = rows
-      case .failure(let error):
-        // A machine on an older ADE simply has none to list.
-        if !syncChatLaunchErrorIsUnsupportedCommand(error) { failed.append(machine.name) }
-      case nil:
-        break
+    .modifier(DeletedRowChrome(style: style))
+    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+      Button(role: .destructive) {
+        store.pendingRemove = entry
+      } label: {
+        Label("Remove", systemImage: "xmark")
       }
+      .disabled(disabled)
     }
-    // Disconnected already says so at the top of the tab.
-    loadError = failed.isEmpty || syncService.connectionState != .connected
-      ? nil
-      : "Couldn’t read deleted lanes from \(failed.joined(separator: ", "))."
-  }
-
-  @MainActor
-  private func restore(_ snapshot: DeletedLaneSnapshot, machine: LaneRecentlyDeletedMachine) async {
-    guard running == nil else { return }
-    running = snapshot.id
-    defer { running = nil }
-    do {
-      let result = try await syncService.restoreDeletedLane(
-        snapshot.id,
-        targetProjectId: machine.projectId,
-        targetProjectRootPath: machine.rootPath
-      )
-      if result.restoredUncommitted {
-        ADEHaptics.success()
-        entries[machine.id]?.removeAll { $0.id == snapshot.id }
-      } else {
-        ADEHaptics.warning()
+    .contextMenu {
+      Button {
+        store.open(entry)
+      } label: {
+        Label("Show conversation", systemImage: "text.bubble")
       }
-      message = (deletedLaneRestoreMessage(snapshot, result), !result.restoredUncommitted)
-      await onRestored()
-    } catch {
-      ADEHaptics.error()
-      message = ("Couldn’t restore \(snapshot.laneName): \(SyncUserFacingError.message(for: error))", true)
+      Button(role: .destructive) {
+        store.pendingRemove = entry
+      } label: {
+        Label("Remove from list", systemImage: "xmark")
+      }
+      .disabled(disabled)
     }
   }
 
-  @MainActor
-  private func drop(_ snapshot: DeletedLaneSnapshot, machine: LaneRecentlyDeletedMachine) async {
-    guard running == nil else { return }
-    running = snapshot.id
-    defer { running = nil }
-    do {
-      try await syncService.removeDeletedLane(
-        snapshot.id,
-        targetProjectId: machine.projectId,
-        targetProjectRootPath: machine.rootPath
-      )
-      entries[machine.id]?.removeAll { $0.id == snapshot.id }
-      message = nil
-    } catch {
-      ADEHaptics.error()
-      message = ("Couldn’t drop that lane’s saved work: \(SyncUserFacingError.message(for: error))", true)
+  // MARK: Navigation
+
+  private func openLane(_ laneId: String) {
+    syncService.settingsPresented = false
+    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+  }
+
+  private func openSession(_ sessionId: String, laneId: String?) {
+    syncService.settingsPresented = false
+    syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: sessionId, laneId: laneId)
+  }
+}
+
+/// Each style's row chrome: flat rows on the page (Lanes) or the settings
+/// panel's surface (Settings).
+private struct DeletedRowChrome: ViewModifier {
+  let style: EveryMachineListStyle
+
+  func body(content: Content) -> some View {
+    switch style {
+    case .flat:
+      content
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .adeFlatRow(insets: EdgeInsets(top: 0, leading: 2, bottom: 0, trailing: 6))
+    case .settings:
+      content.adeSettingsListRow()
     }
   }
 }
+
+// MARK: - Presentations
+
+extension View {
+  /// The conversation sheet of a `RecentlyDeletedSections`, on the List that
+  /// hosts it.
+  func recentlyDeletedPresentations(_ store: RecentlyDeletedStore, syncService: SyncService) -> some View {
+    modifier(RecentlyDeletedPresentations(store: store, syncService: syncService))
+  }
+}
+
+private struct RecentlyDeletedPresentations: ViewModifier {
+  let store: RecentlyDeletedStore
+  let syncService: SyncService
+
+  func body(content: Content) -> some View {
+    content
+      .sheet(item: Binding(get: { store.openChat }, set: { store.openChat = $0 })) { entry in
+        RecentlyDeletedChatSheet(entry: entry, store: store, syncService: syncService)
+      }
+  }
+}
+
+// MARK: - The kept-work notice after a delete
 
 /// After a delete that kept work: its name, what was kept, Restore.
 struct LaneDeletionKeptNotice: View {

@@ -2908,8 +2908,10 @@ Needs you, Changes, Archived), the focused machine's lanes in stack order, then
 each other machine's lanes under its name. Rows swipe to pin and to archive or
 restore; a machine with no link shows its last roster dimmed with no swipes.
 Archived also lists each live machine's Recently deleted lanes
-(`LaneRecentlyDeleted.swift`) with Restore or Put back and a swipe to Drop; a
-delete that kept work shows a notice with Restore. Opening a lane pushes
+(`LaneRecentlyDeleted.swift`, with its store, rows and model beside it) with
+Restore or Put back and a swipe to Drop; a delete that kept work shows a notice
+with Restore. Settings › Deleted & Archived reads every live machine through
+the same `EveryMachineReads` store (`Components/EveryMachineReads.swift`). Opening a lane pushes
 `LaneRoute`. Lane detail reads the cache and the host once on open, and the
 cache again if a local revision landed meanwhile.
 

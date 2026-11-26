@@ -92,9 +92,10 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   (`~/.ade/continue-after-restart.json`, read by that brain), with a machine
   picker when several are reachable.
 - `settings/lanes/LanesSettingsPage.tsx`, `lanes/LaneList.tsx`: Project →
-  Lanes (Your lanes, Rules) and Project → Storage & cleanup (Space, Archive,
-  Rules), one view at a time. The web shows only Rules and Archive; a page
-  with one view has no tab strip; hash links and search switch views. Project
+  Lanes (Your lanes, Rules), Project → Deleted & Archived (Recently deleted,
+  Archive) and Project → Disk space (Space, Rules), one view at a time. The
+  web shows Recently deleted, Archive and Rules; a page with one view has no
+  tab strip; hash links and search switch views. Project
   → Agents is a section list in `settingsTabContent.tsx`.
 - `main/services/account/accountBridge.ts`,
   `apps/ade-cli/src/services/account/accountAuthService.ts`,
@@ -178,11 +179,12 @@ Paths are relative to `apps/desktop/src/` unless they start with `apps/`.
   is user-only, restore CTO-only (`ADE_ACTION_USER_ONLY` /
   `ADE_ACTION_CTO_ONLY`, `adeActions/actionPolicy.ts`). `shared/archive.ts`,
   `shared/types/archive.ts`: one vocabulary (`isArchiveStale`).
-  `settings/ArchiveSection.tsx`: the list split at `staleAfterDays` ("Free up
-  space after", 14 when off), selection bar, restore, Free up space (Archive &
-  reclaim through `useLaneReclaim` on the settings machine's pin), and delete
-  (non-lane items together, at most five lanes a request, then one forced
-  retry by name for dirty lanes). `app/useArchiveReminderBanner.tsx`: at most
+  `settings/ArchiveSection.tsx`: every online copy's archive in one list, each
+  row split at its own machine's `staleAfterDays` ("Free up space after", 14
+  when off), selection bar, restore, Free up space (Archive & reclaim through
+  `useLaneReclaim` on the row's machine pin), and delete (non-lane items
+  together, at most five lanes a request, then one forced retry by name for
+  dirty lanes, matched by machine). `app/useArchiveReminderBanner.tsx`: at most
   once per project per `ARCHIVE_REMINDER_INTERVAL_MS` (a week) when something
   passes the host's line; a summary that lands after a snooze is dropped.
 - `apps/ade-cli/src/services/providerInstances/providerInstanceStore.ts`: this
@@ -1047,7 +1049,7 @@ Tailscale's first warning; **Open Tailscale** opens the app on this computer
   existing `portRange` is kept.
 - `settings/health/HealthSpace.tsx`, `HealthCleanups.tsx`,
   `settings/storage/StorageCleanupDialog.tsx`, `ReclaimConfirmDialog.tsx`,
-  `storageView.ts`, `storageUiConstants.ts`: Project → Storage & cleanup. Plain
+  `storageView.ts`, `storageUiConstants.ts`: Project → Disk space. Plain
   copy on Archive (files stay), Archive & Reclaim (lane, branch and chat stay;
   managed files go) and Delete; a review table of archived lanes, orphaned
   worktrees, DerivedData and build output (size, age, owner, blocked reasons,
@@ -1814,7 +1816,7 @@ saves and who it affects, once per group.
 | **General** | — | Needs attention, You and this machine, ADE version and updates on every machine |
 | **You** | Your ADE account, everywhere | Account, Usage, Sharing (desktop only) |
 | **App** | How ADE behaves for you | Chat, Providers, Android devices and Apple devices (each with a machine picker in its title), MCP servers, ADE MCP, Notifications, Appearance, Behaviour and Keyboard (these three on this computer) |
-| **Project** | The open project (routed to its machine) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Project** | The open project (routed to its machine) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Deleted & Archived (Recently deleted, Archive; every machine at once), Disk space (Space, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
 | **System** | This computer, or the picked machine | Machines (all, and a page each), Advanced (background service, the `ade` command, Send a report, Database copies, Reset) |
 
 **General** opens first:
@@ -1873,12 +1875,18 @@ a project.
   `?machine=` to the tab's machine.
 
 **Project pages.** One-column blocks. Lanes: **Your lanes** (All, Stale, Has
-changes, Running tiles) and **New lanes** (start defaults, templates). Storage
-& cleanup: **Space** (lane and ADE storage, cleanup history), **Archive**
-(lanes, chats, shells), **Rules** (idle archiving, session lifecycle, project
-files). Agents: PR chat transcripts. The web shows only Rules and Archive.
-Links and search switch to the right view; `?tab=storage`, `archive`, `disk`
-and `session-lifecycle` open Storage & cleanup.
+changes, Running tiles) and **New lanes** (start defaults, templates).
+Deleted & Archived: **Recently deleted** (lanes and chats, a lane with its
+chats) and **Archive** (lanes, chats, shells), both read from every online
+machine at once, with no machine picker. Each view has one toolbar (kind
+filter, search) and no second title; row meta lines wrap through
+`MetaLine.tsx`. Disk space: **Space** (lane and ADE
+storage, cleanup history; one machine, picked on the page) and **Rules** (idle
+archiving, session lifecycle, project files). Agents: PR chat transcripts. The
+web shows Recently deleted, Archive and Rules. Links and search switch to the
+right view; `?tab=archive`, `archived`, `recently-deleted` and `trash` open
+Deleted & Archived; `?tab=storage`, `disk` and `session-lifecycle` open Disk
+space.
 
 - Bulk archive re-reads git before the merged-PR exception, then skips dirty,
   active or unpushed lanes.
@@ -1935,7 +1943,8 @@ Project section, or the default page. `isMachineScopedSettingsRoute`
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear. Legacy `?tab=integrations`, `github`, `linear`, and `?integration=github|linear`; `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | `AttentionPreferences` delivery: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, the completion sound. Then Activity's surfaces: the notch (enabled; reveal `always` or `hover`, the same strip either way; expanded panel), celebrations, sounds, hide-previews, per-machine mute, and delivery switches for iPhones and iPads registered to the account. The notch always flashes for work that needs you, and the strip shows state-group counts. One `useActivitySettings()` model; `ActivitySettingsControls` also mounts in the Activity popover and pane. Legacy `?tab=attention`, `activity`, and `#attention-notch`, `#celebrations`, `#attention-sounds`, `#hide-previews`. |
 | Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `PasswordDialogs.tsx`, `passwordsFormat.ts` | One end-to-end encrypted vault (logins, passkeys, secrets), on by default; secrets for every or one project, in the account or this computer only, `.env` import and export. `?tab=secrets` / `secret` open Secrets. See [Passwords & Secrets](../passwords/README.md). |
-| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, archive, idle-archive rules, session lifecycle, project files. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `archive`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Deleted & Archived (Project) | `lanes/LanesSettingsPage.tsx` (`DeletedArchivedPage`), `RecentlyDeletedSection.tsx`, `ArchiveSection.tsx`, `EveryCopyList.tsx`, `state/everyCopyRead.ts` | Recently deleted lanes and chats, and the archive, from every online copy of the project in one list (no picker; an asleep ADE Cloud computer is not read, and neither is the ADE Cloud account itself). Each row acts on its own machine's pin. Legacy `?tab=archive`, `archived`, `recently-deleted`, `trash`. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Disk space (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk and lane storage, cleanup history, idle-archive rules, session lifecycle, project files, for the copy picked on the page. Rule fields show the value in force with "Inherited". Legacy `?tab=storage`, `disk`, `space`, `session-lifecycle`; `?tab=diagnostics` opens Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives with spend) and the `usage/` components | The one-page usage dashboard (see the source map); scope `account` / `machine` / `project`. Legacy `?tab=usage`, `ade-usage`. |
 
 Live quota windows render twice from one snapshot: the top-bar popup
@@ -2508,7 +2517,7 @@ omits the field keeps the two-way behaviour.
 
 Archiving **hides** a lane, chat or shell; ADE never deletes an archived item
 by itself. The only thing ADE deletes on its own is a dead App Control shell.
-Project → Storage & cleanup → Archive, `ade archive` and a weekly desktop banner
+Project → Deleted & Archived → Archive, `ade archive` and a weekly desktop banner
 all read `archive.list` / `archive.summary`.
 
 - **Dead App Control shells are deleted.** An agent-launched shell
