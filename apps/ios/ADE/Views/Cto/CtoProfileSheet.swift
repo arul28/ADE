@@ -333,6 +333,7 @@ struct CtoOpenWorkList: View {
   /// The compact list folds what finished today; the full list shows it.
   @State private var doneOpen = false
   @FocusState private var fieldFocused: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     let items = store.memory?.openWork ?? []
@@ -412,7 +413,7 @@ struct CtoOpenWorkList: View {
   private func doneFold(_ list: [CtoOpenWorkItem], editable: Bool) -> some View {
     if !list.isEmpty {
       Button {
-        withAnimation(.snappy(duration: 0.2)) { doneOpen.toggle() }
+        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { doneOpen.toggle() }
       } label: {
         HStack(spacing: 4) {
           Image(systemName: "chevron.right")

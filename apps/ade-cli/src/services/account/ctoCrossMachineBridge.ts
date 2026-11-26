@@ -404,6 +404,7 @@ export function createCtoCrossMachineBridge(
    * rows (title, lane, runtime state, status line) rather than chat summaries.
    */
   const readMachineWork = async (machine: AdeAccountMachine): Promise<CtoRemoteMachineWork | null> => {
+    const startedAt = Date.now();
     const base = { machineId: machine.machineKey, name: machineName(machine), readAt: new Date().toISOString() };
     // The switch may have been turned off while this read waited its turn.
     if (!access().enabled) return null;
@@ -455,16 +456,19 @@ export function createCtoCrossMachineBridge(
           statusLine: entry.statusLine,
         });
       }
-      // Linked chats the list left out (archived, or settled long ago): by id.
+      // Linked chats the list left out (archived, or settled long ago): by id,
+      // in what is left of this machine's budget, so a slow lookup never costs
+      // the lists already read.
       const listed = new Set(known.map((entry) => entry.sessionId));
       const missing = (options.getLinkedRemoteChats?.() ?? [])
         .filter((link) => link.machineId === machine.machineKey && !listed.has(link.sessionId))
         .slice(0, REMOTE_WORK_MAX_LINKED_LOOKUPS);
-      const lookedUp = await Promise.all(missing.map((link) => callOnMachine(machine, {
+      const lookupBudgetMs = REMOTE_WORK_PER_MACHINE_BUDGET_MS - (Date.now() - startedAt) - 1_000;
+      const lookedUp = lookupBudgetMs < 1_000 ? [] : await Promise.all(missing.map((link) => callOnMachine(machine, {
         domain: "session",
         action: "get",
         args: { sessionId: link.sessionId },
-        timeoutMs: 10_000,
+        timeoutMs: Math.min(10_000, lookupBudgetMs),
       }).then((row) => (isRecord(row) ? knownChat(row) : null), (error: unknown) => {
         // The machine answered its lists, so this one read failing is news.
         logger?.warn("cto_cross_machine.linked_chat_read_failed", { error: errorMessage(error) });
@@ -502,6 +506,8 @@ export function createCtoCrossMachineBridge(
     const targets = machines
       .filter((machine) => !isThisMachine(machine)
         && machine.online
+        // A machine that said it is going to sleep is left asleep.
+        && accountMachinePresence(machine) !== "asleep"
         && (hasProjectByMachine.get(machine.machineKey) !== false
           || Date.now() - (noProjectSeenAt.get(machine.machineKey) ?? 0) >= REMOTE_WORK_NO_PROJECT_RECHECK_MS))
       .slice(0, ROSTER_MAX_MACHINES);

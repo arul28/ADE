@@ -711,7 +711,7 @@ final class CtoStore: ObservableObject {
   func toggleOpenWork(_ item: CtoOpenWorkItem) async {
     if isFixture {
       guard var items = memory?.openWork, let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-      items[index].doneAt = item.isDone ? nil : "2026-11-14T09:00:00Z"
+      items[index].doneAt = item.isDone ? nil : ISO8601DateFormatter().string(from: Date())
       memory?.openWork = items
       return
     }

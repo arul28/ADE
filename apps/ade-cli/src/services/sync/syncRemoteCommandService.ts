@@ -7322,7 +7322,8 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     } else {
       throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
     }
-    return ctoMemoryService.getSnapshot();
+    // The phone replaces its list with this, so it is reconciled like a read.
+    return ctoMemoryService.getReconciledSnapshot();
   });
   register("cto.getSkill", { viewerAllowed: true }, async (payload) => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");

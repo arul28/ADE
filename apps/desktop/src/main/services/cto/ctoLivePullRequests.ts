@@ -76,7 +76,10 @@ export function collectLivePullRequests(
       rows.push({ pr: { ...fromLane(own), isDraft: repoPr.isDraft || own.state === "draft" }, updatedAt: repoPr.updatedAt });
       continue;
     }
-    const remote = remoteLaneByBranch.get(plainBranch(repoPr.headBranch));
+    // A fork's branch can share a name with a lane's; only a same-repo head can be that lane's.
+    const sameRepoHead = !repoPr.headRepoOwner || !repoPr.headRepoName
+      || prKey(repoPr.headRepoOwner, repoPr.headRepoName, 0) === prKey(repoPr.repoOwner, repoPr.repoName, 0);
+    const remote = sameRepoHead ? remoteLaneByBranch.get(plainBranch(repoPr.headBranch)) : undefined;
     rows.push({
       pr: {
         number: repoPr.number,

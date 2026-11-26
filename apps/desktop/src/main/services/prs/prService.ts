@@ -297,6 +297,9 @@ export type OpenRepoPullRequest = {
   title: string;
   isDraft: boolean;
   headBranch: string | null;
+  /** Where the head branch lives; a fork's differs from the repo. Null when unknown. */
+  headRepoOwner: string | null;
+  headRepoName: string | null;
   author: string | null;
   url: string;
   updatedAt: string;
@@ -4754,7 +4757,18 @@ export function createPrService({
       logger.warn("prs.vanished_open_pr_read_failed", { prNumber: number, error: getErrorMessage(error) });
       return null;
     })));
-    upsertGithubPrProjectionsFromRawPulls(repo, reads.filter((raw) => raw != null));
+    // A webhook may have stored something newer (a reopen) while these reads
+    // ran: write a read only over a row it is at least as new as.
+    const fresh = reads.filter((raw) => {
+      if (!isRecord(raw)) return false;
+      const stored = db.get<{ updated_at: string | null }>(
+        `select updated_at from github_pr_projections
+          where project_id = ? and lower(repo_owner) = lower(?) and lower(repo_name) = lower(?) and github_pr_number = ?`,
+        [projectId, repo.owner, repo.name, Number(raw.number)],
+      );
+      return !stored?.updated_at || parseIsoMs(asString(raw.updated_at)) >= parseIsoMs(stored.updated_at);
+    });
+    upsertGithubPrProjectionsFromRawPulls(repo, fresh);
   };
 
   const fetchPr = async (
@@ -10841,6 +10855,8 @@ export function createPrService({
         title: row.title || `PR #${row.github_pr_number}`,
         isDraft: Number(row.is_draft ?? 0) !== 0 || row.state === "draft",
         headBranch: row.head_branch ?? null,
+        headRepoOwner: row.head_repo_owner ?? null,
+        headRepoName: row.head_repo_name ?? null,
         author: row.author ?? null,
         url: row.github_url || `https://github.com/${row.repo_owner}/${row.repo_name}/pull/${row.github_pr_number}`,
         updatedAt: row.updated_at || row.synced_at,
