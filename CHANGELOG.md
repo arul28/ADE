@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.137] - 2026-11-26
+
+### Desktop and web
+
+- CTO: every open PR on the repository and other machines' chats, linked work closes itself, calmer Learned rows (#2652).
+- Settings › Machines lists ADE Cloud; sizes say "Uses no credits" (#2651).
+- Machines stay online through a hung drive; a quieter Machines menu (#2641).
+- Sign-up sends Clerk legal acceptance, so new accounts complete (#2654).
+- `ade issue list` without flags works; an unscoped list skips a tracker with nothing set up; the Jev bonus answers a refused request as 400 (#2655).
+
+### iOS
+
+- Project logos with a Windows computer; no orphaned sessions for deleted lanes (#2642).
+- Sign-up sends legal acceptance (#2654).
+
 ## [1.2.136] - 2026-11-26
 
 ### Desktop and web
@@ -2957,7 +2972,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.136...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.137...HEAD
+[1.2.137]: https://github.com/arul28/ADE/compare/v1.2.136...v1.2.137
 [1.2.136]: https://github.com/arul28/ADE/compare/v1.2.135...v1.2.136
 [1.2.135]: https://github.com/arul28/ADE/compare/v1.2.134...v1.2.135
 [1.2.134]: https://github.com/arul28/ADE/compare/v1.2.133...v1.2.134
