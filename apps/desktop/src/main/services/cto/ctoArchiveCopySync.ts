@@ -12,6 +12,10 @@
  * - A save removes only chunks of this machine's own previous index. Chunks of
  *   an index it took over stay: the old home may still point at them before
  *   it hears of the move.
+ * - A save skips a chunk the account holds only when its own previous index
+ *   names it. Any other chunk it writes again: the new revision makes the
+ *   relay refuse a late delete from the old home, which "queued" alone can't
+ *   prove lost its index write.
  */
 
 import type { CtoHomeMachineRecord } from "../../../shared/ctoHomeMachine";
@@ -110,13 +114,23 @@ export function createCtoArchiveCopySync(args: {
     }
   };
 
-  /** Writes the chunks the account lacks; how many, or null when one couldn't be queued. */
-  const writeChunks = (scope: string, chunks: ReadonlyArray<{ key: string; value: string }>, byKey: ReadonlyMap<string, VaultRow>, reason: string): number | null => {
+  /**
+   * Writes the chunks this machine's own index doesn't already hold; how many,
+   * or null when one couldn't be queued. `ownChunks`: the chunks of this
+   * machine's own index in the account now (empty after a takeover).
+   */
+  const writeChunks = (
+    scope: string,
+    chunks: ReadonlyArray<{ key: string; value: string }>,
+    byKey: ReadonlyMap<string, VaultRow>,
+    ownChunks: ReadonlySet<string>,
+    reason: string,
+  ): number | null => {
     let written = 0;
     for (const chunk of chunks) {
       const existing = byKey.get(chunk.key);
-      // Named by content: a live row with this key already holds these rows.
-      if (existing && !existing.deleted) continue;
+      // Named by content: a live row this machine wrote holds these rows.
+      if (existing && !existing.deleted && ownChunks.has(chunk.key)) continue;
       const answer = args.vault!.trySet(scope, CTO_ACCOUNT_COPY_VAULT_KIND, chunk.key, chunk.value, {
         expectedRevision: existing?.revision ?? ACCOUNT_VAULT_NO_REVISION,
       });
@@ -174,7 +188,8 @@ export function createCtoArchiveCopySync(args: {
         logger.info?.("cto.archive_copy_trimmed", { leftOut: pack.leftOut, floors: pack.floors });
       }
       const byKey = new Map(rows.filter((row) => row.kind === CTO_ACCOUNT_COPY_VAULT_KIND).map((row) => [row.key, row]));
-      const written = writeChunks(scope, pack.chunks, byKey, reason);
+      const ownPrevious = ownIndex ? current.index : null;
+      const written = writeChunks(scope, pack.chunks, byKey, new Set(ownPrevious?.chunks ?? []), reason);
       if (written == null) return;
       const index: CtoArchiveCopyIndex = {
         v: 1,
@@ -194,7 +209,7 @@ export function createCtoArchiveCopySync(args: {
       lastStamp = stamp;
       takenFrom = null;
       // Only after the new index is queued: until then the old one points at them.
-      const removed = ownIndex && current.index ? removeDroppedChunks(scope, current.index, index, byKey) : 0;
+      const removed = ownPrevious ? removeDroppedChunks(scope, ownPrevious, index, byKey) : 0;
       logger.info?.("cto.archive_copy_saved", { reason, rows: index.rows, chunks: index.chunks.length, written, removed });
     } catch (error) {
       logger.warn("cto.archive_copy_save_failed", { reason, error: error instanceof Error ? error.message : String(error) });
