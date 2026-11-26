@@ -1572,7 +1572,7 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
     // doesn't jump to the latest fragment position when the transcript is sorted,
     // which would reorder the visible timeline around tool/status events.
     let keepExistingOrder = workChatEnvelopeSortPrecedesOrMatches(existing, incoming)
-    return WorkChatEnvelope(
+    var merged = WorkChatEnvelope(
       sessionId: incoming.sessionId,
       timestamp: keepExistingOrder ? existing.timestamp : incoming.timestamp,
       sequence: keepExistingOrder ? existing.sequence : incoming.sequence,
@@ -1581,10 +1581,11 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
         turnId: incomingTurnId ?? existingTurnId,
         itemId: incomingItemId ?? existingItemId
       ),
-      textPhase: incoming.textPhase ?? existing.textPhase,
-      // The reply's first fragment names it, as on desktop.
-      assistantMessageReactionKey: existing.assistantMessageReactionKey ?? incoming.assistantMessageReactionKey
+      textPhase: incoming.textPhase ?? existing.textPhase
     )
+    // The reply's first fragment names it, as on desktop.
+    merged.assistantMessageReactionKey = existing.assistantMessageReactionKey ?? incoming.assistantMessageReactionKey
+    return merged
   default:
     return incoming
   }
