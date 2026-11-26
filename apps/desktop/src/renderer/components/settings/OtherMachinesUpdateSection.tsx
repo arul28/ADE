@@ -26,6 +26,12 @@ import type { CloudMachine } from "../../../shared/adeCloud";
 import { ADE_CLOUD_MACHINE_ID, ADE_CLOUD_NAME } from "../../../shared/adeCloud/binding";
 import { UpdateTrackChip } from "../app/ChannelBadge";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
+import {
+  MachineTrackPicker,
+  machineTrackSwitchable,
+  machineTrackSwitchStatus,
+  useMachineTrackSwitches,
+} from "../remoteTargets/MachineTrackPicker";
 import { Banner } from "../ui/notice";
 
 /**
@@ -94,6 +100,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // sent this computer's Beta, and a machine whose track has no known build
   // here is not called behind.
   const known = useKnownAdeVersions();
+  const trackSwitches = useMachineTrackSwitches();
   const cloud = useCloudSelfUpdates();
   // Cloud computers keep themselves current: they leave the machine rows and "Update all",
   // and go into the one ADE Cloud row.
@@ -157,6 +164,9 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           // Up to date only when this computer knows a build on that track to
           // compare with; otherwise the version stands alone.
           const knowsTrack = newestKnownVersionOnTrack(known, track) != null;
+          // Stable/Beta for this machine, moved from here (its own action, never "Update").
+          const switchable = machineTrackSwitchable(machine);
+          const trackStatus = switchable ? machineTrackSwitchStatus(trackSwitches.results, machine.id) : null;
           return (
             <ModernRow
               key={machine.id}
@@ -169,10 +179,10 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
                   size={30}
                 />
               )}
-              title={showTracks ? (
+              title={switchable || showTracks ? (
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                   {machine.name}
-                  <UpdateTrackChip track={track} />
+                  {switchable ? <MachineTrackPicker machine={machine} known={known} /> : <UpdateTrackChip track={track} />}
                 </span>
               ) : machine.name}
               hint={(
@@ -212,6 +222,14 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
                     title: status.message,
                     report: { surface: "machine_update" },
                   }}
+                />
+              ) : null}
+              {trackStatus?.ok ? (
+                <div role="status" className="ade-ap-rowhint">{trackStatus.message}</div>
+              ) : trackStatus ? (
+                <Banner
+                  layout="inline"
+                  model={{ id: `machine-track-switch-${machine.id}`, tone: "warning", title: trackStatus.message, report: false }}
                 />
               ) : null}
             </ModernRow>

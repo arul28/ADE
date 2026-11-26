@@ -25,6 +25,12 @@ import { describeMachineUpdateAttempt } from "../../remoteTargets/machineUpdateS
 import { Banner } from "../../ui/notice";
 import { useCloudSelfUpdates } from "../../remoteTargets/useCloudSelfUpdates";
 import { useMachineFacts, type MachineFacts } from "../machines/machineFacts";
+import {
+  MachineTrackPicker,
+  machineTrackSwitchable,
+  machineTrackSwitchStatus,
+  useMachineTrackSwitches,
+} from "../../remoteTargets/MachineTrackPicker";
 import { useSettingsMachines } from "../machines/settingsMachinesContext";
 
 /**
@@ -133,6 +139,7 @@ function MachineUpdateRow({
 }) {
   const snapshot = useAutoUpdateSnapshot();
   const updates = useMachineUpdates();
+  const trackSwitches = useMachineTrackSwitches();
   const [restarting, setRestarting] = useState(false);
   const track = fact?.track ?? "stable";
   const version = fact?.versionLabel ?? fact?.version ?? null;
@@ -141,7 +148,8 @@ function MachineUpdateRow({
   // What this row says beside the version, and its one action.
   let target: string | null = null;
   let action: ReactNode = null;
-  let status: { ok: boolean; message: string } | null = null;
+  // `track`: the answer to a Stable/Beta switch, a refusal to read, not a fault to report.
+  let status: { ok: boolean; message: string; track?: boolean } | null = null;
   const cloudBox = machine.isThisMachine ? null : cloud.boxFor(fact?.colorKey ?? machine.machineId);
   if (cloudBox) {
     // It updates itself when idle or asleep: the line, not an Update button.
@@ -210,6 +218,13 @@ function MachineUpdateRow({
       );
     }
   }
+  // Another connected machine (not a cloud computer, which updates itself)
+  // gets its track as a picker: Stable/Beta moved from here.
+  const picker = !machine.isThisMachine && !cloudBox && machine.online && fact?.connected && machineTrackSwitchable(fact.connected)
+    ? <MachineTrackPicker machine={fact.connected} known={known} />
+    : null;
+  const trackStatus = picker ? machineTrackSwitchStatus(trackSwitches.results, machine.machineId) : null;
+  if (trackStatus && !status) status = { ...trackStatus, track: true };
   if (!action) {
     action = !machine.online && !machine.isThisMachine
       ? <span className="kit-tag">Offline</span>
@@ -236,6 +251,7 @@ function MachineUpdateRow({
       <div className="ade-gen-mup-bare">
         <span className="ade-gen-mup-bare-row">
           {versionLine}
+          {picker}
           {action}
         </span>
         {status ? <span className="ade-gen-mup-bare-status" role="status">{status.message}</span> : null}
@@ -254,10 +270,10 @@ function MachineUpdateRow({
           dimmed={!machine.online && !machine.isThisMachine}
         />
         <span className="ade-gen-mup-name">{name}</span>
-        <UpdateTrackChip track={track} />
+        {picker ? null : <UpdateTrackChip track={track} />}
       </button>
       {versionLine}
-      <span className="ade-gen-mup-action">{action}</span>
+      <span className="ade-gen-mup-action">{picker}{action}</span>
       {status ? (
         <div className="ade-gen-mup-status">
           {status.ok ? (
@@ -265,7 +281,9 @@ function MachineUpdateRow({
           ) : (
             <Banner
               layout="inline"
-              model={{ id: `machine-update-error-${machine.machineId}`, tone: "error", title: status.message, report: { surface: "machine_update" } }}
+              model={status.track
+                ? { id: `machine-track-switch-${machine.machineId}`, tone: "warning", title: status.message, report: false }
+                : { id: `machine-update-error-${machine.machineId}`, tone: "error", title: status.message, report: { surface: "machine_update" } }}
             />
           )}
         </div>

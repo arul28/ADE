@@ -70,6 +70,37 @@ describe("createRemoteUpdateInstaller", () => {
     expect(updates.quitAndInstall).toHaveBeenCalledWith(true, { requestedRemotely: true });
   });
 
+  // Asked from another machine. Beta back to Stable installs an OLDER build,
+  // which the plain install path would call "already current"; it may only
+  // happen after this machine's own database guard passes.
+  it.each([
+    { name: "the database guard refuses", allowed: false, outcome: "failed", switches: 0, installs: 0 },
+    { name: "Beta back to Stable installs the older Stable build", allowed: true, outcome: "downloading", switches: 1, installs: 1 },
+  ])("switches tracks for another machine: $name", async ({ allowed, outcome, switches, installs }) => {
+    vi.useFakeTimers();
+    const updates = createUpdateService({ status: "idle", currentVersion: "1.2.91-beta.2" }, (set) => {
+      set({ status: "downloading", version: "1.2.90" });
+    });
+    const startTrackSwitch = vi.fn(() => ({ ok: true as const, target: "stable" as const }));
+    const installer = createRemoteUpdateInstaller({
+      getService: () => ({ ...updates.service, startTrackSwitch }),
+      supported: true,
+      logger,
+      installDelayMs: 1_000,
+      checkTrackSwitch: async (target) => (allowed
+        ? { allowed: true, target, targetVersion: "1.2.90" }
+        : { allowed: false, target, reason: "Stable can't open this machine's projects yet." }),
+    });
+
+    const answer = await installer.switchTrack({ track: "stable" });
+    expect(answer.outcome).toBe(outcome);
+    expect(startTrackSwitch).toHaveBeenCalledTimes(switches);
+
+    updates.set({ status: "ready", version: "1.2.90" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(updates.quitAndInstall).toHaveBeenCalledTimes(installs);
+  });
+
   it("downloads first and installs once the download lands", async () => {
     vi.useFakeTimers();
     const updates = createUpdateService({ status: "idle" }, (set) => {

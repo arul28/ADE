@@ -3,6 +3,7 @@ import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { electronMacAppBundlePath } from "../../serviceManager/brainExecutable";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
+import type { UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.
@@ -23,6 +24,13 @@ import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/rem
 
 export const DESKTOP_APP_UPDATE_BRIDGE_PREFIX = "app_update.";
 export const DESKTOP_APP_UPDATE_INSTALL_METHOD = `${DESKTOP_APP_UPDATE_BRIDGE_PREFIX}install`;
+/** Move to the other update track and install its newest build (`requestDesktopAppTrackSwitch`). */
+export const DESKTOP_APP_TRACK_SWITCH_METHOD = `${DESKTOP_APP_UPDATE_BRIDGE_PREFIX}switchTrack`;
+
+export type DesktopAppTrackSwitchRequest = {
+  track: UpdateTrack;
+  requestedBy?: UpdateRequestedBy | null;
+};
 
 export type DesktopAppUpdateInstallRequest = {
   /** What the asking client believes is newest. Null means "whatever is latest". */
@@ -108,6 +116,49 @@ export async function requestDesktopAppUpdate(args: {
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
 }): Promise<DesktopAppUpdateRouting> {
+  return await callDesktopAppUpdateBridge({
+    socketPath: args.socketPath,
+    method: DESKTOP_APP_UPDATE_INSTALL_METHOD,
+    params: { targetVersion: args.targetVersion, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+    connectTimeoutMs: args.connectTimeoutMs,
+    requestTimeoutMs: args.requestTimeoutMs,
+  });
+}
+
+/**
+ * Ask this machine's desktop app to move to the other update track and install
+ * the newest build there (`app_update.switchTrack`). The app runs its own
+ * database guard first, the one its Settings › About switch runs, and refuses
+ * with that reason. An app from before this method answers "not exposed";
+ * the caller says to update ADE there first, never falls back to a runtime
+ * the app would replace.
+ */
+export async function requestDesktopAppTrackSwitch(args: {
+  socketPath: string;
+  track: UpdateTrack;
+  requestedBy?: UpdateRequestedBy | null;
+  connectTimeoutMs?: number;
+}): Promise<DesktopAppUpdateRouting> {
+  return await callDesktopAppUpdateBridge({
+    socketPath: args.socketPath,
+    method: DESKTOP_APP_TRACK_SWITCH_METHOD,
+    params: { track: args.track, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+    connectTimeoutMs: args.connectTimeoutMs,
+  });
+}
+
+/** True when an attached app answered that it predates the method asked for. */
+export function isDesktopBridgeMethodMissing(routing: DesktopAppUpdateRouting): boolean {
+  return !routing.attached && /is not exposed by the desktop bridge|method not found/i.test(routing.detail);
+}
+
+async function callDesktopAppUpdateBridge(args: {
+  socketPath: string;
+  method: string;
+  params: Record<string, unknown>;
+  connectTimeoutMs?: number;
+  requestTimeoutMs?: number;
+}): Promise<DesktopAppUpdateRouting> {
   let client: JsonRpcClient | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   try {
@@ -132,8 +183,8 @@ export async function requestDesktopAppUpdate(args: {
     let raw: unknown;
     try {
       raw = await client.request(
-        DESKTOP_APP_UPDATE_INSTALL_METHOD,
-        { targetVersion: args.targetVersion, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
+        args.method,
+        args.params,
         { timeoutMs: args.requestTimeoutMs ?? INSTALL_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {
@@ -263,13 +314,55 @@ export async function requestUpdateThroughClosedApp(args: {
   targetVersion: string | null;
   requestedBy?: UpdateRequestedBy | null;
 }): Promise<DesktopAppUpdateRouting> {
+  return await requestThroughClosedApp({
+    appPath: args.appPath,
+    doing: "update itself",
+    retry: "update again",
+    ask: (connectTimeoutMs) => requestDesktopAppUpdate({
+      socketPath: args.socketPath,
+      targetVersion: args.targetVersion,
+      requestedBy: args.requestedBy ?? null,
+      connectTimeoutMs,
+    }),
+  });
+}
+
+/** A track switch for a machine whose brain is the app's own while the app is closed: the same open-and-ask. */
+export async function requestTrackSwitchThroughClosedApp(args: {
+  appPath: string;
+  socketPath: string;
+  track: UpdateTrack;
+  requestedBy?: UpdateRequestedBy | null;
+}): Promise<DesktopAppUpdateRouting> {
+  return await requestThroughClosedApp({
+    appPath: args.appPath,
+    doing: "switch its update track",
+    retry: "switch again",
+    stopWhenMethodMissing: true,
+    ask: (connectTimeoutMs) => requestDesktopAppTrackSwitch({
+      socketPath: args.socketPath,
+      track: args.track,
+      requestedBy: args.requestedBy ?? null,
+      connectTimeoutMs,
+    }),
+  });
+}
+
+async function requestThroughClosedApp(args: {
+  appPath: string;
+  doing: string;
+  retry: string;
+  ask: (connectTimeoutMs: number) => Promise<DesktopAppUpdateRouting>;
+  /** An app that answers but predates the method ends the wait at once. */
+  stopWhenMethodMissing?: boolean;
+}): Promise<DesktopAppUpdateRouting> {
   const refuse = (detail: string): DesktopAppUpdateRouting => ({
     attached: true,
     result: {
       outcome: "failed",
       currentVersion: null,
       version: null,
-      message: `ADE is closed on this computer and could not be opened to update itself (${detail}). Open ADE there, then update again.`,
+      message: `ADE is closed on this computer and could not be opened to ${args.doing} (${detail}). Open ADE there, then ${args.retry}.`,
     },
   });
   try {
@@ -281,12 +374,9 @@ export async function requestUpdateThroughClosedApp(args: {
   let detail = "it did not answer";
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, CLOSED_APP_POLL_MS));
-    const routing = await requestDesktopAppUpdate({
-      socketPath: args.socketPath,
-      targetVersion: args.targetVersion,
-      requestedBy: args.requestedBy ?? null,
-      connectTimeoutMs: CLOSED_APP_POLL_MS,
-    });
+    const routing = await args.ask(CLOSED_APP_POLL_MS);
+    // The app is up and answered, but predates the method: waiting longer changes nothing.
+    if (args.stopWhenMethodMissing && isDesktopBridgeMethodMissing(routing)) return routing;
     if (routing.attached) {
       // "unsupported" would send the caller to the standalone update, the very
       // switch this route exists to avoid.

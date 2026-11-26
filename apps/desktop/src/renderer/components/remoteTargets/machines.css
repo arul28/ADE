@@ -185,3 +185,23 @@
 .ade-upd-check[data-tone="ok"] {
   color: var(--kit-ok);
 }
+
+/* Settings › Update other machines: the track chip as a picker for another machine. */
+.ade-track-pick {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--kit-text-3);
+}
+.ade-track-pick[data-busy] { opacity: 0.55; cursor: progress; }
+.ade-track-pick select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: inherit;
+  font: inherit;
+}
+.ade-track-pick:focus-within .ade-shell-channel-badge { outline: 2px solid var(--kit-accent, currentColor); outline-offset: 1px; }

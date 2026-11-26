@@ -37,6 +37,7 @@ import {
 } from "../../../../../ade-cli/src/services/builtInBrowser/demoEngineBridgeClient";
 import {
   DESKTOP_APP_UPDATE_BRIDGE_PREFIX,
+  DESKTOP_APP_TRACK_SWITCH_METHOD,
   DESKTOP_APP_UPDATE_INSTALL_METHOD,
 } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
 import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
@@ -431,6 +432,13 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     if (engine) return await engine.handle(name, rawParams, connection);
     if (isAppUpdateMethod) {
       const installer = args.getAppUpdateInstaller?.() ?? null;
+      const track = rawParams.track === "stable" || rawParams.track === "beta" ? rawParams.track : null;
+      if (installer && method === DESKTOP_APP_TRACK_SWITCH_METHOD && track) {
+        return await installer.switchTrack({
+          track,
+          requestedBy: sanitizeUpdateRequestedBy(rawParams.requestedBy),
+        });
+      }
       if (method !== DESKTOP_APP_UPDATE_INSTALL_METHOD || !installer) {
         throw new JsonRpcError(
           JsonRpcErrorCode.methodNotFound,

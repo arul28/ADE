@@ -343,6 +343,20 @@ service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
   account directory's `GET /releases/latest`, which runs the desktop's own
   reader over the same two release manifests; a track only ever takes a build of
   that track.
+- **Moving another machine to the other track.** Its own action, never part of
+  Update & restart. In Settings > Update other machines (and General > Every
+  machine) a connected machine's track chip is a picker. Choosing the other
+  track asks what is running there, confirms ("Move Mac Studio to Beta?"), then
+  sends the runtime RPC `machine.switchUpdateTrack` to that machine. Its brain
+  asks its ADE app over the desktop bridge (`app_update.switchTrack`; it opens
+  the app first when the brain is the app's own and the app is closed). The app
+  runs the same database guard as Settings > About (`checkTrackSwitch`),
+  switches (`startTrackSwitch`), and installs the other track's newest build as
+  a remote update does, even when that build is older (Beta back to Stable).
+  The answer shows under the row. A machine with no app open, or an app from
+  before the method, refuses with where to switch instead. ADE Cloud computers
+  update themselves and keep a read-only chip. Desktop only: the phone and ADE
+  Web do not offer it. See `remoteUpdateInstall.ts` and `machineTrackSwitch.ts`.
 - **`ade brain update`.** The version `latest` follows the machine track. On Beta
   it is the build that `beta.json` names. It never falls back to the other
   track. See `apps/ade-cli/src/commands/brainUpdate.ts`.

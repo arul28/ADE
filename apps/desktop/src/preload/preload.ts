@@ -1377,6 +1377,7 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
+  RemoteRuntimeTrackSwitchResult,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ChatTerminalPreviewArgs,
@@ -6220,6 +6221,11 @@ const adeBridge = {
         id,
         targetVersion: targetVersion ?? null,
       }),
+    switchUpdateTrack: async (
+      id: string,
+      track: "stable" | "beta",
+    ): Promise<RemoteRuntimeTrackSwitchResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeSwitchUpdateTrack, { id, track }),
     getUpdateImpact: async (id: string): Promise<UpdateImpact> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetUpdateImpact, { id }),
     listProjects: async (id: string): Promise<RemoteRuntimeProjectRecord[]> =>

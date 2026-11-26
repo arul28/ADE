@@ -863,3 +863,29 @@ export type RuntimePingReply = {
   at: string;
   hostFrozenMs?: number;
 };
+
+/**
+ * Another machine's answer to "move to this update track"
+ * (`machine.switchUpdateTrack`). Separate from "Update & restart", which never
+ * crosses tracks: the machine runs the same database check its own
+ * Settings › About switch runs and refuses with that reason.
+ */
+export type RemoteRuntimeTrackSwitchOutcome =
+  /** The other track's build is downloaded; the app installs it and restarts now. */
+  | "installing"
+  /** The other track's build is downloading; the app installs it when it finishes. */
+  | "downloading"
+  /** Back to the track the machine already runs: saved, nothing installs. */
+  | "saved"
+  /** Not switched: the message says why and what to do. */
+  | "refused";
+
+export type RemoteRuntimeTrackSwitchResult = {
+  ok: boolean;
+  track: "stable" | "beta";
+  outcome: RemoteRuntimeTrackSwitchOutcome;
+  /** The build being installed, when there is one. */
+  version: string | null;
+  currentVersion: string | null;
+  message: string;
+};

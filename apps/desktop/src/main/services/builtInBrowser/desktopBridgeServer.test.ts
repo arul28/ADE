@@ -13,7 +13,11 @@ import type { Logger } from "../logging/logger";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { startBuiltInBrowserDesktopBridgeServer, bridgeListenFailureOutcome } from "./desktopBridgeServer";
 import { packRemoteCallFiles, runRemoteAgentBrowserCall } from "./builtInBrowserRemoteCalls";
-import { requestDesktopAppUpdate } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
+import {
+  isDesktopBridgeMethodMissing,
+  requestDesktopAppTrackSwitch,
+  requestDesktopAppUpdate,
+} from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
 import type { RemoteUpdateInstaller } from "../updates/remoteUpdateInstall";
 import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 
@@ -217,7 +221,37 @@ describe("app update over the desktop bridge", () => {
       version: targetVersion,
       message: "Installing.",
     }),
+    switchTrack: async ({ track }) => ({
+      outcome: "downloading",
+      currentVersion: "1.2.90",
+      version: track === "beta" ? "1.2.91-beta.1" : "1.2.89",
+      message: `Moving to ${track}.`,
+    }),
     dispose: () => {},
+  });
+
+  it.each([
+    {
+      name: "an app with the track switch answers it",
+      installer: installingInstaller,
+      expected: {
+        attached: true,
+        result: { outcome: "downloading", currentVersion: "1.2.90", version: "1.2.91-beta.1", message: "Moving to beta." },
+      },
+      missing: false,
+    },
+    // An app from before the method (or with no updater) must read as "missing",
+    // so the brain refuses instead of falling back to a runtime the app replaces.
+    { name: "an app without it reads as missing", installer: () => null, expected: { attached: false }, missing: true },
+  ])("carries a track switch across the bridge: $name", async ({ installer, expected, missing }) => {
+    const { bridge, socketPath } = await startBridge(installer());
+    try {
+      const routing = await requestDesktopAppTrackSwitch({ socketPath, track: "beta" });
+      expect(routing).toMatchObject(expected);
+      expect(isDesktopBridgeMethodMissing(routing)).toBe(missing);
+    } finally {
+      bridge.dispose();
+    }
   });
 
   it("asks this app to install its update and hands back its answer", async () => {

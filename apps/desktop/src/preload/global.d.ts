@@ -1726,6 +1726,15 @@ declare global {
           targetVersion?: string | null,
         ) => Promise<RemoteRuntimeUpdateAndRestartResult>;
         /**
+         * Moves a connected machine to Stable or Beta and installs that
+         * track's newest build there (`machine.switchUpdateTrack`). The
+         * machine runs its own database check and may refuse. Desktop only.
+         */
+        switchUpdateTrack?: (
+          id: string,
+          track: "stable" | "beta",
+        ) => Promise<import("../shared/types/remoteRuntime").RemoteRuntimeTrackSwitchResult>;
+        /**
          * What "Update & restart" would stop on that machine right now. Never
          * rejects: a machine that cannot answer comes back `checked: false`.
          */

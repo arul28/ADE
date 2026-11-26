@@ -260,3 +260,35 @@ export async function confirmMachineUpdates(
     cancelLabel: "Not now",
   });
 }
+
+/**
+ * "Move <machine> to Beta?": the same row as an update (versions, the track
+ * it moves to, what stops there), for a track switch sent to another machine.
+ * Moving back to Stable installs an older build; the machine checks first that
+ * it can still open its projects, and says so here.
+ */
+export async function confirmMachineTrackSwitch(
+  machine: MachineWithImpact,
+  track: UpdateTrack,
+  targetVersion: string | null,
+): Promise<boolean> {
+  const label = updateTrackLabel(track);
+  const row: MachineUpdateRowModel = { ...remoteMachineRowModel({ ...machine, targetVersion }), toTrack: track };
+  const older = track === "stable";
+  return await confirmDialog({
+    title: `Move ${machine.name} to ${label}?`,
+    message: older
+      ? `ADE installs the newest Stable build there and restarts. It is older than the Beta build there, so ${machine.name} first checks that it can still open its projects, and refuses if it can't.`
+      : `ADE installs the newest Beta build there and restarts. Beta builds arrive first and can have rough edges; you can move back to Stable later.`,
+    icon: <ArrowClockwise size={16} weight="bold" />,
+    tone: "accent",
+    size: "md",
+    children: (
+      <div className="ade-upd-list">
+        <MachineUpdateRow row={row} showTracks />
+      </div>
+    ),
+    confirmLabel: `Move to ${label}`,
+    cancelLabel: "Not now",
+  });
+}

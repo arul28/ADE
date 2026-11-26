@@ -136,6 +136,7 @@ import {
   isRemoteRuntimeEventCategory,
   sanitizeMachineName,
   sanitizeUpdateRequestedBy,
+  type RemoteRuntimeTrackSwitchResult,
   type UpdateRequestClientKind,
   type UpdateRequestedBy,
 } from "../../desktop/src/shared/types/remoteRuntime";
@@ -513,6 +514,15 @@ export type MultiProjectRpcHandlerOptions = {
    */
   machineUpdateControls?: MachineUpdateAndRestartDeps;
   /**
+   * Backs `machine.switchUpdateTrack`: move this machine to Stable or Beta,
+   * asked from another machine. Absent for embedded/test runtimes, which then
+   * refuse it like `machine.updateAndRestart`.
+   */
+  switchMachineUpdateTrack?: (
+    track: "stable" | "beta",
+    requestedBy: UpdateRequestedBy | null,
+  ) => Promise<RemoteRuntimeTrackSwitchResult>;
+  /**
    * This machine's "Continue chats after restarts" (`continueAfterRestartStore`),
    * reported in `runtime.updateImpact` so another machine's update dialog can
    * say what happens to the chats here. Absent (embedded, tests): not reported.
@@ -738,6 +748,7 @@ const RUNTIME_METHODS = new Set([
   "personalChats.unsubscribeEvents",
   "machineInfo.get",
   "machine.updateAndRestart",
+  "machine.switchUpdateTrack",
   "machine.reportPowerTransition",
   "projects.list",
   "projects.accountList",
@@ -3647,6 +3658,37 @@ export function createMultiProjectRpcRequestHandler(
         );
         return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
       });
+    }
+
+    // Stable/Beta for this machine, from another machine. Its own method, never
+    // part of "Update & restart" (which stays on the machine's track), and the
+    // same cto gate: it installs a build and restarts every agent here.
+    if (method === "machine.switchUpdateTrack") {
+      if (!callerHasRoleAtLeast(callerRole(), "cto")) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "machine.switchUpdateTrack requires the cto role.",
+        );
+      }
+      const switchTrack = options.switchMachineUpdateTrack;
+      if (!switchTrack) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidRequest,
+          "This ADE runtime cannot change its update track.",
+        );
+      }
+      const track = params.track === "stable" || params.track === "beta" ? params.track : null;
+      if (!track) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "machine.switchUpdateTrack requires track 'stable' or 'beta'.",
+        );
+      }
+      const requestedBy = updateRequester(params.requestedBy, {
+        authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
+        clientName: callerClientName(),
+      });
+      return await switchTrack(track, requestedBy);
     }
 
     // The desktop's pre-suspend beat, forwarded to the brain that publishes

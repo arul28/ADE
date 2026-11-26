@@ -265,6 +265,7 @@ export const IPC = {
   remoteRuntimeCallAction: "ade.remoteRuntime.callAction",
   remoteRuntimeCallSync: "ade.remoteRuntime.callSync",
   remoteRuntimeUpdateAndRestart: "ade.remoteRuntime.updateAndRestart",
+  remoteRuntimeSwitchUpdateTrack: "ade.remoteRuntime.switchUpdateTrack",
   remoteRuntimeGetUpdateImpact: "ade.remoteRuntime.getUpdateImpact",
   remoteRuntimeEnsurePortForward: "ade.remoteRuntime.ensurePortForward",
   /**

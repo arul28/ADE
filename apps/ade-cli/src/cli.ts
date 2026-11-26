@@ -32358,6 +32358,36 @@ async function runServe(
     return routing;
   };
 
+  // Stable/Beta asked from another machine: only this machine's ADE app can
+  // switch tracks (its feed, its database check, an older build), so it is
+  // asked the same way as an update, opening it when it owns this brain and is
+  // closed (`machineTrackSwitch.ts`).
+  const requestDesktopAppTrackSwitchFromServe = async (
+    track: "stable" | "beta",
+    requestedBy: UpdateRequestedBy | null = null,
+  ) => {
+    const { hostAppPath, requestDesktopAppTrackSwitch, requestTrackSwitchThroughClosedApp, isDesktopBridgeMethodMissing } = await import(
+      "./services/runtime/desktopAppUpdateBridge"
+    );
+    const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+      || resolveReachableMachineDesktopBridgeSocketPath();
+    let routing = await requestDesktopAppTrackSwitch({ socketPath, track, requestedBy });
+    const closedAppPath = routing.attached || isDesktopBridgeMethodMissing(routing) ? null : hostAppPath();
+    if (closedAppPath && !routing.attached) {
+      headlessProjectLogger.info("brain.remote_track_switch_opening_app", { appPath: closedAppPath, detail: routing.detail });
+      routing = await requestTrackSwitchThroughClosedApp({ appPath: closedAppPath, socketPath, track, requestedBy });
+    }
+    headlessProjectLogger.info("brain.remote_track_switch_route", {
+      track,
+      attached: routing.attached,
+      outcome: routing.attached ? routing.result.outcome : null,
+      detail: routing.attached ? null : routing.detail,
+      requestedByKind: requestedBy?.clientKind ?? "unknown",
+      requestedByName: requestedBy?.machineName ?? null,
+    });
+    return routing;
+  };
+
   // An embedded runtime is a guest inside an external process. Updating and
   // restarting the MACHINE's ADE from inside it would reach far outside the
   // embedder's lifecycle — it is the same "never claim machine authority"
@@ -33369,6 +33399,14 @@ async function runServe(
         ? {
           readContinueAfterRestart: () => resolveContinueAfterRestart(),
           machineUpdateControls,
+          switchMachineUpdateTrack: async (track: "stable" | "beta", requestedBy: UpdateRequestedBy | null) => {
+            const { runMachineTrackSwitch } = await import("./services/runtime/machineTrackSwitch");
+            return await runMachineTrackSwitch(
+              { requestDesktopAppTrackSwitch: requestDesktopAppTrackSwitchFromServe },
+              track,
+              requestedBy,
+            );
+          },
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
         }
         : {}),

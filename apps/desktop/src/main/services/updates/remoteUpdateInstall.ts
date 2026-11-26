@@ -1,9 +1,11 @@
 import type {
+  DesktopAppTrackSwitchRequest,
   DesktopAppUpdateInstallRequest,
   DesktopAppUpdateInstallResult,
 } from "../../../../../ade-cli/src/services/runtime/desktopAppUpdateBridge";
-import type { AutoUpdateSnapshot } from "../../../shared/types";
+import type { AutoUpdateSnapshot, TrackSwitchCheckResult, UpdateTrackSwitchResult } from "../../../shared/types";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
+import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -26,10 +28,18 @@ type UpdateService = {
   checkForUpdates(options?: { userInitiated?: boolean }): Promise<void>;
   quitAndInstall(resumeChats?: boolean, options?: { requestedRemotely?: boolean }): Promise<boolean>;
   onStateChange(cb: (snapshot: AutoUpdateSnapshot) => void): () => void;
+  /** Settings › About's switch: saves the choice and starts the other track's check. */
+  startTrackSwitch?(target: UpdateTrack): UpdateTrackSwitchResult;
 };
 
 export type RemoteUpdateInstaller = {
   install(request: DesktopAppUpdateInstallRequest): Promise<DesktopAppUpdateInstallResult>;
+  /**
+   * Stable/Beta asked from another machine: the database check, the switch,
+   * then the other track's newest build installed as `install` does, even
+   * when that build is older (Beta back to Stable).
+   */
+  switchTrack(request: DesktopAppTrackSwitchRequest): Promise<DesktopAppUpdateInstallResult>;
   dispose(): void;
 };
 
@@ -56,6 +66,11 @@ export function createRemoteUpdateInstaller(args: {
    * that never landed.
    */
   preflightInstall?: () => Promise<{ ok: true } | { ok: false; message: string }>;
+  /**
+   * The check Settings › About runs before a switch: can the other track's
+   * newest build open every database here? Absent: switching is refused.
+   */
+  checkTrackSwitch?: (target: UpdateTrack) => Promise<TrackSwitchCheckResult>;
   logger: Pick<Logger, "info" | "warn">;
   installDelayMs?: number;
   checkTimeoutMs?: number;
@@ -112,7 +127,11 @@ export function createRemoteUpdateInstaller(args: {
     }, installDelayMs);
   };
 
-  const installWhenDownloaded = (service: UpdateService, targetVersion: string | null): void => {
+  const installWhenDownloaded = (
+    service: UpdateService,
+    targetVersion: string | null,
+    track: UpdateTrack | null = null,
+  ): void => {
     clearPendingDownload();
     let unsubscribe: (() => void) | null = null;
     const timeout = setTimeout(() => {
@@ -131,7 +150,8 @@ export function createRemoteUpdateInstaller(args: {
       if (pendingDownload !== entry) return;
       if (snapshot.status === "ready") {
         stop();
-        if (covers(snapshot.version, targetVersion)) {
+        const onTrack = track == null || (snapshot.version != null && updateTrackOfVersion(snapshot.version) === track);
+        if (onTrack && covers(snapshot.version, targetVersion)) {
           const version = snapshot.version;
           void preflight().then((blocked) => {
             if (pendingDownload !== null || disposed) return;
@@ -190,6 +210,42 @@ export function createRemoteUpdateInstaller(args: {
         timer = setTimeout(() => resolve(null), checkTimeoutMs);
       });
       const settled = await Promise.race([decided, checked, timedOut]);
+      return settled ?? service.getSnapshot();
+    } finally {
+      if (timer) clearTimeout(timer);
+      (unsubscribe as (() => void) | null)?.();
+    }
+  };
+
+  /**
+   * After a switch: waits for the feed of the new track to answer with a build
+   * on that track (downloading or downloaded), or for the check to end.
+   */
+  const awaitTrackBuild = async (service: UpdateService, track: UpdateTrack): Promise<AutoUpdateSnapshot> => {
+    const onTrack = (snapshot: AutoUpdateSnapshot): boolean =>
+      snapshot.version != null && updateTrackOfVersion(snapshot.version) === track;
+    const decided = (snapshot: AutoUpdateSnapshot): boolean =>
+      snapshot.status === "error"
+      || snapshot.status === "installing"
+      || ((snapshot.status === "downloading" || snapshot.status === "ready") && onTrack(snapshot));
+    const now = service.getSnapshot();
+    if (decided(now)) return now;
+    let unsubscribe: (() => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const answered = new Promise<AutoUpdateSnapshot>((resolve) => {
+        unsubscribe = service.onStateChange((snapshot) => {
+          if (decided(snapshot)) resolve(snapshot);
+        });
+      });
+      // The switch already started a check; one that is not running starts here.
+      const checked = (now.status === "checking" || now.status === "downloading"
+        ? answered
+        : service.checkForUpdates({ userInitiated: true }).catch(() => undefined).then(() => service.getSnapshot()));
+      const timedOut = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), checkTimeoutMs);
+      });
+      const settled = await Promise.race([answered, checked, timedOut]);
       return settled ?? service.getSnapshot();
     } finally {
       if (timer) clearTimeout(timer);
@@ -284,6 +340,72 @@ export function createRemoteUpdateInstaller(args: {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         args.logger.warn("autoUpdate.remote_install_request_failed", { targetVersion, error: message });
+        return result("failed", null, null, message);
+      }
+    },
+    async switchTrack(request) {
+      const track = request.track;
+      const label = updateTrackLabel(track);
+      const service = args.getService();
+      if (!service || !args.supported || disposed || !service.startTrackSwitch || !args.checkTrackSwitch) {
+        return result(
+          "unsupported",
+          service?.getSnapshot() ?? null,
+          null,
+          "This ADE app is a development or channel build and has no update tracks.",
+        );
+      }
+      try {
+        const before = service.getSnapshot();
+        args.logger.info("autoUpdate.remote_track_switch_requested", {
+          track,
+          requestedByKind: request.requestedBy?.clientKind ?? "unknown",
+          requestedByName: request.requestedBy?.machineName ?? null,
+          currentVersion: before.currentVersion,
+          status: before.status,
+        });
+        // Checked here, not trusted from the asking machine: the same guard as
+        // Settings › About, against this machine's own databases.
+        const check = await args.checkTrackSwitch(track);
+        if (!check.allowed) return result("failed", before, null, check.reason);
+        const started = service.startTrackSwitch(track);
+        if (!started.ok) return result("failed", before, null, started.reason);
+        if (updateTrackOfVersion(before.currentVersion) === track) {
+          return result("already_current", before, before.currentVersion, `ADE stays on ${label} (${before.currentVersion}).`);
+        }
+        const snapshot = await awaitTrackBuild(service, track);
+        if (snapshot.status === "installing") {
+          return result("installing", snapshot, snapshot.version, `ADE ${snapshot.version ?? "update"} is already installing.`);
+        }
+        if (snapshot.status === "ready" && snapshot.version && updateTrackOfVersion(snapshot.version) === track) {
+          const blocked = await preflight();
+          if (blocked) {
+            return result("failed", snapshot, snapshot.version, `ADE ${snapshot.version} (${label}) is downloaded but can't install: ${blocked}`);
+          }
+          scheduleInstall(service, snapshot.version);
+          return result("installing", snapshot, snapshot.version, `Moving to ${label}: installing ADE ${snapshot.version}.`);
+        }
+        if (snapshot.status === "downloading" && snapshot.version && updateTrackOfVersion(snapshot.version) === track) {
+          installWhenDownloaded(service, null, track);
+          return result(
+            "downloading",
+            snapshot,
+            snapshot.version,
+            `Moving to ${label}: downloading ADE ${snapshot.version}; it installs when the download finishes.`,
+          );
+        }
+        if (snapshot.status === "error") {
+          return result("failed", snapshot, null, snapshot.error?.trim() || `The ${label} update check failed.`);
+        }
+        return result(
+          "no_update",
+          snapshot,
+          null,
+          `The switch to ${label} is saved, but no ${label} build has started downloading yet. It installs once one does.`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        args.logger.warn("autoUpdate.remote_track_switch_failed", { track, error: message });
         return result("failed", null, null, message);
       }
     },

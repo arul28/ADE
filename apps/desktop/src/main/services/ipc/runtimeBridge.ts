@@ -64,6 +64,7 @@ import type {
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
   RemoteRuntimeUpdateAndRestartResult,
+  RemoteRuntimeTrackSwitchResult,
   RuntimeActivitySummary,
   UpdateImpact,
   RuntimeEventsReleaseRequest,
@@ -2060,6 +2061,57 @@ export function registerRuntimeBridge({
           retryOnConnectionError: false,
         },
       );
+    },
+  );
+
+  handle(
+    IPC.remoteRuntimeSwitchUpdateTrack,
+    async (_event, arg: { id: string; track?: unknown }): Promise<RemoteRuntimeTrackSwitchResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const track = arg?.track === "stable" || arg?.track === "beta" ? arg.track : null;
+      if (!track) throw new Error("Choose Stable or Beta.");
+      const target = requireRemoteTarget(id);
+      const status = remoteConnectionService.snapshot().connections
+        .find((connection) => connection.target.id === target.id);
+      const refused = (message: string): RemoteRuntimeTrackSwitchResult => ({
+        ok: false,
+        track,
+        outcome: "refused",
+        version: null,
+        currentVersion: status?.version ?? null,
+        message,
+      });
+      // A cloud box from an older template can't take a new build at all.
+      // (ADE Cloud computers update themselves; the renderer offers no switch for them.)
+      const blocked = await cloudUpdateBlocker(target);
+      if (blocked) return refused(blocked);
+      if (status?.state !== "connected") return refused("Connect to this machine to change its update track.");
+      try {
+        return await remoteConnectionService.callMachineMethod<RemoteRuntimeTrackSwitchResult>(
+          target.id,
+          "machine.switchUpdateTrack",
+          {
+            track,
+            requestedBy: {
+              machineName: (await thisMachineDisplayName()) ?? undefined,
+              clientKind: "desktop",
+            },
+          },
+          {
+            // The other machine may download a build before it answers, and
+            // its install drops this connection: never retried silently.
+            timeoutMs: REMOTE_MACHINE_UPDATE_TIMEOUT_MS,
+            retryOnConnectionError: false,
+          },
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // A machine from before this call: say so rather than the raw refusal.
+        if (/method not found|unsupported (remote )?command|unknown method|requires params\.projectId/i.test(message)) {
+          return refused(`Update ADE on ${target.name} first: its version can't change tracks from another machine.`);
+        }
+        throw error;
+      }
     },
   );
 

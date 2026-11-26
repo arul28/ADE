@@ -247,7 +247,9 @@ The parts are built, except item 11. Code comments cite these numbers.
 2. Remove the old Beta channel.
 3. DB compat level, recorded level, snapshots before migrations.
 4. Track switch in Settings → About, with the database guard and a clear
-   blocked message. Remote "Update & restart" never crosses a machine's track.
+   blocked message. Remote "Update & restart" never crosses a machine's track;
+   moving another machine to the other track is its own confirmed action
+   (`machine.switchUpdateTrack`), guarded on that machine.
 5. Branding: header "Beta" label, About, orange icon in beta builds, Sentry
    `track` tag.
 6. CLI: `ade brain update` follows the machine's track; `ade doctor` shows it.
