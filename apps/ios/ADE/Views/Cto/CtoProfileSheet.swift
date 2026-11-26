@@ -330,6 +330,8 @@ struct CtoOpenWorkList: View {
   @State private var adding = false
   @State private var draft = ""
   @State private var draftOwner = "cto"
+  /// The compact list folds what finished today; the full list shows it.
+  @State private var doneOpen = false
   @FocusState private var fieldFocused: Bool
 
   var body: some View {
@@ -346,7 +348,11 @@ struct CtoOpenWorkList: View {
       }
       group("Waiting on you", waiting, editable: editable)
       group("I'm tracking", tracking, editable: editable)
-      group(compact ? "Done today" : "Done", done, editable: editable)
+      if compact {
+        doneFold(done, editable: editable)
+      } else {
+        group("Done", done, editable: editable)
+      }
       if editable {
         if !(open.isEmpty && done.isEmpty) || adding { CtoRowDivider() }
         if adding {
@@ -398,6 +404,38 @@ struct CtoOpenWorkList: View {
     }
     .onChange(of: fieldFocused) { _, focused in
       if !focused && draft.trimmingCharacters(in: .whitespaces).isEmpty { adding = false }
+    }
+  }
+
+  /// "Done today", folded until tapped.
+  @ViewBuilder
+  private func doneFold(_ list: [CtoOpenWorkItem], editable: Bool) -> some View {
+    if !list.isEmpty {
+      Button {
+        withAnimation(.snappy(duration: 0.2)) { doneOpen.toggle() }
+      } label: {
+        HStack(spacing: 4) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 9, weight: .bold))
+            .rotationEffect(.degrees(doneOpen ? 90 : 0))
+          Text("Done today \(list.count)")
+            .font(.caption.weight(.medium))
+        }
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+        .frame(minHeight: 32, alignment: .bottomLeading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Done today, \(list.count)")
+      .accessibilityValue(doneOpen ? "Expanded" : "Collapsed")
+      if doneOpen {
+        ForEach(Array(list.enumerated()), id: \.element.id) { index, item in
+          if index > 0 { CtoRowDivider() }
+          row(item, editable: editable)
+        }
+      }
     }
   }
 
