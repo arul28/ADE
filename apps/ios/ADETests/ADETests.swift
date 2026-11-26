@@ -19746,6 +19746,46 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(buildWorkEventCards(from: reloadedTranscript).isEmpty)
   }
 
+  func testCtoLearnedDecodesOnBothPathsAndFoldsOneCardPerLearnId() throws {
+    // Live envelope: an unknown area is dropped, the readable change stays.
+    let decoded = try AgentChatEvent.decode(from: [
+      "type": "cto_learned",
+      "learnId": "learn-1",
+      "turnId": "turn-1",
+      "changes": [
+        ["id": "c1", "area": "rules", "op": "added", "text": "Ask before landing"],
+        ["id": "c2", "area": "future_area", "op": "added", "text": "?"],
+      ],
+    ])
+    guard case .ctoLearned(let learnId, let changes, let turnId) = decoded else {
+      return XCTFail("Expected a cto_learned event.")
+    }
+    XCTAssertEqual(learnId, "learn-1")
+    XCTAssertEqual(changes.map(\.id), ["c1"])
+    XCTAssertEqual(turnId, "turn-1")
+    // No readable change: nothing draws.
+    guard case .unknown = try AgentChatEvent.decode(from: [
+      "type": "cto_learned", "learnId": "learn-2",
+      "changes": [["id": "c1", "area": "rules", "op": "renamed", "text": "x"]],
+    ]) else {
+      return XCTFail("A row with no readable change must draw nothing.")
+    }
+
+    // Transcript path, then the Undo copy: one card, newest content, first place.
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"cto_learned","learnId":"learn-1","turnId":"turn-1","changes":[{"id":"c1","area":"rules","op":"added","text":"Ask before landing"},{"id":"c2","area":"skill","op":"added","text":"release","detail":"Cut a release"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:02.000Z","sequence":2,"event":{"type":"error","message":"boom","turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-09T00:05:00.000Z","sequence":3,"event":{"type":"cto_learned","learnId":"learn-1","turnId":"turn-1","changes":[{"id":"c1","area":"rules","op":"added","text":"Ask before landing","undone":true},{"id":"c2","area":"skill","op":"added","text":"release","detail":"Cut a release"}]}}
+    """
+    let transcript = parseWorkChatTranscript(raw)
+    XCTAssertEqual(transcript.count, 3)
+    let learned = buildWorkEventCards(from: transcript).filter { $0.kind == "ctoLearned" }
+    XCTAssertEqual(learned.count, 1)
+    XCTAssertEqual(learned.first?.timestamp, "2026-07-09T00:00:01.000Z")
+    XCTAssertEqual(learned.first?.ctoLearned?.changes.map(\.undone), [true, false])
+    XCTAssertEqual(learned.first?.ctoLearned?.changes.last?.detail, "Cut a release")
+  }
+
   func testDismissedUnprocessedMessageFoldsWithoutStandaloneTimelineCard() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"user_message","text":"Never mind","turnId":"turn-1","steerId":"steer-dismiss","deliveryState":"unprocessed","processed":false}}

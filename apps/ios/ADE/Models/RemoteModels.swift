@@ -2262,6 +2262,13 @@ struct CtoMemory: Codable, Hashable {
   var userNotesLimitBytes: Int?
   var memoryHash: String?
   var userNotesHash: String?
+  /// `.ade/cto/RULES.md`: standing rules the person and the CTO both edit.
+  var rules: String?
+  var rulesBytes: Int?
+  var rulesLimitBytes: Int?
+  var rulesHash: String?
+  /// The CTO's skills, one how-to per kind of task, by name.
+  var skills: [CtoSkillSummary]?
   var openWork: [CtoOpenWorkItem]?
   /// True when a notes write over the cap moves the coldest notes to the
   /// archive instead of being refused. Nil from an older host: keep the block.
@@ -2277,6 +2284,11 @@ struct CtoMemory: Codable, Hashable {
     userNotesLimitBytes: Int? = nil,
     memoryHash: String? = nil,
     userNotesHash: String? = nil,
+    rules: String? = nil,
+    rulesBytes: Int? = nil,
+    rulesLimitBytes: Int? = nil,
+    rulesHash: String? = nil,
+    skills: [CtoSkillSummary]? = nil,
     openWork: [CtoOpenWorkItem]? = nil,
     notesOverflowArchives: Bool? = nil,
     updatedAt: String? = nil
@@ -2289,6 +2301,11 @@ struct CtoMemory: Codable, Hashable {
     self.userNotesLimitBytes = userNotesLimitBytes
     self.memoryHash = memoryHash
     self.userNotesHash = userNotesHash
+    self.rules = rules
+    self.rulesBytes = rulesBytes
+    self.rulesLimitBytes = rulesLimitBytes
+    self.rulesHash = rulesHash
+    self.skills = skills
     self.openWork = openWork
     self.notesOverflowArchives = notesOverflowArchives
     self.updatedAt = updatedAt
@@ -2310,6 +2327,14 @@ struct CtoMemory: Codable, Hashable {
     userNotesLimitBytes = int(.userNotesLimitBytes)
     memoryHash = str(.memoryHash)
     userNotesHash = str(.userNotesHash)
+    rules = str(.rules)
+    rulesBytes = int(.rulesBytes)
+    rulesLimitBytes = int(.rulesLimitBytes)
+    rulesHash = str(.rulesHash)
+    // One unreadable skill row drops only itself.
+    skills = (try? c.decodeIfPresent([CtoSkillSummaryLossy].self, forKey: .skills))
+      .flatMap { $0 }?
+      .compactMap(\.value)
     openWork = (try? c.decodeIfPresent([CtoOpenWorkItem].self, forKey: .openWork)).flatMap { $0 }
     notesOverflowArchives = (try? c.decodeIfPresent(Bool.self, forKey: .notesOverflowArchives)).flatMap { $0 }
     updatedAt = str(.updatedAt)
@@ -2318,12 +2343,19 @@ struct CtoMemory: Codable, Hashable {
   /// The project notes, one per line, without list markers.
   var noteLines: [String] { ctoNoteLines(memory) }
 
-  /// True when the host returned no notes and no open work yet.
+  /// True when the host returned no notes, rules, skills or open work yet.
   var isEmpty: Bool {
     memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && (userNotes ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (rules ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && (skills ?? []).isEmpty
       && (openWork ?? []).isEmpty
   }
+}
+
+private struct CtoSkillSummaryLossy: Decodable {
+  var value: CtoSkillSummary?
+  init(from decoder: Decoder) throws { value = try? CtoSkillSummary(from: decoder) }
 }
 
 /// Notes text as lines: list markers dropped, blanks skipped, and headings,
@@ -2412,6 +2444,192 @@ struct CtoArchivePage: Codable, Hashable {
 /// The start of the error a notes write gets when the file changed since the
 /// editor loaded it (desktop `CTO_NOTES_CHANGED_ERROR`).
 let ctoNotesChangedError = "Notes changed since you opened them."
+
+/// Hard cap on `.ade/cto/RULES.md` (desktop `CTO_RULES_MAX_BYTES`).
+let ctoRulesMaxBytes = 4096
+/// One SKILL.md, frontmatter included (desktop `CTO_SKILL_MAX_BYTES`).
+let ctoSkillMaxBytes = 8192
+/// Skills the CTO keeps at once (desktop `CTO_SKILLS_MAX`).
+let ctoSkillsMax = 40
+
+/// One skill as the memory snapshot lists it (desktop `CtoSkillSummary`).
+struct CtoSkillSummary: Codable, Hashable, Identifiable {
+  var name: String
+  var description: String
+  var bytes: Int?
+  var updatedAt: String?
+
+  var id: String { name }
+
+  init(name: String, description: String, bytes: Int? = nil, updatedAt: String? = nil) {
+    self.name = name
+    self.description = description
+    self.bytes = bytes
+    self.updatedAt = updatedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    name = try c.decode(String.self, forKey: .name)
+    description = (try? c.decodeIfPresent(String.self, forKey: .description)).flatMap { $0 } ?? ""
+    bytes = (try? c.decodeIfPresent(Int.self, forKey: .bytes)).flatMap { $0 }
+    updatedAt = (try? c.decodeIfPresent(String.self, forKey: .updatedAt)).flatMap { $0 }
+  }
+}
+
+/// One whole skill, as `cto.getSkill` answers it (desktop `CtoSkillFile`).
+/// `cto.writeSkill`'s answer: the memory, plus the skill exactly as it was
+/// written (an older host sends no `skill`).
+struct CtoSkillWrite: Decodable {
+  let memory: CtoMemory
+  let skill: CtoSkillFile?
+
+  private enum CodingKeys: String, CodingKey { case skill }
+
+  init(from decoder: Decoder) throws {
+    memory = try CtoMemory(from: decoder)
+    skill = try decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(CtoSkillFile.self, forKey: .skill)
+  }
+}
+
+struct CtoSkillFile: Decodable, Hashable {
+  var name: String
+  var description: String
+  /// The whole SKILL.md: frontmatter and the how-to.
+  var text: String
+  /// sha256 (hex) of `text`; sent back as `baseHash` on a write.
+  var hash: String?
+
+  init(name: String, description: String, text: String, hash: String?) {
+    self.name = name
+    self.description = description
+    self.text = text
+    self.hash = hash
+  }
+
+  private enum CodingKeys: String, CodingKey { case name, description, text, hash }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    name = try c.decode(String.self, forKey: .name)
+    description = (try? c.decodeIfPresent(String.self, forKey: .description)).flatMap { $0 } ?? ""
+    text = (try? c.decodeIfPresent(String.self, forKey: .text)).flatMap { $0 } ?? ""
+    hash = (try? c.decodeIfPresent(String.self, forKey: .hash)).flatMap { $0 }
+  }
+}
+
+/// What `cto.undoLearned` answers (desktop `CtoUndoLearnedResult`).
+struct CtoUndoLearnedResult: Decodable, Hashable {
+  var undone: Bool
+  var note: String?
+
+  init(undone: Bool, note: String? = nil) {
+    self.undone = undone
+    self.note = note
+  }
+
+  private enum CodingKeys: String, CodingKey { case undone, note }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    undone = (try? c.decodeIfPresent(Bool.self, forKey: .undone)).flatMap { $0 } ?? false
+    note = (try? c.decodeIfPresent(String.self, forKey: .note)).flatMap { $0 }
+  }
+}
+
+/// Where a lesson went (desktop `CtoLearnedArea`).
+enum CtoLearnedArea: String, Hashable {
+  case rules
+  case skill
+  case projectNotes = "project_notes"
+  case userNotes = "user_notes"
+
+  /// The row's word (desktop `CTO_LEARNED_AREA_LABEL`).
+  var label: String {
+    switch self {
+    case .rules: return "Rule"
+    case .skill: return "Skill"
+    case .projectNotes: return "Note"
+    case .userNotes: return "About you"
+    }
+  }
+}
+
+enum CtoLearnedOp: String, Hashable { case added, changed, removed }
+
+/// One change a CTO turn made to what it keeps (desktop `CtoLearnedChange`).
+struct CtoLearnedChange: Hashable, Identifiable {
+  var id: String
+  var area: CtoLearnedArea
+  var op: CtoLearnedOp
+  /// The rule or note line as it is now (removed: as it was); a skill's name.
+  var text: String
+  /// A `changed` rule or note: the line it replaced.
+  var previous: String? = nil
+  /// A skill: its one-line description.
+  var detail: String? = nil
+  var undone: Bool = false
+
+  init(id: String, area: CtoLearnedArea, op: CtoLearnedOp, text: String, previous: String? = nil, detail: String? = nil, undone: Bool = false) {
+    self.id = id
+    self.area = area
+    self.op = op
+    self.text = text
+    self.previous = previous
+    self.detail = detail
+    self.undone = undone
+  }
+
+  /// A change from its JSON object, or nil when this build can't read it (an
+  /// unknown area or op, a missing id or text). Desktop `isCtoLearnedChange`.
+  init?(json: [String: Any]) {
+    guard let id = json["id"] as? String,
+          let text = json["text"] as? String,
+          let area = (json["area"] as? String).flatMap(CtoLearnedArea.init(rawValue:)),
+          let op = (json["op"] as? String).flatMap(CtoLearnedOp.init(rawValue:)) else {
+      return nil
+    }
+    self.init(
+      id: id,
+      area: area,
+      op: op,
+      text: text,
+      previous: (json["previous"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+      detail: (json["detail"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+      undone: json["undone"] as? Bool == true
+    )
+  }
+}
+
+/// Decodes one `cto_learned` change, or nil when this build can't read it.
+struct CtoLearnedChangeLossy: Decodable {
+  var value: CtoLearnedChange?
+
+  private enum CodingKeys: String, CodingKey { case id, area, op, text, previous, detail, undone }
+
+  init(from decoder: Decoder) throws {
+    guard let c = try? decoder.container(keyedBy: CodingKeys.self),
+          let id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? nil,
+          let text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? nil,
+          let area = ((try? c.decodeIfPresent(String.self, forKey: .area)) ?? nil).flatMap(CtoLearnedArea.init(rawValue:)),
+          let op = ((try? c.decodeIfPresent(String.self, forKey: .op)) ?? nil).flatMap(CtoLearnedOp.init(rawValue:)) else {
+      value = nil
+      return
+    }
+    func optional(_ key: CodingKeys) -> String? {
+      ((try? c.decodeIfPresent(String.self, forKey: key)) ?? nil).flatMap { $0.isEmpty ? nil : $0 }
+    }
+    value = CtoLearnedChange(
+      id: id,
+      area: area,
+      op: op,
+      text: text,
+      previous: optional(.previous),
+      detail: optional(.detail),
+      undone: ((try? c.decodeIfPresent(Bool.self, forKey: .undone)) ?? nil) == true
+    )
+  }
+}
 
 /// What `cto.refreshContext` did. A busy CTO is refreshed when its turn ends.
 struct CtoRefreshContextResult: Codable, Hashable {
@@ -4505,6 +4723,10 @@ enum AgentChatEvent: Decodable, Equatable {
   /// reply. `targetKey` is `workUserMessageReactionKey` of that message; the
   /// newest reaction per key wins. Draws on the bubble, never as a row.
   case userMessageReaction(targetKey: String, emoji: String, turnId: String?)
+  /// CTO only: what one turn changed in its rules, skills or notes, one row
+  /// with an Undo per change. An Undo re-sends the same `learnId` with that
+  /// change marked undone; the newest copy draws in the first one's place.
+  case ctoLearned(learnId: String, changes: [CtoLearnedChange], turnId: String?)
   /// CTO only: the person's emoji on one of the CTO's messages. `targetKey`
   /// is `workAssistantMessageReactionKey` of that message; the newest per key
   /// wins. Starts no turn, draws under the message, never as a row.
@@ -4770,6 +4992,8 @@ extension AgentChatEvent {
     case replacementMessageId
     case targetKey
     case emoji
+    case learnId
+    case changes
     case messageId
     case itemId
     case phase
@@ -4965,6 +5189,19 @@ extension AgentChatEvent {
         targetKey: targetKey,
         emoji: emoji,
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "cto_learned":
+      // Changes this build can't read are dropped; a row with none draws nothing.
+      let changes = ((try? container.decodeIfPresent([CtoLearnedChangeLossy].self, forKey: .changes)) ?? nil)?
+        .compactMap(\.value) ?? []
+      guard let learnId = (try? decodeNonEmptyString(forKey: .learnId)) ?? nil, !changes.isEmpty else {
+        self = .unknown(type: type)
+        return
+      }
+      self = .ctoLearned(
+        learnId: learnId,
+        changes: changes,
+        turnId: (try? container.decodeIfPresent(String.self, forKey: .turnId)) ?? nil
       )
     case "assistant_message_reaction":
       // A missing key or an emoji outside the fixed set is dropped: nothing draws.
@@ -5576,6 +5813,7 @@ extension AgentChatEvent {
     case .userMessage: return "user_message"
     case .userMessageResolution: return "user_message_resolution"
     case .userMessageReaction: return "user_message_reaction"
+    case .ctoLearned: return "cto_learned"
     case .assistantMessageReaction: return "assistant_message_reaction"
     case .text: return "text"
     case .toolCall: return "tool_call"

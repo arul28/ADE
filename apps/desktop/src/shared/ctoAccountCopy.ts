@@ -21,6 +21,9 @@ export const CTO_ACCOUNT_COPY_MAX_CHARS = 46_000;
 /** The conversation tail kept in the copy, newest last. */
 export const CTO_ACCOUNT_COPY_TAIL_MAX_CHARS = 24_000;
 
+/** One change the person undid, as the CTO's undone list keeps it. */
+export type CtoAccountCopyUndone = { area: string; op: string; text: string; at: string };
+
 /** One CTO routine, as a new home machine re-creates it. */
 export type CtoAccountCopyRoutine = {
   title: string;
@@ -45,6 +48,15 @@ export type CtoAccountCopy = {
   userNotes: string;
   /** `.ade/cto/open-work.json` as written, or null when it has none. */
   openWork: string | null;
+  /** `.ade/cto/RULES.md` as written. Missing in copies from older builds. */
+  rules?: string;
+  /** Each skill's whole SKILL.md, by name. Missing in copies from older builds, or when they did not fit. */
+  skills?: Array<{ name: string; text: string }>;
+  /**
+   * What the person undid (`.ade/cto/learning/undone.json`), so the CTO at a
+   * new home does not make those changes again. Missing in copies from older builds.
+   */
+  undone?: CtoAccountCopyUndone[];
   routines: CtoAccountCopyRoutine[];
   /** The last turns, as the CTO's own conversation tail renders them. */
   tail: string;

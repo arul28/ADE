@@ -1,23 +1,31 @@
 import React, { useCallback, useEffect, useState } from "react";
 import {
   CTO_PROJECT_NOTES_MAX_BYTES,
+  CTO_RULES_MAX_BYTES,
   CTO_USER_NOTES_MAX_BYTES,
+  type CtoSkillSummary,
   type OpenProjectBinding,
 } from "../../../shared/types";
 import { ModernSection } from "../settings/primitives";
 import { Banner } from "../ui/notice";
 import { CtoArchiveList } from "./CtoArchiveList";
 import { CtoOpenWorkList } from "./CtoOpenWorkList";
+import { CtoSkillsList } from "./CtoSkillsList";
 import { AutosaveTextArea, CTO_SETTINGS_GROUP, type AutosaveHostAnswer } from "./ctoSettingsUi";
 import { useCtoMemory } from "./useCtoMemory";
 
 /**
  * Settings › Memory: what the CTO keeps between conversations, all of it
- * editable. The project notes (`.ade/cto/MEMORY.md`), the notes about the
- * person (shared by every project on the CTO's machine) and the open-work
- * list. The CTO is given all three on every turn. Below them, the archive:
- * what left the notes, facts from past turns, discoveries and story versions.
+ * editable. Its rules (`.ade/cto/RULES.md`, yours and its own), its skills
+ * (one how-to per kind of task), the project notes (`.ade/cto/MEMORY.md`),
+ * the notes about the person (shared by every project on the CTO's machine)
+ * and the open-work list. Everything but the skills' bodies rides every turn.
+ * Below them, the archive: what left the notes, facts from past turns,
+ * discoveries and story versions.
  */
+/** One empty list, so a host with no skills doesn't hand the list a new array every render. */
+const NO_SKILLS: CtoSkillSummary[] = [];
+
 export function CtoMemoryPanel({
   pin,
   sessionId,
@@ -59,6 +67,13 @@ export function CtoMemoryPanel({
     },
     [updateNotes],
   );
+  const saveRules = useCallback(
+    async (text: string, baseHash?: string): Promise<AutosaveHostAnswer> => {
+      const next = await updateNotes({ scope: "rules", text, ...(baseHash ? { baseHash } : {}) });
+      return { text: next.rules ?? "", hash: next.rulesHash };
+    },
+    [updateNotes],
+  );
   const saveUser = useCallback(
     async (text: string, baseHash?: string): Promise<AutosaveHostAnswer> => {
       const next = await updateNotes({ scope: "user", text, ...(baseHash ? { baseHash } : {}) });
@@ -85,8 +100,44 @@ export function CtoMemoryPanel({
     return <p className="ade-modern-muted">{loading ? "Loading…" : "Home machine unreachable"}</p>;
   }
 
+  // An older home machine sends no rules or skills and refuses their writes.
+  const hostHasRules = memory.rules !== undefined || memory.rulesHash !== undefined;
+  const hostHasSkills = memory.skills !== undefined;
+
   return (
     <div className="ade-modern-sections">
+      {hostHasRules ? (
+        <ModernSection
+          group={CTO_SETTINGS_GROUP}
+          anchor="cto.memory.rules"
+          title="Rules"
+          hint="Yours and the CTO's, followed every turn"
+        >
+          <AutosaveTextArea
+            ariaLabel="Rules"
+            value={memory.rules ?? ""}
+            hash={memory.rulesHash}
+            limit={memory.rulesLimitBytes ?? CTO_RULES_MAX_BYTES}
+            rows={8}
+            placeholder={"- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default."}
+            onSave={saveRules}
+          />
+        </ModernSection>
+      ) : null}
+
+      {pin && hostHasSkills ? (
+        <ModernSection
+          group={CTO_SETTINGS_GROUP}
+          anchor="cto.memory.skills"
+          title="Skills"
+          hint="One how-to per kind of task"
+        >
+          <div className="ade-modern-rows" style={{ padding: 8 }}>
+            <CtoSkillsList pin={pin} skills={memory.skills ?? NO_SKILLS} onChanged={refresh} />
+          </div>
+        </ModernSection>
+      ) : null}
+
       <ModernSection
         group={CTO_SETTINGS_GROUP}
         anchor="cto.memory.project"

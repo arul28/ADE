@@ -473,6 +473,33 @@ struct CtoMemoryPage: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 0) {
         if let memory = store.memory {
+          // An older host sends no rules and refuses scope "rules": no editor.
+          if memory.rules != nil || memory.rulesHash != nil {
+            CtoSectionTitle(title: "Rules") {
+              Text("Yours and the CTO's, followed every turn")
+                .font(.footnote)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+            CtoNotesEditor(
+              store: store,
+              scope: .rules,
+              text: memory.rules ?? "",
+              hash: memory.rulesHash,
+              limit: memory.rulesLimitBytes ?? ctoRulesMaxBytes,
+              placeholder: "- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default.",
+              accent: live.look.ctoAccent
+            )
+          }
+          if store.canEditSkills || !(memory.skills ?? []).isEmpty {
+            CtoSectionTitle(title: "Skills", count: memory.skills?.count) {
+              Text("One how-to per kind of task")
+                .font(.footnote)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+            CtoSkillsList(store: store, skills: memory.skills ?? [], accent: live.look.ctoAccent)
+          }
           CtoSectionTitle(title: "Project notes")
           CtoNotesEditor(
             store: store,
@@ -731,10 +758,9 @@ func ctoRebaseDraft(base: String, draft: String, host: String) -> String? {
   return nil
 }
 
-/// A notes file: saves a beat after the last keystroke, with a byte meter.
-/// A write the host refuses because the file changed meanwhile asks to reload.
-/// Over the cap it still saves when the host makes room (`overflowMovesOut`):
-/// the oldest notes move to the archive and the field shows what was kept.
+/// A notes file (or the rules) in the shared autosaving editor. Over the cap
+/// it still saves when the host makes room (`overflowMovesOut`): the oldest
+/// notes move to the archive and the field shows what was kept.
 struct CtoNotesEditor: View {
   @ObservedObject var store: CtoStore
   let scope: CtoStore.NotesScope
@@ -745,147 +771,45 @@ struct CtoNotesEditor: View {
   let placeholder: String
   let accent: Color
 
-  private enum SaveState: Equatable { case idle, saving, saved, conflict, failed(String) }
-
-  @State private var draft = ""
-  @State private var baseHash: String? = nil
-  @State private var dirty = false
-  @State private var state: SaveState = .idle
-  @State private var hydrated = false
-
-  private var bytes: Int { draft.utf8.count }
-  private var over: Bool { bytes > limit }
-  /// Over the cap with no host to make room: kept here, not sent.
-  private var blocked: Bool { over && !overflowMovesOut }
-
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      ZStack(alignment: .topLeading) {
-        if draft.isEmpty {
-          Text(placeholder)
-            .font(.body)
-            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-            .padding(.horizontal, 13)
-            .padding(.vertical, 16)
-            .allowsHitTesting(false)
-        }
-        TextEditor(text: $draft)
-          .font(.body)
-          .scrollContentBackground(.hidden)
-          .padding(8)
-          .frame(minHeight: scope == .project ? 200 : 130)
-          .disabled(!store.canEditNotes)
-          .accessibilityLabel(scope == .project ? "Project notes" : "About you")
-      }
-      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      HStack(spacing: 8) {
-        Text(over && overflowMovesOut
-          ? "\(bytes.formatted()) of \(limit.formatted()) · oldest notes move to the archive"
-          : "\(bytes.formatted()) of \(limit.formatted())")
-          .font(.footnote.monospacedDigit())
-          .foregroundStyle(blocked ? ADEColor.warning : ADEColor.textMuted)
-          .lineLimit(1)
-          .minimumScaleFactor(0.8)
-        Spacer(minLength: 8)
-        statusView
-      }
-      .frame(minHeight: 24)
-    }
-    .onAppear {
-      guard !hydrated else { return }
-      hydrated = true
-      draft = text
-      baseHash = hash
-    }
-    .onChange(of: text) { _, next in
-      // The CTO or another device wrote the file: adopt it unless mid-edit.
-      guard !dirty else { return }
-      draft = next
-      baseHash = hash
-    }
-    .onChange(of: hash) { _, next in if !dirty { baseHash = next } }
-    .onChange(of: draft) { _, next in
-      if next != text { dirty = true }
-    }
-    .onDisappear {
-      // Leaving inside the save delay cancels it: save what is left now. The
-      // store outlives this page.
-      guard dirty, !blocked, store.canEditNotes else { return }
-      if case .saving = state { return }
-      let store = store, scope = scope, text = draft, base = baseHash
-      Task { _ = await store.saveNotes(scope, text: text, baseHash: base) }
-    }
-    .task(id: draft) {
-      guard dirty, !blocked, store.canEditNotes else { return }
-      try? await Task.sleep(nanoseconds: 1_200_000_000)
-      guard !Task.isCancelled else { return }
-      await save()
+    let store = store, scope = scope
+    CtoTextFileEditor(
+      text: text,
+      hash: hash,
+      limit: limit,
+      placeholder: placeholder,
+      accent: accent,
+      minHeight: scope == .user ? 130 : (scope == .rules ? 150 : 200),
+      accessibilityLabel: scope == .project ? "Project notes" : (scope == .rules ? "Rules" : "About you"),
+      canEdit: store.canEditNotes,
+      overflowMovesOut: overflowMovesOut,
+      save: { text, baseHash in await store.saveNotes(scope, text: text, baseHash: baseHash) },
+      saved: {
+        guard let memory = store.memory else { return nil }
+        return (CtoNotesEditor.text(of: scope, in: memory), CtoNotesEditor.hash(of: scope, in: memory))
+      },
+      reload: {
+        guard await store.loadMemory(), let memory = store.memory else { return nil }
+        return (CtoNotesEditor.text(of: scope, in: memory), CtoNotesEditor.hash(of: scope, in: memory))
+      },
+      onSaved: { store.savedTick += 1 }
+    )
+  }
+
+  static func text(of scope: CtoStore.NotesScope, in memory: CtoMemory) -> String {
+    switch scope {
+    case .project: return memory.memory
+    case .user: return memory.userNotes ?? ""
+    case .rules: return memory.rules ?? ""
     }
   }
 
-  @ViewBuilder
-  private var statusView: some View {
-    switch state {
-    case .idle:
-      EmptyView()
-    case .saving:
-      Text("Saving…").font(.footnote).foregroundStyle(ADEColor.textMuted)
-    case .saved:
-      Text("Saved").font(.footnote).foregroundStyle(ADEColor.textMuted)
-    case .conflict:
-      Button {
-        Task { await reload() }
-      } label: {
-        Text("Changed elsewhere · Reload").font(.footnote.weight(.medium)).foregroundStyle(accent)
-      }
-      .buttonStyle(.plain)
-      .lineLimit(1)
-    case .failed(let message):
-      Text(message).font(.footnote).foregroundStyle(ADEColor.warning).lineLimit(1)
+  static func hash(of scope: CtoStore.NotesScope, in memory: CtoMemory?) -> String? {
+    switch scope {
+    case .project: return memory?.memoryHash
+    case .user: return memory?.userNotesHash
+    case .rules: return memory?.rulesHash
     }
-  }
-
-  private func save() async {
-    state = .saving
-    let sent = draft
-    let result = await store.saveNotes(scope, text: sent, baseHash: baseHash)
-    switch result {
-    case .saved:
-      dirty = draft != sent
-      state = .saved
-      if let memory = store.memory {
-        // The host's answer is what it kept (notes moved out, lines trimmed):
-        // a clean field shows that, not what was typed.
-        let kept = scope == .project ? memory.memory : (memory.userNotes ?? "")
-        let keptHash = scope == .project ? memory.memoryHash : memory.userNotesHash
-        if !dirty {
-          draft = kept
-          baseHash = keptHash
-        } else if let rebased = ctoRebaseDraft(base: sent, draft: draft, host: kept) {
-          // Keystrokes from during the save go onto what the host kept; a
-          // draft that still holds the lines it moved out would save them back.
-          draft = rebased
-          baseHash = keptHash
-        } else {
-          // The old hash stays, so the host refuses the next save too.
-          state = .conflict
-        }
-      }
-      store.savedTick += 1
-    case .conflict:
-      state = .conflict
-    case .failed(let message):
-      state = .failed(message)
-    }
-  }
-
-  private func reload() async {
-    await store.loadMemory()
-    guard let memory = store.memory else { return }
-    dirty = false
-    draft = scope == .project ? memory.memory : (memory.userNotes ?? "")
-    baseHash = scope == .project ? memory.memoryHash : memory.userNotesHash
-    state = .idle
   }
 }
 

@@ -24,7 +24,7 @@ import {
 import { backgroundCommandLabel } from "../../../shared/chatScheduledWork";
 import { readWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
-import { assistantMessageReactionKey, isChatReactionEmoji, isCtoReactionEmoji, userMessageReactionKey } from "../../../shared/types/chat";
+import { assistantMessageReactionKey, isChatReactionEmoji, isCtoLearnedChange, isCtoReactionEmoji, userMessageReactionKey } from "../../../shared/types/chat";
 import { sceneRowIdentity } from "../../../shared/chatScene";
 import { adeCardProgressTotal, adeCardRowKey } from "../../../shared/adeCard";
 import {
@@ -3175,6 +3175,30 @@ function attachUserMessageReaction(
 }
 
 /**
+ * The CTO's "Learned" row. An Undo re-sends the row with the same `learnId`;
+ * the newest copy takes the first one's place, so the row keeps its spot
+ * under the turn that learned it. A row with no change this build can read
+ * draws nothing.
+ */
+function appendCtoLearnedRow(
+  rows: ChatTranscriptRenderEnvelope[],
+  envelope: AgentChatEventEnvelope,
+  event: Extract<AgentChatEvent, { type: "cto_learned" }>,
+  rowKey: string,
+): void {
+  const changes = Array.isArray(event.changes) ? event.changes.filter(isCtoLearnedChange) : [];
+  if (!event.learnId || !changes.length) return;
+  const next = { ...event, changes };
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const row = rows[index]!;
+    if (row.event.type !== "cto_learned" || row.event.learnId !== event.learnId) continue;
+    rows[index] = { ...row, event: next };
+    return;
+  }
+  rows.push({ key: rowKey, timestamp: envelope.timestamp, event: next });
+}
+
+/**
  * The person's reaction lands on the CTO message it names
  * (`metadata.userReaction`), the newest of theirs winning. A merged text row
  * keeps its first fragment's ids, so its key is the one the person clicked.
@@ -3344,6 +3368,11 @@ export function appendCollapsedChatTranscriptEvent(
 
   if (event.type === "user_message_reaction") {
     attachUserMessageReaction(rows, event);
+    return;
+  }
+
+  if (event.type === "cto_learned") {
+    appendCtoLearnedRow(rows, envelope, event, rowKey);
     return;
   }
 

@@ -397,6 +397,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // kind, or the child's words.
   "cto_stall_nudge",
   "cto_need",
+  // The CTO learning loop: a turn saved a rule, skill or note (`cto_learned`,
+  // `completed`, automatic) and the person undid one of its changes
+  // (`cto_learned_undo`, `completed`). Never the rule, skill, note or chat.
+  "cto_learned",
+  "cto_learned_undo",
   // What became of a handoff's transcript replay. Cross-provider handoffs carry
   // the conversation as text, and the only product question is whether it
   // arrives: whole, in part, not at all, or only after ADE re-sent the message

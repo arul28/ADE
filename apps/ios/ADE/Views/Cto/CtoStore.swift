@@ -210,7 +210,9 @@ func ctoRelativeDay(_ iso: String, now: Date = Date()) -> String {
 
 @MainActor
 final class CtoStore: ObservableObject {
-  enum NotesScope: String { case project, user }
+  /// A file Settings › Memory edits whole: the two notes files, or the rules
+  /// (`.ade/cto/RULES.md`).
+  enum NotesScope: String { case project, user, rules }
   enum NotesSaveResult: Equatable { case saved, conflict, failed(String) }
 
   enum ArchiveFilter: String, CaseIterable, Identifiable {
@@ -237,6 +239,8 @@ final class CtoStore: ObservableObject {
   @Published var memory: CtoMemory?
   @Published var memoryLoaded = false
   @Published var memoryError: String?
+  /// Fixture only: the skills' whole SKILL.md, by name.
+  private var fixtureSkillTexts: [String: String] = [:]
   /// The archive (desktop `CtoArchiveList`): what left the notes, facts, discoveries, story versions.
   @Published var archive: CtoArchivePage?
   @Published var archiveError: String?
@@ -282,6 +286,8 @@ final class CtoStore: ObservableObject {
   private var needsLoaded = false
   /// Bumps when the CTO or its home changes: a read started before is dropped.
   private var needsGeneration = 0
+  /// Bumps with the home too: a skill save's answer from the old home is dropped.
+  private var homeGeneration = 0
 
   private var sync: SyncService? { isFixture ? nil : SyncService.shared }
 
@@ -292,6 +298,7 @@ final class CtoStore: ObservableObject {
   init(
     fixtureSnapshot: CtoSnapshot? = nil,
     fixtureMemory: CtoMemory?,
+    fixtureSkillTexts: [String: String] = [:],
     fixtureArchive: CtoArchivePage? = nil,
     routines: [AgentChatScheduledWorkItem] = [],
     children: [CtoChildRow] = [],
@@ -301,6 +308,7 @@ final class CtoStore: ObservableObject {
     isFixture = true
     snapshot = fixtureSnapshot
     memory = fixtureMemory
+    self.fixtureSkillTexts = fixtureSkillTexts
     fixtureArchiveAll = fixtureArchive
     archive = fixtureArchive
     memoryLoaded = true
@@ -320,6 +328,7 @@ final class CtoStore: ObservableObject {
     // Another CTO or home: the old home's lines are not this one's.
     if changed, !isFixture {
       needsGeneration += 1
+      homeGeneration += 1
       needsTask = nil
       lastNeedsFetchAt = nil
       needsLoaded = false
@@ -335,11 +344,20 @@ final class CtoStore: ObservableObject {
 
   // MARK: Capabilities (an older host hides the control)
 
-  var canEditNotes: Bool { isFixture || sync?.supportsRemoteAction("cto.updateNotes") == true }
-  var canEditOpenWork: Bool { isFixture || sync?.supportsRemoteAction("cto.updateOpenWork") == true }
-  var canRefreshContext: Bool { isFixture || sync?.supportsRemoteAction("cto.refreshContext") == true }
-  var canReadArchive: Bool { isFixture || sync?.supportsRemoteAction("cto.searchMemoryArchive") == true }
-  var canRecallArchive: Bool { isFixture || sync?.supportsRemoteAction("cto.recallArchivedNote") == true }
+  /// CTO calls go to the CTO's home machine, so ask that machine (not the
+  /// focused one) whether it runs them. Unknown while it is offline: hidden.
+  private func homeSupports(_ action: String) -> Bool {
+    isFixture || sync?.ctoHomeSupportsAction(action) == true
+  }
+
+  var canEditNotes: Bool { homeSupports("cto.updateNotes") }
+  var canEditOpenWork: Bool { homeSupports("cto.updateOpenWork") }
+  var canRefreshContext: Bool { homeSupports("cto.refreshContext") }
+  /// Skills need all three calls; an older host lists none of them.
+  var canEditSkills: Bool { homeSupports("cto.getSkill") && homeSupports("cto.writeSkill") }
+  var canDeleteSkills: Bool { homeSupports("cto.deleteSkill") }
+  var canReadArchive: Bool { homeSupports("cto.searchMemoryArchive") }
+  var canRecallArchive: Bool { homeSupports("cto.recallArchivedNote") }
 
   private func supportsRoutineAction(_ action: String) -> Bool {
     if isFixture { return true }
@@ -369,15 +387,19 @@ final class CtoStore: ObservableObject {
     await loadChildren()
   }
 
-  func loadMemory() async {
-    guard let sync else { return }
+  /// False when the read failed (the old memory stays).
+  @discardableResult
+  func loadMemory() async -> Bool {
+    guard let sync else { return false }
+    defer { memoryLoaded = true }
     do {
       memory = try await sync.fetchCtoMemory()
       memoryError = nil
+      return true
     } catch {
       memoryError = ctoShortError(error, fallback: "Couldn't read notes")
+      return false
     }
-    memoryLoaded = true
   }
 
   /// Just after the soonest checked routine is next due. Its check can change
@@ -797,7 +819,11 @@ final class CtoStore: ObservableObject {
 
   func saveNotes(_ scope: NotesScope, text: String, baseHash: String?) async -> NotesSaveResult {
     if isFixture {
-      if scope == .project { memory?.memory = text } else { memory?.userNotes = text }
+      switch scope {
+      case .project: memory?.memory = text
+      case .user: memory?.userNotes = text
+      case .rules: memory?.rules = text
+      }
       return .saved
     }
     guard let sync else { return .failed("Not connected") }
@@ -808,6 +834,70 @@ final class CtoStore: ObservableObject {
       let message = (error as NSError).localizedDescription
       if message.contains(ctoNotesChangedError) { return .conflict }
       return .failed(ctoShortError(error, fallback: "Couldn't save"))
+    }
+  }
+
+  // MARK: Skills
+
+  /// The whole SKILL.md, or nil when it is gone. Throws on a failed read.
+  func loadSkill(_ name: String) async throws -> CtoSkillFile? {
+    if isFixture {
+      guard let text = fixtureSkillTexts[name] else { return nil }
+      let description = memory?.skills?.first { $0.name == name }?.description ?? ""
+      return CtoSkillFile(name: name, description: description, text: text, hash: "fixture-\(text.hashValue)")
+    }
+    guard let sync else { return nil }
+    return try await sync.fetchCtoSkill(name: name)
+  }
+
+  /// The skill exactly as the last save wrote it, by name (its committed hash).
+  private(set) var writtenSkills: [String: CtoSkillFile] = [:]
+
+  /// Writes a whole SKILL.md; `.conflict` when it changed since `baseHash`.
+  func saveSkill(_ name: String, text: String, baseHash: String?) async -> NotesSaveResult {
+    if isFixture {
+      fixtureSkillTexts[name] = text
+      if memory?.skills?.contains(where: { $0.name == name }) != true {
+        memory?.skills = (memory?.skills ?? []) + [CtoSkillSummary(name: name, description: ctoSkillDescription(text) ?? "")]
+      } else if let description = ctoSkillDescription(text), let index = memory?.skills?.firstIndex(where: { $0.name == name }) {
+        memory?.skills?[index].description = description
+      }
+      return .saved
+    }
+    guard let sync else { return .failed("Not connected") }
+    do {
+      let generation = homeGeneration
+      let written = try await sync.writeCtoSkill(name: name, text: text, baseHash: baseHash)
+      // The old home's answer never lands on the store bound to the new one.
+      guard generation == homeGeneration else { return .failed("The CTO moved; reopen the skill") }
+      memory = written.memory
+      writtenSkills[name] = written.skill
+      return .saved
+    } catch {
+      let message = (error as NSError).localizedDescription
+      if message.contains(ctoNotesChangedError) { return .conflict }
+      return .failed(ctoShortError(error, fallback: "Couldn't save"))
+    }
+  }
+
+  @discardableResult
+  func deleteSkill(_ name: String) async -> Bool {
+    if isFixture {
+      fixtureSkillTexts[name] = nil
+      memory?.skills?.removeAll { $0.name == name }
+      return true
+    }
+    guard let sync else { return false }
+    busyIds.insert("skill:\(name)")
+    defer { busyIds.remove("skill:\(name)") }
+    do {
+      memory = try await sync.deleteCtoSkill(name: name)
+      ADEHaptics.light()
+      return true
+    } catch {
+      errorText = ctoShortError(error, fallback: "Couldn't delete the skill")
+      ADEHaptics.error()
+      return false
     }
   }
 
@@ -895,4 +985,46 @@ func ctoShortError(_ error: Error, fallback: String) -> String {
   let message = (error as? LocalizedError)?.errorDescription ?? (error as NSError).localizedDescription
   let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
   return trimmed.isEmpty ? fallback : ctoClipWords(trimmed, max: 48)
+}
+
+/// A new skill's starting SKILL.md (desktop `newSkillText`).
+func ctoNewSkillText(_ name: String) -> String {
+  "---\nname: \(name)\ndescription: When to use this skill, in one line\n---\n\n1. First step\n2. Check that it worked\n"
+}
+
+/// A typed skill name as the host stores it: lower case, runs of anything
+/// else turned into single dashes, at most 48 characters (desktop `ctoSkillSlug`).
+func ctoSkillSlug(_ raw: String) -> String {
+  var slug = ""
+  var pendingDash = false
+  for scalar in raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().unicodeScalars {
+    if ("a"..."z").contains(scalar) || ("0"..."9").contains(scalar) {
+      if pendingDash, !slug.isEmpty { slug.append("-") }
+      pendingDash = false
+      slug.unicodeScalars.append(scalar)
+    } else {
+      pendingDash = true
+    }
+  }
+  var capped = String(slug.prefix(ctoSkillNameMaxChars))
+  while capped.hasSuffix("-") { capped.removeLast() }
+  return capped
+}
+
+/// The host's cap on a skill's folder name (`CTO_SKILL_NAME_MAX_CHARS`).
+let ctoSkillNameMaxChars = 48
+
+/// The `description:` line of a SKILL.md's frontmatter, if it has one.
+func ctoSkillDescription(_ text: String) -> String? {
+  let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+  guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else { return nil }
+  for line in lines.dropFirst() {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed == "---" { break }
+    if trimmed.hasPrefix("description:") {
+      let value = trimmed.dropFirst("description:".count).trimmingCharacters(in: .whitespaces)
+      return value.isEmpty ? nil : value
+    }
+  }
+  return nil
 }

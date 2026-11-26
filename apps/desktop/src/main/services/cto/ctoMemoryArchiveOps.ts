@@ -76,6 +76,8 @@ export function createCtoMemoryArchiveOps(args: {
   readFilesBeforeArchive: () => { evictedDiscoveries: string; discoveries: string; story: CtoStoryRecord | null };
   readNoteLines: (scope: CtoNotesScope) => string[];
   remember: (input: { note: string; scope?: CtoNotesScope }) => CtoRememberResult;
+  /** `remember` for the person's own recall: not the CTO's change to show, and never refused as undone. */
+  rememberAsPerson: (input: { note: string; scope?: CtoNotesScope }) => CtoRememberResult;
 }) {
   const { archive } = args;
 
@@ -123,23 +125,25 @@ export function createCtoMemoryArchiveOps(args: {
    * a note `remember` clipped, or a different note it took for the same one,
    * leaves the entry where it is.
    */
-  const recallArchived = (input: CtoRecallArchivedArgs): CtoRememberResult => {
+  const recall = (input: CtoRecallArchivedArgs, remember: typeof args.remember): CtoRememberResult => {
     if (!archive?.available()) return { ok: false, error: "The archive is not available on this machine." };
     const entry = archive.get(input.id);
     if (!entry) return { ok: false, error: `No archived entry has id ${input.id}.` };
     if (entry.kind === "story") {
       return { ok: false, error: "A story version can't be pinned. Put the part you need in a note with remember." };
     }
-    const result = args.remember({ note: entry.text, scope: input.scope ?? entry.scope ?? "project" });
+    const result = remember({ note: entry.text, scope: input.scope ?? entry.scope ?? "project" });
     if (result.ok && ctoNoteKey(result.saved ? result.note : result.duplicateOf) === ctoNoteKey(entry.text)) {
       archive.markPinned(entry.id);
     }
     return result;
   };
 
+  const recallArchived = (input: CtoRecallArchivedArgs): CtoRememberResult => recall(input, args.remember);
+
   /** The person's recall from Settings › Memory: a refusal is an error. */
   const recallArchivedForUser = (input: CtoRecallArchivedArgs): void => {
-    const result = recallArchived(input);
+    const result = recall(input, args.rememberAsPerson);
     if (!result.ok) throw new AdeExpectedError(result.error, "user");
   };
 

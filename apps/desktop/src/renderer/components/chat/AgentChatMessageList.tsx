@@ -346,6 +346,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import { withChatPin } from "./chatMachinePin";
 import { CtoFreshContextDivider, CtoToolChips } from "./cto/CtoToolChips";
+import { CtoLearnedRow } from "./cto/CtoLearnedRow";
 import { CtoWorkingLine } from "./cto/CtoWorkingLine";
 import { CtoSpawnRows } from "./cto/CtoSpawnRows";
 import { ctoTranscriptRows } from "./cto/ctoSpawnRules";
@@ -4074,6 +4075,11 @@ function renderEvent(
         <span className="min-w-0 truncate">{event.preview ? `${label}: ${event.preview}` : label}</span>
       </div>
     );
+  }
+
+  /* ── CTO: what a turn learned ── */
+  if (event.type === "cto_learned") {
+    return <CtoLearnedRow learnId={event.learnId} changes={event.changes} />;
   }
 
   /* ── System Notice ── */

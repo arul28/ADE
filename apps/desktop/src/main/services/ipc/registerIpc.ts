@@ -117,7 +117,7 @@ import {
 } from "../chat/imageAttachmentConverter";
 import type { AcpChatProvider, ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
-import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
+import { isAdeUsageRangePreset, isAdeUsageScope, isCtoNotesFile } from "../../../shared/types";
 import { isProviderLoginAction } from "../../../shared/types/providerLogins";
 import type { MachineInventoryDetail } from "../../../shared/types/machineInventory";
 import { isProviderInstanceProvider } from "../../../shared/types/providerInstances";
@@ -748,6 +748,13 @@ import type {
   CtoGetMemoryArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoGetSkillArgs,
+  CtoWriteSkillArgs,
+  CtoWriteSkillResult,
+  CtoDeleteSkillArgs,
+  CtoSkillFile,
+  CtoUndoLearnedArgs,
+  CtoUndoLearnedResult,
   CtoArchiveQuery,
   CtoArchivePage,
   CtoRecallArchivedArgs,
@@ -14411,7 +14418,7 @@ export function registerIpc({
   handle(IPC.ctoUpdateNotes, async (_event, arg: CtoUpdateNotesArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    if (arg?.scope !== "project" && arg?.scope !== "user") throw new Error("updateNotes requires a scope.");
+    if (!arg || !isCtoNotesFile(arg.scope)) throw new Error("updateNotes requires a scope.");
     if (typeof arg.text !== "string") throw new Error("updateNotes requires a string `text` field.");
     ctx.ctoMemoryService.writeNotes(arg.scope, arg.text, {
       baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
@@ -14424,6 +14431,40 @@ export function registerIpc({
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
     ctx.ctoMemoryService.updateOpenWork(arg);
     return ctx.ctoMemoryService.getSnapshot();
+  });
+
+  handle(IPC.ctoGetSkill, async (_event, arg: CtoGetSkillArgs): Promise<CtoSkillFile | null> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    if (typeof arg?.name !== "string" || !arg.name.trim()) throw new Error("getSkill requires a name.");
+    return ctx.ctoMemoryService.readSkill(arg.name);
+  });
+
+  handle(IPC.ctoWriteSkill, async (_event, arg: CtoWriteSkillArgs): Promise<CtoWriteSkillResult> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    if (typeof arg?.name !== "string" || typeof arg.text !== "string") throw new Error("writeSkill requires a name and text.");
+    const skill = ctx.ctoMemoryService.writeSkillText({
+      name: arg.name,
+      text: arg.text,
+      baseHash: typeof arg.baseHash === "string" ? arg.baseHash : null,
+    });
+    return { ...ctx.ctoMemoryService.getSnapshot(), skill };
+  });
+
+  handle(IPC.ctoDeleteSkill, async (_event, arg: CtoDeleteSkillArgs): Promise<CtoMemorySnapshot> => {
+    const ctx = getCtx();
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    if (typeof arg?.name !== "string") throw new Error("deleteSkill requires a name.");
+    const result = ctx.ctoMemoryService.deleteSkillAsPerson(arg.name);
+    if (!result.ok) throw new Error(result.error);
+    return ctx.ctoMemoryService.getSnapshot();
+  });
+
+  handle(IPC.ctoUndoLearned, async (_event, arg: CtoUndoLearnedArgs): Promise<CtoUndoLearnedResult> => {
+    const ctx = getCtx();
+    if (!ctx.agentChatService) throw new Error("Chat is not available.");
+    return ctx.agentChatService.undoCtoLearned({ learnId: String(arg?.learnId ?? ""), changeId: String(arg?.changeId ?? "") });
   });
 
   handle(IPC.ctoSearchMemoryArchive, async (_event, arg: CtoArchiveQuery = {}): Promise<CtoArchivePage> => {

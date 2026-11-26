@@ -161,6 +161,29 @@ struct CtoAccountCopySheet: View {
               }
             }
           }
+          if let rules = nonEmptyTrimmed(copy.rules) {
+            section("Rules", symbol: "list.bullet.rectangle", text: rules)
+          }
+          if !copy.skills.isEmpty {
+            ADEKitCard(title: "Skills", symbol: "book.closed", count: "\(copy.skills.count)") {
+              VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(copy.skills.enumerated()), id: \.offset) { _, skill in
+                  VStack(alignment: .leading, spacing: 1) {
+                    Text(skill.name)
+                      .font(.subheadline.weight(.medium))
+                      .foregroundStyle(ADEColor.textPrimary)
+                    if let description = nonEmptyTrimmed(skill.description) {
+                      Text(description)
+                        .font(.caption)
+                        .foregroundStyle(ADEColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                  }
+                  .accessibilityElement(children: .combine)
+                }
+              }
+            }
+          }
           if let notes = nonEmptyTrimmed(copy.projectNotes) {
             section("Project notes", symbol: "doc.text", text: notes)
           }

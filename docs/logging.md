@@ -2694,6 +2694,21 @@ the realistic number is a few a day while a CTO runs children. Both carry
 `mode: "automatic"`, so they never count as a person using ADE. No ceiling was
 raised, and the dashboard spec is untouched.
 
+### The CTO's learning loop
+
+The brain that owns the CTO chat records two coarse facts
+(`chat/agentChatService.ts`, reported by `reportCtoLearning` in
+`analytics/ctoLearningProductAnalytics.ts`), each `ade_feature_used` with
+`feature: "cto"`, `surface: "api"` and `outcome: "completed"`:
+`action: "cto_learned"` when a CTO turn saved a rule, skill or note and drew a
+Learned row (`mode: "automatic"`, so it never counts as a person using ADE),
+and `action: "cto_learned_undo"` when the person pressed Undo on one of its
+changes. The product question is whether the CTO learns and how often the
+person takes it back. Never the rule, skill, note, chat, or the number of
+changes. A per-action one-hour deduplication key bounds each to 24 accepted
+events a day; the realistic number is a few a week. No ceiling was raised, and
+the dashboard spec is untouched.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.

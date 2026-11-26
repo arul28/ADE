@@ -2608,6 +2608,7 @@ func workAdeMessageReasonLabel(_ reason: String) -> String {
   case "cto_intro": return "Started the CTO's introduction"
   case "cto_handoff_note": return "Asked for a hand-off note"
   case "cto_child_report": return "A chat it started reported back"
+  case "cto_review": return "Reviewed a correction"
   default: return "Sent a message for you"
   }
 }

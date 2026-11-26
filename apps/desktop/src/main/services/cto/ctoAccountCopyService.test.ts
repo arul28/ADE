@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -82,7 +83,7 @@ function createMachine(deviceId: string, account: ReturnType<typeof createAccoun
     logger: silent,
     now: () => clock,
   });
-  return { deviceId, memory, service, reach };
+  return { deviceId, adeDir, memory, service, reach };
 }
 
 const homeOn = (deviceId: string): CtoHomeMachineRecord => ({
@@ -227,6 +228,56 @@ describe("ctoAccountCopyService across machines", () => {
     expect(a.memory.readNotes("project")).not.toContain("months ago");
     expect(account.copy()?.ownerDeviceId).toBe("device-a");
     expect(account.copy()?.projectNotes).toContain("Freeze starts Friday");
+  });
+
+  it("carries rules, skills and what the person undid, and leaves skills out whole when they don't fit", async () => {
+    const account = createAccount();
+    const b = createMachine("device-b", account);
+    b.memory.saveSkill({ name: "triage", description: "Triage a bug", body: "1. Reproduce" });
+    b.memory.addRule({ rule: "Keep PRs small", why: "reviews stay fast" });
+    b.memory.beginLearningTurn();
+    b.memory.addRule({ rule: "Merge without review", why: "it is faster" });
+    const learned = b.memory.finishLearningTurn({})!;
+    expect(b.memory.undoLearned({ learnId: learned.learnId, changeId: learned.changes[0]!.id }).ok).toBe(true);
+    tick();
+    await b.service.save("turn_ended");
+
+    // A takes the CTO: B's skills replace A's, and B's Undo still holds on A.
+    const a = createMachine("device-a", account);
+    a.memory.saveSkill({ name: "a-only", description: "From an earlier stay", body: "1. Old" });
+    const homeA = homeOn("device-a");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, homeA);
+    expect((await a.service.adopt({ home: homeA })).restored).toBe(true);
+    expect(a.memory.listSkills().map((skill) => skill.name)).toEqual(["triage"]);
+    expect(a.memory.readRules()).toContain("Keep PRs small");
+    expect(a.memory.addRule({ rule: "Merge without review", why: "it is faster" })).toMatchObject({ ok: false });
+
+    // Skills too big for the account's copy are left out whole, never in part.
+    for (let i = 0; i < 14; i += 1) {
+      a.memory.writeSkillText({ name: `big-${i}`, text: crypto.randomBytes(3500).toString("hex") });
+    }
+    tick();
+    await a.service.save("turn_ended");
+    expect(account.copy()?.ownerDeviceId).toBe("device-a");
+    expect(account.copy()?.skills).toBeUndefined();
+    expect(account.copy()?.undone?.map((item) => item.text)).toEqual(["Merge without review — it is faster."]);
+
+    // So the next home keeps its own skills instead of losing them to a partial list.
+    const c = createMachine("device-c", account);
+    c.memory.saveSkill({ name: "c-keep", description: "Local", body: "1. Keep" });
+    const homeC = homeOn("device-c");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, homeC);
+    expect((await c.service.adopt({ home: homeC })).restored).toBe(true);
+    expect(c.memory.listSkills().map((skill) => skill.name)).toEqual(["c-keep"]);
+    expect(c.memory.readRules()).toContain("Keep PRs small");
+
+    // A skill that can't be read leaves the whole set out too: a copy missing
+    // it would delete it from the next home.
+    fs.mkdirSync(path.join(c.adeDir, "cto", "skills", "broken", "SKILL.md"), { recursive: true });
+    tick();
+    await c.service.save("turn_ended");
+    expect(account.copy()?.ownerDeviceId).toBe("device-c");
+    expect(account.copy()?.skills).toBeUndefined();
   });
 
   it("a chunk the old home's fresh index names but this machine can't read yet keeps that index until the chunk arrives", async () => {

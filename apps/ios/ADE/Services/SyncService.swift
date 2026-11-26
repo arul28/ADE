@@ -12821,6 +12821,44 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// One whole skill (SKILL.md and its hash), or nil when it is gone.
+  func fetchCtoSkill(name: String) async throws -> CtoSkillFile? {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getSkill",
+      args: ["name": name],
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoSkillFile?.self
+    )
+  }
+
+  /// Writes a whole SKILL.md. `baseHash` refuses the write when the skill
+  /// changed since the editor loaded it (`ctoNotesChangedError`).
+  func writeCtoSkill(name: String, text: String, baseHash: String?) async throws -> CtoSkillWrite {
+    let target = try ctoCommandTarget()
+    var args: [String: Any] = ["name": name, "text": text]
+    if let baseHash, !baseHash.isEmpty { args["baseHash"] = baseHash }
+    return try await sendDecodableCommand(
+      action: "cto.writeSkill",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoSkillWrite.self
+    )
+  }
+
+  func deleteCtoSkill(name: String) async throws -> CtoMemory {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.deleteSkill",
+      args: ["name": name],
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
+  }
+
   /// The CTO's archive on its home machine. `query` is keywords (all must
   /// match); without one, newest first and `before` pages back. `id` reads one
   /// entry in full (a story version a list showed as a preview).
@@ -12849,6 +12887,19 @@ final class SyncService: ObservableObject {
       targetProjectId: target.projectId,
       targetProjectRootPath: target.rootPath,
       as: CtoMemory.self
+    )
+  }
+
+  /// Undo on a CTO "Learned" card. The host emits the row again with the
+  /// change marked undone, so the card redraws from the transcript.
+  func undoCtoLearned(learnId: String, changeId: String) async throws -> CtoUndoLearnedResult {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.undoLearned",
+      args: ["learnId": learnId, "changeId": changeId],
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoUndoLearnedResult.self
     )
   }
 

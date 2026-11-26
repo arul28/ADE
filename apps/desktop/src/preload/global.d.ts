@@ -628,6 +628,13 @@ import type {
   CtoMemorySnapshot,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoGetSkillArgs,
+  CtoWriteSkillArgs,
+  CtoWriteSkillResult,
+  CtoDeleteSkillArgs,
+  CtoSkillFile,
+  CtoUndoLearnedArgs,
+  CtoUndoLearnedResult,
   CtoArchiveQuery,
   CtoArchivePage,
   CtoRecallArchivedArgs,
@@ -5716,6 +5723,12 @@ declare global {
         getMemory: (pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         updateNotes: (args: CtoUpdateNotesArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         updateOpenWork: (args: CtoUpdateOpenWorkArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        /** One skill whole, or null; `text` and `hash` feed `writeSkill`. */
+        getSkill: (args: CtoGetSkillArgs, pin: OpenProjectBinding) => Promise<CtoSkillFile | null>;
+        writeSkill: (args: CtoWriteSkillArgs, pin: OpenProjectBinding) => Promise<CtoWriteSkillResult>;
+        deleteSkill: (args: CtoDeleteSkillArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        /** Undo one change of a CTO "Learned" row; the row redraws with it marked undone. */
+        undoLearned: (args: CtoUndoLearnedArgs, pin: OpenProjectBinding) => Promise<CtoUndoLearnedResult>;
         /** The archive on the CTO's home machine: notes that left the notes, facts, discoveries, story versions. */
         searchMemoryArchive: (args: CtoArchiveQuery, pin: OpenProjectBinding) => Promise<CtoArchivePage>;
         /** Pins an archived entry as a note again; answers the new snapshot. */

@@ -656,6 +656,11 @@ export type AgentChatHostContinuationMetadata = {
      * notice already shows the line, so clients draw nothing for the wake.
      */
     | "cto_child_report"
+    /**
+     * ADE's hidden review after the person corrected the CTO: fix the cause
+     * (a rule, a skill, a note). Clients draw nothing for it; its text is dropped.
+     */
+    | "cto_review"
     /** The person answered a card the agent posted (an ADE Cloud size request), or the change it asked for ended. */
     | "card_answer"
     /** ADE's stall judge telling the CTO a chat it started is stuck. */
@@ -693,6 +698,7 @@ export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContin
   cto_intro: "Started the CTO's introduction",
   cto_handoff_note: "Asked for a hand-off note",
   cto_child_report: "A chat it started reported back",
+  cto_review: "Reviewed a correction",
   card_answer: "Told the agent the answer to its request",
 };
 
@@ -1698,6 +1704,18 @@ export type AgentChatEvent =
       type: "user_message_reaction";
       targetKey: string;
       emoji: CtoReactionEmoji;
+      turnId?: string;
+    }
+  | {
+      /**
+       * CTO only: what one turn changed in its rules, skills or memory, one
+       * row with an Undo per change. An Undo emits the same `learnId` again
+       * with that change marked `undone`; clients draw the newest copy in
+       * the place of the first.
+       */
+      type: "cto_learned";
+      learnId: string;
+      changes: CtoLearnedChange[];
       turnId?: string;
     }
   | {
@@ -6314,6 +6332,44 @@ export function userMessageReactionKey(event: {
   if (messageId) return `message:${messageId}`;
   const turnId = event.turnId?.trim();
   return turnId ? `turn:${turnId}` : null;
+}
+
+/** Where a lesson went: the rules, a skill, or one of the two notes files. */
+export type CtoLearnedArea = "rules" | "skill" | "project_notes" | "user_notes";
+
+export const CTO_LEARNED_AREAS: readonly CtoLearnedArea[] = ["rules", "skill", "project_notes", "user_notes"];
+
+/** One change a CTO turn made to what it keeps (`cto_learned`). */
+export type CtoLearnedChange = {
+  /** Unique within its `learnId`. */
+  id: string;
+  area: CtoLearnedArea;
+  op: "added" | "changed" | "removed";
+  /** The rule or note line as it is now (removed: as it was); a skill's name. */
+  text: string;
+  /** `changed` rule or note: the line it replaced. */
+  previous?: string;
+  /** A skill: its one-line description. */
+  detail?: string;
+  /** The person undid it; ADE refuses the CTO the same change again. */
+  undone?: boolean;
+};
+
+/** The row's word for an area: "Rule", "Skill", "Note", "About you". */
+export const CTO_LEARNED_AREA_LABEL: Readonly<Record<CtoLearnedArea, string>> = {
+  rules: "Rule",
+  skill: "Skill",
+  project_notes: "Note",
+  user_notes: "About you",
+};
+
+export function isCtoLearnedChange(value: unknown): value is CtoLearnedChange {
+  if (!value || typeof value !== "object") return false;
+  const change = value as Record<string, unknown>;
+  return typeof change.id === "string"
+    && typeof change.text === "string"
+    && (CTO_LEARNED_AREAS as readonly unknown[]).includes(change.area)
+    && (change.op === "added" || change.op === "changed" || change.op === "removed");
 }
 
 /** True when `provider` can redirect a turn that is already running. */

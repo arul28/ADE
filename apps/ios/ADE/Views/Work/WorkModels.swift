@@ -2150,6 +2150,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
+  /// `kind == "ctoLearned"`: the CTO turn's "Learned" row, newest copy.
+  let ctoLearned: WorkCtoLearnedModel?
   /// `kind == "reasoning"`: measured thinking time in whole seconds, the
   /// desktop `Thought for 12s`. Nil when unknown (one chunk, a sub-second
   /// span, or a merged activity phase), which draws plain `Thought`. Stamped
@@ -2185,7 +2187,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
     spawnCompletionTurns: Int = 1,
     technicalDetail: String? = nil,
     nextAction: String? = nil,
-    taskList: WorkChatTaskListSnapshot? = nil
+    taskList: WorkChatTaskListSnapshot? = nil,
+    ctoLearned: WorkCtoLearnedModel? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -2216,7 +2219,14 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
     self.taskList = taskList
+    self.ctoLearned = ctoLearned
   }
+}
+
+/// What one CTO turn changed in its rules, skills and notes (`cto_learned`).
+struct WorkCtoLearnedModel: Hashable {
+  let learnId: String
+  let changes: [CtoLearnedChange]
 }
 
 enum ColorToken: Equatable {
@@ -2567,6 +2577,9 @@ enum WorkChatEvent: Equatable {
   /// CTO only: an emoji on the person's message (`AgentChatEvent.userMessageReaction`).
   /// Folded onto the bubble by `buildWorkChatMessages`; draws no row.
   case userMessageReaction(targetKey: String, emoji: String, turnId: String?)
+  /// CTO only: what one turn changed in its rules, skills or notes
+  /// (`AgentChatEvent.ctoLearned`). Draws one "Learned" card per `learnId`.
+  case ctoLearned(learnId: String, changes: [CtoLearnedChange], turnId: String?)
   /// CTO only: the person's emoji on a CTO message
   /// (`AgentChatEvent.assistantMessageReaction`). Folded onto that message by
   /// `buildWorkChatMessages`; draws no row and belongs to no turn.
@@ -2639,6 +2652,7 @@ enum WorkChatEvent: Equatable {
     case .userMessage: return "user_message"
     case .userMessageResolution: return "user_message_resolution"
     case .userMessageReaction: return "user_message_reaction"
+    case .ctoLearned: return "cto_learned"
     case .assistantMessageReaction: return "assistant_message_reaction"
     case .assistantText: return "text"
     case .toolCall: return "tool_call"

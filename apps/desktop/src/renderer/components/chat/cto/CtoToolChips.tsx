@@ -1,11 +1,9 @@
 import React from "react";
 import {
   Alarm,
-  BookmarkSimple,
   CalendarX,
   CheckCircle,
   Circle,
-  Eraser,
   PauseCircle,
   PlayCircle,
   Warning,
@@ -21,8 +19,6 @@ const CHIP_ICON: Record<CtoChipKind, Icon> = {
   cancelled: CalendarX,
   paused: PauseCircle,
   resumed: PlayCircle,
-  remembered: BookmarkSimple,
-  forgot: Eraser,
   tracking: Circle,
   done: CheckCircle,
   started: PlayCircle,
@@ -30,7 +26,7 @@ const CHIP_ICON: Record<CtoChipKind, Icon> = {
 
 /**
  * The CTO's state changes, as quiet chips in its thread: "Scheduled · Daily
- * check-in", "Saved note · Deploys go through staging first". One line each,
+ * check-in", "Tracking · Ship the release notes". One line each,
  * the full text in the tooltip; a row of them wraps only between whole chips.
  * They stand in for the tool rows the CTO thread does not draw; a call that is
  * still running draws nothing here (the working line names it).

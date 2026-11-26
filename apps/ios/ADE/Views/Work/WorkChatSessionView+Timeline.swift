@@ -493,6 +493,8 @@ extension WorkChatSessionView {
       )
     } else if card.kind == "ctoFresh" {
       CtoFreshContextDivider()
+    } else if card.kind == "ctoLearned", let learned = card.ctoLearned {
+      CtoLearnedCard(model: learned, accent: ctoLive?.look.ctoAccent ?? ADEColor.accent, live: ctoLive)
     } else if card.kind == "resetCredit" {
       WorkResetCreditNoticeView(card: card)
     } else if card.kind == "rootFullAccess" {

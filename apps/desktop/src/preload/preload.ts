@@ -487,6 +487,13 @@ import type {
   CtoMemorySnapshot,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoGetSkillArgs,
+  CtoWriteSkillArgs,
+  CtoWriteSkillResult,
+  CtoDeleteSkillArgs,
+  CtoSkillFile,
+  CtoUndoLearnedArgs,
+  CtoUndoLearnedResult,
   CtoArchiveQuery,
   CtoArchivePage,
   CtoRecallArchivedArgs,
@@ -15684,6 +15691,22 @@ const adeBridge = {
     ): Promise<CtoMemorySnapshot> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "updateOpenWork", { args }, () =>
         ipcRenderer.invoke(IPC.ctoUpdateOpenWork, args),
+      ),
+    getSkill: async (args: CtoGetSkillArgs, pin?: OpenProjectBinding | null): Promise<CtoSkillFile | null> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "getSkill", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoGetSkill, args),
+      ),
+    writeSkill: async (args: CtoWriteSkillArgs, pin?: OpenProjectBinding | null): Promise<CtoWriteSkillResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "writeSkill", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoWriteSkill, args),
+      ),
+    deleteSkill: async (args: CtoDeleteSkillArgs, pin?: OpenProjectBinding | null): Promise<CtoMemorySnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "deleteSkill", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoDeleteSkill, args),
+      ),
+    undoLearned: async (args: CtoUndoLearnedArgs, pin?: OpenProjectBinding | null): Promise<CtoUndoLearnedResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "undoLearned", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoUndoLearned, args),
       ),
     searchMemoryArchive: async (
       args: CtoArchiveQuery,

@@ -108,6 +108,20 @@ function CtoCopyBody({
           </pre>
         </CopyPart>
       ) : null}
+      {copy.rules?.trim() ? (
+        <CopyPart title="Rules">
+          <p className="ade-cto-copy-text">{copy.rules.trim()}</p>
+        </CopyPart>
+      ) : null}
+      {copy.skills?.length ? (
+        <CopyPart title="Skills">
+          {copy.skills.map((skill) => (
+            <p key={skill.name} className="ade-cto-copy-text">
+              {skill.name}{skill.description ? ` — ${skill.description}` : ""}
+            </p>
+          ))}
+        </CopyPart>
+      ) : null}
       {notes.length ? (
         <CopyPart title="Notes">
           {notes.map((note, index) => <p key={index} className="ade-cto-copy-text">{note}</p>)}

@@ -74,6 +74,14 @@ enum CtoPreviewData {
       userNotesLimitBytes: 2048,
       memoryHash: "a1",
       userNotesHash: "b2",
+      rules: "- Ask before landing a PR — merges to main deploy at once.\n- Use opus for reviews — it catches more than the default.\n- Open PRs as drafts.",
+      rulesBytes: 142,
+      rulesLimitBytes: 4096,
+      rulesHash: "c3",
+      skills: [
+        CtoSkillSummary(name: "release-desktop", description: "Cut a desktop release: bump, notes, tag, watch the workflow", bytes: 412, updatedAt: iso(minutesFromNow: -60 * 24 * 3)),
+        CtoSkillSummary(name: "triage-flaky-test", description: "Find why a test flakes before retrying it", bytes: 318, updatedAt: iso(minutesFromNow: -29)),
+      ],
       openWork: [
         CtoOpenWorkItem(id: "ow-1", text: "Land the login race fix", createdAt: iso(minutesFromNow: -90), doneAt: nil, addedBy: "cto"),
         CtoOpenWorkItem(id: "ow-2", text: "Watch PR #482 checks", createdAt: iso(minutesFromNow: -40), doneAt: nil, addedBy: "cto"),
@@ -152,6 +160,11 @@ enum CtoPreviewData {
     ]
   }
 
+  static let skillTexts: [String: String] = [
+    "release-desktop": "---\nname: release-desktop\ndescription: Cut a desktop release: bump, notes, tag, watch the workflow\n---\n\n1. Bump the patch version in apps/desktop/package.json\n2. Write the release notes from merged PRs\n3. Tag and push; watch the release workflow\n4. Check the download page shows the new build\n",
+    "triage-flaky-test": "---\nname: triage-flaky-test\ndescription: Find why a test flakes before retrying it\n---\n\n1. Run the test 50 times on its own\n2. Look for fixed sleeps and shared state\n3. Fix the cause, then run it 50 times again\n",
+  ]
+
   static var archive: CtoArchivePage {
     CtoArchivePage(
       available: true,
@@ -169,7 +182,7 @@ enum CtoPreviewData {
   }
 
   static func store() -> CtoStore {
-    CtoStore(fixtureSnapshot: snapshot, fixtureMemory: memory, fixtureArchive: archive, routines: routines, children: children, library: library, needs: needs)
+    CtoStore(fixtureSnapshot: snapshot, fixtureMemory: memory, fixtureSkillTexts: skillTexts, fixtureArchive: archive, routines: routines, children: children, library: library, needs: needs)
   }
 
   static func live(turnActive: Bool = false, step: String? = nil) -> CtoLiveModel {
@@ -180,6 +193,9 @@ enum CtoPreviewData {
     model.liveStep = step
     model.runningChildren = 1
     model.sessionId = "fixture-cto"
+    model.fixtureUndoLearned = { _, _ in
+      CtoUndoLearnedResult(undone: false, note: "Preview: nothing to undo here.")
+    }
     if turnActive { model.turnStartedAt = Date().addingTimeInterval(-14) }
     return model
   }
@@ -188,6 +204,18 @@ enum CtoPreviewData {
 
   private static func envelope(_ sequence: Int, _ event: WorkChatEvent, minutesAgo: Double = 2) -> WorkChatEnvelope {
     WorkChatEnvelope(sessionId: "preview-chat-session", timestamp: iso(minutesFromNow: -minutesAgo), sequence: sequence, event: event)
+  }
+
+
+  /// One turn's "Learned" row: a rule added, a note sharpened, a skill added
+  /// and a note about the person, which a later copy (an Undo) marks undone.
+  static func learnedChanges(undoneLast: Bool) -> [CtoLearnedChange] {
+    [
+      CtoLearnedChange(id: "ch-1", area: .rules, op: .added, text: "Ask before landing a PR — merges to main deploy at once."),
+      CtoLearnedChange(id: "ch-2", area: .projectNotes, op: .changed, text: "Login flake = token refresh race; fixed in #482", previous: "Login flake is a timing issue"),
+      CtoLearnedChange(id: "ch-3", area: .skill, op: .added, text: "triage-flaky-test", detail: "Find why a test flakes before retrying it"),
+      CtoLearnedChange(id: "ch-4", area: .userNotes, op: .added, text: "Wants proof with every PR", undone: undoneLast),
+    ]
   }
 
   private static func spawnEnvelope(
@@ -257,16 +285,18 @@ enum CtoPreviewData {
       envelope(8, .toolResult(tool: "mcp__ade__trackWork", resultText: #"{"success":true}"#, itemId: "tc-3", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 29.3),
       envelope(9, .toolCall(tool: "mcp__ade__scheduleWork", argsText: #"{"reason":"Recheck PR #482","delaySeconds":1500}"#, itemId: "tc-4", parentItemId: nil, turnId: "t1"), minutesAgo: 29.2),
       envelope(10, .toolResult(tool: "mcp__ade__scheduleWork", resultText: #"{"success":true,"item":{"title":"Recheck PR #482"}}"#, itemId: "tc-4", parentItemId: nil, turnId: "t1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 29.2),
-      envelope(19, .userMessageReaction(targetKey: "turn:t1", emoji: "👀", turnId: "t1"), minutesAgo: 29.9),
-      envelope(20, .assistantMessageReaction(targetKey: "item:m-1", emoji: "🎉"), minutesAgo: 28),
-      envelope(11, .done(status: "completed", summary: "", usage: WorkUsageSummary(turnCount: 1, inputTokens: 18_420, outputTokens: 1_120, cacheReadTokens: 9_200, cacheCreationTokens: 0, costUsd: 0.04), turnId: "t1", model: "claude-sonnet-5", modelId: "anthropic/claude-sonnet-5"), minutesAgo: 29),
-      envelope(12, .systemNotice(kind: AgentChatNoticeKind.ctoContextRefreshed.rawValue, message: "Fresh context — notes, open work, the story so far and the newest messages carried over.", detail: nil, turnId: nil, steerId: nil), minutesAgo: 10),
-      envelope(13, .userMessage(text: "Land it once checks pass, then start on the release notes.", attachments: nil, turnId: "t2", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 1),
-      envelope(14, .toolCall(tool: "mcp__ade__listPullRequests", argsText: "{}", itemId: "tc-5", parentItemId: nil, turnId: "t2"), minutesAgo: 0.9),
-      envelope(15, .toolResult(tool: "mcp__ade__listPullRequests", resultText: "{}", itemId: "tc-5", parentItemId: nil, turnId: "t2", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 0.85),
-      envelope(16, .userMessage(text: "Is staging green too?", attachments: nil, turnId: "t2", steerId: "steer-1", deliveryState: "delivered", processed: true), minutesAgo: 0.6),
-      envelope(17, .assistantText(text: "Yes, staging passed at 9:12. Checking #482 now.", turnId: "t2", itemId: "m-2"), minutesAgo: 0.5),
-      envelope(18, .toolCall(tool: "mcp__ade__getPullRequestStatus", argsText: #"{"prNumber":482}"#, itemId: "tc-6", parentItemId: nil, turnId: "t2"), minutesAgo: 0.3),
+      envelope(21, .userMessageReaction(targetKey: "turn:t1", emoji: "👀", turnId: "t1"), minutesAgo: 29.9),
+      envelope(22, .assistantMessageReaction(targetKey: "item:m-1", emoji: "🎉"), minutesAgo: 28),
+      envelope(11, .ctoLearned(learnId: "learn-t1", changes: learnedChanges(undoneLast: false), turnId: "t1"), minutesAgo: 29.1),
+      envelope(12, .done(status: "completed", summary: "", usage: WorkUsageSummary(turnCount: 1, inputTokens: 18_420, outputTokens: 1_120, cacheReadTokens: 9_200, cacheCreationTokens: 0, costUsd: 0.04), turnId: "t1", model: "claude-sonnet-5", modelId: "anthropic/claude-sonnet-5"), minutesAgo: 29),
+      envelope(13, .ctoLearned(learnId: "learn-t1", changes: learnedChanges(undoneLast: true), turnId: "t1"), minutesAgo: 12),
+      envelope(14, .systemNotice(kind: AgentChatNoticeKind.ctoContextRefreshed.rawValue, message: "Fresh context — notes, open work, the story so far and the newest messages carried over.", detail: nil, turnId: nil, steerId: nil), minutesAgo: 10),
+      envelope(15, .userMessage(text: "Land it once checks pass, then start on the release notes.", attachments: nil, turnId: "t2", steerId: nil, deliveryState: "delivered", processed: true), minutesAgo: 1),
+      envelope(16, .toolCall(tool: "mcp__ade__listPullRequests", argsText: "{}", itemId: "tc-5", parentItemId: nil, turnId: "t2"), minutesAgo: 0.9),
+      envelope(17, .toolResult(tool: "mcp__ade__listPullRequests", resultText: "{}", itemId: "tc-5", parentItemId: nil, turnId: "t2", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil), minutesAgo: 0.85),
+      envelope(18, .userMessage(text: "Is staging green too?", attachments: nil, turnId: "t2", steerId: "steer-1", deliveryState: "delivered", processed: true), minutesAgo: 0.6),
+      envelope(19, .assistantText(text: "Yes, staging passed at 9:12. Checking #482 now.", turnId: "t2", itemId: "m-2"), minutesAgo: 0.5),
+      envelope(20, .toolCall(tool: "mcp__ade__getPullRequestStatus", argsText: #"{"prNumber":482}"#, itemId: "tc-6", parentItemId: nil, turnId: "t2"), minutesAgo: 0.3),
     ]
   }
 }

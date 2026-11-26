@@ -84,6 +84,15 @@ export async function decodeCtoCopy(raw: string | null): Promise<CloudCtoCopy | 
     projectNotes: clip(text(parsed.projectNotes), NOTES_MAX_CHARS),
     userNotes: clip(text(parsed.userNotes), NOTES_MAX_CHARS),
     openWork: typeof parsed.openWork === "string" ? clip(parsed.openWork, NOTES_MAX_CHARS) : null,
+    rules: clip(text(parsed.rules), NOTES_MAX_CHARS),
+    skills: (Array.isArray(parsed.skills) ? parsed.skills : []).flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const skill = entry as Record<string, unknown>;
+      const name = text(skill.name).trim();
+      if (!name) return [];
+      const description = /^---\r?\n[\s\S]*?^description:\s*(.*)$/m.exec(text(skill.text))?.[1]?.trim() ?? "";
+      return [{ name, description: clip(description, 240) }];
+    }).slice(0, 50),
     routines: routines.flatMap((entry) => {
       if (!entry || typeof entry !== "object") return [];
       const routine = entry as Record<string, unknown>;

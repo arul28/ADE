@@ -209,8 +209,10 @@ struct WorkChatMessageFold {
       // notice says so (desktop `isRestartResumeScheduleId`).
       if envelope.userMessageIsRestartResume { return }
       // Nor the CTO's child report: its `spawn_completed` line already shows
-      // it (desktop `transcriptEventDrawsNothing`).
-      if envelope.userMessageAdeReason == "cto_child_report" { return }
+      // it (desktop `transcriptEventDrawsNothing`). Nor the hidden review turn
+      // the host starts after the person corrects the CTO: its "Learned" card
+      // shows what came of it.
+      if envelope.userMessageAdeReason == "cto_child_report" || envelope.userMessageAdeReason == "cto_review" { return }
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         return
@@ -2674,6 +2676,11 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     ].joined(separator: "|")
   case .userMessageReaction(let targetKey, let emoji, let turnId):
     return ["user_message_reaction", turnId ?? "", targetKey, emoji].joined(separator: "|")
+  case .ctoLearned(let learnId, let changes, let turnId):
+    // Each copy keeps its own row (an Undo re-sends the learnId with a change
+    // marked undone); the card fold draws the newest in the first one's place.
+    let state = changes.map { "\($0.id):\($0.undone ? "1" : "0")" }.joined(separator: ",")
+    return ["cto_learned", turnId ?? "", learnId, state].joined(separator: "|")
   case .assistantMessageReaction(let targetKey, let emoji):
     return ["assistant_message_reaction", targetKey, emoji].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):

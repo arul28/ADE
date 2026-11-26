@@ -5911,3 +5911,39 @@ describe("CTO reactions on the person's message", () => {
     expect(reactionsOf(rows)).toEqual([null]);
   });
 });
+
+describe("CTO Learned rows", () => {
+  const learned = (timestamp: string, undone: boolean, learnId = "learn-1") => env(timestamp, {
+    type: "cto_learned",
+    learnId,
+    changes: [
+      { id: "c1", area: "rules", op: "added", text: "Ask before landing a PR — merges deploy.", ...(undone ? { undone: true } : {}) },
+      // A change this build cannot read is dropped, not drawn.
+      { id: "c2", area: "unknown", op: "added", text: "?" } as never,
+    ],
+  });
+
+  it("draws an Undo's copy in the first row's place, live and on reload alike", () => {
+    const events = [
+      learned("2026-11-25T10:00:00.000Z", false),
+      env("2026-11-25T10:00:01.000Z", { type: "text", text: "next turn", turnId: "t-2" }),
+      learned("2026-11-25T10:00:02.000Z", false, "learn-2"),
+      learned("2026-11-25T10:00:03.000Z", true),
+    ];
+    const full = collapseChatTranscriptEvents(events);
+    expect(full.map((row) => (row.event.type === "cto_learned"
+      ? `${row.event.learnId}:${row.event.changes.map((change) => `${change.id}${change.undone ? "-undone" : ""}`).join(",")}`
+      : row.event.type))).toEqual(["learn-1:c1-undone", "text", "learn-2:c1"]);
+
+    let prevEvents = events.slice(0, 1);
+    let { rows, context } = collapseChatTranscriptEventsWithContext(prevEvents);
+    for (const event of events.slice(1)) {
+      const nextEvents = [...prevEvents, event];
+      const result = collapseChatTranscriptEventsIncrementalWithContext(nextEvents, prevEvents, rows, context);
+      prevEvents = nextEvents;
+      rows = result.rows;
+      context = result.context;
+    }
+    expect(rows).toEqual(full);
+  });
+});

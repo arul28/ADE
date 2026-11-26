@@ -94,13 +94,13 @@ function providerFromModelId(modelId: unknown): string | null {
   return provider ? humanizeProvider(provider) : null;
 }
 
-export type CtoChipKind = "scheduled" | "cancelled" | "paused" | "resumed" | "remembered" | "forgot" | "tracking" | "done" | "started";
+export type CtoChipKind = "scheduled" | "cancelled" | "paused" | "resumed" | "tracking" | "done" | "started";
 
 export type CtoToolChip = {
   /** The entry it came from; stable key for the row. */
   id: string;
   kind: CtoChipKind;
-  /** "Scheduled", "Saved note", … */
+  /** "Scheduled", "Tracking", … */
   verb: string;
   /** What it was about, already clipped. Null when the call named nothing readable. */
   text: string | null;
@@ -153,16 +153,17 @@ function spawnTitle(args: Record<string, unknown>, result: Record<string, unknow
   return str(result?.requestedTitle) ?? str(args.title) ?? str(result?.laneName) ?? (prompt ? clipWords(prompt) : null);
 }
 
-/** State-changing CTO tools that draw a chip instead of hiding in the tools toggle. */
+/**
+ * State-changing CTO tools that draw a chip instead of hiding in the tools
+ * toggle. Notes, rules and skills draw none: the turn's "Learned" row lists
+ * each of those changes with its Undo.
+ */
 const CHIP_TOOL_NAMES: ReadonlySet<string> = new Set([
   "scheduleWork",
   "cancelScheduledWork",
   "setScheduledWorkPaused",
-  "remember",
-  "forget",
   "trackWork",
   "finishWork",
-  "recallNote",
   // Only a remote or ADE Cloud spawn (`ctoRemoteSpawnForEntry`) or a failed one draws.
   "spawnChat",
 ]);
@@ -190,8 +191,6 @@ const FAILED_VERB: Record<CtoChipKind, string> = {
   cancelled: "Couldn't cancel",
   paused: "Couldn't pause",
   resumed: "Couldn't resume",
-  remembered: "Couldn't save note",
-  forgot: "Couldn't drop note",
   tracking: "Couldn't track",
   done: "Couldn't finish",
   started: "Couldn't start",
@@ -239,18 +238,6 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
       text = str(payload?.title) ?? (args.scheduleId ? null : "every routine on that chat");
       break;
     }
-    case "remember":
-      kind = "remembered";
-      text = str(args.note);
-      break;
-    case "forget":
-      kind = "forgot";
-      text = str(args.note);
-      break;
-    case "recallNote":
-      kind = "remembered";
-      text = str(payload?.note) ?? str(payload?.alreadyPinnedAs);
-      break;
     case "trackWork":
       kind = "tracking";
       text = str(args.text) ?? str(payload?.text);
@@ -267,8 +254,6 @@ export function ctoChipForEntry(entry: ChatWorkLogEntry): CtoToolChip | null {
     cancelled: "Cancelled",
     paused: "Paused",
     resumed: "Resumed",
-    remembered: "Saved note",
-    forgot: "Dropped note",
     tracking: "Tracking",
     done: "Done",
     started: "Started a new task",
@@ -362,6 +347,16 @@ export function ctoStepWords(toolName: string, rawArgs: unknown): string | null 
       return "Saving a note";
     case "forget":
       return "Dropping a note";
+    case "addRule":
+      return "Saving a rule";
+    case "removeRule":
+      return "Dropping a rule";
+    case "saveSkill":
+      return "Saving a skill";
+    case "readSkill":
+      return "Reading a skill";
+    case "deleteSkill":
+      return "Deleting a skill";
     case "searchMemory":
       return "Searching my archive";
     case "recallNote":
