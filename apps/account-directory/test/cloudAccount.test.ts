@@ -4343,6 +4343,32 @@ describe("ADE Cloud iPhone", () => {
     expect(nomacCalls).toContain("DELETE");
     expect(harness.row("select state from cloud_phones where phone_id = 'ses_live'").state).toBe("ended");
   });
+
+  it("holds a paid plan's running Revyl phone to the plan's Revyl limit, then stops it", async () => {
+    // Pro ($20): $19 spent on an ended Revyl phone, and a live one 5 minutes ($0.30) in leaves 700 seconds.
+    seedPhoneAccount();
+    harness.env.REVYL_PARTNER_API_KEY = "rvl_test";
+    harness.insert("cloud_phone_revyl", { user_id: OWNER, external_id: `ade-${OWNER}`, app_id: null, created_at: PERIOD, updated_at: PERIOD });
+    seedPhone("ses_rv_old", 1, PERIOD + HOUR, "ended", false, { provider: "revyl", cost_micros: 19_000_000 });
+    seedPhone("ses_rv", 5, clock - 5 * 60_000, "live", true, { provider: "revyl", cost_micros: 0 });
+    const stops: string[] = [];
+    const network = harness.net.fetchStub;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (!url.startsWith("https://backend.revyl.ai/")) return network(input, init);
+      if (url.includes("/session-credentials")) return new Response(JSON.stringify({ credential: { secret: "rvs_test" } }), { status: 201 });
+      if (url.endsWith("/stop")) { stops.push(url); return new Response("{}", { status: 200 }); }
+      const started = new Date(clock - 5 * 60_000).toISOString();
+      return new Response(JSON.stringify({ id: "ses_rv", status: stops.length ? "stopped" : "running", started_at: started, created_at: started, duration_seconds: (clock - Date.parse(started)) / 1000 }), { status: 200 });
+    });
+
+    expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe("running");
+    expect(Number(harness.row("select stop_at from cloud_phones where phone_id = 'ses_rv'").stop_at)).toBe(clock + 700_000);
+
+    clock += 12 * 60_000;
+    expect(await enforcePhoneAllowance(harness.env, OWNER, clock)).toBe("stopped");
+    expect(stops).toHaveLength(1);
+  });
 });
 
 describe("ADE Cloud server moves", () => {

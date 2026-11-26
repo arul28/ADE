@@ -73,7 +73,7 @@ import { CLOUD_PLANS } from "./plans";
 import { forgetNomacLabel, nomacSignatureValid, phoneLabelFor, sessionOf, userIdOfLabel } from "./phoneNomac";
 import { LIVE_STATES, isoMs, sentryCode, type PhoneRead, type PhoneSession, type PhoneWhere } from "./phoneProvider";
 import { forgetRevylAccount } from "./phoneRevyl";
-import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeOf, startOnRoute } from "./phoneRoute";
+import { PHONE_PROVIDERS, abilityWords, clientDrives, heldToUnsureStart, nextAbilities, pickedProviderOf, revylLimitEndsAt, revylLimitMicros, revylMinutesLeft, revylSpentMicros, routeOf, startOnRoute } from "./phoneRoute";
 import { phoneViewerPage } from "./phoneViewerPage";
 import { CLOUD_PHONE_MAX_MINUTES } from "../../../desktop/src/shared/cloudPhone";
 import { warnHours } from "./hoursWarnings";
@@ -520,6 +520,18 @@ async function stopReasonOf(env: CloudEnv, userId: string, context: PhoneContext
 }
 
 /**
+ * When the account's live phone runs out of the paid plan's Revyl limit
+ * (`revylLimitMicros`), or null when that limit doesn't hold it: a NoMac
+ * phone, a free plan's, or a tester's own provider pick.
+ */
+async function revylLimitEnd(env: CloudEnv, userId: string, context: PhoneContext, now: number): Promise<number | null> {
+  if (context.live?.where.provider !== "revyl" || accountRules(context.account) === "free") return null;
+  if ((await phoneAccess(env, userId)).choice?.picked) return null;
+  const limit = revylLimitMicros(CLOUD_PLANS[planIdOf(context.account)].priceUsd);
+  return revylLimitEndsAt(limit, await revylSpentMicros(env, userId, context.account.period_start, now), now);
+}
+
+/**
  * Holds the account's live phone to what the account may use now. It stops at
  * once when the account may use none (credits used, access or the account
  * taken away, a new period since it started); otherwise it gets a `stop_at`
@@ -533,7 +545,9 @@ export async function enforcePhoneAllowance(env: CloudEnv, userId: string, now: 
   const context = await phoneContext(env, userId, now);
   if (context instanceof Response || !context.live) return "none";
   const live = context.live;
-  const why = await stopReasonOf(env, userId, context, now);
+  // A paid plan's Revyl phone also ends where the plan's Revyl limit runs out; told as its time limit.
+  const revylEnd = await revylLimitEnd(env, userId, context, now);
+  const why = await stopReasonOf(env, userId, context, now) ?? (revylEnd != null && revylEnd <= now ? "time_limit" : null);
   if (why) {
     // Due now, saved first: if NoMac refuses the stop, the minute tick tries it again.
     await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'").bind(now, now, live.session.id).run();
@@ -541,7 +555,7 @@ export async function enforcePhoneAllowance(env: CloudEnv, userId: string, now: 
   }
   // Never past one phone's longest: Revyl's phone has no time limit of its own, so this is its limit.
   await env.DB.prepare("update cloud_phones set stop_at = ?, updated_at = ? where phone_id = ? and state = 'live'")
-    .bind(Math.min(now + allowedMinutes(context.usage) * 60_000, live.createdAt + CLOUD_PHONE_MAX_MINUTES * 60_000), now, live.session.id).run();
+    .bind(Math.min(now + allowedMinutes(context.usage) * 60_000, live.createdAt + CLOUD_PHONE_MAX_MINUTES * 60_000, revylEnd ?? Number.POSITIVE_INFINITY), now, live.session.id).run();
   return "running";
 }
 

@@ -72,17 +72,21 @@ export const phoneBusy = (plan: "free" | "paid" = "free"): Response =>
 export const revylLimitMicros = (priceUsd: number): number => Math.round(priceUsd * 1_000_000);
 
 /**
- * What the account's Revyl phones cost ADE since `periodStart`: the ended
- * ones as Revyl billed them, a live one at least for the time it has run
- * (its bill fills in as it ends).
+ * What the account's Revyl phones cost ADE since `periodStart`: each at least
+ * for the time it ran (a live one until now, an ended one until it ended),
+ * since Revyl's bill fills in only after a later settle read.
  */
 export async function revylSpentMicros(env: Pick<CloudEnv, "DB">, userId: string, periodStart: number, now: number): Promise<number> {
   const row = await env.DB.prepare(`
-    select coalesce(sum(case when state = 'live' then max(cost_micros, ((? - created_at) / 1000) * ?) else cost_micros end), 0) as spent
+    select coalesce(sum(max(cost_micros, max(0, (case when state = 'live' then ? else coalesce(ended_at, updated_at) end) - created_at) / 1000 * ?)), 0) as spent
     from cloud_phones where user_id = ? and provider = 'revyl' and created_at >= ?
   `).bind(now, REVYL_MICROS_PER_SECOND, userId, periodStart).first<{ spent: number }>();
   return Math.max(0, Number(row?.spent ?? 0) || 0);
 }
+
+/** When a running Revyl phone uses up what the limit leaves after `spentMicros` (its own time so far included). */
+export const revylLimitEndsAt = (limitMicros: number, spentMicros: number, now: number): number =>
+  now + Math.max(0, Math.floor((limitMicros - spentMicros) / REVYL_MICROS_PER_SECOND)) * 1000;
 
 /** Whole minutes of Revyl phone a limit leaves after what was spent. */
 export const revylMinutesLeft = (limitMicros: number, spentMicros: number): number =>

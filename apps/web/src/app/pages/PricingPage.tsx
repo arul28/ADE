@@ -153,7 +153,7 @@ function PricingHero() {
         </div>
 
         <p className="mx-auto mt-8 max-w-[48rem] text-center text-[14px] leading-[1.6] text-white/45">
-          Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE}
+          Prices in US dollars. {CLOUD_SMALL_FAIR_USE_SENTENCE} On Free, Small stays free while you open an ADE Cloud chat or terminal from the US at least once a week.
         </p>
       </div>
     </section>
@@ -204,9 +204,9 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       {/* Every card keeps these lines' room, so the four cards end level. */}
       <div aria-hidden={!free} className={cn("mt-3 text-center text-[13px] leading-[1.5]", !free && "invisible")}>
         <p className="text-[color:var(--color-lamp)]">No credit card needed</p>
-                  <p className="mx-auto mt-1.5 max-w-[17rem] text-white/50">
-            Unlimited free {SMALL_SIZE.machine}es with ads on, in the US. Otherwise {formatCount(SMALL_NO_ADS_RATE)} {UNIT.many} an hour.
-          </p>
+        <p className="mx-auto mt-1.5 max-w-[17rem] text-white/50">
+          Unlimited free {SMALL_SIZE.machine}es with ads on, in the US. Otherwise {formatCount(SMALL_NO_ADS_RATE)} {UNIT.many} an hour.
+        </p>
       </div>
     </div>
   );
@@ -220,7 +220,9 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
 function PlanAllowance({ plan, free }: { plan: PricingPlan; free: boolean }) {
   return (
     <div className="mt-6 border-t border-white/[0.08] pt-5">
-      <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "with ads on" : "free"} free />
+      <ul>
+        <AllowanceRow name={SMALL_SIZE.machine} detail={SMALL_SIZE.specs} value="Unlimited" unit={free ? "with ads on" : "free"} free />
+      </ul>
       <p className="mt-5 flex items-baseline gap-2">
         <span className="font-display text-[34px] leading-none text-white tabular-nums">{formatCount(plan.hours)}</span>
         <span className="text-[15px] text-white/70">{UNIT.many} a month</span>
@@ -230,7 +232,7 @@ function PlanAllowance({ plan, free }: { plan: PricingPlan; free: boolean }) {
         {HOURLY_SIZES.map((size) => (
           <AllowanceRow key={size.id} name={size.machine} detail={size.specs} value={formatCount(hoursOnSize(plan.hours, size) ?? 0)} unit="h" />
         ))}
-                  <AllowanceRow name="iOS Simulator" detail="No Mac needed" value={formatCount(Math.floor(plan.hours / PHONE_CREDITS_PER_MINUTE))} unit="min" phone />
+        <AllowanceRow name="iOS Simulator" detail="No Mac needed" value={formatCount(Math.floor(plan.hours / PHONE_CREDITS_PER_MINUTE))} unit="min" phone />
       </ul>
     </div>
   );
@@ -447,9 +449,9 @@ function PlanFinder() {
   );
 }
 
-/** The iOS Simulator slider's range: a month of Max's credits, in steps a thumb can land on. */
+/** The iOS Simulator slider's range: a month of the biggest plan's credits, in steps a thumb can land on. */
 const PHONE_MINUTES_STEP = 25;
-const PHONE_MINUTES_MAX = 1500;
+const PHONE_MINUTES_MAX = Math.floor(Math.max(...PRICING_PLANS.map((plan) => plan.hours)) / PHONE_CREDITS_PER_MINUTE / PHONE_MINUTES_STEP) * PHONE_MINUTES_STEP;
 
 /**
  * What the same hours cost on the agent apps that publish a monthly price, cheapest first. Their

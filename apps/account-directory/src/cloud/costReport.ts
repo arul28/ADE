@@ -305,17 +305,17 @@ type DayAccount = {
  * (the paid fallback that costs ADE 6¢ a minute against NoMac's 1¢). Null when
  * no paid phone ran this month.
  */
-async function paidPhoneReportLine(env: CloudEnv, monthStartMs: number): Promise<string | null> {
+async function paidPhoneReportLine(env: CloudEnv, monthStartMs: number, dayEndMs: number): Promise<string | null> {
   const rows = await env.DB.prepare(`
     select provider, coalesce(sum((billed_seconds + 59) / 60), 0) as minutes, coalesce(sum(cost_micros), 0) as cost
-    from cloud_phones where created_at >= ? and free = 0 group by provider
-  `).bind(monthStartMs).all<{ provider: string | null; minutes: number; cost: number }>();
+    from cloud_phones where created_at >= ? and created_at < ? and free = 0 group by provider
+  `).bind(monthStartMs, dayEndMs).all<{ provider: string | null; minutes: number; cost: number }>();
   const all = rows.results ?? [];
   const minutes = all.reduce((sum, row) => sum + row.minutes, 0);
   if (minutes === 0) return null;
   const revyl = all.find((row) => row.provider === "revyl") ?? { minutes: 0, cost: 0 };
   const cost = all.reduce((sum, row) => sum + row.cost, 0);
-  return `Paid iPhone this month: ${minutes} minutes, ${usd(cost)}; Revyl ${revyl.minutes} minutes (${Math.round((revyl.minutes / minutes) * 100)}%), ${usd(revyl.cost)}.`;
+  return `Paid iPhone this month through ${new Date(dayEndMs - 1).toISOString().slice(0, 10)}: ${minutes} minutes, ${usd(cost)}; Revyl ${revyl.minutes} minutes (${Math.round((revyl.minutes / minutes) * 100)}%), ${usd(revyl.cost)}.`;
 }
 
 export async function runDailyCostReport(env: CloudEnv, day: string): Promise<void> {
@@ -445,7 +445,7 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     reportCloudFailure("cloud.sponsored_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return [] as string[];
   });
-  const phoneLine = await paidPhoneReportLine(env, Date.parse(`${monthStart}T00:00:00Z`)).catch((error: unknown) => {
+  const phoneLine = await paidPhoneReportLine(env, Date.parse(`${monthStart}T00:00:00Z`), dayStart + 86_400_000).catch((error: unknown) => {
     reportCloudFailure("cloud.paid_phone_report_failed", { message: error instanceof Error ? error.message : "unknown" });
     return null;
   });
