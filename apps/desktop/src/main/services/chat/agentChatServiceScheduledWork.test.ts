@@ -216,6 +216,16 @@ describe("createAgentChatService", () => {
         cron: "0 * * * *",
         prompt: "   ",
       })).rejects.toThrow(/prompt is required/i);
+      // A check is a shell command: IPC, remote and `ade` callers reach this
+      // with args alone, and a check in them is dropped, never run or stored.
+      const smuggled = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "0 * * * *",
+        prompt: "Watch the deploy.",
+        check: "exit 7",
+      } as unknown as AgentChatCreateScheduledWorkArgs);
+      expect(smuggled.item.check).toBeUndefined();
+      expect(smuggled.check).toBeUndefined();
 
       sessionService.create({
         sessionId: "ended-chat",

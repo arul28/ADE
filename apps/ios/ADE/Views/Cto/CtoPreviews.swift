@@ -100,6 +100,22 @@ enum CtoPreviewData {
         late: nil, outcomeSummary: "2 PRs green, 1 waiting on review"
       ),
       AgentChatScheduledWorkItem(
+        id: "r-4", sessionId: "fixture-cto", kind: "cron", status: "scheduled",
+        title: "Watch PR #482 checks", prompt: "PR #482's checks changed. Say what changed, in a line.",
+        reason: nil, cron: "*/30 * * * *", nextRunAt: iso(minutesFromNow: 18), lastRunAt: iso(minutesFromNow: -180),
+        expiresAt: nil, createdAt: iso(minutesFromNow: -60 * 24), durable: true, cancellable: true,
+        late: nil, outcomeSummary: "Two checks went green.",
+        check: "gh pr checks 482 --json state --jq '.[].state'", lastCheckedAt: iso(minutesFromNow: -12)
+      ),
+      AgentChatScheduledWorkItem(
+        id: "r-5", sessionId: "fixture-cto", kind: "cron", status: "scheduled",
+        title: "Staging deploy", prompt: "The staging deploy status changed. Tell me if it broke.",
+        reason: nil, cron: "0 * * * *", nextRunAt: iso(minutesFromNow: 40), lastRunAt: iso(minutesFromNow: -20),
+        expiresAt: nil, createdAt: iso(minutesFromNow: -60 * 24), durable: true, cancellable: true,
+        late: nil, outcomeSummary: nil,
+        check: "curl -fsS https://staging.example.com/health", lastCheckedAt: iso(minutesFromNow: -20), checkFailing: true
+      ),
+      AgentChatScheduledWorkItem(
         id: "r-2", sessionId: "fixture-cto", kind: "wakeup", status: "scheduled",
         title: "Recheck PR #482", prompt: "See if CI passed on #482.",
         reason: nil, cron: nil, nextRunAt: iso(minutesFromNow: 25), lastRunAt: nil,
@@ -306,6 +322,8 @@ struct CtoPreviewHost: View {
       CtoSettingsScreen(store: store, live: live, initialRoute: .brain)
     case .ctoSettingsMemory:
       CtoSettingsScreen(store: store, live: live, initialRoute: .memory)
+    case .ctoSettingsRoutines:
+      CtoSettingsScreen(store: store, live: live, initialRoute: .routines)
     case .ctoOffline:
       NavigationStack {
         CtoStateCard(

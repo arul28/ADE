@@ -1093,6 +1093,11 @@ struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
   /// The row's own pause switch (the status also reads "paused" when the
   /// chat-wide pause holds it). Older hosts omit it.
   var paused: Bool? = nil
+  /// A shell command the host runs before each fire of a cron; the chat wakes
+  /// only when its output changed, or the first time it fails. Older hosts omit it.
+  var check: String? = nil
+  var lastCheckedAt: String? = nil
+  var checkFailing: Bool? = nil
 }
 
 struct AgentChatCancelScheduledWorkResult: Codable, Equatable {

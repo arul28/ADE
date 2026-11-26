@@ -148,6 +148,59 @@ func ctoDescribeRoutineSchedule(_ item: AgentChatScheduledWorkItem, now: Date) -
   return "Next \(next)"
 }
 
+/// How a routine's check last went: "failing", "no change 4 min ago" (the last
+/// check woke nothing) or "checked 4 min ago" (it woke the last run). The
+/// desktop's `describeRoutineCheck` says the same.
+func ctoDescribeRoutineCheck(_ item: AgentChatScheduledWorkItem, now: Date) -> String? {
+  if item.checkFailing == true { return "failing" }
+  guard let iso = item.lastCheckedAt, let checkedAt = workParsedDate(iso),
+        let ago = ctoDescribeAgo(iso, now: now) else { return nil }
+  // A check that wakes carries its run's own time; a later one was quiet.
+  let quiet = workParsedDate(item.lastRunAt).map { checkedAt > $0 } ?? true
+  return quiet ? "no change \(ago)" : "checked \(ago)"
+}
+
+/// The line under a routine's title. A watch says "On change · every 30 min":
+/// how often it looks matters more than the next clock time. The compact
+/// (panel) form drops "next"; a paused routine shows no next time.
+func ctoRoutineScheduleLine(_ item: AgentChatScheduledWorkItem, now: Date, compact: Bool) -> String {
+  var line: String
+  if item.kind == "cron" || item.kind == "loop", let cron = item.cron?.trimmingCharacters(in: .whitespaces), !cron.isEmpty {
+    let cadence = ctoCronCadence(cron)
+    if item.check?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+      line = "On change · " + cadence.prefix(1).lowercased() + cadence.dropFirst()
+    } else {
+      let next = ctoRoutineIsPending(item) && !ctoRoutineRowPaused(item) ? ctoDescribeNext(item.nextRunAt, now: now) : nil
+      line = next.map { compact ? "\(cadence) · \($0)" : "\(cadence) · next \($0)" } ?? cadence
+    }
+  } else {
+    line = ctoDescribeRoutineSchedule(item, now: now)
+  }
+  if item.late == true { line += " · late" }
+  return line
+}
+
+enum CtoRoutineNoteTone { case plain, accent, danger }
+
+/// One quiet line about how the routine is doing. The desktop's `routineNote`
+/// says the same, in the same order.
+func ctoRoutineNote(_ item: AgentChatScheduledWorkItem, now: Date, running: Bool) -> (text: String, tone: CtoRoutineNoteTone)? {
+  if running { return ("Running now", .accent) }
+  let hasCheck = item.check?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+  if hasCheck && item.checkFailing == true { return ("Check failing · quiet until it passes", .danger) }
+  let lastRun = ctoDescribeAgo(item.lastRunAt, now: now)
+  if let outcome = item.outcomeSummary?.trimmingCharacters(in: .whitespacesAndNewlines), !outcome.isEmpty {
+    return (lastRun.map { "\(outcome) · \($0)" } ?? outcome, .plain)
+  }
+  if hasCheck { return (lastRun.map { "Quiet since it last woke \($0)" } ?? "Nothing new yet", .plain) }
+  return nil
+}
+
+/// "Last ran 3 h ago".
+func ctoRoutineLastRan(_ item: AgentChatScheduledWorkItem, now: Date) -> String? {
+  ctoDescribeAgo(item.lastRunAt, now: now).map { "Last ran \($0)" }
+}
+
 /// "12 min ago", "3 h ago", "Nov 2".
 func ctoRelativeDay(_ iso: String, now: Date = Date()) -> String {
   ctoDescribeAgo(iso, now: now) ?? ""
@@ -201,6 +254,8 @@ final class CtoStore: ObservableObject {
   }
   @Published var routines: [AgentChatScheduledWorkItem] = []
   @Published var routinesLoaded = false
+  /// Routines the person just ran, shown as running for a moment.
+  @Published private(set) var runningIds: Set<String> = []
   @Published var children: [CtoChildRow] = []
   @Published var library: [CtoLibraryItem] = []
   @Published var libraryLoaded = false
@@ -342,6 +397,28 @@ final class CtoStore: ObservableObject {
       memoryError = ctoShortError(error, fallback: "Couldn't read notes")
       return false
     }
+  }
+
+  /// Just after the soonest checked routine is next due. Its check can change
+  /// the row without a CTO turn, so an open list reloads then.
+  var nextCheckReloadAt: Date? {
+    routines
+      .filter { ctoRoutineIsPending($0) && !ctoRoutineRowPaused($0) && !($0.check ?? "").isEmpty }
+      .compactMap { item in
+        item.nextRunAt.flatMap { ISO8601DateFormatter.ctoArchive.date(from: $0) ?? ISO8601DateFormatter().date(from: $0) }
+      }
+      .min()?
+      .addingTimeInterval(5)
+  }
+
+  /// One reload at `nextCheckReloadAt`. A time already past (the check waited
+  /// on a busy chat) gets one later look rather than a tight loop.
+  func reloadRoutinesAtNextCheck(includeTerminal: Bool) async {
+    guard !isFixture, let due = nextCheckReloadAt else { return }
+    let wait = due.timeIntervalSinceNow > 0 ? due.timeIntervalSinceNow : 30
+    try? await Task.sleep(for: .seconds(wait))
+    guard !Task.isCancelled else { return }
+    await loadRoutines(includeTerminal: includeTerminal)
   }
 
   func loadRoutines(includeTerminal: Bool = false) async {
@@ -549,7 +626,19 @@ final class CtoStore: ObservableObject {
   }
 
   func runNow(_ item: AgentChatScheduledWorkItem) async {
-    guard let sync, let sessionId else { ADEHaptics.light(); return }
+    // Hold "Running now" long enough to read, however fast the host answers.
+    runningIds.insert(item.id)
+    defer {
+      Task { @MainActor [weak self] in
+        try? await Task.sleep(for: .milliseconds(1_800))
+        self?.runningIds.remove(item.id)
+      }
+    }
+    guard let sync, let sessionId else {
+      ADEHaptics.light()
+      if isFixture { fixtureRan(item) }
+      return
+    }
     busyIds.insert(item.id)
     defer { busyIds.remove(item.id) }
     do {
@@ -564,6 +653,23 @@ final class CtoStore: ObservableObject {
       ADEHaptics.error()
     }
     await loadRoutines()
+  }
+
+  /// Previews only: a run that finds a failing check passing again.
+  private func fixtureRan(_ item: AgentChatScheduledWorkItem) {
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(700))
+      guard let self, let index = self.routines.firstIndex(where: { $0.id == item.id }) else { return }
+      let formatter = ISO8601DateFormatter()
+      formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+      let now = formatter.string(from: Date())
+      self.routines[index].lastRunAt = now
+      self.routines[index].lastCheckedAt = now
+      if self.routines[index].checkFailing == true {
+        self.routines[index].checkFailing = false
+        self.routines[index].outcomeSummary = "Staging is healthy again."
+      }
+    }
   }
 
   func cancel(_ item: AgentChatScheduledWorkItem) async {

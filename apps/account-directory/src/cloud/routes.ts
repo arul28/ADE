@@ -11,7 +11,8 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { routeSponsored } from "./gravity";
-import { rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
+import { noteComputerNetwork, rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
+import { requestNetwork } from "./sponsoredConsent";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, rememberLaunchSetupDisk, routeLaunches, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
@@ -1614,6 +1615,10 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
     const report = parseActivityReport(await readJson(request), now);
     if (!report) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     await recordActivity(env, computer.instance_id, report, waitUntil);
+    // The network its brain calls from, for Free Small's tripwire (`sponsoredSmall.ts`). Never fails the report.
+    await noteComputerNetwork(env, computer, requestNetwork(request)).catch((error: unknown) => {
+      reportCloudFailure("cloud.computer_network_failed", { message: error instanceof Error ? error.message : "unknown" });
+    });
     return json({ ok: true });
   },
   // A lane's status menu, read when it opens: never wakes the computer (`computerStatus.ts`).
@@ -2115,7 +2120,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   // Sponsored cards and the Index (`gravity.ts`): rows and Gravity only, no provider.
   if (path.startsWith("/cloud/sponsored/")) {
     if (!await takeRequest(env, caller.userId, "sponsored", now)) return tooManyRequests();
-    const sponsored = await routeSponsored(request, path, env, caller.userId, now);
+    const sponsored = await routeSponsored(request, path, env, caller.userId, now, waitUntil);
     if (sponsored) return sponsored;
   }
   // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.

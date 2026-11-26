@@ -49,6 +49,16 @@ function startsOnCountriesOf(env: SponsoredConsentEnv): string[] {
 /** Where a request comes from, as the consent rules read it: its country and state, and the browser's Global Privacy Control. */
 export type SponsoredRequester = { country: string | null; region: string | null; gpc: boolean };
 
+/**
+ * The network the caller is on as Cloudflare sees it: its AS number (an ISP, a
+ * phone carrier, a hosting company), or null with no Cloudflare data (a test,
+ * a local run). It names a network, never one connection.
+ */
+export function requestNetwork(request: Request): number | null {
+  const asn = (request as Request & { cf?: { asn?: unknown } }).cf?.asn;
+  return typeof asn === "number" && Number.isInteger(asn) && asn > 0 ? asn : null;
+}
+
 export function sponsoredRequester(request: Request | null): SponsoredRequester {
   const region = (request as (Request & { cf?: { regionCode?: unknown } }) | null)?.cf?.regionCode;
   return {
@@ -105,10 +115,12 @@ export type ConsentRow = {
   country: string | null;
   gpc: number;
   looked_at: number | null;
+  /** The network (AS number) of the look or yes that last moved `looked_at`, cleared with it (Free Small's tripwire, `sponsoredSmall.ts`). */
+  looked_asn?: number | null;
 };
 
 export async function readConsent(env: CloudDb, userId: string): Promise<ConsentRow | null> {
-  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc, looked_at from cloud_sponsored_consent where user_id = ?")
+  return env.DB.prepare("select consent, email_hash, decided_at, source, country, gpc, looked_at, looked_asn from cloud_sponsored_consent where user_id = ?")
     .bind(userId).first<ConsentRow>();
 }
 

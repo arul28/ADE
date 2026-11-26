@@ -313,13 +313,16 @@ struct CloudCtoCopy: Decodable, Equatable {
     let title: String
     let cron: String
     let paused: Bool
+    /// The command that gates it: it wakes the CTO only when its output changes.
+    let check: String?
 
-    private enum CodingKeys: String, CodingKey { case title, cron, paused }
+    private enum CodingKeys: String, CodingKey { case title, cron, paused, check }
 
-    init(title: String, cron: String, paused: Bool) {
+    init(title: String, cron: String, paused: Bool, check: String? = nil) {
       self.title = title
       self.cron = cron
       self.paused = paused
+      self.check = check
     }
 
     init(from decoder: Decoder) throws {
@@ -327,6 +330,7 @@ struct CloudCtoCopy: Decodable, Equatable {
       title = c.lenient(String.self, forKey: .title) ?? "Routine"
       cron = c.lenient(String.self, forKey: .cron) ?? ""
       paused = c.lenient(Bool.self, forKey: .paused) ?? false
+      check = c.lenient(String.self, forKey: .check).flatMap { nonEmptyTrimmed($0) }
     }
   }
 

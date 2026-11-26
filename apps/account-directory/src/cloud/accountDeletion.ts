@@ -183,7 +183,7 @@ export async function forgetDeletedAccountComputers(env: Pick<CloudEnv, "DB">, u
     // Last: the day rows above tell the live computers by the account ID.
     env.DB.prepare(`
       update cloud_computers set user_id = ?, name = null, machine_key = null, request_id = null, moving_from = null,
-        update_error = null, ade_features = null
+        update_error = null, ade_features = null, net_asn = null
       where user_id = ? and deleted_at is not null
     `).bind(gone, userId),
     env.DB.prepare("update cloud_accounts set test_note = null, plan_cleanup_choice_json = null, plan_cleanup_result_json = null, plan_cleanup_warned_json = null where user_id = ?").bind(userId),

@@ -630,6 +630,167 @@
   .ade-cto-greeting { animation: none; }
 }
 
+/*
+ * Routine rows (`CtoRoutineRows.tsx`). A tile, the title, one schedule line
+ * and at most one quiet note; the details (prompt, check, last run) open in
+ * place on the settings page. State lives on `data-state`: on, off, running,
+ * failing. Motion is opacity and transform only, and only while something
+ * changes.
+ */
+.ade-cto-routine-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.ade-cto-routine-list[data-variant="panel"] { gap: 2px; }
+.ade-cto-routine-list.ade-modern-rows > .ade-cto-routine + .ade-cto-routine {
+  border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.ade-cto-routine {
+  --routine-accent: var(--cto-accent, var(--color-accent));
+  position: relative;
+  min-width: 0;
+  border-radius: 8px;
+  transition: background-color 160ms ease;
+}
+.ade-cto-routine-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ade-cto-routine[data-variant="panel"] { padding: 5px 6px; }
+.ade-cto-routine[data-variant="settings"] { border-radius: 0; }
+.ade-cto-routine[data-variant="settings"] .ade-cto-routine-main { padding: 12px 12px 12px 14px; gap: 12px; }
+.ade-cto-routine:hover,
+.ade-cto-routine:focus-within { background: var(--kit-hover); }
+.ade-cto-routine[data-variant="settings"][data-open="true"] { background: color-mix(in srgb, var(--color-fg) 3%, transparent); }
+
+/* The tile: the routine's kind, tinted while it is on. */
+.ade-cto-routine-tile {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--routine-accent);
+  background: color-mix(in srgb, var(--routine-accent) 13%, transparent);
+  transition: color 200ms ease, background-color 200ms ease, transform 200ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+.ade-cto-routine[data-variant="settings"] .ade-cto-routine-tile { width: 32px; height: 32px; border-radius: 10px; }
+.ade-cto-routine[data-state="off"] .ade-cto-routine-tile {
+  color: var(--kit-text-3);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-cto-routine[data-state="failing"] .ade-cto-routine-tile { color: var(--kit-crit); background: color-mix(in srgb, var(--kit-crit) 12%, transparent); }
+.ade-cto-routine[data-state="running"] .ade-cto-routine-tile { transform: scale(1.06); }
+
+/* A dot on the tile's corner: running (pulses) or failing. */
+.ade-cto-routine-signal {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--routine-accent);
+  box-shadow: 0 0 0 2px var(--kit-panel-bg, var(--color-bg));
+}
+.ade-cto-routine[data-state="failing"] .ade-cto-routine-signal { background: var(--kit-crit); }
+.ade-cto-routine[data-state="running"] .ade-cto-routine-signal { animation: ade-cto-routine-pulse 1100ms ease-in-out infinite; }
+@keyframes ade-cto-routine-pulse {
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+
+/* The text is the settings row's disclosure button. */
+.ade-cto-routine-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ade-cto-routine-text:disabled { cursor: default; }
+.ade-cto-routine-text:focus-visible { outline: 2px solid var(--routine-accent); outline-offset: 3px; border-radius: 4px; }
+.ade-cto-routine-title,
+.ade-cto-routine-when,
+.ade-cto-routine-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* An open row shows its title and note in full. */
+.ade-cto-routine-text[aria-expanded="true"] :is(.ade-cto-routine-title, .ade-cto-routine-note) { white-space: normal; overflow-wrap: anywhere; }
+.ade-cto-routine-title { font-size: 12.5px; font-weight: 500; line-height: 1.4; color: var(--color-fg); transition: color 200ms ease; }
+.ade-cto-routine[data-variant="settings"] .ade-cto-routine-title { font-size: 13px; }
+.ade-cto-routine-when { font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); font-variant-numeric: tabular-nums; }
+.ade-cto-routine-note {
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--kit-text-2);
+  animation: ade-cto-routine-note-in 260ms ease both;
+}
+.ade-cto-routine-note[data-tone="crit"] { color: var(--kit-crit); }
+.ade-cto-routine-note[data-tone="accent"] { color: var(--routine-accent); }
+@keyframes ade-cto-routine-note-in {
+  from { opacity: 0; transform: translateY(-2px); }
+}
+.ade-cto-routine[data-state="off"] .ade-cto-routine-title { color: var(--kit-text-2); }
+
+.ade-cto-routine-controls { display: flex; align-items: center; gap: 2px; flex: none; }
+/* The menu stays out of the way until the row is pointed at. */
+.ade-cto-routine-more { opacity: 0; transition: opacity 140ms ease; }
+.ade-cto-routine:hover .ade-cto-routine-more,
+.ade-cto-routine:focus-within .ade-cto-routine-more,
+.ade-cto-routine-more[data-open="true"] { opacity: 1; }
+@media (hover: none) { .ade-cto-routine-more { opacity: 1; } }
+
+/* Details: open in place, height animated through the grid row. */
+.ade-cto-routine-details {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 220ms cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+.ade-cto-routine[data-open="true"] .ade-cto-routine-details { grid-template-rows: 1fr; }
+.ade-cto-routine-details-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 14px 0 58px;
+  opacity: 0;
+  transition: opacity 180ms ease, padding-bottom 220ms ease;
+}
+.ade-cto-routine[data-open="true"] .ade-cto-routine-details-inner { padding-bottom: 14px; opacity: 1; }
+.ade-cto-routine-prompt { margin: 0; font-size: 12px; line-height: 1.55; color: var(--kit-text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ade-cto-routine-check {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+.ade-cto-routine-check code {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+}
+.ade-cto-routine-check-state,
+.ade-cto-routine-meta { font-size: 11.5px; color: var(--kit-text-3); }
+.ade-cto-routine-check-state[data-tone="crit"] { color: var(--kit-crit); }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-cto-routine,
+  .ade-cto-routine-tile,
+  .ade-cto-routine-details,
+  .ade-cto-routine-details-inner,
+  .ade-cto-routine-more { transition: none; }
+  .ade-cto-routine-note,
+  .ade-cto-routine[data-state="running"] .ade-cto-routine-signal { animation: none; }
+}
+
 /* A routine the CTO just scheduled slides in and glows once. */
 [data-fresh="true"][data-routine-id] {
   border-radius: 8px;

@@ -198,6 +198,11 @@ import {
   type ChatScheduledWorkUpsert,
 } from "./chatScheduledWorkScheduler";
 import {
+  runScheduledWorkCheck,
+  SCHEDULED_WORK_CHECK_MAX_CHARS,
+  scheduledWorkCheckWakeText,
+} from "./scheduledWorkCheck";
+import {
   createCtoThreadFallback,
   ctoModelKey,
   type CtoPendingSettledAction,
@@ -16329,7 +16334,7 @@ export function createAgentChatService(args: {
           : null,
         handoffSession: (handoffArgs) => handoffSession({ ...(handoffArgs as AgentChatHandoffArgs), runtimeActor: { kind: "cto" } }),
         scheduledWorkService: {
-          create: (a) => createScheduledWork(a as AgentChatCreateScheduledWorkArgs),
+          create: ({ check, ...rest }) => createScheduledWork(rest as AgentChatCreateScheduledWorkArgs, { check }),
           list: (a) => listScheduledWork(a ?? {}),
           getState: (a) => getScheduledWorkState(a),
           cancel: (a) => cancelScheduledWork(a),
@@ -73871,6 +73876,7 @@ export function createAgentChatService(args: {
         ...(item.timeZone ? { timeZone: item.timeZone } : {}),
         ...(item.reason ? { reason: item.reason } : {}),
         ...(item.paused ? { paused: true } : {}),
+        ...(item.check ? { check: item.check } : {}),
       }));
     return { tail, routines };
   };
@@ -73899,7 +73905,7 @@ export function createAgentChatService(args: {
           recurring: true,
           ...(routine.reason ? { reason: routine.reason } : {}),
           ...(routine.timeZone ? { timeZone: routine.timeZone } : {}),
-        });
+        }, { check: routine.check ?? null, baseline: false });
         if (routine.paused) {
           await setScheduledWorkItemPaused({ sessionId: cto.sessionId, scheduleId: created.item.id, paused: true }).catch((error: unknown) => {
             logger.warn("agent_chat.cto_routine_pause_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -74227,10 +74233,23 @@ export function createAgentChatService(args: {
     ...(schedule.lateFlag ? { late: true } : {}),
     ...(schedule.outcomeSummary ? { outcomeSummary: schedule.outcomeSummary } : {}),
     ...(schedule.source ? { source: schedule.source } : {}),
+    ...(schedule.check ? { check: schedule.check } : {}),
+    ...(schedule.lastCheckedAt != null ? { lastCheckedAt: new Date(schedule.lastCheckedAt).toISOString() } : {}),
+    ...(schedule.checkFailing ? { checkFailing: true } : {}),
   });
+
+  /**
+   * `internal.check` is a shell command, so it is never read off `args`: IPC,
+   * remote devices and `ade` callers reach this with args alone. Only the
+   * CTO's scheduleWork tool and its routine restore pass one.
+   */
+  /** A routine's check runs in the project folder, signed in to GitHub the way a project chat is. */
+  const runRoutineCheck = (command: string) =>
+    runScheduledWorkCheck(command, projectRoot, { extraEnv: getSessionGithubEnv });
 
   const createScheduledWork = async (
     args: AgentChatCreateScheduledWorkArgs,
+    internal: { check?: string | null; baseline?: boolean } = {},
   ): Promise<AgentChatCreateScheduledWorkResult> => {
     await scheduledWorkReady;
     if (!scheduledWorkScheduler) {
@@ -74273,6 +74292,17 @@ export function createAgentChatService(args: {
     const personTimeZone = ctoOwned ? ctoStateService?.getIdentity().timeZone ?? null : null;
     const timeZone = args.timeZone ?? (isKnownTimeZone(personTimeZone) ? personTimeZone : null);
     const timing = resolveScheduledWorkTiming(args, createdAt, timeZone);
+    const check = typeof internal.check === "string" ? internal.check.trim() : "";
+    if (check && (timing.kind !== "cron" || !timing.recurring)) {
+      throw new Error("A check gates a recurring cron. One-shot wakeups cannot take one.");
+    }
+    if (check.length > SCHEDULED_WORK_CHECK_MAX_CHARS) {
+      throw new Error(`Scheduled work check must be ${SCHEDULED_WORK_CHECK_MAX_CHARS} characters or fewer.`);
+    }
+    // The first run is the baseline, so the first fire wakes only on a change.
+    // A restore skips it: the scheduler's first run is the baseline then, so a
+    // routine that is off runs nothing and a failure still wakes once.
+    const baseline = check && internal.baseline !== false ? await runRoutineCheck(check) : null;
 
     const reason = args.reason?.trim();
     const id = `action:${normalizedSessionId}:${randomUUID()}`;
@@ -74294,10 +74324,18 @@ export function createAgentChatService(args: {
       status: "scheduled",
       lateFlag: false,
       durable: true,
+      ...(check ? { check } : {}),
+      ...(check && baseline ? {
+        ...(baseline.outputHash ? { checkHash: baseline.outputHash } : {}),
+        // The caller sees a failing first run in this result: that is its one wake.
+        ...(baseline.ok ? {} : { checkFailing: true }),
+        lastCheckedAt: createdAt,
+      } : {}),
     });
     return {
       item: toScheduledWorkItem(schedule),
       timeZone: timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+      ...(baseline ? { check: { ok: baseline.ok, exitCode: baseline.exitCode ?? null, output: baseline.detail } } : {}),
     };
   };
 
@@ -84416,6 +84454,8 @@ export function createAgentChatService(args: {
       // retry at the next boundary instead, regardless of which runtime or API
       // created it.
       if (liveManaged?.session.status === "active") return true;
+      // A send was accepted and its turn is still starting (a cold runtime can take a while).
+      if (liveManaged?.turnAcceptedAt) return true;
       // An open card refuses every new turn. Firing now would close the row as
       // "Not delivered" and lose the wake; keep it armed until the card closes.
       if (hasLivePendingInput(liveManaged)) return true;
@@ -84448,6 +84488,27 @@ export function createAgentChatService(args: {
     },
     releaseFire: (schedule) => {
       db?.run?.("delete from kv where key = ?", [scheduledWorkClaimKey(schedule)]);
+    },
+    runCheck: async (schedule) => {
+      const run = await runRoutineCheck(schedule.check ?? "").catch((error: unknown) => {
+        // The scheduler turns a throw into a failed check (one wake); keep the cause in the logs.
+        logger.warn("agent_chat.scheduled_work_check_threw", {
+          scheduleId: schedule.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      });
+      logger.info("agent_chat.scheduled_work_check_ran", {
+        scheduleId: schedule.id,
+        sessionId: schedule.sessionId,
+        ok: run.ok,
+        exitCode: run.exitCode ?? null,
+        changed: run.ok ? run.outputHash !== schedule.checkHash : null,
+      });
+      return run;
+    },
+    onDeliveryHung: (sessionId, heldMs) => {
+      logger.warn("agent_chat.scheduled_work_delivery_hung", { sessionId, heldMs });
     },
     wakeMessageRecorded: async (schedule) => {
       // A provider's native schedule and a tracked CLI leave no marked message
@@ -84494,7 +84555,10 @@ export function createAgentChatService(args: {
         try {
           const sent = await ptyService.sendToSession({
             sessionId: schedule.sessionId,
-            text: schedule.prompt,
+            // A CLI gets the same check verdict a chat does.
+            text: context.check && schedule.check
+              ? `${scheduledWorkCheckWakeText(schedule.check, context.check)}\n\n${schedule.prompt}`
+              : schedule.prompt,
           });
           // sendToSession relaunches an ended CLI. The parent card closed when
           // that process exited, so a resume has to reopen it the same way the
@@ -84562,7 +84626,11 @@ export function createAgentChatService(args: {
               : "(Run now: the person started this early. It will not run again.)"}
 
 ${schedule.prompt}`
-            : schedule.prompt,
+            : context.check && schedule.check
+              ? `${scheduledWorkCheckWakeText(schedule.check, context.check)}
+
+${schedule.prompt}`
+              : schedule.prompt,
           kind: "wake",
           metadata: {
             scheduledWake: {
@@ -85848,7 +85916,8 @@ ${schedule.prompt}`
     },
     /** A person's text for a running agent CLI (Work input box, phone, web); see `AgentCliTypeArgs`. */
     typeIntoAgentCliWhenFree,
-    createScheduledWork,
+    // Args only: a check never comes from outside this service.
+    createScheduledWork: (args: AgentChatCreateScheduledWorkArgs) => createScheduledWork(args),
     listInterruptedChats,
     armUpdateResume,
     releaseChatRuntime,

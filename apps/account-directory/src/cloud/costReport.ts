@@ -1,10 +1,11 @@
 import { pruneSignupIps, signupBurstAlarms, sustainedCpuAlarms } from "./abuseSignals";
+import { smallCloudLookAlarms } from "./sponsoredSmall";
 import { captureCloudSafety, type CloudSafetyStep, type CloudWaitUntil } from "./analytics";
 import { blockCommand, sendOwnerAlert } from "./blocks";
 import type { CloudPlanId } from "./contract";
 import { sendCloudEmail } from "./email";
 import { idleCleanupReportLine } from "./idleCleanup";
-import { sponsoredReportLines } from "./gravity";
+import { sponsoredReportLines } from "./sponsoredReport";
 import {
   CLOUD_PLANS,
   DISK_COST_MICROS_PER_GB_DAY,
@@ -395,6 +396,8 @@ export async function runDailyCostReport(env: CloudEnv, day: string): Promise<vo
     return [];
   });
   alarms.push(...await abuse("cpu", () => sustainedCpuAlarms(env, day)), ...await abuse("signups", () => signupBurstAlarms(env, day)));
+  // Free Small's tripwire (`sponsoredSmall.ts`): kept free by views from its own cloud computer's network.
+  alarms.push(...await abuse("small_cloud_look", () => smallCloudLookAlarms(env, Date.now())));
   await pruneSignupIps(env, dayStart + 86_400_000).catch((error: unknown) => {
     reportCloudFailure("cloud.signup_ip_prune_failed", { message: error instanceof Error ? error.message : "unknown" });
   });

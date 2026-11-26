@@ -3003,7 +3003,8 @@ export type CloudCtoCopy = {
   rules: string;
   /** The CTO's skills by name and one-line description; the how-tos stay in the copy. */
   skills: Array<{ name: string; description: string }>;
-  routines: Array<{ title: string; cron: string; timeZone?: string; paused: boolean }>;
+  /** `check`: the command that gates it; it wakes the CTO only when its output changes. */
+  routines: Array<{ title: string; cron: string; timeZone?: string; check?: string; paused: boolean }>;
   tail: string;
   tailTruncated: boolean;
   story: { summary: string; coveredThrough: string | null } | null;

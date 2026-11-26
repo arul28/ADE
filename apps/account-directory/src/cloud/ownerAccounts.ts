@@ -1,4 +1,5 @@
-import { isSponsoredFormat, sponsoredAbReport, type GravityEnv } from "./gravity";
+import { isSponsoredFormat, type GravityEnv } from "./gravity";
+import { sponsoredAbReport } from "./sponsoredReport";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
 import { gravitySwitches } from "./sponsoredSwitch";
 import { fail, json } from "./http";

@@ -153,7 +153,7 @@ struct CtoAccountCopySheet: View {
                     if routine.paused {
                       ADEKitTag(text: "Paused", tone: .neutral, keepsCase: true)
                     }
-                    Text(routine.cron)
+                    Text(routine.check != nil && !routine.paused ? "\(routine.cron) · on change" : routine.cron)
                       .font(.adeMono(11))
                       .foregroundStyle(ADEColor.textMuted)
                   }

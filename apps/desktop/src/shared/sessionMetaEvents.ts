@@ -7,3 +7,12 @@ export function isSessionMetaOnly(event: { type: string }, field: string, alsoAl
   if (event.type !== "session_meta_updated" || (event as Record<string, unknown>)[field] === undefined) return false;
   return Object.keys(event).every((key) => key === "type" || key === field || alsoAllowed.includes(key));
 }
+
+/**
+ * True for a `session_meta_updated` that carries nothing but its type: the
+ * nudge a durable scheduled-work transition sends when the row's status did not
+ * change (a quiet routine check), so summary readers reload.
+ */
+export function isBareSessionMetaNudge(event: { type: string }): boolean {
+  return event.type === "session_meta_updated" && Object.keys(event).every((key) => key === "type");
+}
