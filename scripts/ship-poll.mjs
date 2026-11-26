@@ -24,6 +24,7 @@ const REVIEW_BOT_CHECK = /coderabbit|greptile|devin|bugbot|codex|copilot/i;
 /** A bot comment that says the bot did not review, or will not review the next push. */
 const BOT_NOTICE = /couldn['’]?t run|usage limit|rate[- ]limit|0 remain|not posted on this PR|review(?:s)? (?:paused|skipped)/i;
 const PENDING_CHECK_STATES = new Set(["PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"]);
+const FAILED_RUN_CONCLUSIONS = new Set(["failure", "startup_failure", "timed_out", "cancelled", "action_required"]);
 
 /**
  * Findings a bot wrote in its review body because they sit outside the diff.
@@ -70,7 +71,7 @@ const isBot = (login) => /\[bot\]$/.test(login ?? "");
  * @param {object} input
  * @param {{state:string,isDraft:boolean,mergeStateStatus:string,headRefOid:string,baseRefName:string}} input.pr
  * @param {Array<{name:string,state:string,bucket?:string,link?:string}>} input.checks
- * @param {Array<{name:string,status:string}>} [input.workflowRuns] The head commit's Actions runs.
+ * @param {Array<{name:string,status:string,conclusion?:string,createdAt?:string}>} [input.workflowRuns] The head commit's Actions runs.
  * @param {Array} input.issueComments  GitHub issue comments on the PR.
  * @param {Array} input.reviews        GitHub PR reviews.
  * @param {Array} input.threads        GraphQL reviewThreads nodes.
@@ -88,12 +89,21 @@ export function summarizePoll({ pr, checks, workflowRuns = [], issueComments, re
   const pending = (check) => PENDING_CHECK_STATES.has(String(check.state).toUpperCase()) || check.bucket === "pending";
   const failed = (check) => check.bucket === "fail" || /^(FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED)$/i.test(check.state);
   // A run GitHub queued has no checks until a runner takes its first job, and
-  // `gh pr checks` lists none of it: a busy queue would read as "CI done".
+  // one that fails at startup never makes any: `gh pr checks` alone would read
+  // both as "CI done". The newest run of each workflow counts; a rerun replaces
+  // an older attempt.
+  const latestRuns = [...new Map([...workflowRuns]
+    .sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")))
+    .map((run) => [run.name, run])).values()];
   const ciRunning = [
     ...ciChecks.filter(pending).map((check) => check.name),
-    ...workflowRuns.filter((run) => run.status !== "completed").map((run) => `${run.name} (${run.status})`),
+    ...latestRuns.filter((run) => run.status !== "completed").map((run) => `${run.name} (${run.status})`),
   ];
-  const ciFailed = ciChecks.filter(failed).map((check) => ({ name: check.name, link: check.link ?? null }));
+  const ciFailed = [
+    ...ciChecks.filter(failed).map((check) => ({ name: check.name, link: check.link ?? null })),
+    ...latestRuns.filter((run) => run.status === "completed" && FAILED_RUN_CONCLUSIONS.has(run.conclusion))
+      .map((run) => ({ name: `${run.name} (${run.conclusion})`, link: run.url ?? null })),
+  ];
   const pendingReviewBots = botChecks.filter(pending).map((check) => check.name);
 
   const openThreads = threads
@@ -268,7 +278,7 @@ function main() {
   const checks = JSON.parse(checksJson || "[]");
   const workflowRuns = JSON.parse(run("gh", [
     "api", `repos/${owner}/${repo}/actions/runs?head_sha=${pr.headRefOid}&per_page=100`,
-    "-q", "[.workflow_runs[] | {name, status}]",
+    "-q", "[.workflow_runs[] | {name, status, conclusion, createdAt: .created_at, url: .html_url}]",
   ]) || "[]");
   const slurp = (endpoint) => JSON.parse(run("gh", ["api", "--paginate", "--slurp", endpoint])).flat();
   const issueComments = slurp(`repos/${owner}/${repo}/issues/${pr.number}/comments`);

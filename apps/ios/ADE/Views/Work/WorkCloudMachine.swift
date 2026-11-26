@@ -471,7 +471,7 @@ struct CloudLaneStateLinesContent: View {
         .foregroundStyle(ADEColor.warning)
         .accessibilityHidden(true)
       VStack(alignment: .leading, spacing: 2) {
-        Text("This lane's cloud computer is deleted in \(days) \(days == 1 ? "day" : "days") because it is unused. Its work that isn't on GitHub is saved in ADE Cloud first, and the lane and its chats stay. After that, your next message makes a new computer\(deletingSizeLabel.map { " at \($0)" } ?? "").")
+        Text("This lane's cloud computer is deleted in \(days) \(days == 1 ? "day" : "days") because it is unused. Its work that isn't on GitHub is saved in ADE Cloud first, and the lane and its chats stay. Files git ignores, such as .env, aren't saved. After that, your next message makes a new computer\(deletingSizeLabel.map { " at \($0)" } ?? "").")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textPrimary)
           .fixedSize(horizontal: false, vertical: true)
