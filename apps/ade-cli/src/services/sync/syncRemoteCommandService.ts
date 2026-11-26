@@ -1,6 +1,7 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isLaneShareGuestCommand } from "./laneShareGuestPolicy";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
+import { providerLoginGate } from "../../../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { buildProviderLoginsDomainService } from "../../../../desktop/src/main/services/providerLogins/providerLoginActions";
 import { PROVIDER_LOGIN_ACCOUNT_WRITES } from "../../../../desktop/src/shared/types/providerLogins";
@@ -4889,6 +4890,17 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const permissionMode = parsed.permissionMode ?? "default";
     validateLaunchProfilePermissionMode(provider, permissionMode);
     const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider] as TerminalToolType;
+    // On a cloud computer, the account's sign-in for this CLI is written before
+    // it starts, as on the desktop path (P5 §4.4). Null everywhere else: no await.
+    const loginGate = provider === "shell" ? null : providerLoginGate(provider);
+    const loginOutcome = loginGate ? await loginGate : null;
+    if (loginOutcome && (loginOutcome.result !== "ok" || loginOutcome.notices?.length)) {
+      args.logger.info("sync_remote.start_cli.provider_login", {
+        provider,
+        result: loginOutcome.result,
+        notices: (loginOutcome.notices ?? []).map((notice) => notice.providerLogin.kind),
+      });
+    }
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
       provider,
       title: parsed.title,

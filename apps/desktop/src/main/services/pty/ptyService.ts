@@ -7219,7 +7219,7 @@ export function createPtyService({
       if (runtimeCliLaunch) {
         // On a cloud computer, the account's sign-in for this CLI is written
         // before it starts, as for a chat turn (P5 §4.4). Null everywhere else: no await.
-        const loginGate = providerLoginGate(String(runtimeCliLaunch.provider));
+        const loginGate = String(runtimeCliLaunch.provider) === "shell" ? null : providerLoginGate(String(runtimeCliLaunch.provider));
         const loginOutcome = loginGate ? await loginGate : null;
         // A terminal has no card: the lines a chat would show are logged only.
         if (loginOutcome && (loginOutcome.result !== "ok" || loginOutcome.notices?.length)) {

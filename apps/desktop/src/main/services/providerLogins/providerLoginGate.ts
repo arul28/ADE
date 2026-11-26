@@ -57,11 +57,17 @@ export function createGate(s: SyncShared) {
       const waited = await waitForAccount(providerId, options);
       if (waited !== "joined") return { result: waited };
     }
+    const pullAccount = (): Promise<unknown> | undefined => {
+      const vaultPull = deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS });
+      // A computer that just started has no account settings yet, and they hold which sign-in ADE Cloud uses.
+      const settingsPull = cold ? deps.settings()?.sync?.() : undefined;
+      return settingsPull ? Promise.all([vaultPull, settingsPull]) : vaultPull;
+    };
     const gated = PROVIDER_LOGIN_CARRY.some((row) => row.provider === providerId && row.carry === "carried")
       || SAVED_KEYS.some((spec) => spec.provider === providerId);
     if (!gated) {
-      // Claude's pass check (a registered check, after this gate) reads the vault: fresh after a cold start.
-      const pulled = cold ? deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS }) : undefined;
+      // Claude's pass check (a registered check, after this gate) reads the vault and settings: fresh after a cold start.
+      const pulled = cold ? pullAccount() : undefined;
       if (pulled) await withTimeout(pulled, GATE_LIMIT_MS);
       return { result: "ok" };
     }
@@ -77,7 +83,7 @@ export function createGate(s: SyncShared) {
         if (timer) clearTimeout(timer);
       });
     };
-    const synced = await limit(deps.vault()?.sync?.({ maxAgeMs: GATE_MAX_AGE_MS }));
+    const synced = await limit(pullAccount());
     const applied = synced === "timeout" ? "timeout" : await limit(jobs.pass([providerId as ProviderLoginProvider]));
     let outcome: ProviderLoginGateOutcome = synced === "timeout" || applied === "timeout" ? { result: "timeout" } : { result: "ok" };
     // A takeover running here (armed, or a turn's that went on) holds the turn too: its CLI must not renew the same copy.
@@ -158,7 +164,8 @@ export function createGate(s: SyncShared) {
       if (waitedMs >= 100) deps.logger.info("provider_login.gate_cold", { provider, waitedMs, result: "joined" });
       return "joined";
     }
-    s.coldWaitSpent = true;
+    // A read still in flight is an answer coming: the next turn waits for it.
+    if (!s.accessPending) s.coldWaitSpent = true;
     deps.logger.warn("provider_login.gate_cold", { provider, waitedMs, result: "timeout", access: s.lastAccess });
     return "timeout";
   }
