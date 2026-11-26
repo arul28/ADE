@@ -409,6 +409,14 @@ function countUnexcluded(
   return count;
 }
 
+/**
+ * Whether a row files on the Settled shelf. A pin outranks settling, as it
+ * does for a lane: a pinned chat stays up in the active run.
+ */
+function filesAsSettled(bucket: SessionFilingBucket | null, session: TerminalSessionSummary): boolean {
+  return bucket === "settled" && !session.pinned;
+}
+
 function partitionQuietSessions(
   sessions: readonly TerminalSessionSummary[],
   effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>,
@@ -425,9 +433,7 @@ function partitionQuietSessions(
     const bucket = buckets.get(session.id) ?? null;
     if (bucket === "snoozed") {
       snoozed.push(session);
-    } else if (bucket === "settled" && !session.pinned) {
-      // A pin outranks settling, as it does for a lane: a pinned chat stays up
-      // in the active run.
+    } else if (filesAsSettled(bucket, session)) {
       settled.push(session);
     } else {
       active.push(session);
@@ -1647,7 +1653,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (bucket === "snoozed") {
         snoozed.add(session.id);
         all.add(session.id);
-      } else if (bucket === "settled" && !session.pinned) {
+      } else if (filesAsSettled(bucket, session)) {
         settled.add(session.id);
         all.add(session.id);
       }

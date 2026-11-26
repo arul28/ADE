@@ -1,20 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatCircleDots, Terminal } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../../shared/types";
-import { isChatToolType } from "../../../../shared/sessionSpawnNesting";
+import { sessionActiveKind, type SessionActiveKind } from "../../../../shared/sessionSpawnNesting";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { canonicalInputFromSummary, sessionCanonicalUiState, sessionIsMidFlight } from "../../../lib/terminalAttention";
 import { primarySessionLabel } from "../../../lib/sessions";
 import { extractError } from "../../../lib/format";
 import { useMachineEntryForBinding, usePinTargetsTab } from "../../../state/crossMachineLanes";
 import { Dialog } from "../../ui/dialog/Dialog";
+import { InlineErrorNotice } from "../../ui/notice";
 import { ToolLogo } from "../../terminals/ToolLogos";
 import { COLORS, SANS_FONT } from "../laneDesignTokens";
 
 /** What one open session in the lane is doing, for the dialog. */
 export type LaneActiveWorkRow = {
   session: TerminalSessionSummary;
-  kind: "chat" | "cli" | "terminal";
+  kind: SessionActiveKind;
   /** `running`: will change on its own. `needs_you`: waiting on the person. `open`: at rest. */
   state: "running" | "needs_you" | "open";
 };
@@ -29,10 +30,7 @@ export function classifyLaneActiveWork(sessions: readonly TerminalSessionSummary
       const state = sessionIsMidFlight(input)
         ? "running"
         : sessionCanonicalUiState(input).phase === "needs_you" ? "needs_you" : "open";
-      const kind = isChatToolType(session.toolType)
-        ? "chat"
-        : !session.toolType || session.toolType === "shell" ? "terminal" : "cli";
-      return { session, kind, state };
+      return { session, kind: sessionActiveKind(session.toolType), state };
     })
     .sort((a, b) => rank[a.state] - rank[b.state]);
 }
@@ -94,13 +92,20 @@ export function LaneActiveWorkDialog({
   const onContinueRef = useRef(onContinue);
   onContinueRef.current = onContinue;
   const continuedRef = useRef(false);
+  // False once the dialog closes: a stop that finishes later must not switch.
+  const aliveRef = useRef(false);
+  // Reads can answer out of order; only the newest one counts.
+  const readSeqRef = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++readSeqRef.current;
     try {
       const sessions = await window.ade.sessions.list({ laneId, limit: 200, includeArchived: false }, pinRef.current);
+      if (seq !== readSeqRef.current) return;
       setRows(classifyLaneActiveWork(sessions.filter((session) => session.laneId === laneId)));
       setLoadError(null);
     } catch (error) {
+      if (seq !== readSeqRef.current) return;
       setLoadError(extractError(error));
     }
   }, [laneId]);
@@ -110,6 +115,7 @@ export function LaneActiveWorkDialog({
   const pinKey = pin.key;
   useEffect(() => {
     if (!open) return undefined;
+    aliveRef.current = true;
     continuedRef.current = false;
     setRows(null);
     setMode("choose");
@@ -121,6 +127,7 @@ export function LaneActiveWorkDialog({
       timer = window.setTimeout(() => { timer = null; void load(); }, 300);
     }, pinRef.current);
     return () => {
+      aliveRef.current = false;
       if (timer != null) window.clearTimeout(timer);
       unsubscribe();
     };
@@ -129,7 +136,7 @@ export function LaneActiveWorkDialog({
   const running = useMemo(() => rows?.filter((row) => row.state === "running") ?? [], [rows]);
 
   const proceed = useCallback(() => {
-    if (continuedRef.current) return;
+    if (continuedRef.current || !aliveRef.current) return;
     continuedRef.current = true;
     onContinueRef.current();
   }, []);
@@ -177,7 +184,9 @@ export function LaneActiveWorkDialog({
   const terminals = rows?.filter((row) => row.kind !== "chat") ?? [];
   const busy = mode !== "choose";
 
-  const description = rows == null
+  const description = loadError && rows == null
+    ? `ADE could not read what is open in this lane${machineName ? ` on ${machineName}` : ""}. You can still switch; open chats and terminals stay attached.`
+    : rows == null
     ? "Checking what is running…"
     : running.length > 0
       ? `${plural(running.length, "session")} ${running.length === 1 ? "is" : "are"} still working${machineName ? ` on ${machineName}` : ""}. Open chats and terminals stay attached and see the new branch.`
@@ -191,11 +200,11 @@ export function LaneActiveWorkDialog({
     : running.length > 0
       ? [
           { label: "Wait, then switch", variant: "solid" as const, autoFocus: true, disabled: busy, title: "Switch as soon as the running work finishes", onClick: () => setMode("waiting") },
-          { label: mode === "stopping" ? "Stopping…" : "Stop and switch", busy: mode === "stopping", disabled: busy, variant: "secondary" as const, title: "Stop the running chats and terminals, then switch", onClick: () => { void stopAndContinue(); } },
+          { label: mode === "stopping" ? "Stopping…" : "Stop and switch", busy: mode === "stopping", disabled: busy, variant: "secondary" as const, title: "Stops the running chats' turns and closes running terminals and agent CLIs, then switches", onClick: () => { void stopAndContinue(); } },
           { label: "Cancel", variant: "secondary" as const, disabled: busy, onClick: onCancel },
         ]
       : [
-          { label: `Switch to ${targetLabel}`, variant: "solid" as const, autoFocus: true, disabled: rows == null, onClick: proceed },
+          { label: `Switch to ${targetLabel}`, variant: "solid" as const, autoFocus: true, disabled: rows == null && !loadError, onClick: proceed },
           { label: "Cancel", variant: "secondary" as const, onClick: onCancel },
         ];
 
@@ -225,7 +234,7 @@ export function LaneActiveWorkDialog({
       ) : undefined}
     >
       {loadError ? (
-        <div style={{ fontSize: 12, color: COLORS.danger }}>Could not read this lane's sessions: {loadError}</div>
+        <InlineErrorNotice id="lane-active-work-read" message={loadError} label="Could not read this lane's sessions" style={{ marginBottom: 8 }} />
       ) : null}
       <div className="flex flex-col gap-3">
         <ActiveWorkGroup label="Chats" icon={<ChatCircleDots size={12} />} rows={chats} stopErrors={stopErrors} />

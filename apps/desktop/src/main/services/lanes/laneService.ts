@@ -187,7 +187,7 @@ import { DEFAULT_NEW_LANE_DEFAULTS, normalizeLaneStart, plainLaneStartBranch, ty
 import { createLaneBranchNaming } from "./laneBranchNaming";
 
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
-import { isChatToolType } from "../../../shared/sessionSpawnNesting";
+import { sessionActiveKind } from "../../../shared/sessionSpawnNesting";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
 import { bareSimulatorPowerOff } from "../ios/simulatorPower";
 import {
@@ -2825,10 +2825,7 @@ export function createLaneService({
     return [
       ...terminalRows.map((row) => ({
         id: row.id,
-        kind: isChatToolType(row.tool_type)
-          ? "chat" as const
-          : !row.tool_type || row.tool_type === "shell" ? "terminal" as const : "cli" as const,
-        toolType: row.tool_type ?? null,
+        kind: sessionActiveKind(row.tool_type),
         title: row.title || row.id,
         status: row.status,
       })),

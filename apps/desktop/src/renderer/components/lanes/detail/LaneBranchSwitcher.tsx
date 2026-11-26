@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, Check, MagnifyingGlass, Plus } from "@phosphor-icons/react";
-import type { LaneBranchActiveWorkItem, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
+import type { LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
@@ -24,7 +24,6 @@ type PendingBranchSwitch = {
   branchName: string;
   mode: "existing" | "create";
   startPoint?: string;
-  activeWork: LaneBranchActiveWorkItem[];
 };
 
 const fieldStyle: React.CSSProperties = {
@@ -178,7 +177,7 @@ export function LaneBranchSwitcher({
     acknowledgeActiveWork?: boolean;
   }) => {
     if (lane.status.dirty) {
-      setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes. Commit, stash, or discard changes first.`, kind: "status" });
+      setError({ message: `Cannot switch branches while ${laneDisplayName(lane)} has uncommitted changes. Commit, stash, or discard changes first.`, kind: "status" });
       return;
     }
     const mode = request.mode ?? "existing";
@@ -200,13 +199,13 @@ export function LaneBranchSwitcher({
           return;
         }
         if (preview.dirty) {
-          setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes.`, kind: "status" });
+          setError({ message: `Cannot switch branches while ${laneDisplayName(lane)} has uncommitted changes.`, kind: "status" });
           return;
         }
         if (preview.activeWork.length > 0) {
           // The dialog says what is running and asks; the menu steps aside.
           setOpen(false);
-          setPendingSwitch({ branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
+          setPendingSwitch({ branchName, mode, startPoint: request.startPoint });
           return;
         }
       }
@@ -242,7 +241,7 @@ export function LaneBranchSwitcher({
       onSwitched?.(branchName);
     } catch (err) {
       const raw = extractError(err);
-      const message = formatBranchCheckoutError(raw, lane.name);
+      const message = formatBranchCheckoutError(raw, laneDisplayName(lane));
       // The formatter only rewrites git's "commit or stash first" refusal.
       setError({ message, kind: message === raw.trim() ? "failure" : "status" });
       // The error shows in the menu; reopen it when a dialog had closed it.
@@ -309,7 +308,7 @@ export function LaneBranchSwitcher({
         ref={triggerRef}
         onClick={toggleOpen}
         disabled={busy}
-        title={`Switch ${lane.name} to another branch`}
+        title={`Switch ${laneDisplayName(lane)} to another branch`}
       >
         <BranchIcon size={12} className="shrink-0 opacity-70" />
         <span className="truncate">{laneBranchLabel(lane.branchRef)}</span>

@@ -814,7 +814,8 @@ function AppearancePreview() {
     <div className="ade-ap-preview" data-active-theme={painted.id} data-previewing={previewing || undefined}>
       <div
         className="ade-ap-preview-stage"
-        {...(previewing ? { "data-theme": painted.baseMode, style: resolved.cssVars as React.CSSProperties } : {})}
+        data-theme={previewing ? painted.baseMode : undefined}
+        style={previewing ? (resolved.cssVars as React.CSSProperties) : undefined}
       >
         <PreviewBackdrop scene={scene} palette={palette} />
         <div className="ade-ap-preview-top">

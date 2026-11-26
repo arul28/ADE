@@ -1610,20 +1610,28 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const targets = changing.map((session) => ({ session, pin: machineRouter.pinForSession(session) }));
       // Show the pin now, on this machine's rows and on another machine's copy,
       // so the row moves the moment it is pinned. The write below confirms it.
+      const tabPinKey = tabCopyPinRef.current?.key ?? null;
       const showPinned = (rows: typeof targets, value: boolean) => {
         const ids = new Set(rows.map(({ session }) => session.id));
         const expiresAtMs = Date.now() + PENDING_PIN_TTL_MS;
-        for (const id of ids) pendingPinsRef.current.set(id, { pinned: value, expiresAtMs });
+        const foreignByPinKey = new Map<string, { pin: OpenProjectBinding; ids: Set<string> }>();
+        for (const { session, pin } of rows) {
+          if (!pin || pin.key === tabPinKey) {
+            // This tab's machine: held over the host roster's reads below.
+            pendingPinsRef.current.set(session.id, { pinned: value, expiresAtMs });
+            continue;
+          }
+          const group = foreignByPinKey.get(pin.key) ?? { pin, ids: new Set<string>() };
+          group.ids.add(session.id);
+          foreignByPinKey.set(pin.key, group);
+        }
         setHostSessions((prev) => (prev.some((row) => ids.has(row.id) && Boolean(row.pinned) !== value)
           ? prev.map((row) => (ids.has(row.id) && Boolean(row.pinned) !== value ? { ...row, pinned: value } : row))
           : prev));
         const foreignMachineIds = new Set<string>();
-        const tabPinKey = tabCopyPinRef.current?.key ?? null;
-        for (const { pin } of rows) {
-          // This tab's own machine is the host roster above.
-          if (!pin || pin.key === tabPinKey) continue;
+        for (const { pin, ids: machineIds } of foreignByPinKey.values()) {
           try {
-            const machineId = patchCrossMachineSessionsPinned(pin, ids, value);
+            const machineId = patchCrossMachineSessionsPinned(pin, machineIds, value);
             if (machineId) foreignMachineIds.add(machineId);
           } catch (error) {
             // Showing it early is a nicety; it must never stop the write.
@@ -1947,6 +1955,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const pendingPins = pendingPinsRef.current;
       if (pendingPins.size > 0) {
         const now = Date.now();
+        for (const [sessionId, pending] of [...pendingPins.entries()]) {
+          if (pending.expiresAtMs <= now) pendingPins.delete(sessionId);
+        }
         for (let index = 0; index < rows.length; index += 1) {
           const row = rows[index];
           const pending = row ? pendingPins.get(row.id) : undefined;

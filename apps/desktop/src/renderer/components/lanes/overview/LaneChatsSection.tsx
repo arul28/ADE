@@ -1,9 +1,8 @@
 import React, { useState } from "react";
-import { PushPin } from "@phosphor-icons/react";
 import { relativeTimeCompact } from "../../../lib/format";
 import { SessionStatusLabel } from "../../terminals/SessionStatusLabel";
 import { ToolLogo } from "../../terminals/ToolLogos";
-import { SESSION_PINNED_TOOLTIP } from "../../terminals/sessionLifecycleActions";
+import { PinnedMark } from "../../terminals/PinnedMark";
 import { cn } from "../../ui/cn";
 import { capRows, type LaneChatRow } from "./laneOverviewModel";
 import { COLORS } from "../laneDesignTokens";
@@ -35,11 +34,7 @@ const ChatRow = React.memo(function ChatRow({ row, onOpen }: { row: LaneChatRow;
           <span className={cn("min-w-0 flex-1 truncate text-[13px] leading-[18px]", done ? "text-fg/60" : "text-fg/90")}>
             {row.title}
           </span>
-          {row.pinned ? (
-            <span className="inline-flex shrink-0" title={SESSION_PINNED_TOOLTIP}>
-              <PushPin size={11} weight="fill" aria-label="Pinned" className="text-muted-fg/55" />
-            </span>
-          ) : null}
+          {row.pinned ? <PinnedMark /> : null}
           <span className="flex shrink-0 items-center">
             <SessionStatusLabel
               presentation={row.presentation}

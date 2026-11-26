@@ -97,6 +97,14 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   return normalized === "cursor" || normalized.endsWith("-chat");
 }
 
+/** What a session is, in the words lane surfaces use: an agent chat, an agent CLI in a terminal, or a shell. */
+export type SessionActiveKind = "chat" | "cli" | "terminal";
+
+export function sessionActiveKind(toolType: string | null | undefined): SessionActiveKind {
+  if (isChatToolType(toolType)) return "chat";
+  return !toolType || toolType === "shell" ? "terminal" : "cli";
+}
+
 /** The provider of an ADE chat's tool type (`claude-chat` → `claude`); null for a session that is not a chat. */
 export function chatToolProvider(toolType: string | null | undefined): string | null {
   if (!toolType || !isChatToolType(toolType)) return null;
