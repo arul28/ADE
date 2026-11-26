@@ -50,6 +50,7 @@ function setup(options: {
   project?: ReturnType<typeof fakeRuntime>;
   deliverRemote?: CrossScopeChatsDeps["deliverRemote"];
   stateDir?: string;
+  ownerId?: string;
 }) {
   let clock = 1_000_000;
   const stateDir = options.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "ade-cross-scope-"));
@@ -71,6 +72,7 @@ function setup(options: {
       : null,
     deliverRemote: options.deliverRemote ?? null,
     stateDir,
+    ...(options.ownerId ? { ownerId: options.ownerId } : {}),
     now: () => clock,
   });
   return { service, stateDir, scopeGet, advance: (ms: number) => { clock += ms; } };
@@ -125,6 +127,42 @@ describe("cross-scope chat wakes", () => {
     third.advance(60 * 60_000);
     await third.service.pump();
     expect(personal.chats.deliverExternalChildCompletion).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a same-scope report on disk until it lands, and another brain on the home never takes it", async () => {
+    let answer = "failed";
+    const project = fakeRuntime(["parent-p"], async () => answer);
+    const brainA = setup({ project, ownerId: "\\\\.\\pipe\\brain-a" });
+
+    // A report to a chat in the child's own project, queued by brain A. Its
+    // first attempt fails (the brain is shutting down, the wake threw).
+    expect(brainA.service.router.queueLocal!(wake("parent-p"))).toBe(true);
+    await vi.waitFor(() => expect(project.chats.deliverExternalChildCompletion).toHaveBeenCalledTimes(1));
+
+    // Brain B shares the home. It neither delivers A's report nor, by saving
+    // its own outbox, erases it.
+    answer = "delivered";
+    const brainB = setup({ project, ownerId: "\\\\.\\pipe\\brain-b", stateDir: brainA.stateDir });
+    brainB.advance(31_000);
+    await brainB.service.pump();
+    expect(brainB.service.router.queueLocal!(wake("parent-p", "turn-b", "child-b"))).toBe(true);
+    await vi.waitFor(() => expect(project.chats.deliverExternalChildCompletion).toHaveBeenCalledTimes(2));
+    expect(project.chats.deliverExternalChildCompletion).toHaveBeenLastCalledWith(
+      expect.objectContaining({ childSessionId: "child-b" }),
+    );
+
+    // Brain A comes back on the same endpoint and delivers its report once.
+    const brainA2 = setup({ project, ownerId: "\\\\.\\pipe\\brain-a", stateDir: brainA.stateDir });
+    brainA2.advance(31_000);
+    await brainA2.service.pump();
+    expect(project.chats.deliverExternalChildCompletion).toHaveBeenCalledTimes(3);
+    expect(project.chats.deliverExternalChildCompletion).toHaveBeenLastCalledWith(
+      expect.objectContaining({ parentSessionId: "parent-p", childSessionId: "child-1" }),
+    );
+    const again = setup({ project, ownerId: "\\\\.\\pipe\\brain-a", stateDir: brainA.stateDir });
+    again.advance(60 * 60_000);
+    await again.service.pump();
+    expect(project.chats.deliverExternalChildCompletion).toHaveBeenCalledTimes(3);
   });
 
   it.each([

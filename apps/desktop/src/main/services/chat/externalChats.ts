@@ -270,7 +270,14 @@ export type ExternalParentWake = {
    * which is why `summary` and `wakeText` say plainly that the child waits.
    */
   notice?: "awaiting_user";
+  /** Stopped as part of the parent's own Stop: close the card, do not wake it. */
+  routeQuietly?: boolean;
+  /** The PR the child's report names, for the CTO's one line. */
+  ctoPrNumber?: number;
 };
+
+/** A wake without its routing: what travels to the scope or machine that holds the parent. */
+export type ExternalParentWakePayload = Omit<ExternalParentWake, "childProjectRoot" | "parentSessionId">;
 
 /** The key one child turn's delivery to one parent is deduped under. */
 export function spawnDeliveryKey(parentSessionId: string, childSessionId: string, childTurnId: string | null | undefined): string {
@@ -320,6 +327,10 @@ export function readExternalParentWake(
       ...(typeof completion.humanMessageCount === "number" ? { humanMessageCount: completion.humanMessageCount } : {}),
     },
     ...(record.notice === "awaiting_user" ? { notice: "awaiting_user" as const } : {}),
+    ...(record.routeQuietly === true ? { routeQuietly: true } : {}),
+    ...(typeof record.ctoPrNumber === "number" && Number.isSafeInteger(record.ctoPrNumber) && record.ctoPrNumber > 0
+      ? { ctoPrNumber: record.ctoPrNumber }
+      : {}),
   };
 }
 
@@ -331,6 +342,13 @@ export type ExternalParentRouter = {
    * parent as gone.
    */
   route(wake: ExternalParentWake): boolean;
+  /**
+   * Take a completion whose parent is a chat in the reporting service itself,
+   * so it survives a restart: queued durably, tried at once, retried from
+   * disk. False when the router cannot hold it; the caller then delivers it
+   * directly, as it would with no router at all.
+   */
+  queueLocal?(wake: ExternalParentWake): boolean;
 };
 
 let router: ExternalParentRouter | null = null;

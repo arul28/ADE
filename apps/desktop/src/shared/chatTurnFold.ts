@@ -344,7 +344,7 @@ function classifySystemNotice(event: SystemNoticeProjection): TurnFoldRowRole {
   // A usage notice is an error (limit hit) unless it says it is only a warning.
   if (noticeKind === "rate_limit") return severity === "warning" || severity === "info" ? "history" : "keep";
   // Model switches and takeovers change what the rest of the thread means.
-  if (status === "model_switched" || status === "spawn_takeover" || status === "spawn_parent_gone") return "keep";
+  if (status === "model_switched" || status === "spawn_takeover" || status === "spawn_parent_gone" || status === "spawn_parent_relinked") return "keep";
   // Warnings and info are a record of the turn, with nothing to act on
   // (a Codex config warning, a hook notice, a compaction that could not run).
   if (

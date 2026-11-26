@@ -809,16 +809,25 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
       ]);
 
-      // The model is still told, with the same single line.
+      // The model itself reads the child's report: the line, then the
+      // child's final message. Only the person's notice is one line.
       const wake = await vi.waitFor(() => {
         const found = events.find((event) =>
           event.sessionId === cto.id
           && event.event.type === "user_message"
-          && event.event.text === notice.message);
+          && event.event.text.startsWith(notice.message));
         expect(found).toBeTruthy();
         return found!;
       });
+      expect((wake.event as any).text).toContain("rewrote the flaky helper");
       expect((wake.event as any).metadata?.spawnCompletion).toBeUndefined();
+      // The wake lands before the notice, so the notice (the dedupe anchor)
+      // never claims a report the CTO did not get.
+      expect(events.indexOf(wake)).toBeLessThan(events.findIndex((event) => event.event === notice));
+      expect((wake.event as any).metadata?.hostContinuation).toMatchObject({
+        reason: "cto_child_report",
+        childSessionId: child.id,
+      });
 
       // A later child turn reopens the CTO's row, as for any parent: the row
       // that the first result settled must read as running again.

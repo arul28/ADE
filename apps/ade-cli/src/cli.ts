@@ -32601,6 +32601,10 @@ async function runServe(
       personalChatScope,
       deliverRemote: async (machineKey, payload) => (await getAgentMachineBridge()).deliverWake(machineKey, payload),
       stateDir: crossMachineStateDir,
+      // Brains sharing this home keep one outbox file each, named by their
+      // endpoint; the machine's own brain also takes over the old shared one.
+      ownerId: socketPath,
+      adoptLegacyOutbox: isMachineDefaultRuntimeSocket(socketPath),
       logger: headlessProjectLogger,
     });
     externalChats.setExternalParentRouter(crossScopeChats.router);

@@ -368,8 +368,21 @@ writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
 `parent_dispatch`). `chat.setParent` writes `agent_chat.parent_changed` with
 `sessionId`, `previousParentSessionId`, `parentSessionId`,
 `previousSpawnKind`, and `spawnKind`; a relink a cross-machine arrival could
-not make writes `agent_chat.cross_machine_handoff_relink_failed`. None of
-these spawn-coordination lines is a PostHog event.
+not make writes `agent_chat.cross_machine_handoff_relink_failed`. A report to
+a chat parent here that went into the brain's outbox is
+`agent_chat.spawn_completion_queued` (same ids, no text), and the outbox's
+`cross_scope_chats.delivered` / `.dropped` in `brain.jsonl` close it out. A
+child whose parent was deleted and that now reports to a live ancestor or the
+CTO writes `agent_chat.spawn_parent_relinked` (`childSessionId`,
+`previousParentSessionId`, `parentSessionId`); a forwarded report that could
+not be routed is `agent_chat.spawn_relinked_report_unrouted`. Restart
+recovery's held-back "stopped" for a turn it continues is
+`agent_chat.spawn_completion_skipped_restart_continue`. The deleted-parent
+link file and the CTO lookup log `agent_chat.deleted_parent_links_read_failed`,
+`agent_chat.deleted_parent_link_failed` and `agent_chat.cto_fallback_lookup_failed`
+as warnings; an outbox taken over from another brain is
+`cross_scope_chats.outbox_adopted` (file name, entry count). None of these
+spawn-coordination lines is a PostHog event.
 
 When the idle sweep or budget eviction reclaims a chat runtime that still
 *claims* live background work — the exemption expired after

@@ -666,6 +666,13 @@ export type AgentChatHostContinuationMetadata = {
    * send none; clients then fall back to their own copy.
    */
   label?: string;
+  /**
+   * `cto_child_report` only: the child turn the wake reports, so a retried
+   * delivery finds the wake it already sent (the host's dedupe; clients
+   * ignore it).
+   */
+  childSessionId?: string;
+  childTurnId?: string;
 };
 
 export type AgentChatHostContinuationReason = AgentChatHostContinuationMetadata["reason"];
