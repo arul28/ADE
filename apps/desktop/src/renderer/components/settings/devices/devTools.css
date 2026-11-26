@@ -213,8 +213,8 @@ button.ade-dev-space-key:focus-visible { outline: 2px solid color-mix(in srgb, v
   font-size: 12px;
   line-height: 17px;
   color: var(--kit-text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* A long path wraps instead of being cut: two projects can share a name. */
+  overflow-wrap: anywhere;
 }
 .ade-dev-owner { color: var(--kit-text-2); }
 .ade-dev-owner[data-owner="lane"] { color: var(--color-fg); font-weight: 500; }
@@ -305,9 +305,14 @@ button.ade-dev-space-key:focus-visible { outline: 2px solid color-mix(in srgb, v
 .ade-dev-needsmac-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 
 /* ── Narrow columns ──────────────────────────────────────────────────── */
-@container devlist (max-width: 480px) {
-  .ade-dev-row { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: 4px; }
-  .ade-dev-row > .ade-modern-btn { grid-column: 2 / -1; justify-self: start; margin-left: -8px; }
+/* A narrow list gives the name the whole width: the size and the action
+   move to a second line under it, size first. */
+@container devlist (max-width: 600px) {
+  .ade-dev-row { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: 2px; align-items: start; }
+  .ade-dev-row-glyph { padding-top: 1px; }
+  .ade-dev-row-text { grid-column: 2 / -1; }
+  .ade-dev-size { grid-column: 2; grid-row: 2; text-align: left; min-width: 0; align-self: center; }
+  .ade-dev-row > .ade-modern-btn { grid-column: 3; grid-row: 2; }
 }
 .ade-dev-xcode-text { flex-basis: 240px; }
 .ade-dev-needsmac-text { flex: 1 1 260px; }

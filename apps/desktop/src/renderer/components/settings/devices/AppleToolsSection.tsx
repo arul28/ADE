@@ -107,7 +107,7 @@ export function AppleToolsSection({
         group="Apple Development"
         anchor="apple-space"
         title="Space"
-        hint="What simulators and Xcode builds keep on the disk, outside your projects. Everything here is rebuilt or downloaded again when it is needed."
+        hint="What simulators and Xcode builds keep on the disk, outside your projects. Build data and runtimes come back when they are needed; a deleted simulator takes its apps and data with it."
       >
         <div className="ade-dev-card">
           <DevToolsSpaceBar
