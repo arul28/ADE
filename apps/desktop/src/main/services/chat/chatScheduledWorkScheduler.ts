@@ -286,6 +286,7 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
 const NATIVE_FIRE_GRACE_MS = 90_000;
 const BUSY_DEFER_RETRY_MS = 20_000;
+const CHAT_BUSY_REASON = "The chat is busy. Try again when its turn finishes.";
 /** A delivery that has not returned by then no longer holds its chat's other wakes. */
 const DELIVERY_HUNG_MS = 60_000;
 const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -689,6 +690,17 @@ export function createChatScheduledWorkScheduler(
       schedule.status = "fired";
       schedule.lastFiredAt = currentTime;
       schedule.lateFlag = late;
+      // A replacement copied this attempt's fields; when nothing reached the
+      // chat, the check's news and the last-fired time go back on it too.
+      const undoUndeliveredOn = (replacement: ChatScheduledWorkRecord): void => {
+        if (replacement.check === schedule.check && replacement.checkHash === schedule.checkHash) {
+          setCheckState(replacement, previousCheck);
+        }
+        if (replacement.lastFiredAt === currentTime) {
+          if (previousLastFiredAt == null) delete replacement.lastFiredAt;
+          else replacement.lastFiredAt = previousLastFiredAt;
+        }
+      };
       try {
         await persist();
       } catch (error) {
@@ -716,7 +728,10 @@ export function createChatScheduledWorkScheduler(
         // Replaced: nothing went out, so the occurrence goes back and the new row runs on its own terms.
         inFlight.delete(scheduleId);
         options.releaseFire?.(cloneSchedule(schedule));
-        if (afterPersist) await settleReplacement(afterPersist, false);
+        if (afterPersist?.status === "fired") {
+          undoUndeliveredOn(afterPersist);
+          await settleReplacement(afterPersist, false);
+        }
         return;
       }
       if (afterPersist.status !== "fired") {
@@ -743,9 +758,13 @@ export function createChatScheduledWorkScheduler(
 
       const current = schedules.get(scheduleId);
       if (!current || current.status === "cancelled" || current.status === "done") return;
-      if (current !== schedule) {
-        // Replaced mid-delivery: the old result settles only the old occurrence's claim.
-        if (retry) options.releaseFire?.(cloneSchedule(schedule));
+      // Replaced mid-delivery: the old result settles only the old occurrence's
+      // claim. A delivered one-shot settles below as usual, so it never sends twice.
+      if (current !== schedule && (retry || current.kind === "cron")) {
+        if (retry) {
+          options.releaseFire?.(cloneSchedule(schedule));
+          if (current.status === "fired") undoUndeliveredOn(current);
+        }
         await settleReplacement(current, !retry);
         return;
       }
@@ -1130,12 +1149,10 @@ export function createChatScheduledWorkScheduler(
       }
       const deferred = options.shouldDefer?.(cloneSchedule(schedule));
       if (isDeferred(deferred)) {
-        return { fired: false, reason: typeof deferred === "object" ? deferred.reason : "The chat is busy. Try again when its turn finishes." };
+        return { fired: false, reason: typeof deferred === "object" ? deferred.reason : CHAT_BUSY_REASON };
       }
       // Another wake is being sent to this chat right now.
-      if (deliveryHeld(schedule.sessionId)) {
-        return { fired: false, reason: "The chat is busy. Try again when its turn finishes." };
-      }
+      if (deliveryHeld(schedule.sessionId)) return { fired: false, reason: CHAT_BUSY_REASON };
       // The same shared claim a timer fire takes, on the occurrence this run
       // stands in for: another brain's timer (or its own Run now) for it then
       // loses the claim instead of delivering a second time.

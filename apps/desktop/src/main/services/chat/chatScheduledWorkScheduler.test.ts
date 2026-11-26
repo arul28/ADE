@@ -1512,6 +1512,47 @@ describe("a cron's check", () => {
     scheduler.dispose();
   });
 
+  it("keeps a wake's news when its row is replaced before the send", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = storedState([checkedCron()]);
+    const fire = createFireMock();
+    let replaced = false;
+    // The routine is rewritten (no status, no hash: it inherits them) while
+    // its fired transition is being reported.
+    const { status: _status, checkHash: _hash, ...rewrite } = checkedCron({ prompt: "Rewritten prompt" });
+    const scheduler: ReturnType<typeof createChatScheduledWorkScheduler> = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      ...sharedClaims(),
+      runCheck: async () => ({ ok: true, outputHash: "hash-new", detail: "news" }),
+      onTransition: async (_schedule, status) => {
+        if (status !== "fired" || replaced) return;
+        replaced = true;
+        await scheduler.upsert(rewrite);
+      },
+      fire,
+    });
+    await scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      checkHash: "hash-a",
+      prompt: "Rewritten prompt",
+    }));
+    expect(requireState(state).schedules[0]?.lastFiredAt).toBeUndefined();
+
+    // The same output is still news to the rewritten routine.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fire).toHaveBeenCalledTimes(1);
+    expect(fire.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ prompt: "Rewritten prompt" }));
+    scheduler.dispose();
+  });
+
   it("refuses Run now on a chat that is taking a timer wake", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
