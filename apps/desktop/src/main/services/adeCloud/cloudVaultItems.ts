@@ -2,10 +2,11 @@
  * The account vault items ADE Cloud keeps, and the part of the vault a brain
  * opens with no project (`accountVault.call`): desktop main's ADE Cloud code in
  * a window with no project on this computer (registerCloudIpc.ts). Any other
- * item, and any other operation, still needs a project's `account_vault`.
+ * item, apart from MCP server credentials, still needs a project's `account_vault`.
  *
- * Every item is scope `all`, kind `integration`.
+ * ADE Cloud items use scope `all` and kind `integration`.
  */
+import { MCP_SECRET_VAULT_KIND, isValidMcpFieldName, isValidMcpRegistryName } from "../../../shared/mcpRegistry";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { CLOUD_SIGN_INS, cloudSignInVaultKey } from "../../../shared/cloudSignIns";
 import { CLOUD_VAULT_KIND } from "./cloudAccess";
@@ -25,14 +26,31 @@ function allows(action: string, [scope, kind, key]: unknown[]): boolean {
   return action === "get" && SIGN_IN_ITEMS.has(key);
 }
 
-/** `service` (the `account_vault` domain) reduced to the provider's items; null stays null. */
-export function cloudOnlyVaultService(service: Record<string, unknown> | null): Record<string, unknown> | null {
+function isMcpRegistryItem(scope: unknown, kind: unknown, key: unknown): boolean {
+  if (scope !== ACCOUNT_SCOPE_ALL || kind !== MCP_SECRET_VAULT_KIND || typeof key !== "string") return false;
+  const [prefix, server, field, name, extra] = key.split("/");
+  return prefix === "mcp" && extra === undefined && isValidMcpRegistryName(server ?? "")
+    && ((field === "oauth" && name === "token")
+      || ((field === "env" || field === "header") && isValidMcpFieldName(name ?? "")));
+}
+
+/** The projectless desktop vault, limited to the settings surfaces that use it. */
+export function desktopMachineVaultService(service: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!service) return null;
   const only = (action: "get" | "set" | "remove") => (...args: unknown[]): unknown => {
-    if (!allows(action, args)) {
-      throw new Error(`With no project, account_vault.${action} reaches only the ADE Cloud items Settings uses, as it uses them.`);
+    if (!allows(action, args) && !isMcpRegistryItem(args[0], args[1], args[2])) {
+      throw new Error(`With no project, account_vault.${action} reaches only the ADE Cloud items Settings uses and MCP server credentials.`);
     }
     return (service[action] as (...callArgs: unknown[]) => unknown)(...args);
   };
-  return { get: only("get"), set: only("set"), remove: only("remove") };
+  return {
+    get: only("get"),
+    set: only("set"),
+    remove: only("remove"),
+    list: (scope?: unknown) => {
+      if (scope !== ACCOUNT_SCOPE_ALL) throw new Error("Choose the account scope to list MCP server credentials.");
+      const list = service.list as (scope: string) => Array<{ scope: string; kind: string; key: string }>;
+      return list(scope).filter((item) => isMcpRegistryItem(item.scope, item.kind, item.key));
+    },
+  };
 }

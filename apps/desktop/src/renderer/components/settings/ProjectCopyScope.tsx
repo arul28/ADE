@@ -197,8 +197,8 @@ export function ProjectCopyBar({ copy, subject = "settings" }: {
   const pickable = choices.length >= 2;
   if (!pickable && page.isThisMachine) return null;
   const name = page.isThisMachine ? (thisMachineName ?? page.machineName) : page.machineName;
-  // "Copy on <machine>" did not say what it meant: the page shows the
-  // settings of the project as it is on that computer, viewed from here.
+  // The page shows the project's settings as they are on that computer,
+  // viewed from here; the tooltip says so in full.
   const explain = `This project is on ${pickable ? "more than one computer" : name}. Its ${subject} here are the ones on ${name}, and changes are made there.`;
   return (
     <div className="ade-copy-scope" data-testid="settings-copy-scope" title={explain}>

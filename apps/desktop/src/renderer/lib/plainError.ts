@@ -3,13 +3,14 @@
  * step that fits, never Electron's "Error invoking remote method '…':" text,
  * a JSON-RPC code, or the name of an internal part.
  *
- * Every Settings page that shows a call's failure reads it through here
- * (Integrations, MCP servers, Machines), so the same failure reads the same
- * everywhere. The sentence a service wrote for a person is kept as it is;
- * only text written for logs is replaced.
+ * Settings › Integrations reads its failures through here (the MCP servers
+ * banner, GitHub links on the Linear page, the GitHub connect choice), and so
+ * can the Machines pages (ADE-225: "Update ADE on <machine>" with an Update
+ * button is the `update` next step with `machine`). A sentence a service
+ * wrote for a person is kept as it is; only text written for logs is replaced.
  */
 
-import { isGithubAutolinksNotAdmin, isGithubAutolinksRefusal } from "../../shared/githubAutolinks";
+import { isUnsupportedAdeActionError } from "../../shared/codedError";
 import { isConnectionTroubleText } from "./format";
 import { machineErrorText } from "./machineErrorText";
 
@@ -17,15 +18,14 @@ import { machineErrorText } from "./machineErrorText";
  * What the person can do about it:
  * - `retry`: it may work in a moment (a dropped link, a slow answer);
  * - `update`: the other computer's ADE is too old to answer this;
- * - `ask_admin`: someone with more rights has to do it;
  * - `none`: nothing to press, the sentence says what to do.
  */
-export type PlainErrorNext = "retry" | "update" | "ask_admin" | "none";
+export type PlainErrorNext = "retry" | "update" | "none";
 
 export type PlainError = { text: string; next: PlainErrorNext };
 
-/** The other computer's ADE does not have this method or action yet (text written for logs). */
-const OLDER_ADE_TEXT = /\bMethod not found\b|is unavailable in this runtime|is not callable|is not exposed/i;
+/** An older brain that has no such JSON-RPC method (the coded forms are `isUnsupportedAdeActionError`). */
+const METHOD_NOT_FOUND_TEXT = /\bMethod not found\b|is unavailable in this runtime/i;
 
 /** A service already said "Update ADE on that computer …" in plain words. */
 const UPDATE_ADE_SENTENCE = /\bUpdate ADE on\b/i;
@@ -35,17 +35,14 @@ const INTERNAL_TEXT = /^\s*(?:\[?-?32\d{3}\]?|code\s*-?32\d{3})|\brequires param
 
 /**
  * `error` as a sentence and a next step. `fallback` is the sentence when the
- * error says nothing a person can use ("Couldn't load the links."); `machine`
- * names the other computer in the "update" sentence.
+ * error says nothing a person can use ("ADE couldn't read the links.");
+ * `machine` names the other computer in the "update" sentence.
  */
 export function plainError(error: unknown, options: { fallback: string; machine?: string | null }): PlainError {
-  const text = machineErrorText(error).trim();
+  const text = error == null ? "" : machineErrorText(typeof error === "string" ? new Error(error) : error).trim();
   if (!text) return { text: options.fallback, next: "retry" };
-  if (isGithubAutolinksRefusal(text)) {
-    return { text, next: isGithubAutolinksNotAdmin(text) ? "ask_admin" : "none" };
-  }
   if (UPDATE_ADE_SENTENCE.test(text)) return { text, next: "update" };
-  if (OLDER_ADE_TEXT.test(text)) {
+  if (isUnsupportedAdeActionError(error) || METHOD_NOT_FOUND_TEXT.test(text)) {
     const where = options.machine?.trim();
     return {
       text: where

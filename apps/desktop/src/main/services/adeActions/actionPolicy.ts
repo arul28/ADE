@@ -498,7 +498,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
     "access", "status", "list", "hours", "limits", "sleep", "wake", "referral", "invite_redeem", "phone_provider", "cloud_sign_in_status", "saved_chat_machine", ...CLOUD_SIGN_IN_WRITES,
     "lanes", "lane_show", "lane_git", "lane_keep", "saved_chats_list", "saved_chats_read", "sessions_list", "session_read", "backups_list", "jobs_list", "project_overview",
   ],
-  account_vault: ["get", "set", "remove"],
+  account_vault: ["get", "set", "remove", "list"],
   // The account's settings (the MCP servers, presets, notifications), from a
   // window with no project on this computer (`accountSettings.call`).
   account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],

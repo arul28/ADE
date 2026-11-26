@@ -104,6 +104,7 @@ type AutomationIngressServiceArgs = {
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
     getAppUserTokenForRelay: () => Promise<string>;
+    isGithubCliOnly?: () => boolean;
     /**
      * The relay answered 401 to this App user token. The account client asks
      * for the account's current token, so the next poll reads the new one
@@ -1159,6 +1160,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   };
 
   const pollGithubRelay = async (generation: number) => {
+    if (args.githubService?.isGithubCliOnly?.()) return;
     const run = createGithubRelayPollRun({
       generation,
       currentGeneration: () => relayPollGeneration,

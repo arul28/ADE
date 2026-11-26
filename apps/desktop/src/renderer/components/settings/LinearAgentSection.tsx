@@ -1,3 +1,4 @@
+import { plainErrorText } from "../../lib/plainError";
 import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -97,7 +98,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       setOverview(next);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load the ADE agent.");
+      setError(plainErrorText(err, "Could not load the ADE agent."));
     } finally {
       setLoading(false);
     }
@@ -137,7 +138,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       await openExternal(session.authUrl);
     } catch (err) {
       setInstalling(false);
-      setError(err instanceof Error ? err.message : "Could not start the install.");
+      setError(plainErrorText(err, "Could not start the install."));
     }
   }, [pin]);
 
@@ -149,7 +150,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       if (next) setOverview(next);
       else await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "That did not work.");
+      setError(plainErrorText(err, "That did not work."));
     } finally {
       setBusy(null);
     }
@@ -174,7 +175,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
       } catch (err) {
         // Show the saved delegations rule, so a retry does not add it twice.
         await load();
-        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${err instanceof Error ? err.message : String(err)}. Add it in Automations.`);
+        throw new Error(`The delegations rule is on, but the mentions rule was not saved: ${plainErrorText(err, "ADE couldn't save the rule.")}. Add it in Automations.`);
       }
     }
   }), [answerMentions, effectiveModelId, effort, hasReasoning, load, permissionConfig, rulePin, run]);
@@ -368,7 +369,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
                   {otherMembers.length === 1 ? "1 other person uses ADE" : `${otherMembers.length} other people use ADE`} in this workspace. Their issues run on their own ADE.{" "}
                   <CaretDown size={11} className="ade-linear-links-caret" aria-label="Show who" />
                 </summary>
-                <div className="ade-ig-chips" style={{ marginTop: 6 }}>
+                <div className="ade-ig-chips">
                   {otherMembers.map((member, index) => (
                     <span key={member.linearUserId || `${member.displayName ?? "someone"}-${index}`} className="kit-tag">{member.displayName ?? "Someone"}</span>
                   ))}

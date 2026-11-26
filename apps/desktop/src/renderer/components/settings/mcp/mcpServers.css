@@ -84,3 +84,7 @@
 .ade-mcp-pager > .ade-modern-muted {
   margin: 0 6px 0 0;
 }
+.ade-mcp-head-actions .ade-ix-search {
+  width: 200px;
+  margin-left: 0;
+}

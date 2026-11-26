@@ -133,7 +133,7 @@ export function LocalConnectionMark({ app, active }: { app: McpLogoId | null; ac
     <span className="ade-amcp-local-link" data-active={active ? "true" : undefined} aria-hidden>
       <McpAppLogo app={app} size={26} />
       <span className="ade-amcp-local-arrow"><ArrowsLeftRight size={12} weight="bold" /></span>
-      <span className="ade-amcp-logo ade-amcp-local-ade" style={{ width: 26, height: 26 }}>
+      <span className="ade-amcp-logo ade-amcp-local-ade">
         <ShareNetwork size={14} weight="fill" />
       </span>
     </span>

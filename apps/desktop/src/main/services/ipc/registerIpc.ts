@@ -13300,7 +13300,7 @@ export function registerIpc({
   registerCloudPhoneViewIpc({ logger: getMachineMainLogger() });
 
   const mcpRegistryService = createMcpRegistryService({
-    vault: accountVaultBridge,
+    vault: createAccountVaultBridge({ ...vaultBridgeOptions, machineFallback: true }),
     adeHome: harnessPresetsAdeDir,
     openUrl: async (url) => await openExternalUrl(url),
     logger: { warn: (event, meta) => getCtx().logger.warn(event, meta) },

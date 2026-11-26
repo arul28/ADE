@@ -5,9 +5,8 @@
  * services turn that into one of the messages below, and Sentry treats each
  * as an answer.
  *
- * The 404 alone can't say which of three it is, so on a refusal the service
- * reads the person's own permission on the repository (`GET /repos/…`, which
- * every reader may call) and says the one that applies:
+ * The service reads repository permissions before requesting links. A refusal
+ * from the autolinks endpoint can then explain the level of access GitHub reported:
  *
  * - not an admin: only an admin can add the links (`GITHUB_AUTOLINKS_NOT_ADMIN`);
  * - an admin whose sign-in lacks Administration access (`GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN`);
@@ -73,8 +72,7 @@ export function githubAutolinksAccessError(
 }
 
 /**
- * Lists a repository's autolinks and, when GitHub refuses, reads the person's
- * permission to say why. Both GitHub services (desktop main's and the brain's)
+ * Checks repository permissions before listing its autolinks. Both GitHub services (desktop main's and the brain's)
  * call this with their own request functions; `statusOf` reads the HTTP status
  * from the error their request throws.
  */
@@ -85,12 +83,12 @@ export async function listGithubAutolinksOrExplain<T>(args: {
   readRepo: () => Promise<unknown>;
   statusOf: (error: unknown) => number | null;
 }): Promise<T> {
+  const access = await args.readRepo().then(githubRepoAdminAccess, () => null);
+  if (access?.admin === false) throw githubAutolinksAccessError(args.owner, args.name, 403, access);
   try {
     return await args.list();
   } catch (error) {
     const status = args.statusOf(error);
-    if (status !== 403 && status !== 404) throw error;
-    const access = await args.readRepo().then(githubRepoAdminAccess, () => null);
     throw githubAutolinksAccessError(args.owner, args.name, status, access) ?? error;
   }
 }

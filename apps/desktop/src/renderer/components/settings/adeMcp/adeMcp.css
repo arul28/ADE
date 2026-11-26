@@ -326,6 +326,8 @@
   gap: 4px;
 }
 .ade-amcp-local-ade {
+  width: 26px;
+  height: 26px;
   color: #fff;
   background: linear-gradient(135deg, var(--ig-accent, #8b7cf6), #3a2a8c);
 }

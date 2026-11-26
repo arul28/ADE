@@ -708,10 +708,13 @@ export function TabContent({
  */
 function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
   const copy = useProjectCopyPage(settingsCopyScope(tab));
+  const location = useLocation();
+  const [params] = useSearchParams();
+  const accountMcp = tab === "integrations" && openIntegrationFromUrl(params, location.hash) === "mcp";
   if (!copy.page) {
     return (
       <>
-        <SettingsColumn wide><NoProjectCopyNotice /></SettingsColumn>
+        {accountMcp ? null : <SettingsColumn wide><NoProjectCopyNotice /></SettingsColumn>}
         {tab === "integrations" ? <IntegrationsTabContent machine={null} standalone noCopy /> : null}
       </>
     );
@@ -719,9 +722,11 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
   return (
     <ProjectCopyScopeProvider page={copy.page}>
       {/* Not a SettingsColumn: its bottom padding would push the page down. */}
-      <div className="ade-settings-column ade-settings-column--wide ade-copy-scope-column">
-        <ProjectCopyBar copy={copy} subject={tab === "integrations" ? "integrations" : "settings"} />
-      </div>
+      {accountMcp ? null : (
+        <div className="ade-settings-column ade-settings-column--wide ade-copy-scope-column">
+          <ProjectCopyBar copy={copy} subject={tab === "integrations" ? "integrations" : "settings"} />
+        </div>
+      )}
       <MachineTabContent tab={tab} machine={copy.page} standalone={false} />
     </ProjectCopyScopeProvider>
   );

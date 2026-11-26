@@ -69,7 +69,7 @@ export type McpRegistryView = {
 export type McpRegistryApi = McpRegistryView & {
   /** A reload is running (the page's Try again shows it). */
   reloading: boolean;
-  reload: () => Promise<void>;
+  reload: (syncFirst?: boolean) => Promise<void>;
   /** Each resolves to null on success, or one sentence saying what went wrong. */
   saveServer: (server: McpRegistryServer, secrets: readonly McpSecretValue[], mode: "create" | "edit") => Promise<string | null>;
   removeServer: (name: string) => Promise<string | null>;
@@ -110,7 +110,7 @@ export function useMcpRegistry(): McpRegistryApi {
   // not overwrite the page for the project they are on.
   const loadSeq = useRef(0);
 
-  const readAll = useCallback(async (): Promise<McpRegistryView> => {
+  const readAll = useCallback(async (syncFirst: boolean): Promise<McpRegistryView> => {
     const settings = window.ade?.accountSettings;
     const registry = window.ade?.mcpRegistry;
     if (!isAdeAvailable(settings) || !isAdeAvailable(registry)) {
@@ -122,8 +122,19 @@ export function useMcpRegistry(): McpRegistryApi {
       registry.context({ projectRoot }),
       registry.scan({ projectRoot }),
     ]);
+    const getServers = () => settings.get({ scope: ACCOUNT_SCOPE_ALL, key: MCP_SERVERS_SETTING_KEY });
+    const readServers = async () => {
+      const cached = syncFirst ? null : await getServers();
+      if (cached && (!cached.ok || cached.value != null)) return cached;
+      const synced = await settings.sync();
+      if (!synced.ok) return synced;
+      if (synced.value === "failed" || synced.value === "unavailable") {
+        return { ok: false as const, message: "ADE couldn't sync your MCP servers. Check your ADE sign-in and internet connection, then try again." };
+      }
+      return getServers();
+    };
     const [serversRow, machineRow, projectRow] = await Promise.all([
-      settings.get({ scope: ACCOUNT_SCOPE_ALL, key: MCP_SERVERS_SETTING_KEY }),
+      readServers(),
       context.deviceOffKey ? settings.get({ scope: ACCOUNT_SCOPE_ALL, key: context.deviceOffKey }) : null,
       context.repoScope ? settings.get({ scope: context.repoScope, key: MCP_OFF_SETTING_KEY }) : null,
     ]);
@@ -168,12 +179,12 @@ export function useMcpRegistry(): McpRegistryApi {
     };
   }, [projectRoot]);
 
-  const reload = useCallback(async (): Promise<void> => {
+  const reload = useCallback(async (syncFirst = false): Promise<void> => {
     const seq = ++loadSeq.current;
     setReloading(true);
     let next: McpRegistryView;
     try {
-      next = await readAll();
+      next = await readAll(syncFirst);
     } catch (error) {
       next = { ...EMPTY, phase: "unavailable", message: errorSentence(error) };
     }
@@ -185,12 +196,6 @@ export function useMcpRegistry(): McpRegistryApi {
 
   useEffect(() => {
     void reload();
-    // One pull when the page opens, so a server added on another computer is
-    // here without waiting for the background tick. Best-effort: offline, the
-    // page already shows this computer's copy.
-    void window.ade?.accountSettings?.sync().then((result) => {
-      if (result.ok) void reload();
-    }).catch(() => undefined);
     return () => {
       loadSeq.current += 1;
     };

@@ -18,7 +18,6 @@ import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { SettingsToggle } from "../primitives/SettingsControls";
 import { ModernPage, ModernRow, ModernRows, ModernSection } from "../primitives/SettingsModern";
-import { SettingsColumn } from "../primitives/SettingsRows";
 import { McpSecretWarnings, mcpServerHoldsPlainSecret } from "./McpSecretWarnings";
 import { McpServerDialog } from "./McpServerDialog";
 import { missingMcpSecrets, useMcpRegistry, type McpRegistryApi, type McpRegistryLevel } from "./useMcpRegistry";
@@ -142,11 +141,19 @@ export function McpServersSection() {
     setServerPage(0);
     setFoundPage(0);
   }, [needle]);
-  // A link to one server (`?mcpServer=`) opens the page it is on.
+  // A link to one server (`?mcpServer=`) opens the page it is on, once per
+  // link: a reload after a change must not pull the person back to it.
+  const pagedToServerRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!focusServer) return;
+    if (!focusServer) {
+      pagedToServerRef.current = null;
+      return;
+    }
+    if (pagedToServerRef.current === focusServer) return;
     const index = filteredServers.findIndex((server) => server.name === focusServer);
-    if (index >= 0) setServerPage(Math.floor(index / MCP_PAGE_SIZE));
+    if (index < 0) return;
+    pagedToServerRef.current = focusServer;
+    setServerPage(Math.floor(index / MCP_PAGE_SIZE));
   }, [filteredServers, focusServer]);
   const serversShown = pageOf(filteredServers, serverPage);
   const foundShown = pageOf(filteredFound, foundPage);
@@ -235,7 +242,7 @@ export function McpServersSection() {
               actions: [{
                 label: registry.reloading ? "Trying again…" : "Try again",
                 busy: registry.reloading,
-                onClick: () => void registry.reload(),
+                onClick: () => void registry.reload(true),
               }],
             }}
           />
@@ -248,8 +255,8 @@ export function McpServersSection() {
           hint="Every ADE agent gets these, on every computer you sign in on."
           actions={(
             <span className="ade-mcp-head-actions">
-              {registry.servers.length + registry.found.length > MCP_PAGE_SIZE || needle ? (
-                <label className="ade-ix-search" style={{ width: 200 }}>
+              {registry.servers.length > 0 || registry.found.length > 0 || needle ? (
+                <label className="ade-ix-search">
                   <MagnifyingGlass size={13} />
                   <input
                     type="search"

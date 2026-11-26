@@ -34,7 +34,7 @@ import {
   type GalleryAppId,
   type TokenSnippetId,
 } from "./adeMcp/adeMcpApps";
-import { agoText, connectionHow, heroPanelNote, isAnswering, isLocalConnection, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
+import { agoText, connectionHow, heroPanelNote, isAnswering, isLocalConnection, recentUseEndsAt, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
 import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
@@ -207,6 +207,18 @@ export function AdeMcpPage() {
   const enabled = signedIn && status?.enabled === true;
   const serverUrl = enabled ? status?.serverUrl ?? null : null;
   const connections = useMemo(() => status?.connections ?? [], [status]);
+  const [activityClock, setActivityClock] = useState(Date.now);
+  useEffect(() => {
+    const now = Math.max(Date.now(), activityClock);
+    const expiry = connections.reduce((next, connection) => {
+      if (!isLocalConnection(connection)) return next;
+      const at = recentUseEndsAt(connection);
+      return at > now && at < next ? at : next;
+    }, Infinity);
+    if (!Number.isFinite(expiry)) return;
+    const timer = setTimeout(() => setActivityClock(Date.now()), expiry - now);
+    return () => clearTimeout(timer);
+  }, [activityClock, connections]);
   const machines = status?.machines ?? [];
   const overall = overallState(status, loading);
   const shownActivity = useMemo(
@@ -473,11 +485,7 @@ export function AdeMcpPage() {
                 return (
                   <div key={connection.id} className="ade-amcp-row ade-amcp-connection">
                     {isLocalConnection(connection) ? (
-                      // Used in the last ten minutes: the arrow moves.
-                      <LocalConnectionMark
-                        app={connection.app ?? "other"}
-                        active={connection.lastUsedAt != null && Date.now() - Date.parse(connection.lastUsedAt) < 10 * 60_000}
-                      />
+                      <LocalConnectionMark app={connection.app ?? "other"} active={recentUseEndsAt(connection) > Math.max(Date.now(), activityClock)} />
                     ) : (
                       <McpAppLogo app={connection.app ?? (isToken ? "token" : "other")} size={30} />
                     )}

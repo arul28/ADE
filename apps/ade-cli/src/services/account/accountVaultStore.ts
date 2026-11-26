@@ -326,7 +326,7 @@ export function createAccountVaultStore(args: {
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     changeMarkKind: "vault",
     flushOnWrite: true,
-    pullSchema: ACCOUNT_VAULT_PULL_SCHEMA,
+    pullSchema: { schema: ACCOUNT_VAULT_PULL_SCHEMA, resetEvent: "account.vault_cursor_reset" },
     now,
     events: {
       writeFailed: "account.vault_cache_write_failed",
@@ -338,7 +338,6 @@ export function createAccountVaultStore(args: {
       purgeFailed: "account.vault_purge_failed",
       itemsParked: "account.vault_items_parked",
       writesSuperseded: "account.vault_writes_superseded",
-      cursorReset: "account.vault_cursor_reset",
     },
     readFile: readCacheFile,
     writeFile: writeCacheFile,

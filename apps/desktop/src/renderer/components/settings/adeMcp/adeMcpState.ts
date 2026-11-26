@@ -59,14 +59,13 @@ const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => M
         detail: "Waiting for ADE MCP's settings to sync to it. This usually takes under a minute.",
       };
     }
-    const ago = agoText(machine.reportedAt);
     return {
       tone: "crit",
       label: "Not getting ADE MCP's key",
-      detail: `It has waited for ADE MCP's key since ${ago ?? "a while ago"}. `
+      detail: "This computer is still waiting for ADE MCP's key. "
         + (machine.isThisMachine
-          ? "Update ADE here: the update reads this computer's account sync again from the start."
-          : "Update ADE on it: the update reads its account sync again from the start."),
+          ? "Check account sync on this page."
+          : "Check account sync on that computer and make sure ADE is up to date."),
     };
   },
   older_ade: () => ({ tone: "warn", label: "Needs an update", detail: "It runs an older ADE that can't answer. Update ADE on it." }),
@@ -178,6 +177,14 @@ export function agoText(iso: string | null, now = Date.now()): string | null {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours} h ago`;
   return new Date(at).toLocaleDateString();
+}
+
+/** A connection used within this long counts as in use: its arrow moves. */
+const RECENT_USE_MS = 10 * 60_000;
+
+/** Whether the connection made a call in the last few minutes. */
+export function recentUseEndsAt(connection: RemoteMcpConnectionSummary): number {
+  return Date.parse(connection.lastUsedAt ?? "") + RECENT_USE_MS;
 }
 
 /** `localhost`, `127.0.0.1` or `[::1]`, with or without a port. */

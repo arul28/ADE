@@ -36,8 +36,8 @@ export type AccountVaultBridgeOptions = {
   getRootPath: () => string | null;
   /**
    * With no booted project, ask the brain's `accountVault.call` instead of
-   * answering unavailable. It opens only the provider's items
-   * (cloudVaultItems.ts), so only the provider bridge sets this.
+   * answering unavailable. It opens the ADE Cloud and MCP registry items
+   * through a local desktop connection.
    */
   machineFallback?: boolean;
   logger?: { debug?(message: string, meta?: Record<string, unknown>): void };

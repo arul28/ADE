@@ -3,6 +3,8 @@ import { createGithubIssueOps } from "./githubIssueOps";
 import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 import { appGrantAllowsCapability, gateAppCandidates } from "../../../shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "./githubAccountAppCredential";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { GITHUB_CLI_SIGN_IN_REQUIRED, githubCliCredentialInventory, githubCliLoginEnv, githubCliOnlyFromCache } from "./githubConnectMode";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "./githubSessionEnv";
 import { peekGithubRepoOwnerFromGitConfig, readOriginUrlFromGitConfig } from "./gitConfigOrigin";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
@@ -359,7 +361,7 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
     return {
       token: null,
       ghCliPath: null,
-      ghAuthError: "GitHub CLI was not found. Install gh or add a personal access token.",
+      ghAuthError: "GitHub CLI was not found. Install gh to use your CLI sign-in.",
     };
   }
 
@@ -371,7 +373,7 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
       timeoutMs: 5_000,
       maxBuffer: 256 * 1024,
       env: {
-        ...process.env,
+        ...githubCliLoginEnv(),
         PATH: mergePathEntries(process.env.PATH, path.dirname(resolved.path)),
       },
     });
@@ -649,6 +651,7 @@ export function createGithubService({
    */
   getAccountDirectoryBaseUrl?: (() => string | null | undefined) | null;
 }) {
+  const cliOnly = githubCliOnlyFromCache(resolveMachineAdeDir(), getAccountUserId);
   const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
   const githubStateDir = path.join(appDataDir, "secrets", "github");
@@ -1106,7 +1109,15 @@ export function createGithubService({
   }
 
   const readCredentialInventory = async (): Promise<GitHubCredentialInventory> =>
-    await credentialInventoryCache.read(sharedGhAuth.credentialInventoryRevision);
+    cliOnly()
+      ? readCliCredentialInventory()
+      : credentialInventoryCache.read(sharedGhAuth.credentialInventoryRevision);
+
+  async function readCliCredentialInventory(): Promise<GitHubCredentialInventory> {
+    const gh = await readGhAuthToken();
+    ghAccountSync.noteLocalGhToken(gh.token);
+    return githubCliCredentialInventory(gh, ghAccountSync.readAccountToken());
+  }
 
   /**
    * The inventory's candidates for `capability`, with each App credential the
@@ -1170,7 +1181,7 @@ export function createGithubService({
   setGitTransportTokenReader(readGitTransportToken, logger);
 
   const readAuthTokenSync = (): GitHubTokenLookup => {
-    const patLookup = readPatAuthToken();
+    const patLookup = cliOnly() ? null : readPatAuthToken();
     const patTokenStored = Boolean(patLookup);
     let ghFallback: GitHubTokenLookup = {
       token: null,
@@ -1181,6 +1192,7 @@ export function createGithubService({
     };
     return selectGithubOperationCredential<GitHubTokenLookup>({
       environment: () => {
+        if (cliOnly()) return null;
         const environment = readEnvironmentAuthToken();
         return environment ? { ...environment, patTokenStored } : null;
       },
@@ -1560,7 +1572,7 @@ export function createGithubService({
     accountingFetchImpl: fetchGitHub,
     userAgent: "ade-desktop",
     defaultHeaders: { "x-github-api-version": GITHUB_REST_API_VERSION },
-    authMissingMessage: "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.",
+    authMissingMessage: cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.",
     onFallback: ({ capability, fromSource, toSource }) => {
       logger.info("github.credential_fallback_used", {
         capability,
@@ -1588,7 +1600,8 @@ export function createGithubService({
     accept?: string;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
-    const explicitToken = args.token?.trim() ?? "";
+    const cliCredentialsOnly = cliOnly();
+    const explicitToken = cliCredentialsOnly ? "" : args.token?.trim() ?? "";
     const candidatePool: GitHubTokenCandidate[] = explicitToken
       ? [{
           token: explicitToken,
@@ -1601,7 +1614,9 @@ export function createGithubService({
       : githubOperationCredentialCandidates(
           (await readCredentialInventory()).candidates,
           capability,
-        ).filter((candidate) => !args.credentialSource || candidate.source === args.credentialSource);
+        ).filter((candidate) =>
+          (!args.credentialSource || candidate.source === args.credentialSource)
+          && (!cliCredentialsOnly || !args.token || candidate.token === args.token.trim()));
     // An App credential serves a write only where the installation on the
     // repository owner accepted the right; otherwise it would 403 on every
     // write (see `githubAppGrant.ts`).
@@ -1613,7 +1628,7 @@ export function createGithubService({
       })
       : [...candidatePool];
     if (candidates.length === 0) {
-      throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
+      throw new Error(cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
     }
 
     const baseUrl = "https://api.github.com";
@@ -1893,6 +1908,7 @@ export function createGithubService({
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
     token?: string;
+    capability?: GithubOperationCredentialCapability;
     maxPages?: number;
     stopWhenUpdatedBefore?: string | null;
   }): Promise<T[]> => {
@@ -1907,6 +1923,7 @@ export function createGithubService({
           path: args.path,
           query: args.query,
           token: args.token,
+          capability: args.capability,
         });
         return {
           data: first.data,
@@ -1919,6 +1936,7 @@ export function createGithubService({
           method: "GET",
           path: `${url.pathname}${url.search}`,
           token: args.token,
+          capability: args.capability,
         });
         return {
           data: next.data,
@@ -2270,7 +2288,7 @@ export function createGithubService({
       ...status,
       gitTransport,
       accountCredentials: readGithubAccountCredentialState(patAccountSync, ghAccountSync),
-      accountApp: await accountApp.statusFor(status.repo, readAppIssueGrant),
+      accountApp: cliOnly() ? null : await accountApp.statusFor(status.repo, readAppIssueGrant),
     }));
     statusInFlight = work;
     try {
@@ -2339,13 +2357,11 @@ export function createGithubService({
 
   const listRepoAutolinks = async (owner: string, name: string): Promise<GitHubAutolink[]> => {
     const repoPath = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
-    // A refusal reads the person's own permission, so the page says "only
-    // admins can add these" instead of a bare 404.
     const data = await listGithubAutolinksOrExplain({
       owner,
       name,
-      list: () => apiRequestAllPages<Record<string, unknown>>({ path: `${repoPath}/autolinks`, query: { per_page: 100 } }),
-      readRepo: async () => (await apiRequest<unknown>({ method: "GET", path: repoPath })).data,
+      list: () => apiRequestAllPages<Record<string, unknown>>({ path: `${repoPath}/autolinks`, query: { per_page: 100 }, capability: "write" }),
+      readRepo: async () => (await apiRequest<unknown>({ method: "GET", path: repoPath, capability: "write" })).data,
       statusOf: (error) => (error instanceof GithubCredentialAttemptError ? error.status : null),
     });
     return data.map(normalizeAutolink).filter((entry) => entry.keyPrefix && entry.urlTemplate);
@@ -2441,8 +2457,8 @@ export function createGithubService({
   // --- account_app: `GH_TOKEN` for `gh` in shells and chats (githubSessionEnv.ts).
   const sessionGithubEnv = createGithubSessionEnv({
     answersShells: accountApp.enabled,
-    readAccountAppToken: () => accountApp.readToken(),
-    peekAccountAppToken: () => accountApp.peekToken(),
+    readAccountAppToken: () => cliOnly() ? Promise.resolve(null) : accountApp.readToken(),
+    peekAccountAppToken: () => cliOnly() ? null : accountApp.peekToken(),
     // The account's copy of a `gh` login, for an owner without the App.
     peekAccountGhToken: () => ghAccountSync.readAccountToken(),
     readGrant: readAppIssueGrant,
@@ -2718,7 +2734,7 @@ export function createGithubService({
     const writeAuth = await readAuthToken("write");
     const token = writeAuth.token;
     if (!token) {
-      const err = new Error("GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.") as Error & { code?: string };
+      const err = new Error(cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.") as Error & { code?: string };
       err.code = "github_not_connected";
       throw err;
     }
@@ -2998,26 +3014,26 @@ export function createGithubService({
 
     getTokenOrThrow(): string {
       const token = readAuthTokenSync().token;
-      if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
+      if (!token) throw new Error(cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
     },
 
     async getTokenOrThrowAsync(): Promise<string> {
       const token = (await readAuthToken("write")).token;
-      if (!token) throw new Error("GitHub write access is unavailable. Connect GitHub CLI or add a personal access token in Settings.");
+      if (!token) throw new Error(cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub write access is unavailable. Connect GitHub CLI or add a personal access token in Settings.");
       return token;
     },
 
     async getReadTokenOrThrowAsync(): Promise<string> {
       const token = (await readAuthToken("read")).token;
-      if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
+      if (!token) throw new Error(cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
     },
 
     /** `owner`: the remote's GitHub owner, when the caller knows it (the App installation check). */
     async getGitTransportTokenOrThrowAsync(opts: { owner?: string | null } = {}): Promise<string> {
       const token = (await readGitTransportAuthToken(opts.owner ?? null)).token;
-      if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
+      if (!token) throw new Error(cliOnly() ? GITHUB_CLI_SIGN_IN_REQUIRED : "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
     },
 
@@ -3028,7 +3044,10 @@ export function createGithubService({
       return await readGithubRepoStarState(requestRawWithCredentialFallback);
     },
 
+    isGithubCliOnly: cliOnly,
+
     async getAppUserTokenForRelay(): Promise<string> {
+      if (cliOnly()) throw markExpected(new Error("GitHub App updates are off in GitHub CLI only mode."), "user");
       return await accountApp.relayAppUserAuth.getValidTokenForRelay();
     },
     async reportAppUserTokenRejected(token: string): Promise<void> {

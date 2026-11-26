@@ -737,7 +737,7 @@ describe("multi-project RPC server", () => {
       ["another integration's secret", "get", ["all", "integration", "github"], /reaches only the ADE Cloud items/],
       ["the credential in a project's scope", "get", ["project:abc", "integration", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
       ["the credential under another kind", "remove", ["all", "secret", CLOUD_PROVIDER_VAULT_ITEM], /reaches only the ADE Cloud items/],
-      ["every row", "list", [], /runs in a project/],
+      ["every row", "list", [], /Choose the account scope/],
     ] as const)("the vault with no project opens only ADE Cloud's items: %s", async (_label, action, argsList, refused) => {
       const rows = new Map<string, string>([
         [`all|integration|${CLOUD_PROVIDER_VAULT_ITEM}`, "the-key"],

@@ -1107,10 +1107,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     onboarding: onboarding as AdeNamespace<"onboarding">,
     modelPicker: modelPicker as AdeNamespace<"modelPicker">,
     ai: ai as AdeNamespace<"ai">,
-    github: createGithubNamespace({
+    github: guardPinnedMembers(createGithubNamespace({
       call,
       onStatusChanged: (listener) => events.on("githubStatusChanged", listener as never),
-    }) as AdeNamespace<"github">,
+    }), "github", { detectRepo: 0, listRepoAutolinks: 1, createRepoAutolink: 1 }, infra) as AdeNamespace<"github">,
     projectConfig: projectConfig as AdeNamespace<"projectConfig">,
     zoom: zoom as AdeNamespace<"zoom">,
     layout: localNamespaces.layout as AdeNamespace<"layout">,

@@ -77,9 +77,8 @@ export function createAccountSettingsSyncService(options: AccountSettingsSyncOpt
     getPool: options.getPool,
     getRootPath: options.getRootPath,
     // With no project booted on this computer (the welcome screen, or a tab
-    // bound to another machine), the brain still serves the account's
-    // settings from its machine store. Without this, Settings › MCP servers
-    // said the background service did not answer.
+    // bound to another machine), the brain serves the account's settings from
+    // its machine store, the same rows any project scope returns.
     machineMethod: "accountSettings.call",
     logger: options.logger,
     decodeRow: toRow,

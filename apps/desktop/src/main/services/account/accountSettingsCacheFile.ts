@@ -38,7 +38,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * would erase it the first time the file was mid-write, unreadable, or written
  * by a newer shape.
  */
-export function readAccountSettingsCacheRows(adeHome: string): Record<string, unknown> | null {
+export function readAccountSettingsCacheRows(adeHome: string, accountUserId?: string): Record<string, unknown> | null {
   let raw: string;
   try {
     raw = fs.readFileSync(path.join(adeHome, ACCOUNT_SETTINGS_CACHE_FILE), "utf8");
@@ -51,7 +51,7 @@ export function readAccountSettingsCacheRows(adeHome: string): Record<string, un
   } catch {
     return null;
   }
-  if (!isRecord(parsed)) return null;
+  if (!isRecord(parsed) || (accountUserId !== undefined && parsed.accountUserId !== accountUserId)) return null;
   const rows = parsed[ACCOUNT_SETTINGS_ROWS_FIELD];
   return isRecord(rows) ? rows : null;
 }

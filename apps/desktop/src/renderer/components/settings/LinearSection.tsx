@@ -25,7 +25,7 @@ import {
 } from "./integrations/IntegrationChrome";
 import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import { showToast } from "../app/toast/toastStore";
-import { Banner } from "../ui/notice";
+import { Banner, type NoticeAction } from "../ui/notice";
 import { LinearMark } from "../lanes/linearBrand";
 import "./IntegrationsSettings.css";
 import { LinearAgentSection } from "./LinearAgentSection";
@@ -33,7 +33,7 @@ import { announceLinearConnectionChanged } from "../../lib/linearConnectionEvent
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { isImeComposing } from "../../lib/imeComposition";
 import { requirePin } from "../../state/repositoryScope";
-import { plainError, type PlainError } from "../../lib/plainError";
+import { plainError, plainErrorText, type PlainError } from "../../lib/plainError";
 
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
 
@@ -92,8 +92,7 @@ export function LinearSection() {
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
   const [githubAutolinks, setGithubAutolinks] = useState<GitHubAutolink[]>([]);
   const [autolinksLoading, setAutolinksLoading] = useState(false);
-  // Why the links could not be read or added, in plain words. `ask_admin`:
-  // the person is not an admin of the repository, so Add is not offered.
+  // Why the links could not be read or added, in plain words.
   const [autolinkError, setAutolinkError] = useState<PlainError | null>(null);
   const [creatingAutolinkId, setCreatingAutolinkId] = useState<string | null>(null);
   const [tokenInput, setTokenInput] = useState("");
@@ -318,7 +317,7 @@ export function LinearSection() {
         if (!active || oauthSessionIdRef.current !== activeSessionId) return;
         setOauthSessionIdState(null);
         setOauthStartingState(false);
-        showToast({ tone: "error", title: "Linear sign-in failed", message: err instanceof Error ? err.message : "OAuth failed." });
+        showToast({ tone: "error", title: "Linear sign-in failed", message: plainErrorText(err, "OAuth failed.") });
       }
     };
     void poll();
@@ -377,7 +376,7 @@ export function LinearSection() {
       ) {
         return;
       }
-      showToast({ tone: "error", title: "Couldn't validate the token", message: err instanceof Error ? err.message : "Validation failed." });
+      showToast({ tone: "error", title: "Couldn't validate the token", message: plainErrorText(err, "Validation failed.") });
     } finally {
       if (validatingRef.current) {
         setValidatingState(false);
@@ -415,7 +414,7 @@ export function LinearSection() {
     } catch (err) {
       if (!oauthStartingRef.current) return;
       setOauthStartingState(false);
-      showToast({ tone: "error", title: "Couldn't start Linear sign-in", message: err instanceof Error ? err.message : "Unable to start OAuth." });
+      showToast({ tone: "error", title: "Couldn't start Linear sign-in", message: plainErrorText(err, "Unable to start OAuth.") });
     }
   }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, isRemoteRuntime, pin]);
 
@@ -430,7 +429,7 @@ export function LinearSection() {
       setTokenInput("");
       setOauthSessionIdState(null);
     } catch (err) {
-      showToast({ tone: "error", title: "Couldn't disconnect Linear", message: err instanceof Error ? err.message : "Failed to disconnect Linear." });
+      showToast({ tone: "error", title: "Couldn't disconnect Linear", message: plainErrorText(err, "Failed to disconnect Linear.") });
     } finally {
       setValidatingState(false);
       setOauthStartingState(false);
@@ -556,6 +555,17 @@ export function LinearSection() {
     </IntegrationCard>
   );
 
+  // Refused: an admin adds the links, so offer their commands. Otherwise a
+  // failure that may pass offers another try.
+  let autolinkActions: NoticeAction[] | undefined;
+  if (autolinksRefused) {
+    autolinkActions = githubRepoSlug
+      ? [{ label: "Copy commands for an admin", icon: <Copy size={12} />, onClick: () => void copyAutolinkCommandsForAdmin() }]
+      : undefined;
+  } else if (autolinkError?.next === "retry") {
+    autolinkActions = [{ label: "Reload links", onClick: () => void loadGithubAutolinks() }];
+  }
+
   const linksCard = (
     <IntegrationCard
       icon={<LinkSimple size={16} weight="bold" />}
@@ -594,7 +604,7 @@ export function LinearSection() {
                   <span className="ade-ig-mini-detail">{candidate.desc}</span>
                   {candidate.configured ? (
                     <span className="kit-tag" data-tone="ok"><CheckCircle size={11} weight="fill" /> Added</span>
-                  ) : autolinksRefused ? null : (
+                  ) : !autolinksLoading && !autolinkError && githubRepo ? (
                     <button
                       type="button"
                       className="ade-modern-btn"
@@ -608,7 +618,7 @@ export function LinearSection() {
                       {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
                       Add
                     </button>
-                  )}
+                  ) : null}
                   <CaretDown size={12} className="ade-linear-links-caret" aria-label="Show the gh command" />
                 </summary>
                 <code className="ade-int-command" style={{ margin: "0 12px 10px", color: "var(--color-muted-fg)" }}>
@@ -629,11 +639,7 @@ export function LinearSection() {
             id: "linear-autolink-error",
             tone: autolinksRefused ? "warning" : "error",
             title: autolinkError.text,
-            actions: autolinksRefused && githubRepoSlug
-              ? [{ label: "Copy commands for an admin", icon: <Copy size={12} />, onClick: () => void copyAutolinkCommandsForAdmin() }]
-              : autolinkError.next === "retry"
-                ? [{ label: "Try again", onClick: () => void loadGithubAutolinks() }]
-                : undefined,
+            actions: autolinkActions,
           }}
         />
       ) : null}

@@ -220,6 +220,7 @@ export function createRemoteMcpMachineRouter(deps: {
   logger?: { warn?: (event: string, data?: Record<string, unknown>) => void };
 }): RemoteMcpMachineRouter {
   const now = deps.now ?? Date.now;
+  let localReport: { machineKey: string; reason: RemoteMcpNotServingReason | null; at: string } | null = null;
   let directory: { at: number; ttl: number; machines: RemoteMcpDirectoryMachine[] | null } | null = null;
   let directoryInFlight: Promise<RemoteMcpDirectoryMachine[] | null> | null = null;
 
@@ -271,6 +272,16 @@ export function createRemoteMcpMachineRouter(deps: {
       const state = isThisMachine
         ? { serving: hereReason === null, reason: hereReason, known: true }
         : otherMachineState({ accountOn, supported, included, online, entry });
+      const savedReport = entry?.reported;
+      if (isThisMachine && (localReport?.machineKey !== machineKey || localReport.reason !== hereReason)) {
+        localReport = {
+          machineKey,
+          reason: hereReason,
+          at: savedReport && savedReport.serving === state.serving && (savedReport.reason ?? null) === hereReason
+            ? savedReport.at
+            : new Date(now()).toISOString(),
+        };
+      }
       byKey.set(machineKey, {
         machineKey,
         name,
@@ -284,9 +295,7 @@ export function createRemoteMcpMachineRouter(deps: {
         lastSeenAt: directoryRow?.lastSeenAt ?? null,
         serving: state.serving,
         notServingReason: state.serving ? null : state.reason,
-        // This computer's state is live; another's is as of its last report,
-        // and null when its state is a guess (servingStateKnown).
-        reportedAt: isThisMachine ? new Date(now()).toISOString() : state.known ? entry?.reported?.at ?? null : null,
+        reportedAt: isThisMachine ? localReport?.at ?? null : state.known ? savedReport?.at ?? null : null,
       });
     };
     for (const row of listed ?? []) add(row.machineKey, row);
