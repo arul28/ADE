@@ -17364,6 +17364,15 @@ final class SyncService: ObservableObject {
     } else if let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil {
       // Files and thread comments ride a live link only: wake the computer first.
       await wakeSavedCloudChatComputer(key)
+      // Still no link (a wake ADE Cloud refused, or one that timed out): say
+      // why and keep the draft, never fall into this phone's own queue, which
+      // neither wakes the computer nor carries the comments there.
+      if savedCloudChatAccountKey(forThreadKey: key) != nil {
+        throw NSError(domain: "ADE", code: 47, userInfo: [
+          NSLocalizedDescriptionKey: cloudWakeFailure(fleetKey: key.machineKey)
+            ?? "This chat's ADE Cloud computer didn't wake. Your message is still here; try again.",
+        ])
+      }
     }
     // Files read for the queue, but the computer came back meanwhile: the
     // caller uploads them over the live link instead of sending text alone.
