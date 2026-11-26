@@ -190,6 +190,10 @@ struct WorkRootSyncInputs: Equatable {
   var workStatus = SyncDomainStatus.disconnected
   var workProjectionRevision: Int?
   var rosterRevision = 0
+  /// The focused computer's roster arrived on this connection. Its first
+  /// answer after a reconnect can be an empty delta that moves no revision,
+  /// yet it is what lets Work leave out rows whose lane no computer has.
+  var rosterLiveOnConnection = false
   var chatLaunchRevision = 0
   /// Side chats opened or ended live: the rows' marks and hiding follow.
   var sideChatRevision = 0
@@ -258,6 +262,7 @@ struct WorkRootSyncInputs: Equatable {
     workProjectionRevision = sync.workProjectionRevision
     let activeProject = sync.activeProject
     rosterRevision = sync.rosterRevision(for: activeProject)
+    rosterLiveOnConnection = sync.rosterLiveOnConnection
     chatLaunchRevision = sync.chatLaunchRevision
     sideChatRevision = sync.sideChatRevision
     pendingChatCreations = sync.pendingChatCreations
