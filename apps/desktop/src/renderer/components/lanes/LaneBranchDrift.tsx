@@ -14,6 +14,8 @@ import { useChatRuntimeScope } from "../chat/ChatRuntimeScope";
 import { showToast } from "../app/toast/toastStore";
 import { cn } from "../ui/cn";
 import { StatusChip, type StatusChipAction } from "../ui/notice";
+import { laneDisplayName } from "../../../shared/laneDisplayName";
+import { LaneActiveWorkDialog } from "./detail/LaneActiveWorkDialog";
 
 function toastSwitchFailure(laneId: string, message: string, action: "switch" | "keep" = "switch"): void {
   showToast({
@@ -74,6 +76,14 @@ export function disarmLaneBranchDriftWarning(laneId: string | null | undefined):
 function subscribeArmed(listener: () => void): () => void {
   armedListeners.add(listener);
   return () => { armedListeners.delete(listener); };
+}
+
+/** The lane's display name, for the active-work dialog. */
+function useLaneDisplayNameById(laneId: string | null | undefined): string {
+  return useAppStore((state) => {
+    const lane = laneId ? state.lanes.find((candidate) => candidate.id === laneId) : null;
+    return lane ? laneDisplayName(lane) : "this lane";
+  });
 }
 
 /**
@@ -184,6 +194,7 @@ function useRecentBranchAdoption(
  */
 function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adoption: BranchAdoption; pin: OpenProjectBinding }) {
   const refreshLanes = useAppStore((state) => state.refreshLanes);
+  const laneName = useLaneDisplayNameById(laneId);
   const [pending, setPending] = useState(false);
   const [forceable, setForceable] = useState(false);
   const switchBack = async (acknowledgeActiveWork: boolean) => {
@@ -207,6 +218,7 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
     }
   };
   return (
+    <>
     <StatusChip
       testId="lane-branch-adopted-chip"
       tone="info"
@@ -216,15 +228,25 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
       detailMono
       tooltip={`The agent switched this lane to ${adoption.branchRef}, so ADE moved the lane with it. The lane keeps its name, and the chat keeps the PR from ${adoption.previousBranchRef}.`}
       actions={[{
-        label: pending ? "Switching…" : forceable ? "Switch anyway" : "Switch back",
-        title: forceable
-          ? "A chat is still running in this lane; switch anyway"
-          : `Check out ${adoption.previousBranchRef} again`,
+        label: pending ? "Switching…" : "Switch back",
+        title: `Check out ${adoption.previousBranchRef} again`,
         disabled: pending,
-        onClick: () => { void switchBack(forceable); },
+        onClick: () => { void switchBack(false); },
       }]}
       onDismiss={() => dismissAdoption(pin, laneId)}
     />
+    {forceable ? (
+      <LaneActiveWorkDialog
+        open
+        laneId={laneId}
+        laneName={laneName}
+        pin={pin}
+        targetLabel={adoption.previousBranchRef}
+        onCancel={() => setForceable(false)}
+        onContinue={() => { void switchBack(true); }}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -322,6 +344,7 @@ export function LaneBranchComposerChip({
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const [pending, setPending] = useState<LaneBranchDriftResolution | null>(null);
   const [forceable, setForceable] = useState<LaneBranchDriftResolution | null>(null);
+  const laneName = useLaneDisplayNameById(laneId);
 
   const visible = Boolean(laneId && drift && armed);
 
@@ -380,14 +403,6 @@ export function LaneBranchComposerChip({
   const busy = pending != null;
   const actions: StatusChipAction[] = [];
   if (driftKind === "switched") {
-    if (forceable) {
-      actions.push({
-        label: "Switch anyway",
-        title: "A chat is still running in this lane; switch anyway",
-        disabled: busy,
-        onClick: () => { void resolve(forceable, true); },
-      });
-    }
     actions.push(
       {
         label: pending === "switch-back" ? "Switching…" : "Switch back",
@@ -413,6 +428,7 @@ export function LaneBranchComposerChip({
     });
   }
   return (
+    <>
     <StatusChip
       testId="lane-branch-drift-strip"
       dataAttributes={{ "data-lane-branch-drift-kind": driftKind }}
@@ -430,5 +446,17 @@ export function LaneBranchComposerChip({
       tooltip={message}
       actions={actions}
     />
+    {forceable && laneId && pin ? (
+      <LaneActiveWorkDialog
+        open
+        laneId={laneId}
+        laneName={laneName}
+        pin={pin}
+        targetLabel={forceable === "keep-head" ? drift.headBranchRef : drift.expectedBranchRef}
+        onCancel={() => setForceable(null)}
+        onContinue={() => { void resolve(forceable, true); }}
+      />
+    ) : null}
+    </>
   );
 }

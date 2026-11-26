@@ -104,6 +104,7 @@ import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import {
   appendForeignMachinesToBoard,
   lanePrWaitingReason,
+  pinnedFirst,
   type WorkBoardWaitingReason,
 } from "./useWorkSessions";
 import {
@@ -424,13 +425,15 @@ function partitionQuietSessions(
     const bucket = buckets.get(session.id) ?? null;
     if (bucket === "snoozed") {
       snoozed.push(session);
-    } else if (bucket === "settled") {
+    } else if (bucket === "settled" && !session.pinned) {
+      // A pin outranks settling, as it does for a lane: a pinned chat stays up
+      // in the active run.
       settled.push(session);
     } else {
       active.push(session);
     }
   }
-  return { active, snoozed, settled };
+  return { active: pinnedFirst(active), snoozed, settled };
 }
 
 function HandoffSessionPlaceholderCard({ job, lane, showLaneIdentity }: {
@@ -1588,21 +1591,30 @@ export const SessionListPane = React.memo(function SessionListPane({
     workSessionFilters,
   ]);
 
-  const visibleSettled = settledFiltered;
+  // A pin outranks settling, as it does for a lane: a pinned chat that was
+  // settled stays in the active run (and in the Pinned group), not the shelf.
+  const pinnedSettled = useMemo(
+    () => (settledFiltered.some((session) => session.pinned) ? settledFiltered.filter((session) => session.pinned) : EMPTY_SESSIONS),
+    [settledFiltered],
+  );
+  const visibleSettled = useMemo(
+    () => (pinnedSettled.length > 0 ? settledFiltered.filter((session) => !session.pinned) : settledFiltered),
+    [pinnedSettled, settledFiltered],
+  );
   const visibleSnoozed = snoozedFiltered;
   const hasAnySessions =
-    runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length
+    runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length + pinnedSettled.length
       + visibleSettled.length + visibleSnoozed.length + filteredHandoffJobs.length > 0;
 
   const allSessions = useMemo(
-    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered, ...visibleSnoozed, ...visibleSettled],
-    [runningFiltered, awaitingInputFiltered, endedFiltered, visibleSnoozed, visibleSettled],
+    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered, ...pinnedSettled, ...visibleSnoozed, ...visibleSettled],
+    [runningFiltered, awaitingInputFiltered, endedFiltered, pinnedSettled, visibleSnoozed, visibleSettled],
   );
   // Settled rows live in their own quiet tier: excluded from lane folders' main
   // run and from time buckets, rendered in a per-group settled tail instead.
   const settledIdSet = useMemo(
-    () => new Set(settledFiltered.map((session) => session.id)),
-    [settledFiltered],
+    () => new Set(visibleSettled.map((session) => session.id)),
+    [visibleSettled],
   );
   // Snoozed rows get the same treatment one tier above settled: out of the main
   // run, into their own group/tail, so a snooze actually removes noise.
@@ -1635,7 +1647,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (bucket === "snoozed") {
         snoozed.add(session.id);
         all.add(session.id);
-      } else if (bucket === "settled") {
+      } else if (bucket === "settled" && !session.pinned) {
         settled.add(session.id);
         all.add(session.id);
       }
@@ -2054,6 +2066,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   const flatLists = useMemo(() => {
     const rows = new Map<string, CrossMachineLaneRow>();
     const result = {
+      pinned: EMPTY_SESSIONS,
       running: [...runningFiltered], awaiting: [...awaitingInputFiltered], ended: [...endedFiltered],
       snoozed: [...visibleSnoozed], settled: [...visibleSettled], rows,
     };
@@ -2083,8 +2096,18 @@ export const SessionListPane = React.memo(function SessionListPane({
         }
       }
     }
+    // Pinned chats, from every machine, lead the list in their own group.
+    // Snoozed ones stay snoozed: the snooze is the newer, explicit choice.
+    const pinned = [...result.running, ...result.awaiting, ...result.ended, ...pinnedSettled]
+      .filter((session) => session.pinned);
+    if (pinned.length > 0) {
+      result.pinned = pinned;
+      result.running = result.running.filter((session) => !session.pinned);
+      result.awaiting = result.awaiting.filter((session) => !session.pinned);
+      result.ended = result.ended.filter((session) => !session.pinned);
+    }
     return result;
-  }, [runningFiltered, awaitingInputFiltered, endedFiltered, visibleSnoozed, visibleSettled,
+  }, [runningFiltered, awaitingInputFiltered, endedFiltered, pinnedSettled, visibleSnoozed, visibleSettled,
     isByLane, allSessionsUnfiltered, foreignRows, visibleForeignRows, unfilteredForeignNestingByCompositeId,
     foreignFilingNowMs, filingBucketsForForeignSessions]);
   const timeBuckets = useMemo(
@@ -2686,8 +2709,9 @@ export const SessionListPane = React.memo(function SessionListPane({
       }
       return ids;
     }
+    const pinnedIds = workCollapsedSectionIds.includes("status:pinned") ? [] : collectVisibleIds(flatLists.pinned);
     if (isByTime) {
-      const ids: string[] = [];
+      const ids: string[] = [...pinnedIds];
       if (!workCollapsedSectionIds.includes("time:today")) ids.push(...collectVisibleIds(timeBuckets.today));
       if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...collectVisibleIds(timeBuckets.yesterday));
       if (!workCollapsedSectionIds.includes("time:older")) ids.push(...collectVisibleIds(timeBuckets.older));
@@ -2695,7 +2719,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (!isQuietShelfCollapsed(workCollapsedSectionIds, "status:settled")) ids.push(...collectVisibleIds(flatLists.settled));
       return ids;
     }
-    const ids: string[] = [];
+    const ids: string[] = [...pinnedIds];
     if (!workCollapsedSectionIds.includes("status:running")) ids.push(...collectVisibleIds(flatLists.running));
     if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...collectVisibleIds(flatLists.awaiting));
     if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...collectVisibleIds(flatLists.ended));
@@ -2704,6 +2728,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     return ids;
   }, [
     flatLists.awaiting,
+    flatLists.pinned,
     boardReplacesList,
     boardSessionIds,
     collectVisibleIds,
@@ -3369,11 +3394,26 @@ export const SessionListPane = React.memo(function SessionListPane({
     </StickyGroupHeader>
   ) : null;
 
+  // Pinned chats lead the flat views, from every machine, in their status order.
+  const pinnedStatusSection = flatLists.pinned.length > 0 ? (
+    <StickyGroupHeader
+      sectionId="status:pinned"
+      icon={<PushPin size={11} weight="fill" className="shrink-0 text-muted-fg/60" />}
+      label="Pinned"
+      count={flatLists.pinned.length}
+      collapsed={workCollapsedSectionIds.includes("status:pinned")}
+      onToggleCollapsed={() => toggleWorkSectionCollapsed("status:pinned")}
+    >
+      {renderCards(flatLists.pinned)}
+    </StickyGroupHeader>
+  ) : null;
+
   const groupedByStatusList = (
     // Single rhythm, container-owned (see StickyGroupHeader): with the borders
     // gone, whitespace IS the grouping, so the gap between groups is the large
     // one and active and quiet groups get the SAME air.
     <div className={cn(GROUP_STACK_CLASS, SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
+      {pinnedStatusSection}
       <StickyGroupHeader
         sectionId="status:running"
         icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-success)" }} />}
@@ -4174,6 +4214,7 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const byTimeList = (
     <div className={cn(GROUP_STACK_CLASS, SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
+      {pinnedStatusSection}
       <StickyGroupHeader
         sectionId="time:today"
         icon={null}

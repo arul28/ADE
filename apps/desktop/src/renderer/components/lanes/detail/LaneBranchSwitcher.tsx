@@ -6,7 +6,7 @@ import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineL
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, fgTint } from "../laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, fgTint } from "../laneDesignTokens";
 import { Banner, InlineErrorNotice, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import {
   formatBranchCheckoutError,
@@ -17,6 +17,8 @@ import {
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
 import { branchNameFromLaneRef } from "../../../../shared/laneBaseResolution";
 import { extractError } from "../../../lib/format";
+import { laneDisplayName } from "../../../../shared/laneDisplayName";
+import { LaneActiveWorkDialog } from "./LaneActiveWorkDialog";
 
 type PendingBranchSwitch = {
   branchName: string;
@@ -202,6 +204,8 @@ export function LaneBranchSwitcher({
           return;
         }
         if (preview.activeWork.length > 0) {
+          // The dialog says what is running and asks; the menu steps aside.
+          setOpen(false);
           setPendingSwitch({ branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
           return;
         }
@@ -241,6 +245,8 @@ export function LaneBranchSwitcher({
       const message = formatBranchCheckoutError(raw, lane.name);
       // The formatter only rewrites git's "commit or stash first" refusal.
       setError({ message, kind: message === raw.trim() ? "failure" : "status" });
+      // The error shows in the menu; reopen it when a dialog had closed it.
+      if (request.acknowledgeActiveWork) setOpen(true);
     } finally {
       setBusy(false);
       if (succeeded) setOpen(false);
@@ -444,48 +450,6 @@ export function LaneBranchSwitcher({
               <span>New branch…</span>
             </button>
           )}
-          {pendingSwitch ? (
-            <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }}>
-              <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
-              <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals stay attached and keep running on the new branch.</div>
-              <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
-                {pendingSwitch.activeWork.slice(0, 3).map((item) => (
-                  <div key={`${item.kind}:${item.id}`} className="truncate" style={{ fontSize: 11, color: COLORS.textSecondary }}>
-                    Terminal: {item.title}
-                  </div>
-                ))}
-                {pendingSwitch.activeWork.length > 3 ? (
-                  <div style={{ fontSize: 11, color: COLORS.textDim }}>+ {pendingSwitch.activeWork.length - 3} more</div>
-                ) : null}
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  style={{
-                    fontSize: 11,
-                    padding: "4px 8px",
-                    height: 26,
-                    border: `1px solid ${COLORS.warning}`,
-                    borderRadius: 6,
-                    background: "color-mix(in srgb, var(--color-warning) 25%, transparent)",
-                    color: COLORS.warning,
-                    fontFamily: SANS_FONT,
-                    fontWeight: 600,
-                  }}
-                  onClick={() => { void checkout({ ...pendingSwitch, acknowledgeActiveWork: true }); }}
-                >
-                  Switch anyway
-                </button>
-                <button
-                  type="button"
-                  style={outlineButton({ fontSize: 11, padding: "4px 8px", height: 26 })}
-                  onClick={() => setPendingSwitch(null)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : null}
           <div className="flex-1 overflow-auto" style={{ padding: "2px 0" }}>
             {branchesLoading && branches.length === 0 ? (
               <div style={{ padding: "10px 12px", fontSize: 12, color: COLORS.textMuted }}>Loading branches…</div>
@@ -516,6 +480,21 @@ export function LaneBranchSwitcher({
             ) : null}
           </div>
       </AnchoredMenu>
+      {pendingSwitch ? (
+        <LaneActiveWorkDialog
+          open
+          laneId={lane.id}
+          laneName={laneDisplayName(lane)}
+          pin={pin}
+          targetLabel={branchNameFromLaneRef(pendingSwitch.branchName)}
+          onCancel={() => setPendingSwitch(null)}
+          onContinue={() => {
+            const next = pendingSwitch;
+            setPendingSwitch(null);
+            void checkout({ ...next, acknowledgeActiveWork: true });
+          }}
+        />
+      ) : null}
     </div>
   );
 }

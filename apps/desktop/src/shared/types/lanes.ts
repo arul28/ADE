@@ -487,7 +487,10 @@ export type LaneBranchSwitchMode = "existing" | "create";
 
 export type LaneBranchActiveWorkItem = {
   id: string;
-  kind: "terminal";
+  /** `chat`: an agent chat. `cli`: an agent CLI in a terminal. `terminal`: a shell. */
+  kind: "chat" | "cli" | "terminal";
+  /** The session's tool type (`claude`, `codex-chat`, `shell`…); null when unknown. */
+  toolType: string | null;
   title: string;
   status: string;
 };

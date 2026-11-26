@@ -726,6 +726,34 @@ export function seedCrossMachineOptimisticSession(
   });
 }
 
+/**
+ * Show a pin change on another machine's rows at once. The write goes to that
+ * machine; the next read of its chats confirms or replaces this.
+ */
+export function patchCrossMachineSessionsPinned(
+  binding: OpenProjectBinding,
+  sessionIds: ReadonlySet<string>,
+  pinned: boolean,
+): string | null {
+  const store = rootAppStoreApi.getState();
+  const existing = machineEntryForBinding(store, binding);
+  if (!existing) return null;
+  let changed = false;
+  const sessions = existing.sessions.map((session) => {
+    if (!sessionIds.has(session.id) || Boolean(session.pinned) === pinned) return session;
+    changed = true;
+    return { ...session, pinned };
+  });
+  if (changed) {
+    store.mergeCrossMachineLanes({
+      machineId: existing.machineId,
+      machineName: existing.machineName,
+      sessions,
+    });
+  }
+  return existing.machineId;
+}
+
 /** Chat-shaped entry point for {@link seedCrossMachineOptimisticSession}. */
 export function seedCrossMachineOptimisticChatSession(
   session: AgentChatSession,

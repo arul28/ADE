@@ -35,6 +35,11 @@ import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
 const UNDO_TOAST_MS = 5_000;
 
+/** What pinning does, said where the user pins and where a pin shows. */
+export const SESSION_PIN_TOOLTIP = "Keep this chat at the top of its lane and of the Work list, on every machine";
+export const SESSION_UNPIN_TOOLTIP = "Let this chat move with the rest of the list again";
+export const SESSION_PINNED_TOOLTIP = "Pinned: stays at the top of its lane and of the Work list, on every machine";
+
 /** Rename either a chat or a terminal through its owning runtime binding. */
 export async function renameSession(
   session: Pick<TerminalSessionSummary, "id" | "toolType" | "cursorCloudAgentId">,

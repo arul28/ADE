@@ -172,63 +172,38 @@ export function ThemeImportExport() {
 type ThemeLink = { label: string; url: string };
 
 const THEME_SOURCES: readonly ThemeLink[] = [
-  { label: "Open VSX themes", url: "https://open-vsx.org/?category=Themes&sortBy=downloadCount" },
+  { label: "Open VSX", url: "https://open-vsx.org/?category=Themes&sortBy=downloadCount" },
   { label: "VS Code Marketplace", url: "https://marketplace.visualstudio.com/search?target=VSCode&category=Themes&sortBy=Installs" },
-  { label: "Preview on vscodethemes.com", url: "https://vscodethemes.com" },
+  { label: "vscodethemes.com", url: "https://vscodethemes.com" },
 ];
 
 /**
- * What Import and Export do, in plain words, with where to find themes.
+ * What Import and Export do, with where to find themes: one line each.
  *
  * It sits under the gallery as a closed disclosure, so it costs no space until
- * someone wants it. The facts it states are the same ones the importer
- * enforces: which files it reads, what a VS Code file gives it, and that an
- * imported theme stays on this computer.
+ * someone wants it. The facts it states are the ones the importer enforces:
+ * which files it reads, and that an imported theme stays on this computer.
  */
 export function ThemeFilesHelp() {
-  const linkStyle: React.CSSProperties = {
-    all: "unset",
-    cursor: "pointer",
-    color: COLORS.accent,
-    fontFamily: SANS_FONT,
-    fontSize: 12,
-    textDecoration: "underline",
-    textUnderlineOffset: 2,
-  };
-  const body: React.CSSProperties = { margin: 0, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55, color: COLORS.textMuted };
-  const label: React.CSSProperties = { fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textSecondary };
   return (
-    <SettingsDisclosure summary="Theme files: import, export and where to find themes">
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={label}>Import</span>
-        <p style={body}>
-          Choose a <code>.json</code> theme file. ADE reads two kinds. An ADE theme file comes from Export. A VS Code
-          colour theme gives ADE its interface, terminal and code colours; comments and trailing commas in the file
-          are fine. A VS Code extension (<code>.vsix</code>) is a zip file: unzip it and choose a file from its
-          <code> themes</code> folder. The theme is saved on this computer and becomes the active theme.
-        </p>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={label}>Export</span>
-        <p style={body}>
-          Saves the active theme as <code>ade-theme-&lt;name&gt;.json</code> and copies the same text to the
-          clipboard. The file holds the palette, terminal colours, code colours and shape settings, so it carries a
-          theme to another computer or to a friend. Importing it there restores the theme.
-        </p>
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <span style={label}>Find more themes</span>
-        <p style={body}>
-          Any VS Code colour theme works. Browse them here, then download the file from the theme's repository.
-        </p>
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+    <SettingsDisclosure summary="Theme files">
+      <dl className="ade-theme-files">
+        <dt>Import</dt>
+        <dd>
+          An ADE theme or any VS Code colour theme (<code>.json</code>), saved on this computer. For a{" "}
+          <code>.vsix</code>, unzip it and pick a file in <code>themes/</code>.
+        </dd>
+        <dt>Export</dt>
+        <dd>Saves the active theme as a <code>.json</code> file and copies it, to use on another computer.</dd>
+        <dt>Find</dt>
+        <dd className="ade-theme-files-links">
           {THEME_SOURCES.map((link) => (
-            <button key={link.url} type="button" style={linkStyle} onClick={() => openExternalUrl(link.url)}>
+            <button key={link.url} type="button" className="ade-theme-files-link" onClick={() => openExternalUrl(link.url)}>
               {link.label}
             </button>
           ))}
-        </div>
-      </div>
+        </dd>
+      </dl>
     </SettingsDisclosure>
   );
 }
