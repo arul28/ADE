@@ -8,36 +8,58 @@
  * and this repository has thousands of pull requests, so the fetch must never
  * hold the export: it stops at the deadline and keeps what arrived.
  */
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 
 /** One overall budget for every GitHub call. */
 export const GITHUB_STATS_DEADLINE_MS = 30_000;
 
 const PROGRESS_EVERY_MS = 5_000;
 
-function runGh(args, cwd, signal) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "gh",
-      args,
-      { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, signal, windowsHide: true },
-      (error, stdout) => (error ? reject(error) : resolve(stdout)),
-    );
-  });
+/**
+ * Stops `child` and everything it started, then lets go of its pipes. On
+ * Windows, `gh` in an ADE terminal is ADE's launcher, which runs a Node shim
+ * that runs `gh.exe`; those hold the output pipes, and an open pipe would keep
+ * the export alive past the deadline.
+ */
+function stopTree(child) {
+  if (child.exitCode === null && child.signalCode === null && child.pid) {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
+    } else {
+      child.kill("SIGTERM");
+    }
+  }
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.unref();
 }
 
 /**
- * Runs a paginated `gh` call and hands each output line to `onLine` as pages
- * arrive. Resolves true when gh finished, false when `signal` stopped it
- * first (the lines so far stay usable); rejects when gh itself failed.
+ * Runs `gh` and hands each output line to `onLine` as pages arrive. Resolves
+ * true when gh finished, false when `signal` stopped it first (the lines so
+ * far stay usable); rejects when gh itself failed.
  */
 function streamGhLines(args, cwd, signal, onLine) {
   return new Promise((resolve, reject) => {
-    const child = spawn("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"], signal, windowsHide: true });
+    if (signal.aborted) return resolve(false);
+    const child = spawn("gh", args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let pending = "";
     let stderr = "";
+    let settled = false;
+    const settle = (finish) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      finish();
+    };
+    const onAbort = () => settle(() => {
+      stopTree(child);
+      resolve(false);
+    });
+    signal.addEventListener("abort", onAbort, { once: true });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
+      if (settled) return;
       pending += chunk;
       const lines = pending.split(/\r?\n/);
       pending = lines.pop() ?? "";
@@ -47,14 +69,19 @@ function streamGhLines(args, cwd, signal, onLine) {
     child.stderr.on("data", (chunk) => {
       if (stderr.length < 4096) stderr += chunk;
     });
-    child.on("error", (error) => (signal.aborted ? resolve(false) : reject(error)));
-    child.on("close", (code) => {
-      if (signal.aborted) return resolve(false);
+    child.on("error", (error) => settle(() => reject(error)));
+    child.on("close", (code) => settle(() => {
       if (pending.trim()) onLine(pending.trim());
       if (code === 0) resolve(true);
       else reject(new Error(stderr.trim().split("\n")[0] || `gh exited with ${code}`));
-    });
+    }));
   });
+}
+
+/** One small `gh` call's whole output, or null when `signal` stopped it. */
+async function runGh(args, cwd, signal) {
+  const lines = [];
+  return (await streamGhLines(args, cwd, signal, (line) => lines.push(line))) ? lines.join("\n") : null;
 }
 
 /** Pull requests by last update: every one created, merged or closed after a time was updated after it. */
@@ -103,17 +130,11 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
   let progress = null;
   try {
     log(`reading the repository and GitHub user (gives up after ${deadlineMs / 1000} s)`);
-    let repoInfoRaw;
-    let viewerRaw;
-    try {
-      [repoInfoRaw, viewerRaw] = await Promise.all([
-        runGh(["repo", "view", "--json", "owner,name"], cwd, controller.signal),
-        runGh(["api", "user", "--cache", "10m"], cwd, controller.signal),
-      ]);
-    } catch (error) {
-      if (controller.signal.aborted) return failed(`gh did not answer in ${deadlineMs / 1000} s`);
-      throw error;
-    }
+    const [repoInfoRaw, viewerRaw] = await Promise.all([
+      runGh(["repo", "view", "--json", "owner,name"], cwd, controller.signal),
+      runGh(["api", "user", "--cache", "10m"], cwd, controller.signal),
+    ]);
+    if (repoInfoRaw === null || viewerRaw === null) return failed(`gh did not answer in ${deadlineMs / 1000} s`);
     const repoInfo = JSON.parse(repoInfoRaw);
     const owner = typeof repoInfo.owner === "string" ? repoInfo.owner : repoInfo.owner?.login;
     const repo = owner && repoInfo.name ? `${owner}/${repoInfo.name}` : null;
@@ -152,8 +173,7 @@ export async function fetchGithubActivityForBrowser({ cwd, deadlineMs = GITHUB_S
         `repos/${repo}/commits`,
         "--method",
         "GET",
-        "--cache",
-        "10m",
+        // No --cache: an export right after a push must see the new commits.
         "-F",
         `author=${viewer}`,
         "-F",
