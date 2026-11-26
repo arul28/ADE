@@ -26,18 +26,28 @@ function otherMachine(bytes: Buffer) {
     mimeType: "image/png",
     availability: "available",
     metadata: { turnId: "turn-1" },
+    createdAt: "2026-11-25T10:00:00.000Z",
+  } as unknown as ComputerUseArtifactView;
+  // An earlier turn's screenshot, filed before the one above.
+  const older = {
+    ...remote,
+    id: "remote-older",
+    title: "Before the change",
+    uri: ".ade/artifacts/computer-use/older.png",
+    metadata: { turnId: "turn-0" },
+    createdAt: "2026-11-25T09:00:00.000Z",
   } as unknown as ComputerUseArtifactView;
   const calls: CtoRemoteActionCall[] = [];
   const runAction = async (_machine: CtoMachineTarget, call: CtoRemoteActionCall): Promise<unknown> => {
     calls.push(call);
-    if (call.action === "listArtifacts") return [remote];
+    if (call.action === "listArtifacts") return [remote, older];
     const offset = Number(call.args?.offset ?? 0);
     const end = Math.min(bytes.length, offset + 4);
     // Let the other caller run between slices, as a real network round trip does.
     await new Promise((resolve) => setImmediate(resolve));
     return { data: bytes.subarray(offset, end).toString("base64"), totalSize: bytes.length };
   };
-  return { remote, calls, runAction };
+  return { remote, older, calls, runAction };
 }
 
 describe("importRemoteChatProof", () => {
@@ -98,7 +108,32 @@ describe("importRemoteChatProof", () => {
     expect(later.shown.map((item) => item.artifactId)).toEqual([copy.id]);
     expect(machine.calls.filter((call) => call.action === "readArtifactRange")).toHaveLength(slicesRead);
 
-    // That machine goes to sleep: the listing fails, and the copy still comes back, said to be one.
+    // The CTO also pulls the earlier turn, so its copy is filed here last.
+    const earlier = await importRemoteChatProof({
+      broker,
+      runAction: machine.runAction,
+      machine: studio,
+      chatSessionId: "child-chat",
+      ctoSessionId: "cto-chat",
+      selection: { turnId: "turn-0" },
+      scratchDir: path.join(projectRoot, ".ade", "tmp", "cto-proof"),
+      logger,
+    });
+    expect(earlier.shown).toHaveLength(1);
+
+    // That machine goes to sleep: the listing fails, and the copies still come
+    // back, said to be copies, the newest by when that machine filed them.
+    const asleepLatest = await importRemoteChatProof({
+      broker,
+      runAction: async () => { throw new Error("Studio is offline."); },
+      machine: studio,
+      chatSessionId: "child-chat",
+      ctoSessionId: "cto-chat",
+      selection: "latest",
+      scratchDir: path.join(projectRoot, ".ade", "tmp", "cto-proof"),
+      logger,
+    });
+    expect(asleepLatest.shown.map((item) => item.artifactId)).toEqual([copy.id]);
     const asleep = await importRemoteChatProof({
       broker,
       runAction: async () => { throw new Error("Studio is offline."); },

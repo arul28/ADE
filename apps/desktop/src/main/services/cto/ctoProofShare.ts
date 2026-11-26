@@ -489,9 +489,13 @@ function copiesPulledBefore(args: {
     if (from?.machineId !== args.machine.machineId || from?.chatSessionId !== args.chatSessionId) return [];
     if (row.availability === "missing_file") return [];
     // Selected by the source turn, which the copy keeps in `importedFrom`.
-    return [{ ...row, metadata: { ...row.metadata, turnId: typeof from.turnId === "string" ? from.turnId : undefined } }];
+    const filedThere = typeof from.createdAt === "string" ? from.createdAt : row.createdAt;
+    return [{ ...row, createdAt: filedThere, metadata: { ...row.metadata, turnId: typeof from.turnId === "string" ? from.turnId : undefined } }];
   });
   if (!copies.length) return null;
+  // Newest first by when the other machine filed each one, the order its own
+  // listing has; the order they were pulled here says nothing about that.
+  copies.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const { picked, more } = selectChatProof(copies, args.selection, args.limit, args.skip);
   return {
     shown: picked.map((row) => shown(row, {
@@ -555,6 +559,7 @@ async function importOne(args: {
           artifactId: artifact.id,
           chatSessionId: args.chatSessionId,
           ...(turnIdOf(artifact) ? { turnId: turnIdOf(artifact) } : {}),
+          ...(typeof artifact.createdAt === "string" ? { createdAt: artifact.createdAt } : {}),
         },
       },
       toolName: "getChatProof",
