@@ -756,14 +756,42 @@ struct WorkSessionDestinationView: View {
   /// through the seed, the in-view latch, and finally the durable sync cache so
   /// the controls survive both the rebuild and any transient nil.
   var composerChatSummary: AgentChatSessionSummary? {
-    chatSummary
+    let summary = chatSummary
       ?? initialChatSummary
       ?? lastKnownChatSummary
       ?? syncService.chatSummaryCache[sessionId]
-      // A chat on another machine has no host summary on this phone, however
-      // it was opened (Hub, Work, a notification): its machine's roster row
-      // names the provider and model.
-      ?? syncService.remoteMachineRosterChat(sessionId: sessionId)?.rosterChatSummary
+    // While this chat's ADE Cloud computer is not awake, the settings it saved
+    // at rest are newer than a summary this phone read before it slept
+    // (another device may have changed them since). A pick from this phone
+    // goes to the computer, so it is awake again before its answer shows.
+    let resting = restingCloudModelCatalog != nil
+    if summary != nil && !resting { return summary }
+    // A chat on another machine has no host summary on this phone, however
+    // it was opened (Hub, Work, a notification): its machine's roster row
+    // names the provider and model.
+    let roster = syncService.remoteMachineRosterChat(sessionId: sessionId)
+    guard resting else { return roster?.rosterChatSummary }
+    return withSavedCloudSettings(summary ?? roster?.rosterChatSummary, roster: roster)
+  }
+
+  /// The summary with the model, preset, thinking level and Fast that the
+  /// chat's saved row carries, each only when the row has it.
+  private func withSavedCloudSettings(
+    _ summary: AgentChatSessionSummary?,
+    roster: RemoteRosterChat?
+  ) -> AgentChatSessionSummary? {
+    guard var summary,
+          let settings = roster?.savedSettings, !settings.isEmpty,
+          let saved = roster?.rosterChatSummary
+    else { return summary }
+    if settings["modelId"] != nil, let modelId = saved.modelId {
+      summary.modelId = modelId
+      if !saved.model.isEmpty { summary.model = saved.model }
+    }
+    if settings["presetId"] != nil { summary.presetId = saved.presetId }
+    if settings["reasoningEffort"] != nil { summary.reasoningEffort = saved.reasoningEffort }
+    if settings["fastMode"] != nil { summary.fastMode = saved.fastMode }
+    return summary
   }
 
   var cursorCloudMirrorWatchKey: String {
