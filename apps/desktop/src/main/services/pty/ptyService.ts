@@ -10891,6 +10891,17 @@ export function createPtyService({
       return count;
     },
 
+    /** Reconciliation can mark a row detached before the owning PTY exits. */
+    listDetachedLiveSessionsForLane(laneId: string): TerminalSessionSummary[] {
+      const rows: TerminalSessionSummary[] = [];
+      for (const entry of ptys.values()) {
+        if (entry.disposed || entry.laneId !== laneId) continue;
+        const row = sessionService.get(entry.sessionId);
+        if (row?.status === "detached" && row.endedAt && !row.archivedAt && row.laneId === laneId) rows.push(row);
+      }
+      return rows;
+    },
+
     // Used by project-context rebalancing to decide whether a project still
     // has user work that would be destroyed by eviction. ANY live PTY (running
     // CLI, shell, agent process) protects the whole context.

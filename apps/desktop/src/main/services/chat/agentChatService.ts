@@ -76015,10 +76015,12 @@ export function createAgentChatService(args: {
     const rows: TerminalSessionSummary[] = [];
     for (const managed of managedSessions.values()) {
       if (managed.closed || managed.deleted || managed.session.laneId !== laneId) continue;
-      if (!sessionTurnRunning(managed) && !hasRuntimeActiveWorkload(managed.runtime)) continue;
+      const running = sessionTurnRunning(managed) || hasRuntimeActiveWorkload(managed.runtime);
+      const backgroundWork = runtimeBackgroundWork(managed.runtime);
+      if (!running && backgroundWork.workingCount === 0) continue;
       const row = sessionService.get(managed.session.id);
       if (row?.archivedAt && !row.endedAt && row.laneId === laneId) {
-        rows.push({ ...row, runtimeState: "running" });
+        rows.push({ ...row, runtimeState: running ? "running" : "idle", backgroundWork });
       }
     }
     return rows;

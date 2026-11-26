@@ -7319,6 +7319,15 @@ describe("ptyService", () => {
         endedAt: "2026-03-17T00:01:00.000Z",
       });
 
+      const branchWork = service.enrichSessions(service.listDetachedLiveSessionsForLane("lane-1"));
+      expect(branchWork).toEqual([expect.objectContaining({
+        id: sessionId,
+        status: "running",
+        ptyId,
+        endedAt: null,
+      })]);
+      expect(service.listDetachedLiveSessionsForLane("another-lane")).toEqual([]);
+
       mockPty._emitter.emit("data", "still running\n");
 
       expect(sessionService.reattach).toHaveBeenCalledWith({

@@ -150,8 +150,9 @@ function ensureAdoptionFeed(pin: OpenProjectBinding): void {
   }, pin);
 }
 
-function dismissAdoption(pin: OpenProjectBinding, laneId: string): void {
-  if (recentAdoptions.delete(adoptionKey(pin.key, laneId))) emitAdoptionChange();
+function dismissAdoption(pin: OpenProjectBinding, laneId: string, adoption: BranchAdoption): void {
+  const key = adoptionKey(pin.key, laneId);
+  if (recentAdoptions.get(key) === adoption && recentAdoptions.delete(key)) emitAdoptionChange();
 }
 
 function subscribeAdoptions(listener: () => void): () => void {
@@ -208,7 +209,7 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
         mode: "existing",
         ...(acknowledgeActiveWork ? { acknowledgeActiveWork: true } : {}),
       }, pin);
-      dismissAdoption(pin, laneId);
+      dismissAdoption(pin, laneId, adoption);
       await refreshLanes({ includeStatus: true });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -234,7 +235,7 @@ function LaneBranchAdoptedChip({ laneId, adoption, pin }: { laneId: string; adop
           disabled: pending,
           onClick: () => { void switchBack(false); },
         }]}
-        onDismiss={() => dismissAdoption(pin, laneId)}
+      onDismiss={() => dismissAdoption(pin, laneId, adoption)}
       />
       {activeWorkPrompt ? (
         <LaneActiveWorkDialog
@@ -412,7 +413,14 @@ export function LaneBranchComposerChip({
   }, [drift, driftKind]);
 
   if (!visible || !drift) {
-    return adoption && laneId && pin ? <LaneBranchAdoptedChip key={adoptionKey(pin.key, laneId)} laneId={laneId} adoption={adoption} pin={pin} /> : null;
+    return adoption && laneId && pin ? (
+      <LaneBranchAdoptedChip
+        key={JSON.stringify([adoptionKey(pin.key, laneId), adoption.at, adoption.previousBranchRef, adoption.branchRef])}
+        laneId={laneId}
+        adoption={adoption}
+        pin={pin}
+      />
+    ) : null;
   }
 
   const busy = pending != null;

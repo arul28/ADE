@@ -1583,6 +1583,7 @@ export type LaneDeleteTeardownDeps = {
   ptyService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => number;
+    listDetachedLiveSessionsForLane?: (laneId: string) => TerminalSessionSummary[];
   };
   fileWatcherService?: {
     countActiveForWorkspace: (workspaceId: string) => number;
@@ -2835,13 +2836,14 @@ export function createLaneService({
       [laneId],
     );
     const archivedWorkingChats = teardownDeps?.agentChatService?.listArchivedWorkingChats?.(laneId) ?? [];
+    const detachedLiveSessions = teardownDeps?.ptyService?.listDetachedLiveSessionsForLane?.(laneId) ?? [];
     return [
-      ...archivedWorkingChats.map((row): LaneBranchActiveWorkItem => ({
+      ...[...archivedWorkingChats, ...detachedLiveSessions].map((row): LaneBranchActiveWorkItem => ({
         id: row.id,
-        kind: "chat",
+        kind: sessionActiveKind(row.toolType),
         toolType: row.toolType ?? null,
         title: row.title || row.id,
-        status: row.status,
+        status: "running",
       })),
       ...terminalRows.map((row): LaneBranchActiveWorkItem => ({
         id: row.id,

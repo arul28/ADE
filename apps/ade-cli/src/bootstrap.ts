@@ -2268,6 +2268,7 @@ export async function createAdeRuntime(args: {
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+      listDetachedLiveSessionsForLane: ptyService.listDetachedLiveSessionsForLane,
     };
     laneTeardownDeps.sessionService = sessionService;
     // Lanes archived before archive took their chats along keep those chats

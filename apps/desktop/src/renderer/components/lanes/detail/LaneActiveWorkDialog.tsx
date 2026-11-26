@@ -44,7 +44,7 @@ export function classifyLaneActiveWork(
 ): LaneActiveWorkRow[] {
   const rank = { running: 0, needs_you: 1, open: 2 } as const;
   const rows = sessions
-    .filter((session) => !session.endedAt && (!session.archivedAt || session.runtimeState === "running"))
+    .filter((session) => !session.endedAt && (!session.archivedAt || session.runtimeState === "running" || sessionIsWorking(session)))
     .map((session): LaneActiveWorkRow => ({
       id: session.id,
       title: primarySessionLabel(session),

@@ -20,6 +20,7 @@ let emitLifecycle: (event: LaneLifecycleEvent) => void = () => undefined;
 
 /** The tab's copy: its lanes' branches are read and switched there. */
 const TAB_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+const ACTIVE_WORK_REFUSAL = "This lane has active sessions. Confirm the branch switch to continue.";
 
 function seedLane(overrides: Partial<LaneSummary>) {
   useAppStore.setState({
@@ -51,9 +52,9 @@ afterEach(() => {
 });
 
 describe("LaneBranchComposerChip", () => {
-  it("switches back after stopping the background work from a settled chat", async () => {
+  it.each(["settled", "archived"] as const)("switches back after stopping the background work from a %s chat", async (filing) => {
     seedLane({ branchRef: "ade/follow-up" });
-    lanesApi.switchBranch.mockRejectedValueOnce(new Error("This lane has active sessions. Confirm the branch switch to continue."));
+    lanesApi.switchBranch.mockRejectedValueOnce(new Error(ACTIVE_WORK_REFUSAL));
     sessionsApi.list.mockResolvedValue([{
       id: "settled-chat",
       laneId: "lane-1",
@@ -61,7 +62,7 @@ describe("LaneBranchComposerChip", () => {
       toolType: "codex-chat",
       status: "running",
       runtimeState: "idle",
-      settledAt: "2026-11-26T15:00:00Z",
+      ...(filing === "settled" ? { settledAt: "2026-11-26T15:00:00Z" } : { archivedAt: "2026-11-26T15:00:00Z" }),
       backgroundWork: { workingCount: 1, monitoringCount: 0 },
     }]);
     agentChatApi.interrupt.mockImplementation(async () => { sessionsApi.list.mockResolvedValue([]); });
@@ -121,5 +122,32 @@ describe("LaneBranchComposerChip", () => {
       resolution: "keep-head",
       expectedHeadBranchRef: "ade/elsewhere",
     }, TAB_PIN));
+  });
+
+  it("clears an open branch confirmation when another branch is adopted in the same lane", async () => {
+    seedLane({ branchRef: "ade/second" });
+    lanesApi.switchBranch.mockRejectedValueOnce(new Error(ACTIVE_WORK_REFUSAL));
+    render(<LaneBranchComposerChip laneId="lane-1" />);
+    const event = {
+      type: "lane-branch-updated",
+      laneId: "lane-1",
+      laneName: "cu md",
+      previousBranchRef: "ade/first",
+      branchRef: "ade/second",
+      adoptedByAgent: true,
+    } as const;
+    act(() => emitLifecycle(event));
+    fireEvent.click(await screen.findByRole("button", { name: /Switch back/ }));
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
+
+    act(() => {
+      seedLane({ branchRef: "ade/third" });
+      emitLifecycle({ ...event, previousBranchRef: "ade/second", branchRef: "ade/third" });
+    });
+
+    expect((await screen.findByTestId("lane-branch-adopted-chip")).textContent).toContain("ade/third");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(lanesApi.switchBranch).toHaveBeenCalledTimes(1);
+    act(() => emitLifecycle({ ...event, previousBranchRef: "ade/third", branchRef: "ade/fourth", adoptedByAgent: false }));
   });
 });
