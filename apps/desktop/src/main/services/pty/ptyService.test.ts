@@ -7052,7 +7052,7 @@ describe("ptyService", () => {
   });
 
   describe("dispose", () => {
-    it("keeps disposed terminals in open work until the last process seen during shutdown exits", async () => {
+    it.each([false, true])("keeps closing terminals in open work until the last process exits (scan timeout: %s)", async (scanTimeout) => {
       vi.useFakeTimers();
       setPlatform("darwin");
       let jobAlive = true;
@@ -7060,12 +7060,13 @@ describe("ptyService", () => {
         if (signal !== 0 || (jobAlive && (pid === 56789 || pid === -56789))) return true;
         throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
       });
-      let scanned = false;
+      let scans = 0;
       mocks.execFile.mockImplementation((...args: unknown[]) => {
         const callback = args.at(-1);
-        const rows = scanned ? "56789 1 56789 45678\n" : "12345 1 12345 45678\n45678 12345 45678 45678\n";
-        scanned = true;
-        if (typeof callback === "function") callback(null, rows, "");
+        const rows = scans++ ? "56789 1 56789 45678\n" : "12345 1 12345 45678\n45678 12345 45678 45678\n";
+        if (typeof callback === "function") {
+          callback(scanTimeout && scans === 2 ? new Error("ps timed out") : null, rows, "");
+        }
         return { kill: vi.fn() };
       });
       try {
@@ -7073,13 +7074,22 @@ describe("ptyService", () => {
         const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "Shell", cols: 80, rows: 24 });
         expect(service.dispose({ ptyId, sessionId }).disposed).toBe(true);
         const onReceipt = vi.fn();
-        const confirmation = service.disposeWithExitReceipt({ ptyId, sessionId }).then(onReceipt);
+        const initialConfirmation = service.disposeWithExitReceipt({ ptyId, sessionId });
 
         await vi.advanceTimersByTimeAsync(1_500);
         expect(sessionService.end).toHaveBeenCalledWith(expect.objectContaining({ sessionId, status: "disposed" }));
+        if (scanTimeout) {
+          await expect(initialConfirmation).resolves.toMatchObject({ processTreeExited: false });
+          // Wait's next lane read retries the scan while retaining the groups from the first scan.
+          await vi.advanceTimersByTimeAsync(2_000);
+        }
         expect(service.listAdditionalLiveSessionsForLane("lane-1")).toEqual([
           expect.objectContaining({ id: sessionId, ptyId, ptyExitPending: true, endedAt: null }),
         ]);
+        const confirmation = (scanTimeout
+          ? service.disposeWithExitReceipt({ ptyId, sessionId })
+          : initialConfirmation).then(onReceipt);
+        await vi.advanceTimersByTimeAsync(100);
         expect(onReceipt).not.toHaveBeenCalled();
 
         jobAlive = false;
@@ -7094,9 +7104,12 @@ describe("ptyService", () => {
       }
     });
 
-    it("keeps a closed Windows terminal in open work while taskkill is in flight", async () => {
+    it.each([false, true])("keeps a closed Windows terminal in open work until exit is confirmed (taskkill failure: %s)", async (taskkillFailed) => {
       setPlatform("win32");
-      const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      vi.useFakeTimers();
+      let childAlive = taskkillFailed;
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (signal === 0 && pid === 45678 && childAlive) return true;
         throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
       });
       try {
@@ -7111,13 +7124,29 @@ describe("ptyService", () => {
         expect(mockPty.kill).not.toHaveBeenCalled();
 
         const taskkill = mocks.execFile.mock.calls.find(([command]) => command === "taskkill.exe");
-        const complete = taskkill?.at(-1) as (error: null, stdout: string, stderr: string) => void;
-        complete(null, "", "");
-        await expect(confirmation).resolves.toMatchObject({ processTreeExited: true });
+        const complete = taskkill?.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+        complete(taskkillFailed ? new Error("taskkill timed out") : null, "", "");
+        await expect(confirmation).resolves.toMatchObject({ processTreeExited: !taskkillFailed });
+        if (taskkillFailed) {
+          mocks.execFile.mockImplementationOnce((...args: unknown[]) => {
+            const callback = args.at(-1);
+            if (typeof callback === "function") callback(null, "45678 12345 0 0\n", "");
+            return { kill: vi.fn() };
+          });
+          const onReceipt = vi.fn();
+          const retry = service.disposeWithExitReceipt({ ptyId, sessionId }).then(onReceipt);
+          await vi.advanceTimersByTimeAsync(100);
+          expect(onReceipt).not.toHaveBeenCalled();
+          childAlive = false;
+          await vi.advanceTimersByTimeAsync(100);
+          await retry;
+          expect(onReceipt).toHaveBeenCalledWith(expect.objectContaining({ processTreeExited: true }));
+        }
         expect(service.listAdditionalLiveSessionsForLane("lane-1")).toEqual([]);
       } finally {
         kill.mockRestore();
         setPlatform(originalPlatform);
+        vi.useRealTimers();
       }
     });
 
