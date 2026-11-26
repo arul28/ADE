@@ -635,3 +635,283 @@ func ctoThreadHidesCard(_ card: WorkEventCardModel) -> Bool {
   if card.kind == "ctoFresh" { return true }
   return card.noticeKind == "rate_limit" && (card.body ?? "").hasPrefix("Approaching")
 }
+
+// MARK: - Waiting on you
+
+private struct CtoStoreKey: EnvironmentKey {
+  static let defaultValue: CtoStore? = nil
+}
+
+extension EnvironmentValues {
+  /// Set on the CTO thread only: the "Waiting on you" card reads its needs.
+  var ctoStore: CtoStore? {
+    get { self[CtoStoreKey.self] }
+    set { self[CtoStoreKey.self] = newValue }
+  }
+}
+
+extension View {
+  /// Keeps the CTO store's needs fresh while the CTO thread is on screen, and
+  /// reports whether the "Waiting on you" card shows. A no-op off the CTO
+  /// thread (no `ctoStore` in the environment).
+  ///
+  /// Reads on appear and on app foreground, when a CTO turn ends, shortly
+  /// after chat events settle, and every 60 s while on screen with the app
+  /// active (children move without CTO events). Nothing runs while hidden.
+  func ctoNeedsFeed(sessionId: String, turnActive: Bool, eventToken: Int, shown: Binding<Bool>) -> some View {
+    modifier(CtoNeedsFeed(sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: shown))
+  }
+}
+
+private struct CtoNeedsFeed: ViewModifier {
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  @Environment(\.ctoStore) private var store
+  @Environment(\.ctoLiveModel) private var live
+
+  func body(content: Content) -> some View {
+    if let store, let live {
+      content.modifier(CtoNeedsFeedAwake(live: live, store: store, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    } else if let store {
+      content.modifier(CtoNeedsFeedActive(store: store, asleep: false, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    } else {
+      content
+    }
+  }
+}
+
+/// Watches the CTO's sleep: the card hides while it sleeps, so the composer keeps no room for it.
+private struct CtoNeedsFeedAwake: ViewModifier {
+  @ObservedObject var live: CtoLiveModel
+  let store: CtoStore
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  func body(content: Content) -> some View {
+    content.modifier(CtoNeedsFeedActive(store: store, asleep: live.asleep, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+  }
+}
+
+private struct CtoNeedsFeedActive: ViewModifier {
+  @ObservedObject var store: CtoStore
+  let asleep: Bool
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  @Environment(\.scenePhase) private var scenePhase
+  @State private var visible = false
+
+  private var active: Bool { visible && scenePhase == .active }
+
+  func body(content: Content) -> some View {
+    content
+      .onAppear { visible = true }
+      .onDisappear { visible = false }
+      // The card's own condition (`CtoWaitingOnYouSlot`).
+      .onChange(of: !asleep && (!store.needs.isEmpty || store.needsFailed), initial: true) { _, show in
+        if shown != show { shown = show }
+      }
+      // Appear, foreground, then every 60 s while on screen and active.
+      .task(id: "\(sessionId)|\(active)") {
+        guard active else { return }
+        await store.loadNeeds(force: true)
+        while !Task.isCancelled {
+          try? await Task.sleep(nanoseconds: 60_000_000_000)
+          guard !Task.isCancelled else { return }
+          await store.loadNeeds(force: true)
+        }
+      }
+      // Chat events for the CTO: one read once they settle (throttled).
+      .task(id: eventToken) {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard !Task.isCancelled, active else { return }
+        await store.loadNeeds()
+      }
+      .onChange(of: turnActive) { wasActive, isActive in
+        guard wasActive, !isActive, active else { return }
+        Task { await store.loadNeeds(force: true) }
+      }
+  }
+}
+
+/// The foot of the CTO thread, above the composer: one row per chat the CTO
+/// started that needs the person, with the CTO's line saying what to do. A
+/// row opens that chat. Draws nothing off the CTO thread or with nothing
+/// waiting; `ctoNeedsFeed` keeps it fresh.
+struct CtoWaitingOnYouSlot: View {
+  @Environment(\.ctoStore) private var store
+  @Environment(\.ctoLiveModel) private var live
+
+  var body: some View {
+    if let store, let live {
+      CtoWaitingOnYouAwake(live: live, store: store)
+    } else if let store {
+      CtoWaitingOnYouCard(store: store)
+    }
+  }
+}
+
+/// The card hides while the CTO sleeps; its lines come back when it wakes.
+private struct CtoWaitingOnYouAwake: View {
+  @ObservedObject var live: CtoLiveModel
+  let store: CtoStore
+
+  var body: some View {
+    if !live.asleep {
+      CtoWaitingOnYouCard(store: store)
+    }
+  }
+}
+
+private struct CtoWaitingOnYouCard: View {
+  @ObservedObject var store: CtoStore
+
+  @Environment(\.ctoLiveModel) private var live
+  /// "+N more" opens the rest in place, as on desktop.
+  @State private var expanded = false
+
+  private static let maxRows = 3
+
+  private var accent: Color { live?.look.ctoAccent ?? ADEColor.ctoAccent }
+
+  var body: some View {
+    if !store.needs.isEmpty {
+      card
+    } else if store.needsFailed {
+      failedCard
+    }
+  }
+
+  private var header: some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(accent)
+        .frame(width: 6, height: 6)
+      Text("Waiting on you")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 0)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+
+  /// The lines could not be read and none are known: say so, with a retry.
+  private var failedCard: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      header
+      HStack(spacing: 10) {
+        Text("Couldn't load what's waiting on you.")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+        Button("Retry") {
+          ADEHaptics.light()
+          Task { await store.loadNeeds(force: true) }
+        }
+        .font(.caption.weight(.semibold))
+        .buttonStyle(.plain)
+        .foregroundStyle(accent)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cto.WaitingOnYou")
+  }
+
+  private var card: some View {
+    let rows = expanded ? store.needs : Array(store.needs.prefix(Self.maxRows))
+    let more = store.needs.count - rows.count
+    return VStack(alignment: .leading, spacing: 0) {
+      header
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+
+      if expanded {
+        // Every line: it scrolls past a few rows, so the composer stays on screen.
+        ScrollView {
+          rowList(rows)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: 220)
+      } else {
+        rowList(rows)
+      }
+
+      if more > 0 {
+        Button {
+          ADEHaptics.light()
+          withAnimation(.snappy(duration: 0.2)) { expanded = true }
+        } label: {
+          Text("+\(more) more")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .padding(.horizontal, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the rest of the chats waiting on you")
+      }
+    }
+    .padding(.bottom, 4)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cto.WaitingOnYou")
+  }
+
+  private func rowList(_ rows: [CtoNeed]) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(Array(rows.enumerated()), id: \.element.id) { index, need in
+        if index > 0 {
+          Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5).padding(.horizontal, 14)
+        }
+        row(need)
+      }
+    }
+  }
+
+  private func row(_ need: CtoNeed) -> some View {
+    Button {
+      ADEHaptics.light()
+      store.openNeed(need)
+    } label: {
+      HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 1) {
+          Text(need.childTitle.isEmpty ? "Untitled chat" : need.childTitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+          Text(need.line)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+        }
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(need.childTitle.isEmpty ? "Untitled chat" : need.childTitle): \(need.line)")
+    .accessibilityHint("Opens that chat")
+  }
+}

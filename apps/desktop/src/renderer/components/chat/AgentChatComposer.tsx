@@ -8401,9 +8401,12 @@ function AgentChatComposerImpl({
     return "Send";
   }
 
+  // The box's side inset. The slot above the box takes the same one, so the two stay one width.
+  const composerInsetClassName = layoutVariant === "grid-tile" ? "mx-0" : "mx-3";
   const composerFrameClassName = cn(
-    "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
-    layoutVariant === "grid-tile" ? "m-0" : "",
+    "mb-3 rounded-[var(--chat-radius-shell)]",
+    composerInsetClassName,
+    layoutVariant === "grid-tile" ? "mb-0" : "",
   );
   const issueContextMenu = (
     <ComposerAnchorMenu
@@ -9372,13 +9375,16 @@ function AgentChatComposerImpl({
         {sendBlocked && sendBlockedReason ? `Send is off. ${sendBlockedReason}` : null}
       </div>
       {aboveComposerSlot ? (
-        <div
-          data-composer-above-slot="true"
-          // A slot whose parts all render nothing (an ADE Cloud lane with no change running) takes no room.
-          // Its parts stack (a sign-in card above a cloud lane's card).
-          className={cn("mb-1.5 flex min-w-0 flex-col gap-1.5 empty:hidden", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
-        >
-          {aboveComposerSlot}
+        // Same frame as the box below: its side inset outside, its column width inside.
+        <div className={cn("min-w-0", composerInsetClassName)}>
+          <div
+            data-composer-above-slot="true"
+            // A slot whose parts all render nothing (an ADE Cloud lane with no change running) takes no room.
+            // Its parts stack (a sign-in card above a cloud lane's card).
+            className={cn("mb-1.5 flex min-w-0 flex-col gap-1.5 empty:hidden", layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]")}
+          >
+            {aboveComposerSlot}
+          </div>
         </div>
       ) : null}
       <BorderBeam

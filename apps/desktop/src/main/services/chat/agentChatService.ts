@@ -1414,6 +1414,8 @@ import {
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
 import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
+import type { CtoStallJudge } from "../cto/ctoStallJudge";
+import { createCtoStallJudgeHost } from "../cto/ctoStallJudgeHost";
 import { createChatWebhookRegistry, type ChatWebhookRegistry } from "./chatWebhookRegistry";
 import { createAgentCliTyping } from "./agentCliTyping";
 import { createAgentCliWakes } from "./agentCliWakes";
@@ -14361,6 +14363,7 @@ export function createAgentChatService(args: {
   // `emitChatEvent` signals it; events emitted before it exists need no
   // signal, since `start()` checks every persisted waiter once ready.
   let chatWaits: ChatWaitRegistry | null = null;
+  let ctoStallJudge: CtoStallJudge | null = null;
   let chatWebhooks: ChatWebhookRegistry | null = null;
   const claudeRecurringCronTtlMs = 7 * 24 * 60 * 60 * 1_000;
   let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
@@ -16195,6 +16198,7 @@ export function createAgentChatService(args: {
         postInterimReply: ({ text }) => postCtoInterimReply({ sessionId, text }),
         endTurnQuietly: async () => endCtoTurnQuietly({ sessionId }),
         reactToMessage: async ({ emoji }) => reactToCtoMessage({ sessionId, emoji }),
+        setNeed: ({ childSessionId, line }) => setCtoNeed({ ctoSessionId: sessionId, childSessionId, line }),
         listChats: listSessions,
         getChatStatus: getSessionSummary,
         armChatWait: (args) => chatWaitRegistry.arm(args),
@@ -26579,6 +26583,7 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     chatWebhooks?.signal(managed.session.id, event);
+    ctoStallJudge?.observe(managed.session.id);
     if (event.type === "tool_call" || event.type === "command" || event.type === "file_change" || event.type === "subagent_started") {
       managed.autoTitleRunUsedTools = true;
     }
@@ -73351,6 +73356,54 @@ export function createAgentChatService(args: {
   chatWebhooks = chatWebhookRegistry;
   chatWebhookRegistry.start();
 
+  // --- CTO stall judge ------------------------------------------------------
+  // Chats the CTO started that stopped moving wake the CTO once ("Stall
+  // nudge:"); the CTO's "Waiting on you" lines live there too
+  // (`cto/ctoStallJudgeHost.ts`).
+  const ctoStallJudgeHost = createCtoStallJudgeHost({
+    logger,
+    db: db ?? null,
+    analytics: args.analytics ?? null,
+    loadedChat: (sessionId) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return null;
+      return {
+        parentId: managed.session.orchestrationParentSessionId ?? null,
+        identityKey: managed.session.identityKey ?? null,
+        deleted: Boolean(managed.deleted),
+      };
+    },
+    loadedChatIds: () => managedSessions.keys(),
+    pendingRequests: (sessionId) => {
+      const managed = managedSessions.get(sessionId);
+      return managed ? collectPendingInputRequests(managed) : undefined;
+    },
+    ctoBusy: (ctoSessionId) => {
+      const cto = managedSessions.get(ctoSessionId);
+      if (!cto) return false;
+      return cto.session.status === "active" || runtimeMidTurn(cto) || collectPendingInputRequests(cto).length > 0;
+    },
+    sessionRow: (sessionId) => sessionService.get(sessionId),
+    summary: (sessionId) => getSessionSummary(sessionId),
+    listChats: () => listSessions(undefined, { includeIdentity: false, includeArchived: false }),
+    listCtoChats: () => listIdentitySessions("cto"),
+    ownedByAnotherBrain: (sessionId) => chatOwnedByAnotherBrain(sessionId),
+    prForLane: (laneId) => prService?.getForLane(laneId) ?? null,
+    defaultTitle: defaultChatSessionTitle,
+    wakeCto: async (ctoSessionId, text) => {
+      await messageSession({
+        sessionId: ctoSessionId,
+        kind: "wake",
+        text,
+        // ADE wrote this, not the person: it must not clear the CTO's "Needs you".
+        metadata: { hostContinuation: { reason: "cto_stall_nudge" } },
+      }, { trustedSpawnCompletion: true });
+    },
+  });
+  ctoStallJudge = ctoStallJudgeHost.judge;
+  ctoStallJudgeHost.judge.start();
+  const { getCtoNeeds, setCtoNeed } = ctoStallJudgeHost;
+
   const getSessionSummary = async (sessionId: string): Promise<AgentChatSessionSummary | null> => {
     await scheduledWorkReady;
     const trimmed = sessionId.trim();
@@ -78699,6 +78752,7 @@ export function createAgentChatService(args: {
     restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
+    ctoStallJudge?.dispose();
     chatWebhooks?.dispose();
     if (heldCodexTerminalTimer) clearInterval(heldCodexTerminalTimer);
     staleRunSweep.dispose();
@@ -85547,6 +85601,8 @@ ${schedule.prompt}`
     endCtoTurnQuietly,
     reactToCtoMessage,
     getCtoAttention,
+    getCtoNeeds,
+    setCtoNeed,
     setCtoAccountCopyHooks,
     startFreshCtoThread,
     isCtoThreadBusy,

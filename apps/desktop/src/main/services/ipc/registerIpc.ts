@@ -738,6 +738,7 @@ import type {
   SyncRoleSnapshot,
   SyncTransferReadiness,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoUpdateIdentityArgs,
@@ -14342,6 +14343,12 @@ export function registerIpc({
     return service
       ? await service.getCtoAttention()
       : { status: "unknown", awaitingInput: false, since: null };
+  });
+
+  /** Read-only: the CTO's "Waiting on you" lines for its chats that need the person. */
+  handle(IPC.ctoGetNeeds, async (): Promise<CtoNeedsSnapshot> => {
+    const service = getCtx().agentChatService;
+    return service ? await service.getCtoNeeds() : { needs: [] };
   });
 
   handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {

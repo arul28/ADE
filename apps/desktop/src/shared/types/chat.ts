@@ -657,7 +657,9 @@ export type AgentChatHostContinuationMetadata = {
      */
     | "cto_child_report"
     /** The person answered a card the agent posted (an ADE Cloud size request), or the change it asked for ended. */
-    | "card_answer";
+    | "card_answer"
+    /** ADE's stall judge telling the CTO a chat it started is stuck. */
+    | "cto_stall_nudge";
   /**
    * The ADE row's one line for `reason` (`HOST_CONTINUATION_REASON_LABEL`),
    * stamped by the host so clients need no table of their own. Older hosts
@@ -672,6 +674,7 @@ export type AgentChatHostContinuationReason = AgentChatHostContinuationMetadata[
 export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContinuationReason, string>> = {
   interrupted_turn_recovery: "Resuming your last request after a restart",
   stall_nudge: "Asked for a status check",
+  cto_stall_nudge: "A chat it started looks stuck",
   continuity_recovery: "Rebuilt this chat's thread from ADE history",
   plan_followup: "Sent your plan decision",
   background_work_ended: "A background job it was waiting on finished",

@@ -12363,6 +12363,24 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The CTO's children that need the person, each with one line from the
+  /// CTO. Goes to the CTO's home machine like the other CTO reads.
+  ///
+  /// Optional-gated (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`): callers
+  /// check `supportsRemoteAction("cto.getNeeds")` first, so an older brain
+  /// shows no card instead of an error.
+  func fetchCtoNeeds() async throws -> CtoNeedsSnapshot {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getNeeds",
+      // A background read: a slow answer must not drop the connection.
+      disconnectOnTimeout: false,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoNeedsSnapshot.self
+    )
+  }
+
   /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
   /// today's daily log. The host command is version-gated: older hosts respond
   /// with a command error, which callers surface as a quiet "not available"

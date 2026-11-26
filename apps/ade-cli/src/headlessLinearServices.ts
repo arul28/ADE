@@ -53,6 +53,7 @@ import type {
   GitHubRequestBudget,
   GitHubStatus,
   CtoAttentionState,
+  CtoNeedsSnapshot,
 } from "../../desktop/src/shared/types";
 import type {
   GithubService,
@@ -244,6 +245,8 @@ type HeadlessLinearServices = {
     ) => Promise<Record<string, unknown> | null>;
     /** Mirrors the desktop chat service so `cto_state.getAttention` resolves headlessly. */
     getCtoAttention: () => Promise<CtoAttentionState>;
+    /** Mirrors the desktop chat service so `cto_state.getNeeds` resolves headlessly. */
+    getCtoNeeds: () => Promise<CtoNeedsSnapshot>;
     getChatTranscript: (args: {
       sessionId: string;
       limit?: number;
@@ -3231,6 +3234,10 @@ function createHeadlessAgentChatService(
       // sessions never block on user input — there is no turn loop to block —
       // so "not waiting" is the truthful answer, not a placeholder.
       return { status: "idle", awaitingInput: false, since: null };
+    },
+    async getCtoNeeds() {
+      // Headless sessions start no children, so nothing waits on the person.
+      return { needs: [] };
     },
     async getChatTranscript({
       sessionId,

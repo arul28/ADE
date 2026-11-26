@@ -7260,6 +7260,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     // chat session as a side effect. Returns CtoAttentionState verbatim.
     return agentChatService.getCtoAttention();
   });
+  register("cto.getNeeds", { viewerAllowed: true }, async () => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    // Read-only, like `cto.getAttention`. Returns CtoNeedsSnapshot verbatim.
+    return agentChatService.getCtoNeeds();
+  });
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     // Returns the CtoMemorySnapshot the iOS client decodes (every field

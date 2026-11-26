@@ -387,6 +387,13 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // couldn't read the account yet (`failed`). Never the machine, the
   // repository, the notes, the conversation, or the routines.
   "cto_home_move",
+  // The CTO's stall judge: a wake about a stuck chat the CTO started
+  // (`cto_stall_nudge`, `completed` or `failed` when the CTO refused it), and
+  // the CTO handing one to the person with a "Waiting on you" line
+  // (`cto_need`, `started`). Never the chat, its title, the line, the stall
+  // kind, or the child's words.
+  "cto_stall_nudge",
+  "cto_need",
   // What became of a handoff's transcript replay. Cross-provider handoffs carry
   // the conversation as text, and the only product question is whether it
   // arrives: whole, in part, not at all, or only after ADE re-sent the message

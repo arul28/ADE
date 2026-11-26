@@ -2635,6 +2635,23 @@ one-hour deduplication key bounds it to 24 accepted events per outcome a day in
 theory; the realistic number is a handful a month. No ceiling was raised, and
 the dashboard spec is untouched.
 
+### The CTO's stall judge
+
+The brain that runs the CTO records two coarse facts from the stall judge
+(`cto/ctoStallJudgeHost.ts`, reported by `reportCtoStall` in
+`analytics/ctoStallProductAnalytics.ts`), each `ade_feature_used` with
+`feature: "cto"` and `surface: "api"`: `action: "cto_stall_nudge"` with
+`completed` (the CTO was woken about a stuck chat it started) or `failed` (the
+CTO refused the wake), and `action: "cto_need"` with `started` (the CTO handed
+a stuck chat to the person with a "Waiting on you" line). The product questions
+are whether nudges happen and how often the CTO hands a stall to the person
+instead of fixing it. Never the chat, its title, the line, the stall kind, or
+the child's words. Nudges are at least five minutes apart per CTO, and a
+per-outcome one-hour deduplication key bounds each to 24 accepted events a day;
+the realistic number is a few a day while a CTO runs children. Both carry
+`mode: "automatic"`, so they never count as a person using ADE. No ceiling was
+raised, and the dashboard spec is untouched.
+
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.

@@ -3255,6 +3255,7 @@ export type SyncRemoteCommandAction =
   | "cto.getState"
   | "cto.getMemory"
   | "cto.getAttention"
+  | "cto.getNeeds"
   | "cto.getHomeMachine"
   | "cto.setHomeMachine"
   | "cto.getLinearConnectionStatus"
