@@ -45,6 +45,7 @@ import {
 import { PairMachineForm } from "./PairMachineForm";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
+import { THIS_COMPUTER_OFFLINE_HINT } from "../../lib/thisComputerOffline";
 import {
   accountMachineForTarget as findAccountMachineForTarget,
   assignMachineSections,
@@ -1459,7 +1460,7 @@ export function RemoteTargetList({
               id: "machines-this-computer-offline",
               tone: "info",
               title: "This computer is offline",
-              detail: "ADE reconnects to these computers on its own when the internet is back.",
+              detail: `ADE reconnects to these computers on its own when the internet is back. ${THIS_COMPUTER_OFFLINE_HINT}`,
             }}
           />
         ) : null}

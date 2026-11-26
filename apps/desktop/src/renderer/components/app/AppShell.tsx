@@ -30,7 +30,7 @@ import type {
   SyncRoleSnapshot,
   SyncRouteHealth,
 } from "../../../shared/types";
-import { isAccountDirectoryNoReplyState } from "../../../shared/types/sync";
+import { isAccountDirectoryNoReply } from "../../../shared/types/sync";
 import {
   eventMatchesBinding,
   getEffectiveBinding,
@@ -519,7 +519,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const apply = (snapshot: SyncRoleSnapshot | null | undefined) => {
       if (cancelled) return;
       const next = snapshot?.routeHealth?.relay ?? null;
-      setAccountDirectoryNoReply(isAccountDirectoryNoReplyState(snapshot?.routeHealth?.accountDirectory?.state));
+      setAccountDirectoryNoReply(isAccountDirectoryNoReply(snapshot?.routeHealth?.accountDirectory));
       // getStatus rebuilds routeHealth.relay as a fresh object every call, so
       // committing it unconditionally would re-render the whole shell on every
       // peer/status push. Only the fields the banner reads matter here.

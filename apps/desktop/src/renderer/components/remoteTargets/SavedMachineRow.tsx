@@ -33,7 +33,7 @@ import {
   autoConnectOffReason,
   connectionStateLabel,
   formatLastSeen,
-  isReachabilityFailure,
+  connectNeverReachedMachine,
   isVersionSkewWarning,
   machineColorKey,
   selectMachineErrorCard,
@@ -270,7 +270,11 @@ export function SavedMachineRow({
   });
   // Offline, "can't reach it" is no news about the machine. Any other failure
   // (a refused pairing, a host key) is still the machine's and still shows.
-  const errorCard = thisComputerOffline && isReachabilityFailure(selectedErrorCard?.failure)
+  const errorCard = thisComputerOffline
+    && connectNeverReachedMachine(
+      selectedErrorCard?.failure,
+      status?.state === "error" ? status.lastErrorInfo?.attempts : null,
+    )
     ? null
     : selectedErrorCard;
   const activeRoute = connected?.target.id === target.id

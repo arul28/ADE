@@ -10,7 +10,9 @@ import type {
 } from "../../../shared/types";
 import {
   deriveRelayOutageState,
-  relayGraceRemainingMs,
+  deriveThisComputerOffline,
+  THIS_COMPUTER_OFFLINE_HINT,
+  useRelayGraceRerender,
   type RelayRouteHealth,
 } from "../../lib/thisComputerOffline";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -54,7 +56,6 @@ import {
  * every banner it raises is project scoped and leaves with the project.
  */
 
-export type { RelayRouteHealth } from "../../lib/thisComputerOffline";
 
 export type IntegrationBannersProps = {
   machineId: string;
@@ -217,26 +218,14 @@ export function IntegrationBanners({
     };
   }, [githubCliOnly, loadAppStatus, readerPinKey]);
 
-  // Relay outage crosses its grace threshold on wall-clock time, not on an
-  // incoming event, so nothing would re-render us at the two-minute mark. Arm a
-  // SINGLE timer for exactly the remaining grace and let it fire once. No
-  // polling: while relay is healthy, suppressed, or already past the threshold,
-  // no timer exists at all.
-  const [relayGraceTick, setRelayGraceTick] = useState(0);
-  useEffect(() => {
-    const remaining = relayGraceRemainingMs(relayHealth, Date.now());
-    if (remaining == null) return;
-    const timer = setTimeout(() => setRelayGraceTick((tick) => tick + 1), remaining + 250);
-    return () => clearTimeout(timer);
-  }, [relayHealth, relayGraceTick]);
+  // The relay outage crosses its grace on wall-clock time, not on an event;
+  // this re-renders once at that moment (a single timer, no polling).
+  useRelayGraceRerender(relayHealth);
 
-  // Not a memo: the input is the wall clock. `relayGraceTick` exists only to
-  // force the re-render when the grace timer fires. The result is a string or
-  // null, so downstream dep lists stay stable.
+  // Not a memo: the input is the wall clock. Both results are a string or a
+  // boolean, so downstream dep lists stay stable.
   const relayOutage = deriveRelayOutageState(relayHealth, Date.now());
-  // Same predicate as `deriveThisComputerOffline`, from the boolean AppShell
-  // already reduced the account-directory state to.
-  const offline = relayOutage === "down" && accountDirectoryNoReply;
+  const offline = deriveThisComputerOffline(relayHealth, accountDirectoryNoReply, Date.now());
 
   // Clear-on-recovery: when a banner's underlying condition is HEALTHY, drop any
   // dismissal recorded for it so a later regression to the SAME state resurfaces a
@@ -297,7 +286,7 @@ export function IntegrationBanners({
         tone: "warning",
         icon: OFFLINE_ICON,
         title: "This computer is offline",
-        detail: "ADE can't reach the internet. Your other computers, your phone and GitHub reconnect on their own when it's back.",
+        detail: `Your other computers, your phone and GitHub reconnect on their own when the internet is back. ${THIS_COMPUTER_OFFLINE_HINT}`,
         actions: [
           {
             label: "Open connections",
@@ -434,8 +423,9 @@ export function IntegrationBanners({
       && currentProjectRoot
       && githubStatus
       && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
-      // Offline: "could not reach GitHub" is the offline banner's to say.
-      && !(offline && githubStatus.authFailure?.kind === "network")
+      // Offline: "could not reach GitHub" is the offline banner's to say. An
+      // unreadable credential store is a local repair, so it still shows.
+      && !(offline && githubStatus.authFailure?.kind === "network" && githubStatus.credentialStoreUnreadable !== true)
     ) {
       githubCliShown = true;
       const described = describeGithubCliBanner(githubStatus, githubCliOnly);

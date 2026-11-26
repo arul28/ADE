@@ -40,8 +40,10 @@ import {
 import { resolveMachineAdeDir } from "../services/projects/machineLayout";
 import { foldsCase } from "../../../desktop/src/shared/pathCase";
 import {
+  createSyncAccountDirectoryHealth,
   describeUnpublishedAccountDirectory,
   isSyncAccountDirectoryState,
+  SYNC_ACCOUNT_DIRECTORY_FAILED_LEGS,
 } from "../../../desktop/src/shared/types/sync";
 import fs from "node:fs";
 import path from "node:path";
@@ -64,11 +66,17 @@ export class SetupUsageError extends Error {}
 export function describeUnpublishedMachine(
   state: string,
   _skipReason?: string | null,
+  /** The failed step, which tells "no internet" from a sign-in refresh failure. */
+  failedLeg?: unknown,
 ): { detail: string; nextAction: string } {
   if (!isSyncAccountDirectoryState(state)) {
     return { detail: "not published to your account", nextAction: "ade doctor" };
   }
-  const { summary, nextAction } = describeUnpublishedAccountDirectory(state);
+  const leg = SYNC_ACCOUNT_DIRECTORY_FAILED_LEGS.find((candidate) => candidate === failedLeg) ?? null;
+  const { summary, nextAction } = describeUnpublishedAccountDirectory(
+    state,
+    createSyncAccountDirectoryHealth(state, null, { failedLeg: leg }),
+  );
   return { detail: summary, nextAction: nextAction ?? "ade doctor" };
 }
 

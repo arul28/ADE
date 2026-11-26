@@ -7,6 +7,7 @@ import type { AppPackageChannel } from "../packageChannel";
 import type { UpdateTrack } from "../updateTrack";
 import type { ExternalSessionProvider } from "./externalSessions";
 import type {
+  SyncAccountDirectoryFailedLeg,
   SyncAccountDirectoryLegDurations,
   SyncAccountDirectoryState,
 } from "./sync";
@@ -46,6 +47,8 @@ export type LocalRuntimeStatus = {
      */
     lastHttpStatus?: number | null;
     lastHttpReason?: string | null;
+    /** The step the current failure happened on (`SyncAccountDirectoryHealth.failedLeg`). */
+    failedLeg?: SyncAccountDirectoryFailedLeg | null;
   } | null;
   lastWedge?: {
     lastCommand: string;
