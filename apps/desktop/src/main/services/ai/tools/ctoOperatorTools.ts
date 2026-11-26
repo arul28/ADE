@@ -1284,7 +1284,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "The screenshots and videos a chat filed as proof, ready to show: each comes back with `cite`, a markdown line to put "
       + "in your reply so it shows inline on desktop, web and the phone. By default the chat's latest turn that filed any; "
-      + "turnId picks one turn, all: true takes the newest " + CTO_PROOF_SHOW_LIMIT + ". Pass machine for a chat on another "
+      + "turnId picks one turn, all: true takes every turn. At most " + CTO_PROOF_SHOW_LIMIT + " come back; `more` counts the rest "
+      + "and skip passes over that many newest ones to reach them. Pass machine for a chat on another "
       + "machine or an ADE Cloud lane: its files are copied here once, so they stay viewable after that machine sleeps. "
       + "`skipped` names proof that could not be shown and why (a deleted file, a machine that is offline).",
     inputSchema: z.object({
@@ -1292,9 +1293,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       machine: machineArgSchema,
       turnId: z.string().trim().min(1).optional(),
       all: z.boolean().optional(),
+      skip: z.number().int().min(0).optional().describe("How many of the newest to pass over, to reach proof past the first page."),
     }),
     budgetMs: ({ machine }) => (machine ? 15 * 60_000 : 6 * 60_000),
-    execute: async ({ sessionId, machine, turnId, all }) => {
+    execute: async ({ sessionId, machine, turnId, all, skip }) => {
       const broker = proofBroker();
       if (!broker) return unavailable("Showing proof");
       const selection = turnId ? { turnId } : all ? "all" as const : "latest" as const;
@@ -1308,6 +1310,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
               chatSessionId: sessionId,
               ctoSessionId: deps.currentSessionId,
               selection,
+              skip,
               scratchDir: proofScratchDir(),
             })
           : await shareChatProofWithCto({
@@ -1315,6 +1318,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
               chatSessionId: sessionId,
               ctoSessionId: deps.currentSessionId,
               selection,
+              skip,
               scratchDir: proofScratchDir(),
             });
         return {

@@ -717,7 +717,14 @@ the CTO chat (`cto/ctoProofShare.ts`):
   already H.264, and re-encoded with ffmpeg otherwise (the machine's ffmpeg,
   or ADE's pinned copy on Linux and Windows). On a Mac with no ffmpeg, a MOV
   goes through `avconvert`. The copy has `metadata.convertedFrom`. When nothing
-  can convert it, the original is shown with a note.
+  can convert it, the original is shown with a note. An MP4 is probed too:
+  HEVC or VP9 inside one gets the same H.264 copy. Any local ffmpeg with
+  libx264 converts (the demo renderer's extra need, drawtext, does not apply).
+- **More than one page.** At most 8 come back per call; `more` counts the
+  rest and `getChatProof({ skip })` reaches them.
+- **The other machine asleep.** `getChatProof` with `machine` returns the
+  copies pulled from that chat before, with a note that they are not a live
+  read.
 
 A remote brain is refused secret-bearing actions, and raw proof bytes are one
 of them. The one exception is `readArtifactRange` for a caller at the CTO role

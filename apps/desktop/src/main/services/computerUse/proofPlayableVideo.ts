@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { ensureFfmpegTools, ffmpegDownloadable, resolveFfmpegTools, runFfmpeg } from "../demoVideo/ffmpegDemoEngine";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
@@ -20,20 +21,39 @@ export const PROOF_VIDEO_EXTENSIONS: ReadonlySet<string> = new Set([...PLAYABLE_
 const REMUX_FIRST_EXTENSIONS = new Set([".mov", ".qt", ".mkv"]);
 const CONVERT_TIMEOUT_MS = 5 * 60_000;
 
-export function isConvertibleVideoPath(filePath: string): boolean {
-  return CONVERTIBLE_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+/** A video `ensurePlayableVideo` may need to copy: every container, since an MP4 can hold HEVC. */
+export function isProofVideoPath(filePath: string): boolean {
+  return PROOF_VIDEO_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
 export type PlayableVideoResult =
   | { path: string; converted: false }
   | { path: string; converted: true; via: "ffmpeg-remux" | "ffmpeg" | "avconvert" };
 
+/** Local ffmpeg builds already checked for libx264, by path. */
+const h264Capable = new Map<string, boolean>();
+
+function encodesH264(binaryPath: string): Promise<boolean> {
+  const known = h264Capable.get(binaryPath);
+  if (known !== undefined) return Promise.resolve(known);
+  return new Promise((resolve) => {
+    execFile(binaryPath, ["-hide_banner", "-encoders"], { timeout: 10_000, windowsHide: true }, (error, stdout) => {
+      const capable = !error && /\blibx264\b/.test(String(stdout ?? ""));
+      h264Capable.set(binaryPath, capable);
+      resolve(capable);
+    });
+  });
+}
+
 /**
- * An ffmpeg that can encode H.264: one on this machine (a build without
- * libx264, like Fedora's `ffmpeg-free`, is skipped), else ADE's pinned copy,
- * downloaded on first use where ADE ships one.
+ * An ffmpeg that can encode H.264: one on this machine with libx264 (a build
+ * without it, like Fedora's `ffmpeg-free`, is skipped; drawtext, which the
+ * demo renderer also needs, is not), else the demo renderer's choice, else
+ * ADE's pinned copy, downloaded on first use where ADE ships one.
  */
 async function ffmpegPath(): Promise<string | null> {
+  const local = resolveExecutableFromKnownLocations("ffmpeg")?.path;
+  if (local && await encodesH264(local)) return local;
   const found = resolveFfmpegTools();
   if (found) return found.ffmpegPath;
   if (!ffmpegDownloadable()) return null;
@@ -73,7 +93,16 @@ export async function ensurePlayableVideo(args: {
 }): Promise<PlayableVideoResult> {
   const { sourcePath, outputDir, logger = null, signal } = args;
   const extension = path.extname(sourcePath).toLowerCase();
-  if (!CONVERTIBLE_VIDEO_EXTENSIONS.has(extension)) return { path: sourcePath, converted: false };
+  if (PLAYABLE_VIDEO_EXTENSIONS.has(extension)) {
+    // An MP4 is a container: HEVC or VP9 inside one fails in most browsers.
+    // Probed only with an ffmpeg already here (any build reads a codec);
+    // with none it passes as it is.
+    const local = resolveExecutableFromKnownLocations("ffmpeg")?.path ?? resolveFfmpegTools()?.ffmpegPath;
+    const codec = local ? await videoCodec(local, sourcePath) : null;
+    if (!codec || codec === "h264") return { path: sourcePath, converted: false };
+  } else if (!CONVERTIBLE_VIDEO_EXTENSIONS.has(extension)) {
+    return { path: sourcePath, converted: false };
+  }
   await fs.promises.mkdir(outputDir, { recursive: true });
   const output = path.join(outputDir, `${path.basename(sourcePath, path.extname(sourcePath))}-${randomUUID()}.mp4`);
   const tryFfmpeg = async (binaryPath: string, remux: boolean): Promise<boolean> => {
@@ -137,13 +166,18 @@ export async function ensurePlayableVideo(args: {
   );
 }
 
-/** A remux keeps the source codec; HEVC or VP9 in an MP4 still fails in most browsers. */
-function remuxedIsH264(ffmpegBinary: string, filePath: string): Promise<boolean> {
+/** The first video stream's codec (`h264`, `hevc`, `vp9`), or null when there is none or ffmpeg cannot read it. */
+function videoCodec(ffmpegBinary: string, filePath: string): Promise<string | null> {
   return new Promise((resolve) => {
     // `ffmpeg -i` with no output prints the stream list on stderr and exits 1.
     execFile(ffmpegBinary, ["-hide_banner", "-i", filePath], { timeout: 15_000, windowsHide: true }, (_error, _stdout, stderr) => {
-      const videoLine = String(stderr ?? "").split("\n").find((line) => /Stream #.*Video:/.test(line)) ?? "";
-      resolve(/Video:\s*h264\b/.test(videoLine));
+      const match = /Stream #.*Video:\s*([a-z0-9_]+)/i.exec(String(stderr ?? ""));
+      resolve(match ? match[1]!.toLowerCase() : null);
     });
   });
+}
+
+/** A remux keeps the source codec; HEVC or VP9 in an MP4 still fails in most browsers. */
+async function remuxedIsH264(ffmpegBinary: string, filePath: string): Promise<boolean> {
+  return (await videoCodec(ffmpegBinary, filePath)) === "h264";
 }

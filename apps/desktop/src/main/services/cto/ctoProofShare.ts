@@ -10,7 +10,7 @@ import {
   type ComputerUseArtifactView,
 } from "../../../shared/types";
 import type { CtoMachineTarget, CtoRemoteActionCall } from "../ai/tools/ctoCrossMachine";
-import { ensurePlayableVideo, isConvertibleVideoPath, PROOF_VIDEO_EXTENSIONS } from "../computerUse/proofPlayableVideo";
+import { ensurePlayableVideo, isProofVideoPath, PROOF_VIDEO_EXTENSIONS } from "../computerUse/proofPlayableVideo";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, isRecord } from "../shared/utils";
 
@@ -45,8 +45,10 @@ export type CtoProofShareResult = {
   shown: CtoShownProof[];
   /** Proof that could not be shown, each with why. */
   skipped: Array<{ artifactId: string; title: string; reason: string }>;
-  /** More proof the chat holds than this call showed. */
+  /** More proof the chat holds than this call showed; `skip` reaches them. */
   more: number;
+  /** Said when the answer is not a live read (the other machine is offline). */
+  note?: string;
 };
 
 export type CtoProofBroker = {
@@ -100,6 +102,7 @@ export function selectChatProof(
   artifacts: ComputerUseArtifactView[],
   selection: CtoProofSelection,
   limit = CTO_PROOF_SHOW_LIMIT,
+  skip = 0,
 ): { picked: ComputerUseArtifactView[]; more: number } {
   const showable = artifacts.filter(isShowable);
   let pool: ComputerUseArtifactView[];
@@ -112,8 +115,9 @@ export function selectChatProof(
     pool = showable.filter((artifact) => turnIdOf(artifact) === selection.turnId);
   }
   // Shown in the order it was filed, so a reply reads like the work went.
-  const picked = pool.slice(0, limit).reverse();
-  return { picked, more: Math.max(0, pool.length - picked.length) };
+  const from = Math.max(0, Math.floor(skip));
+  const picked = pool.slice(from, from + limit).reverse();
+  return { picked, more: Math.max(0, pool.length - from - picked.length) };
 }
 
 function shown(artifact: Pick<ComputerUseArtifactView, "id" | "kind" | "title">, extra: Partial<CtoShownProof> = {}): CtoShownProof {
@@ -196,7 +200,7 @@ export async function showFileAsCtoProof(args: {
   let filePath = args.sourcePath;
   let note: string | undefined;
   let converted = false;
-  if (video && isConvertibleVideoPath(args.sourcePath)) {
+  if (video) {
     try {
       const playable = await ensurePlayableVideo({ sourcePath: args.sourcePath, outputDir: args.scratchDir, logger: args.logger ?? null });
       filePath = playable.path;
@@ -231,7 +235,7 @@ async function playableCopyFor(args: {
   logger?: Logger | null;
 }): Promise<CtoShownProof | null> {
   const sourcePath = args.broker.resolveArtifactFilePath(args.artifact);
-  if (!sourcePath || !isConvertibleVideoPath(sourcePath)) return null;
+  if (!sourcePath || !isProofVideoPath(sourcePath)) return null;
   return onceAtATime(`${args.ctoSessionId}:${args.artifact.id}`, () => convertForCto({ ...args, sourcePath }));
 }
 
@@ -277,6 +281,8 @@ export async function shareChatProofWithCto(args: {
   selection: CtoProofSelection;
   scratchDir: string;
   limit?: number;
+  /** Proof to pass over first (the newest ones an earlier call showed). */
+  skip?: number;
   /** Leave out proof the CTO chat already holds (linked, or an MP4 copy of it). */
   onlyUnshared?: boolean;
   logger?: Logger | null;
@@ -297,7 +303,7 @@ export async function shareChatProofWithCto(args: {
       !copiedFrom.has(artifact.id)
       && !(artifact.links ?? []).some((link) => link.ownerKind === "chat_session" && link.ownerId === args.ctoSessionId));
   }
-  const { picked, more } = selectChatProof(listed, args.selection, args.limit);
+  const { picked, more } = selectChatProof(listed, args.selection, args.limit, args.skip);
   const result: CtoProofShareResult = { shown: [], skipped: [], more };
   const available = picked.filter((artifact) => {
     if (artifact.availability && artifact.availability !== "available") {
@@ -430,14 +436,23 @@ export async function importRemoteChatProof(args: {
   selection: CtoProofSelection;
   scratchDir: string;
   limit?: number;
+  skip?: number;
   logger?: Logger | null;
 }): Promise<CtoProofShareResult> {
-  const listed = asArtifactRows(await args.runAction(args.machine, {
-    domain: "computer_use_artifacts",
-    action: "listArtifacts",
-    args: { ownerKind: "chat_session", ownerId: args.chatSessionId, limit: 200, ...PROOF_LISTING_ARTIFACT_FILTER },
-  }));
-  const { picked, more } = selectChatProof(listed, args.selection, args.limit);
+  let listed: ComputerUseArtifactView[];
+  try {
+    listed = asArtifactRows(await args.runAction(args.machine, {
+      domain: "computer_use_artifacts",
+      action: "listArtifacts",
+      args: { ownerKind: "chat_session", ownerId: args.chatSessionId, limit: 200, ...PROOF_LISTING_ARTIFACT_FILTER },
+    }));
+  } catch (error) {
+    const cached = copiesPulledBefore(args);
+    if (!cached) throw error;
+    args.logger?.warn("cto.proof_remote_list_failed", { machineId: args.machine.machineId, error: getErrorMessage(error) });
+    return cached;
+  }
+  const { picked, more } = selectChatProof(listed, args.selection, args.limit, args.skip);
   const result: CtoProofShareResult = { shown: [], skipped: [], more };
   await fs.promises.mkdir(args.scratchDir, { recursive: true });
   for (const artifact of picked) {
@@ -449,6 +464,43 @@ export async function importRemoteChatProof(args: {
     else result.shown.push(outcome);
   }
   return result;
+}
+
+/**
+ * With the other machine unreachable (asleep, offline), the copies pulled from
+ * that chat before, chosen by the same selection, or null when there are none.
+ */
+function copiesPulledBefore(args: {
+  broker: CtoProofBroker;
+  machine: CtoMachineTarget;
+  chatSessionId: string;
+  ctoSessionId: string;
+  selection: CtoProofSelection;
+  limit?: number;
+  skip?: number;
+}): CtoProofShareResult | null {
+  const copies = args.broker.listArtifacts({
+    ownerKind: "chat_session",
+    ownerId: args.ctoSessionId,
+    limit: CTO_OWNED_LIST_LIMIT,
+    ...PROOF_LISTING_ARTIFACT_FILTER,
+  }).flatMap((row) => {
+    const from = isRecord(row.metadata?.importedFrom) ? row.metadata.importedFrom : null;
+    if (from?.machineId !== args.machine.machineId || from?.chatSessionId !== args.chatSessionId) return [];
+    if (row.availability === "missing_file") return [];
+    // Selected by the source turn, which the copy keeps in `importedFrom`.
+    return [{ ...row, metadata: { ...row.metadata, turnId: typeof from.turnId === "string" ? from.turnId : undefined } }];
+  });
+  if (!copies.length) return null;
+  const { picked, more } = selectChatProof(copies, args.selection, args.limit, args.skip);
+  return {
+    shown: picked.map((row) => shown(row, {
+      sourceArtifactId: String((row.metadata?.importedFrom as Record<string, unknown>).artifactId),
+    })),
+    skipped: [],
+    more,
+    note: `${args.machine.name} is unreachable, so these are the copies pulled from it before; anything it filed since is not here.`,
+  };
 }
 
 /** One remote record: the CTO's copy (pulled now or before), or why it could not be shown. */
@@ -479,7 +531,7 @@ async function importOne(args: {
     await pullRemoteFile({ runAction: args.runAction, machine: args.machine, artifact, target: pulled });
     let filePath = pulled;
     let note: string | undefined;
-    if (isConvertibleVideoPath(pulled)) {
+    if (isProofVideoPath(pulled)) {
       try {
         const playable = await ensurePlayableVideo({ sourcePath: pulled, outputDir: args.scratchDir, logger: args.logger ?? null });
         if (playable.converted) playablePath = playable.path;
@@ -502,6 +554,7 @@ async function importOne(args: {
           machineName: args.machine.name,
           artifactId: artifact.id,
           chatSessionId: args.chatSessionId,
+          ...(turnIdOf(artifact) ? { turnId: turnIdOf(artifact) } : {}),
         },
       },
       toolName: "getChatProof",
@@ -528,7 +581,7 @@ export function formatProofForWake(result: CtoProofShareResult): string | null {
     lines.push("Proof it filed. Reply (not noReply) with these lines where they back what you say; the person sees them only in your reply:");
     for (const item of result.shown) lines.push(item.note ? `${item.cite} (${item.note})` : item.cite);
   }
-  if (result.more > 0) lines.push(`…and ${result.more} more: getChatProof with all: true lists them.`);
+  if (result.more > 0) lines.push(`…and ${result.more} more: getChatProof with skip: ${result.shown.length + result.skipped.length} shows the next ones.`);
   for (const item of result.skipped) lines.push(`Could not show "${item.title}": ${item.reason}.`);
   return lines.join("\n");
 }

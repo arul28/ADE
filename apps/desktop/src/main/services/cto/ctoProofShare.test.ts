@@ -58,7 +58,7 @@ describe("importRemoteChatProof", () => {
     fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it("copies a remote proof home once, even for two callers at once, and keeps showing it after the original is gone", async () => {
+  it("copies a remote proof home once, even for two callers at once, and keeps showing it after the original is gone or its machine sleeps", async () => {
     const broker = createComputerUseArtifactBrokerService({ db, projectId: "project-1", projectRoot, logger });
     const png = Buffer.from("\x89PNG proof bytes that span several slices");
     const machine = otherMachine(png);
@@ -97,5 +97,20 @@ describe("importRemoteChatProof", () => {
     expect(later.skipped).toEqual([]);
     expect(later.shown.map((item) => item.artifactId)).toEqual([copy.id]);
     expect(machine.calls.filter((call) => call.action === "readArtifactRange")).toHaveLength(slicesRead);
+
+    // That machine goes to sleep: the listing fails, and the copy still comes back, said to be one.
+    const asleep = await importRemoteChatProof({
+      broker,
+      runAction: async () => { throw new Error("Studio is offline."); },
+      machine: studio,
+      chatSessionId: "child-chat",
+      ctoSessionId: "cto-chat",
+      selection: { turnId: "turn-1" },
+      scratchDir: path.join(projectRoot, ".ade", "tmp", "cto-proof"),
+      logger,
+    });
+    expect(asleep.shown.map((item) => item.artifactId)).toEqual([copy.id]);
+    expect(asleep.shown[0]!.sourceArtifactId).toBe("remote-shot");
+    expect(asleep.note).toMatch(/Studio is unreachable/);
   });
 });

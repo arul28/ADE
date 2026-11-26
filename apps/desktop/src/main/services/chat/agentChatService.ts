@@ -52277,9 +52277,15 @@ export function createAgentChatService(args: {
    */
   const ctoChildProofForWakeBounded = async (args: Parameters<typeof ctoChildProofForWake>[0]): Promise<string | null> => {
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Name the report's turn, as the copy in progress selects it; a report
+    // with no real turn id (a CLI run, an `event-N` fallback) takes the latest.
+    const turnId = args.spawnCompletion.childTurnId?.trim();
+    const byTurn = turnId && !/^event-\d+$/.test(turnId) && managedSessions.has(args.childSessionId)
+      ? `, turnId: ${JSON.stringify(turnId)}`
+      : "";
     const slow = new Promise<string>((resolve) => {
       timer = setTimeout(() => resolve(
-        `Its proof is still being copied. Call getChatProof({ sessionId: "${args.childSessionId}" }) shortly to show it.`,
+        `Its proof is still being copied. Call getChatProof({ sessionId: "${args.childSessionId}"${byTurn} }) shortly to show it.`,
       ), CTO_CHILD_PROOF_WAKE_WAIT_MS);
     });
     try {
