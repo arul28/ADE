@@ -791,6 +791,7 @@ headers `authorization, content-type`.
 | `PUT /cloud/sign-ins/:id` | web | Saves a key (`{ key }`) to the account vault; for `claude`, a Claude pass (`sk-ant-oat…`). |
 | `DELETE /cloud/sign-ins/:id` | web | Removes it (for `claude`, every pass). |
 | `GET /cloud/models` | web, phone | Models per provider with a default, for a picker before any computer exists. |
+| `PUT /cloud/launches/:id/files/:file` | web, phone, desktop | A file for a launch or a queued message (`src/cloud/launchFiles.ts`, at most 10 of 25 MB per draft). An account holds at most 300 open drafts and 2 GB in them; the upload reserves its size before its body is read (migration 0068). 429 `uploads_full` past either, 410 `files_expired` for an expired draft. |
 
 The launch flow (files, start, Git check, join, run, sign-in, queued
 messages, continue) is in
@@ -926,8 +927,9 @@ Writes have two more minute budgets per account in the same table
 (`store.ts` `takeRequest`, 429 `rate_limited`):
 
 - `uploads`, 1,200: session copies, Git summaries, fork capsule parts and
-  commits, and lane backup writes. A delete's save sends one capsule for each
-  chat.
+  commits, lane backup writes, and launch files (`PUT
+  /cloud/launches/:id/files/:file`). A delete's save sends one capsule for
+  each chat.
 - `settings`, 120: `PUT /cloud/limits`, `PUT /cloud/instances/:id/event-wakes`
   and `PUT /account/lanes`.
 

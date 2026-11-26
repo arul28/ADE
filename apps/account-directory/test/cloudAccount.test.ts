@@ -3697,6 +3697,13 @@ describe("ADE Cloud without a computer", () => {
     const upload = "3f6c2a1e-8b4d-4c7a-9e2f-5a1b0c9d8e7f";
     expect((await harness.send(OWNER, "PUT", `/cloud/launches/${upload}/files/photo-1`, "png", { "content-type": "image/png" })).status).toBe(201);
     const file = { launchId: upload, fileId: "photo-1", name: "photo.png", contentType: "image/png", sizeBytes: 5 };
+    // Copies that would carry the account past its draft bytes start no computer and copy nothing.
+    harness.exec("update cloud_launches set draft_bytes = ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 4, upload);
+    const refused = await harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId: "m0", text: "What is this?", attachments: [file] });
+    expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([429, "uploads_full"]);
+    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(0);
+    expect(harness.rows("select launch_id from cloud_launches where user_id = ?", OWNER)).toEqual([{ launch_id: upload }]);
+    harness.exec("update cloud_launches set draft_bytes = 5 where launch_id = ?", upload);
     const sent = await harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId: "m1", text: "What is this?", attachments: [file] });
     expect(sent.status).toBe(201);
     const { wake } = (await sent.json()) as { wake: { launchId: string } };
@@ -3806,24 +3813,6 @@ describe("ADE Cloud without a computer", () => {
     const sent = await rawPut(await pathOf(), body.stream, { "x-ade-instance": INSTANCE });
     expect(sent.status).toBe(413);
     expect(body.pulled()).toBeLessThan(total);
-  });
-
-  it("a message whose files would carry the account past its draft bytes starts no computer and copies nothing", async () => {
-    harness.env.CLERK_SECRET_KEY = "sk_test";
-    harness.env.CLOUD_LAUNCH_JOIN_KEY = "join-key-test";
-    harness.insert("cloud_settings", { key: "template_version", value: "ade@3", updated_at: NOW });
-    seedAccount(harness, OWNER);
-    seedComputer(harness, { machine_key: "key-gone", lane_id: LANE, lane_name: "Fix the login page", lane_project_origin: "https://github.com/acme/widgets", lane_branch: "ade/fix-login" });
-    expect((await savePart(INSTANCE, "key-gone", 1, "{}\n")).status).toBe(200);
-    harness.exec("update cloud_computers set deleted_at = ?, status = 'deleted' where instance_id = ?", NOW, INSTANCE);
-    const upload = "3f6c2a1e-8b4d-4c7a-9e2f-5a1b0c9d8e7f";
-    expect((await rawPut(`/cloud/launches/${upload}/files/photo-1`, new Uint8Array(5))).status).toBe(201);
-    harness.exec("update cloud_launches set draft_bytes = ? where launch_id = ?", CLOUD_LAUNCH_MAX_DRAFT_BYTES_PER_ACCOUNT - 4, upload);
-    const file = { launchId: upload, fileId: "photo-1", name: "photo.png", contentType: "image/png", sizeBytes: 5 };
-    const sent = await harness.send(OWNER, "POST", "/cloud/chats/key-gone/c1/messages", { messageId: "m1", text: "What is this?", attachments: [file] });
-    expect([sent.status, ((await sent.json()) as { error: { code: string } }).error.code]).toEqual([429, "uploads_full"]);
-    expect(providerCalls(harness, /POST .*\/instances$/)).toHaveLength(0);
-    expect(harness.rows("select launch_id from cloud_launches where user_id = ?", OWNER)).toEqual([{ launch_id: upload }]);
   });
 
   it("a send to a chat whose computer is gone continues it on one new computer, at the size the person picked: a second send rides the same launch", async () => {
