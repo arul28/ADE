@@ -64,9 +64,12 @@ A person can stop seeing a line in two ways, with the eye-slash on the row:
   writes: the next ignore drops stale entries, and a line that is absent keeps
   its entry (its check may only have failed).
 
-Both live in the project database (`kv` row `project_health.ignored`, folders
-relative to the project, at most 200 entries). `kv` syncs, so every copy and
-client sees the same list. The report's `ignored` lists the entries that still
+Both live in the project database, one `kv` row per ignore
+(`project_health.ignored:<key>`, folders relative to the project, at most 200).
+`kv` syncs, so every copy and client sees them, and a row each means two
+computers changing different ignores at once never write over each other. A
+line hide also records the copy it was made on; only that copy reads it or
+retires it when the line changes. The report's `ignored` lists the entries that still
 apply, and each page shows them folded under its rows with Show again.
 Agents cannot ignore or unignore: hiding a warning is the person's call.
 

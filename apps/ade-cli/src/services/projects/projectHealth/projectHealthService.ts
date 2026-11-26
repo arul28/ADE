@@ -155,9 +155,13 @@ type Context = {
   ignoredFolders: Set<string>;
 };
 
-/** The `kv` row the ignored list lives in. `kv` syncs, so every copy sees it. */
-export const PROJECT_HEALTH_IGNORED_KV_KEY = "project_health.ignored";
-/** A list that only grows with clicks; the cap keeps a runaway caller from bloating the row. */
+/**
+ * One `kv` row per ignore, keyed `project_health.ignored:<ignore key>`. `kv`
+ * syncs, so every copy sees them; a row each means two computers adding or
+ * removing different ignores at once never write over each other.
+ */
+export const PROJECT_HEALTH_IGNORED_KV_PREFIX = "project_health.ignored:";
+/** Ignores only grow with clicks; the cap keeps a runaway caller from flooding the table. */
 const MAX_IGNORED = 200;
 
 /**
@@ -628,22 +632,26 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     }
   }
 
-  /** For changes: throws rather than hand back an empty list that a write would then save over the real one. */
+  /** For changes: throws rather than act on a list it could not read. */
   function readIgnoredStrict(): ProjectHealthIgnore[] {
-    const rows = deps.db.all<{ value: string }>("select value from kv where key = ? limit 1", [PROJECT_HEALTH_IGNORED_KV_KEY]);
-    return parseIgnored(rows[0]?.value, deps.logger, true);
+    const rows = deps.db.all<{ value: string }>(
+      "select value from kv where substr(key, 1, ?) = ? order by key",
+      [PROJECT_HEALTH_IGNORED_KV_PREFIX.length, PROJECT_HEALTH_IGNORED_KV_PREFIX],
+    );
+    if (rows.length === 0) return [];
+    // Each row holds one entry; parse them together so the one parser applies its rules.
+    return parseIgnored(`[${rows.map((row) => row.value).join(",")}]`, deps.logger, true);
   }
 
-  function writeIgnored(list: ProjectHealthIgnore[]): void {
-    const kept = list.slice(-MAX_IGNORED);
-    if (kept.length === 0) {
-      deps.db.run("delete from kv where key = ?", [PROJECT_HEALTH_IGNORED_KV_KEY]);
-      return;
-    }
+  function putIgnore(entry: ProjectHealthIgnore): void {
     deps.db.run(
       "insert into kv(key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
-      [PROJECT_HEALTH_IGNORED_KV_KEY, JSON.stringify(kept)],
+      [`${PROJECT_HEALTH_IGNORED_KV_PREFIX}${entry.key}`, JSON.stringify(entry)],
     );
+  }
+
+  function dropIgnore(key: string): void {
+    deps.db.run("delete from kv where key = ?", [`${PROJECT_HEALTH_IGNORED_KV_PREFIX}${key}`]);
   }
 
   async function context(): Promise<Context> {
@@ -1163,10 +1171,11 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     const list = readIgnored();
     if (list.length === 0) return { shown: issues, ignored: [] };
     const kept = withoutChangedHides(list, issues);
-    if (kept.length !== list.length) {
+    // Retire this copy's hides whose line changed, one row each: nothing else is rewritten.
+    for (const entry of list) {
+      if (kept.includes(entry)) continue;
       try {
-        // Re-read strictly so a write never lands on a list that failed to read.
-        writeIgnored(withoutChangedHides(readIgnoredStrict(), issues));
+        dropIgnore(entry.key);
       } catch (error) {
         deps.logger.warn("project_health.ignored_retire_failed", { error: error instanceof Error ? error.message : String(error) });
       }
@@ -1210,8 +1219,11 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
     const { report, allIssues } = await buildChecked();
     cached = { at: Date.now(), report: Promise.resolve(report) };
     const issue = report.issues.find((entry) => entry.id === issueId);
-    // Every line, hidden ones included, tells which hides went stale.
-    const list = withoutChangedHides(readIgnoredStrict(), allIssues);
+    // Every line, hidden ones included, tells which hides went stale; retire those as rows.
+    const read = readIgnoredStrict();
+    const list = withoutChangedHides(read, allIssues);
+    for (const entry of read) if (!list.includes(entry)) dropIgnore(entry.key);
+    if (list.length >= MAX_IGNORED) throw new Error("This project already ignores 200 things. Show some again first.");
     const ignoredAt = new Date().toISOString();
     if (args.path != null) {
       const folder = normalizeIgnoredFolder(args.path);
@@ -1220,7 +1232,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
       if (!list.some((entry) => entry.key === key)) {
         // Only a folder the check names right now: a typo must not quietly ignore nothing.
         if (!issue?.ignorablePaths?.includes(folder)) throw new Error(`${folder} isn't one of the folders this check names.`);
-        writeIgnored([...list, { key, kind: "folder", issueId, path: folder, title: folder, ignoredAt }]);
+        putIgnore({ key, kind: "folder", issueId, path: folder, title: folder, ignoredAt });
       }
     } else {
       if (!issue) throw new Error("That check has nothing to hide right now.");
@@ -1231,11 +1243,11 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
         throw new Error("This line changed since you looked. Check it again, then hide it.");
       }
       const key = projectHealthIgnoreKey(issueId, null, copyId);
-      writeIgnored([
-        // One hide per line per copy; a legacy hide of this line (no copy) is replaced too.
-        ...list.filter((entry) => !(entry.kind === "issue" && entry.issueId === issueId && ownCopy(entry))),
-        { key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), copy: copyId, title: issue.title, ignoredAt },
-      ]);
+      // One hide per line per copy; an older hide of this line without a copy is replaced too.
+      for (const entry of list) {
+        if (entry.kind === "issue" && entry.issueId === issueId && ownCopy(entry) && entry.key !== key) dropIgnore(entry.key);
+      }
+      putIgnore({ key, kind: "issue", issueId, fingerprint: projectHealthIssueFingerprint(issue), copy: copyId, title: issue.title, ignoredAt });
     }
     deps.logger.info("project_health.ignored", { issueId, kind: args.path != null ? "folder" : "issue" });
     return getReport({ forceRefresh: true });
@@ -1244,10 +1256,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
   /** Checks a folder again, or shows a hidden line again. */
   async function unignore(args: ProjectHealthUnignoreArgs): Promise<ProjectHealthReport> {
     const key = typeof args?.key === "string" ? args.key : "";
-    const list = readIgnoredStrict();
-    const next = list.filter((entry) => entry.key !== key);
-    if (next.length !== list.length) {
-      writeIgnored(next);
+    if (readIgnoredStrict().some((entry) => entry.key === key)) {
+      dropIgnore(key);
       deps.logger.info("project_health.unignored", { kind: key.split(":")[0] ?? "" });
     }
     return getReport({ forceRefresh: true });

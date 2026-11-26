@@ -42,7 +42,7 @@ export type ProjectHealthIssue = {
 
 /**
  * Something the person asked the checks to leave alone, saved in the
- * project's database (the `kv` row `project_health.ignored`), so every copy
+ * project's database (one `kv` row each, `project_health.ignored:<key>`), so every copy
  * and every client sees the same list.
  *
  * - `folder`: one folder is no longer checked (`ignorablePaths`). It stays
