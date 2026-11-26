@@ -694,9 +694,9 @@ the CTO chat (`cto/ctoProofShare.ts`):
   is shared instead; a real turn that filed none shares none. A record whose
   file is gone is skipped with that reason. The record keeps its lane, so
   deleting the child's lane deletes the proof here too, and the citation then
-  says the file is gone. ADE works the lines out before the notice that marks
-  the report delivered, and waits at most 45 s (a long video to convert); past
-  that, the wake tells the CTO to call `getChatProof` and the copy keeps going.
+  says the file is gone. The wake waits at most 45 s for the lines (a long
+  video to convert); past that, it tells the CTO to call `getChatProof` and
+  the copy keeps going. A delivery retry reuses the lines.
 - **A child on another machine or an ADE Cloud lane.** The wake (or the
   check-in) tells the CTO to call `getChatProof({ sessionId, machine })`.
   The home brain lists that chat's proof there and pulls each file in
