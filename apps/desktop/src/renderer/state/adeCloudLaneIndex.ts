@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from "react";
 import type { CloudMachine } from "../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../shared/cloudLaneLaunch";
-import { laneComputersOf, parseSavedLaneComputers, savedLaneComputerRows, type LaneComputer } from "../../shared/laneComputer";
+import { laneComputersOf, parseSavedLaneComputers, savedLaneComputers, type LaneComputer } from "../../shared/laneComputer";
+import { accountScopedCopy } from "./accountScopedStorage";
 import { machineNameForBinding } from "../../shared/machineIdentity";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
@@ -10,8 +11,9 @@ import { cloudConnectionMachineKey } from "./cloudSavedChats";
 
 /**
  * The account's ADE Cloud lane computers as last read, kept after the read's
- * surface closes and across a restart (this computer's storage only). It holds
- * no secret: lane names, ids, project origins and computer ids.
+ * surface closes and across a restart (this computer's storage, for the
+ * account signed in here only; ADE Web keeps it in memory). It holds no
+ * secret: lane names, ids, project origins and computer ids.
  *
  * Two readers need it without a read of their own:
  * - the composer's Run on menu, which opens with the last list in hand while
@@ -27,8 +29,8 @@ import { cloudConnectionMachineKey } from "./cloudSavedChats";
 export type AdeCloudLaneComputer = LaneComputer;
 
 const STORAGE_KEY = "ade.cloudLaneComputers.v1";
-/** Every ADE Cloud computer of the account (with a lane or not), by its ids. */
-const CLOUD_COMPUTERS_STORAGE_KEY = "ade.cloudComputerIds.v1";
+/** Where older builds kept every ADE Cloud computer's ids (now in the copy above). */
+const LEGACY_CLOUD_COMPUTERS_STORAGE_KEY = "ade.cloudComputerIds.v1";
 
 /**
  * An ADE Cloud computer as the account names it: its id on the provider and
@@ -56,39 +58,55 @@ type IndexState = {
 /** How long a read of the account's computers is fresh enough to call a computer missing from it deleted. */
 const FRESH_LANE_INDEX_MS = 10 * 60_000;
 
-let state: IndexState = readSaved();
+const EMPTY_INDEX: IndexState = { computers: [], cloudComputers: [], known: false, readAtMs: null };
+let state: IndexState = EMPTY_INDEX;
 const listeners = new Set<() => void>();
 
-function readSavedCloudComputers(): AdeCloudComputerId[] {
-  try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(CLOUD_COMPUTERS_STORAGE_KEY) : null;
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((entry: unknown) => {
-      if (!entry || typeof entry !== "object") return [];
-      const { instanceId, machineKey, hasLane } = entry as Record<string, unknown>;
-      return typeof instanceId === "string" && instanceId
-        ? [{
-            instanceId,
-            machineKey: typeof machineKey === "string" && machineKey ? machineKey : null,
-            ...(hasLane === true ? { hasLane: true as const } : {}),
-          }]
-        : [];
-    });
-  } catch {
-    return [];
-  }
+function emit(): void {
+  for (const listener of listeners) listener();
 }
 
-function readSaved(): IndexState {
-  const cloudComputers = readSavedCloudComputers();
-  try {
-    const raw = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (!raw) return { computers: [], cloudComputers, known: false, readAtMs: null };
-    return { computers: parseSavedLaneComputers(JSON.parse(raw) as unknown), cloudComputers, known: true, readAtMs: null };
-  } catch {
-    return { computers: [], cloudComputers, known: false, readAtMs: null };
-  }
+function parseSavedCloudComputers(raw: unknown): AdeCloudComputerId[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((entry: unknown) => {
+    if (!entry || typeof entry !== "object") return [];
+    const { instanceId, machineKey, hasLane } = entry as Record<string, unknown>;
+    return typeof instanceId === "string" && instanceId
+      ? [{
+          instanceId,
+          machineKey: typeof machineKey === "string" && machineKey ? machineKey : null,
+          ...(hasLane === true ? { hasLane: true as const } : {}),
+        }]
+      : [];
+  });
+}
+
+// This computer's copy, for the account signed in here only (`accountScopedStorage.ts`):
+// lane names and computer ids of one account never show for the next one, and ADE Web keeps none.
+const saved = accountScopedCopy({
+  key: STORAGE_KEY,
+  restore: (value) => {
+    // A read in this window already filled it: that list is newer.
+    if (state.known || !value || typeof value !== "object") return;
+    const row = value as Record<string, unknown>;
+    state = {
+      computers: parseSavedLaneComputers(row.computers),
+      cloudComputers: parseSavedCloudComputers(row.cloudComputers),
+      known: true,
+      readAtMs: null,
+    };
+    emit();
+  },
+  forget: () => {
+    state = EMPTY_INDEX;
+    emit();
+  },
+});
+// Older builds kept the account's computer ids apart, with no account named: dropped.
+try {
+  if (typeof window !== "undefined") window.localStorage.removeItem(LEGACY_CLOUD_COMPUTERS_STORAGE_KEY);
+} catch {
+  // Storage unavailable: nothing was kept.
 }
 
 function signature(computers: readonly AdeCloudLaneComputer[], cloudComputers: readonly AdeCloudComputerId[]): string {
@@ -125,13 +143,11 @@ function noteCloudLaneComputers(
     return;
   }
   state = { computers, cloudComputers, known: true, readAtMs };
-  try {
-    window.localStorage.setItem(STORAGE_KEY, savedLaneComputerRows(computers));
-    window.localStorage.setItem(CLOUD_COMPUTERS_STORAGE_KEY, JSON.stringify(cloudComputers));
-  } catch {
-    // This computer's copy is a convenience; the next read fills it again.
-  }
-  for (const listener of listeners) listener();
+  saved.save({
+    computers: savedLaneComputers(computers),
+    cloudComputers,
+  });
+  emit();
 }
 
 /**
@@ -143,6 +159,15 @@ export function forgetCloudLaneComputer(instanceId: string): void {
   const cloudComputers = state.cloudComputers.filter((computer) => computer.instanceId !== instanceId);
   if (computers.length === state.computers.length && cloudComputers.length === state.cloudComputers.length) return;
   noteCloudLaneComputers(computers, cloudComputers);
+}
+
+/**
+ * Whether a read (or this account's copy) filled the index. ADE Web keeps no
+ * copy, so a page that just loaded knows no ADE Cloud computer yet: a miss
+ * then says nothing about a machine.
+ */
+export function adeCloudLaneIndexKnown(): boolean {
+  return state.known;
 }
 
 /** Hears each change of the lane computers (not a fresher read of the same list). */
