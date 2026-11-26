@@ -25,6 +25,7 @@ import type { LaneSummary } from "../../shared/types/lanes";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import type { TerminalSessionSummary } from "../../shared/types/sessions";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
+import { savedCopyHistoryCursor, savedCopyPartOf } from "../components/chat/chatHistoryWindow";
 import { personErrorText } from "../lib/format";
 
 /** Whether a store machine id is a saved chat's computer this window has no connection to. */
@@ -118,6 +119,23 @@ export function savedChatLocation(
 }
 
 /**
+ * The saved copy that last answered each chat's history read, by chat id. A
+ * saved copy's history cursor still pages it after the computer wakes, and
+ * the sidebar's list then leaves that chat out (the live list owns an awake
+ * computer), so the list can't be the only place to find it.
+ */
+const answeredSavedCopies = new Map<string, SavedChatLocation>();
+const MAX_ANSWERED_SAVED_COPIES = 200;
+
+function noteSavedCopyAnswered(location: SavedChatLocation): void {
+  answeredSavedCopies.delete(location.chatId);
+  answeredSavedCopies.set(location.chatId, location);
+  if (answeredSavedCopies.size > MAX_ANSWERED_SAVED_COPIES) {
+    answeredSavedCopies.delete(answeredSavedCopies.keys().next().value!);
+  }
+}
+
+/**
  * The saved copy of a chat by its id alone, whatever pin asked. For a read
  * whose pin names a connection this window no longer has ("Remote target was
  * not found"): the chat is the same on any machine that saved it.
@@ -201,6 +219,11 @@ function eventsFromPage(page: CloudSavedChatPage, sessionId: string): AgentChatE
   return parseAgentChatTranscript(text).filter((event) => event.sessionId === sessionId);
 }
 
+/** The history cursor of the parts before a page; 0 when it reached the first part. */
+function olderPartsCursor(page: CloudSavedChatPage): number {
+  return page.hasMore && page.nextBefore != null ? savedCopyHistoryCursor(page.nextBefore) : 0;
+}
+
 /** A saved chat's newest page, as the live history read answers it. */
 export function savedChatSnapshot(page: CloudSavedChatPage, sessionId: string): AgentChatEventHistorySnapshot {
   // No `maxEvents` window: a part can't be paged into, so the whole page shows.
@@ -210,18 +233,19 @@ export function savedChatSnapshot(page: CloudSavedChatPage, sessionId: string): 
     truncated: page.hasMore,
     sessionFound: true,
     hasOlderHistory: page.hasMore,
-    tailStartOffset: page.hasMore ? (page.nextBefore ?? 0) : 0,
+    tailStartOffset: olderPartsCursor(page),
   };
 }
 
-/** An older page: `beforeOffset` is the part sequence to read before. */
+/** An older page, read before a part cursor (`savedCopyHistoryCursor`), or the newest page for a byte cursor. */
 export function savedChatHistoryPage(page: CloudSavedChatPage, sessionId: string): AgentChatEventHistoryPage {
   return {
     sessionId,
     events: eventsFromPage(page, sessionId),
-    startOffset: page.nextBefore ?? 0,
+    startOffset: olderPartsCursor(page),
     hasMore: page.hasMore,
     sessionFound: true,
+    savedCopy: true,
   };
 }
 
@@ -612,17 +636,35 @@ export function withSavedChatReads(
       const saved = async (location: SavedChatLocation) => {
         const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
         if (!page) return { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true, hasOlderHistory: false, unavailable: true } satisfies AgentChatEventHistorySnapshot;
+        noteSavedCopyAnswered(location);
         return savedChatSnapshot(page, args.sessionId);
       };
       const location = locate(args.sessionId, pin);
       return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistory(args, pin), saved);
     },
     getEventHistoryPage: async (args, pin) => {
+      // A part cursor came from the saved copy. It pages the saved copy also
+      // once the computer is awake again: the computer's transcript has no
+      // such position, and reading it there ended the chat's older history.
+      // A byte cursor came from the computer; while the computer rests, the
+      // saved copy answers from its newest part instead.
+      const part = savedCopyPartOf(args.beforeOffset);
+      const unavailable = { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
       const saved = async (location: SavedChatLocation) => {
-        const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId, before: args.beforeOffset }).catch(logSavedChatReadFailure);
-        if (!page) return { sessionId: args.sessionId, events: [], startOffset: args.beforeOffset, hasMore: false, sessionFound: true, unavailable: true } satisfies AgentChatEventHistoryPage;
+        const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId, ...(part != null ? { before: part } : {}) }).catch(logSavedChatReadFailure);
+        if (!page) return unavailable;
+        noteSavedCopyAnswered(location);
         return savedChatHistoryPage(page, args.sessionId);
       };
+      if (part != null) {
+        const location = savedChatLocation(pin, args.sessionId, () => false)
+          ?? savedChatLocationForSession(args.sessionId)
+          ?? answeredSavedCopies.get(args.sessionId)
+          ?? null;
+        if (location) return saved(location);
+        console.warn("[cloud] no saved copy to page this chat's older history from", { chatId: args.sessionId });
+        return unavailable;
+      }
       const location = locate(args.sessionId, pin);
       return location ? saved(location) : readOr(args.sessionId, () => api.getEventHistoryPage(args, pin), saved);
     },

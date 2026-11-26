@@ -10166,6 +10166,7 @@ export function AgentChatPane({
           existing,
           maxEvents,
           maxBytes: maxResidentBytes,
+          dedupeAll: batch.fromSavedCopy,
         });
         if (hitResidentCap && options?.backfill) {
           // Leave the view and the cursor as they are; a reader who pages up

@@ -1188,6 +1188,13 @@ a queued one, and a failed one with the server's sentence until the person
 acts. A chat whose computer was deleted continues on a new computer in the
 same chat row.
 
+A cloud chat's older turns can exist only in its saved copy: the computer's
+own transcript can start later. So a history cursor from the saved copy names
+a part of it (`savedCopyHistoryCursor`, `chatHistoryWindow.ts`), and a scroll
+up reads that part from the account even after the computer wakes and the
+list drops the chat's saved row (`cloudSavedChats.ts`). Each saved page is
+deduped against the whole loaded list, not only its seam.
+
 An older server answers a new route with 404. Then the client keeps the
 earlier behavior: the separate lists, or a wake and a direct send.
 
