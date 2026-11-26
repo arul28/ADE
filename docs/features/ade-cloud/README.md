@@ -2100,7 +2100,11 @@ One busy list, `decideCloudBusy` in
   (an account read, kept 15 s) and the computer's saved chats, lanes and open
   PRs from its Work slice (`chatMentionClientRows.ts`). While the computer is
   awake, its own answer comes first, and the account's machines fill the
-  menu only when that answer has no machine rows.
+  menu only when that answer has no machine rows. The phone builds the same
+  menu for a chat with no live link to its computer
+  (`restingCloudChatMentionRows`): the saved chats and lanes Work lists for
+  it, and the account's machines. It has no copy of the computer's PRs, so
+  PRs are left out there, and it lists no files.
 - **A deleted computer's chat** shows no running turn: nothing runs there.
 - **Comments wait on the device.** A thread comment written in a chat whose
   computer rests stays on the device that wrote it (desktop and ADE Web,
