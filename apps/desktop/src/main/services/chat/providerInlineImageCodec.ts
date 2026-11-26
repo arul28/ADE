@@ -36,7 +36,7 @@ export type CodecFitResult =
 /** A JPEG display copy, or null when transparency or too small a saving rules one out. */
 export type CodecDisplayResult = { data: Buffer; width: number; height: number } | null;
 
-type Rgba = { width: number; height: number; data: Uint8Array; hasAlpha: boolean };
+export type Rgba = { width: number; height: number; data: Uint8Array; hasAlpha: boolean };
 
 /**
  * Decodes a PNG or JPEG the caller has already checked (size, pixel count, not
@@ -188,13 +188,16 @@ function axisWeights(srcSize: number, dstSize: number): AxisWeights[] {
 }
 
 /**
- * Box-filter downscale with premultiplied alpha. Never upscales. Works one
- * output row at a time, so memory beyond the output stays at two float rows.
- * Pauses every 64 rows so an in-process resize does not hold the event loop.
+ * Box-filter downscale with premultiplied alpha, built once and run a band of
+ * output rows at a time. Memory beyond the output stays at two float rows.
+ * Null when the image is already within `longEdge` (never upscales).
  */
-async function resizeToLongEdge(image: Rgba, longEdge: number, pause: CodecPause): Promise<Rgba> {
+function longEdgeResizer(
+  image: Rgba,
+  longEdge: number,
+): { width: number; height: number; out: Uint8Array; run: (y0: number, y1: number) => void } | null {
   const scale = longEdge / Math.max(image.width, image.height);
-  if (scale >= 1) return image;
+  if (scale >= 1) return null;
   const width = Math.max(1, Math.round(image.width * scale));
   const height = Math.max(1, Math.round(image.height * scale));
   const xw = axisWeights(image.width, width);
@@ -203,48 +206,68 @@ async function resizeToLongEdge(image: Rgba, longEdge: number, pause: CodecPause
   const out = new Uint8Array(width * height * 4);
   const row = new Float64Array(width * 4);
   const acc = new Float64Array(width * 4);
-  for (let y = 0; y < height; y += 1) {
-    if (y % 64 === 0) await pause();
-    acc.fill(0);
-    const { start: sy0, weights: wy } = yw[y]!;
-    for (let k = 0; k < wy.length; k += 1) {
-      const rowWeight = wy[k]!;
-      if (rowWeight <= 0) continue;
-      const rowOffset = (sy0 + k) * image.width * 4;
-      for (let x = 0; x < width; x += 1) {
-        const { start: sx0, weights: wx } = xw[x]!;
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let a = 0;
-        for (let m = 0; m < wx.length; m += 1) {
-          const p = rowOffset + (sx0 + m) * 4;
-          const w = wx[m]! * src[p + 3]!;
-          r += src[p]! * w;
-          g += src[p + 1]! * w;
-          b += src[p + 2]! * w;
-          a += w;
+  const run = (y0: number, y1: number): void => {
+    for (let y = y0; y < y1; y += 1) {
+      acc.fill(0);
+      const { start: sy0, weights: wy } = yw[y]!;
+      for (let k = 0; k < wy.length; k += 1) {
+        const rowWeight = wy[k]!;
+        if (rowWeight <= 0) continue;
+        const rowOffset = (sy0 + k) * image.width * 4;
+        for (let x = 0; x < width; x += 1) {
+          const { start: sx0, weights: wx } = xw[x]!;
+          let r = 0;
+          let g = 0;
+          let b = 0;
+          let a = 0;
+          for (let m = 0; m < wx.length; m += 1) {
+            const p = rowOffset + (sx0 + m) * 4;
+            const w = wx[m]! * src[p + 3]!;
+            r += src[p]! * w;
+            g += src[p + 1]! * w;
+            b += src[p + 2]! * w;
+            a += w;
+          }
+          row[x * 4] = r;
+          row[x * 4 + 1] = g;
+          row[x * 4 + 2] = b;
+          row[x * 4 + 3] = a;
         }
-        row[x * 4] = r;
-        row[x * 4 + 1] = g;
-        row[x * 4 + 2] = b;
-        row[x * 4 + 3] = a;
+        for (let i = 0; i < row.length; i += 1) acc[i] += row[i]! * rowWeight;
       }
-      for (let i = 0; i < row.length; i += 1) acc[i] += row[i]! * rowWeight;
-    }
-    const outOffset = y * width * 4;
-    for (let x = 0; x < width; x += 1) {
-      const a = acc[x * 4 + 3]!;
-      const o = outOffset + x * 4;
-      if (a > 0) {
-        out[o] = Math.min(255, Math.round(acc[x * 4]! / a));
-        out[o + 1] = Math.min(255, Math.round(acc[x * 4 + 1]! / a));
-        out[o + 2] = Math.min(255, Math.round(acc[x * 4 + 2]! / a));
+      const outOffset = y * width * 4;
+      for (let x = 0; x < width; x += 1) {
+        const a = acc[x * 4 + 3]!;
+        const o = outOffset + x * 4;
+        if (a > 0) {
+          out[o] = Math.min(255, Math.round(acc[x * 4]! / a));
+          out[o + 1] = Math.min(255, Math.round(acc[x * 4 + 1]! / a));
+          out[o + 2] = Math.min(255, Math.round(acc[x * 4 + 2]! / a));
+        }
+        out[o + 3] = Math.min(255, Math.round(a));
       }
-      out[o + 3] = Math.min(255, Math.round(a));
     }
+  };
+  return { width, height, out, run };
+}
+
+/** Downscales on the calling thread: for small images only (a project icon). */
+export function resizeRgbaToLongEdgeSync(image: Rgba, longEdge: number): Rgba {
+  const resizer = longEdgeResizer(image, longEdge);
+  if (!resizer) return image;
+  resizer.run(0, resizer.height);
+  return { width: resizer.width, height: resizer.height, data: resizer.out, hasAlpha: image.hasAlpha };
+}
+
+/** Pauses every 64 rows so an in-process resize does not hold the event loop. */
+async function resizeToLongEdge(image: Rgba, longEdge: number, pause: CodecPause): Promise<Rgba> {
+  const resizer = longEdgeResizer(image, longEdge);
+  if (!resizer) return image;
+  for (let y = 0; y < resizer.height; y += 64) {
+    await pause();
+    resizer.run(y, Math.min(resizer.height, y + 64));
   }
-  return { width, height, data: out, hasAlpha: image.hasAlpha };
+  return { width: resizer.width, height: resizer.height, data: resizer.out, hasAlpha: image.hasAlpha };
 }
 
 /** EXIF orientation (1–8) from a JPEG's APP1 segment; 1 when absent. */

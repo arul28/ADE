@@ -2841,7 +2841,8 @@ struct WorkRootListScreen: View, Equatable {
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,
-      laneMenu: workLaneMenuActions,
+      // An archived lane's row keeps its chip but offers no lane actions.
+      laneMenu: laneById[session.laneId]?.archivedAt == nil ? workLaneMenuActions : nil,
       generateNamesAvailable: inputs.generateNamesAvailable,
       onGenerateNames: generateSessionNames,
       // Per chat: a chat on another machine (or in another project) is served

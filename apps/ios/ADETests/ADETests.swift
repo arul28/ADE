@@ -17611,29 +17611,38 @@ final class ADETests: XCTestCase {
     }
     let sessions = [
       session("in-live-lane", lane: "live"),
+      session("shell-in-roster-lane", lane: "roster-only"),
       session("in-archived-lane", lane: "old"),
       session("in-deleting-lane", lane: "going"),
       session("in-lane-nobody-has", lane: "gone"),
     ]
 
-    for (rosterLoaded, expectedIds) in [
-      (true, ["in-live-lane", "in-archived-lane", "in-deleting-lane"]),
-      // Before the focused computer's roster loads, nothing is left out.
-      (false, ["in-live-lane", "in-archived-lane", "in-deleting-lane", "in-lane-nobody-has"]),
+    for (rosterLive, expectedIds) in [
+      (true, ["in-live-lane", "shell-in-roster-lane", "in-archived-lane", "in-deleting-lane"]),
+      // Until the focused computer's roster is live, nothing is left out.
+      (false, ["in-live-lane", "shell-in-roster-lane", "in-archived-lane", "in-deleting-lane", "in-lane-nobody-has"]),
     ] {
       let filed = workFileSessionsWithoutLane(
         sessions: sessions,
         lanes: [lane("live", archived: false)],
+        rosterLanes: [lane("roster-only", archived: false)],
         archivedLanes: [lane("old", archived: true), lane("unused", archived: true)],
         deletingLaneIds: ["going"],
-        focusedRosterLoaded: rosterLoaded
+        focusedRosterLive: rosterLive
       )
       XCTAssertEqual(filed.sessions.map(\.id), expectedIds)
-      // Only an archived lane that holds a row joins the lane list.
-      XCTAssertEqual(filed.lanes.map(\.id), ["live", "old"])
-      let groups = workSessionGroupsByLane(sessions: filed.sessions, orderedLanes: filed.lanes, deletingLaneIds: ["going"])
+      // A roster lane holding a row joins the lanes; an archived one stays
+      // apart, so it is never offered as a lane to start a chat in.
+      XCTAssertEqual(filed.lanes.map(\.id), ["live", "roster-only"])
+      XCTAssertEqual(filed.archivedLanes.map(\.id), ["old"])
+      let groups = workSessionGroupsByLane(
+        sessions: filed.sessions,
+        orderedLanes: filed.lanes,
+        deletingLaneIds: ["going"],
+        archivedLanes: filed.archivedLanes
+      )
       XCTAssertEqual(groups.first { $0.id == "lane:old" }?.isOrphaned, false)
-      XCTAssertEqual(groups.first { $0.id == "lane:old" }?.label, "old · Archived")
+      XCTAssertEqual(groups.first { $0.id == "lane:roster-only" }?.isOrphaned, false)
     }
   }
 

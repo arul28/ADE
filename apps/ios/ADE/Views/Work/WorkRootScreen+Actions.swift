@@ -120,12 +120,17 @@ extension WorkRootListScreen {
     let laneFiling = workFileSessionsWithoutLane(
       sessions: sideChatSessions,
       lanes: launchProjection.lanes,
+      rosterLanes: activeRoster?.lanes.map { $0.asLaneSummary() } ?? [],
       archivedLanes: localProjectionIsCurrent ? archivedLanes : [],
       deletingLaneIds: deletingLaneIds,
-      focusedRosterLoaded: localProjectionIsCurrent && focusedListed && activeRoster != nil
+      // Live: a roster this connection received, not the copy saved at launch
+      // or kept from before a reconnect.
+      focusedRosterLive: localProjectionIsCurrent && focusedListed && activeRoster != nil
+        && syncService.connectionState == .connected && syncService.rosterLiveOnConnection
     )
     let sessionsSnapshot = laneFiling.sessions
     let lanesSnapshot = laneFiling.lanes.filter { !deletingLaneIds.contains($0.id) }
+    let archivedLanesSnapshot = laneFiling.archivedLanes
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
@@ -172,6 +177,7 @@ extension WorkRootListScreen {
         outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
         orderedLanes: lanesSnapshot,
+        archivedLanes: archivedLanesSnapshot,
         pullRequests: pullRequestsSnapshot,
         githubPrs: githubPrsSnapshot,
         deletingLaneIds: deletingLaneIds,
