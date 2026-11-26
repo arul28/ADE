@@ -1111,6 +1111,7 @@ import {
   ctoReactableMessage,
   ctoReactionFeedbackSinceLastTurn,
   parseCtoReactionFeedback,
+  restoreCtoReactionFeedback,
   settleCtoReactionFeedback,
   stageCtoReactionFeedback,
   type CtoReactionFeedback,
@@ -19082,6 +19083,24 @@ export function createAgentChatService(args: {
     replay: string;
     reconstruction: string;
     restartNote: string;
+    /** The person's reactions this send took off the untold list. */
+    toldReactions: CtoReactionFeedback[];
+  };
+
+  /**
+   * Restages what a refused send consumed, so the next send carries it again.
+   * Each bucket only fills an empty slot: a newer one staged since wins.
+   */
+  const restoreConsumedTurnContext = (managed: ManagedChatSession, consumed: ConsumedTurnContextPrefix): void => {
+    if (consumed.replay && !managed.pendingTranscriptReplay) managed.pendingTranscriptReplay = consumed.replay;
+    if (consumed.reconstruction && !managed.pendingReconstructionContext) {
+      managed.pendingReconstructionContext = consumed.reconstruction;
+    }
+    if (consumed.restartNote && !managed.pendingRestartNote) managed.pendingRestartNote = consumed.restartNote;
+    if (consumed.toldReactions.length && managed.ctoReactionFeedback) {
+      restoreCtoReactionFeedback(managed.ctoReactionFeedback, consumed.toldReactions);
+    }
+    persistChatState(managed);
   };
 
   const consumePendingTurnContextPrefix = (
@@ -19140,9 +19159,9 @@ export function createAgentChatService(args: {
     }
     if (delivered.has("tail")) managed.conversationTail.pending = false;
     if (delivered.has("static")) managed.ctoStaticContext.pending = false;
-    if (hadReconstruction && managed.ctoReactionFeedback) {
-      settleCtoReactionFeedback(managed.ctoReactionFeedback, delivered.has("reactions"));
-    }
+    const toldReactions = hadReconstruction && managed.ctoReactionFeedback
+      ? settleCtoReactionFeedback(managed.ctoReactionFeedback, delivered.has("reactions"))
+      : [];
     // Consumption has to be durable: `pendingTranscriptReplay` is restored on
     // reconstruct, so clearing it in memory alone would replay the whole
     // transcript a second time after a restart.
@@ -19158,6 +19177,7 @@ export function createAgentChatService(args: {
       replay,
       reconstruction,
       restartNote,
+      toldReactions,
     };
   };
 
@@ -32666,11 +32686,7 @@ export function createAgentChatService(args: {
       runtime.turnStartContextConsumed = false;
       runtime.pendingTurnPlanningApprovalGuarded = null;
       runtime.effectiveCollaborationMode = null;
-      if (contextToRestore) {
-        managed.pendingTranscriptReplay = contextToRestore.replay || null;
-        managed.pendingReconstructionContext = contextToRestore.reconstruction || null;
-        persistChatState(managed);
-      }
+      if (contextToRestore) restoreConsumedTurnContext(managed, contextToRestore);
       throw error;
     }
     runtime.turnStartReserved = false;
@@ -63652,18 +63668,7 @@ export function createAgentChatService(args: {
     //
     // Skipped for a mid-turn token refresh: the thread is resumed intact and the
     // model already received this context, so restaging would replay it twice.
-    if (first.consumedTurnContext && !resumedMidTurn) {
-      if (first.consumedTurnContext.replay && !managed.pendingTranscriptReplay) {
-        managed.pendingTranscriptReplay = first.consumedTurnContext.replay;
-      }
-      if (first.consumedTurnContext.reconstruction && !managed.pendingReconstructionContext) {
-        managed.pendingReconstructionContext = first.consumedTurnContext.reconstruction;
-      }
-      if (first.consumedTurnContext.restartNote && !managed.pendingRestartNote) {
-        managed.pendingRestartNote = first.consumedTurnContext.restartNote;
-      }
-      persistChatState(managed);
-    }
+    if (first.consumedTurnContext && !resumedMidTurn) restoreConsumedTurnContext(managed, first.consumedTurnContext);
 
     const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason, {
       preserveAgentId,

@@ -114,14 +114,24 @@ export function stageCtoReactionFeedback(queue: CtoReactionFeedbackQueue): strin
 /**
  * Settles a send: when it delivered the reactions section, the staged
  * reactions leave the list. A reaction that came in after the context was
- * built waits for the next send.
+ * built waits for the next send. Returns the reactions it took off the list.
  */
-export function settleCtoReactionFeedback(queue: CtoReactionFeedbackQueue, delivered: boolean): void {
-  if (delivered && queue.staged) {
-    const told = new Set(queue.staged);
-    queue.pending = queue.pending.filter((item) => !told.has(item));
-  }
+export function settleCtoReactionFeedback(queue: CtoReactionFeedbackQueue, delivered: boolean): CtoReactionFeedback[] {
+  const staged = delivered ? queue.staged : null;
   queue.staged = null;
+  if (!staged) return [];
+  const told = new Set(staged);
+  queue.pending = queue.pending.filter((item) => !told.has(item));
+  return staged.slice();
+}
+
+/**
+ * Puts back the reactions a send took off the list when the provider then
+ * refused the send. A newer reaction on the same message stays instead.
+ */
+export function restoreCtoReactionFeedback(queue: CtoReactionFeedbackQueue, told: readonly CtoReactionFeedback[]): void {
+  const newer = new Set(queue.pending.map((item) => item.targetKey));
+  queue.pending = [...told.filter((item) => !newer.has(item.targetKey)), ...queue.pending];
 }
 
 /** The pending list as the chat state saved it; entries that do not parse are dropped. */
