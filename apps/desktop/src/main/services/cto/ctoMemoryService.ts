@@ -15,6 +15,9 @@ import {
   type CtoOpenWorkOwner,
   type CtoUpdateOpenWorkArgs,
 } from "../../../shared/types/cto";
+import { linkedWorkOutcome, normalizeOpenWorkLink, type CtoLinkedWorkResolver } from "./ctoOpenWorkLinks";
+
+export type { CtoLinkedWorkResolver } from "./ctoOpenWorkLinks";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
@@ -172,22 +175,6 @@ function newWorkId(): string {
   return `w-${randomUUID().replace(/-/g, "").slice(0, 8)}`;
 }
 
-function normalizeOpenWorkLink(value: unknown): CtoOpenWorkLink | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  if (record.kind === "pr") {
-    const number = Number(record.number);
-    return Number.isInteger(number) && number > 0 ? { kind: "pr", number } : null;
-  }
-  if (record.kind === "chat") {
-    const sessionId = typeof record.sessionId === "string" ? record.sessionId.trim() : "";
-    if (!sessionId) return null;
-    const machineId = typeof record.machineId === "string" ? record.machineId.trim() : "";
-    return machineId ? { kind: "chat", sessionId, machineId } : { kind: "chat", sessionId };
-  }
-  return null;
-}
-
 function optionalText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -216,48 +203,6 @@ function normalizeOpenWorkItem(value: unknown): CtoOpenWorkItem | null {
     ...(outcome ? { outcome } : {}),
     ...(closedBy ? { closedBy } : {}),
   };
-}
-
-/** What a linked item's chat or PR looks like right now, as far as this machine knows. */
-export type CtoLinkedWorkResolver = {
-  /** The PR's state on the repo ("open", "draft", "merged", "closed"), or null when unknown. */
-  prState: (number: number) => string | null;
-  /**
-   * The chat as far as this machine can tell, or null when it cannot (a
-   * machine it has not read): done (settled, archived or ended), when it last
-   * came to rest after a clean turn, and its last status line.
-   */
-  chatState: (link: Extract<CtoOpenWorkLink, { kind: "chat" }>) => {
-    done: boolean;
-    restedAt: string | null;
-    statusLine: string | null;
-  } | null;
-};
-
-/**
- * The outcome line for a linked item whose chat or PR has closed, or null
- * while it is still going. A chat counts as done when it ended, or when it
- * came to rest after the item was linked: a chat that was already resting
- * when the CTO linked it has not done that work yet.
- */
-export function linkedWorkOutcome(
-  item: Pick<CtoOpenWorkItem, "link" | "createdAt">,
-  resolver: CtoLinkedWorkResolver,
-): string | null {
-  const link = item.link;
-  if (!link) return null;
-  if (link.kind === "pr") {
-    const state = resolver.prState(link.number);
-    // The row already shows the PR number beside the outcome.
-    if (state === "merged") return "Merged";
-    if (state === "closed") return "Closed without merging";
-    return null;
-  }
-  const chat = resolver.chatState(link);
-  if (!chat) return null;
-  const restedSince = Boolean(chat.restedAt) && Date.parse(chat.restedAt!) > Date.parse(item.createdAt);
-  if (!chat.done && !restedSince) return null;
-  return chat.statusLine ? `Done: ${chat.statusLine}` : "Done";
 }
 
 /** Open items oldest first (a checklist), then finished ones newest first. */
@@ -732,49 +677,66 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   };
 
   let linkedWorkResolver: CtoLinkedWorkResolver | null = null;
+  let linkedWorkRun: Promise<number> | null = null;
   /**
    * Close every open item whose linked chat or PR has closed, with an outcome
-   * line. Runs before each read of the list (the side panel, each CTO turn)
-   * and when PRs change, so a merged PR's item is done the next time anyone
-   * looks. Local reads only; writes only when something closed.
+   * line. Runs at the start of each CTO turn, on each read of the list (the
+   * side panel, Settings) and when PRs change, so a merged PR's item is done
+   * the next time anyone looks. Local reads only (a chat on another machine
+   * answers from the last read of it); writes only when something closed.
+   * One run at a time: a caller that finds one running joins it.
    */
-  const reconcileLinkedWork = (): number => {
-    const resolver = linkedWorkResolver;
-    if (!resolver) return 0;
-    const items = readOpenWork();
-    const closures = new Map<string, string>();
-    for (const item of items) {
-      if (item.doneAt || !item.link) continue;
-      try {
-        const outcome = linkedWorkOutcome(item, resolver);
-        if (outcome) closures.set(item.id, clipText(redactSecrets(outcome), OPEN_WORK_OUTCOME_MAX_CHARS));
-      } catch (error) {
-        warn("cto_memory.linked_work_check_failed", error, { id: item.id });
+  const reconcileLinkedWork = (): Promise<number> => {
+    if (linkedWorkRun) return linkedWorkRun;
+    const run = (async () => {
+      const resolver = linkedWorkResolver;
+      if (!resolver) return 0;
+      const closures = new Map<string, string>();
+      for (const item of readOpenWork()) {
+        if (item.doneAt || !item.link) continue;
+        try {
+          const outcome = await linkedWorkOutcome(item, resolver);
+          if (outcome) closures.set(item.id, clipText(redactSecrets(outcome), OPEN_WORK_OUTCOME_MAX_CHARS));
+        } catch (error) {
+          warn("cto_memory.linked_work_check_failed", error, { id: item.id });
+        }
       }
-    }
-    if (!closures.size) return 0;
-    const doneAt = nowIso();
-    writeOpenWork(items.map((item) => {
-      const outcome = closures.get(item.id);
-      return outcome ? { ...item, doneAt, outcome, closedBy: "auto" as const } : item;
-    }));
-    logger?.info?.("cto_memory.linked_work_closed", { count: closures.size });
-    return closures.size;
+      if (!closures.size) return 0;
+      // Read again: the person may have finished, reopened or removed an item
+      // while the checks ran. Close only what is still open and still linked.
+      const doneAt = nowIso();
+      let closed = 0;
+      const next = readOpenWork().map((item) => {
+        const outcome = closures.get(item.id);
+        if (!outcome || item.doneAt || !item.link) return item;
+        closed += 1;
+        return { ...item, doneAt, outcome, closedBy: "auto" as const };
+      });
+      if (!closed) return 0;
+      writeOpenWork(next);
+      logger?.info?.("cto_memory.linked_work_closed", { count: closed });
+      return closed;
+    })()
+      .catch((error) => {
+        warn("cto_memory.linked_work_reconcile_failed", error);
+        return 0;
+      })
+      .finally(() => {
+        if (linkedWorkRun === run) linkedWorkRun = null;
+      });
+    linkedWorkRun = run;
+    return run;
   };
+
+  /** Open items' chats on other machines, for the machine reads that report on them. */
+  const listLinkedRemoteChats = (): Array<{ machineId: string; sessionId: string }> =>
+    readOpenWork().flatMap((item) => (!item.doneAt && item.link?.kind === "chat" && item.link.machineId
+      ? [{ machineId: item.link.machineId, sessionId: item.link.sessionId }]
+      : []));
 
   /** Late-bound: the PR and session services exist after this one. */
   const setLinkedWorkResolver = (resolver: CtoLinkedWorkResolver | null): void => {
     linkedWorkResolver = resolver;
-  };
-
-  /** The open list after closing what its links say is done. */
-  const readReconciledOpenWork = (): CtoOpenWorkItem[] => {
-    try {
-      if (reconcileLinkedWork() > 0) return readOpenWork();
-    } catch (error) {
-      warn("cto_memory.linked_work_reconcile_failed", error);
-    }
-    return readOpenWork();
   };
 
   const removeWork = (id: string): CtoOpenWorkResult => {
@@ -1010,7 +972,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       userNotesLimitBytes: CTO_USER_NOTES_MAX_BYTES,
       memoryHash: textHash(memory),
       userNotesHash: textHash(userNotes),
-      openWork: readReconciledOpenWork(),
+      openWork: readOpenWork(),
       rules: learning.readRules(),
       rulesBytes: utf8Bytes(learning.readRules()),
       rulesLimitBytes: CTO_RULES_MAX_BYTES,
@@ -1021,6 +983,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     };
   };
 
+  /** The snapshot a reader shows: linked items whose chat or PR closed are closed first. */
+  const getReconciledSnapshot = async (): Promise<CtoMemorySnapshot> => {
+    await reconcileLinkedWork();
+    return getSnapshot();
+  };
+
   /**
    * The memory half of the CTO's per-turn context: project notes, notes about
    * the person, and open work. Rebuilt on every turn; each title carries the
@@ -1029,7 +997,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const buildMemoryContextSections = (): Array<{ title: string; body: string }> => {
     const project = readNotes("project").trim();
     const user = readNotes("user").trim();
-    const items = readReconciledOpenWork();
+    const items = readOpenWork();
     const open = items.filter((item) => !item.doneAt);
     const done = items.filter((item) => item.doneAt).slice(0, OPEN_WORK_INJECTED_DONE);
     const describe = (item: CtoOpenWorkItem): string => {
@@ -1112,9 +1080,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     updateOpenWork,
     reconcileLinkedWork,
     setLinkedWorkResolver,
+    listLinkedRemoteChats,
     recordDiscovery,
     readNewDiscoveries,
     getSnapshot,
+    getReconciledSnapshot,
     buildMemoryContextSections,
     readRules: learning.readRules,
     readUndone: learning.readUndone,

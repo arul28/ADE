@@ -1415,6 +1415,9 @@ function repoPrKey(owner: string, repo: string, number: number): string {
   return `${owner.trim().toLowerCase()}/${repo.trim().toLowerCase()}#${Number(number)}`;
 }
 
+/** Open PRs a complete open sweep no longer lists, read one by one per sweep. */
+const VANISHED_OPEN_PR_READS_PER_SWEEP = 10;
+
 function repoRefKey(repo: GitHubRepoRef | null | undefined): string | null {
   const owner = repo?.owner?.trim().toLowerCase() ?? "";
   const name = repo?.name?.trim().toLowerCase() ?? "";
@@ -2493,6 +2496,16 @@ export function createPrService({
 
     const activeRepoKey = repoRefKey(activeGithubRepo);
     return !activeRepoKey || repoRefKey({ owner: row.repo_owner, name: row.repo_name }) === activeRepoKey;
+  };
+
+  /** An `and …` clause (and its params) keeping rows of the project's active GitHub repo, when known. */
+  const activeRepoSqlFilter = (): { clause: string; params: string[] } => {
+    const key = repoRefKey(activeGithubRepo);
+    if (!key || !activeGithubRepo) return { clause: "", params: [] };
+    return {
+      clause: " and lower(trim(repo_owner)) = ? and lower(trim(repo_name)) = ?",
+      params: [activeGithubRepo.owner.trim().toLowerCase(), activeGithubRepo.name.trim().toLowerCase()],
+    };
   };
 
   /**
@@ -4710,6 +4723,37 @@ export function createPrService({
     resolveWriteViewerLogin,
     forgetActivityInputs,
   });
+
+  /**
+   * A complete walk of the repo's open PRs is the whole open list, so a stored
+   * open row it did not return has merged or closed since. Without a webhook
+   * nothing else says so for a PR no lane owns, and the CTO would keep it as
+   * open. Read each once (a few per sweep) and store what GitHub says.
+   */
+  const settleVanishedOpenProjections = async (repo: GitHubRepoRef, openPulls: readonly unknown[]): Promise<void> => {
+    const listed = new Set(openPulls.map((raw) => (isRecord(raw) ? Number(raw.number) : NaN)));
+    const vanished = db.all<{ github_pr_number: number }>(
+      `
+        select github_pr_number
+          from github_pr_projections
+         where project_id = ?
+           and lower(repo_owner) = lower(?)
+           and lower(repo_name) = lower(?)
+           and state in ('open', 'draft')
+         order by updated_at desc
+      `,
+      [projectId, repo.owner, repo.name],
+    )
+      .map((row) => Number(row.github_pr_number))
+      .filter((number) => Number.isInteger(number) && !listed.has(number))
+      .slice(0, VANISHED_OPEN_PR_READS_PER_SWEEP);
+    if (!vanished.length) return;
+    const reads = await Promise.all(vanished.map((number) => fetchPr(repo, number).catch((error: unknown) => {
+      logger.warn("prs.vanished_open_pr_read_failed", { prNumber: number, error: getErrorMessage(error) });
+      return null;
+    })));
+    upsertGithubPrProjectionsFromRawPulls(repo, reads.filter((raw) => raw != null));
+  };
 
   const fetchPr = async (
     repo: GitHubRepoRef,
@@ -9725,6 +9769,9 @@ export function createPrService({
       githubStackStore.scheduleReconcile(repo, stackNumber);
     }
     upsertGithubPrProjectionsFromRawPulls(repo, repoPullRequestsRaw);
+    if (options.includeExternalClosed !== true && deltaBoundaryMs == null && !sweepBudgetExhausted) {
+      await settleVanishedOpenProjections(repo, repoPullRequestsRaw);
+    }
     // Advance the cursor only once the rows this walk fetched are durable. The
     // next delta stops where this one started, so moving it before the upsert
     // would let a crash between the two skip a window nothing ever re-lists.
@@ -10771,47 +10818,49 @@ export function createPrService({
      * `listAll`, this includes PRs no lane here owns: those opened from another
      * machine's lane, or outside ADE.
      */
-    listOpenRepoPullRequests(limit = 100): OpenRepoPullRequest[] {
-      const activeRepoKey = repoRefKey(activeGithubRepo);
+    listOpenRepoPullRequests(limit = 500): OpenRepoPullRequest[] {
+      // The repo filter is in SQL, before the limit: open rows left from an
+      // old remote must not fill the page.
+      const repo = activeRepoSqlFilter();
       return db.all<GitHubPrProjectionRow>(
         `
           select ${GITHUB_PROJECTION_COLUMNS}
             from github_pr_projections
            where project_id = ?
-             and state in ('open', 'draft')
+             and state in ('open', 'draft')${repo.clause}
            order by updated_at desc
            limit ?
         `,
-        [projectId, Math.max(1, Math.min(250, Math.floor(limit)))],
-      )
-        .filter((row) => !activeRepoKey || repoRefKey({ owner: row.repo_owner, name: row.repo_name }) === activeRepoKey)
-        .map((row) => ({
-          number: Number(row.github_pr_number),
-          title: row.title || `PR #${row.github_pr_number}`,
-          isDraft: Number(row.is_draft ?? 0) !== 0 || row.state === "draft",
-          headBranch: row.head_branch ?? null,
-          author: row.author ?? null,
-          url: row.github_url || `https://github.com/${row.repo_owner}/${row.repo_name}/pull/${row.github_pr_number}`,
-          updatedAt: row.updated_at || row.synced_at,
-        }));
+        [projectId, ...repo.params, Math.max(1, Math.min(1000, Math.floor(limit)))],
+      ).map((row) => ({
+        number: Number(row.github_pr_number),
+        title: row.title || `PR #${row.github_pr_number}`,
+        isDraft: Number(row.is_draft ?? 0) !== 0 || row.state === "draft",
+        headBranch: row.head_branch ?? null,
+        author: row.author ?? null,
+        url: row.github_url || `https://github.com/${row.repo_owner}/${row.repo_name}/pull/${row.github_pr_number}`,
+        updatedAt: row.updated_at || row.synced_at,
+      }));
     },
 
     /**
      * A PR's state on the repo ("open", "draft", "merged", "closed") from
      * what ADE already stored: a lane's PR row first, else the repo's PR list.
-     * Null when ADE has never seen it. No network.
+     * Both only for the project's repo: a lane may link a same-numbered PR on
+     * another repo. Null when ADE has never seen it. No network.
      */
     getRepoPullRequestState(prNumber: number): string | null {
+      const repo = activeRepoSqlFilter();
       const linked = db.get<{ state: string }>(
-        `select state from pull_requests where project_id = ? and github_pr_number = ? order by updated_at desc limit 1`,
-        [projectId, prNumber],
+        `select state from pull_requests where project_id = ? and github_pr_number = ?${repo.clause}
+          order by updated_at desc limit 1`,
+        [projectId, prNumber, ...repo.params],
       );
       if (linked?.state) return linked.state;
-      const activeRepoKey = repoRefKey(activeGithubRepo);
-      const projected = db.all<{ state: string; repo_owner: string; repo_name: string }>(
-        `select state, repo_owner, repo_name from github_pr_projections where project_id = ? and github_pr_number = ?`,
-        [projectId, prNumber],
-      ).find((row) => !activeRepoKey || repoRefKey({ owner: row.repo_owner, name: row.repo_name }) === activeRepoKey);
+      const projected = db.get<{ state: string }>(
+        `select state from github_pr_projections where project_id = ? and github_pr_number = ?${repo.clause} limit 1`,
+        [projectId, prNumber, ...repo.params],
+      );
       return projected?.state ?? null;
     },
 

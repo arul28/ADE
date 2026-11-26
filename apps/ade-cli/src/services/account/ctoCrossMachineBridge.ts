@@ -89,6 +89,10 @@ const REMOTE_WORK_PER_MACHINE_BUDGET_MS = 12_000;
 const REMOTE_WORK_MAX_CHATS = 8;
 /** Lanes kept per machine, for matching open PRs to the lane that opened them. */
 const REMOTE_WORK_MAX_LANES = 200;
+/** Linked chats looked up by id per machine read, beyond its chat list. */
+const REMOTE_WORK_MAX_LINKED_LOOKUPS = 10;
+/** How long a machine found without this project is left out of work reads. */
+const REMOTE_WORK_NO_PROJECT_RECHECK_MS = 10 * 60_000;
 /** An all-domain action listing names actions only; one domain also carries inputs. */
 const ACTION_LIST_MAX_ROWS = 600;
 
@@ -128,6 +132,12 @@ export type CtoCrossMachineBridgeOptions = {
   getLocalActionCaller?: () => Promise<CtoActionCaller> | null;
   /** Read on every call; absent means on. */
   getAccess?: () => CtoCrossMachineAccess;
+  /**
+   * Chats on other machines that open work items link to. Each machine's work
+   * read looks these up by id when its chat list does not carry them (archived,
+   * or settled long ago), so the item still learns the chat is done.
+   */
+  getLinkedRemoteChats?: () => Array<{ machineId: string; sessionId: string }>;
   logger?: {
     info(event: string, meta?: Record<string, unknown>): void;
     warn(event: string, meta?: Record<string, unknown>): void;
@@ -377,6 +387,17 @@ export function createCtoCrossMachineBridge(
     }
   };
 
+  /** A session row as a linked work item needs it, or null for a row without an id. */
+  const knownChat = (row: Record<string, unknown>): NonNullable<CtoRemoteMachineWork["known"]>[number] | null => {
+    const sessionId = typeof row.id === "string" ? row.id : "";
+    if (!sessionId) return null;
+    const statusLine = typeof row.statusNote === "string" ? row.statusNote.trim() : "";
+    return { sessionId, done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: statusLine || null };
+  };
+
+  /** When each machine was last found without this project (work reads skip it for a while). */
+  const noProjectSeenAt = new Map<string, number>();
+
   /**
    * One machine's lanes and working chats, or null when it has no checkout of
    * this project. Two light reads: lane rows without git status, and session
@@ -416,22 +437,34 @@ export function createCtoCrossMachineBridge(
       for (const row of Array.isArray(sessions) ? sessions.filter(isRecord) : []) {
         const toolType = typeof row.toolType === "string" ? row.toolType : null;
         if (!isChatToolType(toolType) && !isTrackedAgentCliToolType(toolType as never)) continue;
-        const sessionId = typeof row.id === "string" ? row.id : "";
-        const statusLine = typeof row.statusNote === "string" ? row.statusNote.trim() : "";
-        const done = isTerminalSessionDone(row);
-        if (sessionId) known.push({ sessionId, done, restedAt: sessionRestedAt(row), statusLine: statusLine || null });
-        if (done || row.status !== "running") continue;
+        const entry = knownChat(row);
+        if (!entry) continue;
+        known.push(entry);
+        if (entry.done || row.status !== "running") continue;
         const runtimeState = row.runtimeState;
         if (runtimeState !== "running" && runtimeState !== "waiting-input") continue;
         const laneId = typeof row.laneId === "string" ? row.laneId : "";
         working.push({
-          sessionId,
+          sessionId: entry.sessionId,
           title: (typeof row.title === "string" ? row.title.trim() : "") || "Untitled chat",
           laneName: laneNameById.get(laneId) ?? (typeof row.laneName === "string" ? row.laneName : null),
           state: runtimeState === "waiting-input" ? "needs input" : "working",
-          statusLine: statusLine || null,
+          statusLine: entry.statusLine,
         });
       }
+      // Linked chats the list left out (archived, or settled long ago): by id.
+      const listed = new Set(known.map((entry) => entry.sessionId));
+      const missing = (options.getLinkedRemoteChats?.() ?? [])
+        .filter((link) => link.machineId === machine.machineKey && !listed.has(link.sessionId))
+        .slice(0, REMOTE_WORK_MAX_LINKED_LOOKUPS);
+      const lookedUp = await Promise.all(missing.map((link) => callOnMachine(machine, {
+        domain: "session",
+        action: "get",
+        args: { sessionId: link.sessionId },
+        timeoutMs: 10_000,
+      }).then((row) => (isRecord(row) ? knownChat(row) : null), () => null)));
+      for (const entry of lookedUp) if (entry) known.push(entry);
+      noProjectSeenAt.delete(machine.machineKey);
       return {
         ...base,
         lanes: laneList,
@@ -440,8 +473,12 @@ export function createCtoCrossMachineBridge(
         known,
       };
     } catch (error) {
-      // `connectToProject` recorded a machine without this project; leave it out.
-      if (hasProjectByMachine.get(machine.machineKey) === false) return null;
+      // `connectToProject` recorded a machine without this project; leave it
+      // out, and look again in a while (it may open the project later).
+      if (hasProjectByMachine.get(machine.machineKey) === false) {
+        noProjectSeenAt.set(machine.machineKey, Date.now());
+        return null;
+      }
       return { ...base, lanes: [], chats: [], chatsTotal: 0, error: errorMessage(error) };
     }
   };
@@ -452,7 +489,10 @@ export function createCtoCrossMachineBridge(
   const refreshRemoteWork = async (): Promise<void> => {
     const machines = await listAccountMachines();
     const targets = machines
-      .filter((machine) => !isThisMachine(machine) && machine.online && hasProjectByMachine.get(machine.machineKey) !== false)
+      .filter((machine) => !isThisMachine(machine)
+        && machine.online
+        && (hasProjectByMachine.get(machine.machineKey) !== false
+          || Date.now() - (noProjectSeenAt.get(machine.machineKey) ?? 0) >= REMOTE_WORK_NO_PROJECT_RECHECK_MS))
       .slice(0, ROSTER_MAX_MACHINES);
     const read = await Promise.all(targets.map((machine) => withTimeout(
       readMachineWork(machine),

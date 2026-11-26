@@ -325,6 +325,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { isTerminalSessionDone, sessionRestedAt } from "../../desktop/src/shared/types/sessions";
+import { getSessionWithChatProjection } from "../../desktop/src/main/services/sessions/chatSessionProjection";
 import {
   brainLogPath,
   installedAdeHomes,
@@ -2322,6 +2323,7 @@ export async function createAdeRuntime(args: {
         logger,
         getLocalActionCaller: getCtoLocalActionCaller,
         getAccess: () => ctoStateService.getCrossMachineAccess(),
+        getLinkedRemoteChats: () => ctoMemoryService.listLinkedRemoteChats(),
       });
       return ctoCrossMachine;
     };
@@ -4235,11 +4237,8 @@ export async function createAdeRuntime(args: {
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
         accountLanesRef.note?.();
-        try {
-          ctoMemoryService.reconcileLinkedWork();
-        } catch (error) {
-          logger.warn("cto_memory.linked_work_reconcile_failed", { error: error instanceof Error ? error.message : String(error) });
-        }
+        // Closes work linked to a PR that merged or closed. Never rejects.
+        void ctoMemoryService.reconcileLinkedWork();
       }
       if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
         const notification: PushPrNotification = {
@@ -4881,9 +4880,11 @@ export async function createAdeRuntime(args: {
     // list (each CTO turn, the side panel) and whenever PRs change.
     ctoMemoryService.setLinkedWorkResolver({
       prState: (prNumber) => headlessLinearServices.prService?.getRepoPullRequestState(prNumber) ?? null,
-      chatState: (link) => {
+      chatState: async (link) => {
         if (link.machineId) return ctoCrossMachine?.peekRemoteChat?.(link.machineId, link.sessionId) ?? null;
-        const row = sessionService.get(link.sessionId);
+        // The row with its chat's live state: a stored chat row reads "running"
+        // between turns, so only the projection can say it came to rest.
+        const row = await getSessionWithChatProjection({ sessionService, ptyService, agentChatService, logger }, link.sessionId);
         if (!row) return null;
         return { done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: row.statusNote?.trim() || null };
       },

@@ -507,7 +507,7 @@ describe("ctoStateService", () => {
     const context = service.buildReconstructionContext();
     expect(context).toContain("Unavailable this turn: lanes.");
     // The rest of the block still rendered.
-    expect(context).toContain("Open PRs (1)");
+    expect(context).toContain("Open PRs on the repo (1)");
 
     fixture.db.close();
   });
@@ -614,9 +614,10 @@ describe("ctoStateService", () => {
     });
     const realisticSnapshot = await realistic.refreshLiveState();
     const realisticBlock = renderCtoLiveStateBlock(realisticSnapshot!);
-    // Measured 2026-09-11: 4591 characters.
-    expect(realisticBlock.length).toBeGreaterThan(4_300);
-    expect(realisticBlock.length).toBeLessThan(4_900);
+    // Measured 2026-11-26: 5423 characters (4591 before each PR said where it
+    // came from).
+    expect(realisticBlock.length).toBeGreaterThan(5_100);
+    expect(realisticBlock.length).toBeLessThan(5_700);
     // Nothing this project can currently produce is truncated.
     expect(realisticBlock).not.toContain("(live state truncated)");
 
@@ -639,7 +640,8 @@ describe("ctoStateService", () => {
       })),
       chatsTotal: 999,
       pullRequests: Array.from({ length: 12 }, (_, i) => ({
-        number: 10000 + i, title: "t".repeat(70), laneId: "l".repeat(40),
+        number: 10000 + i, title: "t".repeat(70), isDraft: true, origin: "this-machine" as const,
+        laneId: "l".repeat(40), laneName: "n".repeat(40), machineName: null, author: null, headBranch: null,
         checks: "changes_requested", review: "changes_requested",
       })),
       pullRequestsTotal: 999,
@@ -658,11 +660,11 @@ describe("ctoStateService", () => {
       unavailable: [],
     };
     const worstRaw = renderCtoLiveStateBlock(worst, Number.MAX_SAFE_INTEGER);
-    // Measured 2026-09-11: 12578 characters — every row present with every
-    // string at its clip limit. A new section that moves this number has to
-    // move the cap with it.
-    expect(worstRaw.length).toBeGreaterThan(12_000);
-    expect(worstRaw.length).toBeLessThan(13_500);
+    // Measured 2026-11-26: 13506 characters (12578 before each PR named its
+    // lane) — every row present with every string at its clip limit. A new
+    // section that moves this number has to move the cap with it.
+    expect(worstRaw.length).toBeGreaterThan(13_000);
+    expect(worstRaw.length).toBeLessThan(14_000);
     expect(worstRaw.length).toBeGreaterThan(CTO_LIVE_STATE_MAX_CHARS);
 
     // ...and the cap holds it, line-aligned, with an explicit marker.

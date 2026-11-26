@@ -1835,7 +1835,7 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   const ctoMemoryService = runtime.ctoMemoryService;
   if (!ctoMemoryService) return null;
   return {
-    getSnapshot: () => ctoMemoryService.getSnapshot(),
+    getSnapshot: () => ctoMemoryService.getReconciledSnapshot(),
     updateNotes: (args?: Partial<CtoUpdateNotesArgs>) => {
       if (!args || !isCtoNotesFile(args.scope)) {
         throw new Error("updateNotes requires `scope`: \"project\", \"user\" or \"rules\".");

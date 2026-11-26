@@ -73,10 +73,8 @@ type CtoStateServiceArgs = {
    * standalone (e.g. capability-manifest preview), but wired in production so
    * the memory is injected into every turn.
    */
-  ctoMemoryService?: Pick<
-    CtoMemoryService,
-    "buildMemoryContextSections"
-  > | null;
+  ctoMemoryService?: (Pick<CtoMemoryService, "buildMemoryContextSections">
+    & Partial<Pick<CtoMemoryService, "reconcileLinkedWork">>) | null;
   /**
    * Live project state, resolved lazily on every refresh. A thunk because this
    * service is constructed long before the chat, PR, and automation services
@@ -1141,8 +1139,14 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
    * quietly send the CTO back to shelling out for state.
    */
   const captureLiveState = async (): Promise<CtoLiveStateSnapshot | null> => {
+    // A turn is starting: close open work whose chat or PR has closed, beside
+    // the capture rather than in front of it. It never rejects.
+    const linkedWork = args.ctoMemoryService?.reconcileLinkedWork?.();
     const sources = args.getLiveStateSources?.() ?? null;
-    if (!sources) return null;
+    if (!sources) {
+      await linkedWork;
+      return null;
+    }
     const unavailable: string[] = [];
     const snapshot: CtoLiveStateSnapshot = {
       capturedAt: nowIso(),
@@ -1302,6 +1306,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       }
     }
 
+    await linkedWork;
     return snapshot;
   };
 

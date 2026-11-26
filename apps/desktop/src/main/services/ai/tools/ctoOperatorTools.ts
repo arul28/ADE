@@ -1531,7 +1531,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           .filter((pr) => state === "all" || pr.state === state || (state === "open" && pr.state === "draft"))
           .sort((a, b) => updatedEpoch(b.updatedAt) - updatedEpoch(a.updatedAt));
         const prs = matched.slice(0, limit);
-        const otherOpenPrs = state === "open" || state === "all"
+        const wantsOpen = state === "open" || state === "all";
+        // `refresh` above re-reads only the PRs a lane owns. The repo's open
+        // list (PRs from other machines or outside ADE) comes from the GitHub
+        // snapshot, which serves its cache while fresh.
+        let repoListNote = null as string | null;
+        if (refresh && wantsOpen) {
+          await deps.prService.getGithubSnapshot().catch((error: unknown) => {
+            repoListNote = `The repo's open PR list could not be refreshed (${getErrorMessage(error)}); otherOpenPrs is from the last read.`;
+          });
+        }
+        const otherOpenPrs = wantsOpen
           ? collectLivePullRequests(deps.prService, deps.crossMachine?.peekRemoteWork?.() ?? null, new Map())
             .filter((pr) => pr.origin !== "this-machine")
             .slice(0, limit)
@@ -1543,6 +1553,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           truncated: matched.length > prs.length,
           prs,
           ...(otherOpenPrs.length ? { otherOpenPrs } : {}),
+          ...(repoListNote ? { note: repoListNote } : {}),
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
@@ -3422,6 +3433,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             : null;
           if (!target) return { success: false, error: "Other machines are not reachable from this runtime; leave machine out for a chat here." };
           machineId = target.isThisMachine ? null : target.machineId;
+        }
+        // A link that names no chat here would never close; say so now.
+        if (chatSessionId && !machineId && typeof deps.sessionService?.get === "function" && !deps.sessionService.get(chatSessionId)) {
+          return { success: false, error: `No chat '${chatSessionId}' on this machine. Pass machine for a chat on another machine.` };
         }
         const link = chatSessionId
           ? { kind: "chat" as const, sessionId: chatSessionId, ...(machineId ? { machineId } : {}) }

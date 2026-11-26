@@ -483,6 +483,7 @@ import {
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { isTerminalSessionDone, sessionRestedAt } from "../shared/types/sessions";
+import { getSessionWithChatProjection } from "./services/sessions/chatSessionProjection";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
@@ -5382,9 +5383,14 @@ app.whenReady().then(async () => {
     // machines here: a chat on another machine stays open until the brain sees it).
     ctoMemoryService.setLinkedWorkResolver({
       prState: (prNumber) => prServiceRef?.getRepoPullRequestState(prNumber) ?? null,
-      chatState: (link) => {
+      chatState: async (link) => {
         if (link.machineId) return null;
-        const row = sessionService.get(link.sessionId);
+        // The row with its chat's live state: a stored chat row reads "running"
+        // between turns, so only the projection can say it came to rest.
+        const row = await getSessionWithChatProjection(
+          { sessionService, ptyService, agentChatService: agentChatServiceRef, logger },
+          link.sessionId,
+        );
         if (!row) return null;
         return { done: isTerminalSessionDone(row), restedAt: sessionRestedAt(row), statusLine: row.statusNote?.trim() || null };
       },

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { CaretRight, Coffee, Notebook, X } from "@phosphor-icons/react";
 import type {
@@ -108,6 +108,25 @@ export function CtoSidePanel({
   useEffect(() => {
     if (turnsFinished > 0) void refreshMemory();
   }, [refreshMemory, turnsFinished]);
+
+  // A child chat that comes to rest may close the open work linked to it; the
+  // read closes it on the host. Keyed on which children rest, and read only
+  // when one more does, not per render or when one starts again.
+  const restingChildKey = useMemo(
+    () => data.children
+      .filter((child) => !child.running && child.summary.awaitingInput !== true)
+      .map((child) => child.summary.sessionId)
+      .sort()
+      .join(","),
+    [data.children],
+  );
+  const restingChildrenRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const previous = restingChildrenRef.current;
+    const resting = new Set(restingChildKey ? restingChildKey.split(",") : []);
+    restingChildrenRef.current = resting;
+    if (previous && [...resting].some((id) => !previous.has(id))) void refreshMemory();
+  }, [refreshMemory, restingChildKey]);
 
   // "Now" is what is happening: chats still working or waiting on the person.
   // A helper that finished its turn is history (its lane and PR are in Library).
