@@ -7963,6 +7963,9 @@ app.whenReady().then(async () => {
     } catch {
       // Scheduled maintenance teardown is best effort.
     }
+    // The CTO archive's SQLite handle: on Windows an open archive.db keeps the
+    // project folder from being moved or deleted. `close` never throws.
+    ctx.ctoMemoryService?.close();
     try {
       if (ctx.rpcSocketPath && !isAdeRuntimeNamedPipePath(ctx.rpcSocketPath)) {
         fs.unlinkSync(ctx.rpcSocketPath);

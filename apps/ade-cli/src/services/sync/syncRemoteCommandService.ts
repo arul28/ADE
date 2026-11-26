@@ -286,7 +286,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
-import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, normalizeCtoArchiveQuery, normalizeCtoRecallArgs, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../../desktop/src/shared/types/sync";
 import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
@@ -7271,6 +7271,11 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     // chat session as a side effect. Returns CtoAttentionState verbatim.
     return agentChatService.getCtoAttention();
   });
+  register("cto.getNeeds", { viewerAllowed: true }, async () => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    // Read-only, like `cto.getAttention`. Returns CtoNeedsSnapshot verbatim.
+    return agentChatService.getCtoNeeds();
+  });
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     // Returns the CtoMemorySnapshot the iOS client decodes (every field
@@ -7299,6 +7304,17 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     } else {
       throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
     }
+    return ctoMemoryService.getSnapshot();
+  });
+  // The archive lives on the CTO's home machine; a phone or the web reads it here.
+  register("cto.searchMemoryArchive", { viewerAllowed: true }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    return ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(payload));
+  });
+  // Not queueable: replayed later, a recall could push out notes written since.
+  register("cto.recallArchivedNote", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(payload));
     return ctoMemoryService.getSnapshot();
   });
   // The person moved the CTO here: take it from its account copy. The phone

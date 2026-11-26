@@ -161,7 +161,7 @@ import {
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
 import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
-import { isTrackedAgentCliToolType } from "../../../shared/types";
+import { isTrackedAgentCliToolType, normalizeCtoArchiveQuery, normalizeCtoRecallArgs } from "../../../shared/types";
 import {
   claimDraft,
   createDraft,
@@ -191,10 +191,13 @@ import type {
   AiFeatureKey,
   AiSettingsStatus,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
   CtoRefreshContextResult,
   CtoUpdateNotesArgs,
+  CtoArchiveQuery,
+  CtoRecallArchivedArgs,
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
@@ -1773,6 +1776,9 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     getAttention: async (): Promise<CtoAttentionState> =>
       (await runtime.agentChatService?.getCtoAttention())
       ?? { status: "unknown", awaitingInput: false, since: null },
+    /** The CTO's "Waiting on you" lines. Read-only, like `getAttention`. */
+    getNeeds: async (): Promise<CtoNeedsSnapshot> =>
+      (await runtime.agentChatService?.getCtoNeeds?.()) ?? { needs: [] },
     /**
      * Give the CTO a fresh provider thread; the ADE session and everything
      * the CTO remembers stay. CTO-only (see `ADE_ACTION_CTO_ONLY.cto_state`).
@@ -1823,6 +1829,12 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
       } else {
         throw new Error("updateOpenWork requires `op`: add, complete, reopen or remove.");
       }
+      return ctoMemoryService.getSnapshot();
+    },
+    searchArchive: (args?: CtoArchiveQuery) => ctoMemoryService.searchArchive(normalizeCtoArchiveQuery(args)),
+    /** Pins an archived entry as a note again; answers the new snapshot, like the other writes. */
+    recallArchived: (args?: Partial<CtoRecallArchivedArgs>) => {
+      ctoMemoryService.recallArchivedForUser(normalizeCtoRecallArgs(args));
       return ctoMemoryService.getSnapshot();
     },
     /**

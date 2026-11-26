@@ -210,6 +210,12 @@
 .adecd-addon-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .adecd-addon-state { font-size: 11.5px; color: var(--kit-text-3); }
 .adecd-addon[data-on] .adecd-addon-state { color: var(--kit-text-2); }
+/* What Small costs with this answer: one quiet line, the lamp's colour when it is free. */
+.adecd-addon-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-2); }
+.adecd-addon-note svg { flex: none; margin-top: 2px; }
+.adecd-addon-note[data-free] { color: var(--adec-lamp-text); }
+/* What Gravity gets, last and smallest. */
+.adecd-addon-fine { font-size: 10.5px; line-height: 1.45; color: var(--kit-text-3); }
 @media (prefers-reduced-motion: reduce) {
   .adecd-plancard[data-new] { animation: none !important; }
 }

@@ -56,6 +56,7 @@ struct CtoSessionDestinationView: View {
       .adeNavigationGlass()
       .tint(live?.look.ctoAccent ?? ADEColor.ctoAccent)
       .environment(\.ctoLiveModel, live)
+      .environment(\.ctoStore, store)
       .task {
         await MainActor.run { startEnsureSession(force: false) }
       }

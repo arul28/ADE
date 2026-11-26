@@ -289,7 +289,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   cto_state: {
     live: "all",
     read: [
-      "getAccountCopyStatus", "getAttention", "getIdentity", "getOnboardingState", "getSnapshot", "previewSystemPrompt",
+      "getAccountCopyStatus", "getAttention", "getNeeds", "getIdentity", "getOnboardingState", "getSnapshot", "previewSystemPrompt",
     ],
     write: [
       "adoptAccountCopy", "completeOnboardingStep", "refreshContext", "runProjectScan", "updateIdentity",
@@ -297,10 +297,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   cto_memory: {
     read: [
-      "getSnapshot",
+      "getSnapshot", "searchArchive",
     ],
     write: [
-      "updateNotes", "updateOpenWork", "recordDiscovery",
+      "updateNotes", "updateOpenWork", "recordDiscovery", "recallArchived",
     ],
   },
   session: {

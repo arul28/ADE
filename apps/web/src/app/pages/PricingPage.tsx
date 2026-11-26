@@ -176,7 +176,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
   const cheapest = plan.id === CHEAPEST_PAID?.id;
   const lit = free || cheapest;
   const tone = free ? "lamp" : cheapest ? "violet" : "quiet";
-  // Where ads reach Free, its Small is unlimited only with sponsored cards on.
+  // Where ads reach Free, its Small is unlimited only with sponsored cards on, in the US.
   const smallNeedsAds = free && GRAVITY_ADS_ON_WEBSITE;
   return (
     <div className={cn("relative flex flex-col rounded-[26px] border p-6", PLAN_CARD_TONES[tone])}>
@@ -201,7 +201,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       </div>
       <dl className="mt-4 flex flex-1 flex-col text-[14px]">
         <PlanRow label="Cloud computers" value={formatCount(plan.computerLimit)} />
-        <PlanRow label="Small computers" value={smallNeedsAds ? "Unlimited, with sponsored cards" : "Unlimited"} />
+        <PlanRow label="Small computers" value={smallNeedsAds ? "Unlimited in the US, with sponsored cards" : "Unlimited"} />
         <PlanRow label={UNIT.extraTitle} value={plan.extraHourCents == null ? "None" : `${formatCents(plan.extraHourCents)} each`} muted={plan.extraHourCents == null} />
         <PlanRow label="Outside agents" value={plan.outsideAgents ? "Yes" : "No"} muted={!plan.outsideAgents} />
         <PlanRow label="Ads" value={plan.adSupported ? "Ad-supported" : "No ads"} />
@@ -222,7 +222,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       </p>
       {smallNeedsAds ? (
         <p className="mt-2 text-[12px] leading-[1.5] text-white/45">
-          Without sponsored cards, Small computers use your {UNIT.count(plan.hours)} too.
+          Outside the US, or without sponsored cards, Small computers use your {UNIT.count(plan.hours)} too.
         </p>
       ) : null}
     </div>
@@ -261,7 +261,7 @@ function RateSection() {
                 detail={`${size.full ? "Full computer · " : ""}${size.cpu} CPU · ${size.memoryGb} GB memory · ${size.use}`}
                 per="Each hour uses"
                 value={size.rate > 0 ? UNIT.count(size.rate) : "None"}
-                note={size.rate > 0 ? undefined : GRAVITY_ADS_ON_WEBSITE ? "Unlimited on paid plans, and on Free with sponsored cards" : "Unlimited, on every plan"}
+                note={size.rate > 0 ? undefined : GRAVITY_ADS_ON_WEBSITE ? "Unlimited on paid plans, and on Free in the US with sponsored cards and an ADE Cloud chat there each week" : "Unlimited, on every plan"}
               />
             ))}
             {PHONE_IN_CREDITS ? (
@@ -631,7 +631,7 @@ function ExtraCard() {
         </ul>
       )}
       <p className="mt-5 text-[13.5px] leading-[1.5] text-white/45">
-        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working{GRAVITY_ADS_ON_WEBSITE ? " with sponsored cards" : ""}.
+        On Free, {UNIT.spenders} pause until next month instead. Small computers keep working{GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards and an ADE Cloud chat there each week" : ""}.
       </p>
     </DetailCard>
   );
@@ -738,7 +738,7 @@ function FaqSection() {
           <FaqItem question={`What happens when my ${UNIT.many} run out?`}>
             On Free, your {listNames(HOURLY_SIZES.map((size) => size.label))} computers{PHONE_IN_CREDITS ? " and the ADE Cloud iPhone" : ""} stop
             until next month, or until you pick a paid plan; {SMALL_SIZE.label} computers keep working
-            {GRAVITY_ADS_ON_WEBSITE ? " with sponsored cards" : ""}. On a paid plan, turn on {UNIT.extra} in Settings and
+            {GRAVITY_ADS_ON_WEBSITE ? " in the US with sponsored cards and an ADE Cloud chat there each week" : ""}. On a paid plan, turn on {UNIT.extra} in Settings and
             your agents keep working: each extra {UNIT.one} costs {extraPriceList()}, billed after use. With {UNIT.extra}{" "}
             off, work on the bigger sizes stops at your plan's {UNIT.many}.
           </FaqItem>

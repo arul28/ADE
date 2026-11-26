@@ -160,9 +160,41 @@ final class CtoStore: ObservableObject {
   enum NotesScope: String { case project, user }
   enum NotesSaveResult: Equatable { case saved, conflict, failed(String) }
 
+  enum ArchiveFilter: String, CaseIterable, Identifiable {
+    case all, note, fact, discovery, story
+    var id: String { rawValue }
+    var label: String {
+      switch self {
+      case .all: return "All"
+      case .note: return "Notes"
+      case .fact: return "Facts"
+      case .discovery: return "Discoveries"
+      case .story: return "Story"
+      }
+    }
+    var kinds: [String] {
+      switch self {
+      case .all: return []
+      case .fact: return ["fact", "decision"]
+      default: return [rawValue]
+      }
+    }
+  }
+
   @Published var memory: CtoMemory?
   @Published var memoryLoaded = false
   @Published var memoryError: String?
+  /// The archive (desktop `CtoArchiveList`): what left the notes, facts, discoveries, story versions.
+  @Published var archive: CtoArchivePage?
+  @Published var archiveError: String?
+  @Published var archiveQuery = ""
+  @Published var archiveFilter: ArchiveFilter = .all
+  @Published var archiveLoadingMore = false
+  /// The filter and query `archive` answers: its cursor pages back only those.
+  @Published private(set) var archivePageKey: String?
+  var archiveRequestKey: String {
+    "\(archiveFilter.rawValue)|\(archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines))"
+  }
   @Published var routines: [AgentChatScheduledWorkItem] = []
   @Published var routinesLoaded = false
   @Published var children: [CtoChildRow] = []
@@ -177,10 +209,24 @@ final class CtoStore: ObservableObject {
   @Published var ctoSession: AgentChatSessionSummary?
   /// Bumps on every successful settings write, for the quiet "Saved".
   @Published var savedTick = 0
+  /// Chats the CTO started that need the person, oldest first
+  /// (`cto.getNeeds`). Empty on an older brain.
+  @Published var needs: [CtoNeed] = []
+  /// The needs read failed and none has succeeded for this CTO yet: the card
+  /// says it couldn't load, rather than showing nothing waiting.
+  @Published var needsFailed = false
 
   let isFixture: Bool
+  private var fixtureArchiveAll: CtoArchivePage?
+  /// Drops an archive answer to an older query or filter.
+  private var archiveGeneration = 0
   private(set) var sessionId: String?
-  private var homeMachineKey: String?
+  private(set) var homeMachineKey: String?
+  private var needsTask: Task<Void, Never>?
+  private var lastNeedsFetchAt: Date?
+  private var needsLoaded = false
+  /// Bumps when the CTO or its home changes: a read started before is dropped.
+  private var needsGeneration = 0
 
   private var sync: SyncService? { isFixture ? nil : SyncService.shared }
 
@@ -191,25 +237,45 @@ final class CtoStore: ObservableObject {
   init(
     fixtureSnapshot: CtoSnapshot? = nil,
     fixtureMemory: CtoMemory?,
+    fixtureArchive: CtoArchivePage? = nil,
     routines: [AgentChatScheduledWorkItem] = [],
     children: [CtoChildRow] = [],
-    library: [CtoLibraryItem] = []
+    library: [CtoLibraryItem] = [],
+    needs: [CtoNeed] = []
   ) {
     isFixture = true
     snapshot = fixtureSnapshot
     memory = fixtureMemory
+    fixtureArchiveAll = fixtureArchive
+    archive = fixtureArchive
     memoryLoaded = true
     self.routines = routines
     routinesLoaded = true
     self.children = children
     self.library = library
     libraryLoaded = true
+    self.needs = needs
     sessionId = "fixture-cto"
   }
 
   func bind(sessionId: String?, homeMachineKey: String?) {
+    let changed = sessionId != self.sessionId || homeMachineKey != self.homeMachineKey
     self.sessionId = sessionId
     self.homeMachineKey = homeMachineKey
+    // Another CTO or home: the old home's lines are not this one's.
+    if changed, !isFixture {
+      needsGeneration += 1
+      needsTask = nil
+      lastNeedsFetchAt = nil
+      needsLoaded = false
+      if !needs.isEmpty { needs = [] }
+      if needsFailed { needsFailed = false }
+      // The old home's archive too; the list reads the new one (its task id names the binding).
+      archiveGeneration += 1
+      archive = nil
+      archiveError = nil
+      archivePageKey = nil
+    }
   }
 
   // MARK: Capabilities (an older host hides the control)
@@ -217,6 +283,8 @@ final class CtoStore: ObservableObject {
   var canEditNotes: Bool { isFixture || sync?.supportsRemoteAction("cto.updateNotes") == true }
   var canEditOpenWork: Bool { isFixture || sync?.supportsRemoteAction("cto.updateOpenWork") == true }
   var canRefreshContext: Bool { isFixture || sync?.supportsRemoteAction("cto.refreshContext") == true }
+  var canReadArchive: Bool { isFixture || sync?.supportsRemoteAction("cto.searchMemoryArchive") == true }
+  var canRecallArchive: Bool { isFixture || sync?.supportsRemoteAction("cto.recallArchivedNote") == true }
 
   private func supportsRoutineAction(_ action: String) -> Bool {
     if isFixture { return true }
@@ -378,6 +446,68 @@ final class CtoStore: ObservableObject {
     libraryLoaded = true
   }
 
+  /// Reads what the CTO's children need from the person. Coalesced: one read
+  /// at a time, and at most one every few seconds unless `force`. A failure
+  /// keeps the last answer; an older brain clears it and shows no card.
+  func loadNeeds(force: Bool = false) async {
+    guard let sync else { return }
+    // Asked of the CTO's home machine, which answers the read; unknown while
+    // that machine is away, so the last answer stays.
+    switch sync.ctoHomeSupportsAction("cto.getNeeds") {
+    case .none: return
+    case .some(false):
+      if !needs.isEmpty { needs = [] }
+      if needsFailed { needsFailed = false }
+      return
+    case .some(true): break
+    }
+    if let joined = needsTask {
+      await joined.value
+      // A forced read wants an answer from after its cause (a turn that just
+      // ended); the read it joined may have started before that. A newer read
+      // another caller started since is fresh enough.
+      guard force else { return }
+      if let newer = needsTask, newer != joined {
+        await newer.value
+        return
+      }
+    }
+    if !force, let last = lastNeedsFetchAt, Date().timeIntervalSince(last) < 5 { return }
+    lastNeedsFetchAt = Date()
+    let generation = needsGeneration
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      let next = try? await sync.fetchCtoNeeds()
+      // Started for another CTO or home: drop it.
+      guard generation == self.needsGeneration else { return }
+      guard let next else {
+        // Known lines stay on a failed read; only a card that never loaded says so.
+        if !self.needsLoaded, !self.needsFailed { self.needsFailed = true }
+        return
+      }
+      self.needsLoaded = true
+      if self.needsFailed { self.needsFailed = false }
+      // Published only when the answer changed.
+      if next.needs != self.needs { self.needs = next.needs }
+    }
+    needsTask = task
+    await task.value
+    if needsTask == task { needsTask = nil }
+  }
+
+  /// Opens the child chat a need is about, the way the profile's child rows
+  /// do: on the CTO's home machine.
+  func openNeed(_ need: CtoNeed) {
+    guard let sync else { return }
+    var laneId = need.laneId
+    // A home on another machine lists its lanes under namespaced ids, which
+    // is what the profile's child rows carry.
+    if let raw = laneId, !isWorkRemoteLaneId(raw), let repo = try? sync.ctoCommandTarget().repo {
+      laneId = workRemoteLaneId(machineKey: repo.machineKey, laneId: raw)
+    }
+    openChat(need.childSessionId, laneId: laneId)
+  }
+
   // MARK: Routines
 
   func setPaused(_ item: AgentChatScheduledWorkItem, paused: Bool) async {
@@ -483,6 +613,80 @@ final class CtoStore: ObservableObject {
     }
   }
 
+  // MARK: Archive
+
+  /// Reads the archive for the current query and filter; `more` pages back.
+  func loadArchive(more: Bool = false) async {
+    let query = archiveQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    let kinds = archiveFilter.kinds
+    let key = archiveRequestKey
+    if more && archivePageKey != key { return }
+    if isFixture {
+      let all = fixtureArchiveAll?.entries ?? []
+      let words = query.lowercased().split(separator: " ").map(String.init)
+      let entries = all.filter { entry in
+        (kinds.isEmpty || kinds.contains(entry.kind))
+          && words.allSatisfy { entry.text.lowercased().contains($0) }
+      }
+      archive = CtoArchivePage(available: true, mode: query.isEmpty ? "recent" : "keyword", entries: entries, counts: fixtureArchiveAll?.counts)
+      archivePageKey = key
+      return
+    }
+    guard let sync, canReadArchive else { return }
+    let before = more ? archive?.nextBefore : nil
+    if more && before == nil { return }
+    if !more { archiveGeneration += 1 }
+    let generation = archiveGeneration
+    if more { archiveLoadingMore = true }
+    defer { if more { archiveLoadingMore = false } }
+    do {
+      let page = try await sync.searchCtoMemoryArchive(query: query, kinds: kinds, before: before)
+      guard generation == archiveGeneration else { return }
+      if more, var current = archive {
+        current.entries += page.entries
+        current.nextBefore = page.nextBefore
+        current.counts = page.counts ?? current.counts
+        archive = current
+      } else {
+        archive = page
+        archivePageKey = key
+      }
+      archiveError = nil
+    } catch {
+      guard generation == archiveGeneration else { return }
+      archiveError = ctoShortError(error, fallback: "Couldn't read the archive")
+    }
+  }
+
+  /// A story version in full (lists show a preview).
+  func fullArchiveText(_ entry: CtoArchiveEntry) async -> String {
+    guard entry.truncated == true, !isFixture, let sync else { return entry.text }
+    let page = try? await sync.searchCtoMemoryArchive(id: entry.id)
+    return page?.entries.first?.text ?? entry.text
+  }
+
+  /// Pins an archived entry as a note again; the notes and the list both re-read.
+  func recallArchived(_ entry: CtoArchiveEntry) async {
+    let key = "archive:\(entry.id)"
+    if isFixture {
+      fixtureArchiveAll?.entries.removeAll { $0.id == entry.id }
+      memory?.memory += "\n- \(entry.text)"
+      await loadArchive()
+      return
+    }
+    guard let sync else { return }
+    busyIds.insert(key)
+    defer { busyIds.remove(key) }
+    do {
+      memory = try await sync.recallCtoArchivedNote(id: entry.id)
+      ADEHaptics.light()
+      await loadArchive()
+    } catch {
+      archiveError = ctoShortError(error, fallback: "Couldn't pin it")
+      ADEHaptics.error()
+    }
+  }
+
   // MARK: Notes
 
   func saveNotes(_ scope: NotesScope, text: String, baseHash: String?) async -> NotesSaveResult {
@@ -559,7 +763,7 @@ final class CtoStore: ObservableObject {
 
   // MARK: Navigation (on the CTO's home machine)
 
-  func openChat(_ sessionId: String, laneId: String) {
+  func openChat(_ sessionId: String, laneId: String?) {
     guard let sync else { return }
     sync.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
       sessionId: sessionId,

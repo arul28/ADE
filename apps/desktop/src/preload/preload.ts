@@ -487,6 +487,9 @@ import type {
   CtoMemorySnapshot,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoArchiveQuery,
+  CtoArchivePage,
+  CtoRecallArchivedArgs,
   CtoRefreshContextResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
@@ -516,6 +519,7 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearOAuthClientArgs,
@@ -15681,6 +15685,20 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "updateOpenWork", { args }, () =>
         ipcRenderer.invoke(IPC.ctoUpdateOpenWork, args),
       ),
+    searchMemoryArchive: async (
+      args: CtoArchiveQuery,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoArchivePage> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "searchArchive", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoSearchMemoryArchive, args),
+      ),
+    recallArchivedNote: async (
+      args: CtoRecallArchivedArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<CtoMemorySnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_memory", "recallArchived", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoRecallArchivedNote, args),
+      ),
     getLinearConnectionStatus: async (pin?: OpenProjectBinding | null): Promise<LinearConnectionStatus> =>
       callPinnedOrBoundRuntimeActionOr(
         pin,
@@ -15924,6 +15942,10 @@ const adeBridge = {
     getAttention: async (pin?: OpenProjectBinding | null): Promise<CtoAttentionState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getAttention", {}, () =>
         ipcRenderer.invoke(IPC.ctoGetAttention),
+      ),
+    getNeeds: async (pin?: OpenProjectBinding | null): Promise<CtoNeedsSnapshot> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "cto_state", "getNeeds", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetNeeds),
       ),
   },
   // Keep-awake is a "This computer" section: with no pin it means this

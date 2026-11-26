@@ -137,15 +137,21 @@ func ctoToolBaseName(_ toolName: String) -> String {
 }
 
 private func ctoJSONObject(_ text: String?) -> [String: Any]? {
-  guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), text.hasPrefix("{"),
+  guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), text.hasPrefix("{") || text.hasPrefix("["),
         let data = text.data(using: .utf8),
-        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let parsed = try? JSONSerialization.jsonObject(with: data)
   else { return nil }
-  // MCP wraps a JSON result in `{ content: [{ type: "text", text }] }`.
-  if let content = object["content"] as? [[String: Any]],
-     let first = content.first(where: { ($0["type"] as? String) == "text" }),
-     let inner = first["text"] as? String,
-     let unwrapped = ctoJSONObject(inner) {
+  // MCP content blocks, bare (`[{ type: "text", text }]`) or wrapped in
+  // `{ content: [...] }`: the JSON result is the first text block.
+  func textBlockObject(_ blocks: [[String: Any]]) -> [String: Any]? {
+    guard let first = blocks.first(where: { ($0["type"] as? String) == "text" }),
+          let inner = first["text"] as? String
+    else { return nil }
+    return ctoJSONObject(inner)
+  }
+  if let blocks = parsed as? [[String: Any]] { return textBlockObject(blocks) }
+  guard let object = parsed as? [String: Any] else { return nil }
+  if let content = object["content"] as? [[String: Any]], let unwrapped = textBlockObject(content) {
     return unwrapped
   }
   return object
@@ -171,6 +177,9 @@ func ctoClipWords(_ text: String, max: Int = 48) -> String {
 
 enum CtoChipKind: String {
   case scheduled, cancelled, paused, resumed, remembered, forgot, tracking, done
+  /// A chat `spawnChat` started on another machine or ADE Cloud: no subagent
+  /// card lands here for it, so the call draws the row itself.
+  case started
 
   var verb: String {
     switch self {
@@ -182,6 +191,7 @@ enum CtoChipKind: String {
     case .forgot: return "Dropped note"
     case .tracking: return "Tracking"
     case .done: return "Done"
+    case .started: return "Started a new task"
     }
   }
 
@@ -195,6 +205,7 @@ enum CtoChipKind: String {
     case .forgot: return "Couldn't drop note"
     case .tracking: return "Couldn't track"
     case .done: return "Couldn't finish"
+    case .started: return "Couldn't start"
     }
   }
 
@@ -208,6 +219,7 @@ enum CtoChipKind: String {
     case .forgot: return "eraser"
     case .tracking: return "circle"
     case .done: return "checkmark.circle.fill"
+    case .started: return "play.circle"
     }
   }
 }
@@ -218,6 +230,19 @@ struct CtoToolChip: Identifiable, Hashable {
   let verb: String
   let text: String?
   let failed: Bool
+  /// `started` on another machine or ADE Cloud only: where the chat runs, so
+  /// its row can open it there. Nil for every other chip.
+  var remote: CtoRemoteSpawn? = nil
+}
+
+/// A chat `spawnChat` started on another machine or ADE Cloud, read off the
+/// call's result. Desktop `CtoToolChip.remote`.
+struct CtoRemoteSpawn: Hashable {
+  let machineName: String
+  let sessionId: String?
+  /// The lane id on that machine (not namespaced).
+  let laneId: String?
+  let provider: String?
 }
 
 /// State-changing CTO tools that draw a chip instead of hiding in the tools list.
@@ -229,14 +254,22 @@ private let ctoChipToolNames: Set<String> = [
 /// (the working line names it then) and for every other tool.
 func ctoChip(for card: WorkToolCardModel) -> CtoToolChip? {
   let name = ctoToolBaseName(card.toolName)
+  if name == "spawnChat" {
+    if let spawn = ctoRemoteSpawn(card) {
+      return CtoToolChip(id: card.id, kind: .started, verb: CtoChipKind.started.verb, text: spawn.title.map { ctoClipWords($0) }, failed: false, remote: spawn.remote)
+    }
+    // A local spawn that started draws its row from its subagent card. One
+    // that failed, on any machine, says so in the thread.
+    guard card.status != .running, ctoToolCardFailed(card) else { return nil }
+    let title = ctoSpawnTitle(args: ctoJSONObject(card.argsText) ?? [:], result: ctoJSONObject(card.resultText))
+    return CtoToolChip(id: card.id, kind: .started, verb: CtoChipKind.started.failedVerb, text: title.map { ctoClipWords($0) }, failed: true)
+  }
   guard ctoChipToolNames.contains(name), card.status != .running else { return nil }
   let args = ctoJSONObject(card.argsText) ?? [:]
   let result = ctoJSONObject(card.resultText)
   let payload = (result?["result"] as? [String: Any]) ?? (result?["item"] as? [String: Any]) ?? result
   if result?["declined"] as? Bool == true || result?["cancelled"] as? Bool == true { return nil }
-  let failed = card.status == .failed
-    || result?["success"] as? Bool == false
-    || ctoStr(result?["error"]) != nil
+  let failed = ctoToolCardFailed(card)
 
   let kind: CtoChipKind
   let text: String?
@@ -266,6 +299,83 @@ func ctoChip(for card: WorkToolCardModel) -> CtoToolChip? {
     return nil
   }
   return CtoToolChip(id: card.id, kind: kind, verb: failed ? kind.failedVerb : kind.verb, text: text.map { ctoClipWords($0) }, failed: failed)
+}
+
+/// A finished call that did not do what it was asked: it failed, or its result
+/// says `success: false` or carries an error.
+private func ctoToolCardFailed(_ card: WorkToolCardModel) -> Bool {
+  if card.status == .failed { return true }
+  let result = ctoJSONObject(card.resultText)
+  return result?["success"] as? Bool == false || ctoStr(result?["error"]) != nil
+}
+
+/// A successful `spawnChat` that ran on another machine or ADE Cloud, read off
+/// its result; nil for a local spawn (its subagent card draws the row), a
+/// failure, or anything else. Desktop `ctoRemoteSpawnForEntry`.
+func ctoRemoteSpawn(_ card: WorkToolCardModel) -> (title: String?, remote: CtoRemoteSpawn)? {
+  guard ctoToolBaseName(card.toolName) == "spawnChat", card.status == .completed,
+        let result = ctoJSONObject(card.resultText), result["success"] as? Bool != false
+  else { return nil }
+  let cloud = result["adeCloud"] as? Bool == true
+  // Every ADE Cloud lane has its own computer, but the person sees one machine: ADE Cloud.
+  guard let machineName = cloud ? "ADE Cloud" : ctoStr(result["machineName"]) else { return nil }
+  let args = ctoJSONObject(card.argsText) ?? [:]
+  // An ADE Cloud launch result names no provider; the model the CTO asked for does.
+  let provider = ctoStr(result["provider"]) ?? ctoProviderId(modelId: result["modelId"]) ?? ctoProviderId(modelId: args["modelId"])
+  return (
+    ctoSpawnTitle(args: args, result: result),
+    CtoRemoteSpawn(machineName: machineName, sessionId: ctoStr(result["sessionId"]), laneId: ctoStr(result["laneId"]), provider: provider)
+  )
+}
+
+private func ctoSpawnTitle(args: [String: Any], result: [String: Any]?) -> String? {
+  ctoStr(result?["requestedTitle"]) ?? ctoStr(args["title"]) ?? ctoStr(result?["laneName"]) ?? ctoStr(args["initialPrompt"])
+}
+
+/// The provider id a model id runs on (`anthropic/…` is `claude`), or nil.
+private func ctoProviderId(modelId: Any?) -> String? {
+  guard let id = ctoStr(modelId), let slash = id.firstIndex(of: "/"), slash != id.startIndex else { return nil }
+  let prefix = String(id[..<slash])
+  return ["anthropic": "claude", "openai": "codex"][prefix] ?? prefix
+}
+
+/// The providers' own subagent tools (Claude `Agent`/`Task`, Codex
+/// `spawn_agent`, OpenCode and Cursor `task`, Cursor `subagent`). Never an MCP
+/// call: an MCP server's own `task` tool is not a spawn.
+private let ctoNativeSpawnToolNames: Set<String> = ["Agent", "Task", "task", "subagent", "spawn_agent"]
+
+/// Spawn calls a spawn row already stands for, so they leave the CTO turn's
+/// tool list: a local `spawnChat` that started a chat, or a native subagent
+/// tool. A remote spawn draws its own row and a failed one stays. Desktop
+/// `isCtoSpawnToolEntry`.
+func ctoIsSpawnToolMember(_ member: WorkToolGroupMember) -> Bool {
+  guard case .tool(let card) = member, card.status == .completed else { return false }
+  let name = ctoToolBaseName(card.toolName)
+  if name == "spawnChat" {
+    guard ctoRemoteSpawn(card) == nil, let result = ctoJSONObject(card.resultText) else { return false }
+    return result["success"] as? Bool != false && ctoStr(result["sessionId"]) != nil
+  }
+  let raw = card.toolName.trimmingCharacters(in: .whitespacesAndNewlines)
+  return !raw.hasPrefix("mcp__") && !raw.hasPrefix("mcp.") && ctoNativeSpawnToolNames.contains(name)
+}
+
+/// The CTO fold row counts the tools its list shows, spawn calls left out.
+func ctoFoldModel(_ model: WorkTurnFoldModel, activity: WorkToolGroupModel?) -> WorkTurnFoldModel {
+  guard let activity else { return model }
+  let dropped = activity.count - (ctoTurnActivity(activity)?.count ?? 0)
+  guard dropped > 0 else { return model }
+  var next = model
+  next.toolCount = max(0, model.toolCount - dropped)
+  return next
+}
+
+/// The CTO turn's tool list without the spawn calls its rows stand for.
+func ctoTurnActivity(_ group: WorkToolGroupModel?) -> WorkToolGroupModel? {
+  guard let group else { return nil }
+  let members = group.members.filter { !ctoIsSpawnToolMember($0) }
+  if members.count == group.members.count { return group }
+  guard !members.isEmpty else { return nil }
+  return WorkToolGroupModel(id: group.id, members: members, turnId: group.turnId)
 }
 
 func ctoChips(for members: [WorkToolGroupMember]) -> [CtoToolChip] {
@@ -383,11 +493,17 @@ func ctoLatestStepWords(_ members: [WorkToolGroupMember]) -> String? {
 struct CtoToolChipsRow: View {
   let chips: [CtoToolChip]
   let accent: Color
+  /// Opens a chat the CTO started on another machine (`WorkSessionDestinationView.openRemoteSpawnedChat`).
+  var onOpenRemote: (@MainActor (CtoRemoteSpawn) -> Void)? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       ForEach(chips) { chip in
-        CtoToolChipView(chip: chip, accent: accent)
+        if let remote = chip.remote {
+          CtoRemoteTaskRow(chip: chip, remote: remote, onOpen: onOpenRemote)
+        } else {
+          CtoToolChipView(chip: chip, accent: accent)
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -634,4 +750,552 @@ struct CtoWorkingLine: View {
 func ctoThreadHidesCard(_ card: WorkEventCardModel) -> Bool {
   if card.kind == "ctoFresh" { return true }
   return card.noticeKind == "rate_limit" && (card.body ?? "").hasPrefix("Approaching")
+}
+
+// MARK: - Waiting on you
+
+private struct CtoStoreKey: EnvironmentKey {
+  static let defaultValue: CtoStore? = nil
+}
+
+extension EnvironmentValues {
+  /// Set on the CTO thread only: the "Waiting on you" card reads its needs.
+  var ctoStore: CtoStore? {
+    get { self[CtoStoreKey.self] }
+    set { self[CtoStoreKey.self] = newValue }
+  }
+}
+
+extension View {
+  /// Keeps the CTO store's needs fresh while the CTO thread is on screen, and
+  /// reports whether the "Waiting on you" card shows. A no-op off the CTO
+  /// thread (no `ctoStore` in the environment).
+  ///
+  /// Reads on appear and on app foreground, when a CTO turn ends, shortly
+  /// after chat events settle, and every 60 s while on screen with the app
+  /// active (children move without CTO events). Nothing runs while hidden.
+  func ctoNeedsFeed(sessionId: String, turnActive: Bool, eventToken: Int, shown: Binding<Bool>) -> some View {
+    modifier(CtoNeedsFeed(sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: shown))
+  }
+}
+
+private struct CtoNeedsFeed: ViewModifier {
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  @Environment(\.ctoStore) private var store
+  @Environment(\.ctoLiveModel) private var live
+
+  func body(content: Content) -> some View {
+    if let store, let live {
+      content.modifier(CtoNeedsFeedAwake(live: live, store: store, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    } else if let store {
+      content.modifier(CtoNeedsFeedActive(store: store, asleep: false, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+    } else {
+      content
+    }
+  }
+}
+
+/// Watches the CTO's sleep: the card hides while it sleeps, so the composer keeps no room for it.
+private struct CtoNeedsFeedAwake: ViewModifier {
+  @ObservedObject var live: CtoLiveModel
+  let store: CtoStore
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  func body(content: Content) -> some View {
+    content.modifier(CtoNeedsFeedActive(store: store, asleep: live.asleep, sessionId: sessionId, turnActive: turnActive, eventToken: eventToken, shown: $shown))
+  }
+}
+
+private struct CtoNeedsFeedActive: ViewModifier {
+  @ObservedObject var store: CtoStore
+  let asleep: Bool
+  let sessionId: String
+  let turnActive: Bool
+  let eventToken: Int
+  @Binding var shown: Bool
+
+  @Environment(\.scenePhase) private var scenePhase
+  @State private var visible = false
+
+  private var active: Bool { visible && scenePhase == .active }
+
+  func body(content: Content) -> some View {
+    content
+      .onAppear { visible = true }
+      .onDisappear { visible = false }
+      // The card's own condition (`CtoWaitingOnYouSlot`).
+      .onChange(of: !asleep && (!store.needs.isEmpty || store.needsFailed), initial: true) { _, show in
+        if shown != show { shown = show }
+      }
+      // Appear, foreground, then every 60 s while on screen and active.
+      .task(id: "\(sessionId)|\(active)") {
+        guard active else { return }
+        await store.loadNeeds(force: true)
+        while !Task.isCancelled {
+          try? await Task.sleep(nanoseconds: 60_000_000_000)
+          guard !Task.isCancelled else { return }
+          await store.loadNeeds(force: true)
+        }
+      }
+      // Chat events for the CTO: one read once they settle (throttled).
+      .task(id: eventToken) {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        guard !Task.isCancelled, active else { return }
+        await store.loadNeeds()
+      }
+      .onChange(of: turnActive) { wasActive, isActive in
+        guard wasActive, !isActive, active else { return }
+        Task { await store.loadNeeds(force: true) }
+      }
+  }
+}
+
+/// The foot of the CTO thread, above the composer: one row per chat the CTO
+/// started that needs the person, with the CTO's line saying what to do. A
+/// row opens that chat. Draws nothing off the CTO thread or with nothing
+/// waiting; `ctoNeedsFeed` keeps it fresh.
+struct CtoWaitingOnYouSlot: View {
+  @Environment(\.ctoStore) private var store
+  @Environment(\.ctoLiveModel) private var live
+
+  var body: some View {
+    if let store, let live {
+      CtoWaitingOnYouAwake(live: live, store: store)
+    } else if let store {
+      CtoWaitingOnYouCard(store: store)
+    }
+  }
+}
+
+/// The card hides while the CTO sleeps; its lines come back when it wakes.
+private struct CtoWaitingOnYouAwake: View {
+  @ObservedObject var live: CtoLiveModel
+  let store: CtoStore
+
+  var body: some View {
+    if !live.asleep {
+      CtoWaitingOnYouCard(store: store)
+    }
+  }
+}
+
+private struct CtoWaitingOnYouCard: View {
+  @ObservedObject var store: CtoStore
+
+  @Environment(\.ctoLiveModel) private var live
+  /// "+N more" opens the rest in place, as on desktop.
+  @State private var expanded = false
+
+  private static let maxRows = 3
+
+  private var accent: Color { live?.look.ctoAccent ?? ADEColor.ctoAccent }
+
+  var body: some View {
+    if !store.needs.isEmpty {
+      card
+    } else if store.needsFailed {
+      failedCard
+    }
+  }
+
+  private var header: some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(accent)
+        .frame(width: 6, height: 6)
+      Text("Waiting on you")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 0)
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+  }
+
+  /// The lines could not be read and none are known: say so, with a retry.
+  private var failedCard: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      header
+      HStack(spacing: 10) {
+        Text("Couldn't load what's waiting on you.")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+        Button("Retry") {
+          ADEHaptics.light()
+          Task { await store.loadNeeds(force: true) }
+        }
+        .font(.caption.weight(.semibold))
+        .buttonStyle(.plain)
+        .foregroundStyle(accent)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cto.WaitingOnYou")
+  }
+
+  private var card: some View {
+    let rows = expanded ? store.needs : Array(store.needs.prefix(Self.maxRows))
+    let more = store.needs.count - rows.count
+    return VStack(alignment: .leading, spacing: 0) {
+      header
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
+
+      if expanded {
+        // Every line: it scrolls past a few rows, so the composer stays on screen.
+        ScrollView {
+          rowList(rows)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: 220)
+      } else {
+        rowList(rows)
+      }
+
+      if more > 0 {
+        Button {
+          ADEHaptics.light()
+          withAnimation(.snappy(duration: 0.2)) { expanded = true }
+        } label: {
+          Text("+\(more) more")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .padding(.horizontal, 14)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows the rest of the chats waiting on you")
+      }
+    }
+    .padding(.bottom, 4)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("Cto.WaitingOnYou")
+  }
+
+  private func rowList(_ rows: [CtoNeed]) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      ForEach(Array(rows.enumerated()), id: \.element.id) { index, need in
+        if index > 0 {
+          Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5).padding(.horizontal, 14)
+        }
+        row(need)
+      }
+    }
+  }
+
+  private func row(_ need: CtoNeed) -> some View {
+    Button {
+      ADEHaptics.light()
+      store.openNeed(need)
+    } label: {
+      HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: 1) {
+          Text(need.childTitle.isEmpty ? "Untitled chat" : need.childTitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+          Text(need.line)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+        }
+        Spacer(minLength: 0)
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(need.childTitle.isEmpty ? "Untitled chat" : need.childTitle): \(need.line)")
+    .accessibilityHint("Opens that chat")
+  }
+}
+
+// MARK: - Spawn rows
+
+/// A child chat the CTO started for real work. A read-only helper chat, a
+/// provider's native subagent or a workflow agent is a background task.
+/// Same rule as desktop (`isCtoStartedTask` in `ctoSpawnRules.ts`).
+func ctoIsStartedTask(_ snapshot: WorkSubagentSnapshot) -> Bool {
+  workChatInfoChildSessionId(snapshot) != nil && !snapshot.readOnly
+}
+
+/// The task row's verb. A child whose first start is in an older page came
+/// from a later turn's result or restart, so the row says what that turn did,
+/// not "Started a new task" a second time. iOS turns the child's "finished
+/// its turn" notice into this result, so the row is that turn's only trace;
+/// desktop draws the notice line and drops the row (`ctoTranscriptRows`).
+func ctoTaskVerb(_ snapshot: WorkSubagentSnapshot) -> String {
+  guard snapshot.startNotLoaded else { return "Started a new task" }
+  switch snapshot.status {
+  case .running: return "Working on"
+  case .succeeded: return "Finished"
+  case .failed: return "Failed"
+  case .stopped: return "Stopped"
+  }
+}
+
+/// The CTO thread's spawn rows, in place of subagent cards: one quiet
+/// "Started a new task" row per child chat, and one "N background tasks" row
+/// for its helpers, which opens to list them. Same as desktop `CtoSpawnRows`.
+struct CtoSpawnRowsView: View {
+  let rows: [WorkSubagentTimelineRow]
+  /// The CTO's own provider: a native helper runs on it.
+  let sessionProvider: String?
+  /// Opens a child chat on its machine (`handleSubagentSelection`).
+  var onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Stops a running native helper by its provider task; nil when the chat cannot.
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Opens Chat Info on a native helper's detail, its result.
+  var onOpenDetail: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// A child chat's current title, when a list knows it (desktop reads the machine's chats).
+  var childTitle: (@MainActor (String) -> String?)? = nil
+
+  @State private var helpersOpen = false
+
+  private var tasks: [WorkSubagentTimelineRow] { rows.filter { ctoIsStartedTask($0.snapshot) } }
+
+  private func taskTitle(_ snapshot: WorkSubagentSnapshot) -> String {
+    workChatInfoChildSessionId(snapshot).flatMap { childTitle?($0) } ?? workSubagentMeaningfulName(snapshot)
+  }
+  private var helpers: [WorkSubagentTimelineRow] { rows.filter { !ctoIsStartedTask($0.snapshot) } }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      ForEach(tasks, id: \.id) { row in
+        Button {
+          Task { await onOpen?(row.snapshot) }
+        } label: {
+          HStack(spacing: 7) {
+            Text(ctoTaskVerb(row.snapshot))
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize()
+            CtoSpawnAvatar(provider: row.snapshot.provider)
+            Text(taskTitle(row.snapshot))
+              .fontWeight(.medium)
+              .foregroundStyle(ADEColor.textPrimary.opacity(0.86))
+              .lineLimit(1)
+              .truncationMode(.tail)
+            Image(systemName: "chevron.right")
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary.opacity(0.7))
+          }
+          .font(.footnote)
+          .frame(minHeight: 30)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(ctoTaskVerb(row.snapshot)): \(taskTitle(row.snapshot))")
+        .accessibilityHint("Opens the chat")
+        .accessibilityIdentifier("Cto.StartedTask")
+      }
+      if !helpers.isEmpty {
+        helpersRow
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// The collapsed row: running wins, then failed, then stopped, then done.
+  private var helpersSummary: (noun: String, summary: String, icon: String, tint: Color) {
+    let noun = helpers.count == 1 ? "1 background task" : "\(helpers.count) background tasks"
+    func count(_ status: WorkSubagentSnapshot.Status) -> Int { helpers.filter { $0.snapshot.status == status }.count }
+    if count(.running) > 0 { return (noun, "\(count(.running)) running", "circle.dotted", ADEColor.accent) }
+    if count(.failed) > 0 { return (noun, "\(count(.failed)) failed", "exclamationmark.circle", ADEColor.warning) }
+    if count(.stopped) > 0 { return (noun, "\(count(.stopped)) stopped", "stop.circle", ADEColor.textSecondary) }
+    return (noun, "done", "checkmark.circle", ADEColor.success)
+  }
+
+  private var helpersRow: some View {
+    let facts = helpersSummary
+    return VStack(alignment: .leading, spacing: 2) {
+      Button {
+        withAnimation(.snappy(duration: 0.2)) { helpersOpen.toggle() }
+      } label: {
+        HStack(spacing: 7) {
+          Image(systemName: facts.icon)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(facts.tint)
+          Text(facts.noun)
+            .fontWeight(.medium)
+            .foregroundStyle(ADEColor.textPrimary.opacity(0.86))
+          Text("· \(facts.summary)")
+            .foregroundStyle(ADEColor.textSecondary)
+          Image(systemName: helpersOpen ? "chevron.down" : "chevron.right")
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary.opacity(0.7))
+        }
+        .font(.footnote)
+        .frame(minHeight: 30)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(facts.noun), \(facts.summary)")
+      .accessibilityValue(helpersOpen ? "Open" : "Closed")
+      .accessibilityIdentifier("Cto.BackgroundTasks")
+      if helpersOpen {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(helpers, id: \.id) { row in
+            CtoHelperLine(snapshot: row.snapshot, sessionProvider: sessionProvider, onOpen: onOpen, onOpenDetail: onOpenDetail, onStop: onStop)
+          }
+        }
+        .padding(.leading, 10)
+        .overlay(alignment: .leading) {
+          Rectangle().fill(ADEColor.textPrimary.opacity(0.09)).frame(width: 1)
+        }
+        .padding(.leading, 6)
+      }
+    }
+  }
+}
+
+/// One helper in the opened background-tasks row. A helper chat opens; a
+/// native subagent has no chat of its own, so it opens its detail in Chat Info.
+private struct CtoHelperLine: View {
+  let snapshot: WorkSubagentSnapshot
+  let sessionProvider: String?
+  var onOpen: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+  var onOpenDetail: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)?
+
+  private var isChat: Bool { workChatInfoChildSessionId(snapshot) != nil }
+
+  private var statusWord: String {
+    switch snapshot.status {
+    case .running: return "running"
+    case .succeeded: return "done"
+    case .failed: return "failed"
+    case .stopped: return "stopped"
+    }
+  }
+
+  private var name: String { workSubagentMeaningfulName(snapshot) }
+
+  private var line: some View {
+    HStack(spacing: 7) {
+      CtoSpawnAvatar(provider: snapshot.provider ?? (isChat ? nil : sessionProvider), size: 16)
+      Text(name)
+        .foregroundStyle(ADEColor.textPrimary.opacity(0.78))
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Text(statusWord)
+        .foregroundStyle(snapshot.status == .failed ? ADEColor.warning : ADEColor.textSecondary)
+        .fixedSize()
+    }
+    .font(.caption)
+    .frame(minHeight: 28)
+  }
+
+  var body: some View {
+    HStack(spacing: 2) {
+      if isChat {
+        Button { Task { await onOpen?(snapshot) } } label: { line.contentShape(Rectangle()) }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(name), \(statusWord)")
+          .accessibilityHint("Opens the chat")
+      } else if let onOpenDetail {
+        Button { Task { await onOpenDetail(snapshot) } } label: { line.contentShape(Rectangle()) }
+          .buttonStyle(.plain)
+          .accessibilityLabel("\(name), \(statusWord)")
+          .accessibilityHint("Shows its result")
+      } else {
+        line
+          .accessibilityElement(children: .combine)
+      }
+      // The same rule as the subagent card's Stop: a native helper's provider task, while it runs.
+      if let onStop, workSubagentCanStopTask(snapshot) {
+        Button { Task { await onStop(snapshot) } } label: {
+          Image(systemName: "stop.fill")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.warning)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(workSubagentStopLabel(snapshot))
+      }
+    }
+  }
+}
+
+/// A chat started on another machine, drawn like a local spawn's row. A tap
+/// opens it on that machine, through the Work list that knows its chats.
+private struct CtoRemoteTaskRow: View {
+  let chip: CtoToolChip
+  let remote: CtoRemoteSpawn
+  var onOpen: (@MainActor (CtoRemoteSpawn) -> Void)?
+
+  private var canOpen: Bool { onOpen != nil && remote.sessionId != nil }
+
+  private var line: some View {
+    HStack(spacing: 7) {
+      Text("Started a new task")
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize()
+      CtoSpawnAvatar(provider: remote.provider)
+      Text(chip.text ?? "a chat")
+        .fontWeight(.medium)
+        .foregroundStyle(ADEColor.textPrimary.opacity(0.86))
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Text("on \(remote.machineName)")
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+      if canOpen {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 9, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary.opacity(0.7))
+      }
+    }
+    .font(.footnote)
+    .frame(minHeight: 30)
+    .contentShape(Rectangle())
+  }
+
+  var body: some View {
+    if canOpen, let onOpen {
+      Button { onOpen(remote) } label: { line }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Started a new task: \(chip.text ?? "a chat") on \(remote.machineName)")
+        .accessibilityHint("Opens the chat")
+        .accessibilityIdentifier("Cto.StartedTask")
+    } else {
+      line
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("Cto.StartedTask")
+    }
+  }
+}
+
+private struct CtoSpawnAvatar: View {
+  let provider: String?
+  var size: CGFloat = 18
+
+  var body: some View {
+    WorkProviderBareLogo(provider: provider, fallbackSymbol: "sparkle", tint: ADEColor.textSecondary, size: size - 6)
+      .frame(width: size, height: size)
+      .background(ADEColor.textPrimary.opacity(0.08), in: Circle())
+      .overlay(Circle().strokeBorder(ADEColor.textPrimary.opacity(0.1), lineWidth: 0.5))
+  }
 }

@@ -3,6 +3,7 @@ import { WEB_PASSWORDS_SENTENCE } from "../../../shared/adeCloud/accountCalls";
 import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
 import {
   EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
+  emptyCtoArchivePage,
   peerToRuntimeDeviceState,
   type AiConfig,
   type CloudAgentArchiveArgs,
@@ -12,6 +13,7 @@ import {
   type CloudAgentOpenResult,
   type CloudAgentRef,
   type CtoAttentionState,
+  type CtoNeedsSnapshot,
   type CtoSnapshot,
   type CtoMemorySnapshot,
   type CtoPreviewSystemPromptArgs,
@@ -20,6 +22,9 @@ import {
   type CtoUpdateIdentityArgs,
   type CtoUpdateNotesArgs,
   type CtoUpdateOpenWorkArgs,
+  type CtoArchiveQuery,
+  type CtoArchivePage,
+  type CtoRecallArchivedArgs,
   type CursorAgentUsage,
   type CursorCloudAgentSummary,
   type CursorCloudArtifactDownload,
@@ -1106,7 +1111,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
-    cto: createCtoNamespace(call, infra),
+    cto: createCtoNamespace(call, infra, commands),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -1240,6 +1245,8 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getMemory: 0,
   updateNotes: 1,
   updateOpenWork: 1,
+  searchMemoryArchive: 1,
+  recallArchivedNote: 1,
   getLinearConnectionStatus: 0,
   setLinearToken: 1,
   clearLinearToken: 0,
@@ -1258,6 +1265,7 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
   getLinearOAuthSession: 1,
   runProjectScan: 0,
   getAttention: 0,
+  getNeeds: 0,
   adoptAccountCopy: 1,
   getAccountCopyStatus: 0,
 };
@@ -1265,6 +1273,7 @@ const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
 function createCtoNamespace(
   call: MiscCall,
   scope: RuntimePinScope,
+  commands: AdapterInfra["commands"],
 ): NonNullable<Window["ade"]["cto"]> {
   return guardPinnedMembers<NonNullable<Window["ade"]["cto"]>>({
     getState: () => call<CtoSnapshot>(
@@ -1288,6 +1297,12 @@ function createCtoNamespace(
       {},
       { status: "unknown", awaitingInput: false, since: null },
     ),
+    // An older host has no needs: no card, never an error. A host that has
+    // them and cannot answer rejects, so the card keeps its lines or says it
+    // couldn't load instead of showing nothing waiting.
+    getNeeds: async () => (commands.hasAction("cto.getNeeds")
+      ? await commands.call<CtoNeedsSnapshot>("cto.getNeeds", {}, { fallback: { needs: [] }, authoritative: true })
+      : { needs: [] }),
     getMemory: () => call<CtoMemorySnapshot>(
       "cto.getMemory",
       {},
@@ -1303,6 +1318,18 @@ function createCtoNamespace(
       "cto.updateOpenWork",
       args,
       unavailableOnHost("The CTO's open work can't be changed on the connected ADE host."),
+      false,
+    ),
+    // An older host has no archive: the section stays hidden rather than erroring.
+    searchMemoryArchive: (args: CtoArchiveQuery) => call<CtoArchivePage>(
+      "cto.searchMemoryArchive",
+      args,
+      emptyCtoArchivePage(),
+    ),
+    recallArchivedNote: (args: CtoRecallArchivedArgs) => call<CtoMemorySnapshot>(
+      "cto.recallArchivedNote",
+      args,
+      unavailableOnHost("The CTO's archive can't be changed on the connected ADE host."),
       false,
     ),
     // `crossMachineEnabled` is the desktop's alone; the host strips it.

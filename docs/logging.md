@@ -368,8 +368,21 @@ writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
 `parent_dispatch`). `chat.setParent` writes `agent_chat.parent_changed` with
 `sessionId`, `previousParentSessionId`, `parentSessionId`,
 `previousSpawnKind`, and `spawnKind`; a relink a cross-machine arrival could
-not make writes `agent_chat.cross_machine_handoff_relink_failed`. None of
-these spawn-coordination lines is a PostHog event.
+not make writes `agent_chat.cross_machine_handoff_relink_failed`. A report to
+a chat parent here that went into the brain's outbox is
+`agent_chat.spawn_completion_queued` (same ids, no text), and the outbox's
+`cross_scope_chats.delivered` / `.dropped` in `brain.jsonl` close it out. A
+child whose parent was deleted and that now reports to a live ancestor or the
+CTO writes `agent_chat.spawn_parent_relinked` (`childSessionId`,
+`previousParentSessionId`, `parentSessionId`); a forwarded report that could
+not be routed is `agent_chat.spawn_relinked_report_unrouted`. Restart
+recovery's held-back "stopped" for a turn it continues is
+`agent_chat.spawn_completion_skipped_restart_continue`. The deleted-parent
+link file and the CTO lookup log `agent_chat.deleted_parent_links_read_failed`,
+`agent_chat.deleted_parent_link_failed` and `agent_chat.cto_fallback_lookup_failed`
+as warnings; an outbox taken over from another brain is
+`cross_scope_chats.outbox_adopted` (file name, entry count). None of these
+spawn-coordination lines is a PostHog event.
 
 When the idle sweep or budget eviction reclaims a chat runtime that still
 *claims* live background work — the exemption expired after
@@ -2647,6 +2660,23 @@ at all. Never the emoji, the message, the chat, or the machine. A refused
 reaction and a repeat of the same emoji send nothing. One deduplication key with
 a one-hour interval bounds it to 24 accepted events a day. No ceiling was raised,
 and the dashboard spec is untouched.
+
+### The CTO's stall judge
+
+The brain that runs the CTO records two coarse facts from the stall judge
+(`cto/ctoStallJudgeHost.ts`, reported by `reportCtoStall` in
+`analytics/ctoStallProductAnalytics.ts`), each `ade_feature_used` with
+`feature: "cto"` and `surface: "api"`: `action: "cto_stall_nudge"` with
+`completed` (the CTO was woken about a stuck chat it started) or `failed` (the
+CTO refused the wake), and `action: "cto_need"` with `started` (the CTO handed
+a stuck chat to the person with a "Waiting on you" line). The product questions
+are whether nudges happen and how often the CTO hands a stall to the person
+instead of fixing it. Never the chat, its title, the line, the stall kind, or
+the child's words. Nudges are at least five minutes apart per CTO, and a
+per-outcome one-hour deduplication key bounds each to 24 accepted events a day;
+the realistic number is a few a day while a CTO runs children. Both carry
+`mode: "automatic"`, so they never count as a person using ADE. No ceiling was
+raised, and the dashboard spec is untouched.
 
 ### Native iOS
 

@@ -12363,6 +12363,24 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// The CTO's children that need the person, each with one line from the
+  /// CTO. Goes to the CTO's home machine like the other CTO reads.
+  ///
+  /// Optional-gated (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`): callers
+  /// check `supportsRemoteAction("cto.getNeeds")` first, so an older brain
+  /// shows no card instead of an error.
+  func fetchCtoNeeds() async throws -> CtoNeedsSnapshot {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.getNeeds",
+      // A background read: a slow answer must not drop the connection.
+      disconnectOnTimeout: false,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoNeedsSnapshot.self
+    )
+  }
+
   /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
   /// today's daily log. The host command is version-gated: older hosts respond
   /// with a command error, which callers surface as a quiet "not available"
@@ -12797,6 +12815,37 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(
       action: "cto.updateNotes",
       args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoMemory.self
+    )
+  }
+
+  /// The CTO's archive on its home machine. `query` is keywords (all must
+  /// match); without one, newest first and `before` pages back. `id` reads one
+  /// entry in full (a story version a list showed as a preview).
+  func searchCtoMemoryArchive(query: String? = nil, kinds: [String] = [], before: Int? = nil, id: Int? = nil, limit: Int = 30) async throws -> CtoArchivePage {
+    let target = try ctoCommandTarget()
+    var args: [String: Any] = ["limit": limit]
+    if let query, !query.isEmpty { args["query"] = query }
+    if !kinds.isEmpty { args["kinds"] = kinds }
+    if let before { args["before"] = before }
+    if let id { args["id"] = id }
+    return try await sendDecodableCommand(
+      action: "cto.searchMemoryArchive",
+      args: args,
+      targetProjectId: target.projectId,
+      targetProjectRootPath: target.rootPath,
+      as: CtoArchivePage.self
+    )
+  }
+
+  /// Pins an archived note, fact or discovery back into the notes.
+  func recallCtoArchivedNote(id: Int) async throws -> CtoMemory {
+    let target = try ctoCommandTarget()
+    return try await sendDecodableCommand(
+      action: "cto.recallArchivedNote",
+      args: ["id": id],
       targetProjectId: target.projectId,
       targetProjectRootPath: target.rootPath,
       as: CtoMemory.self

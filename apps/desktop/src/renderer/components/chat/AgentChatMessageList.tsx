@@ -346,6 +346,8 @@ import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import { withChatPin } from "./chatMachinePin";
 import { CtoFreshContextDivider, CtoToolChips } from "./cto/CtoToolChips";
 import { CtoWorkingLine } from "./cto/CtoWorkingLine";
+import { CtoSpawnRows } from "./cto/CtoSpawnRows";
+import { ctoTranscriptRows } from "./cto/ctoSpawnRules";
 import { drawsCtoChips, keepCtoChipRowsVisible } from "./cto/ctoToolWords";
 import { SponsoredInlineOutlet } from "./sponsored/sponsoredOutlets";
 
@@ -3752,6 +3754,19 @@ function renderEvent(
     || event.type === "subagent_card_grid"
     || event.type === "subagent_stopped_group"
   ) {
+    // The CTO thread draws what it started as quiet rows, not cards
+    // (`ctoTranscriptRows` splits a stopped run back into its cards).
+    if (options?.surfaceProfile === "persistent_identity" && event.type !== "subagent_stopped_group") {
+      return (
+        <CtoSpawnRows
+          members={event.type === "subagent_card_grid" ? event.members : [{ key: envelope.key, timestamp: envelope.timestamp, event }]}
+          sessionProvider={options.sessionProvider ?? null}
+          runtimePin={options.runtimePin ?? null}
+          onOpenTranscript={options.chatInfoHostAvailable ? (taskId: string) => openChatInfoFromActivity(options.sessionId, taskId) : undefined}
+          onStopSubagent={options.onStopSubagent}
+        />
+      );
+    }
     return renderSubagentTimelineRow({ key: envelope.key, timestamp: envelope.timestamp, event }, {
       ...options,
       onOpenChatInfo: (taskId) => openChatInfoFromActivity(options?.sessionId, taskId),
@@ -7106,14 +7121,13 @@ function AgentChatMessageListMain({
     // broke activity phases — two Thinking rows separated only by a hidden
     // `context_usage` row stayed two rows instead of merging into one.
     () => {
-      const next = foldTurnFailureRows(groupChatTranscriptRows(
-        filterVisibleTranscriptRows(rows),
-        previousAllGroupedRowsRef.current,
-      ));
-      previousAllGroupedRowsRef.current = next;
-      return next;
+      const visible = filterVisibleTranscriptRows(rows);
+      const grouped = foldTurnFailureRows(groupChatTranscriptRows(visible, previousAllGroupedRowsRef.current));
+      // The grouping pass reuses its own previous output, so it keeps the unfiltered rows.
+      previousAllGroupedRowsRef.current = grouped;
+      return surfaceProfile === "persistent_identity" ? ctoTranscriptRows(grouped, visible) : grouped;
     },
-    [rows],
+    [rows, surfaceProfile],
   );
   // Same lookup-map shape as turnProofByRowKey / turnEndDurationByRowKey rather
   // than rescanning the summaries once per rendered row.

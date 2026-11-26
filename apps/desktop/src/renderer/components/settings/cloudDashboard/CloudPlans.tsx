@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowSquareOut, Clock, CreditCard, Desktop, Info, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
+import { ArrowSquareOut, Clock, Coins, CreditCard, Desktop, Info, Infinity, Lightning, Megaphone, MoonStars, Robot, Sparkle } from "@phosphor-icons/react";
 import { noteSponsoredNoticeShown, setCloudSponsoredConsent } from "../../../state/cloudAccountStore";
 import { useOnScreen } from "../../chat/sponsored/sponsoredOnScreen";
 import { turnOnSponsoredCards } from "../../chat/sponsored/SponsoredReplySlot";
@@ -30,6 +30,7 @@ import {
 } from "../../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../../lib/format";
 import { isTesterBuild } from "../../../lib/packageChannel";
+import { openExternalUrl } from "../../../lib/openExternal";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
@@ -43,9 +44,24 @@ import { useStillWhenHidden } from "./CloudSky";
 import { checkoutCloudPlanUp, confirmCloudPlanMoveUp } from "./cloudPlanMoveUp";
 import "./cloudPlans.css";
 
-/** What sponsored cards are and what Gravity gets, as the chat's question and notice say it. */
-const SPONSORED_SETTINGS_WHAT =
-  "Free ADE Cloud chats can show one sponsored card with a finished reply, and an agent may recommend a sponsored tool. To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email.";
+/** What sponsored cards do, as the chat's question and notice say it: "Free ADE Cloud chats …" when on, "When on, free …" when off. */
+const SPONSORED_SETTINGS_DO = "ADE Cloud chats can show one card under a finished reply, and an agent may suggest a sponsored tool.";
+/** What Gravity gets, in the row's small print. */
+const SPONSORED_SETTINGS_SENDS =
+  "To pick them, ADE sends Gravity, our ad partner, your last message and the reply (or the agent's search), your IP address, your device type and a hashed copy of your account email. For people 18 or older.";
+
+/**
+ * What Free's Small computers cost this person with this answer, from the
+ * server's flags (`CloudSponsoredState`): free with cards on in the US, credits
+ * with them off, outside the US, or a week after the last chat opened there.
+ */
+function sponsoredSmallNote(sponsored: NonNullable<CloudAccountState["sponsored"]>, on: boolean, noun: string): { free: boolean; text: string } | null {
+  if (sponsored.smallOutsideUS) return { free: false, text: `Small computers use your ${noun} outside the US: sponsored cards keep them free only in the US.` };
+  if (!sponsored.smallNeedsCards) return null;
+  if (!on) return { free: false, text: `Small computers use your ${noun} while sponsored cards are off.` };
+  if (sponsored.smallNeedsLook) return { free: false, text: `Small computers use your ${noun} until you open an ADE Cloud chat in the US: none was opened there in the last 7 days.` };
+  return sponsored.ads ? { free: true, text: "Your Small computers are free while sponsored cards are on." } : null;
+}
 
 /** Why cards are off when a browser's Global Privacy Control turned them off (`CloudSponsoredState.gpcOff`). */
 const SPONSORED_GPC_OFF =
@@ -109,6 +125,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
   // Where cards start on, this row is the notice that they are on (with the switch to turn them off): seen, it is saved.
   const sponsoredStartsOn = sponsoredToggle?.startsOn === true && sponsoredToggle.consent === null;
   const sponsoredOn = sponsoredToggle?.consent === "granted" || sponsoredStartsOn;
+  const sponsoredSmall = sponsoredToggle ? sponsoredSmallNote(sponsoredToggle, sponsoredOn, noun) : null;
   // Seen (the row on screen, the window in front), the row is the notice: saved once. Its words
   // stay while this page is open, after the save turned the answer into a yes.
   const sponsoredRowRef = useRef<HTMLDivElement | null>(null);
@@ -344,7 +361,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <ul className="adecd-plancard-facts">
                   <li title="Cloud computers your account may have, asleep or not: one per lane"><Desktop size={13} /><span><b className="kit-num" data-face="ui">{computers}</b> cloud {computers === 1 ? "computer" : "computers"} <span className="adecd-nowrap">(asleep or not)</span></span></li>
-                  <li title={column.id === "free" && freeSmallNeedsCards ? `Small computers use no ${noun} while sponsored cards are on, and half a credit for each hour awake while they are off.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
+                  <li title={column.id === "free" && freeSmallNeedsCards ? `In the US, Small computers use no ${noun} while sponsored cards are on and you open an ADE Cloud chat there at least once a week. Elsewhere, with them off, or after a week without one, they use half a credit for each hour awake.` : CLOUD_SMALL_UNLIMITED_SENTENCE}><Sparkle size={13} /><span><b>Unlimited</b> Small computers{column.id === "free" && freeSmallNeedsCards ? " with sponsored cards" : ""}</span></li>
                   {isCurrent && oldTerms?.hoursMilli != null ? (
                     <li title={`${formatCloudHours(column.facts.includedMilli)} ${noun} from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> credits until {until}</span></li>
                   ) : (
@@ -386,7 +403,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Sparkle size={14} /></span>
-              <p><b>{freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free with sponsored cards on." : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
+              <p><b>{freeSmallNeedsCards ? "Unlimited Small computers on paid plans, and on Free in the US with sponsored cards on and an ADE Cloud chat opened there each week." : CLOUD_SMALL_UNLIMITED_SENTENCE}</b> Each plan has a number of cloud computers, asleep or not: one per lane.</p>
             </div>
             <div className="adecd-howto-item adecd-howto-rates">
               <span className="adecd-howto-icon"><Clock size={14} /></span>
@@ -439,16 +456,25 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
                 </div>
                 <small className="adecd-addon-state">
                   {!sponsoredOn
-                    ? `Off. If you turn it on, ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
+                    ? `Off. When on, free ${SPONSORED_SETTINGS_DO}`
                     : sponsoredToggle.ads
-                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} ${SPONSORED_SETTINGS_WHAT} Sponsored cards are for people 18 or older.`
+                      ? `On.${sponsoredStartsOn || toldHere ? " They start on where you are; you can turn them off here." : ""} Free ${SPONSORED_SETTINGS_DO}`
                       : "On, but none show for you now: sponsored cards run only in Free ADE Cloud chats, in the countries Gravity serves."}
                 </small>
                 {!sponsoredOn && sponsoredToggle.gpcOff ? (
                   <small className="adecd-addon-state">{SPONSORED_GPC_OFF}</small>
                 ) : null}
-                {sponsoredToggle.smallNeedsCards ? (
-                  <small className="adecd-addon-state">Small computers use your {noun} while sponsored cards are off.</small>
+                {sponsoredSmall ? (
+                  <p className="adecd-addon-note" data-free={sponsoredSmall.free || undefined}>
+                    {sponsoredSmall.free ? <Infinity size={13} weight="bold" aria-hidden /> : <Coins size={13} aria-hidden />}
+                    <span>{sponsoredSmall.text}</span>
+                  </p>
+                ) : null}
+                {sponsoredToggle.ads || !sponsoredOn ? (
+                  <small className="adecd-addon-fine">
+                    {SPONSORED_SETTINGS_SENDS}{" "}
+                    <button type="button" className="adecd-linkish" onClick={() => openExternalUrl("https://ade-app.dev/privacy#sponsored")}>How it works</button>
+                  </small>
                 ) : null}
               </div>
             ) : null}

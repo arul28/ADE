@@ -480,6 +480,7 @@ struct CtoMemoryPage: View {
             text: memory.memory,
             hash: memory.memoryHash,
             limit: memory.memoryLimitBytes ?? 4096,
+            overflowMovesOut: memory.notesOverflowArchives == true,
             placeholder: "- Deploys go through the release lane",
             accent: live.look.ctoAccent
           )
@@ -495,6 +496,10 @@ struct CtoMemoryPage: View {
           )
           CtoSectionTitle(title: "Open work")
           CtoOpenWorkList(store: store, accent: live.look.ctoAccent)
+          if store.canReadArchive {
+            CtoSectionTitle(title: "Archive")
+            CtoArchiveSection(store: store, accent: live.look.ctoAccent)
+          }
         } else if let error = store.memoryError {
           CtoEmptyLine(symbol: "exclamationmark.triangle", text: error)
           Button("Try again") { Task { await store.loadMemory() } }
@@ -516,14 +521,227 @@ struct CtoMemoryPage: View {
   }
 }
 
+/// Settings › Memory › Archive (desktop `CtoArchiveList`): what left the
+/// notes, facts from past turns, read discoveries and story versions. A note,
+/// fact or discovery can be pinned again; a story version opens in full.
+struct CtoArchiveSection: View {
+  @ObservedObject var store: CtoStore
+  let accent: Color
+
+  @State private var expanded: [Int: String] = [:]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Image(systemName: "magnifyingglass")
+          .font(.system(size: 14))
+          .foregroundStyle(ADEColor.textMuted)
+        TextField("Search the archive", text: $store.archiveQuery)
+          .font(.body)
+          .submitLabel(.search)
+          .autocorrectionDisabled()
+          .textInputAutocapitalization(.never)
+          .accessibilityLabel("Search the archive")
+      }
+      .padding(.horizontal, 12)
+      .frame(minHeight: 40)
+      .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(CtoStore.ArchiveFilter.allCases) { filter in
+            filterChip(filter)
+          }
+        }
+      }
+
+      if let error = store.archiveError {
+        CtoEmptyLine(symbol: "exclamationmark.triangle", text: error)
+      }
+      if let page = store.archive {
+        if !page.available {
+          CtoEmptyLine(symbol: "archivebox", text: "No archive on this machine")
+        } else if page.entries.isEmpty {
+          CtoEmptyLine(
+            symbol: "archivebox",
+            text: store.archiveQuery.isEmpty ? "Nothing archived yet" : "No matches",
+            hint: store.archiveQuery.isEmpty ? "Full notes, past facts and story versions land here" : nil
+          )
+        } else {
+          VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(page.entries.enumerated()), id: \.element.id) { index, entry in
+              if index > 0 { CtoRowDivider(inset: 0) }
+              row(entry)
+            }
+          }
+          if page.nextBefore != nil {
+            Button(store.archiveLoadingMore ? "Loading…" : "Show older") {
+              Task { await store.loadArchive(more: true) }
+            }
+            .font(.subheadline)
+            .foregroundStyle(accent)
+            .disabled(store.archiveLoadingMore || store.archivePageKey != store.archiveRequestKey)
+            .frame(minHeight: 44)
+          }
+        }
+      } else {
+        CtoEmptyLine(symbol: "archivebox", text: "Loading…")
+      }
+    }
+    .task(id: "\(store.sessionId ?? "")|\(store.homeMachineKey ?? "")|\(store.archiveFilter.rawValue)|\(store.archiveQuery)|\(store.memory?.memoryHash ?? "")|\(store.memory?.userNotesHash ?? "")") {
+      // A beat after typing stops; a filter or a notes change reads at once.
+      if !store.archiveQuery.isEmpty { try? await Task.sleep(nanoseconds: 250_000_000) }
+      guard !Task.isCancelled else { return }
+      await store.loadArchive()
+    }
+  }
+
+  private func count(_ filter: CtoStore.ArchiveFilter) -> Int {
+    guard let counts = store.archive?.counts else { return 0 }
+    let kinds = filter.kinds.isEmpty ? Array(counts.keys) : filter.kinds
+    return kinds.reduce(0) { $0 + (counts[$1] ?? 0) }
+  }
+
+  private func filterChip(_ filter: CtoStore.ArchiveFilter) -> some View {
+    let selected = store.archiveFilter == filter
+    let total = count(filter)
+    return Button {
+      store.archiveFilter = filter
+    } label: {
+      HStack(spacing: 4) {
+        Text(filter.label)
+        if total > 0 {
+          Text("\(total)")
+            .monospacedDigit()
+            .foregroundStyle(selected ? ADEColor.textPrimary.opacity(0.7) : ADEColor.textMuted)
+        }
+      }
+      .font(.footnote.weight(selected ? .semibold : .regular))
+      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+      .padding(.horizontal, 12)
+      .frame(minHeight: 32)
+      .background(
+        selected ? accent.opacity(0.18) : ADEKit.track,
+        in: Capsule(style: .continuous)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityAddTraits(selected ? .isSelected : [])
+  }
+
+  private func row(_ entry: CtoArchiveEntry) -> some View {
+    let full = expanded[entry.id]
+    let busy = store.busyIds.contains("archive:\(entry.id)")
+    return HStack(alignment: .top, spacing: 10) {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(entry.kindLabel.uppercased())
+          .font(.caption2.weight(.semibold))
+          .tracking(0.6)
+          .foregroundStyle(entry.kind == "decision" ? accent : ADEColor.textMuted)
+        Text(full ?? entry.text)
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(full == nil ? (entry.isStory ? 2 : 4) : nil)
+          .fixedSize(horizontal: false, vertical: true)
+        let meta = [entry.sourceLine, ctoArchiveDate(entry.sourceAt ?? entry.archivedAt)]
+          .filter { !$0.isEmpty }
+          .joined(separator: " · ")
+        if !meta.isEmpty {
+          Text(meta)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+      }
+      Spacer(minLength: 6)
+      if !entry.isStory && store.canRecallArchive {
+        Button {
+          Task { await store.recallArchived(entry) }
+        } label: {
+          Image(systemName: "pin")
+            .font(.system(size: 14, weight: .medium))
+            .foregroundStyle(accent)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(busy)
+        .accessibilityLabel("Pin to the notes")
+      }
+    }
+    .padding(.vertical, 10)
+    .contentShape(Rectangle())
+    .opacity(busy ? 0.5 : 1)
+    .accessibilityAddTraits(entry.isStory ? .isButton : [])
+    .onTapGesture {
+      guard entry.isStory else { return }
+      if expanded[entry.id] != nil {
+        expanded[entry.id] = nil
+      } else {
+        Task { expanded[entry.id] = await store.fullArchiveText(entry) }
+      }
+    }
+  }
+}
+
+/// "Nov 16" (this year) or "Nov 16, 2025".
+func ctoArchiveDate(_ iso: String?) -> String {
+  guard let iso, let date = ISO8601DateFormatter.ctoArchive.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return "" }
+  let sameYear = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+  return date.formatted(sameYear ? .dateTime.month(.abbreviated).day() : .dateTime.month(.abbreviated).day().year())
+}
+
+private extension ISO8601DateFormatter {
+  static let ctoArchive: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+}
+
+/// Puts the edit made from `base` to `draft` onto `host`, the text the host
+/// kept of `base` (desktop `rebaseDraft` in `ctoSettingsUi.tsx`). The edited
+/// lines, with their line breaks, must still be whole at the end or the start
+/// of `host`, so the edit never joins a line the host changed. Nil otherwise.
+func ctoRebaseDraft(base: String, draft: String, host: String) -> String? {
+  if host == base { return draft }
+  let b = Array(base.utf16), d = Array(draft.utf16), h = Array(host.utf16)
+  let newline: UInt16 = 10
+  let maxCount = min(b.count, d.count)
+  var start = 0
+  while start < maxCount && b[start] == d[start] { start += 1 }
+  var end = 0
+  while end < maxCount - start && b[b.count - 1 - end] == d[d.count - 1 - end] { end += 1 }
+  // The edit, widened to whole lines of `base`: b[from..<to].
+  var from = start
+  while from > 0 && b[from - 1] != newline { from -= 1 }
+  var to = b.count - end
+  while to < b.count && b[to] != newline { to += 1 }
+  let tail = Array(b[to...])
+  let replacement = Array(d[from..<(d.count - tail.count)])
+  // The lines from the edit on, at the end of `host` and starting a line there.
+  let at = h.count - (b.count - from)
+  if at >= 0 && h[at...].elementsEqual(b[from...]) && (at == 0 || h[at - 1] == newline) {
+    return String(decoding: Array(h[..<at]) + replacement + tail, as: UTF16.self)
+  }
+  // The lines up to the end of the edit, at the start of `host` and ending a line there.
+  if h.count >= to && h[..<to].elementsEqual(b[..<to]) && (to == h.count || h[to] == newline) {
+    return String(decoding: Array(b[..<from]) + replacement + Array(h[to...]), as: UTF16.self)
+  }
+  return nil
+}
+
 /// A notes file: saves a beat after the last keystroke, with a byte meter.
 /// A write the host refuses because the file changed meanwhile asks to reload.
+/// Over the cap it still saves when the host makes room (`overflowMovesOut`):
+/// the oldest notes move to the archive and the field shows what was kept.
 struct CtoNotesEditor: View {
   @ObservedObject var store: CtoStore
   let scope: CtoStore.NotesScope
   let text: String
   let hash: String?
   let limit: Int
+  var overflowMovesOut = false
   let placeholder: String
   let accent: Color
 
@@ -537,6 +755,8 @@ struct CtoNotesEditor: View {
 
   private var bytes: Int { draft.utf8.count }
   private var over: Bool { bytes > limit }
+  /// Over the cap with no host to make room: kept here, not sent.
+  private var blocked: Bool { over && !overflowMovesOut }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -559,10 +779,13 @@ struct CtoNotesEditor: View {
       }
       .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
       HStack(spacing: 8) {
-        Text("\(bytes.formatted()) of \(limit.formatted())")
+        Text(over && overflowMovesOut
+          ? "\(bytes.formatted()) of \(limit.formatted()) · oldest notes move to the archive"
+          : "\(bytes.formatted()) of \(limit.formatted())")
           .font(.footnote.monospacedDigit())
-          .foregroundStyle(over ? ADEColor.warning : ADEColor.textMuted)
+          .foregroundStyle(blocked ? ADEColor.warning : ADEColor.textMuted)
           .lineLimit(1)
+          .minimumScaleFactor(0.8)
         Spacer(minLength: 8)
         statusView
       }
@@ -587,13 +810,13 @@ struct CtoNotesEditor: View {
     .onDisappear {
       // Leaving inside the save delay cancels it: save what is left now. The
       // store outlives this page.
-      guard dirty, !over, store.canEditNotes else { return }
+      guard dirty, !blocked, store.canEditNotes else { return }
       if case .saving = state { return }
       let store = store, scope = scope, text = draft, base = baseHash
       Task { _ = await store.saveNotes(scope, text: text, baseHash: base) }
     }
     .task(id: draft) {
-      guard dirty, !over, store.canEditNotes else { return }
+      guard dirty, !blocked, store.canEditNotes else { return }
       try? await Task.sleep(nanoseconds: 1_200_000_000)
       guard !Task.isCancelled else { return }
       await save()
@@ -629,10 +852,25 @@ struct CtoNotesEditor: View {
     switch result {
     case .saved:
       dirty = draft != sent
-      if let memory = store.memory {
-        baseHash = scope == .project ? memory.memoryHash : memory.userNotesHash
-      }
       state = .saved
+      if let memory = store.memory {
+        // The host's answer is what it kept (notes moved out, lines trimmed):
+        // a clean field shows that, not what was typed.
+        let kept = scope == .project ? memory.memory : (memory.userNotes ?? "")
+        let keptHash = scope == .project ? memory.memoryHash : memory.userNotesHash
+        if !dirty {
+          draft = kept
+          baseHash = keptHash
+        } else if let rebased = ctoRebaseDraft(base: sent, draft: draft, host: kept) {
+          // Keystrokes from during the save go onto what the host kept; a
+          // draft that still holds the lines it moved out would save them back.
+          draft = rebased
+          baseHash = keptHash
+        } else {
+          // The old hash stays, so the host refuses the next save too.
+          state = .conflict
+        }
+      }
       store.savedTick += 1
     case .conflict:
       state = .conflict

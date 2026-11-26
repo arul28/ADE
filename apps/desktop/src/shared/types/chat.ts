@@ -657,13 +657,22 @@ export type AgentChatHostContinuationMetadata = {
      */
     | "cto_child_report"
     /** The person answered a card the agent posted (an ADE Cloud size request), or the change it asked for ended. */
-    | "card_answer";
+    | "card_answer"
+    /** ADE's stall judge telling the CTO a chat it started is stuck. */
+    | "cto_stall_nudge";
   /**
    * The ADE row's one line for `reason` (`HOST_CONTINUATION_REASON_LABEL`),
    * stamped by the host so clients need no table of their own. Older hosts
    * send none; clients then fall back to their own copy.
    */
   label?: string;
+  /**
+   * `cto_child_report` only: the child turn the wake reports, so a retried
+   * delivery finds the wake it already sent (the host's dedupe; clients
+   * ignore it).
+   */
+  childSessionId?: string;
+  childTurnId?: string;
 };
 
 export type AgentChatHostContinuationReason = AgentChatHostContinuationMetadata["reason"];
@@ -672,6 +681,7 @@ export type AgentChatHostContinuationReason = AgentChatHostContinuationMetadata[
 export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContinuationReason, string>> = {
   interrupted_turn_recovery: "Resuming your last request after a restart",
   stall_nudge: "Asked for a status check",
+  cto_stall_nudge: "A chat it started looks stuck",
   continuity_recovery: "Rebuilt this chat's thread from ADE history",
   plan_followup: "Sent your plan decision",
   background_work_ended: "A background job it was waiting on finished",
@@ -2090,6 +2100,12 @@ export type AgentChatEvent =
       background?: boolean;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       spawnKind?: AgentChatSpawnKind;
+      /**
+       * A spawned ADE chat that started read-only (`permissionMode "plan"`):
+       * a background helper, not a task of its own. The CTO thread groups it
+       * with native background subagents.
+       */
+      readOnly?: boolean;
       workflowName?: string;
       workflowProgress?: AgentChatWorkflowProgress;
       /** SDK spawn_depth when the host publishes it; 0 is the top-level agent. */

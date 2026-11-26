@@ -25,7 +25,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { AdeRuntime } from "../../bootstrap";
 import {
   childWakeToken,
@@ -38,6 +38,7 @@ import {
   type ExternalChatScope,
   type ExternalParentRouter,
   type ExternalParentWake,
+  type ExternalParentWakePayload,
   type ExternalWakeDeliveryResult,
 } from "../../../../desktop/src/main/services/chat/externalChats";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
@@ -54,7 +55,7 @@ export type RemoteWakePayload = {
   parentChatSessionId: string;
   /** The token the receiving machine handed over when it started the child. */
   wakeToken: string;
-  wake: Omit<ExternalParentWake, "parentSessionId" | "childProjectRoot">;
+  wake: ExternalParentWakePayload;
 };
 
 type ProjectRecordLike = { projectId: string; rootPath: string };
@@ -75,6 +76,16 @@ export type CrossScopeChatsDeps = {
   /** Deliver to another machine; absent on a brain with no machine bridge. */
   deliverRemote?: ((machineKey: string, payload: RemoteWakePayload) => Promise<ExternalWakeDeliveryResult>) | null;
   stateDir: string;
+  /**
+   * This brain's own endpoint. Brains that share one home each keep their own
+   * outbox file under it, so none overwrites or delivers another's reports.
+   */
+  ownerId?: string | null;
+  /**
+   * This is the machine's own brain: it takes over the shared outbox file
+   * that builds before per-brain files wrote. Other brains leave it alone.
+   */
+  adoptLegacyOutbox?: boolean;
   logger?: {
     info(event: string, meta?: Record<string, unknown>): void;
     warn(event: string, meta?: Record<string, unknown>): void;
@@ -83,7 +94,12 @@ export type CrossScopeChatsDeps = {
 };
 
 type OutboxTarget =
-  | { kind: "local" }
+  /**
+   * A parent on this machine. With `scope`, the parent is a chat in the
+   * child's own scope, queued so its report survives a restart; that scope is
+   * opened to deliver it, and a chat missing from it is gone.
+   */
+  | { kind: "local"; scope?: ExternalChatScope }
   | { kind: "remote"; machineKey: string; parentChatSessionId: string };
 
 type OutboxEntry = {
@@ -111,6 +127,7 @@ const MAX_RETRY_MS = 5 * 60_000;
 const GIVE_UP_AFTER_MS = 24 * 60 * 60_000;
 const PUMP_INTERVAL_MS = 30_000;
 const MAX_OUTBOX = 1_000;
+const OUTBOX_PREFIX = "external-parent-wakes";
 /**
  * A child started on another machine is forgotten after a month without a
  * report, the same rule that machine keeps for its token: never by count, so
@@ -144,7 +161,8 @@ function readOutboxEntry(value: unknown): OutboxEntry | null {
   if (!wake || !parentSessionId) return null;
   let outboxTarget: OutboxTarget;
   if (target.kind === "local") {
-    outboxTarget = { kind: "local" };
+    const scope = readExternalChatScope(target.scope);
+    outboxTarget = scope ? { kind: "local", scope } : { kind: "local" };
   } else if (target.kind === "remote" && typeof target.machineKey === "string" && typeof target.parentChatSessionId === "string") {
     outboxTarget = { kind: "remote", machineKey: target.machineKey, parentChatSessionId: target.parentChatSessionId };
   } else {
@@ -193,22 +211,103 @@ export type CrossScopeChats = ReturnType<typeof createCrossScopeChats>;
 export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
   const now = deps.now ?? Date.now;
   const logger = deps.logger ?? null;
-  const outboxPath = path.join(deps.stateDir, "external-parent-wakes.json");
+  // Brains that share one home each keep their own outbox file, named by
+  // their endpoint: one writer per file, so no brain overwrites or takes
+  // another's reports. Without an endpoint (embedded, tests) the shared name.
+  const ownerId = deps.ownerId?.trim() || null;
+  const outboxPath = path.join(
+    deps.stateDir,
+    ownerId ? `${OUTBOX_PREFIX}-${createHash("sha256").update(ownerId).digest("hex").slice(0, 16)}.json` : `${OUTBOX_PREFIX}.json`,
+  );
   const childrenPath = path.join(deps.stateDir, "remote-children.json");
-  let outbox: OutboxEntry[] = readJsonArray(outboxPath).flatMap((entry) => readOutboxEntry(entry) ?? []);
+  const readOutboxFile = (filePath: string): OutboxEntry[] =>
+    readJsonArray(filePath).flatMap((entry) => readOutboxEntry(entry) ?? []);
+  let outbox: OutboxEntry[] = readOutboxFile(outboxPath);
+  /**
+   * Take over reports nobody else will deliver: the shared file older builds
+   * wrote (only the machine's own brain, the one those builds were), and the
+   * file of a brain that has not written for the give-up age (it never came
+   * back: a dev brain on its own socket, a renamed endpoint). Taken entries
+   * are tried once more and then given up with the usual note. Returns the
+   * files taken from; they are deleted only once this brain's file holds
+   * their entries, so a restart in between loses nothing.
+   */
+  const adoptOrphanedOutboxes = (): string[] => {
+    if (!ownerId) return [];
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(deps.stateDir);
+    } catch {
+      return [];
+    }
+    const sources: string[] = [];
+    const known = new Set(outbox.map((entry) => entry.key));
+    for (const name of names) {
+      if (!name.startsWith(OUTBOX_PREFIX) || !name.endsWith(".json")) continue;
+      const filePath = path.join(deps.stateDir, name);
+      if (filePath === outboxPath) continue;
+      const legacy = name === `${OUTBOX_PREFIX}.json`;
+      try {
+        if (legacy ? !deps.adoptLegacyOutbox : now() - fs.statSync(filePath).mtimeMs < GIVE_UP_AFTER_MS) continue;
+        const taken = readOutboxFile(filePath).filter((entry) => !known.has(entry.key));
+        for (const entry of taken) known.add(entry.key);
+        outbox.push(...taken);
+        sources.push(filePath);
+        if (taken.length) logger?.info("cross_scope_chats.outbox_adopted", { file: name, entries: taken.length });
+      } catch (error) {
+        logger?.warn("cross_scope_chats.outbox_adopt_failed", { file: name, error: errorMessage(error) });
+      }
+    }
+    return sources;
+  };
+  const adoptedSources = adoptOrphanedOutboxes();
   let remoteChildren: RemoteChildRecord[] = readJsonArray(childrenPath)
     .flatMap((entry) => readRemoteChild(entry) ?? [])
     .filter((record) => now() - record.usedAt < REMOTE_CHILD_UNUSED_MS);
-  const persist = (filePath: string, value: unknown, label: string): void => {
+  /** False when the write failed (logged): the caller must not count on it being on disk. */
+  const persist = (filePath: string, value: unknown, label: string): boolean => {
     try {
       fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
       writeFileAtomic(filePath, JSON.stringify(value), { mode: 0o600 });
+      return true;
     } catch (error) {
       logger?.warn(`cross_scope_chats.${label}_save_failed`, { error: errorMessage(error) });
+      return false;
     }
   };
-  const saveOutbox = (): void => persist(outboxPath, outbox, "outbox");
-  const saveChildren = (): void => persist(childrenPath, remoteChildren, "children");
+  /** An empty outbox leaves no file, so a brain gone quiet is never mistaken for one with reports. */
+  const saveOutbox = (): boolean => {
+    if (outbox.length === 0 && ownerId) {
+      try {
+        fs.rmSync(outboxPath, { force: true });
+        return true;
+      } catch (error) {
+        logger?.warn("cross_scope_chats.outbox_save_failed", { error: errorMessage(error) });
+        return false;
+      }
+    }
+    return persist(outboxPath, outbox, "outbox");
+  };
+  if (adoptedSources.length && saveOutbox()) {
+    for (const filePath of adoptedSources) {
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch (error) {
+        // Left behind: its entries are already in this brain's file, and a
+        // repeat is deduped by key.
+        logger?.warn("cross_scope_chats.outbox_adopt_cleanup_failed", { error: errorMessage(error) });
+      }
+    }
+  }
+  const forgetEntry = (key: string): void => {
+    outbox = outbox.filter((candidate) => candidate.key !== key);
+  };
+  const trimOutbox = (): void => {
+    if (outbox.length > MAX_OUTBOX) outbox = outbox.slice(-MAX_OUTBOX);
+  };
+  const saveChildren = (): void => {
+    persist(childrenPath, remoteChildren, "children");
+  };
 
   const hasChat = (runtime: AdeRuntime, sessionId: string): boolean =>
     runtime.agentChatService?.permissionLevelOf(sessionId) != null;
@@ -315,7 +414,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
 
   const deliverLocally = async (
     parentSessionId: string,
-    wake: Omit<ExternalParentWake, "childProjectRoot" | "parentSessionId">,
+    wake: ExternalParentWakePayload,
     hint: ExternalChatScope | null,
   ): Promise<ExternalWakeDeliveryResult> => {
     const located = await locateChat(parentSessionId, { boot: true, hint });
@@ -360,6 +459,36 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     }, child.parentScope);
   };
 
+  /** Deliver into a parent in one known scope, opening it when needed. */
+  const deliverInScope = async (
+    scope: ExternalChatScope,
+    parentSessionId: string,
+    wake: ExternalParentWakePayload,
+  ): Promise<ExternalWakeDeliveryResult> => {
+    let runtime: AdeRuntime | null = null;
+    try {
+      runtime = scope.kind === "personal"
+        ? await deps.personalChatScope?.runtimeForDelivery() ?? null
+        : (await deps.scopeRegistry.get(scope.projectId)).runtime;
+    } catch (error) {
+      // The scope did not open (shutting down, refused as too slow): that says
+      // nothing about the parent, so try again later.
+      logger?.warn("cross_scope_chats.scope_open_failed", { scope, error: errorMessage(error) });
+      return "failed";
+    }
+    if (!runtime?.agentChatService) return "failed";
+    if (hasChat(runtime, parentSessionId)) {
+      return await runtime.agentChatService.deliverExternalChildCompletion({ ...wake, parentSessionId });
+    }
+    // Not in the pinned scope. The pin came from a path match against the
+    // project registry, which can miss (a project re-registered under another
+    // path); look in every open scope before calling the parent gone, or a
+    // live parent would lose its child to an ancestor.
+    const located = await locateChat(parentSessionId, { boot: false, hint: scope });
+    if (!located?.runtime.agentChatService) return "parent_gone";
+    return await located.runtime.agentChatService.deliverExternalChildCompletion({ ...wake, parentSessionId });
+  };
+
   const noteOnChild = async (entry: OutboxEntry, reason: "parent_gone" | "gave_up" | "refused"): Promise<void> => {
     try {
       const located = await locateChat(entry.wake.childSessionId, {
@@ -372,6 +501,9 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
         parentMachineName: externalChatContext(entry.wake.parentSessionId)?.machineName ?? null,
         childTurnId: entry.wake.spawnCompletion.childTurnId ?? null,
         reason,
+        // A same-scope parent that is gone: the child may report to the
+        // nearest live chat above it instead, with this same report.
+        ...(entry.target.kind === "local" && entry.target.scope ? { wake: entry.wake } : {}),
       });
     } catch (error) {
       logger?.warn("cross_scope_chats.child_notice_failed", { childSessionId: entry.wake.childSessionId, error: errorMessage(error) });
@@ -380,6 +512,9 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
 
   const deliver = async (entry: OutboxEntry): Promise<ExternalWakeDeliveryResult> => {
     const { childProjectRoot: _root, parentSessionId: _parent, ...wake } = entry.wake;
+    if (entry.target.kind === "local" && entry.target.scope) {
+      return await deliverInScope(entry.target.scope, entry.wake.parentSessionId, wake);
+    }
     if (entry.target.kind === "local") {
       return await deliverLocally(
         entry.wake.parentSessionId,
@@ -400,6 +535,44 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     });
   };
 
+  /** Entries a delivery is running for right now: never tried twice at once. */
+  const inFlight = new Set<string>();
+
+  const settle = async (entry: OutboxEntry, result: ExternalWakeDeliveryResult): Promise<void> => {
+    if (result === "delivered") {
+      forgetEntry(entry.key);
+      logger?.info("cross_scope_chats.delivered", { key: entry.key, target: entry.target.kind, attempts: entry.attempts + 1 });
+    } else if ((result === "failed" || result === "pending") && now() - entry.firstQueuedAt < GIVE_UP_AFTER_MS) {
+      entry.attempts += 1;
+      entry.nextAttemptAt = now() + Math.min(MAX_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.max(0, entry.attempts - 1));
+    } else {
+      // Kept on disk until the child has handed the report on (a relink to a
+      // live ancestor queues its replacement): a save meanwhile, or a restart,
+      // must not lose it. Still in flight here, so the pump leaves it alone.
+      await noteOnChild(entry, result === "parent_gone" || result === "refused" ? result : "gave_up");
+      forgetEntry(entry.key);
+      logger?.info("cross_scope_chats.dropped", { key: entry.key, reason: result });
+    }
+    saveOutbox();
+  };
+
+  const attempt = async (entry: OutboxEntry): Promise<ExternalWakeDeliveryResult> => {
+    inFlight.add(entry.key);
+    try {
+      let result: ExternalWakeDeliveryResult;
+      try {
+        result = await deliver(entry);
+      } catch (error) {
+        logger?.warn("cross_scope_chats.delivery_error", { key: entry.key, error: errorMessage(error) });
+        result = "failed";
+      }
+      await settle(entry, result);
+      return result;
+    } finally {
+      inFlight.delete(entry.key);
+    }
+  };
+
   let pumping: Promise<void> | null = null;
   const pumpOnce = async (): Promise<void> => {
     const due = outbox.filter((entry) => entry.nextAttemptAt <= now());
@@ -407,33 +580,17 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     // first failure in a pass, its other entries wait for the next one.
     const unreachable = new Set<string>();
     for (const entry of due) {
+      // Being tried right now (a fresh local report), or settled meanwhile.
+      if (inFlight.has(entry.key) || !outbox.includes(entry)) continue;
       const targetKey = entry.target.kind === "remote" ? entry.target.machineKey : "local";
-      let result: ExternalWakeDeliveryResult;
       if (unreachable.has(targetKey)) {
-        result = "failed";
-      } else {
-        try {
-          result = await deliver(entry);
-        } catch (error) {
-          logger?.warn("cross_scope_chats.delivery_error", { key: entry.key, error: errorMessage(error) });
-          result = "failed";
-        }
-        // Only a transport failure says the machine is dark; "pending" is one
-        // child waiting on its own handshake.
-        if (result === "failed" && entry.target.kind === "remote") unreachable.add(targetKey);
+        await settle(entry, "failed");
+        continue;
       }
-      if (result === "delivered") {
-        outbox = outbox.filter((candidate) => candidate.key !== entry.key);
-        logger?.info("cross_scope_chats.delivered", { key: entry.key, target: entry.target.kind, attempts: entry.attempts + 1 });
-      } else if ((result === "failed" || result === "pending") && now() - entry.firstQueuedAt < GIVE_UP_AFTER_MS) {
-        entry.attempts += 1;
-        entry.nextAttemptAt = now() + Math.min(MAX_RETRY_MS, FIRST_RETRY_MS * 2 ** Math.max(0, entry.attempts - 1));
-      } else {
-        outbox = outbox.filter((candidate) => candidate.key !== entry.key);
-        await noteOnChild(entry, result === "parent_gone" || result === "refused" ? result : "gave_up");
-        logger?.info("cross_scope_chats.dropped", { key: entry.key, reason: result });
-      }
-      saveOutbox();
+      const result = await attempt(entry);
+      // Only a transport failure says the machine is dark; "pending" is one
+      // child waiting on its own handshake.
+      if (result === "failed" && entry.target.kind === "remote") unreachable.add(targetKey);
     }
   };
   const pump = (): Promise<void> => {
@@ -458,9 +615,36 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
         target = { kind: "local" };
       }
       outbox.push({ key, wake, target, attempts: 0, firstQueuedAt: now(), nextAttemptAt: now() });
-      if (outbox.length > MAX_OUTBOX) outbox = outbox.slice(-MAX_OUTBOX);
+      trimOutbox();
       saveOutbox();
       void pump();
+      return true;
+    },
+    queueLocal(wake) {
+      const key = spawnDeliveryKey(wake.parentSessionId, wake.childSessionId, wake.spawnCompletion.childTurnId);
+      if (outbox.some((entry) => entry.key === key)) return true;
+      const entry: OutboxEntry = {
+        key,
+        wake,
+        target: {
+          kind: "local",
+          scope: scopeOfProjectRoot(wake.childProjectRoot),
+        },
+        attempts: 0,
+        firstQueuedAt: now(),
+        nextAttemptAt: now(),
+      };
+      outbox.push(entry);
+      trimOutbox();
+      if (!saveOutbox()) {
+        // Not on disk, so not durable: hand it back and let the caller
+        // deliver it directly, as it does with no router.
+        forgetEntry(key);
+        return false;
+      }
+      // Saved first, then tried at once on its own: a report to a chat here
+      // must not wait in the pump behind another machine's slow delivery.
+      void attempt(entry);
       return true;
     },
   };

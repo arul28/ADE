@@ -2603,6 +2603,7 @@ func workAdeMessageReasonLabel(_ reason: String) -> String {
   case "chat_wait": return "A chat it was waiting on is ready"
   case "subagent_question": return "A subagent has a question"
   case "subagent_awaiting_user": return "A subagent is waiting on you"
+  case "cto_stall_nudge": return "A chat it started looks stuck"
   case "provider_schedule_cleanup": return "Cleaning up old provider schedules"
   case "cto_intro": return "Started the CTO's introduction"
   case "cto_handoff_note": return "Asked for a hand-off note"

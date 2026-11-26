@@ -750,3 +750,119 @@
   justify-content: flex-start;
   padding-top: 48px;
 }
+
+/* ── Waiting on you: the CTO's lines for chats that need the person, above the composer ── */
+
+.ade-cto-needs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 6px 6px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 28%, transparent);
+  border-radius: 12px;
+  /* Solid: a blur here would stay on screen and redraw the window on every streamed word. */
+  background: color-mix(in srgb, var(--color-warning) 6%, var(--color-card, var(--color-bg)));
+}
+
+.ade-cto-needs-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--color-warning) 78%, var(--color-fg));
+}
+
+.ade-cto-needs-count {
+  margin-left: auto;
+  font-weight: 500;
+  color: var(--cto-text-3);
+}
+
+.ade-cto-needs-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Every line shown: it scrolls past about six rows, so the box below stays on screen. */
+.ade-cto-needs-list[data-expanded="true"] {
+  max-height: 172px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.ade-cto-needs-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ade-cto-needs-row:hover {
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+}
+
+.ade-cto-needs-row:focus-visible {
+  outline: 1px solid var(--cto-accent-line);
+  outline-offset: -1px;
+}
+
+.ade-cto-needs-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: color-mix(in srgb, var(--color-fg) 90%, transparent);
+}
+
+.ade-cto-needs-chat {
+  flex-shrink: 1;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--cto-text-3);
+}
+
+.ade-cto-needs-go {
+  flex-shrink: 0;
+  align-self: center;
+  color: var(--cto-text-3);
+  opacity: 0;
+}
+
+.ade-cto-needs-row:hover .ade-cto-needs-go,
+.ade-cto-needs-row:focus-visible .ade-cto-needs-go {
+  opacity: 1;
+}
+
+.ade-cto-needs-more {
+  align-self: flex-start;
+  margin: 2px 8px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  color: var(--cto-text-2);
+  cursor: pointer;
+}
+
+.ade-cto-needs-more:hover {
+  color: var(--color-fg);
+}

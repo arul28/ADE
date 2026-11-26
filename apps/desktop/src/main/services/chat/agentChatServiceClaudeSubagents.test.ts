@@ -802,21 +802,46 @@ describe("createAgentChatService", () => {
       expect(notice.message).toBe('"Retry fix" · Claude · finished · PR #1234');
       expect(notice.message).not.toContain("rewrote the flaky helper");
 
-      // The subagent_result card restates the whole summary, so the CTO thread
-      // does not get one.
-      expect(events.some((event) =>
-        event.sessionId === cto.id && event.event.type === "subagent_result")).toBe(false);
+      // The CTO thread gets the child's result too, so its spawn row settles;
+      // the CTO surfaces draw only the line above, never the summary.
+      expect(events.filter((event) =>
+        event.sessionId === cto.id && event.event.type === "subagent_result").map((event) => event.event)).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
+      ]);
 
-      // The model is still told, with the same single line.
+      // The model itself reads the child's report: the line, then the
+      // child's final message. Only the person's notice is one line.
       const wake = await vi.waitFor(() => {
         const found = events.find((event) =>
           event.sessionId === cto.id
           && event.event.type === "user_message"
-          && event.event.text === notice.message);
+          && event.event.text.startsWith(notice.message));
         expect(found).toBeTruthy();
         return found!;
       });
+      expect((wake.event as any).text).toContain("rewrote the flaky helper");
       expect((wake.event as any).metadata?.spawnCompletion).toBeUndefined();
+      // The wake lands before the notice, so the notice (the dedupe anchor)
+      // never claims a report the CTO did not get.
+      expect(events.indexOf(wake)).toBeLessThan(events.findIndex((event) => event.event === notice));
+      expect((wake.event as any).metadata?.hostContinuation).toMatchObject({
+        reason: "cto_child_report",
+        childSessionId: child.id,
+      });
+
+      // A later child turn reopens the CTO's row, as for any parent: the row
+      // that the first result settled must read as running again.
+      await service.messageSession({ sessionId: child.id, text: "Handle the follow-up too." });
+      await vi.waitFor(() => {
+        expect(events.filter((event) =>
+          event.sessionId === cto.id && event.event.type === "subagent_result")).toHaveLength(2);
+      });
+      const ctoStarts = events
+        .filter((event) => event.sessionId === cto.id && event.event.type === "subagent_started")
+        .map((event) => event.event);
+      expect(ctoStarts).toHaveLength(2);
+      expect((ctoStarts[0] as any).resumed).not.toBe(true);
+      expect(ctoStarts[1]).toMatchObject({ taskId: `chat:${child.id}`, resumed: true });
     });
 
     it("wakes the parent when a human messages a subagent, and names that human message in the report", async () => {

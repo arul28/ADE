@@ -6,7 +6,7 @@
 
 import type { CloudHoursState } from "./contract";
 import { sendCloudEmail } from "./email";
-import { smallUsesNoHours } from "./gravity";
+import { smallUsesNoHours } from "./sponsoredSmall";
 import { phoneAccess } from "./phones";
 import { allowancePercentUsed, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 

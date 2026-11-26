@@ -628,6 +628,9 @@ import type {
   CtoMemorySnapshot,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
+  CtoArchiveQuery,
+  CtoArchivePage,
+  CtoRecallArchivedArgs,
   CtoRefreshContextResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
@@ -658,6 +661,7 @@ import type {
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoAttentionState,
+  CtoNeedsSnapshot,
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
@@ -5712,6 +5716,10 @@ declare global {
         getMemory: (pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         updateNotes: (args: CtoUpdateNotesArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         updateOpenWork: (args: CtoUpdateOpenWorkArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        /** The archive on the CTO's home machine: notes that left the notes, facts, discoveries, story versions. */
+        searchMemoryArchive: (args: CtoArchiveQuery, pin: OpenProjectBinding) => Promise<CtoArchivePage>;
+        /** Pins an archived entry as a note again; answers the new snapshot. */
+        recallArchivedNote: (args: CtoRecallArchivedArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         getLinearConnectionStatus: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,
@@ -5780,6 +5788,8 @@ declare global {
         ) => Promise<CtoGetLinearOAuthSessionResult>;
         runProjectScan: (pin: OpenProjectBinding) => Promise<CtoRunProjectScanResult>;
         getAttention: (pin: OpenProjectBinding) => Promise<CtoAttentionState>;
+        /** The CTO's "Waiting on you" lines, read on its home machine. */
+        getNeeds: (pin: OpenProjectBinding) => Promise<CtoNeedsSnapshot>;
       };
       /**
        * The owner's lane sharing (`lane_share` runtime actions, user-only).

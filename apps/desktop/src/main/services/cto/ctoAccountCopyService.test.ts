@@ -12,32 +12,46 @@ import {
   type CtoAccountCopySettings,
   type CtoAccountCopyVault,
 } from "./ctoAccountCopyService";
+import { decodeCtoArchiveCopyIndex } from "./ctoArchiveCopy";
 import { createCtoMemoryService } from "./ctoMemoryService";
 
 const SCOPE = "repo:github.com/acme/app";
 const silent = { info: () => {}, warn: () => {} };
 
-/** The account's vault as the relay keeps it: one row, refused when the writer names a stale revision. */
+/** The account's vault as the relay keeps it: a row per key, refused when the writer names a stale revision. */
 function createAccount() {
-  let row: { value: string; revision: string } | null = null;
+  const rows = new Map<string, { value: string | null; revision: string }>();
   let seq = 0;
   const settings = new Map<string, unknown>();
+  const write = (key: string, value: string | null, expectedRevision: string | undefined): "queued" | "stale" => {
+    if ((expectedRevision ?? null) !== (rows.get(key)?.revision ?? ACCOUNT_VAULT_NO_REVISION)) return "stale";
+    seq += 1;
+    rows.set(key, { value, revision: `r${seq}` });
+    return "queued";
+  };
   const vaultFor = (reach: { synced: "ready" | "unavailable" }): CtoAccountCopyVault => ({
-    get: () => row?.value ?? null,
-    list: () => (row ? [{ kind: CTO_ACCOUNT_COPY_VAULT_KIND, key: CTO_ACCOUNT_COPY_VAULT_KEY, revision: row.revision }] : []),
-    trySet: (_scope, _kind, _key, value, options) => {
-      if ((options?.expectedRevision ?? null) !== (row?.revision ?? ACCOUNT_VAULT_NO_REVISION)) return "stale";
-      seq += 1;
-      row = { value, revision: `r${seq}` };
-      return "queued";
-    },
+    get: (_scope, _kind, key) => rows.get(key)?.value ?? null,
+    list: () => Array.from(rows.entries()).map(([key, row]) => ({
+      kind: CTO_ACCOUNT_COPY_VAULT_KIND,
+      key,
+      revision: row.revision,
+      ...(row.value == null ? { deleted: true } : {}),
+    })),
+    trySet: (_scope, _kind, key, value, options) => write(key, value, options?.expectedRevision),
+    tryRemove: (_scope, _kind, key, options) => write(key, null, options?.expectedRevision),
     sync: async () => reach.synced,
   });
   const settingsView = (): CtoAccountCopySettings => ({
     get: (_scope, key) => settings.get(key) ?? null,
     set: (_scope, key, value) => settings.set(key, value),
   });
-  return { vaultFor, settingsView, copy: () => decodeCtoAccountCopy(row?.value ?? null) };
+  return {
+    vaultFor,
+    settingsView,
+    copy: () => decodeCtoAccountCopy(rows.get(CTO_ACCOUNT_COPY_VAULT_KEY)?.value ?? null),
+    liveKeys: () => Array.from(rows.entries()).filter(([, row]) => row.value != null).map(([key]) => key),
+    value: (key: string) => rows.get(key)?.value ?? null,
+  };
 }
 
 let clock = Date.parse("2026-11-01T09:00:00.000Z");
@@ -84,8 +98,12 @@ describe("ctoAccountCopyService across machines", () => {
     const account = createAccount();
     const a = createMachine("device-a", account);
     const b = createMachine("device-b", account);
-    b.memory.writeNotes("project", "- Deploys go out on Thursdays");
+    b.memory.writeNotes("project", "- Deploys go out on Thursdays\n- The staging cluster is eu-west-2");
+    // B's archive: a forgotten note and a fact a story fold pulled out.
+    expect(b.memory.forget({ note: "staging cluster" }).ok).toBe(true);
+    b.memory.recordStoryFacts([{ kind: "fact", text: "PR #4182 moved billing to the new queue", sourceAt: null, sourceLabel: "Tool result (listPrs)", sourceSessionId: "s-b" }]);
     a.memory.writeNotes("project", "- Stale note from an old stay");
+    a.memory.recordStoryFacts([{ kind: "decision", text: "A decided long ago to keep the monorepo", sourceAt: null, sourceLabel: null, sourceSessionId: null }]);
 
     // No home yet: the first machine writes the copy, the other never writes over it.
     tick();
@@ -103,6 +121,64 @@ describe("ctoAccountCopyService across machines", () => {
     expect(a.memory.readNotes("project")).toContain("Deploys go out on Thursdays");
     expect(a.memory.readNotes("project")).not.toContain("Stale note");
     expect(account.copy()?.ownerDeviceId).toBe("device-a");
+    // B's archive came with it, joined to what A already held, and A's save
+    // kept both in the account.
+    const texts = (machine: typeof a) => machine.memory.searchArchive({ limit: 100 }).entries.map((entry) => entry.text);
+    expect(texts(a)).toEqual(expect.arrayContaining([
+      "The staging cluster is eu-west-2",
+      "PR #4182 moved billing to the new queue",
+      "A decided long ago to keep the monorepo",
+    ]));
+    expect(a.memory.searchArchive({ query: "billing queue" }).entries[0]?.sourceLabel).toBe("Tool result (listPrs)");
+    const vault = account.vaultFor({ synced: "ready" });
+    const revisionsBefore = new Map(vault.list().map((row) => [row.key, row.revision]));
+    const c = createMachine("device-c", account);
+    const homeC = homeOn("device-c");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, homeC);
+    expect((await c.service.adopt({ home: homeC })).restored).toBe(true);
+    expect(texts(c)).toEqual(expect.arrayContaining([
+      "The staging cluster is eu-west-2",
+      "PR #4182 moved billing to the new queue",
+      "A decided long ago to keep the monorepo",
+    ]));
+    // Every chunk C's index names is live. Chunks of the index C took over stay:
+    // the old home may still point at them before it hears of the move.
+    const index = decodeCtoArchiveCopyIndex(account.value("archive"));
+    expect(index?.ownerDeviceId).toBe("device-c");
+    expect(account.liveKeys()).toEqual(expect.arrayContaining([...index!.chunks]));
+    // C wrote every chunk it took over again: a delete the old home queued
+    // against the revision it knew goes stale, and the chunk stays.
+    const inherited = index!.chunks.find((key) => revisionsBefore.has(key));
+    expect(inherited, "C's index reuses a chunk A wrote").toBeTruthy();
+    expect(vault.tryRemove!(SCOPE, CTO_ACCOUNT_COPY_VAULT_KIND, inherited!, { expectedRevision: revisionsBefore.get(inherited!) })).toBe("stale");
+    expect(account.liveKeys()).toContain(inherited);
+
+    // C pins a note back from the archive; after the move back, A's archive
+    // drops its own copy of it too, and the note is in A's notes.
+    const staging = c.memory.searchArchive({ query: "staging cluster" }).entries[0];
+    expect(staging?.text).toBe("The staging cluster is eu-west-2");
+    expect(c.memory.recallArchived({ id: staging!.id }).ok).toBe(true);
+    tick();
+    await c.service.save("turn_ended");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
+    await a.service.adopt({ home });
+    expect(a.memory.readNotes("project")).toContain("The staging cluster is eu-west-2");
+    expect(texts(a)).not.toContain("The staging cluster is eu-west-2");
+    expect(texts(a)).toContain("PR #4182 moved billing to the new queue");
+
+    // A forgets that note again; back on C, where it was pinned, the archive
+    // shows it again (it left C's notes with the restore).
+    expect(a.memory.forget({ note: "staging cluster" }).ok).toBe(true);
+    tick();
+    await a.service.save("turn_ended");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, homeC);
+    await c.service.adopt({ home: homeC });
+    expect(c.memory.readNotes("project")).not.toContain("The staging cluster is eu-west-2");
+    expect(texts(c)).toContain("The staging cluster is eu-west-2");
+    // A new entry, above any travel cut C's copy keeps: it travels on from C.
+    expect(c.memory.searchArchive({ query: "staging cluster" }).entries[0]!.id).toBeGreaterThan(staging!.id);
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
+    await a.service.adopt({ home });
 
     // B is not the home any more: its saves leave the copy alone.
     b.memory.writeNotes("project", "- Written on the old home after the move");
@@ -151,5 +227,32 @@ describe("ctoAccountCopyService across machines", () => {
     expect(a.memory.readNotes("project")).not.toContain("months ago");
     expect(account.copy()?.ownerDeviceId).toBe("device-a");
     expect(account.copy()?.projectNotes).toContain("Freeze starts Friday");
+  });
+
+  it("a chunk the old home's fresh index names but this machine can't read yet keeps that index until the chunk arrives", async () => {
+    const account = createAccount();
+    const vault = account.vaultFor({ synced: "ready" });
+    const a = createMachine("device-a", account);
+    const b = createMachine("device-b", account);
+    b.memory.writeNotes("project", "- Deploys go out on Thursdays\n- The staging cluster is eu-west-2");
+    expect(b.memory.forget({ note: "staging cluster" }).ok).toBe(true);
+    tick();
+    await b.service.save("turn_ended");
+    const chunk = decodeCtoArchiveCopyIndex(account.value("archive"))!.chunks[0]!;
+    const value = account.value(chunk)!;
+    const revision = () => vault.list(SCOPE).find((row) => row.key === chunk)?.revision;
+    // The relay handed out the index before this chunk.
+    expect(vault.tryRemove!(SCOPE, CTO_ACCOUNT_COPY_VAULT_KIND, chunk, { expectedRevision: revision() })).toBe("queued");
+
+    const home = homeOn("device-a");
+    account.settingsView().set(SCOPE, CTO_HOME_SETTING_KEY, home);
+    expect((await a.service.adopt({ home })).restored).toBe(true);
+    expect(decodeCtoArchiveCopyIndex(account.value("archive"))?.ownerDeviceId).toBe("device-b");
+
+    expect(vault.trySet(SCOPE, CTO_ACCOUNT_COPY_VAULT_KIND, chunk, value, { expectedRevision: revision() })).toBe("queued");
+    tick();
+    await a.service.save("turn_ended");
+    expect(a.memory.searchArchive({ query: "staging cluster" }).entries[0]?.text).toBe("The staging cluster is eu-west-2");
+    expect(decodeCtoArchiveCopyIndex(account.value("archive"))?.ownerDeviceId).toBe("device-a");
   });
 });

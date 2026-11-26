@@ -156,6 +156,7 @@ import {
   type LaneLinearIssueLink,
   type MergeMethod,
   type AppNavigationRequest,
+  CTO_ARCHIVE_KINDS,
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { LaneEnvInitProgress } from "../../desktop/src/shared/types/config";
@@ -1530,6 +1531,34 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "searchMemory",
+    description: "Search the CTO's archive: notes that left the notes (moved out when full, replaced, forgotten), facts and decisions from past turns and tool results, worker discoveries and every story version. Keyword search, every word must match (the best matches only); without `query`, newest first, and pass `nextBefore` as `before` for older entries. Pass `id` to read one entry in full.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1, maxLength: 200 },
+        kinds: { type: "array", items: { type: "string", enum: [...CTO_ARCHIVE_KINDS] } },
+        id: { type: "integer", minimum: 1 },
+        before: { type: "integer", minimum: 1 },
+        limit: { type: "integer", minimum: 1, maximum: 50 }
+      }
+    }
+  },
+  {
+    name: "recallNote",
+    description: "Pin an archived note, fact or discovery back into the CTO's notes by its searchMemory id. When the notes are full, the least recently used notes move to the archive.",
+    inputSchema: {
+      type: "object",
+      required: ["id"],
+      additionalProperties: false,
+      properties: {
+        id: { type: "integer", minimum: 1 },
+        scope: { type: "string", enum: ["project", "user"] }
+      }
+    }
+  },
+  {
     name: "readHistory",
     description: "Page or search the CTO's whole conversation, newest first. With `query`, messages containing all its words, each with its neighbours. Pass `nextBefore` as `before` for older pages.",
     inputSchema: {
@@ -1572,6 +1601,19 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       properties: {
         emoji: { type: "string", enum: [...CTO_REACTION_EMOJIS] }
+      }
+    }
+  },
+  {
+    name: "setNeed",
+    description: "Put one line on the person's \"Waiting on you\" card for a chat you started that needs them (a merge to approve, a product call, a sign-in). It clears when that chat moves; line null clears it now.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId", "line"],
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string", minLength: 1 },
+        line: { anyOf: [{ type: "string", minLength: 1, maxLength: 400 }, { type: "null" }] }
       }
     }
   },
@@ -1831,6 +1873,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_review_comments",
   "get_cto_state",
   "readHistory",
+  "searchMemory",
   "listChats",
   "getChatStatus",
   "readChatTranscript",
@@ -1848,9 +1891,11 @@ const READ_ONLY_TOOLS = new Set([
 const MUTATION_TOOLS = new Set([
   "remember",
   "forget",
+  "recallNote",
   "replyNow",
   "noReply",
   "react",
+  "setNeed",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
   // A chat on another machine whose turn ended letting go of the devices it holds here.
@@ -5993,6 +6038,8 @@ async function runCtoOperatorBridgeTool(
     postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({ sessionId: ctoChatSessionId, text }),
     endTurnQuietly: async () => agentChatService.endCtoTurnQuietly({ sessionId: ctoChatSessionId }),
     reactToMessage: async ({ emoji }) => agentChatService.reactToCtoMessage({ sessionId: ctoChatSessionId, emoji }),
+    // Same caller as `replyNow`: the service refuses a chat this CTO did not start.
+    setNeed: ({ childSessionId, line }) => agentChatService.setCtoNeed({ ctoSessionId: ctoChatSessionId, childSessionId, line }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,

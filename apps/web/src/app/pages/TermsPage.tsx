@@ -5,7 +5,7 @@ import { LINKS } from "../../lib/links";
 import { ANALYTICS_FEATURE_ATTRIBUTE, MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 
-const UPDATED_DATE = "November 24, 2026";
+const UPDATED_DATE = "November 25, 2026";
 
 /** The plain sections of the page, in order. The ads and project-docs cards follow them. */
 const sections: Array<{ title: string; body: string[] }> = [
@@ -93,7 +93,9 @@ export function TermsPage() {
                     Gravity (IRIS Inc.), ADE’s ad partner, labeled “Sponsored”, and an agent may suggest a sponsored
                     tool. In the United States, except California, the cards start on and ADE tells you so; in
                     California and elsewhere they show only after you agree. You can turn them off at any time in Settings › ADE Cloud; Small computers on Free then
-                    use credits. Chats on your own computer and paid plans have no ads.{" "}
+                    use credits. Sponsored cards keep Small computers free only while, in the last 7 days, you turned them on or
+                    opened an ADE Cloud chat from the United States; otherwise, outside the United States included, they use
+                    credits until you next open one there. Chats on your own computer and paid plans have no ads.{" "}
                     <a className="focus-ring rounded-md text-fg underline underline-offset-2" href="/privacy#sponsored">
                       The Privacy page
                     </a>{" "}

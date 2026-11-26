@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ipcErrorMessage } from "../../lib/format";
 import type {
   CtoMemorySnapshot,
+  CtoRecallArchivedArgs,
   CtoUpdateNotesArgs,
   CtoUpdateOpenWorkArgs,
   OpenProjectBinding,
@@ -11,14 +13,19 @@ export type CtoMemoryState = {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  /** Writes a whole notes file. Rejects (and keeps the old snapshot) when the host refuses it. */
-  updateNotes: (args: CtoUpdateNotesArgs) => Promise<void>;
+  /**
+   * Writes a whole notes file and answers the host's snapshot after the write.
+   * Rejects (and keeps the old snapshot) when the host refuses it.
+   */
+  updateNotes: (args: CtoUpdateNotesArgs) => Promise<CtoMemorySnapshot>;
   /** Adds, completes, reopens or removes one open-work item. */
   updateOpenWork: (args: CtoUpdateOpenWorkArgs) => Promise<void>;
+  /** Pins an archived note, fact or discovery as a note again. */
+  recallArchived: (args: CtoRecallArchivedArgs) => Promise<void>;
 };
 
 function errorText(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
+  return ipcErrorMessage(err) || fallback;
 }
 
 /**
@@ -37,6 +44,8 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
   pinRef.current = pin;
   /** Drops a read that answers after the pin moved to another machine. */
   const generationRef = useRef(0);
+  /** Drops a read that a newer read or a finished write overtook. */
+  const readRef = useRef(0);
 
   const refresh = useCallback(async () => {
     const target = pinRef.current;
@@ -47,17 +56,19 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
       return;
     }
     const generation = generationRef.current;
+    const read = ++readRef.current;
+    const current = () => generation === generationRef.current && read === readRef.current;
     setLoading(true);
     try {
       const next = await bridge.getMemory(target);
-      if (generation !== generationRef.current) return;
+      if (!current()) return;
       setMemory(next);
       setError(null);
     } catch (err) {
-      if (generation !== generationRef.current) return;
+      if (!current()) return;
       setError(errorText(err, "Couldn't read notes."));
     } finally {
-      if (generation === generationRef.current) setLoading(false);
+      if (current()) setLoading(false);
     }
   }, []);
 
@@ -70,15 +81,19 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pin?.key, refresh]);
 
-  const write = useCallback(async (run: (target: OpenProjectBinding) => Promise<CtoMemorySnapshot>) => {
+  const write = useCallback(async (run: (target: OpenProjectBinding) => Promise<CtoMemorySnapshot>): Promise<CtoMemorySnapshot> => {
     const target = pinRef.current;
     if (!target) throw new Error("Home machine unreachable");
     const generation = generationRef.current;
     const next = await run(target);
     if (generation === generationRef.current) {
+      // A read that started before this write would answer the older notes.
+      readRef.current += 1;
       setMemory(next);
       setError(null);
+      setLoading(false);
     }
+    return next;
   }, []);
 
   const updateNotes = useCallback(
@@ -87,9 +102,14 @@ export function useCtoMemory(pin: OpenProjectBinding | null): CtoMemoryState {
   );
 
   const updateOpenWork = useCallback(
-    (args: CtoUpdateOpenWorkArgs) => write((target) => window.ade.cto!.updateOpenWork(args, target)),
+    async (args: CtoUpdateOpenWorkArgs) => { await write((target) => window.ade.cto!.updateOpenWork(args, target)); },
     [write],
   );
 
-  return { memory, loading, error, refresh, updateNotes, updateOpenWork };
+  const recallArchived = useCallback(
+    async (args: CtoRecallArchivedArgs) => { await write((target) => window.ade.cto!.recallArchivedNote(args, target)); },
+    [write],
+  );
+
+  return { memory, loading, error, refresh, updateNotes, updateOpenWork, recallArchived };
 }

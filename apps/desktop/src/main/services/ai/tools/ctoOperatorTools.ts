@@ -45,7 +45,7 @@ import type {
   CostSnapshot,
   UsageSnapshot,
 } from "../../../../shared/types";
-import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
+import { CTO_ARCHIVE_KINDS, PROOF_LISTING_ARTIFACT_FILTER } from "../../../../shared/types";
 import type {
   TerminalUnwatchArgs,
   TerminalUnwatchResult,
@@ -163,7 +163,7 @@ export interface CtoOperatorToolDeps {
   issueTracker?: IssueTracker | null;
   ctoMemoryService?: Pick<
     CtoMemoryService,
-    "remember" | "forget" | "trackWork" | "finishWork" | "readNewDiscoveries"
+    "remember" | "forget" | "trackWork" | "finishWork" | "readNewDiscoveries" | "searchArchive" | "recallArchived"
   > | null;
   /** The CTO's whole conversation, paged or searched (`readHistory`). */
   readHistory?: (args: CtoReadHistoryArgs) => Promise<CtoHistoryPage>;
@@ -176,6 +176,8 @@ export interface CtoOperatorToolDeps {
   endTurnQuietly?: () => Promise<{ quiet: boolean; note?: string }>;
   /** `react`: an emoji on the person's newest message, in place of a reply. */
   reactToMessage?: (args: { emoji: CtoReactionEmoji }) => Promise<{ reacted: boolean; note?: string }>;
+  /** `setNeed`: the CTO's "Waiting on you" line for one of its chats; null clears it. */
+  setNeed?: (args: { childSessionId: string; line: string | null }) => Promise<{ set: boolean; line: string | null }>;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean; includeArchived?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   /** Durable wait: wake this thread when other chats reach a state. */
@@ -1083,6 +1085,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         }
         const session = await deps.createChat({
           laneId: executionLaneId,
+          // Named at creation, so the parent's "Started a new task" row reads the title, not "Claude chat".
+          ...(title?.trim() ? { title: title.trim() } : {}),
           provider: resolved.provider,
           model: resolved.model,
           ...(selectedModelId ? { modelId: selectedModelId } : {}),
@@ -2996,7 +3000,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "Write a note you will see on every turn: a decision, a convention, a trap, how the person likes to work. "
       + "One short line. To change a note, pass part of the old line in `replaces` and the note is rewritten in place. "
-      + "The notes have a hard size cap; past it the note is refused until you merge or forget others.",
+      + "The notes have a size cap; past it your least recently used project notes move to your archive (the result lists them), "
+      + "where searchMemory finds them and recallNote brings one back. Notes about the person never move out: when they are full, merge or forget one.",
     inputSchema: z.object({
       note: z.string().trim().min(1).max(400).describe("The note, one line."),
       scope: notesScopeSchema,
@@ -3027,6 +3032,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           ...(result.replaced ? { replaced: result.replaced } : {}),
           scope: result.scope,
           bytes: `${result.bytes} of ${result.limitBytes}`,
+          ...(result.archived?.length
+            ? { archived: result.archived, notice: "The notes were full: these moved to your archive. searchMemory finds them; recallNote brings one back." }
+            : {}),
         };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
@@ -3050,6 +3058,82 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           return { success: false, error: result.error, ...(result.candidates ? { candidates: result.candidates } : {}) };
         }
         return { success: true, forgotten: result.forgotten, scope: result.scope };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "searchMemory", () => core({
+    description:
+      "Search your archive: notes that left your notes (moved out when full, replaced or forgotten), "
+      + "facts and decisions pulled from past turns and tool results (PR numbers, branches, lanes), worker discoveries, "
+      + "and every version of the story so far. Keyword search: every word must match. Without `query`, the newest first. "
+      + "Use it before saying you don't know something from earlier. Pass `id` to read one entry in full (a story version). "
+      + "Without `query`, pass the `nextBefore` you got as `before` for older entries; a keyword search gives the best matches only.",
+    inputSchema: z.object({
+      query: z.string().trim().min(1).max(200).optional(),
+      kinds: z.array(z.enum(CTO_ARCHIVE_KINDS)).optional(),
+      id: z.number().int().positive().optional(),
+      before: z.number().int().positive().optional().describe("The nextBefore of the previous page (newest-first list only)."),
+      limit: z.number().int().min(1).max(50).optional().describe("Default 20."),
+    }),
+    execute: async ({ query, kinds, id, before, limit }) => {
+      const memory = deps.ctoMemoryService;
+      if (!memory) return { success: false, error: "Memory is not available on this runtime." };
+      try {
+        const page = memory.searchArchive({
+          ...(query ? { query } : {}),
+          ...(kinds?.length ? { kinds } : {}),
+          ...(id ? { id } : {}),
+          ...(before ? { before } : {}),
+          limit: limit ?? 20,
+        });
+        if (!page.available) return { success: false, error: "The archive is not available on this machine." };
+        return {
+          success: true,
+          mode: page.mode,
+          results: page.entries.map((entry) => ({
+            id: entry.id,
+            kind: entry.kind,
+            text: entry.text,
+            ...(entry.truncated ? { truncated: true } : {}),
+            ...(entry.scope ? { scope: entry.scope } : {}),
+            ...(entry.reason ? { reason: entry.reason } : {}),
+            ...(entry.sourceAt ? { from: entry.sourceAt } : {}),
+            ...(entry.sourceLabel ? { source: entry.sourceLabel } : {}),
+          })),
+          ...(page.nextBefore ? { nextBefore: page.nextBefore } : {}),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "recallNote", () => core({
+    description:
+      "Pin an archived note, fact or discovery back into your notes (by the id searchMemory gave). "
+      + "If the project notes are full, your least recently used ones move to the archive to make room.",
+    inputSchema: z.object({
+      id: z.number().int().positive(),
+      scope: notesScopeSchema,
+    }),
+    execute: async ({ id, scope }) => {
+      const memory = deps.ctoMemoryService;
+      if (!memory) return { success: false, error: "Memory is not available on this runtime." };
+      try {
+        const result = memory.recallArchived({ id, ...(scope ? { scope } : {}) });
+        if (!result.ok) return { success: false, error: result.error };
+        if (!result.saved) return { success: true, recalled: true, alreadyPinnedAs: result.duplicateOf };
+        return {
+          success: true,
+          recalled: true,
+          note: result.note,
+          scope: result.scope,
+          bytes: `${result.bytes} of ${result.limitBytes}`,
+          ...(result.archived?.length ? { archived: result.archived } : {}),
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -3168,6 +3252,27 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         const result = await deps.reactToMessage({ emoji });
         return result.reacted ? { success: true, reacted: true } : { success: false, error: result.note ?? "Not done." };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  }));
+
+  defineLazyTool(tools, "setNeed", () => core({
+    description:
+      "Put one line on the person's \"Waiting on you\" card for a chat you started that needs them: a merge to "
+      + "approve, a product call, a sign-in, something to test. The line clears by itself when that chat moves. "
+      + "Pass line null to clear it now. Only for what is truly the person's call; fix everything else by steering the chat.",
+    inputSchema: z.object({
+      sessionId: z.string().trim().min(1).describe("The chat you started (its session id)."),
+      line: z.string().trim().min(1).max(400).nullable()
+        .describe("What the person must do, in one short line (\"Approve the merge of PR #12\"). Null clears it."),
+    }),
+    execute: async ({ sessionId, line }) => {
+      if (!deps.setNeed) return { success: false, error: "\"Waiting on you\" lines are not available on this runtime." };
+      try {
+        const result = await deps.setNeed({ childSessionId: sessionId, line });
+        return { success: true, sessionId, ...result };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }

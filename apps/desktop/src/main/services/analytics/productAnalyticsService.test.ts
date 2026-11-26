@@ -713,6 +713,8 @@ describe("productAnalyticsService", () => {
     { action: "capture_gesture", surface: "desktop", outcomes: ["delivered", "failed", "too_large"] },
     { action: "cto_home_move", surface: "api", outcomes: ["completed", "kept", "failed"] },
     { action: "cto_message_reaction", surface: "api", outcomes: ["completed"] },
+    { action: "cto_stall_nudge", surface: "api", outcomes: ["completed", "failed"] },
+    { action: "cto_need", surface: "api", outcomes: ["started"] },
   ] as const)("accepts the CTO's $action outcomes and nothing private beside them", ({ action, surface, outcomes }) => {
     const harness = makeHarness();
 

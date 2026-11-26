@@ -325,7 +325,9 @@ struct CloudHero: View {
           value: small.hoursLeftLabel(account.hours.leftMilli + max(0, account.earnedHours?.leftMilli ?? 0)),
           of: nil,
           fraction: nil,
-          note: account.sponsored?.smallUsesHoursWithoutCards == true ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"
+          note: account.sponsored?.smallNeedsLook == true
+            ? "Left at this size. Opening an ADE Cloud chat in the US makes it unlimited again."
+            : account.sponsored?.smallUsesHoursWithoutCards == true ? "Left at this size. Sponsored cards make it unlimited." : "Left at this size"
         )
       }
       if let past = pastYourPlan(account, words: words) {

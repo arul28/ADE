@@ -2292,6 +2292,8 @@ export async function createAdeRuntime(args: {
       // device) reach the account copy too, not only at a turn's end.
       onChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
     });
+    // The CTO archive's SQLite handle; it opens on first use. `close` never throws.
+    teardown.push(() => ctoMemoryService.close());
     const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
     // The CTO's generic actions on this machine run through the same RPC
     // dispatcher, under the same CTO caller identity, as they would from

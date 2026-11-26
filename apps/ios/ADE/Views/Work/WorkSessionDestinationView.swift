@@ -454,6 +454,12 @@ struct WorkSessionDestinationView: View {
     guard let machineKey = personalChat ? personalChatMachineKey : crossProjectContext?.machineKey else { return false }
     return machineKey != syncService.focusedMachineKey
   }
+  /// The other machine the CTO tab's chat lives on. That tab registers the
+  /// chat's machine with the sync service (`ensureCtoSession`) and passes no
+  /// cross-project context, so `isRemoteMachineChat` reads false there.
+  var registeredRemoteMachineKey: String? {
+    syncService.routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines))?.machineKey
+  }
   /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
   var resolvesLanePr: Bool {
     WorkChatLanePrPolicy(showsLaneActions: showsLaneActions).resolvesLanePr
@@ -2628,6 +2634,10 @@ struct WorkSessionDestinationView: View {
       onResumeUsageLimitNow: resumeUsageLimitNowAction,
       onContinueUsageLimitOnAlternate: continueUsageLimitOnAlternateAction,
       onStopSubagentTask: stopTaskAction,
+      onSelectSubagent: { snapshot in await handleSubagentSelection(snapshot) },
+      onOpenRemoteSpawnedChat: { spawn in openRemoteSpawnedChat(spawn) },
+      onOpenSubagentDetail: { snapshot in await openSubagentDetail(snapshot) },
+      childChatTitle: { childId in childChatTitle(childId) },
       onApproveRequest: approveRequest,
       onImplementPlanInNewChat: implementPlanInNewChat,
       onRespondToQuestion: respondToQuestion,
@@ -3476,14 +3486,20 @@ struct WorkSessionDestinationView: View {
   /// navigation request the Work root resolves. The lane id comes from the
   /// child's own Work row, so a child on another machine carries that
   /// machine's namespaced lane id and the root opens it through that machine.
-  /// Without a row, a child is opened only when both chats are on this
-  /// machine; otherwise there is no lane to route by, and false is returned so
-  /// the row just expands rather than opening on the wrong machine.
+  /// Without a row, a child opens when both chats are on this machine, or when
+  /// the CTO tab's chat is on another machine whose roster lists the child.
+  /// Otherwise there is no lane to route by, and false is returned so the row
+  /// just expands rather than opening on the wrong machine.
   @MainActor
   func openChildChat(_ childId: String) -> Bool {
     let laneId: String?
     if let rowLaneId = chatChildRoster.childrenById[childId]?.laneId {
       laneId = rowLaneId
+    } else if !isRemoteMachineChat, let parentMachineKey = registeredRemoteMachineKey {
+      // A chat this one started runs on this chat's machine; that machine's
+      // roster names its lane.
+      guard let childLaneId = syncService.remoteMachineRosterChat(sessionId: childId)?.laneId else { return false }
+      laneId = workRemoteLaneId(machineKey: parentMachineKey, laneId: childLaneId)
     } else if !isRemoteMachineChat,
               syncService.remoteMachineChat(sessionId: sessionId) == nil,
               syncService.remoteMachineChat(sessionId: childId) == nil {
@@ -3491,7 +3507,62 @@ struct WorkSessionDestinationView: View {
     } else {
       return false
     }
-    let request = WorkSessionNavigationRequest(sessionId: childId, laneId: laneId)
+    requestWorkNavigation(WorkSessionNavigationRequest(sessionId: childId, laneId: laneId))
+    return true
+  }
+
+  /// Opens a chat the CTO started on another machine or ADE Cloud (its
+  /// "Started a new task … on <machine>" row). A chat the Work list holds for
+  /// another machine opens through that machine's namespaced lane id. When
+  /// this chat is itself on another machine, the child may be on the one the
+  /// phone is focused on, so its plain lane id goes to the Work root, which
+  /// says so if the chat is not there. Otherwise the phone cannot tell where
+  /// the chat runs: nothing opens rather than the wrong machine, and the chat
+  /// says the child is not listed yet.
+  @MainActor
+  func openRemoteSpawnedChat(_ spawn: CtoRemoteSpawn) {
+    guard let childId = spawn.sessionId else { return }
+    let laneId: String?
+    if let remote = syncService.remoteMachineChat(sessionId: childId) {
+      // An ADE Cloud launch result names no lane; the machine's roster does.
+      // Without a namespaced lane the Work tab opens the chat on the focused
+      // machine, so a chat whose lane is still unknown does not open.
+      guard let lane = spawn.laneId ?? syncService.remoteMachineRosterChat(sessionId: childId)?.laneId else {
+        errorMessage = remoteSpawnNotListedMessage(spawn)
+        return
+      }
+      laneId = workRemoteLaneId(machineKey: remote.machineKey, laneId: lane)
+    } else if isRemoteMachineChat || registeredRemoteMachineKey != nil {
+      laneId = spawn.laneId
+    } else {
+      errorMessage = remoteSpawnNotListedMessage(spawn)
+      return
+    }
+    requestWorkNavigation(WorkSessionNavigationRequest(sessionId: childId, laneId: laneId))
+  }
+
+  /// Chat Info, opened on one subagent with its detail (result, last activity) expanded.
+  @MainActor
+  func openSubagentDetail(_ snapshot: WorkSubagentSnapshot) async {
+    expandedSubagentDetailIds.insert(snapshot.taskId)
+    await prepareChatInfoPresentation()
+  }
+
+  /// A child chat's current title: its Work row, else another machine's roster.
+  @MainActor
+  func childChatTitle(_ childId: String) -> String? {
+    let title = chatChildRoster.childrenById[childId]?.title
+      ?? syncService.remoteMachineRosterChat(sessionId: childId)?.title
+    let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  private func remoteSpawnNotListedMessage(_ spawn: CtoRemoteSpawn) -> String {
+    "The chat on \(spawn.machineName) is not in this phone's list yet. Try again in a moment."
+  }
+
+  @MainActor
+  private func requestWorkNavigation(_ request: WorkSessionNavigationRequest) {
     if chatInfoPresented {
       // The sheet goes first: the request replaces this chat, and a sheet
       // still up over it would be torn down mid-presentation.
@@ -3499,7 +3570,6 @@ struct WorkSessionDestinationView: View {
     } else {
       syncService.requestedWorkSessionNavigation = request
     }
-    return true
   }
 
   /// Dismisses Chat Info, then runs `action` once the sheet's dismissal has
