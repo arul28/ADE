@@ -450,7 +450,7 @@ describe("createAgentChatService", () => {
         params?: { input?: Array<{ text?: unknown }> };
       };
       const inputText = turnStartRequest.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
-      expect(inputText).toContain("This message was injected automatically by ADE during a chat handoff.");
+      expect(inputText).toContain("This message was injected automatically by Daex during a chat handoff.");
       expect(inputText).toContain("No Machine State Polish");
       expect(mockState.sessions.get(result.session.id)?.goal ?? null).toBeNull();
     });
@@ -2001,7 +2001,7 @@ describe("createAgentChatService", () => {
         } | undefined;
       const inputText = turnStartRequest?.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(inputText).toContain("Start by checking the current test failure, then continue.");
-      expect(inputText).not.toContain("This message was injected automatically by ADE during a chat handoff.");
+      expect(inputText).not.toContain("This message was injected automatically by Daex during a chat handoff.");
     });
 
     it.each([
@@ -2539,7 +2539,7 @@ describe("createAgentChatService", () => {
         expect(setPermissionMode).toHaveBeenCalledWith("plan");
       });
       await vi.waitFor(() => {
-        expect(send).toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by ADE during a chat handoff."));
+        expect(send).toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by Daex during a chat handoff."));
       });
     });
 
@@ -2615,7 +2615,7 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(result.session.id).sdkSessionId).toBeTruthy();
       expect(readPersistedChatState(result.session.id).forkFromSdkSessionId).toBe(sourceSdkSessionId);
       for (const send of [sourceSend, targetWarmupSend, forkWarmupSend]) {
-        expect(send).not.toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by ADE during a chat handoff."));
+        expect(send).not.toHaveBeenCalledWith(expect.stringContaining("This message was injected automatically by Daex during a chat handoff."));
       }
     });
 

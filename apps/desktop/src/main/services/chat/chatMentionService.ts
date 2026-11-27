@@ -640,11 +640,11 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["lastActivity", session.lastActivityAt],
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string"),
       hint:
-        "Pointer to another ADE chat on this machine. Read its transcript with the ade CLI "
+        "Pointer to another Daex chat on this machine. Read its transcript with the daex CLI "
         + "(silent and bounded): "
-        + `\`ade chat read ${session.sessionId} --limit 20 --max-chars 8000 --text\`. `
-        + `Page older content with \`ade chat read ${session.sessionId} --page --cursor <n>\`. `
-        + `Search inside it with \`ade search "session:${session.sessionId} <terms>" --text\`. `
+        + `\`daex chat read ${session.sessionId} --limit 20 --max-chars 8000 --text\`. `
+        + `Page older content with \`daex chat read ${session.sessionId} --page --cursor <n>\`. `
+        + `Search inside it with \`daex search "session:${session.sessionId} <terms>" --text\`. `
         + "Do not assume anything beyond the preview below.",
       previewLabel: "Preview (most recent exchange, truncated):",
       preview: await chatPreview(session.sessionId),
@@ -689,13 +689,13 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
           : []),
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
-        "Pointer to an ADE lane (git worktree + branch) in this project. Inspect it with "
-        + `\`ade lanes show ${lane.id} --text\`, list its chats with `
-        + `\`ade chat list --lane ${lane.id} --text\`, and search its history with `
+        "Pointer to a Daex lane (git worktree + branch) in this project. Inspect it with "
+        + `\`daex lanes show ${lane.id} --text\`, list its chats with `
+        + `\`daex chat list --lane ${lane.id} --text\`, and search its history with `
         // Id + `--lane` flag rather than the in-query `lane:<name>` filter: lane
         // names may contain spaces or quotes, and the flag form stays
         // copy-pasteable in sh, PowerShell, and cmd without any escaping.
-        + `\`ade search "<terms>" --lane ${lane.id} --text\`. `
+        + `\`daex search "<terms>" --lane ${lane.id} --text\`. `
         + "Read files under the worktree path above rather than guessing.",
       preview: pr?.title ? `PR: ${pr.title}` : null,
       previewLabel: pr?.title ? "Linked pull request:" : null,
@@ -720,8 +720,8 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
         "Pointer to a terminal session in this project. Read its scrollback with "
-        + `\`ade terminal read --terminal ${terminal.terminalId} --text\`. `
-        + `Search it with \`ade search "kind:terminal <terms>" --text\`.`,
+        + `\`daex terminal read --terminal ${terminal.terminalId} --text\`. `
+        + `Search it with \`daex search "kind:terminal <terms>" --text\`.`,
       previewLabel: `Preview (last ${TERMINAL_PREVIEW_LINES} lines of scrollback, truncated):`,
       preview: await terminalPreview(terminal.terminalId),
     };
@@ -765,10 +765,10 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["lastSynced", pr.lastSyncedAt ?? ""],
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
-        "Pointer to a pull request tracked by ADE. The status above is ADE's last sync, not a live read. "
-        + `Read more with \`ade prs show ${pr.id} --text\`, `
-        + `\`ade prs checks ${pr.id} --text\` (CI rollup and per-check rows), and `
-        + `\`ade prs comments ${pr.id} --text\` (unresolved review work).`,
+        "Pointer to a pull request tracked by Daex. The status above is Daex's last sync, not a live read. "
+        + `Read more with \`daex prs show ${pr.id} --text\`, `
+        + `\`daex prs checks ${pr.id} --text\` (CI rollup and per-check rows), and `
+        + `\`daex prs comments ${pr.id} --text\` (unresolved review work).`,
     };
   };
 
@@ -777,15 +777,15 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
       case "ok":
         return null;
       case "signed_out":
-        return "The ADE account is signed out on this machine, so account machines cannot be read.";
+        return "The Daex account is signed out on this machine, so account machines cannot be read.";
       case "auth_expired":
-        return "The ADE account session on this machine expired, so account machines cannot be read.";
+        return "The Daex account session on this machine expired, so account machines cannot be read.";
       case "not_configured":
-        return "The ADE account machine directory is not configured on this machine.";
+        return "The Daex account machine directory is not configured on this machine.";
       case "unsupported":
-        return "This ADE runtime cannot read account machines.";
+        return "This Daex runtime cannot read account machines.";
       default:
-        return "The ADE account machine directory could not be reached.";
+        return "The Daex account machine directory could not be reached.";
     }
   };
 
@@ -818,14 +818,14 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["snapshotAt", new Date().toISOString()],
       ].filter((pair): pair is [string, string] => typeof pair[1] === "string" && pair[1].length > 0),
       hint:
-        "The user referenced this machine connected through ADE. "
-        + `Read its status, projects, lanes and recent chats with \`ade machines show ${snapshot.machineKey} --text\`. `
+        "The user referenced this machine connected through Daex. "
+        + `Read its status, projects, lanes and recent chats with \`daex machines show ${snapshot.machineKey} --text\`. `
         + "Change nothing there unless the user asks. When the user asks for work there: "
-        + `to run a command (tests, a build, a CLI signed in there), run \`ade shell start --machine ${snapshot.machineKey} --wait -- <command>\` from this chat; `
+        + `to run a command (tests, a build, a CLI signed in there), run \`daex shell start --machine ${snapshot.machineKey} --wait -- <command>\` from this chat; `
         + "it runs in your code there, so push your commit first (uncommitted changes go along). "
-        + `For a whole task, start a chat there (\`ade chat create --machine ${snapshot.machineKey} --provider <p> --model <id>\`); `
-        + `to move this chat, \`ade chat handoff <this chat> --to ${snapshot.machineKey}\`. `
-        + "Projects, lanes and chats below come from ADE Activity (recent work only, not a full listing).",
+        + `For a whole task, start a chat there (\`daex chat create --machine ${snapshot.machineKey} --provider <p> --model <id>\`); `
+        + `to move this chat, \`daex chat handoff <this chat> --to ${snapshot.machineKey}\`. `
+        + "Projects, lanes and chats below come from Daex Activity (recent work only, not a full listing).",
       previewLabel: "Snapshot at send time:",
       preview: formatAccountMachineSnapshotText(snapshot, Date.now(), { compact: true }),
     };
@@ -846,7 +846,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         ["toolCount", toolCount != null ? String(toolCount) : "not reported"],
         ["lastError", record.lastError ?? "not reported"],
       ],
-      hint: "Pointer to an MCP server configured in ADE on this machine. This snapshot does not attach tools or authorize a tool call. Check the named server and available tools before using it.",
+      hint: "Pointer to an MCP server configured in Daex on this machine. This snapshot does not attach tools or authorize a tool call. Check the named server and available tools before using it.",
       previewLabel: toolCount != null ? "Available tool names:" : "Available tool names (not reported):",
       preview: tools.length ? tools.join("\n") : null,
     };
@@ -891,7 +891,7 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
           ["linearUserId", person.key],
         ].filter((pair): pair is [string, string] => pair[1].length > 0),
         hint: `A member of the user's Linear workspace. ${context} `
-          + `To assign a Linear issue to them when asked: \`ade linear assign <issue> ${person.key}\`.`,
+          + `To assign a Linear issue to them when asked: \`daex linear assign <issue> ${person.key}\`.`,
       };
     }
     return {

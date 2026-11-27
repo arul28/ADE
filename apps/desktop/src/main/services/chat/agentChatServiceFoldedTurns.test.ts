@@ -220,7 +220,7 @@ describe("createAgentChatService", () => {
           status: "completed",
           childTurnId: `cli-exit:${CLI_ENDED_AT}`,
         });
-        expect((wake!.event as any).text).toContain("ade terminal read cli-child-ok");
+        expect((wake!.event as any).text).toContain("daex terminal read cli-child-ok");
       });
     });
 
@@ -381,7 +381,7 @@ describe("createAgentChatService", () => {
           exitCode: 0,
           laneId: "lane-1",
           spawnKind: "peer",
-          readHint: "ade terminal read cli-child-done",
+          readHint: "daex terminal read cli-child-done",
         },
       });
 
@@ -400,8 +400,8 @@ describe("createAgentChatService", () => {
       expect(read.cliSession).toMatchObject({ status: "completed" });
       expect(read.entries).toHaveLength(1);
       expect(read.entries[0]!.text).toContain("All 12 tests passed.");
-      expect(read.entries[0]!.text).toContain("ade terminal read cli-child-done");
-      await expect(service.getChatTranscriptPage({ sessionId: ended.id })).rejects.toThrow(/ade terminal read cli-child-done/);
+      expect(read.entries[0]!.text).toContain("daex terminal read cli-child-done");
+      await expect(service.getChatTranscriptPage({ sessionId: ended.id })).rejects.toThrow(/daex terminal read cli-child-done/);
     });
   });
 

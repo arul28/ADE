@@ -1989,8 +1989,8 @@ describe("createAgentChatService", () => {
         .join("\n");
       expect(appended).toContain("Linear-tracked work");
       expect(appended).toContain("ADE-123");
-      expect(appended).toContain("ade linear");
-      expect(appended).toContain("Prefer `ade linear`");
+      expect(appended).toContain("daex linear");
+      expect(appended).toContain("Prefer `daex linear`");
       expect(appended).toContain("ade-deeplinks");
     });
 
@@ -2037,13 +2037,13 @@ describe("createAgentChatService", () => {
       // front of the message; this file mocks the prompt builder, so the
       // prompt's own wording is checked in `systemPrompt.test.ts`.
       expect(userTurnPayload).not.toContain("[ADE launch directive]");
-      expect(userTurnPayload).not.toContain("CLI controls ADE state");
-      expect(userTurnPayload).not.toContain("ade actions list --text");
+      expect(userTurnPayload).not.toContain("CLI controls Daex state");
+      expect(userTurnPayload).not.toContain("daex actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
       expect(opts?.systemPrompt?.append).toContain("system prompt");
       // The session is named through its env var, so the prompt holds no
       // per-chat value and a second chat in the lane reuses the prompt cache.
-      expect(opts?.systemPrompt?.append).toContain("This ADE chat session's id is in `$ADE_CHAT_SESSION_ID`");
+      expect(opts?.systemPrompt?.append).toContain("This Daex chat session's id is in `$ADE_CHAT_SESSION_ID`");
       expect(opts?.systemPrompt?.append).not.toContain(session.id);
     });
 
@@ -2923,14 +2923,14 @@ describe("createAgentChatService", () => {
         });
         const prompt = opts.systemPrompt as string;
         expect(typeof prompt).toBe("string");
-        expect(prompt).toContain("ADE personal chat");
+        expect(prompt).toContain("Daex personal chat");
         expect(prompt.endsWith("The project codeword is HALYARD.")).toBe(true);
       });
 
       it("accepts a bare string as an append", async () => {
         const opts = await openPersonalClaudeSession({ instructions: "The codeword is HALYARD." });
         const prompt = opts.systemPrompt as string;
-        expect(prompt).toContain("ADE personal chat");
+        expect(prompt).toContain("Daex personal chat");
         expect(prompt.endsWith("The codeword is HALYARD.")).toBe(true);
       });
 
@@ -2940,7 +2940,7 @@ describe("createAgentChatService", () => {
           instructions: { mode: "replace", text: "You are the Halyard assistant." },
         });
         expect(opts.systemPrompt).toBe("You are the Halyard assistant.");
-        expect(opts.systemPrompt as string).not.toContain("ADE personal chat");
+        expect(opts.systemPrompt as string).not.toContain("Daex personal chat");
       });
 
       it("reports what the provider did on the session summary", async () => {

@@ -267,8 +267,8 @@ describe("buildLinearSessionDirective", () => {
     expect(directive).toContain("ENG-12, ENG-34");
     // Deduped — the repeated identifier appears once.
     expect(directive?.match(/ENG-12/g)).toHaveLength(1);
-    expect(directive).toContain("ade linear");
-    expect(directive).toContain("Prefer `ade linear`");
+    expect(directive).toContain("daex linear");
+    expect(directive).toContain("Prefer `daex linear`");
     expect(directive).toContain("ade-linear");
     expect(directive).toContain("ade-deeplinks");
   });

@@ -101,8 +101,8 @@ describe("createAgentChatService", () => {
       } | undefined;
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(turnParams?.collaborationMode?.settings?.developer_instructions).toBe("system prompt");
-      expect(textInput).not.toContain("CLI controls ADE state");
-      expect(textInput).not.toContain("ade actions list --text");
+      expect(textInput).not.toContain("CLI controls Daex state");
+      expect(textInput).not.toContain("daex actions list --text");
       expect(textInput).toContain("Inspect the repo and fix the lane launch bug.");
     });
 
@@ -192,7 +192,7 @@ describe("createAgentChatService", () => {
             ?.developerInstructions ?? "",
         );
         expect(instructions).toContain("You are the Halyard assistant.");
-        expect(instructions.includes("ADE personal chat")).toBe(keepsAdeText);
+        expect(instructions.includes("Daex personal chat")).toBe(keepsAdeText);
       },
     );
 
@@ -1150,17 +1150,17 @@ describe("createAgentChatService", () => {
 
       const first = await turn("What is on fire?");
       expect(first).toContain("CTO Runtime Identity");
-      expect(first).toContain("Immutable ADE doctrine");
-      expect(first).toContain("ADE environment knowledge");
-      expect(first).toContain("ADE Architecture");
+      expect(first).toContain("Immutable Daex doctrine");
+      expect(first).toContain("Daex environment knowledge");
+      expect(first).toContain("Daex Architecture");
       expect(first).toContain("CTO Context");
 
       // Turn two talks to the same Claude SDK session, which holds all of the
       // above verbatim. Only the perishable half rides again.
       const second = await turn("And now?");
       expect(second).not.toContain("CTO Runtime Identity");
-      expect(second).not.toContain("Immutable ADE doctrine");
-      expect(second).not.toContain("ADE Architecture");
+      expect(second).not.toContain("Immutable Daex doctrine");
+      expect(second).not.toContain("Daex Architecture");
       expect(second).toContain("CTO Context");
       expect(Buffer.byteLength(second)).toBeLessThan(Buffer.byteLength(first) / 2);
 
@@ -1205,7 +1205,7 @@ describe("createAgentChatService", () => {
       expect((await service.refreshCtoContext()).refreshed).toBe(true);
       const afterRefresh = await turn(session.id, "Still there?");
       expect(afterRefresh).toContain("CTO Runtime Identity");
-      expect(afterRefresh).toContain("ADE Architecture");
+      expect(afterRefresh).toContain("Daex Architecture");
       expect(afterRefresh).toContain("CTO Context");
 
       service.forceDisposeAll();
@@ -1251,7 +1251,7 @@ describe("createAgentChatService", () => {
       const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       const handedOff = JSON.stringify(turnStart?.params ?? {});
       expect(handedOff).toContain("CTO Runtime Identity");
-      expect(handedOff).toContain("ADE Architecture");
+      expect(handedOff).toContain("Daex Architecture");
 
       service.forceDisposeAll();
       db.close();
@@ -1445,7 +1445,7 @@ describe("createAgentChatService", () => {
 
       const afterReset = await turn("Who are you?");
       expect(afterReset).toContain("CTO Runtime Identity");
-      expect(afterReset).toContain("ADE Architecture");
+      expect(afterReset).toContain("Daex Architecture");
 
       service.forceDisposeAll();
       db.close();
@@ -1511,7 +1511,7 @@ describe("createAgentChatService", () => {
       }
       await vi.waitFor(() => {
         const restated = send.mock.calls.map((call) => String(call[0])).find((text) => text.includes("CTO Runtime Identity"));
-        expect(restated).toContain("ADE Architecture");
+        expect(restated).toContain("Daex Architecture");
       });
       expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({ state: "reconstructed" });
 
@@ -1649,7 +1649,7 @@ describe("createAgentChatService", () => {
       expect(headless).toContain("## Open work");
       // And the thread is intact, so the immutable half does not ride again.
       expect(headless).not.toContain("CTO Runtime Identity");
-      expect(headless).not.toContain("ADE Architecture");
+      expect(headless).not.toContain("Daex Architecture");
 
       service.forceDisposeAll();
       db.close();
@@ -1684,8 +1684,8 @@ describe("createAgentChatService", () => {
         (threadStart?.params as Record<string, unknown> | undefined)?.developerInstructions ?? "",
       );
       expect(developerInstructions.length).toBeGreaterThan(0);
-      expect(developerInstructions).not.toContain("Immutable ADE doctrine");
-      expect(developerInstructions).not.toContain("ADE operator tools");
+      expect(developerInstructions).not.toContain("Immutable Daex doctrine");
+      expect(developerInstructions).not.toContain("Daex operator tools");
 
       const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect(JSON.stringify(turnStart?.params ?? {})).toContain("CTO Runtime Identity");

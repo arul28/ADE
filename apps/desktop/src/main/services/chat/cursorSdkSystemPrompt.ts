@@ -63,10 +63,10 @@ const collapseBlankLines = (raw: string): string =>
 
 const buildCloudCapabilitySection = (runtime: CursorSdkRuntime): string =>
   [
-    `You're running inside the Cursor SDK via ADE (runtime: ${runtime}).`,
-    "- Fresh ADE chats can be launched as Cursor Cloud agents (`Agent.create({ cloud: { repos, autoCreatePR?, workOnCurrentBranch? } })`). Once a chat has any turns ADE will not promote it to cloud — cloud chats must be kicked off cleanly.",
-    "- Existing cloud chats can be mirrored into a new ADE chat session; replies still execute in cloud.",
-    "- Cloud runs survive caller disconnect. `Agent.getRun(runId).cancel()` cancels them from anywhere. ADE auto-pulls artifacts produced by your run into the lane on completion.",
+    `You're running inside the Cursor SDK via Daex (runtime: ${runtime}).`,
+    "- Fresh Daex chats can be launched as Cursor Cloud agents (`Agent.create({ cloud: { repos, autoCreatePR?, workOnCurrentBranch? } })`). Once a chat has any turns Daex will not promote it to cloud — cloud chats must be kicked off cleanly.",
+    "- Existing cloud chats can be mirrored into a new Daex chat session; replies still execute in cloud.",
+    "- Cloud runs survive caller disconnect. `Agent.getRun(runId).cancel()` cancels them from anywhere. Daex auto-pulls artifacts produced by your run into the lane on completion.",
     "- `prUrl` and `autoCreatePR` are creation-time only; they cannot be added retroactively.",
     "- `agent.send(message, { model? })` continues a finished cloud agent in a new run. The model becomes sticky for subsequent turns.",
     "- \"Bring cloud to local\" is intentionally not supported — cloud and local stay separate by design.",
@@ -74,7 +74,7 @@ const buildCloudCapabilitySection = (runtime: CursorSdkRuntime): string =>
 
 const buildControlProtocolSection = (): string =>
   [
-    "ADE control protocol — ADE renders private fenced control blocks from your assistant text and removes them from the visible transcript. Treat them as private formatting; do not explain the mechanism in user-facing replies.",
+    "Daex control protocol — Daex renders private fenced control blocks from your assistant text and removes them from the visible transcript. Treat them as private formatting; do not explain the mechanism in user-facing replies.",
     "Visible plan: ```ade_update_plan {\"explanation\":\"...\",\"steps\":[{\"text\":\"Inspect wiring\",\"status\":\"pending\"}]}``` (close the fence).",
     "Blocking question (output only this block, then stop): ```ade_request_user_input {\"title\":\"Input requested\",\"questions\":[{\"id\":\"scope\",\"header\":\"Scope\",\"question\":\"Which scope?\",\"options\":[{\"label\":\"UI\"},{\"label\":\"Backend\"}],\"allowsFreeform\":true}]}```.",
     "Plan ready for approval: ```ade_plan_approval {\"planDescription\":\"1. Inspect\\n2. Patch\\n3. Verify\"}```.",
@@ -153,7 +153,7 @@ export const buildCursorSdkSystemPrompt = (
     blocks.push(
       [
         "## ADE CLI primer",
-        "Lane shells have an `ade` command that drives the same project DB through the machine runtime endpoint. The `ade cursor cloud` subcommands (e.g. `agents list`, `agents create`, `agents send`, `agents cancel`) mirror the SDK surface above. Run `ade <command> --help` for full flags.",
+        "Lane shells have a `daex` command that drives the same project DB through the machine runtime endpoint (`ade` is the same command and still works). The `daex cursor cloud` subcommands (e.g. `agents list`, `agents create`, `agents send`, `agents cancel`) mirror the SDK surface above. Run `daex <command> --help` for full flags.",
         cliT.value,
       ].join("\n"),
     );
@@ -162,7 +162,7 @@ export const buildCursorSdkSystemPrompt = (
 
   const ctrl = buildControlProtocolSection();
   const ctrlT = truncateFromEnd(ctrl, CONTROL_BUDGET);
-  blocks.push(`## ADE control protocol\n${ctrlT.value}`);
+  blocks.push(`## Daex control protocol\n${ctrlT.value}`);
   sections.push({ name: "control", bytes: ctrlT.value.length, truncated: ctrlT.truncated });
 
   const subagentRouting = truncateFromEnd(

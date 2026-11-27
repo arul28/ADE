@@ -166,7 +166,7 @@ export async function startCodexVoiceHost(args: {
 
   try {
     await request("initialize", {
-      clientInfo: { name: "ade-voice", title: "ADE voice", version: "1" },
+      clientInfo: { name: "ade-voice", title: "Daex voice", version: "1" },
       capabilities: { experimentalApi: true },
     });
     write({ method: "initialized", params: {} });

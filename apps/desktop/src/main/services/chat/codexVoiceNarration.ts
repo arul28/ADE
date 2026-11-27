@@ -465,7 +465,7 @@ export function createVoiceNarration(options: {
         || "The subagent";
       if (event.type === "subagent_started") {
         sink.tell(
-          `[ADE] Subagent "${name}" started. It keeps running after the agent's turn ends; it is not done until ADE says it finished.`,
+          `[Daex] Subagent "${name}" started. It keeps running after the agent's turn ends; it is not done until Daex says it finished.`,
         );
         return;
       }
@@ -473,7 +473,7 @@ export function createVoiceNarration(options: {
       speakResult(`${name} ${outcome}.`);
       const summary = (event.finalSummary ?? event.summary ?? "").trim();
       if (summary) {
-        sink.tell(`[ADE] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${cutTextAtCodePoint(summary, 1_500)}`);
+        sink.tell(`[Daex] Subagent "${name}" ${outcome}. Its report (shown in the chat): ${cutTextAtCodePoint(summary, 1_500)}`);
       }
       return;
     }

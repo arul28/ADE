@@ -254,7 +254,7 @@ describe("resolveChatMentionDetails", () => {
     const detail = details.get("chat:s-new");
     expect(detail?.title).toBe("Login redirect");
     expect(detail?.preview).toBe("user: why is it looping?\nassistant: the redirect never settles");
-    expect(detail?.hint).toContain("ade chat read s-new --limit 20 --max-chars 8000 --text");
+    expect(detail?.hint).toContain("daex chat read s-new --limit 20 --max-chars 8000 --text");
     expect(detail?.hint).toContain("--page --cursor");
     expect(Object.fromEntries(detail!.attributes)).toMatchObject({
       lane: "fix-login",
@@ -321,7 +321,7 @@ describe("resolveChatMentionDetails", () => {
     // Never derived from the unmeasured LaneStatus default (see suggestion test).
     expect(attrs.state).toBeUndefined();
     expect(attrs.worktreeAvailable).toBe("true");
-    expect(detail?.hint).toContain("ade lanes show lane-1 --text");
+    expect(detail?.hint).toContain("daex lanes show lane-1 --text");
   });
 
   // The cheap roster shape carries no worktree probe, so the block must stay
@@ -359,7 +359,7 @@ describe("resolveChatMentionDetails", () => {
     const lines = detail!.preview!.split("\n");
     expect(lines).toHaveLength(15);
     expect(lines.at(-1)).toBe("row 39");
-    expect(detail?.hint).toContain("ade terminal read --terminal t-1 --text");
+    expect(detail?.hint).toContain("daex terminal read --terminal t-1 --text");
   });
 
   // Windows parity: conpty transcripts are CRLF and worktree paths are
@@ -396,7 +396,7 @@ describe("resolveChatMentionDetails", () => {
     // Lane search hint uses the id + --lane flag, so a lane name with spaces or
     // quotes can never break the copy-pasted command in any shell.
     expect(details.get("lane:lane-win")?.hint).toContain(
-      'ade search "<terms>" --lane lane-win --text',
+      'daex search "<terms>" --lane lane-win --text',
     );
   });
 
