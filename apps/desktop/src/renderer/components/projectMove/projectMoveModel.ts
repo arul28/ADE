@@ -1,7 +1,6 @@
 import type { ProjectMoveRecord, ProjectMoveVolume } from "../../../shared/types/projectMove";
 import { isPathEqualOrDescendant } from "../../lib/pathUtils";
 import { BRAND } from "../../../shared/brand";
-import { SHARED_TEXT_CLI } from "../../lib/sharedAgentText";
 
 /** Window event the move surfaces fire so the Location row and the banner re-read. */
 export const PROJECT_MOVE_CHANGED_EVENT = "ade:project-move-changed";
@@ -65,7 +64,7 @@ export function agentCheckPrompt(record: ProjectMoveRecord): string {
     "2. Run `git --no-optional-locks status` in the project and in each lane. Nothing should look unexpectedly changed.",
     dependencies,
     `4. Find files that still name \`${record.sourceRoot}\`: the list ${BRAND.NAME} found is below; also check scripts, .env files, editor settings and Python virtualenvs. For each, say the change you'd make. Ask me before editing.`,
-    `5. Run \`${SHARED_TEXT_CLI} health --text\` (the same checks Settings → Project shows) and go through any open issues with me: explain each, and offer its fix or what I should do. Fixes are mine to press there.`,
+    `5. Run \`${BRAND.CLI} health --text\` (the same checks Settings → Project shows) and go through any open issues with me: explain each, and offer its fix or what I should do. Fixes are mine to press there.`,
     "",
     `## What ${BRAND.NAME} did`,
     bullets(record.followUps),
@@ -78,7 +77,7 @@ export function agentCheckPrompt(record: ProjectMoveRecord): string {
     record.originalParkedAt
       ? `- The old copy at \`${record.originalParkedAt}\` is read-only for you. Don't edit it, run git in it, or delete it, even if asked. I delete it from ${BRAND.NAME}.`
       : "- The old copy is already gone; work only in the moved project.",
-    ...(record.destinationInternal ? [] : [`- This project is on an external drive. Simulator screenshots: use ${BRAND.NAME}'s Apple tools (\`${SHARED_TEXT_CLI} apple …\`), which handle the drive; a hand-run \`xcrun simctl io … screenshot\` must write to /tmp.`]),
+    ...(record.destinationInternal ? [] : [`- This project is on an external drive. Simulator screenshots: use ${BRAND.NAME}'s Apple tools (\`${BRAND.CLI} apple …\`), which handle the drive; a hand-run \`xcrun simctl io … screenshot\` must write to /tmp.`]),
     "- Keep the report short: what works, what you fixed (only with my OK), what I need to do.",
     "",
     `Finish by telling me: when I'm happy, I can delete the old copy, keep it, or set a reminder from ${BRAND.NAME}'s banner or Settings → Project → Location.`,

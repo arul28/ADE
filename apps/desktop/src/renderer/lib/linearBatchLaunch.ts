@@ -24,7 +24,7 @@ import {
   makeLinearIssueContextAttachment,
 } from "../../shared/chatContextAttachments";
 import { githubIssueId } from "../../shared/laneGitHubIssue";
-import { SHARED_TEXT_CLI, sharedTextSkillName } from "./sharedAgentText";
+import { BRAND } from "../../shared/brand";
 import { jiraIssueToLaneIssue } from "../../shared/laneJiraIssue";
 import { jiraIssueLaneName, jiraIssueBranchName } from "../../shared/jiraIssueBranch";
 import { linearIssueLaneName, resolveLinearIssueBranchName, sanitizeLinearIssueBranchName } from "../../shared/linearIssueBranch";
@@ -146,7 +146,7 @@ export function defaultIssueKickoffPrompt(issue: LaunchIssue): string {
   return (
     `Resolve Jira issue ${issue.key}: ${issue.title}. Its details are attached to this session. `
     + "Verify that it still applies against the latest remote main, then make the change it describes. "
-    + `Use \`${SHARED_TEXT_CLI} jira issue\` to read it, \`${SHARED_TEXT_CLI} jira comment\` to report progress, and \`${SHARED_TEXT_CLI} jira transition\` to update its status.`
+    + `Use \`${BRAND.CLI} jira issue\` to read it, \`${BRAND.CLI} jira comment\` to report progress, and \`${BRAND.CLI} jira transition\` to update its status.`
   );
 }
 
@@ -155,7 +155,7 @@ export function githubIssueKickoffPrompt(): string {
     "Resolve the GitHub issue attached to this session. Its full details are in your context — work on THAT issue. "
     + "Start by checking that the issue still applies against the latest remote main. "
     + "Then make the change the issue describes, keeping your work scoped to it. "
-    + `Read and comment on the issue with \`${SHARED_TEXT_CLI} github issue view\` and \`${SHARED_TEXT_CLI} github issue comment\`; the pull request you open closes it.`
+    + `Read and comment on the issue with \`${BRAND.CLI} github issue view\` and \`${BRAND.CLI} github issue comment\`; the pull request you open closes it.`
   );
 }
 
@@ -163,8 +163,8 @@ function cliIssueKickoffPrompt(issue: LaunchIssue, customPrompt: string): string
   if (issue.tracker === "linear") return customPrompt.trim() || defaultKickoffIntro();
   const prompt = customPrompt.trim() || defaultIssueKickoffPrompt(issue);
   const cliCommands = issue.tracker === "github"
-    ? `Use \`${SHARED_TEXT_CLI} github issue view\` and \`${SHARED_TEXT_CLI} github issue comment\` for issue updates.`
-    : `Use \`${SHARED_TEXT_CLI} jira issue\`, \`${SHARED_TEXT_CLI} jira comment\`, and \`${SHARED_TEXT_CLI} jira transition\` for issue work.`;
+    ? `Use \`${BRAND.CLI} github issue view\` and \`${BRAND.CLI} github issue comment\` for issue updates.`
+    : `Use \`${BRAND.CLI} jira issue\`, \`${BRAND.CLI} jira comment\`, and \`${BRAND.CLI} jira transition\` for issue work.`;
   return `${prompt}\n\nIssue: ${issue.key} — ${issue.title}\nURL: ${issue.url ?? "(no URL)"}\n${cliCommands}`;
 }
 
@@ -356,7 +356,7 @@ export function defaultKickoffIntro(): string {
     "Resolve the Linear issue attached to this session. Its full details are in your context, and its identifier is in the `ADE_LINEAR_ISSUE_IDS` environment variable — work on THAT issue. " +
     "Start by verifying the issue is still relevant against the latest remote main — confirm it reproduces or still applies. " +
     "Then make the change the ticket describes (bug fix, implementation, or whatever it specifies), keeping your work scoped to that issue. " +
-    `Read and update the issue with the \`${SHARED_TEXT_CLI} linear\` CLI (issue, comment, set-state, assign, label) — see the ${sharedTextSkillName("daex-linear")} skill; prefer it over any Linear MCP.`
+    `Read and update the issue with the \`${BRAND.CLI} linear\` CLI (issue, comment, set-state, assign, label) — see the daex-linear skill; prefer it over any Linear MCP.`
   );
 }
 

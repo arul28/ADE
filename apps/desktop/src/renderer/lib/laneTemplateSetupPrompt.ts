@@ -1,6 +1,5 @@
 import type { LaneDependencyFolderStatus } from "../../shared/types";
 import { BRAND } from "../../shared/brand";
-import { SHARED_TEXT_CLI, sharedTextSkillName } from "./sharedAgentText";
 
 const MAX_LISTED_LOCKFILES = 12;
 
@@ -21,7 +20,7 @@ export function buildLaneTemplateSetupPrompt(args: {
   const project = args.projectName?.trim() || "this project";
   const listed = args.folders.slice(0, MAX_LISTED_LOCKFILES).map((folder) => `- ${folder.lockfile} (${folder.manager})`);
   if (args.folders.length > MAX_LISTED_LOCKFILES) {
-    listed.push(`- and ${args.folders.length - MAX_LISTED_LOCKFILES} more (run \`${SHARED_TEXT_CLI} lanes deps --text\`)`);
+    listed.push(`- and ${args.folders.length - MAX_LISTED_LOCKFILES} more (run \`${BRAND.CLI} lanes deps --text\`)`);
   }
   const existing = !args.templateNames.length
     ? "This machine has no lane templates yet."
@@ -37,14 +36,14 @@ export function buildLaneTemplateSetupPrompt(args: {
     "- A lane template says what happens when a lane is created. It can copy env files, install packages, copy paths from the main checkout, and run a setup script. With `injectPrimaryPath: true`, the setup script gets `$PRIMARY_WORKTREE_PATH` (the main checkout).",
     "- The default template runs for every new lane on that machine. Templates are stored per machine (in that machine's `.ade/local.yaml`) and do not sync.",
     `- This chat runs in the main checkout on ${args.machineName}, so a template you save here is for ${args.machineName}.`,
-    `- Read \`${SHARED_TEXT_CLI} help lanes\` and the ${sharedTextSkillName("daex-lanes-git")} skill for the template commands (\`${SHARED_TEXT_CLI} lanes templates …\`, \`${SHARED_TEXT_CLI} lanes deps\`).`,
+    `- Read \`${BRAND.CLI} help lanes\` and the daex-lanes-git skill for the template commands (\`${BRAND.CLI} lanes templates …\`, \`${BRAND.CLI} lanes deps\`).`,
     "",
     `## What ${BRAND.NAME} found in the main checkout`,
     ...(listed.length ? listed : ["- No lockfiles. Read the repo to see how it gets its packages."]),
     existing,
     "",
     "## Before you write the template",
-    `1. Ask me: make one template for all my machines, or a separate template for each machine? List my machines with \`${SHARED_TEXT_CLI} machines list\`. To read or write another machine's templates, add \`--machine "<name>"\` to the \`${SHARED_TEXT_CLI} lanes templates\` commands.`,
+    `1. Ask me: make one template for all my machines, or a separate template for each machine? List my machines with \`${BRAND.CLI} machines list\`. To read or write another machine's templates, add \`--machine "<name>"\` to the \`${BRAND.CLI} lanes templates\` commands.`,
     "2. Suggest, but do not do: research current package managers and build tools online. If a different one, or a different setting, would make installs, builds or CI clearly faster or smaller for this repo, tell me what it is, what it would save, and what it would cost to switch. Do not switch it yourself.",
     "",
     "## The template",
@@ -57,11 +56,11 @@ export function buildLaneTemplateSetupPrompt(args: {
     "",
     "## Check it before you call it done",
     "1. Save the template and set it as the default on the machines I choose.",
-    `2. On every machine you saved it to, create a test lane with it (\`${SHARED_TEXT_CLI} lanes create --name template-test --template <id>\`, plus \`--machine "<name>"\` for another machine), and wait for setup to finish. A template that works on this machine can fail on another one: a different OS, shell, or tool location. Do the checks below on each machine.`,
+    `2. On every machine you saved it to, create a test lane with it (\`${BRAND.CLI} lanes create --name template-test --template <id>\`, plus \`--machine "<name>"\` for another machine), and wait for setup to finish. A template that works on this machine can fail on another one: a different OS, shell, or tool location. Do the checks below on each machine.`,
     "3. Check that each package folder in the test lane is the lane's own folder, not a link, unless I asked for links.",
     "4. Run one quick check in the test lane (a typecheck, one test, or a build step).",
     "5. Check that the main checkout's package folders did not change.",
     "6. Measure the real disk the test lane uses with the free space before and after (`df`). `du` and Finder count space-saving clones at full size.",
-    `7. Delete each test lane (\`${SHARED_TEXT_CLI} lanes delete <lane> --force\`, with \`--machine\` for another machine) and tell me what the template does, and for each machine how long setup took and how much disk a lane uses.`,
+    `7. Delete each test lane (\`${BRAND.CLI} lanes delete <lane> --force\`, with \`--machine\` for another machine) and tell me what the template does, and for each machine how long setup took and how much disk a lane uses.`,
   ].join("\n");
 }
