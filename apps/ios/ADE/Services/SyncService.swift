@@ -19049,7 +19049,8 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
     )
     guard result is [String: Any] else { return [] }
-    return (try? decode(result, as: WorkToolsDevServerList.self))?.servers ?? []
+    // An answer this build cannot read is a failed read, not "no servers".
+    return try decode(result, as: WorkToolsDevServerList.self).servers
   }
 
   /// Whether this phone may open a dev server in the desktop browser.
@@ -19089,7 +19090,9 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: 20_000_000_000,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
-    return try decode(result, as: WorkToolsOpenedBrowserTab.self)
+    let opened = try decode(result, as: WorkToolsOpenedBrowserTab.self)
+    ProductAnalytics.shared.captureFeature(.devServerOpen, outcome: .completed)
+    return opened
   }
 
   // MARK: - Mac Desktop live stream and takeover

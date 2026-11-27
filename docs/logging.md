@@ -2748,6 +2748,8 @@ A GitHub connect of the ADE account that the phone started records `ade_mobile_f
 
 When an ADE Cloud plan lands (bought, or moved up) and the phone's ADE Cloud page says "You're on Plus", it records `ade_mobile_feature_used` with `feature: "cloud_plan"` and `outcome: "completed"`, once per account, plan and period on that phone (`CloudPlanSeenStore`). It never carries the plan, the price or the account. A plan changes rarely, so the per-foreground deduplication and the daily feature limit bound it; no ceiling was raised. Direct GitHub reads (PR lists, repositories) are never events.
 
+Two phone features record `ade_mobile_feature_used` with `outcome: "completed"` and nothing else, after the host confirmed the action: `feature: "thread_comment"` when the chat's host took a comment made in the phone's selection sheet, and `feature: "dev_server_open"` when a lane's dev server opened in a desktop browser from the phone's Browser sheet. They answer whether people use the phone's comment and dev-server paths at all. Never the quote, the note, the reply, the URL, the port, the lane or the machine. A failure, a retry the host answered with the existing comment, and phone size or Take control send nothing extra. The per-foreground deduplication and the 7-feature-events-per-day limit bound both; no ceiling was raised, and the dashboard spec is untouched.
+
 Host-recorded mobile mutations may still appear in the canonical `ade_*` namespace with `surface: mobile`; those events use the machine installation identity and the same shared 200-event budget. Native `ade_mobile_*` events describe only interaction with the phone app itself.
 
 ### Public marketing site

@@ -2179,6 +2179,29 @@ actions and personal action names.
   `chat.createDraft`, Schedule send hides.
 - Context usage is on the latest turn-end marker, not the composer.
 
+### Select, copy and comment on a reply
+
+Long replies are split into one transcript cell per markdown block, so a
+long-press lifts one block. The menu (`WorkMessageTextMenuItems` in
+`WorkMessageTextSelection.swift`) offers **Copy message** (the whole reply),
+**Copy this part** (the held block, laid out as the sheet lays it out),
+**Select text**, and **Comment on this part** (Comment… on a whole-reply row)
+when the chat's host takes `chat.createThreadComment`. The person's own
+messages offer Select text too.
+
+Select text opens one sheet per chat (`WorkMessageTextSelectionModel`, presented
+by the session view) with the reply in a read-only `UITextView`, because SwiftUI
+`Text` cannot select a range. The held block starts selected. A floating glass
+pill offers Copy and Comment for the selection, and the edit menu has Comment
+first. On a wide screen the text keeps a readable column. Comment shows a small
+card with the quote and a note field; Add sends `chat.createThreadComment` with
+a text anchor built by `WorkMessageSelectableDocument.swift` (the twin of
+desktop `captureTextAnchor`), the message key desktop uses
+(`workThreadCommentMessageKey`, the twin of `sceneRowIdentity`), and one
+`clientId` per draft, so a retry after a lost answer returns the same comment.
+A still-streaming reply, or one with no shared key, says why it can't take a
+comment. Fixture: `-adePreviewScreen chat-comments`.
+
 ### Importing sessions
 
 Work imports CLI sessions from the 11 import providers (Claude, Codex, Cursor,
@@ -2550,8 +2573,14 @@ display that is off.
   the visible height, and the screen scale. The desktop lays the page out at
   that size while the phone watches (see
   [Chat › Tabs on other machines](../chat/README.md#built-in-browser-chrome-identity-tab-ownership-cleanup-and-other-machines));
-  when it keeps its own size the card shows its `viewportNote`. Input stays
-  frame fractions, so Take control works at either size.
+  when it keeps its own size the card shows its `viewportNote`. The scale is
+  capped at 2x (the desktop renders the page at it for a frame near 1,000 px
+  wide). A frame answer to a phone-size read that lacks `viewportApplied`
+  (an older desktop or brain, or a read-only viewer pairing, whose `viewport`
+  the host drops) hides the switch until the sheet changes lane. Input stays
+  frame fractions, so Take control works at either size. The Dev servers card
+  is `WorkToolsDevServersCard.swift`; a failed fresh read says it couldn't load
+  the list instead of "no dev servers".
 
 #### macOS card and viewer
 

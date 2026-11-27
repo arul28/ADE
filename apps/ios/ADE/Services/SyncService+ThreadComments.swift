@@ -58,6 +58,7 @@ extension SyncService {
       targetProjectRootPath: scope.rootPath,
       as: ChatThreadComment.self
     )
+    ProductAnalytics.shared.captureFeature(.threadComment, outcome: .completed)
     // The host also publishes the new list; whichever lands first wins, and a
     // list that changed while the create was out is re-read instead.
     if threadCommentsWriteVersion[sessionId, default: 0] == startedAt {

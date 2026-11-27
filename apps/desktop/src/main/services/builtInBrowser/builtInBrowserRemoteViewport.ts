@@ -218,7 +218,8 @@ export function createRemoteViewport(deps: RemoteViewportDeps) {
         deps.onCleared?.(tab);
       }
     } catch (error) {
-      deps.logger()?.debug("built_in_browser.remote_viewport_failed", {
+      // Once per watch: a failed apply is not retried until the watch ends.
+      deps.logger()?.warn("built_in_browser.remote_viewport_failed", {
         tabId: tab.id,
         err: errorMessage(error),
       });
