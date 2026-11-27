@@ -166,7 +166,7 @@ function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: stri
 
 /** The machine import runs at most once per start; a failure tries again at the next start. */
 let importTried = false;
-/** The owner as this window knows it, for when storage can't keep it. */
+/** The owner as this window last saw it, for when storage can't be read. */
 let knownOwner: string | null = null;
 let syncInFlight: Promise<void> | null = null;
 /** A star while a sync ran: sync once more after it. */
@@ -226,7 +226,8 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
    */
   const claimFor = (owner: string) => {
     const stored = readStored(OWNER_KEY);
-    const previous = knownOwner ?? (typeof stored === "string" ? stored : null);
+    // The saved owner is shared by every window; this window's memory is the fallback when storage can't be read.
+    const previous = typeof stored === "string" ? stored : knownOwner;
     knownOwner = owner;
     if (previous && previous !== owner) {
       setLocal([], { add: [], remove: [] });

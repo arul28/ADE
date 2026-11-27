@@ -45,9 +45,11 @@ final class ModelPickerStore: ObservableObject {
     async let recTask = try? await syncService.getModelRecents()
     let fav = await favTask
     let rec = await recTask
-    if let fav { confirmedFavorites = fav }
-    // A star tapped while the read ran wins over the read.
-    if let fav, generation == favoritesGeneration { favorites = fav }
+    // A star tapped while the read ran wins over the read, and its answer is the newer confirmed list.
+    if let fav, generation == favoritesGeneration {
+      confirmedFavorites = fav
+      favorites = fav
+    }
     if let rec {
       recents = rec
       // The `@` menu ranks by the same recents; only the host's answer is
