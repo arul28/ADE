@@ -123,6 +123,14 @@ final class AccountCloudStore: ObservableObject {
   private var transcriptPartFirstSequence: [String: [Int: Int]] = [:]
   /// Saved chats read this run, by thread key: one read per open.
   private var transcriptReads: [String: Task<Void, Never>] = [:]
+  /// Saved proof pictures read this run, by saved copy and artifact (nil:
+  /// none was saved, asked again after `savedProofNoneKept`). Kept to
+  /// `savedProofKeptBytes`, the oldest first out.
+  private var savedProofs: [String: (at: Date, proof: CloudSavedChatProof?)] = [:]
+  private var savedProofOrder: [String] = []
+  private var savedProofReads: [String: Task<CloudSavedChatProof?, Never>] = [:]
+  private static let savedProofKeptBytes = 24 * 1024 * 1024
+  private static let savedProofNoneKept: TimeInterval = 300
 
   /// Where a saved chat's scroll-back stands.
   private struct TranscriptPaging {
@@ -583,6 +591,47 @@ final class AccountCloudStore: ObservableObject {
     queued[key] = list
   }
 
+  // MARK: Saved proof
+
+  /// One proof picture a saved chat cited (a still for a video), from the
+  /// account with no wake. Only for a chat read through the account
+  /// (`savedCloudChatAccountKey`): the caller passes that key.
+  func savedProof(accountMachineKey: String, chatId: String, artifactId: String, using sync: SyncService) async -> CloudSavedChatProof? {
+    let id = "\(accountMachineKey)\u{0}\(chatId)\u{0}\(artifactId)"
+    if let kept = savedProofs[id], kept.proof != nil || Date().timeIntervalSince(kept.at) < Self.savedProofNoneKept {
+      return kept.proof
+    }
+    if let running = savedProofReads[id] { return await running.value }
+    let generation = accountGeneration
+    let read = Task { @MainActor [weak sync] () -> CloudSavedChatProof? in
+      guard let client = await sync?.cloudServerClient() else { return nil }
+      do {
+        return try await client.savedChatProof(machineKey: accountMachineKey, chatId: chatId, artifactId: artifactId)
+      } catch {
+        accountCloudLog.notice("cloud_store read=proof failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+        return nil
+      }
+    }
+    savedProofReads[id] = read
+    let proof = await read.value
+    savedProofReads[id] = nil
+    // The account changed while it was out: none of it is this account's.
+    guard generation == accountGeneration else { return nil }
+    keepSavedProof(id: id, proof: proof)
+    return proof
+  }
+
+  private func keepSavedProof(id: String, proof: CloudSavedChatProof?) {
+    savedProofOrder.removeAll { $0 == id }
+    savedProofOrder.append(id)
+    savedProofs[id] = (Date(), proof)
+    var bytes = savedProofs.values.reduce(0) { $0 + ($1.proof?.data.count ?? 0) }
+    while bytes > Self.savedProofKeptBytes, let oldest = savedProofOrder.first, oldest != id {
+      savedProofOrder.removeFirst()
+      bytes -= savedProofs.removeValue(forKey: oldest)?.proof?.data.count ?? 0
+    }
+  }
+
   // MARK: Saved transcripts
 
   /// Reads the newest part of a saved chat and hands it to the chat's thread
@@ -783,6 +832,10 @@ final class AccountCloudStore: ObservableObject {
     transcriptPartFirstSequence = [:]
     for task in transcriptReads.values { task.cancel() }
     transcriptReads = [:]
+    savedProofs = [:]
+    savedProofOrder = []
+    for task in savedProofReads.values { task.cancel() }
+    savedProofReads = [:]
     CloudSponsoredStore.shared.reset()
   }
 

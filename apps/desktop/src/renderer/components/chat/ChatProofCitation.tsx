@@ -19,6 +19,7 @@ import {
   useArtifactPreview,
 } from "./useArtifactPreview";
 import { withChatPin } from "./chatMachinePin";
+import { SavedProofPicture, useSavedChatProof } from "./SavedChatProof";
 
 /**
  * What the transcript already knows about proof, so a citation in an answer
@@ -191,6 +192,8 @@ function CitedProofMedia({
   const text = caption?.trim() || artifact.description?.trim() || artifact.title;
   const olderLine = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
   const mediaHeight = compact ? "max-h-[300px]" : "max-h-[440px]";
+  // The computer rests or is gone: the copy it saved before it rested, read from the account.
+  const saved = useSavedChatProof(artifact.id, failed && fallback == null);
 
   if (failed && fallback != null) return <>{fallback}</>;
   // Marked while it loads too, so a comment keeps its place; only a proof
@@ -215,6 +218,12 @@ function CitedProofMedia({
         // would otherwise give each tile its caption's width.
         <SlowLinkHeldPicture title={text} bytes={held.bytes} onShow={showHeld} className="min-h-40 w-[420px] max-w-full" />
       ) : loading ? (
+        <span className="flex min-h-40 w-[420px] max-w-full items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
+          <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
+        </span>
+      ) : failed && saved.status === "ready" ? (
+        <SavedProofPicture proof={saved.proof} label={text} compact={compact} onWake={retryLabel === "Wake" ? retry : null} />
+      ) : failed && saved.status === "loading" ? (
         <span className="flex min-h-40 w-[420px] max-w-full items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">
           <SpinnerGap size={18} className="animate-spin" aria-label="Loading proof" />
         </span>
@@ -296,6 +305,8 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
   const scope = useChatRuntimeScope();
   // Read only once the record could not be read: a cloud computer asleep, or deleted.
   const machine = useChatMachineWake();
+  // A cloud computer asleep or deleted: the copy it saved before it rested, read from the account.
+  const saved = useSavedChatProof(artifactId, state.status === "unreadable" && fallback == null);
   if (fallback != null && state.status !== "ready") return <>{fallback}</>;
   if (state.status === "loading") {
     return (
@@ -318,6 +329,32 @@ export function CitedProofSlot({ artifactId, caption, compact, fallback }: {
     const { retry } = state;
     // A cloud computer asleep or deleted says so; anything else is a failed read.
     const reach = chatMachineReach(machine);
+    if (saved.status === "ready") {
+      const label = caption?.trim() || (saved.proof.source === "video" ? "Video proof" : "Proof");
+      return (
+        <span data-proof-citation={artifactId} className="block min-w-0">
+          <SavedProofPicture
+            proof={saved.proof}
+            label={label}
+            compact={compact}
+            onWake={reach === "asleep" || reach === "waking" ? () => void machine.wakeThen(retry) : null}
+          />
+          {caption?.trim() ? (
+            <span className="mt-1.5 block min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] not-italic leading-5 text-fg/70">
+              {caption.trim()}
+            </span>
+          ) : null}
+        </span>
+      );
+    }
+    if (saved.status === "loading") {
+      return (
+        <CitationPlaceholder>
+          <SpinnerGap size={14} className="animate-spin" aria-hidden />
+          {caption?.trim() || "Loading proof"}
+        </CitationPlaceholder>
+      );
+    }
     const text = reach
       ? `${chatMachineMediaSentence(reach, "proof", scope.machineName, machine.error)}${reach === "waking" ? "" : cited}`
       : `Couldn't load this proof from ${scope.isRemote ? scope.machineName : "this computer"}.${cited}`;

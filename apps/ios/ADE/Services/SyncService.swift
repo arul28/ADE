@@ -30020,6 +30020,20 @@ extension SyncService: ChatThreadTransport {
     return cloudAccountMachineKey(fleetKey: key.machineKey)
   }
 
+  /// A proof picture this chat's computer saved before it rested (a still
+  /// for a video). Nil for a chat with a live link: only a chat read through
+  /// the account asks, so the read never wakes the computer.
+  func savedCloudChatProof(sessionId: String, artifactId: String) async -> CloudSavedChatProof? {
+    guard let key = chatThreadKey(for: sessionId), let accountKey = savedCloudChatAccountKey(forThreadKey: key) else { return nil }
+    return await AccountCloudStore.shared.savedProof(accountMachineKey: accountKey, chatId: key.sessionId, artifactId: artifactId, using: self)
+  }
+
+  /// Wakes the chat's own computer (a saved video's "Wake to play").
+  func wakeSavedCloudChatComputer(sessionId: String) async {
+    guard let key = chatThreadKey(for: sessionId), savedCloudChatAccountKey(forThreadKey: key) != nil else { return }
+    await wakeSavedCloudChatComputer(key)
+  }
+
   /// A send to a cloud chat with no live link that can't go through the
   /// server's queue (an older server, or files): wake the chat's own
   /// computer and wait for it. The focused computer wakes through its own

@@ -279,6 +279,28 @@ are in
   saved before this redaction is sent again once (its mark lacks
   `redacted-1`). A move between the person's own computers is not redacted:
   it goes from computer to computer, and the account server does not keep it.
+- **Proof in a saved chat.** The rest save also sends the proof each saved
+  chat cites (`cloudProofSave.ts`): every `ade-proof://<id>` and
+  ```` ```proof-compare ```` id in its answers. A picture goes as WebP, its
+  longest side at most 2,000 px, quality 80, so a screenshot's text stays
+  readable (about 93% smaller than the PNG). With no WebP encoder it goes as
+  JPEG; with no ffmpeg, as the original PNG, JPEG, WebP or GIF if it fits.
+  A video goes as one still, never the video. Each file goes once (its size
+  and time are the mark), at most 40 a save, and only while the save has
+  time and nobody uses the computer.
+- The server keeps it beside the chat
+  (`PUT`/`GET /cloud/chats/:machine/:chat/proof/:artifact`), sealed like a
+  part and under the copy's prefix, so deleting the chat deletes it. Only the
+  computer writes one, only for a chat it already saved. Pictures only, by
+  their first bytes (no SVG); at most 3 MB each and 60 per chat; the bytes
+  count against the account's saved-chat space. A read answers a fixed
+  picture type with `nosniff`. No new table: the bytes go in the copy row's
+  `bytes`, and the count is the bucket's list of the chat's proof.
+- The desktop, ADE Web and the phone show the saved picture in place of
+  "This proof is on ADE Cloud, which is asleep" while the computer rests or
+  after it is deleted. A video shows its still with **Wake to play**. They
+  read it from the account, by the chat's own saved copy, and never wake the
+  computer. Nothing saved: the notice stays.
 - A saved CLI or shell copy opens read-only. The person's own computers that
   are offline are hidden in Work, Lanes and the welcome page.
 

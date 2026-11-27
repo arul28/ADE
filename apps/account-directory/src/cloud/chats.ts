@@ -2,6 +2,13 @@ import {
   CLOUD_CHAT_MAX_ACCOUNT_BYTES,
   CLOUD_CHAT_MAX_PAGE_PARTS,
   CLOUD_CHAT_MAX_PART_BYTES,
+  CLOUD_CHAT_PROOF_ID,
+  CLOUD_CHAT_PROOF_MAX_BYTES,
+  CLOUD_CHAT_PROOF_MAX_PER_CHAT,
+  CLOUD_CHAT_PROOF_MIME,
+  CLOUD_CHAT_PROOF_SOURCE_HEADER,
+  cloudChatProofKindOf,
+  type CloudChatProofSource,
   type CloudChatComputer,
   type CloudChatMoveResult,
   type CloudChatPartResponse,
@@ -21,7 +28,8 @@ import { logCloud, moveQueuedMessagesStatement, ownMachineMoveTarget, ownedCompu
 import { digestFor, openBytes, openText, sealBytes, sealText, userKeys, type UserKeys } from "./seal";
 import { deleteCapsule, deleteCapsulesForLane } from "./forkCapsules";
 import { deleteGitSummaryForLaneStatement } from "./gitSummaries";
-import { deleteSessionCopiesForLane, readCappedJson } from "./sessionCopies";
+import { callingComputer, deleteSessionCopiesForLane, readCappedJson } from "./sessionCopies";
+import { readBoundedBytes } from "../sinkUtils";
 import { publishedStatement, storageGeneration, sweep, sweepStatement, unclaimedUpload } from "./storageSweeps";
 
 /**
@@ -64,6 +72,8 @@ const partAad = (userId: string, machineKey: string, chatId: string, seq: number
   `ade.cloud.chat.part.v1\0${userId}\0${machineKey}\0${chatId}\0${seq}`;
 const summaryAad = (userId: string, machineKey: string, chatId: string): string =>
   `ade.cloud.chat.summary.v1\0${userId}\0${machineKey}\0${chatId}`;
+const proofAad = (userId: string, machineKey: string, chatId: string, artifactId: string): string =>
+  `ade.cloud.chat.proof.v1\0${userId}\0${machineKey}\0${chatId}\0${artifactId}`;
 
 /**
  * Every object of one chat copy sits under its row's prefix (`cloud_chat_copies.r2_key`). A new copy
@@ -74,6 +84,9 @@ const summaryAad = (userId: string, machineKey: string, chatId: string): string 
 const newChatPrefix = (userId: string, machineKey: string, chatId: string): string =>
   `chats/${userId}/${machineKey}/${chatId}~${storageGeneration()}/`;
 const partKey = (prefix: string, seq: number): string => `${prefix}${String(seq).padStart(10, "0")}`;
+/** A chat's proof sits under its copy's prefix, so the copy's delete and sweep take it too. No part key starts with `proof/`. */
+const proofPrefix = (prefix: string): string => `${prefix}proof/`;
+const proofKey = (prefix: string, artifactId: string): string => `${proofPrefix(prefix)}${artifactId}`;
 
 export type CopyRow = {
   user_id: string;
@@ -344,6 +357,117 @@ async function handlePutPart(request: Request, env: CloudEnv, userId: string, ma
   await rewardAfterCloudChat(env, userId, now);
   await noteFirstCloudChat(env, userId, now, waitUntil);
   return json({ ok: true, lastSeq: row.lastSeq } satisfies CloudChatPartResponse);
+}
+
+/**
+ * `PUT /cloud/chats/:machine/:chat/proof/:artifact`, from the computer (its
+ * instance header, like a capsule part): one picture the chat cited, or a
+ * still of a cited video, saved before the computer rests. The body is the
+ * picture itself; only WebP, PNG, JPEG and GIF are kept, by their first
+ * bytes, at most `CLOUD_CHAT_PROOF_MAX_BYTES`, at most
+ * `CLOUD_CHAT_PROOF_MAX_PER_CHAT` per chat. Only for a chat that already has
+ * a saved copy here: the proof sits under the copy's prefix and its bytes
+ * count in the copy's `bytes`, so the account cap holds and a delete of the
+ * copy takes the proof with it. The same picture again writes nothing.
+ */
+async function handlePutProof(request: Request, env: CloudEnv, userId: string, machineKey: string, chatId: string, artifactId: string, now: number): Promise<Response> {
+  const bucket = bucketFor(env);
+  if (!bucket) {
+    logCloud("cloud.chat_bucket_missing", { userId });
+    return unavailable();
+  }
+  const tooLarge = () => fail("proof_too_large", "That proof is too large to save.", 413);
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > CLOUD_CHAT_PROOF_MAX_BYTES) return tooLarge();
+  // Called from the computer: only its owner's computers save here.
+  const computer = await callingComputer(env, request, userId, null);
+  if (!computer) return fail("not_found", "ADE Cloud has no such computer.", 404);
+  const read = await readBoundedBytes(request, CLOUD_CHAT_PROOF_MAX_BYTES);
+  if (!read.ok) return tooLarge();
+  const plain = read.bytes;
+  if (plain.byteLength === 0) return fail("bad_request", "That proof is empty.", 400);
+  const kind = cloudChatProofKindOf(plain);
+  if (!kind) {
+    logCloud("cloud.chat_proof_refused", { userId, machineKey, chatId, reason: "not_a_picture" });
+    return fail("proof_unsupported", "Only WebP, PNG, JPEG and GIF pictures are saved as proof.", 415);
+  }
+  const source: CloudChatProofSource = request.headers.get(CLOUD_CHAT_PROOF_SOURCE_HEADER)?.trim() === "video" ? "video" : "image";
+  const row = await copyRow(env, userId, machineKey, chatId);
+  if (!row) return notFound();
+  const keys = await userKeys(env, userId, now);
+  if (!keys) return unavailable();
+  const prefix = row.r2_key;
+  const key = proofKey(prefix, artifactId);
+  const digest = await digestFor(keys, plain);
+  const stored = await bucket.head(key);
+  if (stored?.customMetadata?.digest === digest && stored.customMetadata.source === source) return json({ ok: true, bytes: stored.size });
+  if (!stored) {
+    const listed = await bucket.list({ prefix: proofPrefix(prefix), limit: CLOUD_CHAT_PROOF_MAX_PER_CHAT });
+    if (listed.objects.length >= CLOUD_CHAT_PROOF_MAX_PER_CHAT || listed.truncated) {
+      logCloud("cloud.chat_proof_refused", { userId, machineKey, chatId, reason: "chat_full", limit: CLOUD_CHAT_PROOF_MAX_PER_CHAT });
+      return fail("proof_limit", `A saved chat keeps at most ${CLOUD_CHAT_PROOF_MAX_PER_CHAT} proof pictures.`, 409);
+    }
+  }
+  const sealed = await sealBytes(keys.aes, proofAad(userId, sealKeyOf(row), chatId, artifactId), plain);
+  const delta = sealed.byteLength - (stored?.size ?? 0);
+  if (delta > 0 && await accountBytes(env, userId) + delta > CLOUD_CHAT_MAX_ACCOUNT_BYTES) {
+    logCloud("cloud.chat_account_full", { userId, machineKey, chatId, limitBytes: CLOUD_CHAT_MAX_ACCOUNT_BYTES });
+    return fail("account_full", "This account's saved chats are full. Delete some chats to save new ones.", 413);
+  }
+  await bucket.put(key, sealed, { customMetadata: { digest, kind, source } });
+  // Counted on the row it was read against: a copy deleted or made again since takes nothing of it.
+  const counted = await env.DB.prepare(`
+    update cloud_chat_copies set bytes = max(0, bytes + ?)
+    where user_id = ? and machine_key = ? and chat_id = ? and r2_key = ?
+  `).bind(delta, userId, machineKey, chatId, prefix).run();
+  if ((counted.meta?.changes ?? 0) !== 1) {
+    // The picture goes unless a row still reads its prefix (a move took the copy, proof and all).
+    const kept = await env.DB.prepare("select 1 as kept from cloud_chat_copies where user_id = ? and r2_key = ?").bind(userId, prefix).first();
+    if (!kept) await bucket.delete(key);
+    logCloud("cloud.chat_proof_conflict", { userId, machineKey, chatId });
+    return fail("sequence_conflict", "This chat's saved copy changed while that proof was saved.", 409);
+  }
+  logCloud("cloud.chat_proof_saved", { userId, machineKey, chatId, kind, source, bytes: plain.byteLength });
+  return json({ ok: true, bytes: sealed.byteLength });
+}
+
+/**
+ * `GET /cloud/chats/:machine/:chat/proof/:artifact`: the saved picture,
+ * opened, with a fixed type from what its bytes are (never from the request
+ * or the computer), `nosniff`, shown inline and cached only privately. Read
+ * under the caller's own account like the transcript, and by a moved chat's
+ * old machine key too. 404 when nothing was saved.
+ */
+async function handleGetProof(env: CloudEnv, userId: string, machineKey: string, chatId: string, artifactId: string, now: number): Promise<Response> {
+  const bucket = bucketFor(env);
+  if (!bucket) return unavailable();
+  const row = await copyRow(env, userId, machineKey, chatId) ?? await movedRow(env, userId, machineKey, chatId);
+  if (!row) return notFound();
+  const object = await bucket.get(proofKey(row.r2_key, artifactId));
+  if (!object) return fail("not_found", "That proof isn't saved.", 404);
+  const keys = await userKeys(env, userId, now);
+  if (!keys) return unavailable();
+  const opened = await openBytes(keys.aes, proofAad(userId, sealKeyOf(row), row.chat_id, artifactId), new Uint8Array(await object.arrayBuffer()));
+  const kind = opened ? cloudChatProofKindOf(opened) : null;
+  if (!opened || !kind) {
+    logCloud("cloud.chat_proof_unreadable", { userId, machineKey, chatId });
+    return fail("chat_unreadable", "This saved proof can't be read right now.", 503);
+  }
+  const source: CloudChatProofSource = object.customMetadata?.source === "video" ? "video" : "image";
+  return new Response(opened as Uint8Array<ArrayBuffer>, {
+    status: 200,
+    headers: {
+      "content-type": CLOUD_CHAT_PROOF_MIME[kind],
+      "content-length": String(opened.byteLength),
+      "x-content-type-options": "nosniff",
+      "content-disposition": "inline",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "cache-control": "private, max-age=300",
+      [CLOUD_CHAT_PROOF_SOURCE_HEADER]: source,
+      // A browser client reads the source across origins.
+      "access-control-expose-headers": CLOUD_CHAT_PROOF_SOURCE_HEADER,
+    },
+  });
 }
 
 /** Accounts this isolate already saw past their first chat: their saves skip the write below. */
@@ -838,6 +962,10 @@ export async function routeSavedChats(request: Request, url: URL, path: string, 
   }
   if (segments.length === 4 && second && ROW_ID.test(second) && third === "parts" && fourth && SEQ.test(fourth) && request.method === "PUT") {
     return handlePutPart(request, env, userId, machineKey, second, Number(fourth), now, waitUntil);
+  }
+  if (segments.length === 4 && second && ROW_ID.test(second) && third === "proof" && fourth && CLOUD_CHAT_PROOF_ID.test(fourth)) {
+    if (request.method === "PUT") return handlePutProof(request, env, userId, machineKey, second, fourth, now);
+    if (request.method === "GET") return handleGetProof(env, userId, machineKey, second, fourth, now);
   }
   return notFound();
 }

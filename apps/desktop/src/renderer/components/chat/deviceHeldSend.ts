@@ -7,15 +7,26 @@ import { hasHeldAttachments, stageHeldAttachments } from "./heldChatAttachments"
 import { threadCommentsHeldOnDevice } from "./threadCommentsHeldOnDevice";
 import { handOverHeldThreadComments } from "./threadCommentsStore";
 
-function notReached(what: "files" | "comments", error: unknown): Error {
+/**
+ * The sentence a send shows when what this device kept could not go: what
+ * happened, on which machine, and that everything is still here to try again.
+ * The transport's own reason goes to the log, not to the person: it named a
+ * connection, not something they can act on.
+ */
+function notReached(what: "files" | "comments", machineName: string | null | undefined, error: unknown): Error {
   const reason = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error));
-  return new Error(`Your ${what} didn't reach the chat's machine, so nothing was sent. ${reason}`);
+  console.warn(`[chat] held ${what} did not reach the chat's machine`, reason);
+  const machine = machineName?.trim() || "the chat's computer";
+  return new Error(what === "files"
+    ? `Not sent. ADE couldn't copy your files to ${machine}. Your message and files are still in the box, so press Send to try again.`
+    : `Not sent. ADE couldn't hand your comments to ${machine}. Your message and comments are still here, so press Send to try again.`);
 }
 
 /**
  * What a send carries that this device kept while the chat's ADE Cloud
  * computer rested goes to that computer now, right before the message (the
- * send wakes it anyway), the way the send reaches it (`chatSendReach`):
+ * send wakes it anyway), the way the send reaches it (`chatSendReach`) while
+ * it still rests, else straight through the chat's own pin:
  *
  * - Files kept here (`heldChatAttachments.ts`) are copied there, in order,
  *   and come back named by their paths there. A file already copied for an
@@ -47,9 +58,14 @@ export async function prepareDeviceHeldForSend(args: {
   carriesComments: boolean;
   /** The chat's ADE Cloud computer rests now (`ChatRuntimeScope.machineRests`). */
   machineRests: boolean;
+  /** The chat's machine as the pane names it, for the sentence a failure shows. */
+  machineName?: string | null;
 }): Promise<{ attachments: AgentChatFileRef[]; stagedHeldPaths: string[]; commentsHandedOver: boolean }> {
   const { api, sessionId, pin } = args;
-  const reach = sessionId ? chatSendReach(api) : null;
+  // Only a resting computer is reached another way (its machine key, a wake).
+  // A chat whose machine is up gets what was kept here straight through its
+  // own pin, even a file kept while it rested: nothing may send it elsewhere.
+  const reach = sessionId && args.machineRests ? chatSendReach(api) : null;
   const onSendMachine = <T>(write: (pin: OpenProjectBinding) => Promise<T>): Promise<T> =>
     withChatPin(pin, (chatPin) => (reach && sessionId ? reach(sessionId, chatPin, write) : write(chatPin)));
 
@@ -62,7 +78,7 @@ export async function prepareDeviceHeldForSend(args: {
         save: (file) => onSendMachine((callPin) => api.saveTempAttachment(file, callPin)),
       }));
     } catch (error) {
-      throw notReached("files", error);
+      throw notReached("files", args.machineName, error);
     }
   }
 
@@ -73,7 +89,7 @@ export async function prepareDeviceHeldForSend(args: {
     try {
       await handOverHeldThreadComments(sessionId, pin, api.threadComments, onSendMachine);
     } catch (error) {
-      throw notReached("comments", error);
+      throw notReached("comments", args.machineName, error);
     }
   }
   return { attachments, stagedHeldPaths, commentsHandedOver };

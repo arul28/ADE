@@ -17647,6 +17647,7 @@ export function AgentChatPane({
         attachments: attachmentsSnapshot,
         carriesComments: includeThreadComments && threadCommentsSessionAtSend != null,
         machineRests: chatComputerRestingRef.current,
+        machineName: chatMachineNameRef.current,
       });
       if (deviceHeld.stagedHeldPaths.length) {
         for (const path of deviceHeld.stagedHeldPaths) sentHeldAttachmentPathsRef.current.add(path);

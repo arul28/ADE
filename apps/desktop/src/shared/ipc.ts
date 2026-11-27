@@ -1222,6 +1222,7 @@ export const IPC = {
   cloudSavedChatsList: "ade.cloud.savedChats.list",
   cloudSavedChatsRead: "ade.cloud.savedChats.read",
   cloudSavedChatsDelete: "ade.cloud.savedChats.delete",
+  cloudSavedChatsReadProof: "ade.cloud.savedChats.readProof",
   /**
    * ADE with no computer (`main/services/adeCloud/adeCloudReadIpc.ts`): a
    * tab bound to ADE Cloud, the account reads behind it, and the message

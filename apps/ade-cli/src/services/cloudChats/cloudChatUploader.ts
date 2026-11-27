@@ -104,6 +104,8 @@ export type CloudChatUploader = {
    * when this project has no such parent chat.
    */
   uploadSubagentCopy(parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }): Promise<boolean | null>;
+  /** The chats of this project the server holds a saved copy of (at least one part sent). */
+  savedChatIds(): string[];
   dispose(): void;
 };
 
@@ -154,6 +156,13 @@ export async function uploadSubagentCloudCopy(
     if (result !== null) return result;
   }
   return false;
+}
+
+/** Every chat on this computer with a saved copy on the account server, across its open projects. */
+export function savedCloudChatIds(): Set<string> {
+  const ids = new Set<string>();
+  for (const uploader of uploaders) for (const id of uploader.savedChatIds()) ids.add(id);
+  return ids;
 }
 
 /** The restored chat's upload goes on from `seq` in the project that holds it (`CloudChatUploader.adoptRestored`). */
@@ -856,6 +865,9 @@ export function createCloudChatUploader(deps: CloudChatUploaderDeps): CloudChatU
         persist();
       }
       return true;
+    },
+    savedChatIds() {
+      return disposed ? [] : Object.entries(state.chats).filter(([, entry]) => entry.seq > 0).map(([id]) => id);
     },
     dispose() {
       disposed = true;

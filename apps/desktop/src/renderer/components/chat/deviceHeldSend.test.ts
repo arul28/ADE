@@ -38,7 +38,7 @@ describe("prepareDeviceHeldForSend", () => {
       machineRests: true,
     });
 
-    await expect(send()).rejects.toThrow("Your files didn't reach the chat's machine, so nothing was sent. disk full");
+    await expect(send()).rejects.toThrow("Not sent. ADE couldn't copy your files to the chat's computer.");
 
     await expect(send()).resolves.toEqual({
       attachments: [

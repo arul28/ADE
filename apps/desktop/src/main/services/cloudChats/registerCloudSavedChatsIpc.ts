@@ -13,7 +13,11 @@ import type {
   CloudSavedChatPage,
   CloudSavedChatReadArgs,
   CloudSavedChatsListArgs,
+  CloudSavedChatProofArgs,
+  CloudSavedChatProofResult,
 } from "../../../shared/cloudSavedChats";
+import { savedChatProofResultOf } from "../../../shared/cloudSavedChats";
+import { createCloudApiClient } from "../../../shared/cloudApiClient";
 import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { cloudAccessDepsFor, cloudServerFor, DESKTOP_CLOUD_TOKEN_WAIT_MS } from "../adeCloud/cloudAccess";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
@@ -50,6 +54,24 @@ export function registerCloudSavedChatsIpc(args: { logger: Logger }): void {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSavedChatsRead)) return null;
     if (!arg?.machineKey || !arg.chatId) return null;
     return await read((server) => server.readSavedChat(arg));
+  });
+
+  // One picture a saved chat cited, from the account with no wake. The renderer names the chat by its own
+  // saved copy (`savedChatLocation`), never the tab's machine; an account read, so no pin.
+  ipcMain.handle(IPC.cloudSavedChatsReadProof, async (event, arg: CloudSavedChatProofArgs): Promise<CloudSavedChatProofResult | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudSavedChatsReadProof)) return null;
+    if (typeof arg?.machineKey !== "string" || typeof arg.chatId !== "string" || typeof arg.artifactId !== "string") return null;
+    if (!arg.machineKey || !arg.chatId || !arg.artifactId) return null;
+    const baseUrl = credentials.signedIn() ? credentials.directoryBaseUrl() : null;
+    if (!baseUrl) return null;
+    try {
+      const proof = await createCloudApiClient({ baseUrl, accessToken: () => credentials.accessToken() })
+        .savedChatProof(arg.machineKey, arg.chatId, arg.artifactId);
+      return proof ? savedChatProofResultOf(proof) : null;
+    } catch (error) {
+      logger.warn("cloud.saved_chat_proof_read_failed", { error: error instanceof Error ? error.name : "unknown" });
+      return null;
+    }
   });
 
   ipcMain.handle(IPC.cloudSavedChatsDelete, async (event, arg: CloudSavedChatDeleteArgs): Promise<void> => {

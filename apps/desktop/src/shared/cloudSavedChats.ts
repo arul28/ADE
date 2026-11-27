@@ -69,6 +69,25 @@ export type CloudSavedChatPage = CloudChatTranscriptPage;
 export type CloudSavedChatsListArgs = { machineKey?: string | null; projectKey?: string | null; limit?: number; cursor?: string | null };
 export type CloudSavedChatReadArgs = { machineKey: string; chatId: string; before?: number | null; limit?: number };
 export type CloudSavedChatDeleteArgs = { machineKey: string; chatId: string };
+/** One proof picture a saved chat cited, by the chat's own saved copy (`machineKey`, `chatId`). */
+export type CloudSavedChatProofArgs = { machineKey: string; chatId: string; artifactId: string };
+/**
+ * A saved proof picture as a client shows it: a data URL of a WebP, PNG,
+ * JPEG or GIF (its type from its bytes), and whether it is a picture or a
+ * still of a video. Null from the bridge when nothing was saved.
+ */
+export type CloudSavedChatProofResult = { dataUrl: string; source: "image" | "video" };
+
+/** A saved proof's bytes as the data URL a client shows (no Buffer: the web client builds it too). */
+export function savedChatProofResultOf(proof: { bytes: ArrayBuffer; mimeType: string; source: "image" | "video" }): CloudSavedChatProofResult {
+  const bytes = new Uint8Array(proof.bytes);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let start = 0; start < bytes.length; start += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(start, start + chunk));
+  }
+  return { dataUrl: `data:${proof.mimeType};base64,${btoa(binary)}`, source: proof.source };
+}
 
 export function cloudSavedChatsUrl(base: string): string {
   return `${base.replace(/\/+$/, "")}/cloud/chats`;

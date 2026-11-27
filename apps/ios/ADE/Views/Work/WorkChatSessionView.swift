@@ -2914,7 +2914,13 @@ struct WorkChatSessionView: View {
       },
       content: artifactContent,
       load: onLoadArtifact,
-      resolveMissing: onResolveMissingProof
+      resolveMissing: onResolveMissingProof,
+      savedProof: { [syncServiceReference, sessionId = session.id] id in
+        await syncServiceReference.service?.savedCloudChatProof(sessionId: sessionId, artifactId: id)
+      },
+      wakeComputer: { [syncServiceReference, sessionId = session.id] in
+        await syncServiceReference.service?.wakeSavedCloudChatComputer(sessionId: sessionId)
+      }
     )
   }
 

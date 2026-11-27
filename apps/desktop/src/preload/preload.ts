@@ -162,7 +162,7 @@ import type {
   CtoCloudHomeMethod,
 } from "../shared/ctoCloudHome";
 import type { CloudAccountState, CloudAgentLimits, CloudComputerStatus, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudSponsoredAdAnswer, CloudSponsoredAdRequest, CloudSponsoredChoice, CloudSponsoredHideRequest, CloudSponsoredSeenRequest, CloudSponsoredState, CloudStatus } from "../shared/adeCloud";
-import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatProofArgs, CloudSavedChatProofResult, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } from "../shared/adeCloudMachine";
 import type { CloudCarriedSignIns, CloudLaneBackup, CloudLaunchRecord as AccountCloudLaunchRecord, CloudModelCatalog } from "../../../account-directory/src/cloud/contract";
@@ -14632,6 +14632,8 @@ const adeBridge = {
       list: (args: CloudSavedChatsListArgs): Promise<CloudSavedChatList | null> => ipcRenderer.invoke(IPC.cloudSavedChatsList, args),
       read: (args: CloudSavedChatReadArgs): Promise<CloudSavedChatPage | null> => ipcRenderer.invoke(IPC.cloudSavedChatsRead, args),
       delete: (args: CloudSavedChatDeleteArgs): Promise<void> => ipcRenderer.invoke(IPC.cloudSavedChatsDelete, args),
+      /** One proof picture a saved chat cited: account-level, by the chat's own saved copy, so no pin. */
+      readProof: (args: CloudSavedChatProofArgs): Promise<CloudSavedChatProofResult | null> => ipcRenderer.invoke(IPC.cloudSavedChatsReadProof, args),
     },
     /** C4: account-level (the account's GitHub sign-in), so no pin. */
     gitPreflight: (args: { originUrl: string }): Promise<CloudGitPreflight | null> => ipcRenderer.invoke(IPC.cloudGitPreflight, args),

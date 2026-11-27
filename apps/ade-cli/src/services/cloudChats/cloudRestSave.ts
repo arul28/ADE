@@ -23,6 +23,10 @@
  *    restores the chat from it with the same chat id. Every other provider
  *    needs none: the restore replays the saved transcript.
  *
+ * 4c. The proof each saved chat cites (`cloudProofSave.ts`): a picture as
+ *    WebP, a video as one still, once per file, at most
+ *    `PROOF_TRIES_PER_SAVE` a save. A client shows it with no wake.
+ *
  * Only projects whose runtime is open count: a project nobody opened since
  * boot has no new terminal output and no new chat turns.
  *
@@ -53,7 +57,7 @@ import {
   CLOUD_SESSION_MAX_PER_COMPUTER,
   cloudLaneColorOf,
 } from "../../../../account-directory/src/cloud/contract";
-import type { CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
+import { CloudApiError, type CloudApiClient } from "../../../../desktop/src/shared/cloudApiClient";
 import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
 import { isChatToolType } from "../../../../desktop/src/shared/sessionSpawnNesting";
 import { isTrackedAgentCliToolType, type TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
@@ -70,6 +74,7 @@ import type { AgentChatCrossMachineForkTransport, AgentChatCrossMachineHandoffCa
 import { redactProviderHistoryFile, type CloudChatUploadPendingResult } from "./cloudChatUploader";
 import { parseSavedTranscript, transcriptEndOf, type CapsuleTranscriptEnd } from "./cloudChatRestore";
 import { runLaneBackups, type BackupLane } from "./cloudLaneBackup";
+import { chatCitedProofIds, findProofFfmpeg, proofPictureFor, proofSourceOf, transcriptMark, type ProofFfmpeg } from "./cloudProofSave";
 
 type Logger = {
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -94,6 +99,14 @@ const STATE_FILE = "rest-save.json";
  * unredacted copy.
  */
 const CAPSULE_MARK_VERSION = "redacted-1";
+/** Leads every proof mark: a change to how proof is made sends each file again once. */
+const PROOF_MARK_VERSION = "webp2000q80-1";
+/** Proof files one save tries at most (each a conversion and an upload); the rest wait for the next save. */
+const PROOF_TRIES_PER_SAVE = 40;
+/** A conversion starts only with this much of the save's time left. */
+const PROOF_MIN_MS = 3_000;
+/** One conversion's longest run. */
+const PROOF_CONVERT_MS = 30_000;
 
 export type CloudRestSaveOptions = {
   /**
@@ -124,6 +137,10 @@ export type CloudRestSaveDeps = {
    * (`uploadSubagentCloudCopy`). Left out, no subagent is saved.
    */
   uploadSubagentCopy?: (parentSessionId: string, copy: { chatId: string; text: string; title: string | null; lastActivityAt: string | null }) => Promise<boolean>;
+  /** The chats with a saved copy on the account server (`savedCloudChatIds`). Left out, no proof is saved. */
+  savedChatIds?: () => ReadonlySet<string>;
+  /** The ffmpeg that makes proof pictures (`findProofFfmpeg`); tests pass their own. */
+  proofFfmpeg?: () => Promise<ProofFfmpeg | null>;
   /** Every lane on the computer for its backup (`cloudLaneBackup.ts`). Left out, no backup is made. */
   backupLanes?: () => Promise<{ complete: boolean; lanes: BackupLane[] }>;
 };
@@ -148,6 +165,10 @@ type RestSaveState = {
   subagents?: Record<string, string>;
   /** Parent chat id → the activity mark its subagents were last read at. */
   subagentScans?: Record<string, string>;
+  /** Chat id → artifact id → the mark of the proof file saved, or found to have nothing to save. */
+  proofs?: Record<string, Record<string, string>>;
+  /** Chat id → the transcript mark its citations were last read at, with every one settled. */
+  proofScans?: Record<string, string>;
 };
 
 const emptyState = (machineKey: string | null): RestSaveState => ({ v: 1, machineKey, sessions: {}, git: {}, capsules: {}, eventWakes: null });
@@ -539,6 +560,8 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
           eventWakes: Array.isArray(parsed.eventWakes) ? parsed.eventWakes : null,
           subagents: parsed.subagents ?? {},
           subagentScans: parsed.subagentScans ?? {},
+          proofs: parsed.proofs ?? {},
+          proofScans: parsed.proofScans ?? {},
         };
       }
     } catch {
@@ -893,8 +916,104 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       }
     }
 
-    // Git first (small), then capsules (what a continue needs), then the copies, then subagents.
-    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline);
+    // 4c. The proof each saved chat cites: once per file, a bounded number per save.
+    const proofTasks: Array<() => Promise<void>> = [];
+    const savedChats = deps.savedChatIds?.() ?? null;
+    if (savedChats?.size) {
+      const proofs = (state.proofs ??= {});
+      const proofScans = (state.proofScans ??= {});
+      let tries = 0;
+      // Set once the account is full: no more proof this save, and none marked sent.
+      let accountFull = false;
+      let ffmpeg: Promise<ProofFfmpeg | null> | null = null;
+      const tools = () => (ffmpeg ??= (deps.proofFfmpeg ?? findProofFfmpeg)().catch(() => null));
+      for (const runtime of runtimes) {
+        const broker = runtime.computerUseArtifactBrokerService;
+        if (!broker) continue;
+        let rows: TerminalSessionSummary[] = [];
+        try {
+          rows = runtime.sessionService.list({ limit: 200, includeArchived: false });
+        } catch (error) {
+          logger.warn("cloud.rest_save_sessions_read_failed", { error: errorText(error) });
+        }
+        for (const row of rows) {
+          if (!isChatToolType(row.toolType) || !savedChats.has(row.id)) continue;
+          proofTasks.push(async () => {
+            if (!idle() || accountFull) return;
+            try {
+              const transcriptPath = path.join(runtime.paths.chatTranscriptsDir, `${row.id}.jsonl`);
+              const scanMark = transcriptMark(transcriptPath);
+              if (!scanMark || proofScans[row.id] === scanMark) return;
+              const sent = (proofs[row.id] ??= {});
+              const cited = chatCitedProofIds(transcriptPath);
+              let complete = true;
+              for (const artifactId of cited) {
+                if (!idle() || accountFull || tries >= PROOF_TRIES_PER_SAVE || deadline - Date.now() < PROOF_MIN_MS) {
+                  complete = false;
+                  break;
+                }
+                const artifact = broker.listArtifacts({ artifactId, limit: 1 })[0] ?? null;
+                const filePath = artifact ? broker.resolveArtifactFilePath(artifact) : null;
+                let stat: fs.Stats | null = null;
+                try {
+                  stat = filePath ? fs.statSync(filePath) : null;
+                } catch {
+                  stat = null;
+                }
+                const mark = stat ? `${PROOF_MARK_VERSION}|${stat.size}|${Math.floor(stat.mtimeMs)}` : `${PROOF_MARK_VERSION}|none`;
+                if (sent[artifactId] === mark) continue;
+                const source = artifact && filePath && stat?.isFile() ? proofSourceOf(artifact, filePath) : null;
+                // No file here (a link, another computer's proof, deleted) or not a picture or video: nothing to save until it changes.
+                if (!source || !filePath) {
+                  sent[artifactId] = mark;
+                  continue;
+                }
+                tries += 1;
+                const picture = await proofPictureFor({ filePath, source, ffmpeg: await tools(), timeoutMs: Math.min(PROOF_CONVERT_MS, deadline - Date.now()) });
+                if (!picture) {
+                  sent[artifactId] = mark;
+                  continue;
+                }
+                if (!idle() || Date.now() >= deadline) {
+                  complete = false;
+                  break;
+                }
+                try {
+                  await api.putSavedChatProof(machineKey, row.id, artifactId, instanceId, picture.bytes, {
+                    source,
+                    contentType: picture.contentType,
+                    timeoutMs: deadline - Date.now(),
+                  });
+                  sent[artifactId] = mark;
+                  report.proofs = (report.proofs ?? 0) + 1;
+                } catch (error) {
+                  const code = error instanceof CloudApiError ? error.code : null;
+                  logger.warn("cloud.rest_proof_failed", { sessionId: row.id, artifactId, status: error instanceof CloudApiError ? error.status : null, code });
+                  if (code === "account_full") {
+                    accountFull = true;
+                    complete = false;
+                    break;
+                  }
+                  // What the server will never keep as it is (no copy here, too large, not a picture, the chat full): not sent again until the file changes.
+                  if (code === "not_found" || code === "proof_too_large" || code === "proof_unsupported" || code === "proof_limit") {
+                    sent[artifactId] = mark;
+                    if (code === "proof_limit") break;
+                    continue;
+                  }
+                  complete = false;
+                }
+              }
+              if (complete) proofScans[row.id] = scanMark;
+            } catch (error) {
+              logger.warn("cloud.rest_save_proof_failed", { sessionId: row.id, error: errorText(error) });
+            }
+          });
+        }
+      }
+    }
+
+    // Git first (small), then capsules (what a continue needs), then the copies, the chats' proof, then subagents.
+    const notStarted = await runLimited([...gitTasks, ...capsuleTasks, ...sessionTasks, ...proofTasks, ...subagentTasks], UPLOAD_PARALLEL, deadline);
     // 5. The events that wake this computer at rest: a Linear workspace or webhook a rule here acts on.
     if (idle()) {
       const topics = eventWakeTopics(runtimes, deps.accountUserId());
@@ -923,6 +1042,7 @@ export function createCloudRestSave(deps: CloudRestSaveDeps): CloudRestSave {
       sessions: report.sessions,
       git: report.git,
       skipped: report.skipped,
+      proofs: report.proofs ?? 0,
       notStarted,
       ms: Date.now() - started,
     });

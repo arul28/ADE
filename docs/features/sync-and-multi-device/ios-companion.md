@@ -1123,6 +1123,13 @@ computer is "ADE Cloud" (`CloudLaneComputerLabels.label`,
   (`markSnapshotStalled`). When the phone learns only after the chat opened
   that its computer has no live link (the account's computers still loading,
   a link that just dropped), the thread reads the saved copy then.
+- **Proof in a saved chat.** A cited proof the phone can't load from a resting
+  or deleted cloud computer shows the picture the computer saved before it
+  rested (`CloudServerClient.savedChatProof`, through
+  `AccountCloudStore.savedProof`). Only a chat read through the account asks
+  (`savedCloudChatAccountKey`), so it never wakes the computer. A video shows
+  its still with **Wake to play**, which wakes the chat's own computer.
+  Nothing saved: the citation's notice stays.
 - **The queue.** A send to a cloud chat with no live link goes to
   `POST /cloud/chats/:machine/:chat/messages` with the `clientSendId` as the
   message id (`SyncService.sendChatMessage`). The server holds it, wakes the

@@ -16,6 +16,12 @@ struct WorkProofCitationContext {
   /// Asks the chat's host about a cited id the list does not hold (filed after
   /// the list was read, or by another chat). The chat asks once per id.
   var resolveMissing: (@MainActor (String) async -> Void)? = nil
+  /// The picture the chat's resting ADE Cloud computer saved for a cited id
+  /// (a still for a video), from the account with no wake. Answers nil for a
+  /// chat with a live link.
+  var savedProof: (@MainActor (String) async -> CloudSavedChatProof?)? = nil
+  /// Wakes the chat's own computer: a saved video's "Wake to play".
+  var wakeComputer: (@MainActor () async -> Void)? = nil
 }
 
 private struct WorkProofCitationEnvironmentKey: EnvironmentKey {
@@ -41,14 +47,27 @@ struct WorkProofCitationView: View {
   @State private var seekRequest: Double?
   /// The chapters stay behind their toggle until the person opens them.
   @State private var chaptersOpen = false
+  /// What the chat's resting computer saved for this id, once asked.
+  @State private var saved: CloudSavedChatProof?
+  @State private var waking = false
 
   private var mediaMaxHeight: CGFloat { compact ? 220 : 360 }
 
   var body: some View {
     if let citations, let artifact = citations.artifactsById[artifactId] ?? citations.lookup?(artifactId) {
+      let content = citations.content[artifactId]
+      let failed = Self.isError(content)
       VStack(alignment: .leading, spacing: 6) {
-        media(artifact: artifact, content: citations.content[artifactId], load: citations.load)
-          .task(id: artifactId) { await citations.load(artifact, .preview) }
+        Group {
+          // The computer can't send it (asleep, deleted): the copy it saved before it rested.
+          if failed, let saved {
+            savedMedia(saved, label: captionText(artifact))
+          } else {
+            media(artifact: artifact, content: content, load: citations.load)
+          }
+        }
+        .task(id: artifactId) { await citations.load(artifact, .preview) }
+        .task(id: "\(artifactId)|\(failed)") { if failed { await askSaved() } }
         captionRows(artifact)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -61,17 +80,82 @@ struct WorkProofCitationView: View {
         )
       }
     } else {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Image(systemName: "exclamationmark.triangle")
-          .foregroundStyle(ADEColor.warning)
-        Text(missingText)
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
+      Group {
+        if let saved {
+          VStack(alignment: .leading, spacing: 6) {
+            savedMedia(saved, label: caption.isEmpty ? (saved.source == .video ? "Video proof" : "Proof") : caption)
+            if !caption.isEmpty {
+              Text(caption)
+                .font(.footnote)
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+          HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+              .foregroundStyle(ADEColor.warning)
+            Text(missingText)
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .padding(10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
       }
-      .padding(10)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .task(id: artifactId) { await citations?.resolveMissing?(artifactId) }
+      .task(id: artifactId) {
+        await citations?.resolveMissing?(artifactId)
+        await askSaved()
+      }
+    }
+  }
+
+  private static func isError(_ content: WorkLoadedArtifactContent?) -> Bool {
+    if case .error = content { return true }
+    return false
+  }
+
+  /// Asks the account once for the saved copy; nil (a live chat, nothing saved) leaves the view as it was.
+  private func askSaved() async {
+    guard saved == nil, let ask = citations?.savedProof else { return }
+    saved = await ask(artifactId)
+  }
+
+  /// The saved picture where the live proof would be. A video shows its
+  /// still with "Wake to play"; the video itself plays only from the computer.
+  @ViewBuilder
+  private func savedMedia(_ proof: CloudSavedChatProof, label: String) -> some View {
+    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+    VStack(alignment: .leading, spacing: 4) {
+      if let image = UIImage(data: proof.data) {
+        ZStack {
+          Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxHeight: mediaMaxHeight)
+            .clipShape(shape)
+            .overlay(shape.strokeBorder(ADEColor.border.opacity(0.3)))
+            .accessibilityLabel(label)
+          if proof.source == .video, let wake = citations?.wakeComputer {
+            Button {
+              waking = true
+              Task {
+                await wake()
+                waking = false
+              }
+            } label: {
+              Label(waking ? "Waking…" : "Wake to play", systemImage: waking ? "hourglass" : "play.fill")
+                .font(.footnote.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(waking)
+          }
+        }
+      }
+      Text(proof.source == .video ? "A still from the video, saved while its computer rests." : "Saved copy, shown while its computer rests.")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
     }
   }
 

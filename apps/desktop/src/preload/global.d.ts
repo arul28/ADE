@@ -19,7 +19,7 @@ import type { CloudAccessIpcAnswer, CloudChatSendAnswer, CloudChatSendRequest } 
 import type { AdeCloudBridge } from "../shared/adeCloud/chatQueue";
 import type { CloudCarriedSignIns, CloudLaunchRecord as AccountCloudLaunchRecord, CloudModelCatalog } from "../../../account-directory/src/cloud/contract";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
-import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
+import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatProofArgs, CloudSavedChatProofResult, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type {
   LaneShareGuestBridge,
@@ -5206,6 +5206,12 @@ declare global {
           list: (args: CloudSavedChatsListArgs) => Promise<CloudSavedChatList | null>;
           read: (args: CloudSavedChatReadArgs) => Promise<CloudSavedChatPage | null>;
           delete: (args: CloudSavedChatDeleteArgs) => Promise<void>;
+          /**
+           * One proof picture a saved chat cited (a still for a video), from
+           * the account with no wake. By the chat's own saved copy, never the
+           * tab's machine; null when none was saved. Optional: older bridges.
+           */
+          readProof?: (args: CloudSavedChatProofArgs) => Promise<CloudSavedChatProofResult | null>;
         };
         getStatus: () => Promise<CloudStatus | null>;
         /** A copy or move reports through `onCreateProgress`, ending in `done` or `failed`. */

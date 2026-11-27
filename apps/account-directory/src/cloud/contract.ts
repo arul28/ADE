@@ -1261,6 +1261,47 @@ export const CLOUD_CHAT_MAX_PART_BYTES = 8 * 1024 * 1024;
 export const CLOUD_CHAT_MAX_ACCOUNT_BYTES = 2 * 1024 * 1024 * 1024;
 export const CLOUD_CHAT_MAX_PAGE_PARTS = 12;
 
+/**
+ * A saved chat's proof (`/cloud/chats/:m/:c/proof/:artifact`): the picture a
+ * chat cited, or a still of a cited video, which the computer saves before it
+ * rests so a client shows it with no wake. Pictures only, checked by their
+ * first bytes; each counts in `CLOUD_CHAT_MAX_ACCOUNT_BYTES`.
+ */
+export const CLOUD_CHAT_PROOF_MAX_BYTES = 3 * 1024 * 1024;
+/** Most proof files one saved chat keeps. */
+export const CLOUD_CHAT_PROOF_MAX_PER_CHAT = 60;
+/** A proof's artifact id, as `ade-proof://<id>` names it. */
+export const CLOUD_CHAT_PROOF_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** The computer says what the saved picture is of (`image`, or `video` for a still); the read answers it back. */
+export const CLOUD_CHAT_PROOF_SOURCE_HEADER = "x-ade-proof-source";
+export type CloudChatProofSource = "image" | "video";
+export type CloudChatProofKind = "webp" | "png" | "jpeg" | "gif";
+export const CLOUD_CHAT_PROOF_MIME: Readonly<Record<CloudChatProofKind, string>> = {
+  webp: "image/webp",
+  png: "image/png",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+};
+
+/** `/cloud/chats/:machine/:chat/proof/:artifact`. */
+export const cloudChatProofPath = (machineKey: string, chatId: string, artifactId: string): string =>
+  `${CLOUD_PATHS.chats}/${encodeURIComponent(machineKey)}/${encodeURIComponent(chatId)}/proof/${encodeURIComponent(artifactId)}`;
+
+/**
+ * What a picture's first bytes say it is, or null for anything else (SVG,
+ * HTML, a video, text). The server stores only these; a client checks again
+ * before it shows the bytes.
+ */
+export function cloudChatProofKindOf(bytes: Uint8Array): CloudChatProofKind | null {
+  const at = (index: number) => bytes[index] ?? -1;
+  const ascii = (start: number, text: string) => [...text].every((char, index) => at(start + index) === char.charCodeAt(0));
+  if (bytes.byteLength >= 8 && [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((byte, index) => at(index) === byte)) return "png";
+  if (bytes.byteLength >= 3 && at(0) === 0xff && at(1) === 0xd8 && at(2) === 0xff) return "jpeg";
+  if (bytes.byteLength >= 6 && (ascii(0, "GIF87a") || ascii(0, "GIF89a"))) return "gif";
+  if (bytes.byteLength >= 12 && ascii(0, "RIFF") && ascii(8, "WEBP")) return "webp";
+  return null;
+}
+
 /** What the computer sends with a part: the chat's row in the list. */
 export type CloudChatRowInput = {
   title: string | null;
@@ -1737,6 +1778,8 @@ export type CloudSaveForRestReport = {
   git: number;
   /** Chats with no capsule (a provider that replays, over the cap, a failed build). */
   skipped: number;
+  /** Proof pictures saved with their chats' copies; left out by an ADE older than saved proof. */
+  proofs?: number;
   /** The lane backups of this save (`CloudBackupReport`); left out by an ADE older than lane backups. */
   backups?: CloudBackupSaveSummary | null;
   error?: string | null;

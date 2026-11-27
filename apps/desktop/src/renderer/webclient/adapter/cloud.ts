@@ -15,7 +15,7 @@ import { createWebCloudCopies } from "./cloudCopies";
 import { createWebCloudMoves } from "./cloudMoves";
 import { createWebCloudLaneLife, createWebCloudResizes, createWebTierRequestTeller } from "./cloudLaneLifeWeb";
 import { projectPinOnMachine } from "../../lib/machineConnect";
-import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
+import { savedChatProofResultOf, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
 import { runAdeCloudAccountCall } from "../../../shared/adeCloud/accountCalls";
 import type { CloudAgentLimitsState } from "../../../../../account-directory/src/cloud/contract";
@@ -515,6 +515,11 @@ export function createWebCloudNamespace(
         const api = accountClient.cloudApi();
         if (!api) throw new Error("Sign in to ADE to delete a saved chat.");
         await api.deleteSavedChat(machineKey, chatId);
+      },
+      // Straight from the account with the person's token: a picture is no read for a connected machine to relay.
+      readProof: async ({ machineKey, chatId, artifactId }) => {
+        const proof = await accountClient.cloudApi()?.savedChatProof(machineKey, chatId, artifactId).catch(() => null);
+        return proof ? savedChatProofResultOf(proof) : null;
       },
     },
     // The connected machine answers for the account: read again when this tab's connection changes.

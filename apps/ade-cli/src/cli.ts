@@ -33250,7 +33250,7 @@ async function runServe(
 
   // ADE Cloud computer: the rest save and the queue of messages for its chats.
   if (!embedded && cloudInstanceId && cloudRest && cloudKeepAwake) {
-    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }] = await Promise.all([
+    const [{ createCloudRestSave }, { createCloudChatMessageQueue }, { uploadPendingCloudChats, uploadSubagentCloudCopy, savedCloudChatIds }, laneBackup, { normalizeGitRemoteIdentity }, { readGitOriginUrl }] = await Promise.all([
       import("./services/cloudChats/cloudRestSave"),
       import("./services/cloudChats/cloudChatMessageQueue"),
       import("./services/cloudChats/cloudChatUploader"),
@@ -33282,6 +33282,7 @@ async function runServe(
       flushChats: (timeoutMs) => uploadPendingCloudChats(timeoutMs),
       accountUserId: () => brainAccountAuthService.getStatus().userId ?? null,
       uploadSubagentCopy: uploadSubagentCloudCopy,
+      savedChatIds: savedCloudChatIds,
       backupLanes: laneBackup.createBackupLaneLister({
         cachePath: path.join(layout.adeDir, "cloud", "backup-lanes.json"),
         projects: () => projectRegistry.list().map((record) => ({
