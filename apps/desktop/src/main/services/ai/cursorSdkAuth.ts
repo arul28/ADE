@@ -37,7 +37,7 @@ import { BRAND } from "../../../shared/brand";
 
 export type { CursorSdkAuthEvent, CursorSdkAuthStatus, CursorSdkLoginResult };
 
-const CURSOR_LOGIN_API_KEY_NAME = `${BRAND.NAME}`;
+const CURSOR_LOGIN_API_KEY_NAME = BRAND.NAME;
 
 export type CursorSdkAuthSnapshot = {
   storeUnavailable: boolean;

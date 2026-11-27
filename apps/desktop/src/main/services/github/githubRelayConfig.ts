@@ -11,7 +11,7 @@ import {
 } from "./githubAppUserAuthFailure";
 import { BRAND } from "../../../shared/brand";
 
-export const ADE_GITHUB_APP_DISPLAY_NAME = `${BRAND.NAME}`;
+export const ADE_GITHUB_APP_DISPLAY_NAME = BRAND.NAME;
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
 export const ADE_GITHUB_APP_INSTALL_URL = `https://github.com/apps/${ADE_GITHUB_APP_SLUG}/installations/new`;
 export const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
