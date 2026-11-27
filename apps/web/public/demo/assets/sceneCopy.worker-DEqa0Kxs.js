@@ -1,0 +1,1 @@
+function e(e){return new Worker(`/demo/assets/sceneCopy.worker-9HG6hqmy.js`,{name:e?.name})}export{e as default};
