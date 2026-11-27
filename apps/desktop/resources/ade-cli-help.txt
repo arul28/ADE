@@ -1431,7 +1431,7 @@ Proof and computer use
   `attach`, `capture`, `ingest`, and `record` re-read the record they just
   filed and, with --text, end with a line like
   `Attached 1 artifact to lane <id> / chat <id> (<title>)`. Anything else is a
-  failure: they exit non-zero and print `ade: proof attach failed — <reason>`.
+  failure: they exit non-zero and print `daex: proof attach failed — <reason>`.
   Pass --no-verify to skip the re-read.
 
   Attaching a file that is already proof

@@ -83,7 +83,7 @@ export function runSkillCommand(rest: string[]): SkillCliResult {
 /** A skill folder ADE could not read is named on stderr, so a short list is not a silent one. */
 function warnUnreadable(filePath: string, error: unknown): void {
   const code = (error as NodeJS.ErrnoException | null)?.code ?? (error instanceof Error ? error.message : String(error));
-  process.stderr.write(`ade: could not read ${filePath} (${code})\n`);
+  process.stderr.write(`daex: could not read ${filePath} (${code})\n`);
 }
 
 export function runSkillList(args: string[]): SkillCliResult {

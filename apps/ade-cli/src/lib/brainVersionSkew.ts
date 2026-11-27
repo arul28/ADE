@@ -223,7 +223,7 @@ function noteBrainVersionSkewOnce(note: string): void {
   if (brainVersionSkewNoted) return;
   brainVersionSkewNoted = true;
   try {
-    process.stderr.write(`ade: note: ${note}\n`);
+    process.stderr.write(`daex: note: ${note}\n`);
   } catch {
     // A note must never fail the command.
   }

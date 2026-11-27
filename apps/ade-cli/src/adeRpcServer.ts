@@ -3010,7 +3010,7 @@ export function isRealScreenProofCall(toolArgs: Record<string, unknown>): boolea
  * The one line a proof capture or recording prints when the caller's lane has
  * no Mac Desktop display and the caller did not ask for the real screen.
  *
- * The CLI prefixes it with `ade: proof capture failed — `, so a caller that
+ * The CLI prefixes it with `daex: proof capture failed — `, so a caller that
  * greps for "failed" still sees it. Off macOS, no lane can have a display and
  * `--real-screen` cannot help either, so the text names only the proof paths
  * that work there.

@@ -1362,7 +1362,7 @@ async function executePlanOnAllMachines(
   ]));
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   if (isRecord(roster) && roster.state !== "ok") {
-    process.stderr.write(`ade: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
+    process.stderr.write(`daex: ${String(roster.message ?? "Other machines are unavailable.")} Showing this machine only.\n`);
   }
   const roots = resolveRoots(options);
   const localIdentity = gitRemoteIdentity(getGitRemote(roots.projectRoot));
@@ -1710,12 +1710,12 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   const sizeId = options.cloudSize ?? null;
   const launch: JsonObject = { ...launchArgs, launchId, cloud: sizeId ? { sizeId } : {} };
   const say = (line: string) => {
-    if (!options.json) process.stderr.write(`ade: ${line}\n`);
+    if (!options.json) process.stderr.write(`daex: ${line}\n`);
   };
   // The launch is the brain's: an interrupt here leaves it running there, and says how to reach it.
   const onInterrupt = () => {
     process.stderr.write(
-      `\nade: the lane keeps starting on ${BRAND.CLOUD_NAME}. Check it: daex chat launch-status ${launchId} --machine cloud`
+      `\ndaex: the lane keeps starting on ${BRAND.CLOUD_NAME}. Check it: daex chat launch-status ${launchId} --machine cloud`
       + ` · stop it and delete its computer: daex chat launch-cancel ${launchId} --machine cloud\n`,
     );
     process.exit(130);
@@ -1733,7 +1733,7 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
       }
       // Always, --json too (stderr), before the launch waits: the id is what follows or resumes it.
       const sizeText = held ? "the size it started with" : (sizeId ?? "your default size");
-      process.stderr.write(`ade: ${held ? "going on with" : "starting"} a lane on ${BRAND.CLOUD_NAME} (${sizeText}). Launch id ${launchId}.\n`);
+      process.stderr.write(`daex: ${held ? "going on with" : "starting"} a lane on ${BRAND.CLOUD_NAME} (${sizeText}). Launch id ${launchId}.\n`);
       let lastLine = "";
       const { outcome, status, answer } = await followCloudLaneLaunch({
         start: () => call("lane_launch", { launch, originUrl }),

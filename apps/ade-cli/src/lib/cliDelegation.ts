@@ -484,7 +484,7 @@ export function startCliDelegationIfNeeded(): Promise<boolean> | null {
     (result) => exitLike(result),
     (error: unknown) => {
       process.stderr.write(
-        `ade: could not run ${target.command} (${error instanceof Error ? error.message : String(error)}); continuing with this CLI.\n`,
+        `daex: could not run ${target.command} (${error instanceof Error ? error.message : String(error)}); continuing with this CLI.\n`,
       );
       return false;
     },

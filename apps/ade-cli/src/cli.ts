@@ -3620,7 +3620,7 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
   \`attach\`, \`capture\`, \`ingest\`, and \`record\` re-read the record they just
   filed and, with --text, end with a line like
   \`Attached 1 artifact to lane <id> / chat <id> (<title>)\`. Anything else is a
-  failure: they exit non-zero and print \`ade: proof attach failed — <reason>\`.
+  failure: they exit non-zero and print \`daex: proof attach failed — <reason>\`.
   Pass --no-verify to skip the re-read.
 
   Attaching a file that is already proof
@@ -12258,7 +12258,7 @@ async function runChatLaunchCommand(
       ? await callChat("armWebhook", { sessionId: started.launchId, url: plan.notify.url, ...(plan.notify.token ? { token: plan.notify.token } : {}) })
         .then(() => ({ notify: { armed: true } }), (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
-          process.stderr.write(`ade: the chat starts, but its notify webhook was not armed: ${message}\n`);
+          process.stderr.write(`daex: the chat starts, but its notify webhook was not armed: ${message}\n`);
           return { notify: { armed: false, error: message } };
         })
       : {};
@@ -25492,7 +25492,7 @@ function findProjectRoots(startDir: string): {
     // Git refuses folders that belong to another account; say so instead of
     // silently treating the cwd as the project. Trusting is the user's call.
     const ownership = parseGitOwnershipError(String(git.stderr ?? ""));
-    if (ownership) process.stderr.write(`ade: ${gitOwnershipMessage(ownership)}\n`);
+    if (ownership) process.stderr.write(`daex: ${gitOwnershipMessage(ownership)}\n`);
   }
   const fallback = gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
   return { projectRoot: fallback, workspaceRoot: fallback };
@@ -27799,7 +27799,7 @@ function withTemporaryFolderWarning(result: unknown): unknown {
   const record = isRecord(result) ? result : null;
   const warning = temporaryFolderWarning(record ? asString(record.rootPath) : null);
   if (!record || !warning) return result;
-  process.stderr.write(`ade: warning: ${warning}\n`);
+  process.stderr.write(`daex: warning: ${warning}\n`);
   return { ...record, warning };
 }
 
@@ -27857,7 +27857,7 @@ async function resolveDesktopSocketProjectId(
     if (!isLegacySocket) {
       try {
         process.stderr.write(
-          `ade: could not register this project with the desktop (${formatDiagnosticError(error)}). `
+          `daex: could not register this project with the desktop (${formatDiagnosticError(error)}). `
           + `Project-scoped commands may fail until ${BRAND.NAME} Desktop is restarted.\n`,
         );
       } catch {
@@ -28581,7 +28581,7 @@ class RuntimeSelfShutdownBlockedError extends Error {}
 /** Say once, on stderr, that this CLI and the brain it uses are different builds. */
 function warnUsingMismatchedRuntime(runtimeInfo: MachineRuntimeInfo, mismatch: string): void {
   process.stderr.write(
-    `ade: using the running ${BRAND.NAME} brain as is: ${mismatch}. `
+    `daex: using the running ${BRAND.NAME} brain as is: ${mismatch}. `
       + "It cannot be restarted from inside its own session; "
       + `use the brain's own CLI${runtimeInfo.version ? ` (${runtimeInfo.version})` : ""} to remove this warning.\n`,
   );
@@ -41935,7 +41935,7 @@ function readProofWarnings(record: Record<string, unknown>): string[] {
  * actually has to read: did a record land, and where.
  *
  * Throws instead of returning a failure record, so the CLI exits non-zero and
- * prints `ade: <command> failed — <reason>`. An agent grepping for "failed"
+ * prints `daex: <command> failed — <reason>`. An agent grepping for "failed"
  * has to find it; a JSON blob that merely lacks an `artifacts` array is exactly
  * what went unread when six attaches in a row silently did nothing.
  */
@@ -42237,7 +42237,7 @@ function summarizeExecution(args: {
   ) {
     const notified = values.notify === undefined ? null : unwrapActionEnvelope(values.notify);
     if (isRecord(notified) && notified.ok === false) {
-      process.stderr.write(`ade: the chat started, but its notify webhook was not armed: ${String(notified.error ?? "unknown error")}\n`);
+      process.stderr.write(`daex: the chat started, but its notify webhook was not armed: ${String(notified.error ?? "unknown error")}\n`);
     }
     return {
       ok: true,
@@ -43673,7 +43673,7 @@ async function waitThroughBrowserApproval<T>(
       const minutes = Math.round(BUILT_IN_BROWSER_APPROVAL_WAIT_MS / 60_000);
       if (deadline == null) {
         deadline = startedAt + BUILT_IN_BROWSER_APPROVAL_WAIT_MS;
-        notify(`ade: waiting for the user to ${pending.waitingFor} (up to ${minutes} min)…`);
+        notify(`daex: waiting for the user to ${pending.waitingFor} (up to ${minutes} min)…`);
       }
       if (now() >= deadline) {
         throw new CliToolError(
@@ -44303,7 +44303,7 @@ function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Pro
   const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
   if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
-      `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
+      `daex: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
@@ -44515,7 +44515,7 @@ async function runParsedCli(
       const { cleanupLegacyBundledAdeSkillsForCli } = await import("./bootstrap");
       cleanupLegacyBundledAdeSkillsForCli();
     } catch (error) {
-      process.stderr.write(`ade: skipped legacy skill cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(`daex: skipped legacy skill cleanup: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
 
@@ -45025,7 +45025,7 @@ async function main(): Promise<void> {
     if (error instanceof CliUsageError) {
       await writeProcessOutput(
         process.stderr,
-        `ade: ${error.message}\nRun 'daex help'.\n`,
+        `daex: ${error.message}\nRun 'daex help'.\n`,
       );
       process.exitCode = 2;
       return;
@@ -45035,7 +45035,7 @@ async function main(): Promise<void> {
       // hint table's key, not something a reader needs to see twice.
       await writeProcessOutput(
         process.stderr,
-        `ade: ${error.message.replace(/^MAC_DESKTOP_[A-Z0-9_]+:\s*/, "")}\n`,
+        `daex: ${error.message.replace(/^MAC_DESKTOP_[A-Z0-9_]+:\s*/, "")}\n`,
       );
       const iosHint = iosSimulatorErrorHint(
         error.message,
@@ -45061,7 +45061,7 @@ async function main(): Promise<void> {
       return;
     }
     if (error instanceof CliExecutionError) {
-      await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
+      await writeProcessOutput(process.stderr, `daex: ${error.message}\n`);
       // `executePlan` wraps a raw failure as "Failed while running …" and keeps
       // the original text in `details.cause`.
       const cause = typeof error.details.cause === "string" ? error.details.cause : "";
@@ -45076,7 +45076,7 @@ async function main(): Promise<void> {
     }
     await writeProcessOutput(
       process.stderr,
-      `ade: ${error instanceof Error ? error.stack || error.message : String(error)}\n`,
+      `daex: ${error instanceof Error ? error.stack || error.message : String(error)}\n`,
     );
     process.exitCode = 1;
   }
