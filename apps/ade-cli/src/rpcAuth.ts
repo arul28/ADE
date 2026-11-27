@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /**
  * Per-boot bearer auth for the loopback TCP JSON-RPC listener.
@@ -42,7 +43,7 @@ export function withRpcAuthParam(
     // the server would deny the request anyway, so fail loudly at the client
     // instead of shipping a request that dies with a confusing policy error.
     throw new Error(
-      "ADE TCP RPC requests must use object params so the auth token can be attached.",
+      `${BRAND.NAME} TCP RPC requests must use object params so the auth token can be attached.`,
     );
   }
   return { ...(params as Record<string, unknown>), [ADE_RPC_AUTH_PARAM]: authToken };

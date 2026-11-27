@@ -55,6 +55,7 @@ import {
 import { record, records, withAsked } from "./cliAndroidFormat";
 import { buildAndroidSuitePlan } from "./cliAndroidSuite";
 import { buildAndroidDevicePlan } from "./cliAndroidDevice";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /* ──────────────────────────────────────────────────────────────────────────
    ANDROID EMULATOR — `ade android`.
@@ -308,85 +309,85 @@ export function androidFlagNames(args: readonly string[], carriers: ValueCarrier
 /** The next step for each coded refusal. Keyed on the contract's codes, so a new code needs a line. */
 const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_SDK_NOT_FOUND:
-    "hint: install the Android SDK (Android Studio, or the command-line tools) or set ANDROID_HOME, then run `ade android status --text`.",
+    "hint: install the Android SDK (Android Studio, or the command-line tools) or set ANDROID_HOME, then run `daex android status --text`.",
   ANDROID_TOOL_MISSING:
-    "hint: install the missing SDK package (platform-tools, emulator, cmdline-tools) with sdkmanager, then run `ade android status --text`.",
+    "hint: install the missing SDK package (platform-tools, emulator, cmdline-tools) with sdkmanager, then run `daex android status --text`.",
   ANDROID_NO_ACCELERATION:
-    "hint: turn on hardware acceleration (Windows: Windows Hypervisor Platform; Linux: KVM access), then try again. `ade android status --text` shows what the check found.",
+    "hint: turn on hardware acceleration (Windows: Windows Hypervisor Platform; Linux: KVM access), then try again. `daex android status --text` shows what the check found.",
   ANDROID_NO_SYSTEM_IMAGE:
-    "hint: install a system image for this machine's ABI with sdkmanager, or pass --image <package>. `ade android devices --text` lists the installed ones.",
-  ANDROID_AVD_NOT_FOUND: "hint: `ade android devices --text` lists this machine's AVDs.",
+    "hint: install a system image for this machine's ABI with sdkmanager, or pass --image <package>. `daex android devices --text` lists the installed ones.",
+  ANDROID_AVD_NOT_FOUND: "hint: `daex android devices --text` lists this machine's AVDs.",
   ANDROID_AVD_HELD_BY_OTHER_LANE:
-    "hint: another lane holds that AVD. Pick a free one (`ade android devices --text`), or make one: `ade android device-create --profile <id>`.",
+    "hint: another lane holds that AVD. Pick a free one (`daex android devices --text`), or make one: `daex android device-create --profile <id>`.",
   ANDROID_LANE_HAS_DEVICE:
-    "hint: this lane already holds an AVD. Use it (`ade android start`), or `ade android device-detach` before you create or attach another.",
+    "hint: this lane already holds an AVD. Use it (`daex android start`), or `daex android device-detach` before you create or attach another.",
   ANDROID_EXTRA_DEVICE_LIMIT:
-    "hint: this lane holds its limit of extra devices. Remove one (`ade android device-detach --device <avd>`), or promote one and use it (`ade android device-promote --device <avd>`).",
+    "hint: this lane holds its limit of extra devices. Remove one (`daex android device-detach --device <avd>`), or promote one and use it (`daex android device-promote --device <avd>`).",
   ANDROID_DEVICE_IS_EXTRA:
-    "hint: that AVD is one of this lane's extra devices. Make it the lane's device: `ade android device-promote --device <avd>`.",
+    "hint: that AVD is one of this lane's extra devices. Make it the lane's device: `daex android device-promote --device <avd>`.",
   ANDROID_DEVICE_NOT_LANE_OWNED:
-    "hint: `ade android status --text` lists the lane's device and its extras. `ade android device-create --extra --catalog <id>` adds an extra.",
+    "hint: `daex android status --text` lists the lane's device and its extras. `daex android device-create --extra --catalog <id>` adds an extra.",
   ANDROID_LANE_DEVICE_BUSY:
-    "hint: the device is in use (a live view, a recording, a test, an install, or another agent's lease). Wait for it to finish, then run `ade android device-promote` again.",
+    "hint: the device is in use (a live view, a recording, a test, an install, or another agent's lease). Wait for it to finish, then run `daex android device-promote` again.",
   ANDROID_AVD_RUNNING:
     "hint: that AVD already runs outside this lane. Close that emulator first, or attach another AVD.",
   ANDROID_NO_FREE_PORT:
     "hint: every emulator port (5554-5682) is in use. Stop an emulator you do not need, then try again.",
   ANDROID_BOOT_TIMEOUT:
-    "hint: the emulator did not finish booting in time. Read the log it names, then run `ade android start` again.",
+    "hint: the emulator did not finish booting in time. Read the log it names, then run `daex android start` again.",
   ANDROID_ADB_UNAUTHORIZED:
     "hint: adb refused the device; the error says why. An agent does not restart the adb server: every device on it loses its connection. "
-      + "Ask the user to press \"Restart adb and start\" in the Android pane, or to run `ade android start --restart-adb` in a terminal on that machine. "
-      + "If ADE already restarted the server, cold boot the AVD or read the log the error names.",
+      + "Ask the user to press \"Restart adb and start\" in the Android pane, or to run `daex android start --restart-adb` in a terminal on that machine. "
+      + `If ${BRAND.NAME} already restarted the server, cold boot the AVD or read the log the error names.`,
   ANDROID_EMULATOR_EXITED:
-    "hint: the emulator quit. Read the log it names (`ade android status --text` shows the path).",
+    "hint: the emulator quit. Read the log it names (`daex android status --text` shows the path).",
   ANDROID_STREAM_FAILED:
     "hint: the live view failed. `tap`, `button`, `type` and `screenshot` do not need it.",
   ANDROID_PATH_OUTSIDE_LANE:
-    "hint: --out must be inside the lane worktree. Pass a path there, or leave out --out for a file under ADE's data folder.",
+    `hint: --out must be inside the lane worktree. Pass a path there, or leave out --out for a file under ${BRAND.NAME}'s data folder.`,
   ANDROID_NOT_RUNNING:
-    "hint: boot the lane's emulator first: `ade android start`, or `ade android device-create --profile <id>` when the lane has none.",
+    "hint: boot the lane's emulator first: `daex android start`, or `daex android device-create --profile <id>` when the lane has none.",
   // P1 setup.
   // Only the user installs, in the desktop app; the CLI reads the plan and the progress.
   ANDROID_SDK_LICENSE_NOT_ACCEPTED:
-    "hint: The user accepts each licence in the ADE desktop app's setup card. `ade android sdk licenses` shows their text.",
+    `hint: The user accepts each licence in the ${BRAND.NAME} desktop app's setup card. \`daex android sdk licenses\` shows their text.`,
   ANDROID_SDK_NO_SPACE: "hint: Free space, or pick a folder on another drive in the setup card.",
-  ANDROID_SDK_INSTALL_BUSY: "hint: Wait for it: `ade android sdk status --text` shows its progress. The setup card can stop it.",
+  ANDROID_SDK_INSTALL_BUSY: "hint: Wait for it: `daex android sdk status --text` shows its progress. The setup card can stop it.",
   ANDROID_SDK_INSTALL_FAILED:
-    "hint: Run `ade android sdk status` to see what is missing. The user installs again from the setup card; finished parts stay.",
+    "hint: Run `daex android sdk status` to see what is missing. The user installs again from the setup card; finished parts stay.",
   ANDROID_SDK_PATH_INVALID: "hint: Pick the folder that holds platform-tools, emulator or system-images.",
   ANDROID_LOW_MEMORY:
-    "hint: stop an emulator you do not need (`ade android stop` in its lane) or close apps, then try again. Never start one with the raw `emulator` binary instead. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
+    "hint: stop an emulator you do not need (`daex android stop` in its lane) or close apps, then try again. Never start one with the raw `emulator` binary instead. Ask the user before you run `daex android start --force`: it boots anyway, and the machine can swap.",
   ANDROID_LOW_DISK:
-    "hint: the disk can't hold a new device's data. On ADE Cloud, ADE grows the disk itself: if the message says it is growing, the computer restarts and your chat continues; run `ade android start` again then. If it couldn't, grow it yourself with `ade cloud resize --free 8 --reason \"Android emulator first boot\"` (inside the plan no yes is needed; never ask the user to press Grow). Elsewhere, tell the user to free disk space. Never delete files to make room yourself.",
+    `hint: the disk can't hold a new device's data. On ${BRAND.CLOUD_NAME}, ${BRAND.NAME} grows the disk itself: if the message says it is growing, the computer restarts and your chat continues; run \`daex android start\` again then. If it couldn't, grow it yourself with \`daex cloud resize --free 8 --reason \"Android emulator first boot\"\` (inside the plan no yes is needed; never ask the user to press Grow). Elsewhere, tell the user to free disk space. Never delete files to make room yourself.`,
   // P1 agent suite.
   ANDROID_ELEMENT_NOT_FOUND:
-    "hint: run `ade android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",
+    "hint: run `daex android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",
   ANDROID_WAIT_TIMEOUT:
-    "hint: run `ade android snapshot --text` to see what is on screen; pass --timeout-ms <ms> (up to 120000) to wait longer.",
+    "hint: run `daex android snapshot --text` to see what is on screen; pass --timeout-ms <ms> (up to 120000) to wait longer.",
   ANDROID_UI_TREE_FAILED:
-    "hint: the screen's element tree could not be read. Try again; `ade android screenshot --text` still shows the screen.",
-  ANDROID_APP_NOT_FOUND: "hint: `ade android apps --text` lists the apps on the emulator.",
+    "hint: the screen's element tree could not be read. Try again; `daex android screenshot --text` still shows the screen.",
+  ANDROID_APP_NOT_FOUND: "hint: `daex android apps --text` lists the apps on the emulator.",
   ANDROID_BUILD_FAILED:
     "hint: read the build output above, fix the build, then run the command again. --module and --variant pick another module or build type.",
-  ANDROID_INSTALL_FAILED: "hint: read adb's reason above. A signature conflict needs `ade android uninstall --package <name>` first.",
+  ANDROID_INSTALL_FAILED: "hint: read adb's reason above. A signature conflict needs `daex android uninstall --package <name>` first.",
   ANDROID_PACKAGE_NOT_ADE_INSTALLED:
-    "hint: this lane uses an AVD it did not make, and ADE did not install this app, so ADE leaves it. Uninstall it in the emulator yourself.",
-  ANDROID_RECORDING_ACTIVE: "hint: stop it first: `ade android record-stop --text`.",
-  ANDROID_RECORDING_NOT_FOUND: "hint: `ade android record-list --text` lists this lane's recordings.",
+    `hint: this lane uses an AVD it did not make, and ${BRAND.NAME} did not install this app, so ${BRAND.NAME} leaves it. Uninstall it in the emulator yourself.`,
+  ANDROID_RECORDING_ACTIVE: "hint: stop it first: `daex android record-stop --text`.",
+  ANDROID_RECORDING_NOT_FOUND: "hint: `daex android record-list --text` lists this lane's recordings.",
   // P3.
   ANDROID_SYSTEM_IMAGE_IN_USE:
-    "hint: an AVD uses that system image. Stop the emulator first; `ade android sdk images --text` shows which AVDs use each image.",
+    "hint: an AVD uses that system image. Stop the emulator first; `daex android sdk images --text` shows which AVDs use each image.",
   ANDROID_TESTS_RUNNING: "hint: this lane's instrumentation tests already run. Wait for that run to finish, then try again.",
 };
 
 /** A cloud box has no KVM: the agent starts a lane on a full computer (agents never make a bare one). */
 const CLOUD_BOX_ANDROID_HINT =
   "hint: tell the user the message above in plain words. Push this lane's branch, then start a lane on a full computer on it: "
-  + "`ade lanes create --machine cloud --size large --existing-branch <branch> --name <name>` "
-  + "(ADE asks the user, or the agent limits answer), then start a chat there: "
-  + "`ade chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt \"<the task>\"`. "
-  + "Never make a computer (`ade cloud create`): agents start lanes. The `ade-cloud` skill has the steps.";
+  + "`daex lanes create --machine cloud --size large --existing-branch <branch> --name <name>` "
+  + `(${BRAND.NAME} asks the user, or the agent limits answer), then start a chat there: `
+  + "`daex chat create --machine <its computer> --lane <its lane id> --provider <p> --model <id> --prompt \"<the task>\"`. "
+  + "Never make a computer (`daex cloud create`): agents start lanes. The `ade-cloud` skill has the steps.";
 
 const ANDROID_ERROR_HINT_ENTRIES = Object.entries(ANDROID_ERROR_HINTS) as Array<[AndroidErrorCode, string]>;
 
@@ -404,16 +405,16 @@ export function androidEmulatorErrorHint(message: string): string | null {
   const personOnly = ANDROID_PERSON_ONLY_SDK.exec(message);
   if (personOnly) {
     if (personOnly[1] === "installSystemImage" || personOnly[1] === "removeSystemImage") {
-      return "Only the user installs or removes Android system images, in the ADE desktop app: the device picker's System images. "
-        + "Ask the user. `ade android sdk images --text` shows what is installed and what is available.";
+      return `Only the user installs or removes Android system images, in the ${BRAND.NAME} desktop app: the device picker's System images. `
+        + "Ask the user. `daex android sdk images --text` shows what is installed and what is available.";
     }
     if (personOnly[1] === "setMachinePreferences") {
       return "Only the user changes this machine's Android preferences (tap rings, key badges, auto-record, the storage warning, the remote bitrate), "
-        + "in the ADE desktop app: Settings › Android devices. Ask the user. To stop auto-record in this lane: ade android auto-record off.";
+        + `in the ${BRAND.NAME} desktop app: Settings › Android devices. Ask the user. To stop auto-record in this lane: daex android auto-record off.`;
     }
     return personOnly[1] === "setSdkPath"
-      ? "Only the user picks this machine's Android SDK folder, in the ADE desktop app: Settings › Android devices. Ask the user."
-      : "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app: "
+      ? `Only the user picks this machine's Android SDK folder, in the ${BRAND.NAME} desktop app: Settings › Android devices. Ask the user.`
+      : `Only the user installs the Android SDK and accepts Google's licences, in the ${BRAND.NAME} desktop app: `
         + "the setup card in the Android tool, or Settings › Android devices. Ask the user.";
   }
   if (message.includes("ANDROID_NO_ACCELERATION:") && message.includes("ADE Cloud box")) return CLOUD_BOX_ANDROID_HINT;
@@ -467,7 +468,7 @@ function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undef
 export function readAndroidDeviceClaim(args: string[], verb: string): { device?: string } {
   const device = readValue(args, ["--device"]);
   if (device != null && !device.trim()) {
-    throw new CliUsageError(`android ${verb}: --device needs an AVD name (ade android status --text lists the lane's devices).`);
+    throw new CliUsageError(`android ${verb}: --device needs an AVD name (daex android status --text lists the lane's devices).`);
   }
   return device ? { device: device.trim() } : {};
 }
@@ -497,8 +498,8 @@ export function requireAndroidExtrasSupport(plan: CliPlan & { kind: "execute" },
           if (!known) {
             // As `requireMacDesktopBrainCapability`: an older brain drops the argument without an error.
             throw new CliToolError(
-              `The ADE brain this command reached is older than this ade and does not know extra devices; it would ignore ${flag}, `
-                + `so android ${verb} would act on the lane's own device. Update ADE there (or run \`ade brain update\` for a standalone brain), or leave out ${flag}.`,
+              `The ${BRAND.NAME} brain this command reached is older than this daex and does not know extra devices; it would ignore ${flag}, `
+                + `so android ${verb} would act on the lane's own device. Update ${BRAND.NAME} there (or run \`daex brain update\` for a standalone brain), or leave out ${flag}.`,
               { capability: ANDROID_EXTRAS_ACTION, flag, verb },
             );
           }
@@ -534,7 +535,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     const unknown = androidFlagNames(args, carriers).find((name) =>
       name !== "--lane" && !verbFlags.includes(name) && !(name === "--no-record" && ANDROID_NO_RECORD_VERBS.has(sub)));
     if (unknown) {
-      throw new CliUsageError(`android ${sub} does not take ${unknown}. Run 'ade android --help'.`);
+      throw new CliUsageError(`android ${sub} does not take ${unknown}. Run 'daex android --help'.`);
     }
   }
   const remote = options.remote === true;
@@ -663,7 +664,7 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     // One of the lane's extras becomes the lane's device; the old one is kept.
     // `--device <avd>`, or the AVD as the first word.
     const device = readAndroidDeviceClaim(args, sub).device ?? positionals()[0]?.trim() ?? "";
-    if (!device) throw new CliUsageError("android device-promote needs --device <avd> of one of this lane's extra devices (ade android status --text lists them).");
+    if (!device) throw new CliUsageError("android device-promote needs --device <avd> of one of this lane's extra devices (daex android status --text lists them).");
     return requireAndroidExtrasSupport(
       androidAction("android device-promote", "devicePromote", { ...laneClaim(), device }, "android-device-promote"),
       sub,
@@ -798,5 +799,5 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
     launchPassthrough,
   });
   if (suite) return suite;
-  throw new CliUsageError(`Unknown android subcommand '${sub}'. Run 'ade android --help'.`);
+  throw new CliUsageError(`Unknown android subcommand '${sub}'. Run 'daex android --help'.`);
 }

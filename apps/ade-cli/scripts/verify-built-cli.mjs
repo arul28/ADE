@@ -22,7 +22,7 @@ async function runHelp(command, args) {
     cwd: packageRoot,
     env: process.env,
   });
-  if (!stdout.includes("Agent-focused command-line interface for ADE")) {
+  if (!stdout.includes("Agent-focused command-line interface for Daex")) {
     throw new Error(`[ade-cli:build] CLI help output did not include the ADE banner text for ${command}`);
   }
 }
@@ -128,7 +128,7 @@ async function assertPackagedResolutionCliHelp() {
       }
       throw new Error(`[ade-cli:build] dist/cli.cjs --help failed under packaged module resolution${detail}`);
     }
-    if (!stdout.includes("Agent-focused command-line interface for ADE")) {
+    if (!stdout.includes("Agent-focused command-line interface for Daex")) {
       throw new Error("[ade-cli:build] packaged-resolution CLI help output did not include the ADE banner text");
     }
   } finally {

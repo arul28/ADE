@@ -18,6 +18,7 @@ import {
   type ParsedCli,
   type SocketJsonRpcClient,
 } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /* ──────────────────────────────────────────────────────────────────────────
    WHERE A CHAT LIVES — a chat id given without `--machine`.
@@ -199,7 +200,7 @@ export async function locateChatOnAccount(
   try {
     client = await connectMachineRuntimeDaemon(options, options.socketPath?.trim() || null, { allowSpawn: false });
   } catch (error) {
-    report.note = `Couldn't reach this machine's ADE brain, so no other machine was asked (${errorText(error)}).`;
+    report.note = `Couldn't reach this machine's ${BRAND.NAME} brain, so no other machine was asked (${errorText(error)}).`;
     return report;
   }
   try {
@@ -348,8 +349,8 @@ export async function restingCloudChatLocation(options: GlobalOptions, report: C
 
 function restingCloudSentence(resting: ReadonlyArray<{ machine: string; instanceId: string }>): string | null {
   if (!resting.length) return null;
-  const wakes = resting.map((entry) => `\`ade cloud wake ${entry.instanceId}\` (${entry.machine})`).join(", ");
-  return `asleep on ADE Cloud, not asked: ${resting.map((entry) => entry.machine).join(", ")}. `
+  const wakes = resting.map((entry) => `\`daex cloud wake ${entry.instanceId}\` (${entry.machine})`).join(", ");
+  return `asleep on ${BRAND.CLOUD_NAME}, not asked: ${resting.map((entry) => entry.machine).join(", ")}. `
     + `If the chat is there, wake its computer with ${wakes} (a wake uses credits), then run this again`;
 }
 
@@ -438,7 +439,7 @@ export function chatDeletedSentence(sessionId: string, deleted: { deletedAt?: un
   return `Chat ${sessionId} was deleted at ${String(deleted.deletedAt)}. `
     + (deleted.reopenable === false
       ? "Its conversation is gone, so it can't be reopened."
-      : `Reopen it with \`ade chat deleted reopen ${sessionId}\`${deleted.reopenable === true ? "" : " (in its project)"}.`);
+      : `Reopen it with \`daex chat deleted reopen ${sessionId}\`${deleted.reopenable === true ? "" : " (in its project)"}.`);
 }
 
 export function formatChatLocate(value: unknown): string {
@@ -475,7 +476,7 @@ export function formatChatLocate(value: unknown): string {
       const scope = isRecord(match.scope) ? match.scope : {};
       return [match.machine, scope.kind === "personal" ? "(personal)" : scope.name ?? scope.projectId ?? "", record.read ?? ""];
     }),
-    "ADE chat location",
+    `${BRAND.NAME} chat location`,
     { fullColumns: ["next"] },
   );
   return `${table}\n${matches.length > 1 ? "\nThis id is on more than one machine; pass --machine <name>.\n" : ""}${unasked ? `${unasked}\n` : ""}`;

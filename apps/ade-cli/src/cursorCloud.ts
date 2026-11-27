@@ -22,6 +22,7 @@ import {
   CURSOR_WINDOWS_ARM_BLOCKER,
   isCursorProviderSupported,
 } from "../../desktop/src/shared/providerPlatformSupport";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 type CursorSdk = typeof import("@cursor/sdk");
 
@@ -329,7 +330,7 @@ export async function runCursorCloud(args: Args, outputMode: CursorOutputMode): 
 
   const command = parseCursorCloudCommand(cleaned);
   if (!command) {
-    throw new CursorCloudUsageError("ade cursor cloud requires a subgroup. Try 'agents', 'runs', 'artifacts', 'repos', 'models', or 'me'.");
+    throw new CursorCloudUsageError("daex cursor cloud requires a subgroup. Try 'agents', 'runs', 'artifacts', 'repos', 'models', or 'me'.");
   }
 
   if (command.group === "agents") return runAgentsGroup(command.sub, command.rest, opts);
@@ -714,16 +715,16 @@ function truncate(value: string, max: number): string {
 export const CURSOR_CLOUD_HELP: Record<string, string> = {
   cloud: `  Cursor Cloud (via @cursor/sdk)
 
-  Two ADE entry points are mirrored here:
-    1. "Send to Cursor Cloud"      ade cursor cloud agents create --repo ... --prompt ...
-    2. "Open existing cloud chat"  ade cursor cloud agents resume --agent <id> --prompt ...
+  Two ${BRAND.NAME} entry points are mirrored here:
+    1. "Send to Cursor Cloud"      daex cursor cloud agents create --repo ... --prompt ...
+    2. "Open existing cloud chat"  daex cursor cloud agents resume --agent <id> --prompt ...
 
-    $ ade cursor cloud agents list | create | resume | show | archive | unarchive | delete | cancel
-    $ ade cursor cloud runs list | show | cancel
-    $ ade cursor cloud artifacts list | download
-    $ ade cursor cloud repos list
-    $ ade cursor cloud models list
-    $ ade cursor cloud me
+    $ daex cursor cloud agents list | create | resume | show | archive | unarchive | delete | cancel
+    $ daex cursor cloud runs list | show | cancel
+    $ daex cursor cloud artifacts list | download
+    $ daex cursor cloud repos list
+    $ daex cursor cloud models list
+    $ daex cursor cloud me
 
   Auth:
     --api-key <key>        Cursor API key. Falls back to CURSOR_API_KEY env var.
@@ -735,36 +736,36 @@ export const CURSOR_CLOUD_HELP: Record<string, string> = {
 `,
   agents: `  Cursor Cloud: agents
 
-    $ ade cursor cloud agents list [--archived] [--limit N] [--cursor C]
-    $ ade cursor cloud agents create --repo <git-url> --prompt <text>
+    $ daex cursor cloud agents list [--archived] [--limit N] [--cursor C]
+    $ daex cursor cloud agents create --repo <git-url> --prompt <text>
         [--branch <ref>] [--model <id>] [--pr-url <url>]
         [--auto-pr] [--work-on-current-branch] [--name <agent-name>]
-    $ ade cursor cloud agents resume --agent <id> --prompt <text> [--model <id>]
-    $ ade cursor cloud agents show --agent <id>
-    $ ade cursor cloud agents archive --agent <id>
-    $ ade cursor cloud agents unarchive --agent <id>
-    $ ade cursor cloud agents delete --agent <id>
-    $ ade cursor cloud agents cancel --agent <id> --run <id>
+    $ daex cursor cloud agents resume --agent <id> --prompt <text> [--model <id>]
+    $ daex cursor cloud agents show --agent <id>
+    $ daex cursor cloud agents archive --agent <id>
+    $ daex cursor cloud agents unarchive --agent <id>
+    $ daex cursor cloud agents delete --agent <id>
+    $ daex cursor cloud agents cancel --agent <id> --run <id>
 
   Notes:
     - "create" launches a fresh cloud agent and streams the first prompt.
-      skipReviewerRequest is always set to true (matches ADE desktop).
+      skipReviewerRequest is always set to true (matches ${BRAND.NAME} desktop).
     - "resume" mirrors an existing cloud agent and sends a follow-up prompt.
     - With --text the assistant text is streamed to stderr while events arrive.
 `,
   runs: `  Cursor Cloud: runs
 
-    $ ade cursor cloud runs list   --agent <id> [--limit N] [--cursor C]
-    $ ade cursor cloud runs show   --agent <id> --run <id>
-    $ ade cursor cloud runs cancel --agent <id> --run <id>
+    $ daex cursor cloud runs list   --agent <id> [--limit N] [--cursor C]
+    $ daex cursor cloud runs show   --agent <id> --run <id>
+    $ daex cursor cloud runs cancel --agent <id> --run <id>
 
   "show" prints the conversation turns. With --json the response also includes
   status / model / durationMs / git so consumers can resume programmatically.
 `,
   artifacts: `  Cursor Cloud: artifacts
 
-    $ ade cursor cloud artifacts list     --agent <id>
-    $ ade cursor cloud artifacts download --agent <id> --path <remote>
+    $ daex cursor cloud artifacts list     --agent <id>
+    $ daex cursor cloud artifacts download --agent <id> --path <remote>
         [--out <local-path>]
 
   Without --out the file is returned base64-encoded in JSON. With --out the
@@ -772,14 +773,14 @@ export const CURSOR_CLOUD_HELP: Record<string, string> = {
 `,
   repos: `  Cursor Cloud: repos
 
-    $ ade cursor cloud repos list
+    $ daex cursor cloud repos list
 
   Lists GitHub repositories the authenticated user has connected to Cursor.
   Use the URL field as --repo on "agents create".
 `,
   models: `  Cursor Cloud: models
 
-    $ ade cursor cloud models list
+    $ daex cursor cloud models list
 
   Lists models available for cloud agents. Use the top-level id field as
   --model on "agents create" / "agents resume". Older nested "model.id"
@@ -787,7 +788,7 @@ export const CURSOR_CLOUD_HELP: Record<string, string> = {
 `,
   me: `  Cursor Cloud: me
 
-    $ ade cursor cloud me
+    $ daex cursor cloud me
 
   Returns the authenticated API key's metadata: apiKeyName, userEmail (if
   visible), and createdAt. Useful for verifying which key the CLI is using.

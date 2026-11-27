@@ -539,7 +539,7 @@ function createNodePathValue(paths, options = {}) {
 }
 
 function assertAdeCliHelp(stdout, label) {
-  if (!stdout.includes("Agent-focused command-line interface for ADE")) {
+  if (!stdout.includes("Agent-focused command-line interface for Daex")) {
     fail(`${label} did not print ADE CLI help`);
   }
 }

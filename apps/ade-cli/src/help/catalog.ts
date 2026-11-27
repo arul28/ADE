@@ -42,7 +42,7 @@ const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 export function usageLineAvailable(line: string, scope: "read" | "write", availability: Availability): boolean {
   // A help page's line ends in a description column after a wide gap.
   const usage = line.trim().replace(/^\$\s*/, "").replace(/\s{2,}.*$/, "");
-  const tokens = usage.replace(/^ade\s+/, "").split(/\s+/);
+  const tokens = usage.replace(/^(?:ade|daex)\s+/, "").split(/\s+/);
   let index = 0;
   while (tokens[index]?.startsWith("-")) {
     const option = tokens[index]!;
@@ -64,7 +64,7 @@ export function usageLineAvailable(line: string, scope: "read" | "write", availa
 export function filterHelpTextForScope(text: string, scope: "read" | "write", availability: Availability): string {
   return text
     .split("\n")
-    .filter((line) => !/^\s*\$ ade\s+/.test(line) || usageLineAvailable(line, scope, availability))
+    .filter((line) => !/^\s*\$ (?:ade|daex)\s+/.test(line) || usageLineAvailable(line, scope, availability))
     .join("\n");
 }
 
@@ -135,7 +135,7 @@ function parseHelpPage(page: string): Pick<HelpCatalogCommand, "summary" | "usag
   let started = false;
   for (const line of bodyLines) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("$ ade")) {
+    if (!trimmed || (trimmed.startsWith("$ ade") || trimmed.startsWith("$ daex"))) {
       if (started && !trimmed) break;
       continue;
     }
@@ -147,7 +147,7 @@ function parseHelpPage(page: string): Pick<HelpCatalogCommand, "summary" | "usag
   const summary = sentenceEnd >= 0 ? body.slice(0, sentenceEnd + 1) : body;
   const usage = lines
     .map((line) => line.trim())
-    .filter((line) => line.startsWith("$ ade"))
+    .filter((line) => line.startsWith("$ ade") || line.startsWith("$ daex"))
     .map((line) => line.slice(2).replace(/\s{2,}.*$/, "").trim());
   return { summary, usage };
 }

@@ -19,6 +19,7 @@ import {
   type JsonObject,
   type ParsedCli,
 } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /* ──────────────────────────────────────────────────────────────────────────
    `ade apple …` on the ADE Cloud iPhone (`ios@cloud`).
@@ -91,13 +92,13 @@ function target(args: Args, verb: string): string {
   const id = flag(args, "--id");
   if (id) return `#${/\s/.test(id) ? quoted(id) : id}`;
   const label = flag(args, "--label") ?? args.words.join(" ");
-  if (!label.trim()) throw new CliUsageError(`ade apple ${verb} on the ADE Cloud iPhone takes --label "<text>" or --id <accessibility id>.`);
+  if (!label.trim()) throw new CliUsageError(`daex apple ${verb} on the ${BRAND.CLOUD_NAME} iPhone takes --label "<text>" or --id <accessibility id>.`);
   return quoted(label);
 }
 
 function point(args: Args, verb: string): string {
   const [x, y] = args.words.map(Number);
-  if (args.words.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) throw new CliUsageError(`ade apple ${verb} <x> <y> (points, as snapshot prints them).`);
+  if (args.words.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) throw new CliUsageError(`daex apple ${verb} <x> <y> (points, as snapshot prints them).`);
   return `@${x},${y}`;
 }
 
@@ -124,7 +125,7 @@ const DIRECTIONS = new Set(["up", "down", "left", "right"]);
 function launchCall(args: Args): Call {
   if (args.flags.has("--no-build")) {
     const app = flag(args, "--bundle-id");
-    if (!app) throw new CliUsageError("ade apple launch --no-build --bundle-id <id> on the ADE Cloud iPhone.");
+    if (!app) throw new CliUsageError(`daex apple launch --no-build --bundle-id <id> on the ${BRAND.CLOUD_NAME} iPhone.`);
     return { action: "control", args: { action: "launch", app, ...(args.afterDashes.length ? { value: args.afterDashes.join(" ") } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "launch" };
   }
   const sub = flag(args, "--path") ?? flag(args, "--project");
@@ -153,7 +154,7 @@ function installAppCall(args: Args, app: string): Call {
 
 function swipeCall(args: Args, verb: string): Call {
   const direction = (args.words[0] ?? "").toLowerCase();
-  if (!DIRECTIONS.has(direction)) throw new CliUsageError(`ade apple ${verb} <up|down|left|right> [--label "<on this element>"] on the ADE Cloud iPhone.`);
+  if (!DIRECTIONS.has(direction)) throw new CliUsageError(`daex apple ${verb} <up|down|left|right> [--label "<on this element>"] on the ${BRAND.CLOUD_NAME} iPhone.`);
   const on = flag(args, "--label") || flag(args, "--id") ? ` ${target(args, verb)}` : "";
   return act([`${verb} ${direction}${on}`], verb);
 }
@@ -192,13 +193,13 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   type: (args) => {
     const text = args.words.join(" ");
-    if (!text) throw new CliUsageError("ade apple type \"<text>\" [--submit]");
+    if (!text) throw new CliUsageError("daex apple type \"<text>\" [--submit]");
     return act(args.flags.has("--submit") ? [`type ${quoted(text)}`, "key return"] : [`type ${quoted(text)}`], "type");
   },
   key: (args, verb) => {
     const key = KEY_STEPS[(args.words[0] ?? "").toLowerCase()];
     if (!key || args.flags.has("--cmd") || args.flags.has("--shift") || args.flags.has("--alt") || args.flags.has("--ctrl")) {
-      throw new CliToolError("The ADE Cloud iPhone presses return, escape, delete, tab and space (no shortcuts). Type text with ade apple type.", { verb });
+      throw new CliToolError(`The ${BRAND.CLOUD_NAME} iPhone presses return, escape, delete, tab and space (no shortcuts). Type text with daex apple type.`, { verb });
     }
     return act([`key ${key}`], "key");
   },
@@ -206,7 +207,7 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   scroll: swipeCall,
   button: (args, verb) => {
     const which = (args.words[0] ?? "").toLowerCase();
-    if (which !== "home") throw new CliToolError("The ADE Cloud iPhone has the home button (ade apple button home).", { verb });
+    if (which !== "home") throw new CliToolError(`The ${BRAND.CLOUD_NAME} iPhone has the home button (daex apple button home).`, { verb });
     return act(["home"], "home");
   },
   "wait-for-element": (args, verb) => {
@@ -232,7 +233,7 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   "install-app": (args) => {
     const app = flag(args, "--app");
-    if (!app) throw new CliUsageError("ade apple install-app --app <path to a Simulator .app> on the ADE Cloud iPhone.");
+    if (!app) throw new CliUsageError(`daex apple install-app --app <path to a Simulator .app> on the ${BRAND.CLOUD_NAME} iPhone.`);
     return installAppCall(args, app);
   },
   relaunch: (args) => {
@@ -246,7 +247,7 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   "open-url": (args) => {
     const url = args.words[0] ?? flag(args, "--url");
-    if (!url) throw new CliUsageError("ade apple open-url <url or deep link>");
+    if (!url) throw new CliUsageError("daex apple open-url <url or deep link>");
     return { action: "control", args: { action: "open_url", value: url }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: "open a link" };
   },
   logs: (args) => {
@@ -263,7 +264,7 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   record: (args) => {
     const action = (args.words[0] ?? "").toLowerCase();
-    if (action !== "start" && action !== "stop") throw new CliUsageError("ade apple record start|stop on the ADE Cloud iPhone (stop answers a link to the MP4).");
+    if (action !== "start" && action !== "stop") throw new CliUsageError(`daex apple record start|stop on the ${BRAND.CLOUD_NAME} iPhone (stop answers a link to the MP4).`);
     const caption = flag(args, "--caption");
     return {
       action: "record",
@@ -280,12 +281,12 @@ const VERBS: Readonly<Record<string, (args: Args, verb: string) => Call>> = {
   },
   act: (args) => {
     const steps = args.words.filter((step) => step.trim());
-    if (!steps.length) throw new CliUsageError("ade apple act \"<step>\" [\"<step>\" …], e.g. ade apple act 'fill #email a@b.c' 'tap \"Sign In\"' 'wait \"Welcome\" 10'");
+    if (!steps.length) throw new CliUsageError("daex apple act \"<step>\" [\"<step>\" …], e.g. daex apple act 'fill #email a@b.c' 'tap \"Sign In\"' 'wait \"Welcome\" 10'");
     return act(steps, "act");
   },
   control: (args) => {
     const action = args.words[0];
-    if (!action) throw new CliUsageError("ade apple control <action> [value] [--app <bundle id>]: launch, terminate, uninstall, open_url, grant, revoke, location, push, appearance, locale, timezone, text_size, status_bar, storekit, shake, orientation (ade apple status says which this phone does).");
+    if (!action) throw new CliUsageError("daex apple control <action> [value] [--app <bundle id>]: launch, terminate, uninstall, open_url, grant, revoke, location, push, appearance, locale, timezone, text_size, status_bar, storekit, shake, orientation (daex apple status says which this phone does).");
     const value = flag(args, "--value") ?? (args.words.length > 1 ? args.words.slice(1).join(" ") : undefined);
     const app = flag(args, "--app") ?? flag(args, "--bundle-id");
     return { action: "control", args: { action, ...(value !== undefined ? { value } : {}), ...(app ? { app } : {}) }, timeoutMs: CLOUD_PHONE_CALL_TIMEOUT_MS, label: `control ${action}` };
@@ -345,7 +346,7 @@ function callFor(verb: string, tokens: string[], root: () => string): Call {
   const handler = Object.hasOwn(VERBS, verb) ? VERBS[verb] : undefined;
   if (!handler) {
     throw new CliToolError(
-      `ade apple ${verb} isn't on the ADE Cloud iPhone. It takes: ${[...Object.keys(VERBS), SHOW_VERB].join(", ")}. ade devices use ios@here (or a Mac) for the rest.`,
+      `daex apple ${verb} isn't on the ${BRAND.CLOUD_NAME} iPhone. It takes: ${[...Object.keys(VERBS), SHOW_VERB].join(", ")}. daex devices use ios@here (or a Mac) for the rest.`,
       { verb },
     );
   }
@@ -360,11 +361,11 @@ function textOf(call: Call, value: unknown): string {
     const minutes = isRecord(value.minutes) ? ` · credits for about ${value.minutes.left} min left this period` : "";
     const idle = `${CLOUD_PHONE_IDLE_SECONDS / 60} minutes`;
     const phone = isRecord(value.phone)
-      ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: ade apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`
-      : "phone: off. Any ade apple command starts it, reads like snapshot too, and it counts minutes from then until it stops.";
+      ? `phone: ${asString(value.phone.state)} (${asString(value.phone.device)}). It counts minutes until it stops: daex apple stop when done, or it stops by itself after ${idle} with no input (those ${idle} count too).`
+      : "phone: off. Any daex apple command starts it, reads like snapshot too, and it counts minutes from then until it stops.";
     return value.access === "on"
-      ? `ADE Cloud iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${cloudPhoneAbilityLines(value, isRecord(value.phone) && value.phone.state !== "ended")}`
-      : `ADE Cloud iPhone · ${asString(value.reason) ?? "not available"}\n`;
+      ? `${BRAND.CLOUD_NAME} iPhone · on${minutes}\n${phone}\n${recentLines(value.recent)}capabilities: ${Array.isArray(value.capabilities) ? value.capabilities.join(", ") : ""}\n${cloudPhoneAbilityLines(value, isRecord(value.phone) && value.phone.state !== "ended")}`
+      : `${BRAND.CLOUD_NAME} iPhone · ${asString(value.reason) ?? "not available"}\n`;
   }
   if (action === "screenshot") {
     // Some cloud phones answer no link (the file is the screenshot): no line for one.
@@ -374,11 +375,11 @@ function textOf(call: Call, value: unknown): string {
   if (action === "start") {
     const phone = isRecord(value.phone) ? value.phone : null;
     const minutes = isRecord(value.minutes) ? ` · credits for about ${value.minutes.left} min left this period` : "";
-    return `ADE Cloud iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`
+    return `${BRAND.CLOUD_NAME} iPhone ${asString(phone?.state) ?? "ready"} (${asString(phone?.device) ?? "iphone"})${minutes}\n`
       + cloudPhoneAbilityLines({ abilities: value.abilities }, true)
-      + `It counts minutes until it stops. Run ade apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;
+      + `It counts minutes until it stops. Run daex apple stop when you are done: by itself it stops only after ${CLOUD_PHONE_IDLE_SECONDS / 60} minutes with no command or input (those minutes count too), or after ${CLOUD_PHONE_MAX_MINUTES / 60} hours. The next command starts a new one.\n`;
   }
-  if (action === "stop") return value.stopped ? "Stopped the ADE Cloud iPhone.\n" : "The ADE Cloud iPhone was not running.\n";
+  if (action === "stop") return value.stopped ? `Stopped the ${BRAND.CLOUD_NAME} iPhone.\n` : `The ${BRAND.CLOUD_NAME} iPhone was not running.\n`;
   // A recording saved on the brain's machine (Revyl's has no download link): say where.
   const saved = action === "record" ? asString(value.path) : null;
   const text = `${asString(value.text) ?? ""}${saved ? `\nSaved ${saved}` : ""}`;
@@ -413,15 +414,15 @@ export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]
   const call = callFor(verb, command.slice(1), () => buildRoot(parsed.options));
   const plan: CliPlan & { kind: "execute" } = {
     kind: "execute",
-    label: `ade apple ${verb} (ADE Cloud iPhone)`,
+    label: `daex apple ${verb} (${BRAND.CLOUD_NAME} iPhone)`,
     steps: [actionStep("result", "cloud_phone", call.action, call.args)],
-    needsLiveRuntime: "the ADE Cloud iPhone",
+    needsLiveRuntime: `the ${BRAND.CLOUD_NAME} iPhone`,
     shapeResult: (values) => values.result,
   };
   const value = unwrapActionEnvelope(await executePlan(plan, { ...options, timeoutMs: Math.max(options.timeoutMs, call.timeoutMs) }));
   // The brain files screenshots and recordings to the proof drawer itself, owned by this chat and lane.
   const filed = isRecord(value) && typeof value.artifactId === "string"
-    ? `Filed in the proof drawer (${value.artifactId}).\ncite: ${proofCitationMarkdown(value.artifactId, call.action === "record" ? "ADE Cloud iPhone recording" : "ADE Cloud iPhone screenshot")}`
+    ? `Filed in the proof drawer (${value.artifactId}).\ncite: ${proofCitationMarkdown(value.artifactId, call.action === "record" ? `${BRAND.CLOUD_NAME} iPhone recording` : `${BRAND.CLOUD_NAME} iPhone screenshot`)}`
     : null;
   const failed = isRecord(value) && value.failed === true;
   if (!options.text) return { output: formatOutput(value, options, undefined), exitCode: failed ? 1 : 0 };
@@ -434,13 +435,13 @@ export async function runCloudIphoneCommand(parsed: ParsedCli, command: string[]
  * which never starts a phone). The rest of the help is the Mac's.
  */
 export async function cloudIphoneHelpTail(parsed: ParsedCli): Promise<string> {
-  const verbs = `On the ADE Cloud iPhone (this chat's device), ade apple takes: ${[...Object.keys(VERBS), SHOW_VERB].join(", ")}.\n`;
+  const verbs = `On the ${BRAND.CLOUD_NAME} iPhone (this chat's device), daex apple takes: ${[...Object.keys(VERBS), SHOW_VERB].join(", ")}.\n`;
   const options: GlobalOptions = { ...parsed.options, machine: null, allMachines: false, machineProject: null, machineWorkCopy: null, timeoutMs: 20_000 };
   const plan: CliPlan & { kind: "execute" } = {
     kind: "execute",
-    label: "ade apple status (ADE Cloud iPhone)",
+    label: `daex apple status (${BRAND.CLOUD_NAME} iPhone)`,
     steps: [actionStep("result", "cloud_phone", "getStatus", {})],
-    needsLiveRuntime: "the ADE Cloud iPhone",
+    needsLiveRuntime: `the ${BRAND.CLOUD_NAME} iPhone`,
     shapeResult: (values) => values.result,
   };
   const status = await executePlan(plan, options).then(unwrapActionEnvelope).catch(() => null);

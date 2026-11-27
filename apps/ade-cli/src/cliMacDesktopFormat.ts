@@ -58,6 +58,7 @@ import {
   renderTable,
   type JsonObject,
 } from "./cli";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /**
  * The host the CLI is asked about.
@@ -79,7 +80,7 @@ export function hostPlatform(value?: unknown): string {
 
 /** "ADE Windows Desktop" on a Windows host, "ADE Mac Desktop" on a Mac. */
 export function screenTitle(value: unknown, suffix = ""): string {
-  return `ADE ${desktopProductName(hostPlatform(value))}${suffix ? ` ${suffix}` : ""}`;
+  return `${BRAND.NAME} ${desktopProductName(hostPlatform(value))}${suffix ? ` ${suffix}` : ""}`;
 }
 
 /**
@@ -95,47 +96,47 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   [
     MAC_DESKTOP_UNSUPPORTED_PLATFORM_CODE,
     (host) => host === "win32"
-      ? "This needs a Windows host with the ADE desktop driver installed (or the verb is Mac-only). Check: ade screen status --text"
+      ? `This needs a Windows host with the ${BRAND.NAME} desktop driver installed (or the verb is Mac-only). Check: daex screen status --text`
       : host === "linux"
-        ? "This verb is not available on a Linux lane screen (claim, release and present are Mac-only; every window on a Linux screen is already the lane's). Check: ade screen status --text"
-        : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `ade browser` / `ade app-control` here.",
+        ? "This verb is not available on a Linux lane screen (claim, release and present are Mac-only; every window on a Linux screen is already the lane's). Check: daex screen status --text"
+        : "This needs a macOS runtime host (or the verb is Windows-only). Run it against a Mac runtime, or use `daex browser` / `daex app-control` here.",
   ],
   [
     MAC_DESKTOP_PERMISSION_REQUIRED_CODE,
-    "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: ade screen status --text",
+    "Grant the missing permission in System Settings → Privacy & Security → Screen Recording and Accessibility, then re-run: daex screen status --text",
   ],
   [
     MAC_DESKTOP_DRIVER_UNAVAILABLE_CODE,
-    "The ADE desktop driver is not running. Check it with: ade screen status --text",
+    `The ${BRAND.NAME} desktop driver is not running. Check it with: daex screen status --text`,
   ],
   [
     MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
-    "No lane screen could be created. `ade screen status --text` reports the mode it fell back to.",
+    "No lane screen could be created. `daex screen status --text` reports the mode it fell back to.",
   ],
-  [MAC_DESKTOP_NO_DISPLAY_CODE, "This lane has no screen yet — run: ade screen start --text"],
+  [MAC_DESKTOP_NO_DISPLAY_CODE, "This lane has no screen yet — run: daex screen start --text"],
   [
     // The display exists; there is nothing on it to act on. `start` would not help.
     MAC_DESKTOP_NO_WINDOW_CODE,
-    "This lane's screen has no window — open an app (ade screen open <app>) or claim a window (ade screen claim --window <id>).",
+    "This lane's screen has no window — open an app (daex screen open <app>) or claim a window (daex screen claim --window <id>).",
   ],
   [
     // The message already names the holding lane; the hint does not restate it.
     MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
-    "That window or app belongs to the lane named above. Act only on your lane's windows (ade screen windows --text).",
+    "That window or app belongs to the lane named above. Act only on your lane's windows (daex screen windows --text).",
   ],
   [
     MAC_DESKTOP_WINDOW_NOT_FOUND_CODE,
-    "Window ids die with their process — re-enumerate with: ade screen windows --text",
+    "Window ids die with their process — re-enumerate with: daex screen windows --text",
   ],
   [
     MAC_DESKTOP_HANDLE_EXPIRED_CODE,
-    "That handle belongs to an older observation — re-observe with: ade screen observe --text",
+    "That handle belongs to an older observation — re-observe with: daex screen observe --text",
   ],
   [
     MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
     (host) => host === "win32"
-      ? "Real input on the user's main desktop needs the user's yes once per chat — run: ade screen lease --reason \"<what for>\" (a private Windows screen never needs this)."
-      : "Real pointer and keyboard input moves the user's one Mac pointer, so it needs the user's approval once per chat — run: ade screen lease --reason \"<what for>\"",
+      ? "Real input on the user's main desktop needs the user's yes once per chat — run: daex screen lease --reason \"<what for>\" (a private Windows screen never needs this)."
+      : "Real pointer and keyboard input moves the user's one Mac pointer, so it needs the user's approval once per chat — run: daex screen lease --reason \"<what for>\"",
   ],
   [
     MAC_DESKTOP_USER_HAS_CONTROL_CODE,
@@ -147,7 +148,7 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   ],
   [
     MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
-    "No recording is running — start one with: ade screen record start --caption \"<what>\"",
+    "No recording is running — start one with: daex screen record start --caption \"<what>\"",
   ],
   [
     MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
@@ -166,11 +167,11 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   ],
   [
     WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE,
-    "A key chord or a Shift key cannot be sent in the background on the main desktop. Send it again with --real (the window comes forward for it), or leave the mode out and ADE chooses.",
+    `A key chord or a Shift key cannot be sent in the background on the main desktop. Send it again with --real (the window comes forward for it), or leave the mode out and ${BRAND.NAME} chooses.`,
   ],
   [
     WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE,
-    "Windows could not complete that window action. Inspect the lane screen, then list the windows again with: ade screen windows --text",
+    "Windows could not complete that window action. Inspect the lane screen, then list the windows again with: daex screen windows --text",
   ],
   [
     WINDOWS_DESKTOP_WRONG_PASSWORD_CODE,
@@ -178,7 +179,7 @@ const MAC_DESKTOP_ERROR_HINTS: ReadonlyArray<readonly [code: string, hint: strin
   ],
   [
     WINDOWS_DESKTOP_SIGN_IN_FAILED_CODE,
-    "The private sign-in did not finish. Retry once with: ade screen start --text; if it fails again, ask the user to check the PC.",
+    "The private sign-in did not finish. Retry once with: daex screen start --text; if it fails again, ask the user to check the PC.",
   ],
   [
     WINDOWS_DESKTOP_CANCELLED_CODE,
@@ -206,8 +207,8 @@ export function macDesktopErrorHint(message: string, host: string | null = proce
 function withoutSharedDesktopAsk(hint: string): string {
   if (!hint.includes("--shared")) return hint;
   const kept = hint
-    .replace(/,? ?or ask for (?:their|the) main desktop(?: instead)?: ade screen start --shared --reason "<what for>" --text/u, "")
-    .replace(/(?:Ask for the main desktop instead|Ask in this chat with): ade screen start --shared --reason "<what for>" --text/u, "")
+    .replace(/,? ?or ask for (?:their|the) main desktop(?: instead)?: (?:ade|daex) screen start --shared --reason "<what for>" --text/u, "")
+    .replace(/(?:Ask for the main desktop instead|Ask in this chat with): (?:ade|daex) screen start --shared --reason "<what for>" --text/u, "")
     .trim();
   const ask = "Only a chat on that PC can ask the user for its main desktop.";
   return kept ? `${kept.replace(/[.\s]*$/u, ".")} ${ask}` : ask;
@@ -253,7 +254,7 @@ function macDesktopWindowsFooter(windows: JsonObject[], options: { elevatedWarni
   if (hasElevatedWindow && options.elevatedWarning) {
     lines.push(
       "",
-      "Warning: An administrator window is on this screen; ADE cannot click, type into, focus past or minimize it.",
+      `Warning: An administrator window is on this screen; ${BRAND.NAME} cannot click, type into, focus past or minimize it.`,
     );
   }
   return lines;
@@ -576,17 +577,17 @@ export function formatMacDesktopOpen(value: unknown): string {
     lines.push(
       "",
       `No window: ${asString(result.message) ?? "the app handed the request to an instance that was already running, and exited."}`,
-      "Next: open it with its full path and a fresh profile or file, or claim the existing window (ade screen windows --text, then ade screen claim --window <id>).",
+      "Next: open it with its full path and a fresh profile or file, or claim the existing window (daex screen windows --text, then daex screen claim --window <id>).",
     );
   } else if (result.watching === true) {
     lines.push(
       "",
-      "No window yet; ADE is watching for it. Next: ade screen wait --window-title \"<part of its title>\" --text",
+      `No window yet; ${BRAND.NAME} is watching for it. Next: daex screen wait --window-title \"<part of its title>\" --text`,
     );
   } else {
     lines.push(
       "",
-      "No window appeared and ADE is not watching for one. Check the screen: ade screen observe --text",
+      `No window appeared and ${BRAND.NAME} is not watching for one. Check the screen: daex screen observe --text`,
     );
   }
   return lines.join("\n");
@@ -600,7 +601,7 @@ export function formatMacDesktopScreenshot(value: unknown): string {
     ["file", result.filePath],
     ["size", result.width && result.height ? `${result.width}x${result.height}` : null],
     ["captured", result.capturedAt],
-    ["filed", result.proofArtifactId ? "yes" : "no — use `ade screen proof --caption \"<what>\"` to file proof"],
+    ["filed", result.proofArtifactId ? "yes" : "no — use `daex screen proof --caption \"<what>\"` to file proof"],
   ], ["filed"]);
 }
 
@@ -644,7 +645,7 @@ export function formatMacDesktopWindowAction(value: unknown): string {
       ["window", result.windowId],
       ["closed", action === "close" ? result.closed : null],
       ["note", action === "close" && result.closed === false
-        ? "The window is still open (it may be asking to save). Observe it: ade screen observe --window <id> --text"
+        ? "The window is still open (it may be asking to save). Observe it: daex screen observe --window <id> --text"
         : null],
     ], ["note"]),
     ...macDesktopWindowsFooter(firstArray(result, ["windows"])),
@@ -704,7 +705,7 @@ export function formatMacDesktopWindows(value: unknown): string {
     { fullColumns: ["id", "lane"] },
   );
   return windows.some((window) => window.elevated === true)
-    ? `${table}\n\nWarning: An administrator window is on this screen; ADE cannot click, type into, focus past or minimize it.`
+    ? `${table}\n\nWarning: An administrator window is on this screen; ${BRAND.NAME} cannot click, type into, focus past or minimize it.`
     : table;
 }
 

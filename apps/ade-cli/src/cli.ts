@@ -137,6 +137,7 @@ import {
   type TriageProviderName,
 } from "./commands/triage";
 import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
+import { BRAND } from "../../desktop/src/shared/brand";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -1670,126 +1671,127 @@ function maybeRunBuiltCliFallback(
 }
 
 const TOP_LEVEL_HELP = `${ADE_BANNER}
-  Agent-focused command-line interface for ADE.
+  Agent-focused command-line interface for ${BRAND.NAME}.
+  ${BRAND.NAME} was called ADE: \`ade\` still works as an alias for \`daex\`, so older scripts and skills keep running.
 
-  ADE CLI commands operate through the machine ADE brain by default.
-  The brain is the always-on ADE process for this machine: it owns the project
+  ${BRAND.NAME} CLI commands operate through the machine ${BRAND.NAME} brain by default.
+  The brain is the always-on ${BRAND.NAME} process for this machine: it owns the project
   catalog, sync endpoint, and execution authority for the channel.
 
-    $ ade help <command...>                         Display help for a command
-    $ ade connect [--status]                        Link this machine to your ADE account
-    $ ade setup                                     Finish or redo install setup (agent CLIs, account, desktop app)
-    $ ade login [--headless] [--max-wait <seconds>] Sign in to your ADE account
-    $ ade logout                                    Sign out of the ADE account
-    $ ade auth status                               Show ADE account sign-in status
-    $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
-    $ ade machines list                             List machines from the ADE account directory
-    $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade devices [--kind ios|android|screen|app] --text
+    $ daex help <command...>                        Display help for a command
+    $ daex connect [--status]                       Link this machine to your ${BRAND.NAME} account
+    $ daex setup                                    Finish or redo install setup (agent CLIs, account, desktop app)
+    $ daex login [--headless] [--max-wait <seconds>] Sign in to your ${BRAND.NAME} account
+    $ daex logout                                   Sign out of the ${BRAND.NAME} account
+    $ daex auth status                              Show ${BRAND.NAME} account sign-in status
+    $ daex account token create                     Print a durable token for ADE_ACCOUNT_TOKEN
+    $ daex machines list                            List machines from the ${BRAND.NAME} account directory
+    $ daex machines show <name|key> --text          Read one machine's status, projects, lanes and recent chats
+    $ daex machines connect <id|name>               Save an account machine on this install
+    $ daex devices [--kind ios|android|screen|app] --text
                                                     Every device this chat can use, on every machine
-    $ ade devices use <kind>@<machine|here> | current
+    $ daex devices use <kind>@<machine|here> | current
                                                     Pick the machine this chat's iPhone, Android, screen or app runs on
-    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
-                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
-    $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+    $ daex new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start a ${BRAND.NAME} Work chat or tracked CLI session (from an agent: a subagent)
+    $ daex desktop                                  Launch the installed ${BRAND.NAME} desktop app
+    $ daex screen start | observe | click | proof   Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
-    $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
+    $ daex open <url>                               Open an ade:// or ade-app.dev deeplink via the OS
+    $ daex link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
-    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
-    $ ade brain start | stop | status               Manage the background ADE brain
-    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
-    $ ade runtime run --socket <path> --profile embedded
-                                                    Run a guest runtime for an external embedder (ADE SDK):
+    $ daex linear install                           Register ${BRAND.NAME} as Linear's "Open in coding tool" target
+    $ daex skill list | show <name>                 Browse ${BRAND.NAME}'s bundled agent skills (local)
+    $ daex brain start | stop | status              Manage the background ${BRAND.NAME} brain
+    $ daex runtime run --socket <path>              Run a manual runtime for dev/test work
+    $ daex runtime run --socket <path> --profile embedded
+                                                    Run a guest runtime for an external embedder (${BRAND.NAME} SDK):
                                                     personal chats only, no automations, sync off
-    $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine brain
-    $ ade projects list                             List projects registered on this machine
-    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
-    $ ade status                                    Does the ADE brain answer
-    $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade health --text                             This project's problems and their fixes
-    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+    $ daex rpc --stdio                              Speak ${BRAND.NAME} JSON-RPC over stdin/stdout
+    $ daex init [path]                              Register a project with this machine brain
+    $ daex projects list                            List projects registered on this machine
+    $ daex sync web [--open] [--no-clipboard]       Print (and copy) the web client pairing link + code
+    $ daex sync status | devices                    Machine sync and paired devices (pair a phone: daex brain pin generate)
+    $ daex status                                   Does the ${BRAND.NAME} brain answer
+    $ daex doctor [--online]                        Inspect installed app and machine-brain health
+    $ daex health --text                            This project's problems and their fixes
+    $ daex report-issue [--send] [--open]           Print a redacted diagnostic report; --send hands it to ${BRAND.NAME} privately,
                                                     --open then opens a public GitHub issue that holds only its reference
-    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
-    $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
-    $ ade lanes list | show | create | child        Work with lanes and lane stacks
-    $ ade git status | commit | push | stash        Run ADE-aware git operations
-    $ ade operations status | wait                  Poll operation/test/chat/run status
-    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
-    $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
-    $ ade notify --title "<text>" [--body "<text>"] [--open <ade link>]
-                                                    Send a push to the phones on your ADE account
-    $ ade mcp status | on | off | token create | activity
-                                                    ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
-    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
-    $ ade shell start | write | resize | close      Launch and control tracked shell sessions
-    $ ade terminal list | resume | read | write | signal
+    $ daex triage [--agent] [--provider <name>]     Build a triage context + playbook and hand the repair to your coding agent
+    $ daex reset --all [--dry-run]                  Remove everything ${BRAND.NAME} put on this computer (hard reset)
+    $ daex lanes list | show | create | child       Work with lanes and lane stacks
+    $ daex git status | commit | push | stash       Run ADE-aware git operations
+    $ daex operations status | wait                 Poll operation/test/chat/run status
+    $ daex diff changes | file | patch              Inspect lane diffs (including raw git patch text)
+    $ daex files tree | read | write | search       Read and edit lane workspaces
+    $ daex search "<query>" --text                   Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ daex notify --title "<text>" [--body "<text>"] [--open <daex link>]
+                                                    Send a push to the phones on your ${BRAND.NAME} account
+    $ daex mcp status | on | off | token create | activity
+                                                    ${BRAND.NAME} MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this machine
+    $ daex prs list | create | show | checks         Manage PRs and their GitHub state
+    $ daex shell start | write | resize | close     Launch and control tracked shell sessions
+    $ daex terminal list | resume | read | write | signal
                                                     Control an attached session terminal
-    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note | interrupt
-                                                    Work with ADE agent chats
-    $ ade drafts list | create | schedule | update | delete | now | show
+    $ daex history list | show | commits | export    Inspect ${BRAND.NAME} operation timeline and lane commits
+    $ daex chat list | create | send | ask | note | interrupt
+                                                    Work with ${BRAND.NAME} agent chats
+    $ daex drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade session show | move | snooze | wake | clear-woke
+    $ daex session show | move | snooze | wake | clear-woke
                                                     A chat or CLI session on the Work board: file it, snooze it until a deadline
-    $ ade linear create | edit | comment | set-state | assign | issue | graphql
+    $ daex linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
-    $ ade jira status | connect | projects | list | issue | create | edit
+    $ daex jira status | connect | projects | list | issue | create | edit
                                                     Connect to Jira Cloud and manage issues
-    $ ade issue list | view | comment | state | create | open-url
+    $ daex issue list | view | comment | state | create | open-url
                                                     Read and update issues across trackers
-    $ ade github issue list | view | create | edit | comment | close
+    $ daex github issue list | view | create | edit | comment | close
                                                     Create, read, and edit GitHub issues
-    $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
-    $ ade automations list | create | run | runs    Manage automation rules
-    $ ade tests list | run | stop | runs | logs     Run configured test suites
-    $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
-    $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
-    $ ade android status | create | start | tap    Drive this lane's Android emulator
-    $ ade app-control launch | observe | click | record
+    $ daex github app-auth login | status | clear   Authorize the machine ${BRAND.NAME} GitHub App (device flow)
+    $ daex automations list | create | run | runs   Manage automation rules
+    $ daex tests list | run | stop | runs | logs    Run configured test suites
+    $ daex proof status | list | screenshot | record Manage proof and computer-use artifacts
+    $ daex apple devices | apps | launch | tap     Control Apple simulators, capture, and input
+    $ daex android status | create | start | tap   Drive this lane's Android emulator
+    $ daex app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
-    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade browser attach | detach                  The user's own browser, only when they ask
-    $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
-    $ ade scene preview <file> --text              Check a \`\`\`scene before putting it in a reply
-    $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
+    $ daex browser open | tabs | screenshot        Use ${BRAND.NAME}'s built-in browser pane
+    $ daex browser attach | detach                 The user's own browser, only when they ask
+    $ daex work-tools state | actions              Read the desktop Work tools pane for a lane
+    $ daex scene preview <file> --text             Check a \`\`\`scene before putting it in a reply
+    $ daex ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
-    $ ade usage limits --text                       What's left of each subscription, per account
-    $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
-    $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
-    $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
-    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
-    $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
-    $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
-    $ ade providers accounts list | add | remove | default
+    $ daex usage limits --text                      What's left of each subscription, per account
+    $ daex usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
+    $ daex router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
+    $ daex models catalog | sheet                   Every model you can run: full registry profiles, or organized by task kind
+    $ daex harness routes | providers | env | test  Any model in any harness (--via), and your Custom providers
+    $ daex storage snapshot | compress              Inspect ${BRAND.NAME} disk usage and compress old history
+    $ daex archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
+    $ daex providers accounts list | add | remove | default
                                                     Manage this machine's Claude/Codex logins
-    $ ade proxy status | start | stop | login | logout
+    $ daex proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | set | copy | request | delete | exec  This project's secrets, in Passwords & Secrets
-    $ ade passwords list | status                     Saved logins agents can use (never a value)
-    $ ade code --site <host>                          A site's current sign-in code
-    $ ade messages recent | send                      The person's texts, on their Mac
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
-    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
-    $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
-    $ ade update status | check | install | dismiss Read auto-update state and drive install
-    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
-    $ ade actions list | describe | run | status | wait  Escape hatch for every ADE service action
-    $ ade cursor cloud agents | runs | artifacts | repos | models | me
+    $ daex secrets list | set | copy | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ daex passwords list | status                    Saved logins agents can use (never a value)
+    $ daex code --site <host>                         A site's current sign-in code
+    $ daex messages recent | send                     The person's texts, on their Mac
+    $ daex integrations status | connect <provider>   See and connect GitHub, Linear and Jira
+    $ daex mcp servers | servers add|remove <name>  Read the MCP servers your agents get; ask to add or remove one
+    $ daex settings find <words>                    Where a ${BRAND.NAME} setting or page is, as a link the chat shows as a chip
+    $ daex update status | check | install | dismiss Read auto-update state and drive install
+    $ daex tools status | ensure | gc               Inspect and populate the pinned agent-CLI cache
+    $ daex actions list | describe | run | status | wait  Escape hatch for every ${BRAND.NAME} service action
+    $ daex cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk
 
   Global options:
-    --project-root <path>   ADE project root. Inside a lane worktree, this resolves to the parent project.
+    --project-root <path>   ${BRAND.NAME} project root. Inside a lane worktree, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the machine brain and run an in-process ADE runtime.
-    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
+    --headless              Skip the machine brain and run an in-process ${BRAND.NAME} runtime.
+    --socket                Require a live ${BRAND.NAME} endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -1797,46 +1799,46 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                             own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
-    $ ade doctor --text
-    $ ade lanes list --text
-    $ ade lanes create --name fix-login --description "Repair login redirect"
-    $ ade git status --lane <lane> --text
-    $ ade git status --full --lane <lane> --text
-    $ ade git sync --lane <lane> --rebase --base main
-    $ ade git stage --lane <lane> src/index.ts
-    $ ade git commit --lane <lane> -m "Fix login redirect"
-    $ ade prs create --lane <lane> --base main --draft
-    $ ade prs checks <pr-id-or-number-or-url> --text
-    $ ade proof record --seconds 20
-    $ ade apple apps --text
-    $ ade apple launch --target <id> --text
-    $ ade app-control launch --command "pnpm dev" --text
-    $ ade browser open http://localhost:5173 --new-tab --text
-    $ ade terminal read --chat-session <owner-session-id> --text
-    $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ daex doctor --text
+    $ daex lanes list --text
+    $ daex lanes create --name fix-login --description "Repair login redirect"
+    $ daex git status --lane <lane> --text
+    $ daex git status --full --lane <lane> --text
+    $ daex git sync --lane <lane> --rebase --base main
+    $ daex git stage --lane <lane> src/index.ts
+    $ daex git commit --lane <lane> -m "Fix login redirect"
+    $ daex prs create --lane <lane> --base main --draft
+    $ daex prs checks <pr-id-or-number-or-url> --text
+    $ daex proof record --seconds 20
+    $ daex apple apps --text
+    $ daex apple launch --target <id> --text
+    $ daex app-control launch --command "pnpm dev" --text
+    $ daex browser open http://localhost:5173 --new-tab --text
+    $ daex terminal read --chat-session <owner-session-id> --text
+    $ daex terminal read --pty <pty-id> --text
+    $ daex new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ daex new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
 
-  Generic ADE action JSON contract:
+  Generic ${BRAND.NAME} action JSON contract:
     Object-shaped call:
-      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
-      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
+      $ daex actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
+      $ daex actions run git.push --arg laneId=lane-1 --arg setUpstream=true
     JSON value fields:
-      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
+      $ daex actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
-      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
-    $ ade actions list --text
-    $ ade actions list --domain pr --text
-    $ ade actions run <domain.action> --input-json '{"key":"value"}'
+      $ daex actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
+    $ daex actions list --text
+    $ daex actions list --domain pr --text
+    $ daex actions run <domain.action> --input-json '{"key":"value"}'
 
-  Start with: ade doctor --text
+  Start with: daex doctor --text
 `;
 
 export function topLevelHelpText(): string {
   let text = TOP_LEVEL_HELP;
   if (!automationsCliEnabled()) {
     text = text.replace(
-      /    \$ ade automations list \| create \| run \| runs    Manage automation rules\n/,
+      /    \$ (?:ade|daex) automations list \| create \| run \| runs +Manage automation rules\n/,
       "",
     );
   }
@@ -1851,8 +1853,8 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
 /** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
 let cliCloudEnabled = false;
 
-const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
-                                                    A new lane on its own new ADE Cloud computer: ADE makes the
+const CHAT_CLOUD_HELP = `    $ daex chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
+                                                    A new lane on its own new ${BRAND.CLOUD_NAME} computer: ${BRAND.NAME} makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
                                                     (default: the size you saved for new lanes; a default Small
@@ -1861,12 +1863,12 @@ const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --p
                                                     names the lane and its computer (default: from the prompt).
                                                     Asks you first. Ctrl-C stops only the waiting; the
                                                     same --launch-id <id> again follows it or goes on from a
-                                                    failed step. ade chat launch-status|launch-cancel <id>
+                                                    failed step. daex chat launch-status|launch-cancel <id>
                                                     --machine cloud checks it or stops it.
 `;
 
-const LANES_CLOUD_HELP = `  ade lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
-                   (the lane alone, with no chat, on its own new ADE Cloud computer; asks you first.
+const LANES_CLOUD_HELP = `  daex lanes create --machine cloud [--size small|medium|large|xlarge] [--launch-id <id>] --name <name> [...]
+                   (the lane alone, with no chat, on its own new ${BRAND.CLOUD_NAME} computer; asks you first.
                    No --size: the size you saved for new lanes (a Small whose setup needs more memory moves
                    to Medium once, and the repo starts at Medium after that). The same --launch-id again follows it or
                    goes on from a failed step. A Linear issue needs its whole JSON. No --description
@@ -2000,19 +2002,19 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   status: STATUS_HELP,
   settings: SETTINGS_HELP,
   reset: `${ADE_BANNER}
-  ADE Reset
+  ${BRAND.NAME} Reset
 
-  The hard reset. Removes everything ADE put on this computer: the background
-  service, every ADE process, ADE's data folder, the desktop app's settings and
-  caches, ADE's Keychain items, the entries ADE added to other tools, and the
-  ADE data and lane folders inside every project ADE was used on. Your code and
-  your repositories stay. The next launch of ADE is a first install.
+  The hard reset. Removes everything ${BRAND.NAME} put on this computer: the background
+  service, every ${BRAND.NAME} process, ${BRAND.NAME}'s data folder, the desktop app's settings and
+  caches, ${BRAND.NAME}'s Keychain items, the entries ${BRAND.NAME} added to other tools, and the
+  ${BRAND.NAME} data and lane folders inside every project ${BRAND.NAME} was used on. Your code and
+  your repositories stay. The next launch of ${BRAND.NAME} is a first install.
 
   It needs no running brain, so it works on a machine where nothing else does.
 
-    $ ade reset --all --dry-run           List everything the reset would remove
-    $ ade reset --all                     Reset; asks you to type RESET first
-    $ ade reset --all --yes               Reset without asking (scripts)
+    $ daex reset --all --dry-run          List everything the reset would remove
+    $ daex reset --all                    Reset; asks you to type RESET first
+    $ daex reset --all --yes              Reset without asking (scripts)
 
   Flags:
     --all                  Required. There is no partial reset.
@@ -2029,25 +2031,25 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     --text | --json        Output format (default JSON).
 
   Notes:
-    macOS keeps its own record of whether ADE may run in the background. A
-    reset cannot clear it; if ADE is switched off under Login Items, turn it
+    macOS keeps its own record of whether ${BRAND.NAME} may run in the background. A
+    reset cannot clear it; if ${BRAND.NAME} is switched off under Login Items, turn it
     back on after the reset.
 `,
   triage: `${ADE_BANNER}
-  ADE Triage
+  ${BRAND.NAME} Triage
 
-  Hand a broken ADE install to your own coding agent. Runs the same checks as
-  "ade doctor" and collects the same redacted diagnostics as "ade report-issue",
+  Hand a broken ${BRAND.NAME} install to your own coding agent. Runs the same checks as
+  "daex doctor" and collects the same redacted diagnostics as "daex report-issue",
   writes them plus a maintained repair playbook into a fresh temp directory, and
   then starts whichever agent CLI is installed so you can work the fix with it.
 
   The playbook is fetched from GitHub when the network allows (3s timeout) and
   falls back to the copy shipped with this build; the output says which won.
 
-    $ ade triage                          Launch the first installed agent CLI
-    $ ade triage --provider codex         Launch a specific one
-    $ ade triage --agent --json           Print the handoff for an agent already running
-    $ ade triage --agent --text           The same, human-readable
+    $ daex triage                         Launch the first installed agent CLI
+    $ daex triage --provider codex        Launch a specific one
+    $ daex triage --agent --json          Print the handoff for an agent already running
+    $ daex triage --agent --text          The same, human-readable
 
   Flags:
     --agent                Launch nothing; print contextPath, playbookPath,
@@ -2064,15 +2066,15 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     When an agent is launched the terminal belongs to it: the file paths are
     printed on stderr before it starts, stdout stays empty, and triage exits
     with the agent's own exit code.
-    The context file is redacted with the same rules as "ade report-issue"; it
+    The context file is redacted with the same rules as "daex report-issue"; it
     never contains credentials, and it is written to a temp directory, not into
     your project.
     Set ${TRIAGE_NO_FETCH_ENV}=1 to skip the playbook fetch entirely.
 `,
   connect: `${ADE_BANNER}
-  ADE Connect
+  ${BRAND.NAME} Connect
 
-  Link this machine to your ADE account so you can reach it from ADE desktop,
+  Link this machine to your ${BRAND.NAME} account so you can reach it from ${BRAND.NAME} desktop,
   the web client, and iOS. Safe to re-run: every step is idempotent, and on an
   already-connected machine it just prints status and exits.
 
@@ -2081,10 +2083,10 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     service   Register and start this platform's login service
     machine   Wait for this machine's row to reach the account directory
 
-    $ ade connect                  Connect this machine (prompts to sign in)
-    $ ade connect --status --text  Report only; never signs in or installs
-    $ ade connect --headless       Sign in from another device (QR code, link, and code)
-    $ ade connect --no-login       Install the service only; stay local/LAN-only
+    $ daex connect                 Connect this machine (prompts to sign in)
+    $ daex connect --status --text  Report only; never signs in or installs
+    $ daex connect --headless      Sign in from another device (QR code, link, and code)
+    $ daex connect --no-login      Install the service only; stay local/LAN-only
 
   Flags:
     --status                       Report the three steps without changing anything.
@@ -2098,37 +2100,37 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   Notes:
     The machine row is published by the running brain, not by this command, so
     the brain must stay running for the machine to remain reachable.
-    Undo with "ade logout" and "ade runtime uninstall-service".
+    Undo with "daex logout" and "daex runtime uninstall-service".
 `,
   mcp: `${ADE_BANNER}${REMOTE_MCP_HELP}`,
   notify: `${ADE_BANNER}
   Send a notification to your phone
 
-  Sends a push you write to every phone signed in to your ADE account. Use it
+  Sends a push you write to every phone signed in to your ${BRAND.NAME} account. Use it
   from a terminal, from an agent ("tell me when the deploy is done"), or from
   an automation. The text arrives exactly as written; nothing is added.
 
-  Run by an agent inside an ADE chat, it is that chat's message: the chat shows
+  Run by an agent inside a ${BRAND.NAME} chat, it is that chat's message: the chat shows
   "Notified you", Activity's Inbox lists it on every device, a tap opens the
   chat, and the phone stays quiet while you are at your computer or if you
   muted the chat. A chat can send 6 an hour; the same words twice within ten
   minutes go out once.
 
-    $ ade notify --title "Deploy finished"
-    $ ade notify --title "Tests failed" --body "3 failures in apps/desktop" --text
-    $ ade notify --title "Review ready" --open "ade://pr/1514"
+    $ daex notify --title "Deploy finished"
+    $ daex notify --title "Tests failed" --body "3 failures in apps/desktop" --text
+    $ daex notify --title "Review ready" --open "ade://pr/1514"
 
   Flags:
     --title <text>                 Required. Up to 64 characters.
     --body <text>                  Optional second line. Up to 160 characters.
-    --open <ade link>              Optional. What a tap opens: an ade:// or
+    --open <daex link>              Optional. What a tap opens: an ade:// or
                                    https://ade-app.dev/open link for a chat,
                                    PR, lane, file, commit, branch or Linear
-                                   issue (make one with \`ade link\`), or
+                                   issue (make one with \`daex link\`), or
                                    ade://activity[?state=needs_you].
 
   Notes:
-    Needs a signed-in account (\`ade login\`) and the running brain.
+    Needs a signed-in account (\`daex login\`) and the running brain.
     Phones that turned notifications off, are in quiet hours, or muted this
     machine stay quiet. An account can send 60 an hour; past that the command
     exits non-zero and says when to try again.
@@ -2136,17 +2138,17 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     sends as its own chat.
 `,
   auth: `${ADE_BANNER}
-  ADE Account
+  ${BRAND.NAME} Account
 
-  ADE requires an account. Signing in carries your settings, secrets, and
+  ${BRAND.NAME} requires an account. Signing in carries your settings, secrets, and
   provider keys to every machine you use, and connects them to each other.
   Work already on this machine is never blocked while you are signed out.
 
-    $ ade login                    Sign in in the browser here, or scan the QR code with a phone
-    $ ade login --headless         Open no browser here: print the QR code, a link, and a code
-    $ ade logout                   Clear the shared machine account session
-    $ ade auth status --text       Show the shared machine account status
-    $ ade account token create     Print a self-contained durable token once for agent/CI setup
+    $ daex login                   Sign in in the browser here, or scan the QR code with a phone
+    $ daex login --headless        Open no browser here: print the QR code, a link, and a code
+    $ daex logout                  Clear the shared machine account session
+    $ daex auth status --text      Show the shared machine account status
+    $ daex account token create    Print a self-contained durable token once for agent/CI setup
 
   Flags (login):
     --headless                     Sign in from another device only. The password is
@@ -2155,20 +2157,20 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
                                    session expires.
 `,
   machines: `${ADE_BANNER}
-  ADE account machines
+  ${BRAND.NAME} account machines
 
-  The machine directory is optional. Local ADE, PIN pairing, saved SSH targets,
+  The machine directory is optional. Local ${BRAND.NAME}, PIN pairing, saved SSH targets,
   and explicit remote addresses continue to work while signed out.
 
-    $ ade machines list --text
-    $ ade machines show <name|machine-key|device-id> --text
-    $ ade machines list --projects --text          Agent-safe roster with each machine's projects
-    $ ade machines rename <machine-key> "Build workstation"
-    $ ade machines rename <machine-key> --clear
-    $ ade machines remove <machine-key> --confirm REMOVE
-    $ ade machines remove <name|machine-key|device-id>   From a chat: asks the person (Remove / Keep card)
-    $ ade machines reconnect
-    $ ade machines connect <machine-key|device-id|unambiguous-name>
+    $ daex machines list --text
+    $ daex machines show <name|machine-key|device-id> --text
+    $ daex machines list --projects --text         Agent-safe roster with each machine's projects
+    $ daex machines rename <machine-key> "Build workstation"
+    $ daex machines rename <machine-key> --clear
+    $ daex machines remove <machine-key> --confirm REMOVE
+    $ daex machines remove <name|machine-key|device-id>  From a chat: asks the person (Remove / Keep card)
+    $ daex machines reconnect
+    $ daex machines connect <machine-key|device-id|unambiguous-name>
 
   Machine keys and device ids are stable selectors. An exact display name is
   accepted only when it identifies one machine; ambiguous names fail with the
@@ -2178,12 +2180,12 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
 
   \`show\` is read-only and open to agents: it prints the machine's status and
   the projects, lanes and up to five recent chats (with their latest activity
-  lines) that the machine published to ADE Activity. It is recent work, not a
+  lines) that the machine published to ${BRAND.NAME} Activity. It is recent work, not a
   full listing, and it never reads a whole transcript or changes the machine.
 
-  Sign in with \`ade login\`. \`connect\` securely saves the selected machine
-  for that account, so ADE desktop and the web client can open it. Signing out removes
-  machines added through the account from this ADE install. Machines you pair
+  Sign in with \`daex login\`. \`connect\` securely saves the selected machine
+  for that account, so ${BRAND.NAME} desktop and the web client can open it. Signing out removes
+  machines added through the account from this ${BRAND.NAME} install. Machines you pair
   directly with a PIN, SSH, or an address stay saved after sign-out.
 
   \`remove\` takes a machine off the account, revokes it, and clears the Activity
@@ -2207,7 +2209,7 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   re-register a removed machine — so this is the way back: it re-registers as a
   deliberate pairing and, only once the directory accepts, lifts the push gate
   so Activity, alerts, and badges resume without a restart. An interactive
-  \`ade login\` runs the same repair automatically.
+  \`daex login\` runs the same repair automatically.
 
   The directory only accepts a re-pair with proof of a freshly completed
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
@@ -2216,7 +2218,7 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   devices: DEVICES_HELP,
 
   search: `${ADE_BANNER}
-  ADE Search
+  ${BRAND.NAME} Search
 
   Search project-backed chat transcripts across every project registered with
   the machine brain. Terminal scrollback, CLI sessions, PRs, commits, branches,
@@ -2224,20 +2226,20 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   Personal/no-project chats are excluded. Returns ranked matches with a deep
   link per result. Prefer this over grepping .ade/ internals.
 
-    $ ade search "login redirect" --text
-    $ ade search "flaky test" --kind chat,terminal --text
-    $ ade search "auth" --lane fix-login --limit 10 --json
-    $ ade search "rate limit" --cursor <nextCursor> --text
-    $ ade search --status --text
-    $ ade search --rebuild --text
+    $ daex search "login redirect" --text
+    $ daex search "flaky test" --kind chat,terminal --text
+    $ daex search "auth" --lane fix-login --limit 10 --json
+    $ daex search "rate limit" --cursor <nextCursor> --text
+    $ daex search --status --text
+    $ daex search --rebuild --text
 
   Query syntax (passed through to the index):
-    bare terms         AND-ed together        ade search "retry backoff"
-    "quoted phrase"    exact phrase           ade search '"connection refused"'
-    kind:<kind>        restrict to a kind     ade search "kind:pr merge queue"
-    lane:<name>        restrict to a lane     ade search "lane:fix-login timeout"
-    session:<id>       restrict to a session  ade search "session:abc123 panic"
-    since:<date>       recency floor          ade search "since:2026-06-01 crash"
+    bare terms         AND-ed together        daex search "retry backoff"
+    "quoted phrase"    exact phrase           daex search '"connection refused"'
+    kind:<kind>        restrict to a kind     daex search "kind:pr merge queue"
+    lane:<name>        restrict to a lane     daex search "lane:fix-login timeout"
+    session:<id>       restrict to a session  daex search "session:abc123 panic"
+    since:<date>       recency floor          daex search "since:2026-06-01 crash"
 
   Flags:
     --kind, --kinds <a,b>   Comma-separated kinds to include. One or more of:
@@ -2246,7 +2248,7 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     --lane, --lane-id <id>  Restrict to a lane (id or name; the service resolves names).
     --limit <n>             Max results to return.
     --cursor <c>            Continue from a previous query's nextCursor.
-    --actions               List the raw search service actions exposed via ADE actions.
+    --actions               List the raw search service actions exposed via ${BRAND.NAME} actions.
     --status                Show index doc counts, backfill state, and index path.
     --rebuild               Rebuild the whole index from scratch (CTO-only).
     --text                  Aligned rows (including PROJECT when routed across
@@ -2259,66 +2261,66 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     2  usage error (e.g. unknown --kind)
 `,
   desktop: `${ADE_BANNER}
-  ADE Desktop
+  ${BRAND.NAME} Desktop
 
-  Launch the installed ADE desktop app. The desktop app attaches to the normal
+  Launch the installed ${BRAND.NAME} desktop app. The desktop app attaches to the normal
   machine brain and starts it if needed.
 
-    $ ade desktop
-    $ ade desktop --app-name "ADE Alpha"
+    $ daex desktop
+    $ daex desktop --app-name "ADE Alpha"
 
   Flags:
-    --app-name <name>       Installed app name to open. Defaults to ADE, or
+    --app-name <name>       Installed app file name to open. Defaults to ADE, or
                             ADE Alpha based on the installed CLI wrapper.
 `,
   jira: `${ADE_BANNER}
-  ADE Jira
+  ${BRAND.NAME} Jira
 
-  Connect this machine's ADE brain to Jira Cloud, then read and update issues.
+  Connect this machine's ${BRAND.NAME} brain to Jira Cloud, then read and update issues.
   Credentials are stored in the machine credential store. Jira Cloud API tokens
   are read from stdin so they do not appear in shell history or process listings.
 
   Connection:
-    $ ade --role cto jira connect --site https://example.atlassian.net --email you@example.com --token-stdin
-    $ ade jira status --text
-    $ ade --role cto jira disconnect
+    $ daex --role cto jira connect --site https://example.atlassian.net --email you@example.com --token-stdin
+    $ daex jira status --text
+    $ daex --role cto jira disconnect
 
   Read:
-    $ ade jira projects --text
-    $ ade jira list --project ADE --state open --mine --limit 30 --text
-    $ ade jira list --query "login crash" --jql 'priority = High' --text
-    $ ade jira issue ADE-42 --text
+    $ daex jira projects --text
+    $ daex jira list --project ${BRAND.NAME} --state open --mine --limit 30 --text
+    $ daex jira list --query "login crash" --jql 'priority = High' --text
+    $ daex jira issue ADE-42 --text
 
   Create and update:
-    $ ade jira create --project ADE --type Bug --title "Login fails" --description-file notes.md --label auth
-    $ ade jira edit ADE-42 --title "Updated title" --label triage --remove-label needs-info
-    $ ade jira comment ADE-42 "Fixed in the next build"
-    $ ade jira transition ADE-42 --to "In Progress"
-    $ ade jira assign ADE-42 --assignee "Morgan Lee"
-    $ ade jira label ADE-42 --label triage
-    $ ade jira unlabel ADE-42 --label triage
+    $ daex jira create --project ${BRAND.NAME} --type Bug --title "Login fails" --description-file notes.md --label auth
+    $ daex jira edit ADE-42 --title "Updated title" --label triage --remove-label needs-info
+    $ daex jira comment ADE-42 "Fixed in the next build"
+    $ daex jira transition ADE-42 --to "In Progress"
+    $ daex jira assign ADE-42 --assignee "Morgan Lee"
+    $ daex jira label ADE-42 --label triage
+    $ daex jira unlabel ADE-42 --label triage
 
   Notes:
     - connect and disconnect require --role cto.
-    - Pipe the API token into connect; ADE never prints or stores it in project files.
+    - Pipe the API token into connect; ${BRAND.NAME} never prints or stores it in project files.
     - Jira list results are paged; pass the returned cursor to --cursor for the next page.
 `,
   issue: `${ADE_BANNER}
-  ADE Issues
+  ${BRAND.NAME} Issues
 
   Read and update issues across the connected Linear, GitHub, and Jira trackers.
   References may be a Linear key, Jira key, GitHub issue number, repository issue
   reference, or issue URL.
 
-    $ ade issue list [--tracker linear|github|jira] [--scope <team|project|repo>] --text
-    $ ade issue view <reference> --text
-    $ ade issue resolve <reference> --text
-    $ ade issue comment <reference> --body "Comment text"
-    $ ade issue state <reference> --to "In Progress"
-    $ ade issue create --tracker linear --team ENG --title "Review login flow"
-    $ ade issue create --tracker github --repo owner/repo --title "Fix login flow"
-    $ ade issue create --tracker jira --project ADE --type Task --title "Review login flow"
-    $ ade issue open-url <reference>
+    $ daex issue list [--tracker linear|github|jira] [--scope <team|project|repo>] --text
+    $ daex issue view <reference> --text
+    $ daex issue resolve <reference> --text
+    $ daex issue comment <reference> --body "Comment text"
+    $ daex issue state <reference> --to "In Progress"
+    $ daex issue create --tracker linear --team ENG --title "Review login flow"
+    $ daex issue create --tracker github --repo owner/repo --title "Fix login flow"
+    $ daex issue create --tracker jira --project ${BRAND.NAME} --type Task --title "Review login flow"
+    $ daex issue open-url <reference>
 
   Flags:
     --tracker <kind>       Select one tracker for list/create.
@@ -2330,38 +2332,38 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     --body-file <path>     Read a comment or issue description from a file.
 `,
   github: `${ADE_BANNER}
-  ADE GitHub
+  ${BRAND.NAME} GitHub
 
-  Authorize the machine-scoped ADE GitHub App so headless / brain setups (which
+  Authorize the machine-scoped ${BRAND.NAME} GitHub App so headless / brain setups (which
   have no Settings panel) can use the hosted PR-sync webhook relay. Uses GitHub's
-  device flow: ADE prints a short user code and a verification URL, you approve
-  in a browser, and ADE stores the resulting user token in the machine credential
+  device flow: ${BRAND.NAME} prints a short user code and a verification URL, you approve
+  in a browser, and ${BRAND.NAME} stores the resulting user token in the machine credential
   store. The token itself is never printed.
 
-    $ ade --role cto github app-auth login     Start device flow and wait for approval
-    $ ade github app-auth status --text        Show the credential state, login, and expiry
-    $ ade --role cto github app-auth clear      Remove the stored authorization
-    $ ade github actions --text                 List raw github service actions
-    $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
+    $ daex --role cto github app-auth login    Start device flow and wait for approval
+    $ daex github app-auth status --text       Show the credential state, login, and expiry
+    $ daex --role cto github app-auth clear     Remove the stored authorization
+    $ daex github actions --text                List raw github service actions
+    $ daex actions run github.getStatus --input-json '{"forceRefresh":true}' --text
                                                 Show active read/write credentials and cooldowns
 
-  Issues (see \`ade github issue --help\`):
-    $ ade github issue list --text              List open issues in this project's repo
-    $ ade github issue view 12 --comments --text
-    $ ade github issue create --title "Crash on launch" --label bug
+  Issues (see \`daex github issue --help\`):
+    $ daex github issue list --text             List open issues in this project's repo
+    $ daex github issue view 12 --comments --text
+    $ daex github issue create --title "Crash on launch" --label bug
 
   Notes:
     - login, clear (and the raw start/poll actions) require --role cto.
     - login keeps one connection open for the whole device flow because the
       device-auth session lives in runtime memory; do not split start and poll
       across separate invocations in headless mode.
-    - GitHub reads try an explicit environment token, the ADE GitHub App,
+    - GitHub reads try an explicit environment token, the ${BRAND.NAME} GitHub App,
       GitHub CLI, then a stored PAT. Writes skip the read-only GitHub App.
       Authentication failures and rate limits can fall through to the next
       healthy credential while the failed source is in cooldown.
     - Read "state" from app-auth status, not "access token expires". An access
       token lives 8 hours and renews on use, so a lapsed expiry with state
-      "authorized" is healthy. State "blocked" means ADE paused its own retries
+      "authorized" is healthy. State "blocked" means ${BRAND.NAME} paused its own retries
       until "retry after" — wait, do not re-authorize. Only "needs_reauth" and
       "missing" call for login.
 
@@ -2372,72 +2374,72 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   "github issue": `${ADE_BANNER}
   GitHub issues
 
-  Read, create, and edit issues in a GitHub repo. ADE uses the GitHub
+  Read, create, and edit issues in a GitHub repo. ${BRAND.NAME} uses the GitHub
   connection of the running brain, so no token is needed here. Every command
   works on this project's origin repo; pass --repo owner/name for another one.
   An issue can be 12, #12, owner/name#12, or an issue URL.
 
   Read:
-    $ ade github issue list --text              Open issues, newest activity first
+    $ daex github issue list --text             Open issues, newest activity first
         [--state open|closed|all] [--label bug]... [--assignee <login|none>] [--limit 30]
-    $ ade github issue view 12 --text           Title, state, labels, assignees, milestone, body
+    $ daex github issue view 12 --text          Title, state, labels, assignees, milestone, body
         [--comments]                            Also print the comments
 
   Create:
-    $ ade github issue create --title "Crash on launch" --body-file notes.md --text
+    $ daex github issue create --title "Crash on launch" --body-file notes.md --text
         [--body "..." | --body-file <path|->]   Body inline, from a file, or from stdin with -
         [--label bug]... [--assignee octocat]... [--milestone "v1.2"|<number>]
         [--type Bug] [--parent 10]             Issue type (organization repos); parent issue
-        [--attach shot.png]...                  Attach files (needs GitHub CLI on the ADE machine)
+        [--attach shot.png]...                  Attach files (needs GitHub CLI on the ${BRAND.NAME} machine)
 
   Edit:
-    $ ade github issue edit 12 --title "New title" [--body "..." | --body-file <path|->]
-    $ ade github issue comment 12 "Fixed in #40"
-    $ ade github issue comment 12 --body-file reply.md
-    $ ade github issue close 12 [--reason completed|not-planned|duplicate]
-    $ ade github issue reopen 12
-    $ ade github issue label 12 --add bug --remove triage
-    $ ade github issue assign 12 --add octocat [--remove hubot] [--clear]
-    $ ade github issue milestone 12 "v1.2"      Milestone by title or number, or none
-    $ ade github issue type 12 Bug              Issue type by name, or none
-    $ ade github issue sub-issue 10 12          Put #12 under #10
+    $ daex github issue edit 12 --title "New title" [--body "..." | --body-file <path|->]
+    $ daex github issue comment 12 "Fixed in #40"
+    $ daex github issue comment 12 --body-file reply.md
+    $ daex github issue close 12 [--reason completed|not-planned|duplicate]
+    $ daex github issue reopen 12
+    $ daex github issue label 12 --add bug --remove triage
+    $ daex github issue assign 12 --add octocat [--remove hubot] [--clear]
+    $ daex github issue milestone 12 "v1.2"     Milestone by title or number, or none
+    $ daex github issue type 12 Bug             Issue type by name, or none
+    $ daex github issue sub-issue 10 12         Put #12 under #10
 
   Output is JSON by default. Add --text for a short summary.
 `,
   open: `${ADE_BANNER}
-  ADE Open
+  ${BRAND.NAME} Open
 
   Hand an "ade://" or "https://ade-app.dev/open?..." deeplink to the OS so the
-  installed ADE desktop receives it (single-instance lock focuses the existing
+  installed ${BRAND.NAME} desktop receives it (single-instance lock focuses the existing
   window). Also accepts the Linear coding-tool hand-off form.
 
-    $ ade open ade://lane/<lane-uuid>
-    $ ade open ade://session/<session-id>
-    $ ade open ade://repo/<owner>/<repo>/branch/<branch>?pr=42
-    $ ade open ade://pr/<owner>/<repo>/<number>
-    $ ade open ade://linear-issue/ADE-123?branch=arul/ade-123-fix
-    $ ade open https://ade-app.dev/open?type=lane&id=<lane-uuid>
-    $ ade open --linear-issue ADE-123 --branch arul/ade-123-fix
+    $ daex open ade://lane/<lane-uuid>
+    $ daex open ade://session/<session-id>
+    $ daex open ade://repo/<owner>/<repo>/branch/<branch>?pr=42
+    $ daex open ade://pr/<owner>/<repo>/<number>
+    $ daex open ade://linear-issue/ADE-123?branch=arul/ade-123-fix
+    $ daex open https://ade-app.dev/open?type=lane&id=<lane-uuid>
+    $ daex open --linear-issue ADE-123 --branch arul/ade-123-fix
 
   Flags:
     --linear-issue <id>     Linear issue identifier; routes to the matching lane.
     --branch <branch>       Linear-generated branch hint passed alongside --linear-issue.
 `,
   link: `${ADE_BANNER}
-  ADE Link
+  ${BRAND.NAME} Link
 
   Build a shareable deeplink URL for a lane, Work session, file, commit, artifact, branch, PR, or Linear issue.
   The URL is printed and (unless --no-clipboard) copied to the clipboard.
 
-    $ ade link lane <lane-uuid>
-    $ ade link session <session-id> [--lane <lane-uuid>]
-    $ ade link file <path> [--line <number>] [--lane <lane-uuid>]
-    $ ade link commit <sha> [--lane <lane-uuid>]
-    $ ade link artifact <id>
-    $ ade link branch <owner/repo> <branch> [--pr <number>]
-    $ ade link pr <owner/repo> <number>
-    $ ade link linear-issue <ADE-123> [--branch <branch>]
-    $ ade link <url>                                Round-trip parse + re-emit a deeplink
+    $ daex link lane <lane-uuid>
+    $ daex link session <session-id> [--lane <lane-uuid>]
+    $ daex link file <path> [--line <number>] [--lane <lane-uuid>]
+    $ daex link commit <sha> [--lane <lane-uuid>]
+    $ daex link artifact <id>
+    $ daex link branch <owner/repo> <branch> [--pr <number>]
+    $ daex link pr <owner/repo> <number>
+    $ daex link linear-issue <ADE-123> [--branch <branch>]
+    $ daex link <url>                               Round-trip parse + re-emit a deeplink
 
   Flags:
     --ade           Emit the custom "ade://" form. Defaults to the https mirror.
@@ -2446,18 +2448,18 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
 `,
   skill: `${ADE_BANNER}
-  ADE Skills
+  ${BRAND.NAME} Skills
 
-  Browse ADE's bundled, version-locked agent skills directly from the bundled
+  Browse ${BRAND.NAME}'s bundled, version-locked agent skills directly from the bundled
   resources. This is a local command that does NOT require the machine brain —
   it is the tamper-proof backstop for agents that can't natively discover
-  ADE's skills.
+  ${BRAND.NAME}'s skills.
 
-    $ ade skill list                                List bundled skills (JSON: name, description, path)
-    $ ade skill list --text                         One "name — description" line per skill
-    $ ade skill show <name>                         Print a skill's SKILL.md (JSON: name, description, content, path)
-    $ ade skill show <name> --text                  Print just the skill's markdown body
-    $ ade skill show <name> <file> --text           Print another file in the skill (references/<topic>.md)
+    $ daex skill list                               List bundled skills (JSON: name, description, path)
+    $ daex skill list --text                        One "name — description" line per skill
+    $ daex skill show <name>                        Print a skill's SKILL.md (JSON: name, description, content, path)
+    $ daex skill show <name> --text                 Print just the skill's markdown body
+    $ daex skill show <name> <file> --text          Print another file in the skill (references/<topic>.md)
 
   Flags:
     --text          Human-readable output.
@@ -2467,74 +2469,74 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   ADE Runtime Compatibility
 
   Run an explicit manual runtime, or use compatibility endpoint commands for
-  older scripts. Prefer "ade brain" for the automated always-on service.
+  older scripts. Prefer "daex brain" for the automated always-on service.
 
-    $ ade runtime run --socket /tmp/ade-dev.sock
-    $ ade runtime status --text
-    $ ade runtime start
-    $ ade runtime stop
-    $ ade runtime watchdog-check
+    $ daex runtime run --socket /tmp/ade-dev.sock
+    $ daex runtime status --text
+    $ daex runtime start
+    $ daex runtime stop
+    $ daex runtime watchdog-check
 
   Notes:
     "run" starts a foreground manual runtime on the selected endpoint.
-    "watchdog-check" is the external liveness check the ADE watchdog agent runs
+    "watchdog-check" is the external liveness check the ${BRAND.NAME} watchdog agent runs
     on a timer. It reads the brain's heartbeat file and stops a brain that has
     stopped responding, so the service supervisor can restart it. It never
     opens the runtime socket and never starts anything.
     Manual runtimes always run with sync off so they cannot claim brain
     authority.
-    "start" and "stop" are compatibility endpoint commands; use "ade brain"
+    "start" and "stop" are compatibility endpoint commands; use "daex brain"
     for service-managed lifecycle commands.
 `,
   brain: `${ADE_BANNER}
-  ADE Brain
+  ${BRAND.NAME} Brain
 
-  Manage the always-on, machine-owned ADE brain for this channel. The brain is
-  the background ADE process that carries the local RPC endpoint, sync
+  Manage the always-on, machine-owned ${BRAND.NAME} brain for this channel. The brain is
+  the background ${BRAND.NAME} process that carries the local RPC endpoint, sync
   websocket, project catalog, and executor authority. Clients attach to it.
 
-    $ ade brain status --text
-    $ ade brain show --text
-    $ ade brain start
-    $ ade brain stop
-    $ ade brain restart
-    $ ade brain update --text
-    $ ade brain update status --text
-    $ ade brain pin generate
-    $ ade brain pin set 123456
-    $ ade brain pin clear
+    $ daex brain status --text
+    $ daex brain show --text
+    $ daex brain start
+    $ daex brain stop
+    $ daex brain restart
+    $ daex brain update --text
+    $ daex brain update status --text
+    $ daex brain pin generate
+    $ daex brain pin set 123456
+    $ daex brain pin clear
 
   Notes:
     "start" enables and loads the login service.
-    "stop" disables and unloads the login service. An open ADE app starts
+    "stop" disables and unloads the login service. An open ${BRAND.NAME} app starts
     it again; quit the app to keep the brain stopped.
     "update" downloads the standalone runtime for this channel, stages it under
     ADE_HOME, then hands off to a detached helper that restarts the brain.
-    With the ADE app installed it updates the app too, and the brain runs
+    With the ${BRAND.NAME} app installed it updates the app too, and the brain runs
     the app's runtime: on macOS the open app installs its own update, a
     closed one is replaced after its checksum and signature are checked; on
     Windows the app's installer runs. If the app can't be updated, nothing is.
     "pin" sets the code a phone or the web client types to pair with this machine.
 `,
   tools: `${ADE_BANNER}
-  ADE Agent Tools
+  ${BRAND.NAME} Agent Tools
 
-  Inspect and populate the pinned agent-CLI cache. ADE pins exact,
+  Inspect and populate the pinned agent-CLI cache. ${BRAND.NAME} pins exact,
   checksum-verified versions of every agent it runs (Claude Code, Codex,
   OpenCode, Copilot, Droid, Grok, Qwen Code, Kimi, Devin, Pi, Muse, ...) and
   downloads them into a machine-level cache shared by the desktop app, the
-  brain, and every channel. ADE never runs an agent CLI you installed yourself.
+  brain, and every channel. ${BRAND.NAME} never runs an agent CLI you installed yourself.
 
-    $ ade tools status --text
-    $ ade tools ensure --text
-    $ ade tools ensure codex --text
-    $ ade tools ensure --all --text
-    $ ade tools gc --dry-run --text
+    $ daex tools status --text
+    $ daex tools ensure --text
+    $ daex tools ensure codex --text
+    $ daex tools ensure --all --text
+    $ daex tools gc --dry-run --text
 
   Notes:
     "ensure" with no tool names fetches the tools this machine shows signs of
     using (a sign-in, a token, the provider's own CLI), the same rule the brain
-    applies on every "ade serve"; the rest download the first time a chat or
+    applies on every "daex serve"; the rest download the first time a chat or
     task needs them. Name tools to fetch just those, or pass --all for
     everything this build pins (well over a gigabyte). It is a no-op for
     tools already cached.
@@ -2547,78 +2549,78 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     and desktop app from fetching in the background.
 `,
   serve: `${ADE_BANNER}
-  ADE Internal Brain Process
+  ${BRAND.NAME} Internal Brain Process
 
   Internal/debug command that runs the brain process in the foreground. Most
-  users should use "ade brain start", "ade brain stop", and "ade brain status".
+  users should use "daex brain start", "daex brain stop", and "daex brain status".
   A brain started by hand serves only agents unless it is started with
-  "ade --role cto serve"; desktops, phones and the web need that role.
+  "daex --role cto serve"; desktops, phones and the web need that role.
 
   Flags:
     --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
     --no-sync               Disable machine sync discovery for this foreground brain process.
     --dev-test-machine      Dev only: run as its own machine on the account, beside the
-                            installed ADE (own home required). Use npm run dev:machine -- start.
+                            installed ${BRAND.NAME} (own home required). Use npm run dev:machine -- start.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
 `,
   rpc: `${ADE_BANNER}
-  ADE JSON-RPC
+  ${BRAND.NAME} JSON-RPC
 
-  Attaches to the machine ADE brain and speaks ADE JSON-RPC over stdio.
-  If the brain is not running, ADE starts it before accepting requests. This
+  Attaches to the machine ${BRAND.NAME} brain and speaks ${BRAND.NAME} JSON-RPC over stdio.
+  If the brain is not running, ${BRAND.NAME} starts it before accepting requests. This
   mode is used by SSH transports.
 
-    $ ade rpc --stdio
+    $ daex rpc --stdio
 `,
   init: `${ADE_BANNER}
-  ADE Project Init
+  ${BRAND.NAME} Project Init
 
   Registers a project with this machine brain and creates its .ade directory
   if needed.
 
-    $ ade init
-    $ ade init /path/to/project
+    $ daex init
+    $ daex init /path/to/project
 `,
   projects: `${ADE_BANNER}
-  ADE projects
+  ${BRAND.NAME} projects
 
-  Manage the machine-scoped ADE project registry used by the ADE runtime.
+  Manage the machine-scoped ${BRAND.NAME} project registry used by the ${BRAND.NAME} runtime.
 
-    $ ade projects list --text                      Projects whose folder is gone are hidden; --include-missing lists them
-    $ ade projects list --account --text            Your ADE account's projects, with each copy and its computer
+    $ daex projects list --text                     Projects whose folder is gone are hidden; --include-missing lists them
+    $ daex projects list --account --text           Your ${BRAND.NAME} account's projects, with each copy and its computer
                                                     Any command takes --project-root <ap_id|owner/name> for this computer's copy,
                                                     or --machine <name> --machine-project <ap_id|owner/name> for another computer's
-    $ ade projects add /path/to/project [--display-name <name>]
-    $ ade projects add /path/to/project --display-name Clicker
+    $ daex projects add /path/to/project [--display-name <name>]
+    $ daex projects add /path/to/project --display-name Clicker
                                                     Rename a project in place: its folder, id and lanes stay.
                                                     With a git origin, every computer on your account shows the name
-    $ ade projects clone owner/repo [--path <folder>] [--name <dir>] [--display-name <name>]
+    $ daex projects clone owner/repo [--path <folder>] [--name <dir>] [--display-name <name>]
                                                     Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
                                                     A folder under /tmp, /var/folders or %TEMP% gets a warning: the system can empty it
-    $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
-    $ ade projects remove <project-id>              Remove the project from ADE on this machine (the folder stays)
-    $ ade projects touch <project-id>
-    $ ade projects retry <project-id|path>          Open a project again that ADE refused because its folder is too slow
-    $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
+    $ daex projects prune [--dry-run]               Remove projects whose folder is gone from ${BRAND.NAME} (never deletes a folder)
+    $ daex projects remove <project-id>             Remove the project from ${BRAND.NAME} on this machine (the folder stays)
+    $ daex projects touch <project-id>
+    $ daex projects retry <project-id|path>         Open a project again that ${BRAND.NAME} refused because its folder is too slow
+    $ daex projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
   Start a chat or a CLI session
 
-  Start either a persistent ADE Work chat or a tracked provider CLI session
+  Start either a persistent ${BRAND.NAME} Work chat or a tracked provider CLI session
   with one command. This mirrors the desktop New Chat mode toggle. Every
-  launch names its model with --model; ADE never picks one.
+  launch names its model with --model; ${BRAND.NAME} never picks one.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --auto-create-lane --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
-    $ ade new chat --mode chat --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash --prompt "Fix login"
-    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
+    $ daex new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ daex new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ daex new chat --mode chat --auto-create-lane --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ daex new chat --mode chat --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash --prompt "Fix login"
+    $ daex new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
 
   Flags:
-    --mode <chat|cli>      Select a persistent ADE chat or tracked provider CLI session.
+    --mode <chat|cli>      Select a persistent ${BRAND.NAME} chat or tracked provider CLI session.
     --lane <lane|auto>     Target lane. "auto" is the same as --auto-create-lane.
     --auto-create-lane     Create a new lane first, then launch there.
     --lane-name <name>     Explicit name for an auto-created lane.
@@ -2630,16 +2632,16 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
                            CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
     --model <id>           Required (not for a plain shell). The model id:
-                           ade chat models --provider <p> --text, or
-                           ade harness routes --text for any model in any harness.
-    --instance <email>     Which Claude/Codex account signs in (ade providers accounts list --text).
+                           daex chat models --provider <p> --text, or
+                           daex harness routes --text for any model in any harness.
+    --instance <email>     Which Claude/Codex account signs in (daex providers accounts list --text).
     --custom-provider <name>, --credential <id>, --via <source>
                            Where the model runs: a saved Custom provider, a stored
                            API key, or any model in any harness. Optional; at most
-                           one (ade help providers, ade help harness).
+                           one (daex help providers, daex help harness).
     --title <text>         The session's title.
     --print-config         Print what would launch, and launch nothing.
-    --machine <name>       Start it on another of your machines (ade help machines).
+    --machine <name>       Start it on another of your machines (daex help machines).
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
     --droid-permission-mode <m>
@@ -2665,27 +2667,27 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     lineage.
 
   Compatibility:
-    ade chat create still creates persistent Work chats.
-    ade shell start-cli still starts tracked provider CLI sessions.
+    daex chat create still creates persistent Work chats.
+    daex shell start-cli still starts tracked provider CLI sessions.
 `,
   "new chat": `${ADE_BANNER}
   New chat / CLI session
 
-  One entry point for ADE's desktop New Chat toggle:
-    --mode chat creates a persistent ADE Work chat.
+  One entry point for ${BRAND.NAME}'s desktop New Chat toggle:
+    --mode chat creates a persistent ${BRAND.NAME} Work chat.
     --mode cli starts a tracked provider CLI terminal.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --lane auto --lane-name fix-login --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file brief.md
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file - <<'EOF'
+    $ daex new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ daex new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ daex new chat --mode chat --lane auto --lane-name fix-login --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ daex new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file brief.md
+    $ daex new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file - <<'EOF'
 
-  --model is required (not for a plain shell); see ade help new for every flag.
+  --model is required (not for a plain shell); see daex help new for every flag.
 
   The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
-  The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
+  The command defaults to the current ${BRAND.NAME} lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   From an agent, the new session is a subagent of that agent's chat and
   reports back to it. --no-report: it does not report back. --no-parent: a
@@ -2698,21 +2700,21 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   lanes: `${ADE_BANNER}
   Lanes
 
-  New work off the project default (usually what you want)   ade lanes create --name <n>
-  Continue work that is in another lane / branch             ade lanes create --name <n> --from <branch> --on local
-  ...and bring its uncommitted changes too (copied)          ade lanes create --name <n> --from <branch> --on uncommitted
-  Work directly on an existing branch                        ade lanes create --name <n> --existing-branch <branch>
+  New work off the project default (usually what you want)   daex lanes create --name <n>
+  Continue work that is in another lane / branch             daex lanes create --name <n> --from <branch> --on local
+  ...and bring its uncommitted changes too (copied)          daex lanes create --name <n> --from <branch> --on uncommitted
+  Work directly on an existing branch                        daex lanes create --name <n> --existing-branch <branch>
 
-  ade lanes create [--name <name>] [--description <text>]
+  daex lanes create [--name <name>] [--description <text>]
                    [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
                    [--linear-issue-json '{...}' [--start-chat [--no-report] --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
-${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
-  ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
+${LANES_CLOUD_HELP}  daex lanes defaults [--text|--json]
+  daex lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
                          [--branch-pattern <pattern>]   (e.g. "ade/{slug}", "{user}/{slug}", "{slug}")
-  ade lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
+  daex lanes list | show | archive | unarchive | delete | deleted | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
   stand in). --project-root <dir>, before or after the subcommand, names
@@ -2722,119 +2724,119 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   away (best effort; the lane still works locally if the push fails), so the
   branch is ready for a PR.
 
-    $ ade lanes list --text                        List lanes and their branches (adopts new worktrees)
-    $ ade lanes show <lane> --text                  Inspect one lane status
-    $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
-    $ ade lane drift resolve --lane <lane> --switch-back
+    $ daex lanes list --text                       List lanes and their branches (adopts new worktrees)
+    $ daex lanes show <lane> --text                 Inspect one lane status
+    $ daex lane drift --lane <lane> --text          Check whether the worktree HEAD drifted off the lane's branch
+    $ daex lane drift resolve --lane <lane> --switch-back
                                                     Restore the worktree to the lane's recorded branch (refuses if dirty)
-    $ ade lane drift resolve --lane <lane> --keep-head
+    $ daex lane drift resolve --lane <lane> --keep-head
                                                     Re-point the lane (and its name) at the live HEAD branch
-    $ ade lanes templates list --text                List this project's lane templates
-    $ ade lanes templates show <id>                  Show one lane template
-    $ ade lanes templates save --json '<...>'        Save a LaneTemplate JSON object
-    $ ade lanes templates default [<id>] [--clear]  Read or change the default lane template
-    $ ade lanes templates apply <id> --lane <lane>  Apply a template to an existing lane
-    $ ade lanes templates delete <id>                Delete a lane template
-    $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies in the main
+    $ daex lanes templates list --text               List this project's lane templates
+    $ daex lanes templates show <id>                 Show one lane template
+    $ daex lanes templates save --json '<...>'       Save a LaneTemplate JSON object
+    $ daex lanes templates default [<id>] [--clear]  Read or change the default lane template
+    $ daex lanes templates apply <id> --lane <lane>  Apply a template to an existing lane
+    $ daex lanes templates delete <id>               Delete a lane template
+    $ daex lanes deps [--refresh] --text             Check lockfiles and installed dependencies in the main
                                                     checkout (not a lane's worktree)
-    $ ade lanes templates list --machine "<name>" --text
+    $ daex lanes templates list --machine "<name>" --text
                                                     Templates follow your account per repository; --machine reads them via that computer
-    $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
+    $ daex lanes link-linear-issue <lane> --linear-issue-json '{...}'
                                                     Link an existing lane to a Linear issue (alias: attach-linear-issue)
-    $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
+    $ daex lanes detach-linear-issue <lane> [--issue-id ENG-431]
                                                     Unlink one issue (or all non-primary links) from a lane
-    $ ade lanes archive <lane>                      Archive a lane in ADE; also brings down the Docker services
+    $ daex lanes archive <lane>                     Archive a lane in ${BRAND.NAME}; also brings down the Docker services
                                                     its env init started (best-effort — a failed teardown still archives)
-    $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
-    $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
+    $ daex lanes reclaim-preview <lane>             Show reclaimable space and safety warnings
+    $ daex lanes archive-and-reclaim <lane> --confirm RECLAIM
                                                     Archive the lane, then remove its ADE-managed local files
-    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed.
+    $ daex lanes unarchive <lane>                   Restore an archived lane and recreate its worktree if needed.
                                                     Docker comes back up too: a recreated worktree re-runs the whole
                                                     env init before returning, a plain unarchive returns immediately
                                                     and restarts Docker in the background (watch lane env init events).
-                                                    Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
-    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree. Uncommitted files and
+                                                    Run "daex lanes action initEnv --arg laneId=<lane>" for the full sequence
+    $ daex lanes delete <lane> --force              Delete a lane and clean up its worktree. Uncommitted files and
                                                     commits no other branch or remote holds are kept for ${DELETED_LANE_KEEP_DAYS} days
-    $ ade lanes deleted list --text                 Deleted lanes whose work ADE kept
-    $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
-    $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
-    $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
-    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, access, risk, end, made by)
-    $ ade lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
-                                                    Share the lane with another ADE account, Watch only: they see
+    $ daex lanes deleted list --text                Deleted lanes whose work ${BRAND.NAME} kept
+    $ daex lanes deleted restore <id>               Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
+    $ daex lanes rename <lane> --name "<name>"      Rename a lane (its branch keeps its name)
+    $ daex lanes appearance <lane> --emoji 🐛       Set a lane emoji (use --emoji "" to clear)
+    $ daex lanes share --lane <lane> --text         List the lane's shares (people, state, access, risk, end, made by)
+    $ daex lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
+                                                    Share the lane with another ${BRAND.NAME} account, Watch only: they see
                                                     its chats and sessions and cannot send, run or approve anything.
-                                                    From the CLI, an agent or ADE MCP: Watch only, at most 5 an hour.
-                                                    More rights: the share sheet in the ADE app
-    $ ade lanes share --lane <lane> --remove <email|grant id>
+                                                    From the CLI, an agent or ${BRAND.NAME} MCP: Watch only, at most 5 an hour.
+                                                    More rights: the share sheet in the ${BRAND.NAME} app
+    $ daex lanes share --lane <lane> --remove <email|grant id>
                                                     Stop a share of this lane
-    $ ade lanes actions --text                      List callable lane service methods
+    $ daex lanes actions --text                     List callable lane service methods
 `,
   git: `${ADE_BANNER}
   Git
 
-  Git commands run in the lane worktree and record ADE operations so the app can
+  Git commands run in the lane worktree and record ${BRAND.NAME} operations so the app can
   refresh lane state. Use --lane for anything other than the active workspace.
   For a GitHub HTTPS remote, push, pull, fetch and sync try git's own sign-in
-  first, then ADE's GitHub credential (GitHub CLI or a personal access token in
+  first, then ${BRAND.NAME}'s GitHub credential (GitHub CLI or a personal access token in
   Settings), so they work where a bare "git push" says "could not read
   Username". SSH remotes sign in with your SSH key only.
 
-    $ ade git status --lane <lane> --text           Show ADE-aware sync status
-    $ ade git status --full --lane <lane> --text    Show full lane status, diff, and conflict state
-    $ ade git fetch --lane <lane>                   Fetch remote refs
-    $ ade git pull --lane <lane>                    Pull with ADE's ff-only lane operation
-    $ ade git pull --lane <lane> --rebase           Pull and replay local commits on upstream
-    $ ade git pull --lane <lane> --merge            Pull and merge upstream into the lane
-    $ ade git undo --lane <lane>                    Reset to the previous recorded HEAD
-    $ ade git redo --lane <lane>                    Restore the last undone HEAD
-    $ ade git sync --lane <lane> --rebase --base main
+    $ daex git status --lane <lane> --text          Show ADE-aware sync status
+    $ daex git status --full --lane <lane> --text   Show full lane status, diff, and conflict state
+    $ daex git fetch --lane <lane>                  Fetch remote refs
+    $ daex git pull --lane <lane>                   Pull with ${BRAND.NAME}'s ff-only lane operation
+    $ daex git pull --lane <lane> --rebase          Pull and replay local commits on upstream
+    $ daex git pull --lane <lane> --merge           Pull and merge upstream into the lane
+    $ daex git undo --lane <lane>                   Reset to the previous recorded HEAD
+    $ daex git redo --lane <lane>                   Restore the last undone HEAD
+    $ daex git sync --lane <lane> --rebase --base main
                                                     Sync the lane with its base branch
-    $ ade git stage --lane <lane> src/file.ts       Stage one file
-    $ ade git stage-all --lane <lane>               Stage all current changes
-    $ ade git unstage --lane <lane> src/file.ts     Unstage one file
-    $ ade git commit --lane <lane> -m <message>     Commit, adding Refs <issue-id> on linked Linear lanes
-    $ ade git push --lane <lane> --set-upstream     Push through ADE
-    $ ade git push --lane <lane> --force-with-lease Force-push through ADE with lease
-    $ ade git branches --lane <lane> --text         List branches with last-commit metadata
-    $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
-    $ ade git stash push|list|apply|pop|drop        Use ADE lane stash actions
+    $ daex git stage --lane <lane> src/file.ts      Stage one file
+    $ daex git stage-all --lane <lane>              Stage all current changes
+    $ daex git unstage --lane <lane> src/file.ts    Unstage one file
+    $ daex git commit --lane <lane> -m <message>    Commit, adding Refs <issue-id> on linked Linear lanes
+    $ daex git push --lane <lane> --set-upstream    Push through ${BRAND.NAME}
+    $ daex git push --lane <lane> --force-with-lease Force-push through ${BRAND.NAME} with lease
+    $ daex git branches --lane <lane> --text        List branches with last-commit metadata
+    $ daex git user-identity --lane <lane> --text   Read lane checkout's git user.name/email
+    $ daex git stash push|list|apply|pop|drop       Use ${BRAND.NAME} lane stash actions
                                                     pop/drop resolve the saved stash OID before changing it
-    $ ade git rebase --lane <lane>                  Rebase the lane onto its base
-    $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
-    $ ade git merge --lane <lane>                   Merge origin/<base> into the lane; undone on conflict
-    $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
-    $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
-    $ ade git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
-    $ ade git reset <sha> --soft --lane <lane>      Reset HEAD to a commit (soft/mixed/hard)
-    $ ade git is-reachable <sha> --lane <lane>      Check if a commit is in the lane history
-    $ ade diff changes --lane <lane> --text         Inspect changed files
+    $ daex git rebase --lane <lane>                 Rebase the lane onto its base
+    $ daex git rebase continue --lane <lane>        Continue an in-progress rebase
+    $ daex git merge --lane <lane>                  Merge origin/<base> into the lane; undone on conflict
+    $ daex git conflict show --lane <lane> --text   Inspect merge/rebase conflict state
+    $ daex git conflict resolve --kind rebase       Continue after manual conflict resolution
+    $ daex git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
+    $ daex git reset <sha> --soft --lane <lane>     Reset HEAD to a commit (soft/mixed/hard)
+    $ daex git is-reachable <sha> --lane <lane>     Check if a commit is in the lane history
+    $ daex diff changes --lane <lane> --text        Inspect changed files
 `,
   operations: `${ADE_BANNER}
   Operations
 
-  Poll status for long-running ADE operations that returned an operation,
+  Poll status for long-running ${BRAND.NAME} operations that returned an operation,
   test run, chat session, or PR id.
 
-    $ ade operations status --operation <id> --text
-    $ ade operations wait --operation <id> --wait-ms 30000 --text
-    $ ade actions wait --test-run <id> --wait-ms 30000 --text
+    $ daex operations status --operation <id> --text
+    $ daex operations wait --operation <id> --wait-ms 30000 --text
+    $ daex actions wait --test-run <id> --wait-ms 30000 --text
 
   Generic operation logs are not persisted by the operation table. Use
-  "ade tests logs" or terminal/app-control log commands for surfaces that own
+  "daex tests logs" or terminal/app-control log commands for surfaces that own
   logs.
 `,
   history: `${ADE_BANNER}
   History
 
-  Inspect ADE's persisted operation timeline and lane commit history.
+  Inspect ${BRAND.NAME}'s persisted operation timeline and lane commit history.
 
-    $ ade history list --text                        List recent operations (default limit 50)
-    $ ade history list --lane <lane> --kind push     Filter operations by lane and kind
-    $ ade history list --status succeeded --text     Filter by terminal status
-    $ ade history show --id <operation-id> --text    Show one operation record
-    $ ade history commits --lane <lane> --text       List recent git commits for a lane
-    $ ade history export --out history.json          Export filtered operations as JSON
-    $ ade history export --lane <lane>               Print export JSON to stdout
+    $ daex history list --text                       List recent operations (default limit 50)
+    $ daex history list --lane <lane> --kind push    Filter operations by lane and kind
+    $ daex history list --status succeeded --text    Filter by terminal status
+    $ daex history show --id <operation-id> --text   Show one operation record
+    $ daex history commits --lane <lane> --text      List recent git commits for a lane
+    $ daex history export --out history.json         Export filtered operations as JSON
+    $ daex history export --lane <lane>              Print export JSON to stdout
 
   Flags:
     --lane, --lane-id       Filter or scope to one lane
@@ -2849,181 +2851,181 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   diff: `${ADE_BANNER}
   Diffs
 
-    $ ade diff changes --lane <lane> --text         Summarize staged/unstaged file changes
-    $ ade diff file --lane <lane> <path> --text     Show one file diff (side-by-side text)
-    $ ade diff patch --lane <lane> <path> --text    Raw unified diff / patch for one file
-    $ ade diff file --mode staged <path>            Inspect staged diff for one file
-    $ ade diff actions --text                       List diff service actions
+    $ daex diff changes --lane <lane> --text        Summarize staged/unstaged file changes
+    $ daex diff file --lane <lane> <path> --text    Show one file diff (side-by-side text)
+    $ daex diff patch --lane <lane> <path> --text   Raw unified diff / patch for one file
+    $ daex diff file --mode staged <path>           Inspect staged diff for one file
+    $ daex diff actions --text                      List diff service actions
 `,
   prs: `${ADE_BANNER}
   Pull requests
 
-  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, full PR URLs, or
-  the 'gh:owner/repo#<n>' form that 'prs list-open' prints for a PR ADE has no row
+  PR identifiers may be ${BRAND.NAME} PR ids, GitHub PR numbers, #numbers, full PR URLs, or
+  the 'gh:owner/repo#<n>' form that 'prs list-open' prints for a PR ${BRAND.NAME} has no row
   for — quote that one, since most shells treat '#' as a comment.
   Merging, closing, reopening, commenting, reviewing, labels, reviewers, checks and
   branch cleanup all work on any PR in the repo, whether or not a lane exists for it.
   The exceptions need one: create and link take a lane by definition, and threads
-  and deployments still resolve through ADE's own row.
+  and deployments still resolve through ${BRAND.NAME}'s own row.
 
-    $ ade prs list --text                           List PRs known to ADE
-    $ ade prs show <pr> --text                      One PR: state, branch, checks and reviews
-    $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
-    $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
-    $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
+    $ daex prs list --text                          List PRs known to ${BRAND.NAME}
+    $ daex prs show <pr> --text                     One PR: state, branch, checks and reviews
+    $ daex prs list-open --text                     List every open GitHub PR in the repo, keyed by head branch
+    $ daex prs create --lane <lane> --base main     Open a GitHub PR from a lane; prints GitHub + ${BRAND.NAME} URLs
+    $ daex prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
                                                     The text: "## Why", "## What changed", "## Evidence", "## Not checked".
                                                     Proof cited in it (![caption](ade-proof://<id>), or a proof-compare
                                                     block) is uploaded into the text. Prints what a reader will miss.
-    $ ade prs body <pr> --body-file pr.md           Replace the PR text; same upload and same notes
-    $ ade prs create --lane <lane> --close-linear-issue-on-merge
-    $ ade prs create --lane <lane> --allow-dirty    Create it even with uncommitted or untracked files in the lane;
+    $ daex prs body <pr> --body-file pr.md          Replace the PR text; same upload and same notes
+    $ daex prs create --lane <lane> --close-linear-issue-on-merge
+    $ daex prs create --lane <lane> --allow-dirty   Create it even with uncommitted or untracked files in the lane;
                                                     the PR holds the lane's commits only
-    $ ade prs land <pr> --method squash             Merge; keeps the remote branch
-    $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
-    $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
-    $ ade prs reopen <pr>                           Reopen a closed PR
-    $ ade prs draft <pr>                            Convert an open PR back to a draft
-    $ ade prs ready <pr>                            Mark a draft PR ready for review
-    $ ade prs auto-merge <pr> on --method squash    Arm GitHub auto-merge (method defaults to squash)
-    $ ade prs auto-merge <pr> off                   Disarm auto-merge
-    $ ade prs cleanup-branch <pr> --delete-remote-branch
+    $ daex prs land <pr> --method squash            Merge; keeps the remote branch
+    $ daex prs land <pr> --delete-remote-branch     Merge and delete the head branch on the remote
+    $ daex prs close <pr>                           Close on GitHub; the branch is kept and you can reopen it
+    $ daex prs reopen <pr>                          Reopen a closed PR
+    $ daex prs draft <pr>                           Convert an open PR back to a draft
+    $ daex prs ready <pr>                           Mark a draft PR ready for review
+    $ daex prs auto-merge <pr> on --method squash   Arm GitHub auto-merge (method defaults to squash)
+    $ daex prs auto-merge <pr> off                  Disarm auto-merge
+    $ daex prs cleanup-branch <pr> --delete-remote-branch
                                                     Delete a merged/closed PR's branch (local too, unless --keep-local)
-    $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
-    $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
-    $ ade prs comments <pr> --text                  Show unresolved review work
-    $ ade prs reply <pr> --thread <id> --body "..." Reply to one review thread
-    $ ade prs comment-edit <pr> --comment <id> --body "..."
+    $ daex prs link --lane <lane> --url <pr-url>    Point a lane at an existing GitHub PR
+    $ daex prs checks <pr> --text                   Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
+    $ daex prs comments <pr> --text                 Show unresolved review work
+    $ daex prs reply <pr> --thread <id> --body "..." Reply to one review thread
+    $ daex prs comment-edit <pr> --comment <id> --body "..."
                                                     Edit an issue or review comment
-    $ ade prs comment-react <pr> --comment <id> --content +1
+    $ daex prs comment-react <pr> --comment <id> --content +1
                                                     React to a PR comment (GraphQL node id or REST database id)
-    $ ade prs github-snapshot --include-external-closed --history-page-limit 4
+    $ daex prs github-snapshot --include-external-closed --history-page-limit 4
                                                     Include bounded closed PR history in the GitHub snapshot
-    $ ade prs github-snapshot --include-state-counts --no-revalidate
+    $ daex prs github-snapshot --include-state-counts --no-revalidate
                                                     Include exact state totals without a background refresh
-    $ ade prs stacks list                           List GitHub stacks for the active repository
-    $ ade prs stacks sync                           Refresh authoritative stack state from GitHub
-    $ ade prs stacks create --pulls 12,13,14        Create a stack, ordered bottom to top
-    $ ade prs stacks add --stack 8 --pulls 15       Add pull requests above the current stack top
-    $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
-    $ ade prs link-chat --pr <ade-pr-id> --session <id>    Link a pull request to a chat
-    $ ade prs unlink-chat --pr <ade-pr-id> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
-    $ ade prs watch <pr> [--chat <id>]     Wake the chat on each PR change (failed check, checks passed, comments, conflict, merge)
-    $ ade prs ship <pr> [--chat <id>]      Watch + standing instructions to take the PR to merged; waits for CI and review bots
-    $ ade prs unwatch <pr> [--chat <id>]   Stop watching. <pr> is an ADE PR id, a PR number, or a PR URL
-    $ ade prs watch-status [--chat <id>]   The chat's live watches. --chat defaults to $ADE_CHAT_SESSION_ID
-                                                      --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
-    $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
-    $ ade prs labels set <pr> ready-to-merge        Replace labels
-    $ ade prs assignees <pr> --add alice --remove bob
+    $ daex prs stacks list                          List GitHub stacks for the active repository
+    $ daex prs stacks sync                          Refresh authoritative stack state from GitHub
+    $ daex prs stacks create --pulls 12,13,14       Create a stack, ordered bottom to top
+    $ daex prs stacks add --stack 8 --pulls 15      Add pull requests above the current stack top
+    $ daex prs stacks unstack --stack 8             Remove eligible pull requests from a GitHub stack
+    $ daex prs link-chat --pr <ade-pr-id> --session <id>   Link a pull request to a chat
+    $ daex prs unlink-chat --pr <ade-pr-id> --session <id>  Unlink a pull request from a chat (does not revive as fallback)
+    $ daex prs watch <pr> [--chat <id>]    Wake the chat on each PR change (failed check, checks passed, comments, conflict, merge)
+    $ daex prs ship <pr> [--chat <id>]     Watch + standing instructions to take the PR to merged; waits for CI and review bots
+    $ daex prs unwatch <pr> [--chat <id>]  Stop watching. <pr> is a ${BRAND.NAME} PR id, a PR number, or a PR URL
+    $ daex prs watch-status [--chat <id>]  The chat's live watches. --chat defaults to $ADE_CHAT_SESSION_ID
+                                                      --pr takes a ${BRAND.NAME} PR id (from 'daex prs list'), not a GitHub number or URL
+    $ daex prs resolve-thread <pr> --thread <id>    Resolve a review thread
+    $ daex prs labels set <pr> ready-to-merge       Replace labels
+    $ daex prs assignees <pr> --add alice --remove bob
                                                     Add or remove assignees; anyone not named is kept
-    $ ade prs reviewers request <pr> alice bob      Request reviewers
+    $ daex prs reviewers request <pr> alice bob     Request reviewers
 `,
   shell: `${ADE_BANNER}
   Shell sessions
 
-  Shell commands create tracked PTY sessions that ADE can display and audit.
-  Inside an ADE chat or tracked agent CLI session, shell starts attach to the
+  Shell commands create tracked PTY sessions that ${BRAND.NAME} can display and audit.
+  Inside a ${BRAND.NAME} chat or tracked agent CLI session, shell starts attach to the
   active owner session automatically.
 
-    $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
-    $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
-    $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --model claude-opus-5-5 --reasoning-effort ultracode --prompt "fix tests"
-    $ ade shell start --provider claude --model claude-opus-5-5 --lane <lane> --message "fix tests"
-    $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
-    $ ade shell write <pty-id> --data "q"           Write data to a PTY
-    $ ade shell resize <pty-id> --cols 120 --rows 36
-    $ ade shell close <pty-id>                      Dispose a PTY
+    $ daex shell start --lane <lane> -- npm test    Start a tracked shell session
+    $ daex shell start -- npm test                  Without --lane: your own lane, else the project's primary lane
+    $ daex shell start --lane <lane> -c "npm test"  Start with a command string
+    $ daex new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
+    $ daex shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
+    $ daex shell start-cli claude --lane <lane> --model claude-opus-5-5 --reasoning-effort ultracode --prompt "fix tests"
+    $ daex shell start --provider claude --model claude-opus-5-5 --lane <lane> --message "fix tests"
+    $ daex shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
+    $ daex shell write <pty-id> --data "q"          Write data to a PTY
+    $ daex shell resize <pty-id> --cols 120 --rows 36
+    $ daex shell close <pty-id>                     Dispose a PTY
 
   After start, use the returned session id with:
-    $ ade terminal read --terminal <session-id> --text
+    $ daex terminal read --terminal <session-id> --text
 
-  On another machine (in your code there: ADE keeps a copy of this chat's code
+  On another machine (in your code there: ${BRAND.NAME} keeps a copy of this chat's code
   on that machine, at your commit, which must be pushed, with your uncommitted
   changes applied):
-    $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
-    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
-    $ ade shell clean --machine <name>               Delete your code there and everything it held
-    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
-    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+    $ daex shell start --machine <name> --wait -- npm test  Stream the output, exit with its code
+    $ daex shell start --machine <name> --code as-is -- git status  Use your code there as it is now
+    $ daex shell start --machine <name> --code fresh --wait -- npm test  Throw away changes made there first
+    $ daex shell clean --machine <name>              Delete your code there and everything it held
+    $ daex shell start --machine <name> --clone --wait -- npm test  Clone this repo there first if it is missing (GitHub)
+    $ daex shell start --machine <name> --no-code --wait -- nvidia-smi  No code needed: an empty folder there, removed after
   --code synced (the default) makes your code there match this checkout before
   the command runs. Each call opens a new shell there and syncs again, so put
   all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
   Files made there that git does not track (a generated .xcodeproj, a pushed
   file) stay through a sync; edits there to the repo's files refuse it.
-  --no-code needs no commit or push, only a project open in ADE there.
+  --no-code needs no commit or push, only a project open in ${BRAND.NAME} there.
   The shell runs in the background there; no list on that machine shows it.
-  To move a file, use ade files push|pull --machine <name> (see ade files
+  To move a file, use daex files push|pull --machine <name> (see daex files
   --help), never base64 or echo inside a shell command.
 
   Provider CLI launches take --model (required) and accept --instance for a
   Claude/Codex account, and --custom-provider, --credential or --via for where
-  the model runs (ade help providers).
+  the model runs (daex help providers).
 
-  Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
+  Prefer daex new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
 `,
   terminal: `${ADE_BANNER}
   Attached terminal
 
-  Terminal commands control the active terminal attached to an ADE chat or
+  Terminal commands control the active terminal attached to a ${BRAND.NAME} chat or
   tracked agent CLI session. Use attached runtime mode when you want the same
   terminal the app is viewing.
 
-    $ ade terminal list --chat-session <owner-session-id> --text  List running and ended terminals for a session
-    $ ade terminal list --include-archived --text   Also list archived shells (hidden by default)
-    $ ade terminal active --chat-session <owner-session-id> --text Show the active terminal
-    $ ade terminal resume --terminal <session-id> --text Resume an ended provider CLI terminal
-    $ ade terminal read --terminal <session-id> --text Read terminal scrollback
-    $ ade terminal read --pty <pty-id> --text       Read by PTY id
-    $ ade app-control logs --text                   Read the active App Control launch terminal
-    $ ade terminal write --terminal <session-id> --data "y\\n"
-    $ ade terminal signal --terminal <session-id> --signal SIGINT
+    $ daex terminal list --chat-session <owner-session-id> --text  List running and ended terminals for a session
+    $ daex terminal list --include-archived --text  Also list archived shells (hidden by default)
+    $ daex terminal active --chat-session <owner-session-id> --text Show the active terminal
+    $ daex terminal resume --terminal <session-id> --text Resume an ended provider CLI terminal
+    $ daex terminal read --terminal <session-id> --text Read terminal scrollback
+    $ daex terminal read --pty <pty-id> --text      Read by PTY id
+    $ daex app-control logs --text                  Read the active App Control launch terminal
+    $ daex terminal write --terminal <session-id> --data "y\\n"
+    $ daex terminal signal --terminal <session-id> --signal SIGINT
 
-  Watch a terminal instead of polling it. ADE wakes your chat when the
+  Watch a terminal instead of polling it. ${BRAND.NAME} wakes your chat when the
   terminal prints something new (after it goes quiet for a few seconds), with
   the last ~4 KB cleaned of colors and redraws. Output already on screen when
   the watch starts never wakes you. The terminal exiting ends the watch with
   one last wake that carries the exit code.
 
-    $ ade terminal watch <terminal-id> --text        Wake this chat on new output
-    $ ade terminal watch <terminal-id> --match error Only on lines containing "error"
-    $ ade terminal watch <terminal-id> --match "ready|listening" --lifetime 30m
-    $ ade terminal watch --command "npm run dev" --match "error|ready"
+    $ daex terminal watch <terminal-id> --text       Wake this chat on new output
+    $ daex terminal watch <terminal-id> --match error Only on lines containing "error"
+    $ daex terminal watch <terminal-id> --match "ready|listening" --lifetime 30m
+    $ daex terminal watch --command "npm run dev" --match "error|ready"
                                                     Start a shell in the chat's lane and watch it
-    $ ade terminal watches --text                   This chat's watches (--all for every chat)
-    $ ade terminal unwatch <watch-id>               Stop one quietly (no id: all of this chat's)
+    $ daex terminal watches --text                  This chat's watches (--all for every chat)
+    $ daex terminal unwatch <watch-id>              Stop one quietly (no id: all of this chat's)
 
   Lifetime defaults to 2h (max 24h). A watch stops itself after 20 wakes in
   an hour. Watches run on the machine that runs the chat, watch only that
-  machine's terminals, and end if that machine's ADE restarts.
+  machine's terminals, and end if that machine's ${BRAND.NAME} restarts.
 `,
   files: `${ADE_BANNER}
   Files
 
-  File commands operate inside an ADE workspace id, usually a lane id.
+  File commands operate inside a ${BRAND.NAME} workspace id, usually a lane id.
   --workspace defaults to --lane, else the shell's lane (ADE_LANE_ID).
 
-    $ ade files workspaces --text                   List workspace roots
-    $ ade files tree --workspace <lane> --path src  Show a workspace tree
-    $ ade files read --workspace <lane> <path> --text Read a file
-    $ ade files write --workspace <lane> <path> --stdin
-    $ ade files write --workspace <lane> <path> --text "new content"
-    $ ade files write --workspace <lane> <path> --stdin --base64 --offset 262144  Add a chunk at that byte; answers path, bytes, sha256
-    $ ade files create --workspace <lane> <path> --text "content"
-    $ ade files mkdir --workspace <lane> src/new
-    $ ade files search --workspace <lane> -q <text> Search text in a workspace
-    $ ade files quick-open --workspace <lane> -q app
-    $ ade files quick-open --workspace <lane> -q src --include-directories
+    $ daex files workspaces --text                  List workspace roots
+    $ daex files tree --workspace <lane> --path src  Show a workspace tree
+    $ daex files read --workspace <lane> <path> --text Read a file
+    $ daex files write --workspace <lane> <path> --stdin
+    $ daex files write --workspace <lane> <path> --text "new content"
+    $ daex files write --workspace <lane> <path> --stdin --base64 --offset 262144  Add a chunk at that byte; answers path, bytes, sha256
+    $ daex files create --workspace <lane> <path> --text "content"
+    $ daex files mkdir --workspace <lane> src/new
+    $ daex files search --workspace <lane> -q <text> Search text in a workspace
+    $ daex files quick-open --workspace <lane> -q app
+    $ daex files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (your code there, the one ade shell start --machine uses;
+  On another machine (your code there, the one daex shell start --machine uses;
   paths there are relative to its top, / or \\ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
-    $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
+    $ daex files push --machine <name> ./fixture.bin test/fixtures/  Copy a file there (your code is put there at your commit if missing)
+    $ daex files pull --machine <name> build/out.log ./logs/         Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
   base64 in shell commands. A pushed file git does not track stays there
   through the next sync (--code fresh drops it); one that replaces a file of
@@ -3039,18 +3041,18 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
 
   Settling is NOT here: 'settle' and 'unsettle' were removed because deciding
   that work is finished is the user's call. A row leaves the active list when
-  the user settles it in ADE or when its PR merges. Snooze is the agent-safe
+  the user settles it in ${BRAND.NAME} or when its PR merges. Snooze is the agent-safe
   way to quiet a row you are waiting on — it hides the row without claiming
   the work is done, and a hand-raise wakes it early.
 
-    $ ade session show <id> --text                  Print what the session is doing (status + elapsed), the agent
+    $ daex session show <id> --text                 Print what the session is doing (status + elapsed), the agent
                                                     processes it is holding open, settle/snooze state, and the wake reason
-    $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
-    $ ade session snooze <id> --until 2026-07-26T18:00:00Z
+    $ daex session snooze <id> --for 1h             Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
+    $ daex session snooze <id> --until 2026-07-26T18:00:00Z
                                                     Snooze until an explicit ISO-8601 deadline
-    $ ade session snooze <id> --until-asked          Snooze open-ended (the desktop/iOS "Until I'm asked" preset):
+    $ daex session snooze <id> --until-asked         Snooze open-ended (the desktop/iOS "Until I'm asked" preset):
                                                     no clock deadline, so only a hand-raise brings the row back
-    $ ade --role cto session move <id> --to done    File the session under a Work-board column
+    $ daex --role cto session move <id> --to done   File the session under a Work-board column
                                                     (needs-you|working|done; both spellings of 'needs-you' accepted).
                                                     CTO-only, like the other settle-column writers: the move tells the
                                                     agent the USER moved its card, so an agent must not move its own.
@@ -3058,56 +3060,56 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
                                                     PR is mid-CI, so it is derived and never a drop target.
                                                     The move is reversible for 5 seconds through
                                                     'actions run session.undoBoardMove' with the returned moveId.
-    $ ade session wake <id>                         Clear the snooze now (--reason timer|needs_you|error|turn_complete|manual)
-    $ ade session clear-woke <id>                   Drop the "woke early" marker after visiting the row
-    $ ade session actions --text                    List raw session service actions
+    $ daex session wake <id>                        Clear the snooze now (--reason timer|needs_you|error|turn_complete|manual)
+    $ daex session clear-woke <id>                  Drop the "woke early" marker after visiting the row
+    $ daex session actions --text                   List raw session service actions
 
   Snooze is a visibility overlay, not a lifecycle phase: the session keeps
   running while snoozed, and a hand-raise wakes it early — an approval request
   ('needs_you'), a failed turn ('error'), or a completed turn ('turn_complete').
-  'ade session show' reports which one brought it back.
+  'daex session show' reports which one brought it back.
 `,
   chat: `${ADE_BANNER}
   Work chats
 
-  Chat commands use ADE agent chat sessions. Live provider-backed chat normally
+  Chat commands use ${BRAND.NAME} agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because it owns provider/session state.
 
-  Transcript reads are silent and may target any project-backed ADE chat on
+  Transcript reads are silent and may target any project-backed ${BRAND.NAME} chat on
   this machine, including chats in other projects. Personal/no-project chats
   stay on the separate --personal surface. Reads are bounded by message and
   character limits; use --page and --cursor to walk older content.
 
-    $ ade chat list --lane <lane> --text            List chat sessions (archived chats hidden)
-    $ ade chat list --include-archived --text       Also list archived chats ('ade archive list' for all archived items)
-    $ ade chat list --personal --text               List machine personal chats (no project required)
-    $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
-    $ ade chat list --all-machines --text           Every machine in one table, with a machine column
-    $ ade chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
+    $ daex chat list --lane <lane> --text           List chat sessions (archived chats hidden)
+    $ daex chat list --include-archived --text      Also list archived chats ('daex archive list' for all archived items)
+    $ daex chat list --personal --text              List machine personal chats (no project required)
+    $ daex chat list --machine "Mac mini" --text    Chats on another machine on your account (this repo's checkout there)
+    $ daex chat list --all-machines --text          Every machine in one table, with a machine column
+    $ daex chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
-${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machine personal-chat actions
-    $ ade chat action --personal models --input-json '{"provider":"codex"}'
-    $ ade chat list --include-automation --text
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
-    $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
-    $ ade chat create --personal --provider copilot --model github-copilot/auto --copilot-auto-tier balance
-    $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
+${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List machine personal-chat actions
+    $ daex chat action --personal models --input-json '{"provider":"codex"}'
+    $ daex chat list --include-automation --text
+    $ daex chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ daex chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
+    $ daex chat create --personal --provider copilot --model github-copilot/auto --copilot-auto-tier balance
+    $ daex chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
                                                     Inject caller-owned MCP servers into one chat. There is no typed
                                                     --mcp-server flag: the config is nested JSON, which --arg-json
                                                     already carries. Add --arg strictMcpConfig=false to also load the
                                                     user's own MCP config (personal chats withhold it by default), or
                                                     --arg strictMcpConfig=true to withhold it on a project chat.
-                                                    Read mcpCapability on the created session (ade chat show
+                                                    Read mcpCapability on the created session (daex chat show
                                                     <session> --personal --json) for what the provider could honor:
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431 --provider <p> --model <id> --parent <session> --type subagent
+    $ daex chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
+    $ daex chat create --from-linear-issue ENG-431 --provider <p> --model <id> --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
-    $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
+    $ daex chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
                                                     Start a chat in a brand-new lane (the desktop composer's new-lane
                                                     send). The brain fetches the base, checks out the worktree, applies
                                                     the default lane template, then creates the chat and sends the prompt.
@@ -3118,48 +3120,48 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
-                                                    use 'ade new chat --lane auto --model <id> --type ...' for a parented child.
-    $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
-    $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
-    $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
-    $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat show <session>                       Session summary (title, provider, model, activity report)
-    $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
+                                                    use 'daex new chat --lane auto --model <id> --type ...' for a parented child.
+    $ daex chat launches --text                     List new-lane launches running or recently finished on the brain
+    $ daex chat launch-status <launch>              One launch's stages (exit 1 when unknown or expired)
+    $ daex chat launch-cancel <launch>              Cancel a launch before its agent starts; deletes its chat, lane, and branch
+    $ daex chat send <session> --text "next step"   Send a message; steers automatically if the turn is active
+    $ daex chat show <session>                      Session summary (title, provider, model, activity report)
+    $ daex chat status <session>                    Live turn status: RUNNING / BLOCKED / WAITING / IDLE
                                                     Exit 0 running or waiting (turn ended, background
                                                     agents/shells still running), 1 idle, 2 blocked. Use --text.
                                                     Adds an 'effort' line while the running work keeps an
                                                     older effort than the one picked, and a 'pending' line
                                                     while a fast-mode change waits for background work.
                                                     Adds a 'resume' line while a usage limit is live.
-    $ ade chat locate <session> --text              Which machine on your account has this chat. A chat command
+    $ daex chat locate <session> --text             Which machine on your account has this chat. A chat command
                                                     whose id is not found here looks there by itself
-    $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
+    $ daex chat resume-now <session>                Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
-    $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
+    $ daex chat continue-on-account <session>       Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
-    $ ade chat switch-account <session> --account <email>  Move a Claude or Codex chat to another account; same thread
-                                                    Accounts: ade providers accounts list. Exit 1 when refused.
-    $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
-    $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
-                                                    Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
-    $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
+    $ daex chat switch-account <session> --account <email>  Move a Claude or Codex chat to another account; same thread
+                                                    Accounts: daex providers accounts list. Exit 1 when refused.
+    $ daex chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
+    $ daex chat activity debugging                   Name what this turn is doing when ${BRAND.NAME}'s own detection (from tool calls) cannot tell; use clear to remove it
+                                                    Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ${BRAND.NAME} Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
+    $ daex chat ask "Which account should I use?"   Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
-                                                    --clear takes that hand back down (alias: 'ade chat unask'):
+                                                    --clear takes that hand back down (alias: 'daex chat unask'):
                                                     only the marker this chat or a subagent it started raised
                                                     (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
-    $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
-    $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
+    $ daex chat deleted list --text                 Recently deleted chats this machine can still reopen (--query <text>)
+    $ daex chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
                                                     A deleted CLI session (AGENT "claude CLI") relaunches in its lane,
-                                                    resuming its own conversation when ADE knows it, else fresh
-    $ ade chat inbox --text                         Every chat and CLI session in the project that waits on you, each
+                                                    resuming its own conversation when ${BRAND.NAME} knows it, else fresh
+    $ daex chat inbox --text                        Every chat and CLI session in the project that waits on you, each
                                                     with its question or approval inline and the exact command that
                                                     answers it
                                                     (--all-machines: every machine on your account)
-    $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
+    $ daex chat pending <session> --text            The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
-    $ ade chat respond <session> --option 2         Answer the chat's pending question (alias: answer). Finds the one
+    $ daex chat respond <session> --option 2        Answer the chat's pending question (alias: answer). Finds the one
                                                     open input itself; --item <id> picks one when several are open.
                                                     Question: --option <number|value|label> (repeat for multi-select),
                                                     --answer <question>=<value> per question (number from 1, or the
@@ -3175,23 +3177,23 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     While a chat waits on input, 'chat message' and 'chat send' are
                                                     refused (error -32011) until it is answered. A subagent's question
                                                     is also sent to its parent chat with these commands filled in.
-    $ ade chat generate-names                       Regenerate chat title, lane name, and status line
+    $ daex chat generate-names                      Regenerate chat title, lane name, and status line
                                                     (--session <id>; defaults to $ADE_CHAT_SESSION_ID)
-    $ ade chat generate-names --title --status      Limit to those fields; omit flags for all three
-                                                    Also: ade chat update --title, ade lanes rename.
-    $ ade chat steer <session> --personal --text "focus on the tradeoffs"
-    $ ade chat models --personal --provider codex
-    $ ade chat update <session> --personal --title "Trip planning"
-    $ ade chat update <session> --personal --tag "review-ready"
+    $ daex chat generate-names --title --status     Limit to those fields; omit flags for all three
+                                                    Also: daex chat update --title, daex lanes rename.
+    $ daex chat steer <session> --personal --text "focus on the tradeoffs"
+    $ daex chat models --personal --provider codex
+    $ daex chat update <session> --personal --title "Trip planning"
+    $ daex chat update <session> --personal --tag "review-ready"
                                                     Claude-only; --tag "" clears it
-    $ ade chat message <session> --kind auto --text "status"
+    $ daex chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
-    $ ade chat message <session> --kind auto --text-file - <<'EOF'
+    $ daex chat message <session> --kind auto --text-file - <<'EOF'
                                                     Long or multi-line text from a file or stdin (-). Also on
                                                     send, steer and side. On Windows, never pass multi-line
                                                     text as an argument: ade.cmd cuts it at the first line.
-    $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
-    $ ade chat steer <session> --text "context" --dispatch interrupt
+    $ daex chat steer <session> --text "context"    Steer/queue context into an active turn
+    $ daex chat steer <session> --text "context" --dispatch interrupt
                                                     Deliver into the running turn: inline | interrupt.
                                                     Omit --dispatch to stage for the next turn.
                                                     Claude and Cursor take inline and interrupt; Codex and
@@ -3200,36 +3202,36 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
-    $ ade chat wait <session> --for idle --timeout 10m   (or --timeout-ms 600000)
-    $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
-    $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
-    $ ade chat notify <session> --list | --cancel
+    $ daex chat wait <session> --for idle --timeout 10m  (or --timeout-ms 600000)
+    $ daex chat events <session> --since <cursor> --json  Turn starts and ends, input needed, errors since a cursor; answers at once
+    $ daex chat notify <session> --url https://… --token-stdin  POST there each time it goes idle, needs input or fails (7 days)
+    $ daex chat notify <session> --list | --cancel
                                                     Wait for idle, active, awaiting-input, or terminal.
                                                     Stops early with waiting_on_user when only the user
                                                     can answer the chat's card
-    $ ade chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
-                                                    Return now; ADE wakes this chat when all (or any) of them get there,
+    $ daex chat wait <id> [<id>…] --async [--any] [--for idle|terminal]
+                                                    Return now; ${BRAND.NAME} wakes this chat when all (or any) of them get there,
                                                     and once when one of them waits on the user
-    $ ade chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
-    $ ade chat waits [<session>]                    Waits this chat armed or is a target of
-    $ ade chat wait --cancel <waitId>               Cancel an armed wait
-    $ ade chat wait --background [--job <id>[,<id>]]
+    $ daex chat send <B> --after <A>[,<A2>] "<prompt>"  Send B this prompt once A (and A2) are idle
+    $ daex chat waits [<session>]                   Waits this chat armed or is a target of
+    $ daex chat wait --cancel <waitId>              Cancel an armed wait
+    $ daex chat wait --background [--job <id>[,<id>]]
                                                     Wake this chat when its background jobs end (Codex; Claude/OpenCode do it natively)
-    $ ade chat recover <session> --turn <turn-id> --action nudge
+    $ daex chat recover <session> --turn <turn-id> --action nudge
                                                     Recover a stalled provider turn: wait, nudge, retry, or resume
-    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
+    $ daex chat resolve-unprocessed <session> --steer <steer-id> --action run-next
                                                     Run an accepted-but-unprocessed follow-up next, or dismiss it
-    $ ade chat models --provider codex --json       List models and supported reasoning tiers
-    $ ade chat read <session> --limit 20 --max-chars 8000 --text
+    $ daex chat models --provider codex --json      List models and supported reasoning tiers
+    $ daex chat read <session> --limit 20 --max-chars 8000 --text
                                                     Read a bounded recent window
-    $ ade chat read <session> --page --cursor <n>  Page older transcript content
-    $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
-    $ ade chat goal <session> --status paused       Update a Codex goal status
-    $ ade chat handoff <session> --model openai/gpt-5.6-sol --note "focus on tests"
+    $ daex chat read <session> --page --cursor <n>  Page older transcript content
+    $ daex chat goal <session> --objective "Ship it" Set or inspect a Codex goal
+    $ daex chat goal <session> --status paused      Update a Codex goal status
+    $ daex chat handoff <session> --model openai/gpt-5.6-sol --note "focus on tests"
                                                     Start a new chat with an extra handoff note
-    $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
+    $ daex chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ daex chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
                                                     default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
@@ -3242,12 +3244,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     keeps its own permission level, never broader.
                                                     The source is locked after arrival until the person chooses
                                                     Work here instead.
-    $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
-    $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
-    $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --to "Mac Studio" <session> [<session>…]
+    $ daex chat handoff <session> --options --json  Where the chat can go, and what blocks it (with fixes)
+    $ daex chat handoff <session> --cancel          Keep a queued or awaiting move here, or dismiss an unknown one
+    $ daex chat handoff <session> --retry           Retry a failed or unknown move with the same choices
+    $ daex chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
+    $ daex chat move --to "Mac Studio" --all        Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
@@ -3258,73 +3260,73 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     here and resumes its own conversation there (Claude Code,
                                                     Codex), else starts fresh there with a brief (other agents, or
                                                     --brief). --all includes CLIs.
-    $ ade chat move --status <batch-id>              Show batch progress and per-item state
-    $ ade chat move --retry <batch-id>               Resume remaining batch items
-    $ ade chat fork <session> --model openai/gpt-5.6-sol
+    $ daex chat move --status <batch-id>             Show batch progress and per-item state
+    $ daex chat move --retry <batch-id>              Resume remaining batch items
+    $ daex chat fork <session> --model openai/gpt-5.6-sol
                                                     Carry this conversation into a new chat (same provider)
-    $ ade chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
+    $ daex chat fork <cli-session> [--model <model>]  A CLI session (Claude Code, Codex, …) forks into a new chat from its
                                                     own conversation file; without --model it keeps the CLI's model.
                                                     handoff <cli-session> sends a brief instead (its terminal output when
-                                                    ADE can't read the conversation).
-    $ ade chat fork <session> --model <model> --through-turn <turn-id>
+                                                    ${BRAND.NAME} can't read the conversation).
+    $ daex chat fork <session> --model <model> --through-turn <turn-id>
                                                     Fork from an earlier finished turn; later turns are left out
-    $ ade chat side <session> "Why did we pick Redis?"
+    $ daex chat side <session> "Why did we pick Redis?"
                                                     Ask the chat's read-only side chat (opens it if needed)
-    $ ade chat side <session> --end                  End the chat's side chat for good
-    $ ade chat rewind-files <session> --message <user-message-id> --dry-run
+    $ daex chat side <session> --end                 End the chat's side chat for good
+    $ daex chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
-    $ ade chat subagents <session> --text           List child agents for a chat
-    $ ade chat scheduled-work pause <session>        Pause this agent session's durable wakeups/cron/loops
-    $ ade chat scheduled-work resume <session>       Re-arm them
-    $ ade chat scheduled-work status <session>       Inspect pause state + next armed wake (resume to re-arm)
-    $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
-    $ ade chat scheduled-work create --in 12m --prompt "<text>"
+    $ daex chat subagents <session> --text          List child agents for a chat
+    $ daex chat scheduled-work pause <session>       Pause this agent session's durable wakeups/cron/loops
+    $ daex chat scheduled-work resume <session>      Re-arm them
+    $ daex chat scheduled-work status <session>      Inspect pause state + next armed wake (resume to re-arm)
+    $ daex chat scheduled-work list [session]        List durable jobs (--all includes recent history)
+    $ daex chat scheduled-work create --in 12m --prompt "<text>"
                                                     Relative one-shot; supports s, m, h, d, w
-    $ ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "<text>"
+    $ daex chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "<text>"
                                                     Absolute one-shot; offset or Z is required
-    $ ade chat scheduled-work create --cron "<expr>" --prompt "<text>" [--once]
+    $ daex chat scheduled-work create --cron "<expr>" --prompt "<text>" [--once]
                                                     Cron uses the brain machine's local timezone
                                                     Optional: --reason "<text>" --session <id>
-    $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
+    $ daex chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
                                                     <session> is the chat that owns the job (first), <id> the job id;
                                                     also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
-    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
+    $ daex new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
-    $ ade chat attach-linear-issue <session> --issue-id ENG-431
+    $ daex chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
-    $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
+    $ daex chat detach-linear-issue <session> [--issue-id ENG-431]
                                                     Detach one issue (or all) from a session
-    $ ade chat linear-issues <session> --text       List issues attached to a session
-    $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
-    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
-    $ ade chat interrupt <session> --stop-background
+    $ daex chat linear-issues <session> --text      List issues attached to a session
+    $ daex chat interrupt <session>                 Stop an active turn and clear its queued messages
+    $ daex chat interrupt <session> --keep-queue    Stop the turn but preserve queued messages
+    $ daex chat interrupt <session> --stop-background
                                                     Also stop background jobs; combine with --keep-queue
-    $ ade chat interrupt <session> --stop-children  Also stop the chats this chat spawned (depth-first); add --stop-background for everything
-    $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
+    $ daex chat interrupt <session> --stop-children  Also stop the chats this chat spawned (depth-first); add --stop-background for everything
+    $ daex chat interrupt <session> --mode <mode>   stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
                                                     | stop_and_clear_and_children | stop_everything_and_children
-    $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
-    $ ade chat restart [<session>] [--stop | --after-turn]
+    $ daex chat stop-task <session> <taskId>        Stop one Claude or OpenCode background task; siblings keep running
+    $ daex chat restart [<session>] [--stop | --after-turn]
                                                     Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
                                                     With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
-    $ ade chat update <session> --pin | --unpin      Pin or unpin a chat or CLI session in the Work list
-    $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
+    $ daex chat update <session> --pin | --unpin     Pin or unpin a chat or CLI session in the Work list
+    $ daex chat archive <session>                   Archive a chat (hidden from lists; daex chat unarchive <session> brings it back)
                                                     Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
-                                                    ade chat delete <cli-session> stops it and keeps it in Recently deleted.
+                                                    daex chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
-    $ ade chat demote <session>                     Take over a subagent: its reports to its parent stop
-    $ ade chat promote <session>                    Make the chat report back to its parent again
-    $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
+    $ daex chat demote <session>                    Take over a subagent: its reports to its parent stop
+    $ daex chat promote <session>                   Make the chat report back to its parent again
+    $ daex chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
                                                     [--no-report]; a chat whose old parent is gone becomes a subagent
-    $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
-    $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
-    $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
-    $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --provider <p> --model <id> --parent <session> --type subagent --prompt "fix"
+    $ daex chat set-parent <session> --no-parent    Detach the chat from its parent
+    $ daex chat keep-reporting <session>            Dismiss the takeover prompt without changing the report channel
+    $ daex chat restore-queue <session> <recovery>  Restore a recently cleared queue during its undo window
+    $ daex chat slash <session> --text              List slash commands for a session
+    $ daex new chat --mode cli --lane <lane> --provider <p> --model <id> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Required. The model id (ade chat models --provider <p> --text).
+    --model <id>            Required. The model id (daex chat models --provider <p> --text).
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
@@ -3335,10 +3337,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --custom-provider <name>, --credential <id>, --via <source>
                             Where the model runs: a saved Custom provider, a
                             stored API key, or any model in any harness. Pass
-                            one (ade help providers, ade help harness).
+                            one (daex help providers, daex help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            ADE may lower it for an agent: never above the agent's own access (stderr note).
+                            ${BRAND.NAME} may lower it for an agent: never above the agent's own access (stderr note).
     --fast                  Request fast service tier when the model advertises it.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
@@ -3362,41 +3364,41 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Permission notes:
     full-auto maps Codex to sandbox=danger-full-access and approval=never.
     config-toml is only meaningful for Codex/OpenCode provider-native config.
-    Use ade actions run chat.modelCatalog --json to inspect model-specific
+    Use daex actions run chat.modelCatalog --json to inspect model-specific
     reasoning tiers and fast-mode support.
 
   Handoff notes:
     fork stays on the source provider and in the source lane; brief summarizes
     the chat, can switch provider, and accepts --target-lane.
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
-    Cursor has no fork surface, so ADE forks it by replaying this conversation
+    Cursor has no fork surface, so ${BRAND.NAME} forks it by replaying this conversation
     into a fresh Cursor agent instead of copying a provider thread; the oldest
     turns drop if the transcript exceeds the target model's context window or
     provider input limit.
 
-  Personal chats attach to the machine-owned ADE brain and never register a
+  Personal chats attach to the machine-owned ${BRAND.NAME} brain and never register a
   project. They work with a desktopless brain and through the same
-  'ade rpc --stdio' transport used by remote desktops. One-shot '--headless'
+  'daex rpc --stdio' transport used by remote desktops. One-shot '--headless'
   is intentionally unsupported because it would dispose the agent runtime when
   the command exits.
 `,
   "chat create": `${ADE_BANNER}
   Chat create
 
-  Create a persistent ADE Work chat session with provider/model/runtime settings.
+  Create a persistent ${BRAND.NAME} Work chat session with provider/model/runtime settings.
 
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --prompt "fix"
-    $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
-    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --prompt "Work this issue"
+    $ daex chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ daex chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan
+    $ daex chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --prompt "fix"
+    $ daex chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
+    $ daex chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --prompt "Work this issue"
 
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Required. The model id (ade chat models --provider <p> --text;
-                            ade harness routes --text for any model in any harness).
+    --model <id>            Required. The model id (daex chat models --provider <p> --text;
+                            daex harness routes --text for any model in any harness).
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -3406,18 +3408,18 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             ade.cmd cuts an argument at its first line break.
                             Not with --prompt.
     --instance <email>      Which provider account to run on, by its email (ade
-                            usage limits and ade providers accounts list show
+                            usage limits and daex providers accounts list show
                             them; an account's id works too).
     --credential <id>       A stored API key for the provider.
     --custom-provider <name>
                             A saved Custom provider, by name or id (or a route id
-                            from ade harness route-id); --model must be its own
-                            model (ade harness providers --text lists them).
+                            from daex harness route-id); --model must be its own
+                            model (daex harness providers --text lists them).
     --via <source>          Any model in any harness: opencode-go, key:<provider>,
-                            account:<claude|codex>:<id>, ... (ade help harness).
+                            account:<claude|codex>:<id>, ... (daex help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            From an agent, ADE may lower it: a chat never
+                            From an agent, ${BRAND.NAME} may lower it: a chat never
                             gets more access than the agent's own chat or its
                             parent. chat create then prints a note on stderr.
     --droid-permission-mode <m>
@@ -3454,18 +3456,18 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     opencode full-auto -> allow permissions.
 
   Discovery:
-    $ ade actions run chat.modelCatalog --input-json '{"mode":"cached"}' --json
-    $ ade actions run chat.getAvailableModels --input-json '{"provider":"codex"}' --json
+    $ daex actions run chat.modelCatalog --input-json '{"mode":"cached"}' --json
+    $ daex actions run chat.getAvailableModels --input-json '{"provider":"codex"}' --json
 
   CLI sessions:
-    Use ade new chat --mode cli ... when you want a tracked provider CLI terminal
+    Use daex new chat --mode cli ... when you want a tracked provider CLI terminal
     instead of a persistent Work chat. These chat commands also take a tracked
     CLI session id (they run on the machine that owns the terminal):
       send / message   Typed at the CLI's prompt. Busy: queued as a durable wait
                        that types it at the next free prompt (its id cancels it:
-                       ade chat wait --cancel <id>); --interrupt presses the
+                       daex chat wait --cancel <id>); --interrupt presses the
                        CLI's cancel key first. Text only: no images. Qwen, Kimi,
-                       Grok, Copilot, Antigravity and Devin: typed at once (ADE
+                       Grok, Copilot, Antigravity and Devin: typed at once (${BRAND.NAME}
                        cannot tell when their prompt is free).
       steer            Typed now, even mid-turn; the CLI decides what to do with it.
       interrupt        Presses the provider's cancel key (Esc; Esc twice for
@@ -3487,10 +3489,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   the desktop and mobile recovery cards. Older Codex brains automatically use
   the compatible legacy action.
 
-    $ ade chat recover <session> --turn <turn-id> --action wait
-    $ ade chat recover <session> --turn <turn-id> --action nudge
-    $ ade chat recover <session> --turn <turn-id> --action retry
-    $ ade chat recover <session> --turn <turn-id> --action resume
+    $ daex chat recover <session> --turn <turn-id> --action wait
+    $ daex chat recover <session> --turn <turn-id> --action nudge
+    $ daex chat recover <session> --turn <turn-id> --action retry
+    $ daex chat recover <session> --turn <turn-id> --action resume
 
   Actions:
     wait    Keep the current turn alive and restart its stalled-turn watchdog.
@@ -3501,11 +3503,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   "chat resolve-unprocessed": `${ADE_BANNER}
   Resolve an unprocessed chat message
 
-  Resolve a message ADE accepted while a turn was active but the provider did
+  Resolve a message ${BRAND.NAME} accepted while a turn was active but the provider did
   not process. The operation is durable and idempotent across retries.
 
-    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
-    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action dismiss
+    $ daex chat resolve-unprocessed <session> --steer <steer-id> --action run-next
+    $ daex chat resolve-unprocessed <session> --steer <steer-id> --action dismiss
 
   Actions:
     run-next  Send the accepted message as the next turn.
@@ -3515,28 +3517,28 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Drafts and scheduled sends
 
   A draft is unsent composer text; a scheduled draft is one the runtime delivers
-  at a fire time. \`ade drafts\` is the CLI over the chat.*Draft actions.
+  at a fire time. \`daex drafts\` is the CLI over the chat.*Draft actions.
 
-    $ ade drafts list --text                        Drafts and armed sends, newest first
-    $ ade drafts list --scheduled --text            Only armed sends
-    $ ade drafts list --needs-you --text            Sends that need you (blocked or missed)
-    $ ade drafts list --machine <name> --text       That machine's drafts and armed sends
-    $ ade drafts create --prompt "<text>"           Save a plain draft
-    $ cat prompt.md | ade drafts create             Read the prompt from stdin
-    $ ade drafts create --prompt "Ship it" --image ./shot.png
+    $ daex drafts list --text                       Drafts and armed sends, newest first
+    $ daex drafts list --scheduled --text           Only armed sends
+    $ daex drafts list --needs-you --text           Sends that need you (blocked or missed)
+    $ daex drafts list --machine <name> --text      That machine's drafts and armed sends
+    $ daex drafts create --prompt "<text>"          Save a plain draft
+    $ cat prompt.md | daex drafts create             Read the prompt from stdin
+    $ daex drafts create --prompt "Ship it" --image ./shot.png
                                                     --image is repeatable
-    $ ade drafts schedule <id> --in 90m --target <session>
+    $ daex drafts schedule <id> --in 90m --target <session>
                                                     Arm an existing chat; --in avoids time-zone math
-    $ ade drafts schedule <id> --at "2026-07-23T01:05:00-04:00" --target <session>
+    $ daex drafts schedule <id> --at "2026-07-23T01:05:00-04:00" --target <session>
                                                     Absolute fire time; offset or Z is required
-    $ ade drafts schedule <id> --in 2h --new-chat --lane <lane> --provider codex --model openai/gpt-5.6-sol
+    $ daex drafts schedule <id> --in 2h --new-chat --lane <lane> --provider codex --model openai/gpt-5.6-sol
                                                     Start a chat in that lane at the fire time
-    $ ade drafts update <id> --prompt "better text" Edit the draft's text
-    $ ade drafts update <id> --in 30m               Retime an armed send (its target carries over)
-    $ ade drafts update <id> --unschedule           Return it to a plain draft
-    $ ade drafts show <id> --text                   Full prompt and state
-    $ ade drafts now <id>                           Deliver it immediately, whatever the fire time
-    $ ade drafts delete <id>                        Remove it
+    $ daex drafts update <id> --prompt "better text" Edit the draft's text
+    $ daex drafts update <id> --in 30m              Retime an armed send (its target carries over)
+    $ daex drafts update <id> --unschedule          Return it to a plain draft
+    $ daex drafts show <id> --text                  Full prompt and state
+    $ daex drafts now <id>                          Deliver it immediately, whatever the fire time
+    $ daex drafts delete <id>                       Remove it
 
   Schedule flags (for schedule and create):
     --at <iso>              Absolute ISO-8601 with an explicit offset or Z.
@@ -3545,7 +3547,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --new-chat --lane <lane>  Create a chat in that lane at the fire time; also needs --provider and --model.
     --provider <id> --model <id>
                             Captured for a new chat; both are required with --new-chat
-                            (ade chat models --provider <p> --text lists the ids).
+                            (daex chat models --provider <p> --text lists the ids).
     --permission <mode>     Captured permission mode.
     --thinking <effort>     Captured reasoning effort.
     --machine <name>        Make it on that machine, the one the --target chat is on;
@@ -3559,7 +3561,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   proof: `${ADE_BANNER}
   Proof and computer use
 
-  Proof commands capture or ingest reviewer-visible evidence for ADE work.
+  Proof commands capture or ingest reviewer-visible evidence for ${BRAND.NAME} work.
   Prefer screenshots/images, screen recordings, and browser captures/traces.
   Console logs are supporting diagnostics, not a replacement for visual proof.
 
@@ -3568,29 +3570,29 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   --real-screen to capture the whole real screen (macOS only; runs headless
   unless --socket is passed).
 
-    $ ade proof status --text                       Show proof backend capabilities
-    $ ade proof list --text                         List captured artifacts
-    $ ade proof capture --caption "Done"            Capture the lane's Mac Desktop display
-    $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
-    $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
-    $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
-    $ ade proof publish --pr 12 --replace <id>      Same, and delete your earlier ADE proof comments on it
-    $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
-    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane (${DEMO_STEP_MAX_CHARS} chars max)
-    $ ade proof step "Pick a model" --focus 0.6,0.1,0.4,0.8  Same, and hold the camera on that region (x,y,w,h fractions)
-    $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
-    $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
-    $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
-    $ ade proof review artifact-id --page 2 --text  Page 2 of a tall picture, cut out as a readable image (or --y-from/--y-to)
-    $ ade proof rm artifact-id                      Delete stored proof and its record
-    $ ade proof broken --text                       List proof whose stored file is unavailable
-    $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
-    $ ade proof prune                               Preview broken proof records (does not delete)
-    $ ade proof prune --broken                      Delete every broken proof record
-    $ ade proof record --seconds 20                 Record the lane's Mac Desktop display
-    $ ade proof record --seconds 36 --plain         Same, in real time (no still stretches cut)
-    $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
+    $ daex proof status --text                      Show proof backend capabilities
+    $ daex proof list --text                        List captured artifacts
+    $ daex proof capture --caption "Done"           Capture the lane's Mac Desktop display
+    $ daex proof capture --real-screen --caption "Done"  Capture the whole real screen
+    $ daex proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
+    $ daex proof publish --pr 12 <id> <id>          Post chosen proof to a PR as one comment (gh 2.99+)
+    $ daex proof publish --pr 12 --replace <id>     Same, and delete your earlier ${BRAND.NAME} proof comments on it
+    $ daex proof publish --pr 12 --in-body          Upload the proof the PR text cites, in place (gh 2.99+)
+    $ daex proof step "Open the settings page"      Caption the next part of every recording running on this lane (${DEMO_STEP_MAX_CHARS} chars max)
+    $ daex proof step "Pick a model" --focus 0.6,0.1,0.4,0.8  Same, and hold the camera on that region (x,y,w,h fractions)
+    $ daex proof review artifact-id --text          A sheet of a video's key moments (or a picture's path) to check before publishing
+    $ daex proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
+    $ daex proof review --chat <session-id> --text  The newest video (else proof) a chat filed
+    $ daex proof review artifact-id --page 2 --text  Page 2 of a tall picture, cut out as a readable image (or --y-from/--y-to)
+    $ daex proof rm artifact-id                     Delete stored proof and its record
+    $ daex proof broken --text                      List proof whose stored file is unavailable
+    $ daex proof recover artifact-id                Re-import a broken proof from its surviving source
+    $ daex proof prune                              Preview broken proof records (does not delete)
+    $ daex proof prune --broken                     Delete every broken proof record
+    $ daex proof record --seconds 20                Record the lane's Mac Desktop display
+    $ daex proof record --seconds 36 --plain        Same, in real time (no still stretches cut)
+    $ daex proof launch --app "ADE"                 Launch an app for proof capture
+    $ daex proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
 
   Where proof files may live
 
@@ -3622,9 +3624,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Attaching a file that is already proof
 
-  ADE hashes every proof file. An attach whose bytes match earlier proof in
+  ${BRAND.NAME} hashes every proof file. An attach whose bytes match earlier proof in
   this project (a renamed copy included) fails with PROOF_DUPLICATE and names
-  the earlier proof with its cite: line. To show a shot ADE already filed
+  the earlier proof with its cite: line. To show a shot ${BRAND.NAME} already filed
   (every "apple screenshot" is), paste that cite: line. Otherwise record a
   new one, or report that recording failed.
   An attached video whose own creation time is before the chat's request is
@@ -3634,9 +3636,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Apple Development
 
   Apple device commands build, launch, stream, inspect, and control a per-lane
-  iOS simulator through ADE's vendored helper. \`ade ios-sim\` is a deprecated
-  alias for one minor release (\`ade ios\` and \`ade simulator\` still route here).
-  Commands reach the running ADE brain, so launch/select/tap operate on the
+  iOS simulator through ${BRAND.NAME}'s vendored helper. \`daex ios-sim\` is a deprecated
+  alias for one minor release (\`daex ios\` and \`daex simulator\` still route here).
+  Commands reach the running ${BRAND.NAME} brain, so launch/select/tap operate on the
   same long-lived service (--socket only turns a missing brain into an
   error). Launch keeps the device in the background; pass --open-drawer when the user should see the
   Apple column, or run "apple show" at any time to put the device on screen.
@@ -3655,115 +3657,115 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Use "apple claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
-    $ ade apple status --text                    Show simulator readiness
-    $ ade apple show                             Show the device to the user (tools pane)
-    $ ade apple show --floating                  Show it as the floating player instead
-    $ ade apple devices --text                   List available simulators
-    $ ade apple apps --device <udid> --text      List launchable apps
-    $ ade apple launch --target <id>    Build, install, and launch an app
-    $ ade apple launch --follow         Same, announcing the wait before the summary
-    $ ade apple claim --lane <lane-id>  Attribute the drawer session to a lane
-    $ ade apple launch --bundle-id com.example Launch installed app
-    $ ade apple launch --configuration Release Build Release instead of Debug
-    $ ade apple launch --bundle-id <id> --no-build --text -- -flag value  Pass launch arguments
-    $ ade apple shutdown                End this chat's simulator session (the device stays on)
-    $ ade apple shutdown --force        Force-release a session owned by another chat
-    $ ade apple launch --force          Take the simulator over in one step
-    $ ade apple launch --foreground     Also open Simulator.app (stays closed by default; the device shows in ADE)
-    $ ade apple actions --text                   List every callable ios_simulator action
+    $ daex apple status --text                   Show simulator readiness
+    $ daex apple show                            Show the device to the user (tools pane)
+    $ daex apple show --floating                 Show it as the floating player instead
+    $ daex apple devices --text                  List available simulators
+    $ daex apple apps --device <udid> --text     List launchable apps
+    $ daex apple launch --target <id>   Build, install, and launch an app
+    $ daex apple launch --follow        Same, announcing the wait before the summary
+    $ daex apple claim --lane <lane-id>  Attribute the drawer session to a lane
+    $ daex apple launch --bundle-id com.example Launch installed app
+    $ daex apple launch --configuration Release Build Release instead of Debug
+    $ daex apple launch --bundle-id <id> --no-build --text -- -flag value  Pass launch arguments
+    $ daex apple shutdown               End this chat's simulator session (the device stays on)
+    $ daex apple shutdown --force       Force-release a session owned by another chat
+    $ daex apple launch --force         Take the simulator over in one step
+    $ daex apple launch --foreground    Also open Simulator.app (stays closed by default; the device shows in ${BRAND.NAME})
+    $ daex apple actions --text                  List every callable ios_simulator action
 
-  ADE discovers Xcode projects from the project root and apps/* folders.
+  ${BRAND.NAME} discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade apple screenshot --out shot.png --text Capture a screenshot (filed as proof; prints cite:)
-    $ ade apple screenshot --no-proof --text     A scratch shot that files nothing
-    $ ade apple proof --caption "<what>" --text  Screenshot into the proof drawer
-    $ ade apple snapshot --text                  Capture selectable UI context
-    $ ade apple inspector --text                 Show current inspector data
-    $ ade apple inspect --x 120 --y 420 --text   Inspect a point in the simulator
-    $ ade apple preview-status --text           Xcode MCP readiness for Preview Lab
-    $ ade apple previews --source <file> --text  List nearby #Preview definitions
-    $ ade apple preview-match --source <file>    Resolve best Preview Lab match
-    $ ade apple preview-ensure --text            Open/wait for Xcode Preview Lab
-    $ ade apple preview-current --text           Render preview for the selected simulator UI
-    $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
+    $ daex apple screenshot --out shot.png --text Capture a screenshot (filed as proof; prints cite:)
+    $ daex apple screenshot --no-proof --text    A scratch shot that files nothing
+    $ daex apple proof --caption "<what>" --text  Screenshot into the proof drawer
+    $ daex apple snapshot --text                 Capture selectable UI context
+    $ daex apple inspector --text                Show current inspector data
+    $ daex apple inspect --x 120 --y 420 --text  Inspect a point in the simulator
+    $ daex apple preview-status --text          Xcode MCP readiness for Preview Lab
+    $ daex apple previews --source <file> --text  List nearby #Preview definitions
+    $ daex apple preview-match --source <file>   Resolve best Preview Lab match
+    $ daex apple preview-ensure --text           Open/wait for Xcode Preview Lab
+    $ daex apple preview-current --text          Render preview for the selected simulator UI
+    $ daex apple preview-render --source <file>  Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade apple open-device --text      Boot a simulator with no app (headless; shown in ADE)
-    $ ade apple open-device --window    Also open Simulator.app (every booted simulator gets a window)
-    $ ade apple device-session --text   Report the tracked device session
-    $ ade apple settings --text         Read appearance, text size, a11y
-    $ ade apple close-device --text     Release the device session
+    $ daex apple open-device --text     Boot a simulator with no app (headless; shown in ${BRAND.NAME})
+    $ daex apple open-device --window   Also open Simulator.app (every booted simulator gets a window)
+    $ daex apple device-session --text  Report the tracked device session
+    $ daex apple settings --text        Read appearance, text size, a11y
+    $ daex apple close-device --text    Release the device session
 
   An app session names a bundle id, a build root, and a lane. A device session
-  is a booted simulator with no app. ADE never shuts down a device it did not
+  is a booted simulator with no app. ${BRAND.NAME} never shuts down a device it did not
   boot unless you pass "close-device --shutdown".
 
   Live view (helper H.264; no Screen Recording grant, no Simulator window):
-    $ ade apple stream-start --fps 60            Stream the device framebuffer
-    $ ade apple stream-status --text             Show live view and input state
-    $ ade apple stream-stop                      Stop the live view
+    $ daex apple stream-start --fps 60           Stream the device framebuffer
+    $ daex apple stream-status --text            Show live view and input state
+    $ daex apple stream-stop                     Stop the live view
 
   Per-lane devices:
-    $ ade apple device-create --text             Make a new, empty device for this lane
-    $ ade apple device-create --runtime "iOS 26.3" --device-type "iPad Air 11-inch (M4)" --text
-    $ ade apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text   A second device beside the lane's own; drive it with --device
-    $ ade apple device-attach --simulator <id>   Bind an installed simulator the user named
-    $ ade apple start [--udid <id>|--runtime <r>] Attach or create, boot, wait, and stream
-    $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
-    $ ade apple device-list --installed --text   Installed simulators for a picker
-    $ ade apple device-list --text               The one device this lane owns
-    $ ade apple device-detach --text             Give up the lane's device (an ADE-made one is deleted ~5-20 min later)
-    $ ade apple device-promote --device <id>     Make an extra device the lane's own (the old one is kept)
-    $ ade apple device-delete --text             Delete the lane's ADE device (attached devices refuse)
-    $ ade apple device-cleanup --text            Delete leftover ADE devices, release ended lanes
-    $ ade apple test --scheme ADE --text         xcodebuild test on the lane's device, cache in the lane
-    $ ade apple install --device <id> --launch   Build once, install (and start) on an extra device
+    $ daex apple device-create --text            Make a new, empty device for this lane
+    $ daex apple device-create --runtime "iOS 26.3" --device-type "iPad Air 11-inch (M4)" --text
+    $ daex apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text  A second device beside the lane's own; drive it with --device
+    $ daex apple device-attach --simulator <id>  Bind an installed simulator the user named
+    $ daex apple start [--udid <id>|--runtime <r>] Attach or create, boot, wait, and stream
+    $ daex apple stop --text                    Power the lane's device OFF (session-only: shutdown)
+    $ daex apple device-list --installed --text  Installed simulators for a picker
+    $ daex apple device-list --text              The one device this lane owns
+    $ daex apple device-detach --text            Give up the lane's device (an ADE-made one is deleted ~5-20 min later)
+    $ daex apple device-promote --device <id>    Make an extra device the lane's own (the old one is kept)
+    $ daex apple device-delete --text            Delete the lane's ${BRAND.NAME} device (attached devices refuse)
+    $ daex apple device-cleanup --text           Delete leftover ${BRAND.NAME} devices, release ended lanes
+    $ daex apple test --scheme ${BRAND.NAME} --text        xcodebuild test on the lane's device, cache in the lane
+    $ daex apple install --device <id> --launch  Build once, install (and start) on an extra device
 
   Recording:
-    $ ade apple record-start --text              Start a manual recording
-    $ ade apple record-stop --keep --text        Stop and keep (or --discard)
-    $ ade apple record-list --text               List recordings for this lane
-    $ ade apple record-delete --id <id> --text   Delete a recording this chat owns
-    $ ade apple auto-record off --text           Agent input on this lane starts no recording (--no-record: one command)
-    $ ade apple frame --out shot.png --text      Grab one decoded stream frame
+    $ daex apple record-start --text             Start a manual recording
+    $ daex apple record-stop --keep --text       Stop and keep (or --discard)
+    $ daex apple record-list --text              List recordings for this lane
+    $ daex apple record-delete --id <id> --text  Delete a recording this chat owns
+    $ daex apple auto-record off --text          Agent input on this lane starts no recording (--no-record: one command)
+    $ daex apple frame --out shot.png --text     Grab one decoded stream frame
 
   Device tools:
-    $ ade apple button home --text               Press Home (also lock, volume-up, volume-down, siri)
-    $ ade apple button app-switcher --text       Open the App Switcher (two home presses)
-    $ ade apple rotate landscape-left --text     Set orientation
-    $ ade apple fold closed --text               Fold an iPhone Duo (closed, open, laptop, book, tent)
-    $ ade apple posture --text                   A foldable's hinge angle and active panel
-    $ ade apple app-store-shots --text           Both iPhone Duo displays at App Store sizes, as proof
-    $ ade apple duo-skill --text                 Add Apple's app-resizability skill to the lane
-    $ ade apple render --poses closed,open --text  3D renders (needs ADE open on the project), as proof
-    $ ade apple runtimes --text                  Simulator runtimes; "runtimes install" fetches what Xcode needs
-    $ ade apple derived-data --measure --text    Xcode's DerivedData folders and their sizes (read only)
-    $ ade apple appearance dark --text           Switch to dark mode
-    $ ade apple content-size accessibility-large Set Dynamic Type size
-    $ ade apple accessibility reduce-motion on   Set one accessibility option
-    $ ade apple location 37.7749 -122.4194       Set the simulated location
-    $ ade apple location --clear                 Clear the simulated location
-    $ ade apple permission grant photos --bundle-id <id>
-    $ ade apple push --bundle-id <id> --title Hi --body "You have mail"
-    $ ade apple open-url myapp://settings        Open a deeplink
-    $ ade apple relaunch --bundle-id <id>        Restart without rebuilding
-    $ ade apple terminate --bundle-id <id>       Stop a running app
-    $ ade apple uninstall --bundle-id <id>       Remove an app and its container
-    $ ade apple status-bar --time 9:41 --wifi-bars 3
-    $ ade apple status-bar --clear               Drop the status bar override
-    $ ade apple app-state --bundle-id <id>       Report running state and pid
-    $ ade apple foreground --text                Which app the device has in front
-    $ ade apple foreground --wait 10 --text      Same, waiting up to 10 s for an app after a launch
-    $ ade apple lease --wait 300 --holder <name> Take a turn on the lane's device (queues behind others, same chat too)
-    $ ade apple lease --token <t>                Renew your turn (only the token renews)
-    $ ade apple lease release --token <t>        Hand the device to the next agent in line
-    $ ade apple window --left --text             Lay out the front app's iPad window (--size WxH, --fill, --split, ...)
+    $ daex apple button home --text              Press Home (also lock, volume-up, volume-down, siri)
+    $ daex apple button app-switcher --text      Open the App Switcher (two home presses)
+    $ daex apple rotate landscape-left --text    Set orientation
+    $ daex apple fold closed --text              Fold an iPhone Duo (closed, open, laptop, book, tent)
+    $ daex apple posture --text                  A foldable's hinge angle and active panel
+    $ daex apple app-store-shots --text          Both iPhone Duo displays at App Store sizes, as proof
+    $ daex apple duo-skill --text                Add Apple's app-resizability skill to the lane
+    $ daex apple render --poses closed,open --text  3D renders (needs ${BRAND.NAME} open on the project), as proof
+    $ daex apple runtimes --text                 Simulator runtimes; "runtimes install" fetches what Xcode needs
+    $ daex apple derived-data --measure --text   Xcode's DerivedData folders and their sizes (read only)
+    $ daex apple appearance dark --text          Switch to dark mode
+    $ daex apple content-size accessibility-large Set Dynamic Type size
+    $ daex apple accessibility reduce-motion on  Set one accessibility option
+    $ daex apple location 37.7749 -122.4194      Set the simulated location
+    $ daex apple location --clear                Clear the simulated location
+    $ daex apple permission grant photos --bundle-id <id>
+    $ daex apple push --bundle-id <id> --title Hi --body "You have mail"
+    $ daex apple open-url myapp://settings       Open a deeplink
+    $ daex apple relaunch --bundle-id <id>       Restart without rebuilding
+    $ daex apple terminate --bundle-id <id>      Stop a running app
+    $ daex apple uninstall --bundle-id <id>      Remove an app and its container
+    $ daex apple status-bar --time 9:41 --wifi-bars 3
+    $ daex apple status-bar --clear              Drop the status bar override
+    $ daex apple app-state --bundle-id <id>      Report running state and pid
+    $ daex apple foreground --text               Which app the device has in front
+    $ daex apple foreground --wait 10 --text     Same, waiting up to 10 s for an app after a launch
+    $ daex apple lease --wait 300 --holder <name> Take a turn on the lane's device (queues behind others, same chat too)
+    $ daex apple lease --token <t>               Renew your turn (only the token renews)
+    $ daex apple lease release --token <t>       Hand the device to the next agent in line
+    $ daex apple window --left --text            Lay out the front app's iPad window (--size WxH, --fill, --split, ...)
 
   Event log:
-    $ ade apple log-start --bundle-id <id>       Start the device event log
-    $ ade apple log --since <cursor> --text      Read new rows
-    $ ade apple log-stop --text                  Stop the log
+    $ daex apple log-start --bundle-id <id>      Start the device event log
+    $ daex apple log --since <cursor> --text     Read new rows
+    $ daex apple log-stop --text                 Stop the log
 
   --bundle-id is required: "log stream" reads the whole device. It keeps the
   app's own process and its bundle-id subsystem; --subsystem <prefix> and
@@ -3772,24 +3774,24 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   one that can stop it; --force takes it.
 
   Semantic actions:
-    $ ade apple snapshot --text                  Read the refs on screen first
-    $ ade apple find-element --label Continue    Find one element by query
-    $ ade apple tap-element --label Continue     Tap the element, not a pixel
-    $ ade apple tap-element --label Photo --hold-ms 1000   Long-press the element
-    $ ade apple fill-element --identifier email --value ada@example.com
-    $ ade apple wait-for-element --label Welcome --timeout-ms 8000
-    $ ade apple wait-for-element --label Spinner --gone
-    $ ade apple assert-visible --label "Order confirmed"
-    $ ade apple proof-bundle --caption "<what>"  Screenshot plus proof metadata
+    $ daex apple snapshot --text                 Read the refs on screen first
+    $ daex apple find-element --label Continue   Find one element by query
+    $ daex apple tap-element --label Continue    Tap the element, not a pixel
+    $ daex apple tap-element --label Photo --hold-ms 1000  Long-press the element
+    $ daex apple fill-element --identifier email --value ada@example.com
+    $ daex apple wait-for-element --label Welcome --timeout-ms 8000
+    $ daex apple wait-for-element --label Spinner --gone
+    $ daex apple assert-visible --label "Order confirmed"
+    $ daex apple proof-bundle --caption "<what>"  Screenshot plus proof metadata
 
   Input and selection:
-    $ ade apple select --x 120 --y 420  Add simulator UI context to chat
-    $ ade apple tap 120 420                      Tap in the simulator
-    $ ade apple long-press 120 420 --duration-ms 1000   Hold a press (context menus)
-    $ ade apple drag 120 700 120 250             Drag in the simulator
-    $ ade apple swipe 120 700 120 250            Swipe in the simulator
-    $ ade apple scroll down --anchor-x 200 --anchor-y 500  Scroll the view under a point
-    $ ade apple type "hello" --text              Type into the launched app
+    $ daex apple select --x 120 --y 420  Add simulator UI context to chat
+    $ daex apple tap 120 420                     Tap in the simulator
+    $ daex apple long-press 120 420 --duration-ms 1000  Hold a press (context menus)
+    $ daex apple drag 120 700 120 250            Drag in the simulator
+    $ daex apple swipe 120 700 120 250           Swipe in the simulator
+    $ daex apple scroll down --anchor-x 200 --anchor-y 500  Scroll the view under a point
+    $ daex apple type "hello" --text             Type into the launched app
 
   A coordinate tap is a guess that the layout did not move. Prefer
   tap-element and fill-element; fall back to tap when no query matches.
@@ -3797,52 +3799,52 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   "mac-desktop": `${ADE_BANNER}
   Mac Desktop
 
-  Each lane can own a private macOS screen. ADE creates a virtual display named
+  Each lane can own a private macOS screen. ${BRAND.NAME} creates a virtual display named
   after the lane, parks the lane's windows on it, and drives them through the
   Accessibility API — the user's real display and real pointer stay untouched.
-  Aliases: \`ade mac-desk\` and \`ade desk\`. NOTE: \`ade desktop\` is the
-  separate ADE desktop-app launcher, not this. macOS runtime hosts only;
+  Aliases: \`daex mac-desk\` and \`daex desk\`. NOTE: \`daex desktop\` is the
+  separate ${BRAND.NAME} desktop-app launcher, not this. macOS runtime hosts only;
   everywhere else "status" answers supported=false and the rest refuse.
 
   Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID. A chat-bound
   caller is pinned to its chat's lane: --lane naming a different lane is refused.
 
   Display:
-    $ ade mac-desktop status --text                    Host support, display, windows, lease
-    $ ade mac-desktop start --text                     Create this lane's display
-    $ ade mac-desktop display --text                   Show the resolution
-    $ ade mac-desktop display 1440p --text             Set it (1080p, 1440p, 4k)
-    $ ade mac-desktop stop --text                      Quit the apps it opened (forced), return your windows
-    $ ade mac-desktop show --text                      Show it to the user in the tools pane
-    $ ade mac-desktop show --floating --text           ...or as the floating card over the chat
+    $ daex mac-desktop status --text                   Host support, display, windows, lease
+    $ daex mac-desktop start --text                    Create this lane's display
+    $ daex mac-desktop display --text                  Show the resolution
+    $ daex mac-desktop display 1440p --text            Set it (1080p, 1440p, 4k)
+    $ daex mac-desktop stop --text                     Quit the apps it opened (forced), return your windows
+    $ daex mac-desktop show --text                     Show it to the user in the tools pane
+    $ daex mac-desktop show --floating --text          ...or as the floating card over the chat
 
   Windows:
-    $ ade mac-desktop open <app|path|url> --text       Launch an app onto the display
-    $ ade mac-desktop open Xcode -- --args here        Everything after -- is the app's argv
-    $ ade mac-desktop open ~/song.als --text           A document goes to the lane's running copy
-    $ ade mac-desktop open ~/song.als --new-instance   ...or to a separate new copy
-    $ ade mac-desktop windows --text                   List windows
-    $ ade mac-desktop claim --window <id> --text       Move an existing window here
-    $ ade mac-desktop release --window <id> --text     Give it to you (a lane app goes whole)
-    $ ade mac-desktop quit [<app>] --text              Quit apps the lane opened, released ones too (only when asked)
+    $ daex mac-desktop open <app|path|url> --text      Launch an app onto the display
+    $ daex mac-desktop open Xcode -- --args here       Everything after -- is the app's argv
+    $ daex mac-desktop open ~/song.als --text          A document goes to the lane's running copy
+    $ daex mac-desktop open ~/song.als --new-instance  ...or to a separate new copy
+    $ daex mac-desktop windows --text                  List windows
+    $ daex mac-desktop claim --window <id> --text      Move an existing window here
+    $ daex mac-desktop release --window <id> --text    Give it to you (a lane app goes whole)
+    $ daex mac-desktop quit [<app>] --text             Quit apps the lane opened, released ones too (only when asked)
 
   Observe, then act by handle:
-    $ ade mac-desktop observe --text                   Screenshot + numbered elements
-    $ ade mac-desktop observe --map --limit 80 --text  Add a numbered element-map image
-    $ ade mac-desktop click <handle> --text            Click what you observed
-    $ ade mac-desktop click --text "Sign in" --text    Click by visible text
-    $ ade mac-desktop click --x 900 --y 420 --text     Click a global point (no pointer moves)
-    $ ade mac-desktop click --x 300 --y 200 --local    A point read off the screenshot (display-local)
-    $ ade mac-desktop click --x 900 --y 420 --right    Right-click; --double for a double click
-    $ ade mac-desktop type "hello" --clear --text      Type into the focused element
-    $ ade mac-desktop type "reddit" --submit --text    Type, then press Return
-    $ ade mac-desktop press return --text              One key (return, tab, escape, f5…)
-    $ ade mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
+    $ daex mac-desktop observe --text                  Screenshot + numbered elements
+    $ daex mac-desktop observe --map --limit 80 --text  Add a numbered element-map image
+    $ daex mac-desktop click <handle> --text           Click what you observed
+    $ daex mac-desktop click --text "Sign in" --text   Click by visible text
+    $ daex mac-desktop click --x 900 --y 420 --text    Click a global point (no pointer moves)
+    $ daex mac-desktop click --x 300 --y 200 --local   A point read off the screenshot (display-local)
+    $ daex mac-desktop click --x 900 --y 420 --right   Right-click; --double for a double click
+    $ daex mac-desktop type "hello" --clear --text     Type into the focused element
+    $ daex mac-desktop type "reddit" --submit --text   Type, then press Return
+    $ daex mac-desktop press return --text             One key (return, tab, escape, f5…)
+    $ daex mac-desktop press return --cmd --shift --text Modifiers: --cmd --shift
                                                        --alt (option) --control
-    $ ade mac-desktop scroll down --amount 5 --text    Scroll the display or a target
-    $ ade mac-desktop scroll down --x 900 --y 420      Scroll the view under a point
-    $ ade mac-desktop drag --from <handle> --to 900,420
-    $ ade mac-desktop wait --label "Done" --timeout 8000 --text
+    $ daex mac-desktop scroll down --amount 5 --text   Scroll the display or a target
+    $ daex mac-desktop scroll down --x 900 --y 420     Scroll the view under a point
+    $ daex mac-desktop drag --from <handle> --to 900,420
+    $ daex mac-desktop wait --label "Done" --timeout 8000 --text
 
   Every acting command re-observes and prints what the screen looks like now.
   None of the commands above moves the user's pointer or needs approval. A
@@ -3853,7 +3855,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   control that appears on hover or a drop onto another app or the Dock, and it
   needs one lease per chat:
 
-    $ ade mac-desktop lease --reason "drag the file onto the dock" --text
+    $ daex mac-desktop lease --reason "drag the file onto the dock" --text
 
   Points are global screen points; observe prints the display's range as
   "points". --local (click, scroll, drag) takes display-local points instead.
@@ -3861,11 +3863,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   the user, prints its outcome, and exits 1 unless it was granted.
 
   Capture:
-    $ ade mac-desktop screenshot --out shot.png --text Capture without filing proof
-    $ ade mac-desktop record start --caption "<what>"  Record; a caption files it
-    $ ade mac-desktop record stop --text
-    $ ade mac-desktop record status --text             Is it recording, since when, how long
-    $ ade mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
+    $ daex mac-desktop screenshot --out shot.png --text Capture without filing proof
+    $ daex mac-desktop record start --caption "<what>"  Record; a caption files it
+    $ daex mac-desktop record stop --text
+    $ daex mac-desktop record status --text            Is it recording, since when, how long
+    $ daex mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
 
   Recording flags (record start):
     --plain                File it as recorded: no cuts, zoom, pointer or captions.
@@ -3873,7 +3875,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   A recording becomes a demo when it stops: still stretches are cut, waits
   play faster, the camera zooms to each action, a pointer and click rings are
-  drawn, and step captions (ade proof step "<text>") show. Every video ends
+  drawn, and step captions (daex proof step "<text>") show. Every video ends
   under 10 MB. record stop reports durationMs (video), wallDurationMs (real
   time) and idleCutMs. A recording stops itself after 5 minutes (stopReason
   "cap"), after 2 minutes with no action ("idle") or when the disk is almost
@@ -3899,8 +3901,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   On Linux it is Linux Desktop, a private virtual display (Xvfb) per lane.
   The verbs are the same on every host.
 
-  Aliases: \`ade screen\` is the neutral name. \`ade mac-desktop\` and
-  \`ade windows-desktop\` both work. NOTE: \`ade desktop\` is the separate ADE
+  Aliases: \`daex screen\` is the neutral name. \`daex mac-desktop\` and
+  \`daex windows-desktop\` both work. NOTE: \`daex desktop\` is the separate ${BRAND.NAME}
   desktop-app launcher, not this.
 
   Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID, and a
@@ -3908,77 +3910,77 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   may come last, even after \`--\`.
 
   Screen:
-    $ ade screen status --text                      Product, seat, holder, next step
-    $ ade screen start --text                       Create this lane's screen (private)
-    $ ade screen start --shared --reason "<why>" --text
+    $ daex screen status --text                     Product, seat, holder, next step
+    $ daex screen start --text                      Create this lane's screen (private)
+    $ daex screen start --shared --reason "<why>" --text
                                                     Windows: ask the user, in this chat,
                                                     for their main desktop
-    $ ade screen stop --text                        Stop it (quits apps the lane opened)
-    $ ade screen show --text                        Show it to the user (--floating: card)
+    $ daex screen stop --text                       Stop it (quits apps the lane opened)
+    $ daex screen show --text                       Show it to the user (--floating: card)
 
   The user's steps (an agent asks, it cannot do these):
-    $ ade screen setup --allow-prompt --text        Windows: one-time admin step.
+    $ daex screen setup --allow-prompt --text       Windows: one-time admin step.
                                                     Linux: install the screen's system packages
-    $ ade screen setup --allow-prompt --save-password --text   Save the Windows password
-    $ ade screen takeover --text                    Windows: take the private screen from another lane
+    $ daex screen setup --allow-prompt --save-password --text  Save the Windows password
+    $ daex screen takeover --text                   Windows: take the private screen from another lane
 
   Apps and windows:
-    $ ade screen open <app|path|url> --text         Launch onto the screen; prints its windows
-    $ ade screen open notepad -- C:\\tmp\\proof.txt --text   App args after --
-    $ ade screen windows --text                     List windows
-    $ ade screen focus --window <id> --text         Windows, Linux: raise one of this lane's windows
-    $ ade screen minimize --window <id> --text      Windows, Linux: minimize it
-    $ ade screen close --window <id> --text         Windows, Linux: close it (it may ask to save)
-    $ ade screen claim --window <id> --text         Move an existing window here
-    $ ade screen release --window <id> --text       Give it to the user (a lane app goes whole)
-    $ ade screen quit [app] --text                  Quit apps the lane opened
+    $ daex screen open <app|path|url> --text        Launch onto the screen; prints its windows
+    $ daex screen open notepad -- C:\\tmp\\proof.txt --text  App args after --
+    $ daex screen windows --text                    List windows
+    $ daex screen focus --window <id> --text        Windows, Linux: raise one of this lane's windows
+    $ daex screen minimize --window <id> --text     Windows, Linux: minimize it
+    $ daex screen close --window <id> --text        Windows, Linux: close it (it may ask to save)
+    $ daex screen claim --window <id> --text        Move an existing window here
+    $ daex screen release --window <id> --text      Give it to the user (a lane app goes whole)
+    $ daex screen quit [app] --text                 Quit apps the lane opened
 
   Observe, then act by handle:
-    $ ade screen observe --text                     Screenshot + numbered elements
-    $ ade screen click <handle> --text              Click what you observed
-    $ ade screen click --x 400 --y 300 --text       Click a point (real input)
-    $ ade screen type "hello" --submit --text       Type, then press Return
-    $ ade screen press s --ctrl --text              One key, with modifiers
-    $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
-    $ ade screen drag --from <handle|x,y> --to <handle|x,y> --text
+    $ daex screen observe --text                    Screenshot + numbered elements
+    $ daex screen click <handle> --text             Click what you observed
+    $ daex screen click --x 400 --y 300 --text      Click a point (real input)
+    $ daex screen type "hello" --submit --text      Type, then press Return
+    $ daex screen press s --ctrl --text             One key, with modifiers
+    $ daex screen scroll down --amount 5 --text     Scroll the screen or a target
+    $ daex screen drag --from <handle|x,y> --to <handle|x,y> --text
                                                     Drag inside a window (--real: onto another app)
-    $ ade screen present main | display --text      Show the lane's windows on the user's screen, and back (Mac)
-    $ ade screen wait --label "Done" --timeout 8000 --text
+    $ daex screen present main | display --text     Show the lane's windows on the user's screen, and back (Mac)
+    $ daex screen wait --label "Done" --timeout 8000 --text
 
   Modifier keys: --ctrl, --alt, --shift, and --win (Windows key, Windows only).
   On Windows --cmd is sent as Ctrl and --opt as Alt; on a Mac --cmd is ⌘.
 
   Real input (a point click, a drag, --real): a Windows private seat needs no
   lease. A Mac and the Windows shared seat do: on a Mac run
-  \`ade screen lease --reason "<why>"\` once per chat; on the shared seat the
+  \`daex screen lease --reason "<why>"\` once per chat; on the shared seat the
   user's yes covers it.
 
   Capture:
-    $ ade screen screenshot --out shot.png --text   Capture without filing proof
-    $ ade screen record start --caption "<what>"    Record; a caption files it
-    $ ade proof step "<what happens next>"          A caption and chapter in the video
-    $ ade screen record stop --text                 Prints the duration and a cite line
-    $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
+    $ daex screen screenshot --out shot.png --text  Capture without filing proof
+    $ daex screen record start --caption "<what>"   Record; a caption files it
+    $ daex proof step "<what happens next>"         A caption and chapter in the video
+    $ daex screen record stop --text                Prints the duration and a cite line
+    $ daex screen proof --caption "<what>" --text   Capture, re-observe, file proof
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
 
   Another machine: --machine <name> drives that machine's screen (Mac,
   Windows or Linux Desktop) with no lane there. The screen belongs to your
-  code there (ADE puts it there at your commit on the first start or open;
+  code there (${BRAND.NAME} puts it there at your commit on the first start or open;
   the commit must be pushed), and this chat owns it, as for a lane. status,
   windows and stream status put nothing there. --lane is refused. screen
   proof and a captioned recording are filed in this chat's proof drawer.
   lease and start --shared ask in a chat on that machine, so they are
-  refused; use the default input instead. ade devices use screen@<name>
-  sends every screen command there with no flag (ade devices --text lists
-  the screens you can use). ade shell clean --machine <name> deletes your
+  refused; use the default input instead. daex devices use screen@<name>
+  sends every screen command there with no flag (daex devices --text lists
+  the screens you can use). daex shell clean --machine <name> deletes your
   code there and closes its screen.
-    $ ade screen start --machine "MacBook Pro" --text
-    $ ade screen open TextEdit --machine "MacBook Pro" --text
-    $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
+    $ daex screen start --machine "MacBook Pro" --text
+    $ daex screen open TextEdit --machine "MacBook Pro" --text
+    $ daex screen proof --caption "<what>" --machine "MacBook Pro" --text
 
   Errors (each prints its next step):
     WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
-    WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ADE did not start); ask
+    WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ${BRAND.NAME} did not start); ask
                                      the user to take over, or start --shared
     WINDOWS_DESKTOP_LOCKED           ask the user to unlock the PC
     WINDOWS_DESKTOP_NOT_CONSOLE_SESSION  private unavailable; start --shared
@@ -3986,11 +3988,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     WINDOWS_DESKTOP_ELEVATED_WINDOW  an admin window holds focus; ask the user to resolve it
     WINDOWS_DESKTOP_WINDOW_ACTION_FAILED  Windows could not focus or minimize the window, or an app did not answer in time
     WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE  main desktop: a key chord cannot be sent in the background; add --real
-    MAC_DESKTOP_INPUT_LEASE_REQUIRED Mac / shared seat: ade screen lease
+    MAC_DESKTOP_INPUT_LEASE_REQUIRED Mac / shared seat: daex screen lease
   Setup, takeover and shared consent belong to the user; an agent cannot
   pass --allow-prompt or --consent itself.
 
-  For the full Mac surface, run \`ade mac-desktop --help\`; the verbs match.
+  For the full Mac surface, run \`daex mac-desktop --help\`; the verbs match.
 `,
   "android": `${ADE_BANNER}
   Android Emulator
@@ -4004,232 +4006,232 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   the same pixels as the screenshot.
 
   Setup and the lane's device:
-    $ ade android status --text                    SDK, acceleration, the lane's emulator, and the
+    $ daex android status --text                   SDK, acceleration, the lane's emulator, and the
                                                    lane's app's last crash while it runs
-    $ ade android devices --text                   AVDs (and the lane holding each), system images
-    $ ade android devices --profiles --text        Also list the hardware profiles
-    $ ade android device-create --profile medium_phone --text
+    $ daex android devices --text                  AVDs (and the lane holding each), system images
+    $ daex android devices --profiles --text       Also list the hardware profiles
+    $ daex android device-create --profile medium_phone --text
                                                    Make an AVD for this lane and boot it
                                                    (--image <package>, --name <shown name>, --no-start)
-    $ ade android device-create --catalog galaxy-s25 --color navy --text
+    $ daex android device-create --catalog galaxy-s25 --color navy --text
                                                    A brand device: pixel-10, pixel-10-pro, pixel-10-pro-fold,
                                                    pixel-tablet, pixel-watch, galaxy-s25, galaxy-s25-ultra,
                                                    galaxy-z-fold7, oneplus-13, nothing-phone-3 (stock Android)
-    $ ade android device-attach --avd <name> --text
+    $ daex android device-attach --avd <name> --text
                                                    Hold an existing AVD no other lane holds (--no-start)
-    $ ade android start --text                     Boot the lane's AVD (waits for boot completed).
+    $ daex android start --text                    Boot the lane's AVD (waits for boot completed).
                                                    Refused with ANDROID_LOW_MEMORY when the machine
                                                    is short of memory or swapping, or its emulators
                                                    would pass half of its memory; --force boots
                                                    anyway (ask the user first)
-    $ ade android stop --text                      Stop it; the lane keeps its AVD
-    $ ade android keep-running on|off --text       ADE stops an emulator nobody used for 20 min;
+    $ daex android stop --text                     Stop it; the lane keeps its AVD
+    $ daex android keep-running on|off --text      ${BRAND.NAME} stops an emulator nobody used for 20 min;
                                                    "on" keeps the lane's running one up
-    $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
+    $ daex android device-detach --text            Stop it and let the AVD go. An AVD ${BRAND.NAME} made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
 
-  Extra devices (a second device beside the lane's own, as ade apple's):
-    $ ade android device-create --extra --catalog pixel-tablet --text
+  Extra devices (a second device beside the lane's own, as daex apple's):
+    $ daex android device-create --extra --catalog pixel-tablet --text
                                                    Make an extra AVD for this lane and boot it beside
                                                    the lane's device (at most 2; each one holds 2-5 GB
                                                    of RAM, and every boot goes through the RAM guard)
-    $ ade android start --device <avd> --text      Boot an extra (stop --device <avd> stops it)
-    $ ade android install --apk build/app.apk --device <avd> --text
+    $ daex android start --device <avd> --text     Boot an extra (stop --device <avd> stops it)
+    $ daex android install --apk build/app.apk --device <avd> --text
                                                    Install on an extra (launch --device too); an extra
                                                    that is off boots first
-    $ ade android device-promote --device <avd> --text
+    $ daex android device-promote --device <avd> --text
                                                    Make an extra the lane's device (the one that streams,
                                                    records and runs tests). The old one is kept as an
                                                    extra; the user's own AVD is released. Refused while
                                                    the device streams, records, tests, installs, or
                                                    another agent holds the lease
-    $ ade android device-detach --device <avd> --text
+    $ daex android device-detach --device <avd> --text
                                                    Remove an extra: it stops and is deleted (--keep
                                                    keeps the AVD). The lane keeps its device; the
                                                    lane's extras are deleted when the lane ends
-    $ ade android device-cleanup --dry-run --text  What cleanup does: release ended lanes' devices, stop
-                                                   emulators ADE started that no lane holds, forget rows
+    $ daex android device-cleanup --dry-run --text  What cleanup does: release ended lanes' devices, stop
+                                                   emulators ${BRAND.NAME} started that no lane holds, forget rows
                                                    whose AVD is gone (--power-off-idle: also idle ones;
                                                    an agent reaches only its own lane). It runs by itself
-                                                   too. An emulator ADE started with no input, view,
+                                                   too. An emulator ${BRAND.NAME} started with no input, view,
                                                    recording, lease or test for 20 min powers off
                                                    unless kept running
                                                    (ADE_ANDROID_IDLE_POWER_OFF_MINUTES, 0 = never).
 
   Input and capture:
-    $ ade android screenshot --out shot.png --text Write a PNG (on the emulator's machine), filed as
+    $ daex android screenshot --out shot.png --text Write a PNG (on the emulator's machine), filed as
                                                    proof; prints cite: (--no-proof: the file only)
-    $ ade android tap 540 1200 --text              Tap a point
-    $ ade android swipe 540 1800 540 600 --duration-ms 300 --text
+    $ daex android tap 540 1200 --text             Tap a point
+    $ daex android swipe 540 1800 540 600 --duration-ms 300 --text
                                                    Swipe from one point to another
-    $ ade android button back --text               back | home | recents | power | volume-up | volume-down
-    $ ade android rotate landscape-left --text     Lock the screen: portrait, portrait-upside-down,
+    $ daex android button back --text              back | home | recents | power | volume-up | volume-down
+    $ daex android rotate landscape-left --text    Lock the screen: portrait, portrait-upside-down,
                                                    landscape-left, landscape-right (landscape is
                                                    landscape-right). Apps that fix their orientation,
                                                    such as the home screen, keep it.
-    $ ade android type "hello world" --text        Type into the focused field (--value "<text>" for text
+    $ daex android type "hello world" --text       Type into the focused field (--value "<text>" for text
                                                    that starts with a dash; --submit presses Enter after)
-    $ ade android key tab --text                   One key: return, tab, escape, delete, space, up, down,
+    $ daex android key tab --text                  One key: return, tab, escape, delete, space, up, down,
                                                    left, right, home, end, page-up, page-down, f1-f12,
                                                    a letter or a digit. Modifiers: key ctrl+a, or
                                                    key a --ctrl (--shift, --alt, --meta/--cmd)
-    $ ade android frame --text                     One PNG of the screen now, not filed as proof (--out)
-    $ ade android inspect 540 1200 --text          The element under a point, with its source file:line
+    $ daex android frame --text                    One PNG of the screen now, not filed as proof (--out)
+    $ daex android inspect 540 1200 --text         The element under a point, with its source file:line
                                                    when the lane's code names it (--ref, --screenshot)
-    $ ade android select 540 1200 --text           Inspect with the crop, as the person's pick
-    $ ade android fold half --text                 Fold a foldable AVD: open, half, closed, or an angle
+    $ daex android select 540 1200 --text          Inspect with the crop, as the person's pick
+    $ daex android fold half --text                Fold a foldable AVD: open, half, closed, or an angle
                                                    (--angle 0-180). Waits for the screen to swap.
-    $ ade android posture --text                   Read the hinge: angle, fold state, screen in front
-    $ ade android play-store-shots --text          Google Play screenshots, filed as proof: a foldable's
+    $ daex android posture --text                  Read the hinge: angle, fold state, screen in front
+    $ daex android play-store-shots --text         Google Play screenshots, filed as proof: a foldable's
                                                    cover (phone slot) and inner screen (large-screen
                                                    slot); any other device, its screen. 9:16 or 16:9,
                                                    no alpha, 1080-3840 px. --no-proof: the files only
-    $ ade android window --text                    The app windows of a large screen (tablet, open fold)
-    $ ade android window split --package <a> --with <b> --text
+    $ daex android window --text                   The app windows of a large screen (tablet, open fold)
+    $ daex android window split --package <a> --with <b> --text
                                                    Two apps side by side. Also: left | right | top |
                                                    bottom | swap | freeform | fill | close (--package),
                                                    --size WxH, --move X,Y (a free window). Exits 1
                                                    when the window did not land.
-    $ ade android preview list --module app --text List the module's Compose @Preview functions (no emulator)
-    $ ade android preview --module app --fqn com.example.ui.GreetingKt.GreetingPreview --text
+    $ daex android preview list --module app --text List the module's Compose @Preview functions (no emulator)
+    $ daex android preview --module app --fqn com.example.ui.GreetingKt.GreetingPreview --text
                                                    Render Compose previews to PNG with no emulator, filed as
                                                    proof (Android CLI). No --fqn: every preview (up to 24).
                                                    --no-proof: write the images only.
-    $ ade android render --angles front,back --lighting studio --sheet --text
+    $ daex android render --angles front,back --lighting studio --sheet --text
                                                    3D renders of the device with its live screen, filed as
-                                                   proof (needs ADE open on the lane's Android tool).
+                                                   proof (needs ${BRAND.NAME} open on the lane's Android tool).
                                                    Angles: front, three-quarter-left, three-quarter-right,
                                                    back, current. --video adds a 6 s turntable; --no-shadow
-    $ ade android show --text                      Show the emulator to the user (tools pane;
+    $ daex android show --text                     Show the emulator to the user (tools pane;
                                                    --floating: the floating player over the chat)
-    $ ade android actions --text                   List the android_emulator actions
-    $ ade android long-press 540 1200 --duration-ms 1500 --text
-    $ ade android drag 200 800 800 800 --duration-ms 600 --text
+    $ daex android actions --text                  List the android_emulator actions
+    $ daex android long-press 540 1200 --duration-ms 1500 --text
+    $ daex android drag 200 800 800 800 --duration-ms 600 --text
                                                    A slow press-move-lift (drag and drop)
-    $ ade android scroll --direction down --amount 0.6 --text
+    $ daex android scroll --direction down --amount 0.6 --text
                                                    (--anchor-x/--anchor-y: where the finger starts)
 
   Apps:
-    $ ade android apps --text                      Apps on the emulator (and which ADE installed)
-    $ ade android install --gradle --text          Build the lane's app with its Gradle wrapper and
+    $ daex android apps --text                     Apps on the emulator (and which ${BRAND.NAME} installed)
+    $ daex android install --gradle --text         Build the lane's app with its Gradle wrapper and
                                                    install it (--module app, --variant debug)
-    $ ade android install --apk build/app.apk --text
+    $ daex android install --apk build/app.apk --text
                                                    Install an APK inside the lane worktree
-    $ ade android launch --gradle --text           Build, install and open it
-    $ ade android launch --package <name> --text   Open an installed app (--activity <name>)
-    $ ade android launch --package <name> --extra user=ada --extra count=3 --text
+    $ daex android launch --gradle --text          Build, install and open it
+    $ daex android launch --package <name> --text  Open an installed app (--activity <name>)
+    $ daex android launch --package <name> --extra user=ada --extra count=3 --text
                                                    Intent extras: true/false, a number or text is typed
                                                    (--extra-string keeps it text). am start options:
                                                    --launch-arg <word>, or -- <words>
-    $ ade android relaunch --package <name> --text Stop it, then open it again (the launch's flags)
-    $ ade android app-state <name> --text          Installed, running, in front, pid, version
-    $ ade android foreground --wait 10 --text      The app in front; --wait asks again until one is
+    $ daex android relaunch --package <name> --text Stop it, then open it again (the launch's flags)
+    $ daex android app-state <name> --text         Installed, running, in front, pid, version
+    $ daex android foreground --wait 10 --text     The app in front; --wait asks again until one is
                                                    (--package <name> waits for that one, exits 1 when not)
-    $ ade android terminate --package <name> --text
-    $ ade android uninstall --package <name> --text
+    $ daex android terminate --package <name> --text
+    $ daex android uninstall --package <name> --text
                                                    On an AVD the lane did not make, only apps
-                                                   ADE installed
-    $ ade android open-url https://example.com --text
+                                                   ${BRAND.NAME} installed
+    $ daex android open-url https://example.com --text
                                                    Open a URL or a deep link (myapp://...)
-    $ ade android test --text                      Run the app's instrumentation tests on the
+    $ daex android test --text                     Run the app's instrumentation tests on the
                                                    lane's emulator (--module app, --variant debug,
                                                    --class <fqcn>, --method <name>); exits 1 when
                                                    a test fails
 
   Read the screen and act on elements:
-    $ ade android snapshot --text                  The screen's elements: ref, role, name, center
+    $ daex android snapshot --text                 The screen's elements: ref, role, name, center
                                                    (--fresh reads again; a read is kept 5 s)
-    $ ade android find-element --label "Sign in" --text
-    $ ade android tap-element --ref text:greet --text
+    $ daex android find-element --label "Sign in" --text
+    $ daex android tap-element --ref text:greet --text
                                                    (--hold-ms <ms> for a long press)
-    $ ade android fill-element --identifier name --value "Ada" --text
+    $ daex android fill-element --identifier name --value "Ada" --text
                                                    Clear the field, type, and read it back
-    $ ade android wait-for-element --text "Welcome" --timeout-ms 20000 --text
+    $ daex android wait-for-element --text "Welcome" --timeout-ms 20000 --text
                                                    (--gone waits for it to leave)
-    $ ade android assert-visible --text "Hello, Ada" --text
+    $ daex android assert-visible --text "Hello, Ada" --text
                                                    Exits 1 when it is not on screen
   Element queries: --ref, --identifier (the resource id), --label (content
   description), --text (shown text, part of it is enough), --role, --index <n>.
 
   Logs, recordings and proof:
-    $ ade android log --package <name> --level warn --lines 200 --text
+    $ daex android log --package <name> --level warn --lines 200 --text
                                                    Logcat (--since <cursor> reads only newer lines)
-    $ ade android record-start --label "sign in" --text
+    $ daex android record-start --label "sign in" --text
                                                    Record the screen (--max-seconds, up to 300).
                                                    The stop makes a demo: idle time cut, tap rings,
-                                                   typed-text badges, ade proof step chapters, under
+                                                   typed-text badges, daex proof step chapters, under
                                                    10 MB. --plain: the video as recorded; --zoom:
                                                    follow the taps. A rotation stays one video.
                                                    Starting one while an automatic one runs keeps it.
-    $ ade android record-stop --text               Stop; the MP4 files to this chat's proof drawer
+    $ daex android record-stop --text              Stop; the MP4 files to this chat's proof drawer
                                                    and prints cite: (--discard keeps nothing;
                                                    --keep, the default, files it)
-    $ ade android auto-record off --text           An agent's input on this lane starts no recording
+    $ daex android auto-record off --text          An agent's input on this lane starts no recording
                                                    (on | off | status). --no-record on tap, swipe,
                                                    type, key, button, open-url, long-press, drag,
                                                    scroll, tap-element, fill-element: one command.
                                                    An automatic recording stops when the turn ends,
                                                    or after 2 minutes with no change.
-    $ ade android record-list --text
-    $ ade android record-delete --id <id> --text
-    $ ade android proof-bundle --caption "after sign in" --text
+    $ daex android record-list --text
+    $ daex android record-delete --id <id> --text
+    $ daex android proof-bundle --caption "after sign in" --text
                                                    Screenshot + elements + log + meta, filed as
                                                    proof (--out <dir>, --package, --no-elements)
 
   Take turns and set the emulator up:
-    $ ade android lease --wait 300 --holder <name> --text
+    $ daex android lease --wait 300 --holder <name> --text
                                                    Take a turn on the lane's emulator; exits 1
                                                    when not granted. --ttl <s>
-    $ ade android lease renew --token <t> --text   (lease release --token <t>, lease status)
-    $ ade android location 37.7749 -122.4194 --text
-    $ ade android location --clear --text          Clear it: the GPS goes back to the emulator's default
-    $ ade android appearance dark --text           light | dark
-    $ ade android accessibility bold-text on --text
+    $ daex android lease renew --token <t> --text  (lease release --token <t>, lease status)
+    $ daex android location 37.7749 -122.4194 --text
+    $ daex android location --clear --text         Clear it: the GPS goes back to the emulator's default
+    $ daex android appearance dark --text          light | dark
+    $ daex android accessibility bold-text on --text
                                                    One switch: increase-contrast, bold-text,
                                                    invert-colors, grayscale, color-correction,
                                                    talkback (on | off, or --on/--off)
-    $ ade android status-bar --time 9:41 --text    Screenshot status bar (SystemUI demo mode); also
+    $ daex android status-bar --time 9:41 --text   Screenshot status bar (SystemUI demo mode); also
                                                    --data-network wifi|5g|lte|4g|3g|e|g, --wifi-bars,
                                                    --cellular-bars (0-4), --battery-level,
                                                    --battery-state charging|charged|discharging
-    $ ade android status-bar --clear --text        Back to the device's own status bar
-    $ ade android settings --text                  Text and display size, developer and accessibility
+    $ daex android status-bar --clear --text       Back to the device's own status bar
+    $ daex android settings --text                 Text and display size, developer and accessibility
                                                    switches, status bar, battery, radios, location,
                                                    orientation and the app in front
-    $ ade android settings --airplane on --text    One change per call: --text-size, --display-size,
+    $ daex android settings --airplane on --text   One change per call: --text-size, --display-size,
                                                    --animations, --show-taps, --layout-bounds,
                                                    --battery <0-100> [--charging on|off], --wifi,
                                                    --data, --airplane (on | off)
-    $ ade android permission grant camera --package <name> --text
+    $ daex android permission grant camera --package <name> --text
                                                    grant | revoke: camera, location, microphone,
                                                    notifications, contacts, photos, calendar,
                                                    or android.permission.X
 
   Android SDK (this machine):
-    $ ade android sdk status --text                What is installed, what is missing, the sizes,
+    $ daex android sdk status --text               What is installed, what is missing, the sizes,
                                                    the free space and the licences
                                                    (--folder <path>, --with-cli)
-    $ ade android sdk licenses --text              Read the licences (--id <id> for one)
-    $ ade android sdk images --text                The installed system images (size, the AVDs that
+    $ daex android sdk licenses --text             Read the licences (--id <id> for one)
+    $ daex android sdk images --text               The installed system images (size, the AVDs that
                                                    use each) and the ones to download for this
                                                    machine (--installed: only the installed ones)
 
   Only the user installs the SDK, accepts Google's licences, stops an
-  install or picks the SDK folder, in the ADE desktop app: the setup card in
-  the Android tool, or Settings › Android devices. ADE never accepts a
+  install or picks the SDK folder, in the ${BRAND.NAME} desktop app: the setup card in
+  the Android tool, or Settings › Android devices. ${BRAND.NAME} never accepts a
   licence. \`sdk install\`, \`sdk use\` and \`sdk cancel\` refuse a terminal.
   The user also installs and removes system images, in the device picker's
   System images. \`sdk install --image <id>\` and \`sdk remove --image <id>\`
   refuse a terminal too.
 
-  The verbs and flags are the ones \`ade apple\` uses for the same job (tap
+  The verbs and flags are the ones \`daex apple\` uses for the same job (tap
   also takes --x/--y, button --name, type --value). Any other flag is refused.
   Never run \`emulator -avd\`, \`adb kill-server\` or \`adb emu kill\`: they
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there runs your code there (ADE
+  no new lane. Without --lane, the emulator there runs your code there (${BRAND.NAME}
   puts it there at your commit on first use; the commit must be pushed).
   Every view of this chat then shows it in the Android tool. status and
   devices put nothing there. --lane <id> uses a lane on that machine
@@ -4241,14 +4243,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   does not travel: use --gradle). A Gradle build or a boot there waits as
   long as it would here and prints "still running" lines to stderr
   meanwhile. --clone sets this repo up there first. The emulator's lease is
-  let go when this chat's turn ends (it stays on). ade devices use
+  let go when this chat's turn ends (it stays on). daex devices use
   android@<name> sends every android command there with no flag (ade
   devices --text lists the emulators you can use).
-    $ ade android device-create --profile medium_phone --machine windows --text
-    $ ade android tap 540 1200 --machine windows --text
+    $ daex android device-create --profile medium_phone --machine windows --text
+    $ daex android tap 540 1200 --machine windows --text
 
   Errors (each prints its next step):
-    ANDROID_SDK_NOT_FOUND            install the SDK (ade android sdk status) or set ANDROID_HOME
+    ANDROID_SDK_NOT_FOUND            install the SDK (daex android sdk status) or set ANDROID_HOME
     ANDROID_TOOL_MISSING             install the missing SDK package
     ANDROID_NO_ACCELERATION          turn on hardware acceleration
     ANDROID_NO_SYSTEM_IMAGE          install a system image, or pass --image
@@ -4261,16 +4263,16 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     ANDROID_ADB_UNAUTHORIZED         adb refused the device; ask the user to press "Restart adb
                                      and start" in the Android pane (or run start --restart-adb
                                      in a terminal on that machine); never restart adb yourself
-    ANDROID_NOT_RUNNING              ade android start first
+    ANDROID_NOT_RUNNING              daex android start first
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
-    ANDROID_LOW_DISK                 the disk can't hold a new device's data. On ADE Cloud ADE
+    ANDROID_LOW_DISK                 the disk can't hold a new device's data. On ${BRAND.CLOUD_NAME} ${BRAND.NAME}
                                      grows it itself (start again after the restart), or run
-                                     ade cloud resize --free 8 --reason "..."; elsewhere tell the user
-    ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
+                                     daex cloud resize --free 8 --reason "..."; elsewhere tell the user
+    ANDROID_ELEMENT_NOT_FOUND        daex android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
     ANDROID_TESTS_RUNNING            the lane's tests already run; wait for them
-    ANDROID_PACKAGE_NOT_ADE_INSTALLED   ADE did not install it on this AVD
+    ANDROID_PACKAGE_NOT_ADE_INSTALLED   ${BRAND.NAME} did not install it on this AVD
   The live view (stream and live touch) and deleting an AVD no lane holds are
   the user's, in the Android panel; an agent uses tap, swipe, button and type.
 `,
@@ -4278,11 +4280,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   App Control
 
   App Control drives a desktop app you are building. Today that means an
-  Electron app: ADE launches it (or attaches to one that is running) through a
+  Electron app: ${BRAND.NAME} launches it (or attaches to one that is running) through a
   Chrome DevTools Protocol (CDP) port. Then you observe it, act on it, record
   it, and file proof from it. Playwright, agent-browser and Computer Use can
-  attach to the same app; ADE keeps the session and turns captures into chat
-  context. Aliases: \`ade app\` and \`ade electron\`.
+  attach to the same app; ${BRAND.NAME} keeps the session and turns captures into chat
+  context. Aliases: \`daex app\` and \`daex electron\`.
 
   Each lane has its own session. --lane defaults to ADE_LANE_ID and --chat-session
   to ADE_CHAT_SESSION_ID. With neither, a call made from inside a lane worktree
@@ -4295,55 +4297,55 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   terminal session as before, so an edit/relaunch loop keeps one shell. It gets
   a new one instead when someone typed into the old shell, it was archived, or
   the old app did not exit within 5 seconds; --new-shell asks for a new one.
-  ADE sets
+  ${BRAND.NAME} sets
   ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS and forwards the
   debug flags for npm/pnpm/yarn/bun scripts and direct electron commands. A
   custom launcher must forward ADE_APP_CONTROL_DEBUG_FLAGS (or read
   ADE_APP_CONTROL_CDP_PORT), or put {ADE_APP_CONTROL_DEBUG_FLAGS} in the
-  command. --cwd resolves a relative path from the directory you run ade in.
+  command. --cwd resolves a relative path from the directory you run daex in.
 
   Session:
-    $ ade app-control status --text                This lane's session and provider readiness
-    $ ade app-control launch --command "npm run dev" --text
-    $ ade app-control launch pnpm dev --text       The words after launch are the command
-    $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
-    $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
-    $ ade app-control connect --cdp-port 9222      Attach to an app that is already running
-    $ ade app-control claim --lane <lane-id>       Attribute the session to a lane
-    $ ade app-control stop --text                  Quit the app ADE launched; detach an attached one
-    $ ade app-control show --text                  Show the app to the user in the tools pane
-    $ ade app-control show --floating --text       ...or as the floating card over the chat
+    $ daex app-control status --text               This lane's session and provider readiness
+    $ daex app-control launch --command "npm run dev" --text
+    $ daex app-control launch pnpm dev --text      The words after launch are the command
+    $ daex app-control launch --command "pnpm dev" --cwd apps/desktop --text
+    $ daex app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
+    $ daex app-control connect --cdp-port 9222     Attach to an app that is already running
+    $ daex app-control claim --lane <lane-id>      Attribute the session to a lane
+    $ daex app-control stop --text                 Quit the app ${BRAND.NAME} launched; detach an attached one
+    $ daex app-control show --text                 Show the app to the user in the tools pane
+    $ daex app-control show --floating --text      ...or as the floating card over the chat
 
-  Observe, then act (the same loop as "ade browser"):
-    $ ade app-control observe --map --text         Screenshot + numbered element map + handles
-    $ ade app-control observe --no-dom --text      Screenshot only, no element list
-    $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
-    $ ade app-control click --text-match "Save"    Click by visible label
-    $ ade app-control right-click --text-match "Row"  Right-click by label (same as click --button right)
-    $ ade app-control click 120 420 --coords viewport
-    $ ade app-control hover --test-id row-3
-    $ ade app-control fill --selector "#name" --value "Ada"
-    $ ade app-control clear --selector "#name"
-    $ ade app-control type "hello" --text          Type into the focused element
-    $ ade app-control press --key Enter            Alias: key
-    $ ade app-control scroll --x 120 --y 420 --delta-y 600
-    $ ade app-control wait --text-match "Saved" --timeout-ms 8000
-    $ ade app-control wait --load-state network-idle
-    $ ade app-control trace --limit 20 --text      Recent actions for this session
+  Observe, then act (the same loop as "daex browser"):
+    $ daex app-control observe --map --text        Screenshot + numbered element map + handles
+    $ daex app-control observe --no-dom --text     Screenshot only, no element list
+    $ daex app-control click --handle obs-...:e:7  Click a handle from the last observation
+    $ daex app-control click --text-match "Save"   Click by visible label
+    $ daex app-control right-click --text-match "Row"  Right-click by label (same as click --button right)
+    $ daex app-control click 120 420 --coords viewport
+    $ daex app-control hover --test-id row-3
+    $ daex app-control fill --selector "#name" --value "Ada"
+    $ daex app-control clear --selector "#name"
+    $ daex app-control type "hello" --text         Type into the focused element
+    $ daex app-control press --key Enter           Alias: key
+    $ daex app-control scroll --x 120 --y 420 --delta-y 600
+    $ daex app-control wait --text-match "Saved" --timeout-ms 8000
+    $ daex app-control wait --load-state network-idle
+    $ daex app-control trace --limit 20 --text     Recent actions for this session
 
   Every acting command answers with a new observation: read its hit and
   effect before the next step. --no-observe skips it; --fast skips the settle
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
-    $ ade app-control snapshot --text              Screenshot + DOM element refs
-    $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
-    $ ade app-control select --x 120 --y 420       Add that element to the chat as context
-    $ ade app-control proof --caption "<what>" --text  Capture the app and file the still as proof
-    $ ade app-control record start --caption "<what>" --text
-    $ ade app-control record status --text
-    $ ade app-control record stop --text           Finish the video and file it as proof
+    $ daex app-control screenshot --out shot.png   Capture without filing proof (--text alone saves to a temp file)
+    $ daex app-control snapshot --text             Screenshot + DOM element refs
+    $ daex app-control inspect --x 120 --y 420     Hit-test a point, add nothing to the chat
+    $ daex app-control select --x 120 --y 420      Add that element to the chat as context
+    $ daex app-control proof --caption "<what>" --text  Capture the app and file the still as proof
+    $ daex app-control record start --caption "<what>" --text
+    $ daex app-control record status --text
+    $ daex app-control record stop --text          Finish the video and file it as proof
 
   Recording flags (record start):
     --caption <text>       What the video shows. A captioned video is filed as proof.
@@ -4361,20 +4363,20 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   "chat-ended"), and is filed the same way.
 
   Terminal:
-    $ ade app-control logs --text                  Read the launch terminal
-    $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
-    $ ade app-control terminal signal --signal SIGINT
-    $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
+    $ daex app-control logs --text                 Read the launch terminal
+    $ daex app-control terminal write --data "y\\n" Answer a prompt in that terminal
+    $ daex app-control terminal signal --signal SIGINT
+    $ daex terminal read --terminal <session-id> --text Read a specific attached terminal
 
   Windows, targets and drivers:
-    $ ade app-control windows --text               Debuggable windows for this session
-    $ ade app-control switch-window --target <id>  Drive a different window
-    $ ade app-control targets --text               List debuggable CDP targets
-    $ ade app-control attach-target --target <id>  Attach to one renderer target
-    $ ade app-control focus --text                 Raise the app window
-    $ ade app-control minimize --text              Minimize the app window
-    $ ade app-control drivers --text               Driver availability (cdp, computer_use)
-    $ ade app-control actions --text               List every callable app_control action
+    $ daex app-control windows --text              Debuggable windows for this session
+    $ daex app-control switch-window --target <id>  Drive a different window
+    $ daex app-control targets --text              List debuggable CDP targets
+    $ daex app-control attach-target --target <id>  Attach to one renderer target
+    $ daex app-control focus --text                Raise the app window
+    $ daex app-control minimize --text             Minimize the app window
+    $ daex app-control drivers --text              Driver availability (cdp, computer_use)
+    $ daex app-control actions --text              List every callable app_control action
 
   Another machine: --machine <name> runs the app on that machine with no lane
   there. The app runs from your code there (at your commit; the commit must
@@ -4384,18 +4386,18 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   there) and runs in a terminal there; --cwd must be inside this checkout and
   is the same folder there. status and drivers put nothing there. --lane is
   refused. proof and a captioned recording are filed in this chat's proof
-  drawer. ade devices use app@<name> sends every app-control command there
-  with no flag. ade shell clean --machine <name> deletes your code there and
+  drawer. daex devices use app@<name> sends every app-control command there
+  with no flag. daex shell clean --machine <name> deletes your code there and
   stops its app.
-    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
-    $ ade app-control observe --map --machine windows --text
+    $ daex app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ daex app-control observe --map --machine windows --text
 `,
   browser: `${ADE_BANNER}
-  ADE browser
+  ${BRAND.NAME} browser
 
-  Browser commands control ADE's built-in browser pane. ADE uses one persistent
+  Browser commands control ${BRAND.NAME}'s built-in browser pane. ${BRAND.NAME} uses one persistent
   authentication profile per installation/channel, so cookies and site storage
-  are shared across projects. Visible tabs remain independent per ADE
+  are shared across projects. Visible tabs remain independent per ${BRAND.NAME}
   window/project (with a separate personal-chat collection). Desktop bridge
   calls use the project root only to route to the right tab collection.
   Ownership is per tab/session:
@@ -4410,17 +4412,17 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   revealing the Browser panel unless --panel is passed. It prints
   "opened: <tab-id> <url>" or "navigated: <tab-id> <url>" first. Use --new-tab
   only when the task truly needs another tab; --active-tab and --tab stay
-  explicit. By default every agent may use the ADE browser without asking. If
-  the user set "Agents can use the ADE browser" to lanes or chats they approve,
+  explicit. By default every agent may use the ${BRAND.NAME} browser without asking. If
+  the user set "Agents can use the ${BRAND.NAME} browser" to lanes or chats they approve,
   the first browser command from a new lane or chat asks them once: the command
   waits up to 2 minutes, printing "waiting for the user to allow this chat to
-  use the ADE browser" once, and a Block fails with "approval_blocked: the user
-  blocked this chat from using the ADE browser". One answer covers every site.
+  use the ${BRAND.NAME} browser" once, and a Block fails with "approval_blocked: the user
+  blocked this chat from using the ${BRAND.NAME} browser". One answer covers every site.
   Any process
   on this machine may drive the browser; a chat's calls are tagged with that
   chat and its lane so it owns its tabs, and agent force takeovers are
   refused. Profile diagnostics and remembered-permission administration stay
-  in the trusted ADE renderer.
+  in the trusted ${BRAND.NAME} renderer.
 
   Every tab shares the user's sign-ins unless it is opened --isolated. An
   isolated tab has its own cookies and storage, kept in memory and wiped when
@@ -4446,8 +4448,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   only your tabs and free agent tabs; ask the user about the rest. Agent tabs
   clean themselves up: a chat's tabs close 15 minutes after it goes idle, and
   at once when it ends or its lane is archived or deleted; a tab the user
-  clicked, typed in, navigated or kept is never closed by ADE. An agent's tab
-  is not brought back after ADE restarts; a tab the user opened or kept keeps
+  clicked, typed in, navigated or kept is never closed by ${BRAND.NAME}. An agent's tab
+  is not brought back after ${BRAND.NAME} restarts; a tab the user opened or kept keeps
   its id.
 
   Which machine. "status" prints the route: the browser "open" uses (the
@@ -4457,13 +4459,13 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   machine. Every error names the machine whose browser refused.
 
   The user's own browser (only when the user asks for it):
-    $ ade browser attach --text           The tab the user is looking at
-    $ ade browser attach --tab "Stripe" --text
+    $ daex browser attach --text          The tab the user is looking at
+    $ daex browser attach --tab "Stripe" --text
                                                    The tab whose title or URL contains "Stripe"
-    $ ade browser attach --browser edge --text
+    $ daex browser attach --browser edge --text
                                                    chrome, edge, brave, arc, helium or chromium
-    $ ade browser detach --text           Back to ADE's browser
-  ADE's browser is the default for all web work. Attach only when the user asks
+    $ daex browser detach --text          Back to ${BRAND.NAME}'s browser
+  ${BRAND.NAME}'s browser is the default for all web work. Attach only when the user asks
   you to look at or use their own browser ("the tab I have open", "use my
   Chrome"), never on your own. Attach runs on the machine this chat runs on and
   prints "attached: <browser> on <machine>, tab "<title>" (<url>)": tell the
@@ -4479,40 +4481,40 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade browser status --text           Every tab on every machine, owners, and the route (alias: tabs)
-    $ ade browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
-    $ ade browser claim --lane <lane-id>  Attribute the active browser tab to a lane
-    $ ade browser panel --text            Open the Work sidebar Browser panel
-    $ ade browser open https://example.com --text
-    $ ade browser open https://example.com --panel --text
-    $ ade browser open localhost:5173 --new-tab --text
-    $ ade browser open localhost:5173 --active-tab --text
-    $ ade browser open localhost:3000/login --isolated --text
-    $ ade browser open localhost:3000/login --profile viewer --text
-    $ ade browser open https://example.com --no-panel
-    $ ade browser new-tab --url https://example.com
-    $ ade browser switch --tab <tab-id>
-    $ ade browser close --tab <tab-id>
-    $ ade browser dev-servers --text      Dev servers running in this lane
-    $ ade browser dev-servers stop 5173   Stop a server this chat started
-    $ ade browser actions --text          List built_in_browser actions
+    $ daex browser status --text          Every tab on every machine, owners, and the route (alias: tabs)
+    $ daex browser authorize --tab <id>   Ask the user to let this chat use the ${BRAND.NAME} browser
+    $ daex browser claim --lane <lane-id>  Attribute the active browser tab to a lane
+    $ daex browser panel --text           Open the Work sidebar Browser panel
+    $ daex browser open https://example.com --text
+    $ daex browser open https://example.com --panel --text
+    $ daex browser open localhost:5173 --new-tab --text
+    $ daex browser open localhost:5173 --active-tab --text
+    $ daex browser open localhost:3000/login --isolated --text
+    $ daex browser open localhost:3000/login --profile viewer --text
+    $ daex browser open https://example.com --no-panel
+    $ daex browser new-tab --url https://example.com
+    $ daex browser switch --tab <tab-id>
+    $ daex browser close --tab <tab-id>
+    $ daex browser dev-servers --text     Dev servers running in this lane
+    $ daex browser dev-servers stop 5173  Stop a server this chat started
+    $ daex browser actions --text         List built_in_browser actions
 
   "dev-servers" lists the dev servers this machine's runtime knows for the
   calling chat's lane: ready lines ("Local: http://localhost:5173") printed in
-  ADE terminals or in an agent's own shell, plus listening ports whose process
+  ${BRAND.NAME} terminals or in an agent's own shell, plus listening ports whose process
   runs from the lane's worktree (a server started in the background shows up a
   few seconds after the command that started it returns). It needs no desktop.
-  ADE never connects to a port to find it. "dev-servers stop <port>" stops a
+  ${BRAND.NAME} never connects to a port to find it. "dev-servers stop <port>" stops a
   server this chat's agent started (SIGTERM to its process group, SIGKILL after
   3s; taskkill /T on Windows). It refuses a port held by anything else, and
-  never stops ADE, an agent CLI or a terminal.
+  never stops ${BRAND.NAME}, an agent CLI or a terminal.
 
   No desktop on this machine
 
-  When this machine has no ADE window, "open"/"new-tab"/"panel" are forwarded to
+  When this machine has no ${BRAND.NAME} window, "open"/"new-tab"/"panel" are forwarded to
   a desktop that has this lane pinned, which reaches this machine's localhost
   over a TCP port-forward. The result prints "opened: on <desktop> via tunnel",
-  or "waiting for approval on <desktop> — reaching this port needs a yes in ADE"
+  or "waiting for approval on <desktop> — reaching this port needs a yes in ${BRAND.NAME}"
   the first time you name a port the human has not allowed, or "no desktop is
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
@@ -4520,28 +4522,28 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
   Signing in with Passwords:
-    $ ade browser signin --tab <tab-id> --text
-    $ ade browser signin --tab <tab-id> --account me@example.com --text
-  Sign in to the open page's site with a login saved in Passwords. ADE types the
+    $ daex browser signin --tab <tab-id> --text
+    $ daex browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ${BRAND.NAME} types the
   username and password into the page itself; you never see the password. With
   no saved login for the site, the person is asked in this chat (the secure
-  sign-in card): they save one and ADE fills it, or they choose to type it into
-  the page themselves (then run \`ade browser handoff\` to wait for them).
+  sign-in card): they save one and ${BRAND.NAME} fills it, or they choose to type it into
+  the page themselves (then run \`daex browser handoff\` to wait for them).
   Never ask for a password in chat. --site <host> is only a check that the tab
   is on the site you expect; the site is always the tab's own page.
 
-    $ ade browser signup --tab <tab-id> --text
-    $ ade browser signup --tab <tab-id> --account me@example.com --text
+    $ daex browser signup --tab <tab-id> --text
+    $ daex browser signup --tab <tab-id> --account me@example.com --text
   Creating an account: fill the email/username yourself, then run signup on
-  the sign-up form. ADE makes a strong password, types it into the password
+  the sign-up form. ${BRAND.NAME} makes a strong password, types it into the password
   (and confirm) boxes, and saves the login once the form holds all of it.
-  You never see it. Submit the form yourself; later sign-ins use \`ade browser signin\`.
+  You never see it. Submit the form yourself; later sign-ins use \`daex browser signin\`.
   --account names the username when the form has none filled in.
 
   Login handoff (when you cannot sign in; a person must):
-    $ ade browser handoff --tab <id> --reason "sign in to staging" --text
-    $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
-    $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
+    $ daex browser handoff --tab <id> --reason "sign in to staging" --text
+    $ daex browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
+    $ daex browser handoff --tab <id> --reason "corp SSO" --no-wait
   Trailing words are the reason without --reason. A dashed word is read as a
   flag, so fence the sentence: handoff -- fix the -2fa prompt
   Blocks until the person presses Hand back (default 15m), so your next step
@@ -4550,81 +4552,81 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   handoff_active — do not retry, wait. You never hand the tab back yourself.
 
   Agent sessions:
-    $ ade browser session start --tab <tab-id> --text
-    $ ade browser sessions --text
-    $ ade browser observe --browser-session <session-id> --map --text
-    $ ade browser click --browser-session <session-id> --handle obs-...:e:1
-    $ ade browser session click <session-id> --handle obs-...:e:1
-    $ ade browser session wait <session-id> --network-idle
-    $ ade browser session trace <session-id> --text
-    $ ade browser session proof <session-id> --caption "Verified"
-    $ ade browser session end <session-id>
+    $ daex browser session start --tab <tab-id> --text
+    $ daex browser sessions --text
+    $ daex browser observe --browser-session <session-id> --map --text
+    $ daex browser click --browser-session <session-id> --handle obs-...:e:1
+    $ daex browser session click <session-id> --handle obs-...:e:1
+    $ daex browser session wait <session-id> --network-idle
+    $ daex browser session trace <session-id> --text
+    $ daex browser session proof <session-id> --caption "Verified"
+    $ daex browser session end <session-id>
 
   Page controls:
-    $ ade browser observe --tab <tab-id>  Save scratch screenshot + DOM observation
-    $ ade browser observe --tab <tab-id> --map
-    $ ade browser trace --tab <tab-id> --text
-    $ ade browser click --tab <tab-id> --x 120 --y 420
-    $ ade browser click --tab <tab-id> --selector "button[type=submit]"
-    $ ade browser click --tab <tab-id> --text-match "Sign in"
-    $ ade browser click --tab <tab-id> --handle obs-...:e:1
-    $ ade browser wait --tab <tab-id> --selector ".ready"
-    $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
-    $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
-    $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
-    $ ade browser signin --tab <tab-id> --text
-    $ ade browser signin --tab <tab-id> --site example.com --text
-    $ ade browser signup --tab <tab-id> --text
-    $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
-    $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
-    $ ade browser type --tab <tab-id> "hello"
-    $ ade browser key --tab <tab-id> Enter
-    $ ade browser scroll --tab <tab-id> --dy 700
-    $ ade browser hover --tab <tab-id> --selector ".menu"
-    $ ade browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
-    $ ade browser select-option --tab <tab-id> --selector "select#plan" --value pro
-    $ ade browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
-    $ ade browser upload --tab <tab-id> --trigger "button[aria-label='Add photos or video']" ./clip.mp4
-    $ ade browser drop --tab <tab-id> --selector "#dropzone" ./clip.mp4
-    $ ade browser downloads --tab <tab-id> --text
-    $ ade browser downloads wait --tab <tab-id> --timeout-ms 30000 --text
-    $ ade browser clipboard --text
-    $ ade browser clipboard write --value "hello" --text
-    $ ade browser paste --selector "#editor" --text
-    $ ade browser emulate --tab <tab-id> --device iphone-17-pro
-    $ ade browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
-    $ ade browser emulate --tab <tab-id> --off
-    $ ade browser open localhost:5173 --device ipad
-    $ ade browser zoom --tab <tab-id> --factor 1.25
-    $ ade browser zoom --tab <tab-id> --reset
-    $ ade browser text --tab <tab-id> --text           Read the page's text (main content)
-    $ ade browser text --tab <tab-id> --offset 20000 --text
-    $ ade browser text --tab <tab-id> --selector "#content" --max-chars 5000
-    $ ade browser find --tab <tab-id> "checkout"
-    $ ade browser find-stop --tab <tab-id>
-    $ ade browser devtools --tab <tab-id> --mode bottom
-    $ ade browser devtools --tab <tab-id> --close
-    $ ade browser network on --tab <tab-id>
-    $ ade browser network --tab <tab-id> --failed --limit 20 --text
-    $ ade browser network off --tab <tab-id>
-    $ ade browser har --tab <tab-id>
-    $ ade browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
-    $ ade browser record stop --tab <tab-id>
-    $ ade browser proof --tab <tab-id> --caption "Verified"
-    $ ade browser proof --tab <tab-id> --har --caption "Checkout 500s"
-    $ ade browser reload --tab <tab-id>
-    $ ade browser back --tab <tab-id>
-    $ ade browser forward --tab <tab-id>
-    $ ade browser stop --tab <tab-id>
+    $ daex browser observe --tab <tab-id>  Save scratch screenshot + DOM observation
+    $ daex browser observe --tab <tab-id> --map
+    $ daex browser trace --tab <tab-id> --text
+    $ daex browser click --tab <tab-id> --x 120 --y 420
+    $ daex browser click --tab <tab-id> --selector "button[type=submit]"
+    $ daex browser click --tab <tab-id> --text-match "Sign in"
+    $ daex browser click --tab <tab-id> --handle obs-...:e:1
+    $ daex browser wait --tab <tab-id> --selector ".ready"
+    $ daex browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
+    $ daex browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
+    $ daex browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ daex browser signin --tab <tab-id> --text
+    $ daex browser signin --tab <tab-id> --site example.com --text
+    $ daex browser signup --tab <tab-id> --text
+    $ daex browser clear-field --tab <tab-id> --selector "input[name=q]"
+    $ daex browser press --tab <tab-id> --selector "input[name=q]" Enter
+    $ daex browser type --tab <tab-id> "hello"
+    $ daex browser key --tab <tab-id> Enter
+    $ daex browser scroll --tab <tab-id> --dy 700
+    $ daex browser hover --tab <tab-id> --selector ".menu"
+    $ daex browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
+    $ daex browser select-option --tab <tab-id> --selector "select#plan" --value pro
+    $ daex browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ daex browser upload --tab <tab-id> --trigger "button[aria-label='Add photos or video']" ./clip.mp4
+    $ daex browser drop --tab <tab-id> --selector "#dropzone" ./clip.mp4
+    $ daex browser downloads --tab <tab-id> --text
+    $ daex browser downloads wait --tab <tab-id> --timeout-ms 30000 --text
+    $ daex browser clipboard --text
+    $ daex browser clipboard write --value "hello" --text
+    $ daex browser paste --selector "#editor" --text
+    $ daex browser emulate --tab <tab-id> --device iphone-17-pro
+    $ daex browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
+    $ daex browser emulate --tab <tab-id> --off
+    $ daex browser open localhost:5173 --device ipad
+    $ daex browser zoom --tab <tab-id> --factor 1.25
+    $ daex browser zoom --tab <tab-id> --reset
+    $ daex browser text --tab <tab-id> --text          Read the page's text (main content)
+    $ daex browser text --tab <tab-id> --offset 20000 --text
+    $ daex browser text --tab <tab-id> --selector "#content" --max-chars 5000
+    $ daex browser find --tab <tab-id> "checkout"
+    $ daex browser find-stop --tab <tab-id>
+    $ daex browser devtools --tab <tab-id> --mode bottom
+    $ daex browser devtools --tab <tab-id> --close
+    $ daex browser network on --tab <tab-id>
+    $ daex browser network --tab <tab-id> --failed --limit 20 --text
+    $ daex browser network off --tab <tab-id>
+    $ daex browser har --tab <tab-id>
+    $ daex browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
+    $ daex browser record stop --tab <tab-id>
+    $ daex browser proof --tab <tab-id> --caption "Verified"
+    $ daex browser proof --tab <tab-id> --har --caption "Checkout 500s"
+    $ daex browser reload --tab <tab-id>
+    $ daex browser back --tab <tab-id>
+    $ daex browser forward --tab <tab-id>
+    $ daex browser stop --tab <tab-id>
 
   Capture and context:
-    $ ade browser screenshot --tab <tab-id> --text
-    $ ade browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
-    $ ade browser select --x 120 --y 420  Attach DOM context at a viewport point
-    $ ade browser inspect-start           Start DOM inspect mode
-    $ ade browser inspect-stop            Stop DOM inspect mode
-    $ ade browser select-current --text   Return the selected DOM item
-    $ ade browser clear-selection
+    $ daex browser screenshot --tab <tab-id> --text
+    $ daex browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
+    $ daex browser select --x 120 --y 420  Attach DOM context at a viewport point
+    $ daex browser inspect-start          Start DOM inspect mode
+    $ daex browser inspect-stop           Stop DOM inspect mode
+    $ daex browser select-current --text  Return the selected DOM item
+    $ daex browser clear-selection
 
   Flags:
     --                   Everything after it is a literal value, never a flag —
@@ -4640,7 +4642,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --here               Use the browser on the machine this agent runs on. Without
                          it, when the user drives this chat from another computer,
-                         browser commands run in the ADE browser on that computer,
+                         browser commands run in the ${BRAND.NAME} browser on that computer,
                          where the user can see them. Use --here to test a page
                          on this machine, to record, or to upload a local file.
     --isolated           open/new-tab: use a throwaway sign-in, not the user's.
@@ -4709,7 +4711,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --wait-after-ms <n>  Delay before post-action observation (default 150).
     --fast               Alias for --wait-after-ms 0 on browser actions.
     --no-observe         Do not capture the post-action scratch observation.
-    --force              Reserved takeover flag; ADE agent calls are rejected.
+    --force              Reserved takeover flag; ${BRAND.NAME} agent calls are rejected.
     --lease-ttl-ms <n>   Override tab lease TTL for lane-owned actions.
     --lane, --lane-id <id> Claim lane for open/new-tab/claim/session/actions.
                          On panel/switch, claims only when passed explicitly.
@@ -4717,23 +4719,23 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                          On panel/switch, claims only when passed explicitly.
 `,
   ui: `${ADE_BANNER}
-  ADE ui
+  ${BRAND.NAME} ui
 
   Shows a surface of this chat to the user. The desktop window that has the
   chat in front opens it and says so; the command prints what really happened.
 
-    $ ade ui show apple            The Apple device, in the tools pane
-    $ ade ui show floating-apple   The floating device player over the chat
-    $ ade ui show browser          The browser, in the tools pane
-    $ ade ui show proof            The chat's proof drawer
-    $ ade ui show mac-desktop      The lane's Mac Desktop, in the tools pane
-    $ ade ui show floating-mac-desktop
+    $ daex ui show apple           The Apple device, in the tools pane
+    $ daex ui show floating-apple  The floating device player over the chat
+    $ daex ui show browser         The browser, in the tools pane
+    $ daex ui show proof           The chat's proof drawer
+    $ daex ui show mac-desktop     The lane's Mac Desktop, in the tools pane
+    $ daex ui show floating-mac-desktop
                                    The floating Mac Desktop card over the chat
-    $ ade ui show app-control      The lane's App Control app, in the tools pane
-    $ ade ui show floating-app-control
+    $ daex ui show app-control     The lane's App Control app, in the tools pane
+    $ daex ui show floating-app-control
                                    The floating App Control card over the chat
-    $ ade ui show android          The lane's Android emulator, in the tools pane
-    $ ade ui show floating-android The floating Android player over the chat
+    $ daex ui show android         The lane's Android emulator, in the tools pane
+    $ daex ui show floating-android The floating Android player over the chat
 
   Results:
     shown       The surface is on screen now.
@@ -4751,13 +4753,13 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --text                 Human-readable summary.
     --json                 Structured JSON (default when piped).
 
-  "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
-  is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
-  for the Mac Desktop, "ade app-control show [--floating]" for App Control, and
-  "ade android show [--floating]" for the Android emulator.
+  "daex apple show" is the same as "daex ui show apple"; "apple show --floating"
+  is "ui show floating-apple". "daex mac-desktop show [--floating]" is the same
+  for the Mac Desktop, "daex app-control show [--floating]" for App Control, and
+  "daex android show [--floating]" for the Android emulator.
 `,
   "work-tools": `${ADE_BANNER}
-  ADE work tools
+  ${BRAND.NAME} work tools
 
   The read-only mirror of the desktop's Work tools pane for one lane: which tool
   the desktop has open, the browser tabs that lane owns (with owner, recording
@@ -4766,12 +4768,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   This is a state read, not a control surface. Which tool the pane shows is
   published by the desktop renderer that owns it, so there is no command to set
-  it; open the tool in ADE Desktop. To drive a tool, use "ade browser" or
-  "ade app-control".
+  it; open the tool in ${BRAND.NAME} Desktop. To drive a tool, use "daex browser" or
+  "daex app-control".
 
-    $ ade work-tools state --text                  Tools pane state for this agent's lane
-    $ ade work-tools state --lane <lane-id> --text Another lane (human callers only)
-    $ ade work-tools actions --text                List every callable work_tools action
+    $ daex work-tools state --text                 Tools pane state for this agent's lane
+    $ daex work-tools state --lane <lane-id> --text Another lane (human callers only)
+    $ daex work-tools actions --text               List every callable work_tools action
 
   Flags:
     --lane, --lane-id <id> Lane to read. Ignored for chat-bound agents, which
@@ -4787,34 +4789,34 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
     Observation bytes never travel with the state. "state" prints the
     host-absolute path the desktop wrote; read that file directly, or call
-    "ade actions run work_tools.readObservationPreview" when the caller cannot
+    "daex actions run work_tools.readObservationPreview" when the caller cannot
     see this machine's filesystem.
 `,
   scene: `${ADE_BANNER}
   Scenes
 
   Render a \`\`\`scene the way a chat will, before you put it in a reply: the
-  same document, SDK, policy and sandbox, in a hidden window of the ADE
+  same document, SDK, policy and sandbox, in a hidden window of the ${BRAND.NAME}
   desktop app. Prints the path of a PNG of the drawn scene (read it to check
   the layout) and every problem found: script errors, blocked requests, a
   scene that never settles, and source mistakes the policy turns into blanks.
-  Needs the ADE desktop app on this machine.
+  Needs the ${BRAND.NAME} desktop app on this machine.
 
-    $ ade scene guide                                  The short rules for writing a scene (read this first)
-    $ ade scene preview /tmp/chart.html --text         Preview a scene file
-    $ ade scene preview /tmp/chart.html --theme light  In the light theme
-    $ ade scene preview /tmp/chart.html --width 980    At another frame width (default 720)
-    $ cat draft.md | ade scene preview - --text        A fence or a body on stdin
+    $ daex scene guide                                 The short rules for writing a scene (read this first)
+    $ daex scene preview /tmp/chart.html --text        Preview a scene file
+    $ daex scene preview /tmp/chart.html --theme light  In the light theme
+    $ daex scene preview /tmp/chart.html --width 980   At another frame width (default 720)
+    $ cat draft.md | daex scene preview - --text        A fence or a body on stdin
 `,
   tests: `${ADE_BANNER}
   Tests
 
-    $ ade tests list --text                         List configured test suites
-    $ ade tests run --lane <lane> --suite unit      Run a configured suite
-    $ ade tests run --lane <lane> --command "npm test" --wait
-    $ ade tests runs --lane <lane> --text           List recent test runs
-    $ ade tests logs <run-id> --text                Tail a test run log
-    $ ade tests stop <run-id>                       Stop an active test run
+    $ daex tests list --text                        List configured test suites
+    $ daex tests run --lane <lane> --suite unit     Run a configured suite
+    $ daex tests run --lane <lane> --command "npm test" --wait
+    $ daex tests runs --lane <lane> --text          List recent test runs
+    $ daex tests logs <run-id> --text               Tail a test run log
+    $ daex tests stop <run-id>                      Stop an active test run
 `,
   usage: `${ADE_BANNER}
   Usage and provider quotas
@@ -4823,29 +4825,29 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   history, token/cost stats, and budget guardrails. Live quota refresh is
   intentionally separate from local provider-ledger scans.
 
-    $ ade usage limits --text                       Per account: % left, reset, pace, reading age
-    $ ade usage limits --provider claude --text     One provider's accounts
-    $ ade usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
-    $ ade usage limits --all-machines --text        Every machine on the account in one table
-    $ ade usage snapshot --text                     Cached quota, source/stale state, and history
-    $ ade usage stats --range 7d --text             Tokens, cost, and activity for a range
-    $ ade usage stats --scope account --text        Merge every machine on the account
-    $ ade usage stats --scope project --range 30d   This project only
-    $ ade usage stats --scope account --force       Skip the account fan-out rate floor
-    $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
-    $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
-    $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
-    $ ade usage stats --by lane --range 30d --text   ADE chat spend by chat, lane, or account
-    $ ade usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
-    $ ade usage prices --text                       Custom model prices and Map to mappings
-    $ ade --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
-    $ ade --role cto usage prices set local-x --input 1 --output 4      Price a model per 1M tokens
-    $ ade --role cto usage refresh --text           Refresh live provider quota only
-    $ ade --role cto usage refresh --history --text Scan local provider history and costs
-    $ ade usage budget get --text                   Read budget guardrail config
-    $ ade usage budget set --from-file budget.json  Save budget guardrail config
-    $ ade usage budget check --provider claude --scope global
-    $ ade usage budget cumulative --scope global    Cumulative spend for the current week
+    $ daex usage limits --text                      Per account: % left, reset, pace, reading age
+    $ daex usage limits --provider claude --text    One provider's accounts
+    $ daex usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
+    $ daex usage limits --all-machines --text       Every machine on the account in one table
+    $ daex usage snapshot --text                    Cached quota, source/stale state, and history
+    $ daex usage stats --range 7d --text            Tokens, cost, and activity for a range
+    $ daex usage stats --scope account --text       Merge every machine on the account
+    $ daex usage stats --scope project --range 30d  This project only
+    $ daex usage stats --scope account --force      Skip the account fan-out rate floor
+    $ daex usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
+    $ daex usage turns --days 14 --text             Per-turn ledger by provider, account, model
+    $ daex usage turns --group-by provider --recent 20  Add the 20 newest turns
+    $ daex usage stats --by lane --range 30d --text  ${BRAND.NAME} chat spend by chat, lane, or account
+    $ daex usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
+    $ daex usage prices --text                      Custom model prices and Map to mappings
+    $ daex --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
+    $ daex --role cto usage prices set local-x --input 1 --output 4     Price a model per 1M tokens
+    $ daex --role cto usage refresh --text          Refresh live provider quota only
+    $ daex --role cto usage refresh --history --text Scan local provider history and costs
+    $ daex usage budget get --text                  Read budget guardrail config
+    $ daex usage budget set --from-file budget.json  Save budget guardrail config
+    $ daex usage budget check --provider claude --scope global
+    $ daex usage budget cumulative --scope global   Cumulative spend for the current week
 `,
   router: `${ADE_BANNER}
   Model router
@@ -4860,14 +4862,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   efficiency report replays every chat thread from the turn ledger — history
   from day one — and the shadow-logged subagents; dollars are list prices.
 
-    $ ade router routes --text                      Every route with score, cost, time, and billing
-    $ ade router routes --provider codex --limit 20 One harness, best first
-    $ ade router pick "summarize how sync works" --provider claude --model claude-opus-5-5 --effort high --text
+    $ daex router routes --text                     Every route with score, cost, time, and billing
+    $ daex router routes --provider codex --limit 20 One harness, best first
+    $ daex router pick "summarize how sync works" --provider claude --model claude-opus-5-5 --effort high --text
                                                     The route it would pick for one task (dry run)
-    $ ade router pick "fix the flaky test" --provider codex --model gpt-6-sol --kind light_edit
-    $ ade router shadow --days 7 --text             What it would have changed for recent subagents
-    $ ade router efficiency --days 7 --text         What it would have saved across every chat thread and subagent
-    $ ade router refresh --text                     Fetch the newest registry (signed-in accounts)
+    $ daex router pick "fix the flaky test" --provider codex --model gpt-6-sol --kind light_edit
+    $ daex router shadow --days 7 --text            What it would have changed for recent subagents
+    $ daex router efficiency --days 7 --text        What it would have saved across every chat thread and subagent
+    $ daex router refresh --text                    Fetch the newest registry (signed-in accounts)
 
   Env: ADE_MODEL_ROUTER_SHADOW=0 stops the shadow log; ADE_MODEL_REGISTRY_FILE=<path>
   reads a local registry snapshot instead of the account directory.
@@ -4883,9 +4885,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   metered channel, or free). Read-only: it starts nothing. Registry data is
   based on Artificial Analysis (artificialanalysis.ai).
 
-    $ ade models catalog --text                     One line per model, best Intelligence Index first
-    $ ade models catalog --provider opencode --text One harness
-    $ ade models catalog                            Full profiles as JSON
+    $ daex models catalog --text                    One line per model, best Intelligence Index first
+    $ daex models catalog --provider opencode --text One harness
+    $ daex models catalog                           Full profiles as JSON
 
   The model sheet organizes the same models by the kind of task they suit:
   a 0-1 score per task kind (question, research, review, small edit, feature,
@@ -4893,9 +4895,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   best effort per kind, speed and cost tiers, and plain-English notes: what
   each model family is good for and what to avoid it for.
 
-    $ ade models sheet --text                       Task-kind table, then each family in words
-    $ ade models sheet --provider claude --text     One harness
-    $ ade models sheet                              The sheet as JSON
+    $ daex models sheet --text                      Task-kind table, then each family in words
+    $ daex models sheet --provider claude --text    One harness
+    $ daex models sheet                             The sheet as JSON
 
   Env: ADE_MODEL_REGISTRY_FILE=<path> reads a local registry snapshot instead
   of the account directory.
@@ -4904,16 +4906,16 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Archived lanes, chats, and shells
 
   Archiving hides an item; it is never deleted on its own. Archived chats and
-  shells are left out of 'ade chat list', 'ade terminal list', and search unless
-  you pass --include-archived. Read one by id with 'ade chat show' / 'ade terminal
+  shells are left out of 'daex chat list', 'daex terminal list', and search unless
+  you pass --include-archived. Read one by id with 'daex chat show' / 'daex terminal
   read' any time. Refs are <kind>:<id>, where kind is lane, chat, or shell.
 
-    $ ade archive list --text                       Everything archived, newest first
-    $ ade archive list --kind chat --older-than 14 --text
+    $ daex archive list --text                      Everything archived, newest first
+    $ daex archive list --kind chat --older-than 14 --text
                                                     Archived chats from 14+ days ago
-    $ ade archive summary --text                    Counts per kind and what is 14+ days old
-    $ ade archive summary --older-than 30 --text    Same, with a 30-day cutoff
-    $ ade --role cto archive restore chat:<id> lane:<id>
+    $ daex archive summary --text                   Counts per kind and what is 14+ days old
+    $ daex archive summary --older-than 30 --text   Same, with a 30-day cutoff
+    $ daex --role cto archive restore chat:<id> lane:<id>
                                                     Unarchive items (needs the CTO role)
 
   Each item reports done or failed on its own; the command exits non-zero when
@@ -4930,9 +4932,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   Settings → Overview. Reading is safe; a fix changes data or files, so it is
   CTO-only (agents read the report and offer fixes to the person).
 
-    $ ade health --text                              Issues, each with its fix id
-    $ ade health --refresh --text                    Check again instead of the 30 s cache
-    $ ade --role cto health --fix update-paths --text   Run one fix and show the new report
+    $ daex health --text                             Issues, each with its fix id
+    $ daex health --refresh --text                   Check again instead of the 30 s cache
+    $ daex --role cto health --fix update-paths --text  Run one fix and show the new report
 
   The report lists what the person ignored. Ignoring and showing again are the
   person's, in Settings (General, or Project → Location): agents cannot hide a
@@ -4940,34 +4942,34 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   agent's.
 `,
   storage: `${ADE_BANNER}
-  ADE storage insights and disk hygiene
+  ${BRAND.NAME} storage insights and disk hygiene
 
-  Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
+  Reports what ${BRAND.NAME} is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
   volume's free space, like Settings → Project → Disk space on the
   desktop. The snapshot is read-only; compression is lossless and safe.
   Maintenance runs the policy-driven ledger sweep (prune/compress/vacuum).
   Target-scoped cleanup (which deletes files) is left to the action bridge.
 
-    $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
-    $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
-    $ ade storage compress --text                   Losslessly compress old chat/terminal history
-    $ ade --role cto storage maintenance --text     Run the policy-driven maintenance sweep now (CTO)
-    $ ade storage actions --text                    List raw storage service actions
-    $ ade storage action deletedLaneChatsSummary --text   Chats from deleted lanes still on disk, and where
-    $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
-    $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
+    $ daex storage snapshot --text                  Categorized ${BRAND.NAME} disk usage + free-space summary
+    $ daex storage snapshot --refresh --text        Force a fresh scan (skip the cached snapshot)
+    $ daex storage compress --text                  Losslessly compress old chat/terminal history
+    $ daex --role cto storage maintenance --text    Run the policy-driven maintenance sweep now (CTO)
+    $ daex storage actions --text                   List raw storage service actions
+    $ daex storage action deletedLaneChatsSummary --text  Chats from deleted lanes still on disk, and where
+    $ daex storage action cleanupPreview --input-json '{"targets":[...]}'  Preview a target-scoped cleanup
+    $ daex --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'  Delete previewed targets (CTO)
 `,
   providers: `${ADE_BANNER}
   Provider accounts on this machine
 
   Claude and Codex each keep a whole signed-in identity inside one config
-  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). An ADE account for either is
+  directory (\$CLAUDE_CONFIG_DIR / \$CODEX_HOME). A ${BRAND.NAME} account for either is
   one of those directories plus a label, so several logins can live side by side
   on one machine. OpenCode keeps provider logins in its own credential store;
-  use \`ade providers opencode accounts\` to inspect and manage those logins.
+  use \`daex providers opencode accounts\` to inspect and manage those logins.
 
-  ADE never drives Claude or Codex sign-in: \`add\` prints the exact command
+  ${BRAND.NAME} never drives Claude or Codex sign-in: \`add\` prints the exact command
   and env var to run so the login lands in the new directory. \`remove\` signs a
   signed-in account out with the provider CLI's own logout, then forgets it; the
   directory stays, and so does the login when that sign-out fails.
@@ -4979,103 +4981,103 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   and the default are the user's: run them from your own terminal; an agent's
   call is refused.
 
-    $ ade providers status --text                   Every provider here: signed in, needs sign-in, not installed
+    $ daex providers status --text                  Every provider here: signed in, needs sign-in, not installed
                                                     or unknown, with the link that opens its sign-in page.
                                                     Read-only; starts no provider. --provider <p>, --machine <name>
-    $ ade providers accounts list --text            All accounts, both providers
-    $ ade providers accounts list --provider claude --text
-    $ ade providers accounts add --provider claude --text
+    $ daex providers accounts list --text           All accounts, both providers
+    $ daex providers accounts list --provider claude --text
+    $ daex providers accounts add --provider claude --text
                                                     Create an account and print its login command
-    $ ade providers accounts add --provider codex --accent '#3b82f6' --text
-    $ ade providers accounts login --instance you@example.com --text
+    $ daex providers accounts add --provider codex --accent '#3b82f6' --text
+    $ daex providers accounts login --instance you@example.com --text
                                                     Reprint one account's login command
-    $ ade providers accounts default --instance you@example.com --text
+    $ daex providers accounts default --instance you@example.com --text
                                                     Make an account the provider's default
-    $ ade providers accounts remove --instance you@example.com --text
+    $ daex providers accounts remove --instance you@example.com --text
                                                     Sign an account out and forget it
-    $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
-    $ ade providers accounts list --synced --text   Sign-ins your account keeps for your computers,
+    $ daex providers accounts refresh --text        Re-read each config home and record who is signed in
+    $ daex providers accounts list --synced --text  Sign-ins your account keeps for your computers,
                                                     and whether this computer copies its own (and why not)
-    $ ade providers accounts list --synced --provider grok --text
-    $ ade providers accounts refresh --synced --text
+    $ daex providers accounts list --synced --provider grok --text
+    $ daex providers accounts refresh --synced --text
                                                     Look at this computer's login files now (yours only)
-    $ ade providers actions --text                  List raw provider-account service actions
+    $ daex providers actions --text                 List raw provider-account service actions
 
   OpenCode logins (on this machine):
-    $ ade providers opencode accounts list --text
-    $ ade providers opencode accounts activate --id <id> --text
-    $ ade providers opencode accounts rename --id <id> --label Work --text
-    $ ade providers opencode accounts remove --id <id> --text
+    $ daex providers opencode accounts list --text
+    $ daex providers opencode accounts activate --id <id> --text
+    $ daex providers opencode accounts rename --id <id> --label Work --text
+    $ daex providers opencode accounts remove --id <id> --text
     For cloud logins, inspect \`ai.opencodeAuthMethods\` first, then call
-    \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
+    \`ai.opencodeCloudConnect\` with \`daex actions run\` and the current prompt answers.
 
   Every launch names its model with --model. Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
-    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
+    $ daex chat create --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
+    $ daex new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
 
   Use a saved Custom provider (Settings › Providers › Custom providers) or one
   stored API key for one session:
-    $ ade harness providers --text                      Your Custom providers, with the flags to launch each
-    $ ade chat create --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
-    $ ade new chat --mode cli --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
-    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --credential openrouter
+    $ daex harness providers --text                     Your Custom providers, with the flags to launch each
+    $ daex chat create --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ daex new chat --mode cli --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ daex chat create --lane <lane> --provider claude --model claude-opus-5-5 --credential openrouter
   --custom-provider, --credential and --via each say where the model runs; pass
   at most one. A Custom provider runs one model, so --model must be its own. In CLI
   mode a Custom provider on Cursor launches the native CLI instead: Cursor
   takes no key or endpoint from the launch.
 
   Use any model you pay for in any harness, with nothing saved:
-    $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
-    $ ade harness routes --provider claude --text       Everything each harness can reach
+    $ daex chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
+    $ daex harness routes --provider claude --text      Everything each harness can reach
 `,
   harness: `${ADE_BANNER}
   Any model you pay for, inside any harness
 
-  A harness is the agent program ADE runs (the --provider list: claude, codex,
+  A harness is the agent program ${BRAND.NAME} runs (the --provider list: claude, codex,
   opencode, droid, pi, cursor, ...). Every launch names its model with --model.
 
   See what each harness can reach (your Claude, Codex and Grok sign-ins,
   OpenCode sign-ins, stored keys), and how:
-    $ ade harness routes --provider claude --text
+    $ daex harness routes --provider claude --text
 
   Launch any of them with nothing saved (chat or CLI):
-    $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
-    $ ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
-    $ ade chat create --lane <lane> --provider droid --via account:codex:codex --model gpt-6-luna
+    $ daex chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
+    $ daex new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
+    $ daex chat create --lane <lane> --provider droid --via account:codex:codex --model gpt-6-luna
     --via takes opencode-go | opencode | opencode:<provider> | key:<provider>[:<credentialId>]
       | account:<claude|codex>:<accountId> | subscription:<claude|codex|grok|kimi|devin|muse>
     Model ids are examples; the routes list has the current ones.
 
   Custom providers: a harness, where it runs and one model, saved under a name
   in Settings › Providers › Custom providers. Launch one by name with its model:
-    $ ade harness providers --text                      Each one, with the exact flags to launch it
-    $ ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+    $ daex harness providers --text                     Each one, with the exact flags to launch it
+    $ daex chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
 
   Check one pairing with a one-token request (records the verdict for routing):
-    $ ade harness test --provider claude --via opencode-go --model deepseek-v4.1-flash --text
+    $ daex harness test --provider claude --via opencode-go --model deepseek-v4.1-flash --text
 
   Run a Custom provider in your own terminal (the env is printed, never saved;
-  the harness command it defines runs ADE's pinned copy, never one on your PATH):
-    $ eval "$(ade harness env "DeepSeek on Claude" --text)" && claude --model <model>
-    PS> ade harness env "DeepSeek on Claude" --shell pwsh --text | Out-String | Invoke-Expression
+  the harness command it defines runs ${BRAND.NAME}'s pinned copy, never one on your PATH):
+    $ eval "$(daex harness env "DeepSeek on Claude" --text)" && claude --model <model>
+    PS> daex harness env "DeepSeek on Claude" --shell pwsh --text | Out-String | Invoke-Expression
     The output contains the provider token. Do not paste it anywhere.
 `,
   proxy: `${ADE_BANNER}
-  ADE subscription proxy
+  ${BRAND.NAME} subscription proxy
 
   The local proxy runs your Claude, Codex, Grok, Kimi, Devin and Muse sign-ins
-  in other harnesses. It needs no sign-in of its own: ADE lends it each login
+  in other harnesses. It needs no sign-in of its own: ${BRAND.NAME} lends it each login
   you already have (access token only) and renews it through that provider's
   own CLI. The status view never prints proxy credentials.
 
-    $ ade proxy status --text                    Show installation, runtime, and the logins it holds
-    $ ade proxy start --text                     Install and start the proxy
-    $ ade proxy stop --text                      Stop it
-    $ ade proxy login --provider claude --text   Optional: a separate Claude login only the proxy holds
-    $ ade proxy logout <login-id> --text         Remove a separate proxy login (not a lent one)
+    $ daex proxy status --text                   Show installation, runtime, and the logins it holds
+    $ daex proxy start --text                    Install and start the proxy
+    $ daex proxy stop --text                     Stop it
+    $ daex proxy login --provider claude --text  Optional: a separate Claude login only the proxy holds
+    $ daex proxy logout <login-id> --text        Remove a separate proxy login (not a lent one)
 `,
   secrets: `${ADE_BANNER}
-  ADE secrets
+  ${BRAND.NAME} secrets
 
   A project's secrets live in Passwords & Secrets, encrypted on the person's
   account and synced to every computer they sign in to: the secrets for every
@@ -5083,26 +5085,26 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   --storage device stays on this computer only. List output never reveals
   values and shows where each secret lives.
 
-  Agents use secrets, they never read them: \`ade secrets exec\` runs a command
+  Agents use secrets, they never read them: \`daex secrets exec\` runs a command
   with the project's secrets in its environment, on this computer, and prints
   its output with every value masked (also in base64 and URL-encoded form;
   values under 8 characters are not masked, and it says which). \`get\` and
-  \`copy\` are the person's (or an app the person gave full ADE MCP access);
+  \`copy\` are the person's (or an app the person gave full ${BRAND.NAME} MCP access);
   export is in the
-  ADE desktop app (Settings › Passwords & Secrets).
+  ${BRAND.NAME} desktop app (Settings › Passwords & Secrets).
   --env NAME (repeatable) passes only those; --timeout 10m.
 
-    $ ade secrets list --text                       List secret names and metadata
-    $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
-    $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save for this project, on every computer
-    $ ade secrets set TOKEN --value local --storage device   This computer only
-    $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
-    $ ade secrets set TOKEN --value-file token.txt
-    $ ade secrets delete STRIPE_API_KEY             Delete a secret
-    $ ade secrets copy --from owner/other-repo      Copy another project's own secrets here, in one go (the person's;
+    $ daex secrets list --text                      List secret names and metadata
+    $ daex secrets exec -- npm run deploy           Run a command with the secrets in its env
+    $ daex secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
+    $ daex secrets set STRIPE_API_KEY --value sk_... Save for this project, on every computer
+    $ daex secrets set TOKEN --value local --storage device  This computer only
+    $ printf %s "$TOKEN" | daex secrets set TOKEN --stdin
+    $ daex secrets set TOKEN --value-file token.txt
+    $ daex secrets delete STRIPE_API_KEY            Delete a secret
+    $ daex secrets copy --from owner/other-repo     Copy another project's own secrets here, in one go (the person's;
                                                     an agent's shell is refused)
-    $ ade secrets copy --from /path/to/other --names STRIPE_API_KEY,SENTRY_DSN --overwrite
+    $ daex secrets copy --from /path/to/other --names STRIPE_API_KEY,SENTRY_DSN --overwrite
       A name this project already has is skipped (and listed) unless --overwrite.
       Values never print. --machine <name>: both projects on that machine.
 
@@ -5111,12 +5113,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   project's secrets (Passwords & Secrets) and only the outcome comes back —
   never the value:
 
-    $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
+    $ daex secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
       --generate offers a strong random value first; --timeout 30m (default)
       Prints {name, saved: true} | {name, saved: false, kept: true} | {name, saved: false, declined: true}
 
-    $ ade secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
-      For a token a shell CLI needs once, not kept in ADE. The person picks
+    $ daex secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
+      For a token a shell CLI needs once, not kept in ${BRAND.NAME}. The person picks
       "Temporary private file" or "Save to Passwords & Secrets" (your --delivery is the
       default). A file answer prints {name, saved: true, delivery: "file",
       file, expiresAt}: an owner-only file on this chat's machine. Read it only
@@ -5126,70 +5128,70 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
       the same --request-id returns the same file without asking again.
 `,
   passwords: `${ADE_BANNER}
-  ADE Passwords
+  ${BRAND.NAME} Passwords
 
   Saved logins and API keys, encrypted on the person's account. Agents use
   them and never see them: nothing here prints a password or a secret value.
 
-    $ ade passwords list --text      Sites, usernames and kinds of saved items
-    $ ade passwords status --text    Whether Passwords & Secrets is on for this computer
-    $ ade passwords sync --text      Pull what other computers saved
+    $ daex passwords list --text     Sites, usernames and kinds of saved items
+    $ daex passwords status --text   Whether Passwords & Secrets is on for this computer
+    $ daex passwords sync --text     Pull what other computers saved
 
-  To sign in to a site, open its sign-in page and run \`ade browser signin\`:
-  ADE types the saved login into the page. With no saved login, the person is
-  asked in your chat. To create an account, run \`ade browser signup\` on the
-  sign-up form: ADE makes the password, saves it, and types it in. Changing
+  To sign in to a site, open its sign-in page and run \`daex browser signin\`:
+  ${BRAND.NAME} types the saved login into the page. With no saved login, the person is
+  asked in your chat. To create an account, run \`daex browser signup\` on the
+  sign-up form: ${BRAND.NAME} makes the password, saves it, and types it in. Changing
   and removing items is the person's, in Settings › Passwords & Secrets.
 `,
   code: `${ADE_BANNER}
-  ADE sign-in codes
+  ${BRAND.NAME} sign-in codes
 
-    $ ade code --site github.com --text                The current authenticator code
-    $ ade code --site github.com --account me@x.com --text
-    $ ade code wait --site github.com --text           The authenticator, else the next texted code
-    $ ade code wait --from messages --timeout 3m --text
+    $ daex code --site github.com --text               The current authenticator code
+    $ daex code --site github.com --account me@x.com --text
+    $ daex code wait --site github.com --text          The authenticator, else the next texted code
+    $ daex code wait --from messages --timeout 3m --text
 
   \`code wait\` returns the site's saved authenticator code at once when it has
   one; otherwise it waits for the newest code texted to the person's Mac
   (Messages must be connected there) after you ask, up to --timeout (2m).
 
   The code comes from the authenticator saved with the site's login in
-  Passwords; you get the code (it lasts seconds), never the key. \`ade browser
+  Passwords; you get the code (it lasts seconds), never the key. \`daex browser
   signin\` also fills it by itself on a page that asks for one. A code sent by
-  email: open the mail in the ADE browser (already signed in) and read it.
+  email: open the mail in the ${BRAND.NAME} browser (already signed in) and read it.
 `,
   messages: `${ADE_BANNER}
-  ADE Messages (the person's texts, on their Mac)
+  ${BRAND.NAME} Messages (the person's texts, on their Mac)
 
-    $ ade messages status --text
-    $ ade messages recent --limit 10 --text          Newest texts (yours and theirs)
-    $ ade messages recent --from +15551234567 --since 1h --text
-    $ ade messages chats --text                      Recent conversations
-    $ ade messages send --to +15551234567 --text "On my way"
+    $ daex messages status --text
+    $ daex messages recent --limit 10 --text         Newest texts (yours and theirs)
+    $ daex messages recent --from +15551234567 --since 1h --text
+    $ daex messages chats --text                     Recent conversations
+    $ daex messages send --to +15551234567 --text "On my way"
 
   Off until the person connects Messages in Settings › Integrations ›
-  Messages on a Mac (ADE needs Full Disk Access there to read). Reading
+  Messages on a Mac (${BRAND.NAME} needs Full Disk Access there to read). Reading
   follows its Read Texts switch. Every text you send is shown to the person
   on a card in your chat first, unless they turned on Send Without Asking.
   From a cloud lane, these reach the Mac the person is using.
 `,
   integrations: `${ADE_BANNER}
-  ADE integrations
+  ${BRAND.NAME} integrations
 
   GitHub, Linear and Jira. Status never shows a key or token.
 
-    $ ade integrations status --text                 Which are connected here, and as whom
+    $ daex integrations status --text                Which are connected here, and as whom
 
   Asking the person to connect one (agents: use this, never ask them to paste
   a key into chat). The chat shows a connect card with the provider's own
-  ways to connect: a browser sign-in where there is one, otherwise a key. ADE
+  ways to connect: a browser sign-in where there is one, otherwise a key. ${BRAND.NAME}
   checks the key with the provider and saves it into the integration on the
   machine that runs this chat. Only the outcome comes back:
 
-    $ ade integrations connect linear --reason "To read and update the issues you mentioned"
+    $ daex integrations connect linear --reason "To read and update the issues you mentioned"
       --timeout 30m (default, 2h at most). Returns at once if it is already connected.
       GitHub counts as connected only with a token that can push and open PRs;
-      ADE's GitHub app alone only reads.
+      ${BRAND.NAME}'s GitHub app alone only reads.
       Prints {provider, connected: true, method, account} | {provider, connected: false, declined: true}
 
   When to ask: if the person named the integration ("use Linear"), raise the
@@ -5197,143 +5199,143 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   card only after they say yes.
 `,
   cloud: `${ADE_BANNER}
-  ADE Cloud computers
+  ${BRAND.CLOUD_NAME} computers
 
-  Each computer on your ADE Cloud account is one of your machines: reach it
+  Each computer on your ${BRAND.CLOUD_NAME} account is one of your machines: reach it
   with --machine <its name>. They sleep on their own after a few idle minutes
   and use no credits while asleep; a --machine call or a message wakes one in
   about 20 seconds. Reading a sleeping lane's saved chats does not wake it.
   <machine> is its name or id. Sizes: small, medium, large, xlarge
-  (ade cloud status lists each one's CPU, memory and credits an hour). large and
+  (daex cloud status lists each one's CPU, memory and credits an hour). large and
   xlarge are full computers: Android and Docker need one.
 
-    $ ade cloud status --text                     Everything in one read: can a new lane start (and why not),
+    $ daex cloud status --text                    Everything in one read: can a new lane start (and why not),
                                                     plan, hours, computers (N of your plan's), each lane, sizes, agent limits
-    $ ade cloud list --text                       Computers, state, size, how many credits each uses an hour (Small: none)
+    $ daex cloud list --text                      Computers, state, size, how many credits each uses an hour (Small: none)
 
   Lanes, chats and saved work (reads wake nothing; each delete asks you first)
 
-    $ ade cloud lanes --text                      Every lane, one list: on a computer (awake, asleep) or its
+    $ daex cloud lanes --text                     Every lane, one list: on a computer (awake, asleep) or its
                                                     computer deleted (the lane and chats stay; its next message
                                                     makes a new computer). --stale: unused a week or due for
                                                     cleanup, biggest disk first. --deleted, --project <origin>
-    $ ade cloud lanes <lane> --text               One lane and its saved chats (<lane>: name, id, branch or link)
-    $ ade cloud lanes delete <lane>               Delete the lane, its computer and its saved chats.
-                                                    ADE checks its work first; the card also offers Keep for later
-    $ ade cloud lanes free <lane>                 Keep for later: push its work, remove its computer, keep the lane
-    $ ade cloud lanes start <lane> [--size medium]
+    $ daex cloud lanes <lane> --text              One lane and its saved chats (<lane>: name, id, branch or link)
+    $ daex cloud lanes delete <lane>              Delete the lane, its computer and its saved chats.
+                                                    ${BRAND.NAME} checks its work first; the card also offers Keep for later
+    $ daex cloud lanes free <lane>                Keep for later: push its work, remove its computer, keep the lane
+    $ daex cloud lanes start <lane> [--size medium]
                                                     A new computer for a lane whose computer was deleted, on its branch
-    $ ade cloud lanes keep <lane>                 Stop the idle cleanup's delete (no wake, no credits)
-    $ ade cloud lanes git <lane> --text           Its Git summary as the computer saved it
-    $ ade cloud chats [read|delete <chat id>]     The account's saved chats (readable with the computer asleep or deleted)
-    $ ade cloud sessions [read|delete <id>]       Saved CLI and shell copies
-    $ ade cloud backups [forget <lane id>]        Work not on GitHub that ADE saved for each lane
-    $ ade cloud jobs [cancel <id>]                Launches, moves and copies ADE's server runs now
-    $ ade cloud project [--origin <origin>]       One project's whole ADE Cloud view
+    $ daex cloud lanes keep <lane>                Stop the idle cleanup's delete (no wake, no credits)
+    $ daex cloud lanes git <lane> --text          Its Git summary as the computer saved it
+    $ daex cloud chats [read|delete <chat id>]    The account's saved chats (readable with the computer asleep or deleted)
+    $ daex cloud sessions [read|delete <id>]      Saved CLI and shell copies
+    $ daex cloud backups [forget <lane id>]       Work not on GitHub that ${BRAND.NAME} saved for each lane
+    $ daex cloud jobs [cancel <id>]               Launches, moves and copies ${BRAND.NAME}'s server runs now
+    $ daex cloud project [--origin <origin>]      One project's whole ${BRAND.CLOUD_NAME} view
 
   Computers
 
-    $ ade cloud hours --text                      Plan, credits left, reset date, earned ones
-    $ ade cloud phone-provider <auto|nomac|revyl> Testers only: who runs your ADE Cloud iPhones (the next one
-                                                    starts there). Anyone else is refused by ADE Cloud.
-    $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
-    $ ade cloud invite --text                     Your invite link: friends joined, rewards left, credits earned
+    $ daex cloud hours --text                     Plan, credits left, reset date, earned ones
+    $ daex cloud phone-provider <auto|nomac|revyl> Testers only: who runs your ${BRAND.CLOUD_NAME} iPhones (the next one
+                                                    starts there). Anyone else is refused by ${BRAND.CLOUD_NAME}.
+    $ daex cloud work-state --text                On a cloud computer: which lanes have work not on GitHub yet
+    $ daex cloud invite --text                    Your invite link: friends joined, rewards left, credits earned
                                                     (enter a friend's invite in Settings › Account)
-    $ ade cloud create --kind vm --shape large --name "android vm"
+    $ daex cloud create --kind vm --shape large --name "android vm"
                                                     A computer with no lane. An agent never makes one alone: it asks
                                                     you on a card in its chat, and with nobody to ask the answer is no.
                                                     Agents start a lane with the size it needs (--machine cloud --size).
-    $ ade cloud sleep <machine>                   Sleep now (uses no credits)
-    $ ade cloud wake <machine>                    Wake (at 0 credits the server refuses it, except a Small one)
-    $ ade cloud resize <machine> --shape large    Same kind, new size; it restarts
-    $ ade cloud resize --request --size large --reason "Android needs it"
+    $ daex cloud sleep <machine>                  Sleep now (uses no credits)
+    $ daex cloud wake <machine>                   Wake (at 0 credits the server refuses it, except a Small one)
+    $ daex cloud resize <machine> --shape large   Same kind, new size; it restarts
+    $ daex cloud resize --request --size large --reason "Android needs it"
                                                     An agent asks the person (a card in its chat); nothing changes until they confirm
-    $ ade cloud recommend --need "a hosted Postgres for the orders table"
-                                                    On ADE Cloud Free, for a real need the person has now: a Sponsored pick from
+    $ daex cloud recommend --need "a hosted Postgres for the orders table"
+                                                    On ${BRAND.CLOUD_NAME} Free, for a real need the person has now: a Sponsored pick from
                                                     Gravity's Index shows as a card in your chat. It installs nothing; set it up
                                                     only if they ask. With no card (a CLI session), say "Sponsored:" in your reply.
-    $ ade cloud resize --free 8 --reason "the build needs 8 GB"
+    $ daex cloud resize --free 8 --reason "the build needs 8 GB"
                                                     On a cloud computer: grow its own disk to fit 8 GB free (--disk <GB>: to that size).
                                                     Up to the size's own disk maximum it grows with no card (agents, unattended
                                                     too); past it, move the lane to a bigger size. It restarts the computer; the
-                                                    call waits, and ADE continues your chat after the restart. Use it instead of
+                                                    call waits, and ${BRAND.NAME} continues your chat after the restart. Use it instead of
                                                     asking the person to grow it.
-    $ ade cloud update <machine>                  Move to its channel's image now and restart; files stay
+    $ daex cloud update <machine>                 Move to its channel's image now and restart; files stay
                                                     (each computer also updates itself when idle or asleep)
-    $ ade cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy; an agent's asks you)
-    $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat (an agent's asks you)
-    $ ade cloud delete <machine>                  Gone for good, files and all
-    $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
-    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
+    $ daex cloud copy <machine> --name "lane box"  A new computer with the same files (a warm copy; an agent's asks you)
+    $ daex cloud move <machine> --to vm|box       Change kind, keeping every repo, lane and chat (an agent's asks you)
+    $ daex cloud delete <machine>                 Gone for good, files and all
+    $ daex cloud limits [ask|balanced|hands-off]  What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
+    $ daex chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new computer (sizes: small, medium,
                                                     large, xlarge); the chat starts there
-    $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
+    $ daex lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
 
-  ade cloud alone is ade cloud status. status, list, hours, limits (reading
+  daex cloud alone is daex cloud status. status, list, hours, limits (reading
   them), invite, sleep, wake, the reads of lanes, chats, sessions, backups,
   jobs and project, and lanes keep are the account's and work from any folder;
   the rest run in this folder's project. A new lane, create and copy are refused at
   once when status says no new lane can start, with the same sentence.
 
   Invites: a friend who enters your link gets ${formatCloudHours(CLOUD_REFERRAL_REWARD_MILLI)} extra free cloud credits, and
-  so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
+  so do you once their first chat runs on ${BRAND.CLOUD_NAME} (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
   Earned credits never expire; they are used after the plan's credits and before
   extra credits. The free plan is given once per computer and once per GitHub
   account, which must be at least 30 days old (or add a card, no charge).
 
-  Plans: Free, Plus, Pro and Max. \`ade cloud status\` lists each with its price,
-  cloud computers and credits, from ADE Cloud itself. Change it in Settings › ADE Cloud › Plans.
+  Plans: Free, Plus, Pro and Max. \`daex cloud status\` lists each with its price,
+  cloud computers and credits, from ${BRAND.CLOUD_NAME} itself. Change it in Settings › ${BRAND.CLOUD_NAME} › Plans.
   Unlimited Small computers on every plan: they never use your credits. Bigger
   computers use credits: a credit is an hour on a Medium computer or a minute
-  on the ADE Cloud iPhone, so the same credits last less on a Large or an
+  on the ${BRAND.CLOUD_NAME} iPhone, so the same credits last less on a Large or an
   X-Large (status shows them as time on each).
   Each plan has a number of cloud computers, asleep or not. At the limit a new
-  lane is refused: free up a computer from another lane (ade cloud lanes free
+  lane is refused: free up a computer from another lane (daex cloud lanes free
   <lane>: the lane and its chats stay, and it gets a new computer at its next
   message), delete a lane, or move to a bigger plan.
-  Outside agents (ADE MCP) may start ADE Cloud work on paid plans only.
+  Outside agents (${BRAND.NAME} MCP) may start ${BRAND.CLOUD_NAME} work on paid plans only.
 
   Asks first: create, resize, update, copy, move, delete,
   raising the limits, a new lane (--machine cloud). The card shows in your chat and gives up
-  after 5 minutes. In a full-auto chat or an automation ADE answers it with
+  after 5 minutes. In a full-auto chat or an automation ${BRAND.NAME} answers it with
   the person's limits (balanced: 3 new machines a day, up to 4x16), and says
   no to deleting a machine that chat didn't make. create, copy and move are
   the exception: an agent's always shows the card, also in a full-auto chat,
-  and with nobody to ask (an automation, ADE MCP) the answer is no. They work
-  from any of your signed-in machines; without an ADE window there, your chat
+  and with nobody to ask (an automation, ${BRAND.NAME} MCP) the answer is no. They work
+  from any of your signed-in machines; without a ${BRAND.NAME} window there, your chat
   gets a link to approve the new machine joining your account.
-  From a terminal with no ADE chat, what asks first is refused: ADE can't
-  tell a person there from an agent. Start a lane in the ADE app (Run on:
-  ADE Cloud) or ask for it in an ADE chat.
-  To move one chat and its lane to another computer: ade chat move.
+  From a terminal with no ${BRAND.NAME} chat, what asks first is refused: ${BRAND.NAME} can't
+  tell a person there from an agent. Start a lane in the ${BRAND.NAME} app (Run on:
+  ${BRAND.CLOUD_NAME}) or ask for it in a ${BRAND.NAME} chat.
+  To move one chat and its lane to another computer: daex chat move.
 `,
   "mcp servers": `${ADE_BANNER}
-  ADE MCP servers (ade://settings/mcp.servers)
+  ${BRAND.NAME} MCP servers (ade://settings/mcp.servers)
 
-  The MCP servers every agent ADE launches gets, defined once for the
+  The MCP servers every agent ${BRAND.NAME} launches gets, defined once for the
   person's account. Values (tokens, keys) live in the account vault and are
   never shown: the list says only whether each one is set.
 
-    $ ade mcp servers --text                         Every server in ADE, where it is on, what is set;
-                                                     and servers other tools' configs here have that ADE does not
+    $ daex mcp servers --text                        Every server in ${BRAND.NAME}, where it is on, what is set;
+                                                     and servers other tools' configs here have that ${BRAND.NAME} does not
 
   Asking the person to add one (agents: use this, never ask them to paste a
   key into chat). The chat shows an MCP server card with exactly what runs;
   the person approves it, in every permission mode, and types any values.
-  ADE saves the server to their account, on all their machines:
+  ${BRAND.NAME} saves the server to their account, on all their machines:
 
-    $ ade mcp servers add notion --reason "To read the spec page"
-      A quick setup from ADE's catalogue: the vendor's own address. Names:
+    $ daex mcp servers add notion --reason "To read the spec page"
+      A quick setup from ${BRAND.NAME}'s catalogue: the vendor's own address. Names:
       ${catalogueNameLines()}.
-      github, linear and atlassian open ADE's own connect card instead (one connection for ADE and agents).
-    $ ade mcp servers add sentry --import --reason "To read the crash"
+      github, linear and atlassian open ${BRAND.NAME}'s own connect card instead (one connection for ${BRAND.NAME} and agents).
+    $ daex mcp servers add sentry --import --reason "To read the crash"
       A server another tool here already has (see the list); its values are copied.
-    $ ade mcp servers add team-db --reason "To query the staging data" --env DB_TOKEN -- npx -y @example/db-mcp
+    $ daex mcp servers add team-db --reason "To query the staging data" --env DB_TOKEN -- npx -y @example/db-mcp
       A local server: the command line after --. --env NAME for each value it reads.
-    $ ade mcp servers add team-wiki --reason "To read the runbook" --url https://mcp.example.com/mcp [--sse] [--header Authorization]
+    $ daex mcp servers add team-wiki --reason "To read the runbook" --url https://mcp.example.com/mcp [--sse] [--header Authorization]
       A remote server.
-      --timeout 30m (default, 2h at most). Returns at once if ADE already has that name, URL, or command line.
+      --timeout 30m (default, 2h at most). Returns at once if ${BRAND.NAME} already has that name, URL, or command line.
       Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
         | {name, integration, connected, next} (github, linear, atlassian)
 
@@ -5343,11 +5345,11 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
   Asking the person to remove one (only when they asked):
 
-    $ ade mcp servers remove stripe --reason "You asked to disconnect Stripe"
+    $ daex mcp servers remove stripe --reason "You asked to disconnect Stripe"
       A card asks them; on yes it leaves their account on every machine, with
       its saved values and sign-in.
       Prints {name, removed: true, next} | {name, removed: false, declined: true}
-      GitHub, Linear and Jira are ADE integrations: link
+      GitHub, Linear and Jira are ${BRAND.NAME} integrations: link
       ade://settings/integrations.github (or .linear, .jira) instead.
 
   When to ask: if the person named the server ("add the GitHub MCP"), raise
@@ -5358,36 +5360,36 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   linear: `${ADE_BANNER}
   Linear workflows
 
-  Daemon bridge (for an agent running inside a tracked ADE CLI session):
-  these commands route over the ADE runtime to the desktop runtime, which holds
-  the Linear credentials — the CLI never needs a Linear token. When ADE launches
+  Daemon bridge (for an agent running inside a tracked ${BRAND.NAME} CLI session):
+  these commands route over the ${BRAND.NAME} runtime to the desktop runtime, which holds
+  the Linear credentials — the CLI never needs a Linear token. When ${BRAND.NAME} launches
   an agent with an attached issue it injects \$ADE_CHAT_SESSION_ID and
   \$ADE_LINEAR_ISSUE_IDS, so the agent can read and write its issue with no ids.
 
-    $ ade linear attach --this-session --issue-id ENG-431
+    $ daex linear attach --this-session --issue-id ENG-431
                                                     Attach an issue to the current CLI session
-    $ ade linear issues --this-session --text       List issues attached to this session
-    $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
-    $ ade linear issue-comments ENG-431 --text      Its comments
-    $ ade linear picker-data --text                 Workflow states and users (for set-state and assign)
-    $ ade linear inbox [--all] --text               Your Linear notifications (unread unless --all)
-    $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
-    $ ade linear comment ENG-431 "Done"             Comment on a specific issue
-    $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
-    $ ade linear assign ENG-431 me                  Assign: me, none, a name, an email, or a user id
-    $ ade linear label ENG-431 "needs-review"       Add a label to an issue
-    $ ade linear unlabel ENG-431 "needs-review"     Remove a label from an issue
-    $ ade linear graphql --query 'query { viewer { id name } }'
+    $ daex linear issues --this-session --text      List issues attached to this session
+    $ daex linear issue ENG-431 --text              Read one issue (defaults to the session's attached issue)
+    $ daex linear issue-comments ENG-431 --text     Its comments
+    $ daex linear picker-data --text                Workflow states and users (for set-state and assign)
+    $ daex linear inbox [--all] --text              Your Linear notifications (unread unless --all)
+    $ daex linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
+    $ daex linear comment ENG-431 "Done"            Comment on a specific issue
+    $ daex linear set-state ENG-431 "In Progress"   Move an issue to a state (name in the issue's team, or id)
+    $ daex linear assign ENG-431 me                 Assign: me, none, a name, an email, or a user id
+    $ daex linear label ENG-431 "needs-review"      Add a label to an issue
+    $ daex linear unlabel ENG-431 "needs-review"    Remove a label from an issue
+    $ daex linear graphql --query 'query { viewer { id name } }'
                                                     Run Linear GraphQL through the project connection
-    $ ade linear graphql --query-file query.graphql --variables-file vars.json
+    $ daex linear graphql --query-file query.graphql --variables-file vars.json
                                                     Use files for larger GraphQL operations
-    $ ade linear detach --this-session [--issue-id ENG-431]
+    $ daex linear detach --this-session [--issue-id ENG-431]
                                                     Detach one issue (or all) from this session
 
   Create and edit issues. Names work where Linear has names: states, users,
   labels, projects, milestones, cycles, and templates. Ids work too.
 
-    $ ade linear create --team ENG --title "Fix login redirect" --text
+    $ daex linear create --team ENG --title "Fix login redirect" --text
                                                     Create an issue; prints its id and URL
         [--description "..." | --description-file <path|->]
         [--state "Todo"] [--assignee me|<name|email|id>] [--priority urgent|high|normal|low|none|0-4]
@@ -5397,109 +5399,109 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
         as related. --blocks, --blocked-by, --sub-issue, or --duplicate pick the
         link. --standalone skips it. A near-duplicate of an open issue is not
         created unless you pass --allow-duplicate.
-    $ ade linear edit ENG-431 --title "New title" --description-file notes.md
+    $ daex linear edit ENG-431 --title "New title" --description-file notes.md
                                                     Change any field; takes the create flags plus --remove-label
-    $ ade linear set-priority ENG-431 high          Priority: urgent, high, normal, low, none, or 0-4
-    $ ade linear set-estimate ENG-431 3             Estimate in the team's scale, or none
-    $ ade linear set-cycle ENG-431 current          Cycle: current, next, a number, an id, or none
-    $ ade linear set-project ENG-431 "Mobile"       Project by name or id, or none
-    $ ade linear set-milestone ENG-431 "Beta"       Milestone in the issue's project, or none
-    $ ade linear set-due ENG-431 2026-11-01         Due date as YYYY-MM-DD, or none
-    $ ade linear set-parent ENG-431 ENG-400         Make it a sub-issue, or none to detach it
-    $ ade linear relate ENG-431 --blocks ENG-432    Link issues: --blocks, --blocked-by, --related, --duplicate-of
+    $ daex linear set-priority ENG-431 high         Priority: urgent, high, normal, low, none, or 0-4
+    $ daex linear set-estimate ENG-431 3            Estimate in the team's scale, or none
+    $ daex linear set-cycle ENG-431 current         Cycle: current, next, a number, an id, or none
+    $ daex linear set-project ENG-431 "Mobile"      Project by name or id, or none
+    $ daex linear set-milestone ENG-431 "Beta"      Milestone in the issue's project, or none
+    $ daex linear set-due ENG-431 2026-11-01        Due date as YYYY-MM-DD, or none
+    $ daex linear set-parent ENG-431 ENG-400        Make it a sub-issue, or none to detach it
+    $ daex linear relate ENG-431 --blocks ENG-432   Link issues: --blocks, --blocked-by, --related, --duplicate-of
 
   Workspace + automation (typically run with --role cto):
-    $ ade --role cto linear quick-view --text      Show connected workspace, projects, and issues
-    $ ade --role cto linear picker-data --text     Read projects/users/states for the issue picker
-    $ ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
+    $ daex --role cto linear quick-view --text     Show connected workspace, projects, and issues
+    $ daex --role cto linear picker-data --text    Read projects/users/states for the issue picker
+    $ daex --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
                                                     Search issues for the lane Linear-issue picker
-    $ ade --role cto linear issue-comments --issue-id <id>
+    $ daex --role cto linear issue-comments --issue-id <id>
                                                     Fetch comments on a Linear issue
 `,
   actions: `${ADE_BANNER}
-  ADE actions
+  ${BRAND.NAME} actions
 
-  Escape hatch for any exposed ADE service method. Use typed commands first
+  Escape hatch for any exposed ${BRAND.NAME} service method. Use typed commands first
   when they exist; use actions when an agent needs exact service coverage.
 
   Argument shapes:
     Object args become one object parameter:
-      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
-      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
+      $ daex actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
+      $ daex actions run git.push --arg laneId=lane-1 --arg setUpstream=true
     --arg parses true/false/null/numbers; --arg-json parses a JSON value:
-      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
+      $ daex actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     argsList is for service methods with multiple positional parameters:
-      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
-    $ ade actions list --text                       Domain-grouped action catalog
-    $ ade actions list --domain git --text          Narrow the catalog
-    $ ade actions describe chat.respondToInput --text
+      $ daex actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
+    $ daex actions list --text                      Domain-grouped action catalog
+    $ daex actions list --domain git --text         Narrow the catalog
+    $ daex actions describe chat.respondToInput --text
                                                     One action: read/write access, description, documented
                                                     input fields and an example (alias: show, schema)
-    $ ade --role cto actions list --domain attention --text
+    $ daex --role cto actions list --domain attention --text
                                                     Discover account-wide Activity actions
-    $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
+    $ daex --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
                                                     Read work across connected machines and projects
-    $ ade actions run <domain.action> --input-json '{"key":"value"}'
-    $ ade actions run <domain> <action> --input-json '{"key":"value"}'
-    $ ade actions status --text                     Runtime action availability
+    $ daex actions run <domain.action> --input-json '{"key":"value"}'
+    $ daex actions run <domain> <action> --input-json '{"key":"value"}'
+    $ daex actions status --text                    Runtime action availability
 `,
   automations: `${ADE_BANNER}
   Automations
 
-    $ ade automations list [--json]                 List automation rules
-    $ ade automations show <id> [--json]            Inspect a rule
-    $ ade automations create --from-file <path>     Create from YAML (also accepts --stdin)
-    $ ade automations update <id> --from-file <path>
-    $ ade automations delete <id>                   Remove a rule (on every computer when it follows your account)
-    $ ade automations toggle <id> --enabled true|false
-    $ ade automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
+    $ daex automations list [--json]                List automation rules
+    $ daex automations show <id> [--json]           Inspect a rule
+    $ daex automations create --from-file <path>    Create from YAML (also accepts --stdin)
+    $ daex automations update <id> --from-file <path>
+    $ daex automations delete <id>                  Remove a rule (on every computer when it follows your account)
+    $ daex automations toggle <id> --enabled true|false
+    $ daex automations run-on <id> [--device <sync-device-id> --name <computer> | --cloud]
                                                      Choose the one computer that runs a rule that
                                                      follows your account. Default: this computer.
-                                                     --cloud: ADE Cloud watches its schedule or
+                                                     --cloud: ${BRAND.CLOUD_NAME} watches its schedule or
                                                      webhook and starts each run on a new computer
-    $ ade automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
+    $ daex automations test <id> [--mode preview|safe|live] [--pr <n>] [--issue <n>]
           [--linear <id>] [--lane <id>] [--chat <id>] [--body-file <json>] [--plan] [--yes]
                                                      Test a rule with an event. preview shows
                                                      what a real run does; safe runs in a
                                                      throwaway lane and only reports posts and
                                                      pushes; live runs for real and needs --yes.
                                                      --plan shows a test's plan without running it
-    $ ade automations cleanup-test <run-id>         Delete the lanes a test run made
-    $ ade automations run <id> [--lane <id>] [--dry-run]
-    $ ade automations trigger <id> [--lane <id>]
+    $ daex automations cleanup-test <run-id>        Delete the lanes a test run made
+    $ daex automations run <id> [--lane <id>] [--dry-run]
+    $ daex automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
-    $ ade automations ingress status [--text]        Show webhook gateway status
-    $ ade automations ingress start [--text]         Start the local webhook listener
-    $ ade automations ingress refresh [--text]       Re-detect Tailscale/gateway status
-    $ ade --role cto automations ingress set-url <https-url>
+    $ daex automations ingress status [--text]       Show webhook gateway status
+    $ daex automations ingress start [--text]        Start the local webhook listener
+    $ daex automations ingress refresh [--text]      Re-detect Tailscale/gateway status
+    $ daex --role cto automations ingress set-url <https-url>
                                                      Save the public gateway URL
-    $ ade --role cto automations ingress clear-url   Clear the public gateway URL
-    $ ade automations linear-ingress status [--text]  Show Linear webhook ingress status
-    $ ade --role cto automations linear-ingress connect
+    $ daex --role cto automations ingress clear-url  Clear the public gateway URL
+    $ daex automations linear-ingress status [--text]  Show Linear webhook ingress status
+    $ daex --role cto automations linear-ingress connect
                                                      Register the Linear webhook (CTO only)
-    $ ade --role cto automations linear-ingress disconnect
+    $ daex --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
-    $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
-    $ ade automations webhook create --service github --model <id> [--filter body.action=opened]
+    $ daex automations linear-ingress poll [--text]   Drain queued Linear events now
+    $ daex automations webhook create --service github --model <id> [--filter body.action=opened]
                  [--prompt "…"] [--in-this-chat | --chat <id>]
                  (--model is the chat each event starts; not needed with --in-this-chat / --chat)
                  [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
                                                      One step: a private URL + the rule, then paste steps
-    $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
-    $ ade automations webhook deliveries <wh-id> [--text]
+    $ daex automations webhook list [--text]         Every webhook automation, its URL and last delivery
+    $ daex automations webhook deliveries <wh-id> [--text]
                                                      What arrived and why it ran or was skipped
-    $ ade automations webhook delivery <whd-id> [--text]
+    $ daex automations webhook delivery <whd-id> [--text]
                                                      One delivery: the prompt the agent got, headers, body
-    $ ade automations webhook test <wh-id> [--body <json>]
+    $ daex automations webhook test <wh-id> [--body <json>]
                                                      Ring the URL like the real service (signed)
-    $ ade automations webhook replay <whd-id>        Run a logged delivery again
-    $ ade automations webhook url|rotate|retire <wh-id>
+    $ daex automations webhook replay <whd-id>       Run a logged delivery again
+    $ daex automations webhook url|rotate|retire <wh-id>
                                                      Show, replace, or stop a URL
-    $ ade automations cleanups list [--text]          List scheduled lane cleanups
-    $ ade automations cleanups cancel <id>            Cancel a scheduled lane cleanup
-    $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
-    $ ade automations run-show <runId> [--json]     Inspect a run
-    $ ade automations example                       Print an example rule (stdout)
+    $ daex automations cleanups list [--text]         List scheduled lane cleanups
+    $ daex automations cleanups cancel <id>           Cancel a scheduled lane cleanup
+    $ daex automations runs [--rule <id>] [--status <s>] [--limit 50]
+    $ daex automations run-show <runId> [--json]    Inspect a run
+    $ daex automations example                      Print an example rule (stdout)
 
   Lane mode flags (apply to create/update on top of --from-file/--stdin/--text):
     --lane-mode <create|reuse|require-on-trigger|pr-branch>
@@ -5519,17 +5521,17 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   update: `${ADE_BANNER}
   Auto-update
 
-  Auto-update commands query and drive ADE desktop's auto-updater. The desktop
+  Auto-update commands query and drive ${BRAND.NAME} desktop's auto-updater. The desktop
   app owns the updater process; CLI parity exists so agents can read state and,
   when explicitly requested by the user, trigger a check, install, or dismiss
   the post-install notice. quitAndInstall relaunches the desktop app and only
   succeeds when status is "ready".
 
-    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress, last failed install)
-    $ ade --socket update check --text              Trigger a background update check
-    $ ade --socket update install --text            Refresh latest, restore a vanished staged installer if needed, then quit and install when ready
-    $ ade --socket update dismiss --text            Clear the recently-installed banner
-    $ ade --socket update actions --text            List callable update actions
+    $ daex --socket update status --text            Read AutoUpdateSnapshot (status, version, progress, last failed install)
+    $ daex --socket update check --text             Trigger a background update check
+    $ daex --socket update install --text           Refresh latest, restore a vanished staged installer if needed, then quit and install when ready
+    $ daex --socket update dismiss --text           Clear the recently-installed banner
+    $ daex --socket update actions --text           List callable update actions
 
   Snapshot status values: idle, checking, downloading, ready, installing, error.
   "installing" appears between quitAndInstall and the desktop relaunch. That
@@ -5661,7 +5663,7 @@ function parseRuntimeProfile(value: string | null | undefined): "embedded" | und
   if (!trimmed) return undefined;
   if (trimmed === "embedded") return "embedded";
   throw new CliUsageError(
-    `Unknown runtime profile '${trimmed}'. The only profile ade runtime run accepts is 'embedded'.`,
+    `Unknown runtime profile '${trimmed}'. The only profile daex runtime run accepts is 'embedded'.`,
   );
 }
 
@@ -5799,8 +5801,8 @@ function refuseRemovedFlags(args: readonly string[], removed: Readonly<Record<st
  */
 function refuseUnknownSubcommand(command: string, domain: string, sub: string): never {
   throw new CliUsageError(
-    `'ade ${command} ${sub}' is not a command; see 'ade help ${command}'. `
-    + `To call a service action by name: ade actions run ${domain}.<action> (ade actions list --domain ${domain}).`,
+    `'ade ${command} ${sub}' is not a command; see 'daex help ${command}'. `
+    + `To call a service action by name: daex actions run ${domain}.<action> (daex actions list --domain ${domain}).`,
   );
 }
 
@@ -5852,7 +5854,7 @@ function readMoveDestination(args: string[]): string | null {
       args.splice(at, next == null || next.startsWith("--") ? 1 : 2);
     }
   }
-  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `daex machines list`).");
   const left = flagNamesOutsideFreeText(args);
   if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
   return value;
@@ -5877,7 +5879,7 @@ export function readValue(args: string[], names: readonly string[]): string | nu
       if (glued) {
         const value = token.slice(glued.length).trim();
         throw new CliUsageError(
-          `"${token}" reached ADE as one argument. Pass ${glued} and its value as two: ${glued} ${value}, or ${glued}=${value}.`,
+          `"${token}" reached ${BRAND.NAME} as one argument. Pass ${glued} and its value as two: ${glued} ${value}, or ${glued}=${value}.`,
         );
       }
       continue;
@@ -6154,7 +6156,7 @@ function buildIosSimulatorHelp(args: string[]): string {
     return IOS_SIMULATOR_SUBCOMMAND_HELP[canonical];
   }
   if (rawSubcommand && !IOS_SIMULATOR_SUBCOMMAND_HELP[canonical]) {
-    return `${HELP_BY_COMMAND["apple"]}\n  Unknown Apple device subcommand '${rawSubcommand}'. Run 'ade apple actions --text' to list raw service actions.\n`;
+    return `${HELP_BY_COMMAND["apple"]}\n  Unknown Apple device subcommand '${rawSubcommand}'. Run 'daex apple actions --text' to list raw service actions.\n`;
   }
   return HELP_BY_COMMAND["apple"];
 }
@@ -6165,7 +6167,7 @@ function buildAppControlHelp(args: string[]): string {
   const focused = `${HELP_BY_COMMAND["app-control"]}
   Focused help for '${rawSubcommand}':
     Most subcommands accept --input-json and --arg/--arg-json as escape hatches.
-    Use "ade app-control actions --text" to inspect the exact service methods.
+    Use "daex app-control actions --text" to inspect the exact service methods.
     Use --socket when you want the desktop drawer and CLI to share the same live App Control session.
 `;
   return focused;
@@ -6216,7 +6218,7 @@ function envLaneIdForLaneCommand(): string | null {
   const laneId = process.env.ADE_LANE_ID?.trim() || null;
   if (isRemoteWorkLaneId(laneId)) {
     throw new CliUsageError(
-      "This shell runs in the code a chat on another machine keeps here, so it has no ADE lane. "
+      `This shell runs in the code a chat on another machine keeps here, so it has no ${BRAND.NAME} lane. `
       + "Pass --lane <lane> to act on a lane of this machine.",
     );
   }
@@ -6761,23 +6763,23 @@ function readJsonPayloadOption(
  * forgot it; this says what to pass and where to find one.
  */
 const REQUIRED_VALUE_HINTS: Readonly<Record<string, string>> = {
-  sessionId: "a chat or CLI session id (`ade chat list --text` lists them)",
-  workSessionId: "a chat, CLI or shell session id (`ade chat list --text` lists chats and CLI sessions; `ade terminal list --text` lists shells)",
+  sessionId: "a chat or CLI session id (`daex chat list --text` lists them)",
+  workSessionId: "a chat, CLI or shell session id (`daex chat list --text` lists chats and CLI sessions; `daex terminal list --text` lists shells)",
   launchProvider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")}), or shell for a plain terminal`,
-  signInProvider: "the provider to sign in, as the first word (ade providers sign-in claude --remote)",
+  signInProvider: "the provider to sign in, as the first word (daex providers sign-in claude --remote)",
   proxyProvider: "--provider claude or --provider codex",
-  chatSessionId: "a chat id (`ade chat list --text` lists them)",
-  prId: "a PR number or id (`ade prs list --text` lists them)",
-  prUrlOrNumber: "a PR URL or number (`ade prs list --text` lists them)",
-  laneId: "a lane id or name (`ade lanes list --text` lists them)",
-  targetLaneId: "the lane to move to (`ade lanes list --text` lists them)",
-  targetModelId: "the model to hand it to, --model <id> (`ade chat models --text` lists them)",
-  model: "--model <id> (`ade chat models --text` lists them)",
+  chatSessionId: "a chat id (`daex chat list --text` lists them)",
+  prId: "a PR number or id (`daex prs list --text` lists them)",
+  prUrlOrNumber: "a PR URL or number (`daex prs list --text` lists them)",
+  laneId: "a lane id or name (`daex lanes list --text` lists them)",
+  targetLaneId: "the lane to move to (`daex lanes list --text` lists them)",
+  targetModelId: "the model to hand it to, --model <id> (`daex chat models --text` lists them)",
+  model: "--model <id> (`daex chat models --text` lists them)",
   provider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")})`,
-  turnId: "a turn id (`ade chat transcript <chat> --json` shows them)",
-  templateId: "a lane template id (`ade lanes templates list --text` lists them)",
-  terminalId: "a terminal id, --terminal <id> (`ade terminal list --text` lists them)",
-  browserSessionId: "a browser session id, --browser-session <id> (`ade browser status --text` lists them)",
+  turnId: "a turn id (`daex chat transcript <chat> --json` shows them)",
+  templateId: "a lane template id (`daex lanes templates list --text` lists them)",
+  terminalId: "a terminal id, --terminal <id> (`daex terminal list --text` lists them)",
+  browserSessionId: "a browser session id, --browser-session <id> (`daex browser status --text` lists them)",
 };
 
 export function requireValue(value: string | null, label: string): string {
@@ -6944,7 +6946,7 @@ function readSessionId(args: string[], options: { thisSession?: boolean } = {}):
   const envSession = asString(process.env.ADE_CHAT_SESSION_ID);
   if (options.thisSession && !envSession) {
     throw new CliUsageError(
-      "--this-session requires ADE_CHAT_SESSION_ID, which ADE sets inside a tracked CLI session.",
+      `--this-session requires ADE_CHAT_SESSION_ID, which ${BRAND.NAME} sets inside a tracked CLI session.`,
     );
   }
   return envSession;
@@ -7049,7 +7051,7 @@ function requireLinearIssueId(args: string[]): string {
   const fromSession = sessionLinearIssueId();
   if (fromSession) return fromSession;
   throw new CliUsageError(
-    "Linear issue id is required. Pass --issue-id <id> or run inside a session with an attached issue (ADE sets $ADE_LINEAR_ISSUE_IDS).",
+    `Linear issue id is required. Pass --issue-id <id> or run inside a session with an attached issue (${BRAND.NAME} sets $ADE_LINEAR_ISSUE_IDS).`,
   );
 }
 
@@ -7090,7 +7092,7 @@ function resolveLinearWriteCommand(
   }
   if (!issueId) {
     throw new CliUsageError(
-      "Linear issue id is required. Pass --issue-id <id> or run inside a session with an attached issue (ADE sets $ADE_LINEAR_ISSUE_IDS).",
+      `Linear issue id is required. Pass --issue-id <id> or run inside a session with an attached issue (${BRAND.NAME} sets $ADE_LINEAR_ISSUE_IDS).`,
     );
   }
   if (!value) {
@@ -7135,7 +7137,7 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
   const lines = [
     `Work on Linear issue ${identifier}${title ? `: ${title}` : ""}.`,
     "Read the attached issue context, then implement the change end-to-end.",
-    "Use `ade linear` to read comments and post status/comments back to the issue as you progress.",
+    "Use `daex linear` to read comments and post status/comments back to the issue as you progress.",
   ];
   if (url) lines.push(`Issue: ${url}`);
   return lines.join("\n");
@@ -7277,7 +7279,7 @@ function assertNotFusedTargetFlag(token: string, previous: string | undefined): 
     && (FREE_TEXT_VALUE_FLAGS.has(previous) || VALUE_CARRIER_FLAGS.has(previous));
   if (isValue) return;
   throw new CliUsageError(
-    `"${token}" reached ade as one argument, so its flags would be ignored and the command would run here. `
+    `"${token}" reached daex as one argument, so its flags would be ignored and the command would run here. `
       + `Pass each flag and value as its own word: ${token.trim().split(/\s+/).join(" ")}`
       + ` (in a script, use an array, not one quoted string). Text that starts with a flag goes in a text flag, such as --prompt.`,
   );
@@ -7689,7 +7691,7 @@ function laneStartFromFlags(flags: LaneStartFlags | null, key = "laneDefaults"):
 function formatLaneDefaultsText(value: unknown): string {
   const snapshot = unwrappedRecord(value);
   // Never print built-in values as if they were the project's.
-  if (!isRecord(snapshot.defaults)) return "ADE couldn't read this project's new-lane defaults. The brain may need a newer ADE.";
+  if (!isRecord(snapshot.defaults)) return `${BRAND.NAME} couldn't read this project's new-lane defaults. The brain may need a newer ${BRAND.NAME}.`;
   const defaults = snapshot.defaults;
   const start = normalizeLaneStart(defaults.start) ?? DEFAULT_LANE_START;
   const branch = laneStartSourceBranch(start, {
@@ -7733,7 +7735,7 @@ function formatLaneCreateResultText(value: unknown): string {
   const progress = isRecord(setup.progress) ? setup.progress : {};
   const steps = Array.isArray(progress.steps) ? progress.steps.filter(isRecord) : [];
   if (!templateId && steps.length === 0) {
-    lines.push("Setup: nothing to do. No default lane template is set (see `ade lanes templates`).");
+    lines.push("Setup: nothing to do. No default lane template is set (see `daex lanes templates`).");
     return lines.join("\n");
   }
   lines.push(`Setup${templateId ? ` (template ${templateId})` : ""}: ${asString(progress.overallStatus) ?? "unknown"}.`);
@@ -7814,7 +7816,7 @@ function buildLaneSharePlan(args: string[]): CliPlan {
   // One flag per meaning: an unknown word is refused, never read as a list.
   const unknown = args.find((word) => !PARSED_SWITCHES.has(word));
   if (unknown !== undefined) {
-    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --access watch, --hide-machines or --hide-models.`);
+    throw new CliUsageError(`daex lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --access watch, --hide-machines or --hide-models.`);
   }
   if (add && remove) throw new CliUsageError("Pass --add or --remove, not both.");
   if (!add && (preset != null || endsValue != null || hideMachines || hideModels)) {
@@ -8188,7 +8190,7 @@ function buildLanePlan(args: string[]): CliPlan {
     const set = args[0] === "set";
     if (set) args.shift();
     const changes = readLaneStartFlags(args);
-    if (set && changes.on === "uncommitted") throw new CliUsageError("Copying uncommitted changes is picked per lane. Use --on uncommitted on `ade lanes create`, or save --on local.");
+    if (set && changes.on === "uncommitted") throw new CliUsageError("Copying uncommitted changes is picked per lane. Use --on uncommitted on `daex lanes create`, or save --on local.");
     const branchPattern = readValue(args, ["--branch-pattern"]);
     const template = readValue(args, ["--template"]);
     const noTemplate = readFlag(args, ["--no-template"]);
@@ -8449,7 +8451,7 @@ function buildLanePlan(args: string[]): CliPlan {
     const confirmation = readValue(args, ["--confirm", "--confirmation"]);
     if (confirmation !== "RECLAIM") {
       throw new CliUsageError(
-        'archive-and-reclaim requires --confirm RECLAIM. Run "ade lanes reclaim-preview <lane>" first.',
+        'archive-and-reclaim requires --confirm RECLAIM. Run "daex lanes reclaim-preview <lane>" first.',
       );
     }
     return {
@@ -8481,7 +8483,7 @@ function buildLanePlan(args: string[]): CliPlan {
       };
     }
     if (verb === "restore" || verb === "undo" || verb === "reopen") {
-      const id = requireValue(firstPositional(args), "deleted lane id (see `ade lanes deleted list`)");
+      const id = requireValue(firstPositional(args), "deleted lane id (see `daex lanes deleted list`)");
       return {
         kind: "execute",
         label: "lanes deleted restore",
@@ -8495,7 +8497,7 @@ function buildLanePlan(args: string[]): CliPlan {
     }
     if (verb === "remove" || verb === "rm" || verb === "delete") {
       throw new CliUsageError(
-        "Drop a deleted lane's saved work in ADE: Settings › Deleted & Archived › Recently deleted. The command line can list and restore them.",
+        `Drop a deleted lane's saved work in ${BRAND.NAME}: Settings › Deleted & Archived › Recently deleted. The command line can list and restore them.`,
       );
     }
     throw new CliUsageError("lanes deleted supports list or restore <id>.");
@@ -8702,7 +8704,7 @@ function routePresetIdFromFlags(
   if (!harness || !isHarnessPresetBody(harness)) {
     throw new CliUsageError(`--via needs --provider <name> (${ROUTABLE_HARNESSES.join(", ")}).`);
   }
-  if (!model) throw new CliUsageError("--via needs --model <model id> (see `ade harness routes --harness <h> --text`).");
+  if (!model) throw new CliUsageError("--via needs --model <model id> (see `daex harness routes --harness <h> --text`).");
   const effort = peekValue(args, ["--reasoning-effort", "--effort"])?.trim();
   return encodeRoutePresetId({
     harness,
@@ -8732,7 +8734,7 @@ function formatHarnessProviders(value: unknown): string {
   const rows = isRecord(value) && Array.isArray(value.customProviders) ? value.customProviders.filter(isRecord) : [];
   if (!rows.length) {
     return "No Custom providers on this machine. Make one in Settings › Providers › Custom providers,\n"
-      + "or run any model in any harness with --via (ade harness routes --text).\n";
+      + "or run any model in any harness with --via (daex harness routes --text).\n";
   }
   const lines = ["Custom providers (launch one with both flags; the model must be its own):"];
   for (const row of rows) {
@@ -8770,7 +8772,7 @@ function buildHarnessPlan(args: string[]): CliPlan {
       if (!found.ok) throw new CliUsageError(found.message);
       presetId = found.preset.id;
     }
-    if (!presetId) throw new CliUsageError("ade harness env needs a Custom provider (`ade harness env \"<name>\"`; `ade harness providers --text` lists them), or --via with --provider and --model.");
+    if (!presetId) throw new CliUsageError("daex harness env needs a Custom provider (`daex harness env \"<name>\"`; `daex harness providers --text` lists them), or --via with --provider and --model.");
     // PowerShell by default on Windows, where `export` lines mean nothing.
     const shell = readValue(rest, ["--shell"])?.trim() || (process.platform === "win32" ? "pwsh" : undefined);
     if (shell && shell !== "zsh" && shell !== "bash" && shell !== "pwsh") {
@@ -8807,11 +8809,11 @@ function buildHarnessPlan(args: string[]): CliPlan {
     const via = readValue(rest, ["--via"])?.trim();
     const model = readValue(rest, ["--model", "--model-id"])?.trim();
     if (!harness || !via || !model) {
-      throw new CliUsageError("ade harness test needs --harness <h> --via <source> --model <id>.");
+      throw new CliUsageError("daex harness test needs --harness <h> --via <source> --model <id>.");
     }
     const source = parseViaSourceSpec(via);
     if (source.kind !== "key" && source.kind !== "opencode") {
-      throw new CliUsageError("ade harness test checks OpenCode sign-ins and stored keys.");
+      throw new CliUsageError("daex harness test checks OpenCode sign-ins and stored keys.");
     }
     return {
       kind: "execute",
@@ -8825,12 +8827,12 @@ function buildHarnessPlan(args: string[]): CliPlan {
   }
   if (sub === "route-id" || sub === "id") {
     const via = readValue(rest, ["--via"])?.trim();
-    if (!via) throw new CliUsageError("ade harness route-id needs --via <source> --provider <harness> --model <id>.");
+    if (!via) throw new CliUsageError("daex harness route-id needs --via <source> --provider <harness> --model <id>.");
     // `presetId` is the old key, kept for scripts that read it.
     const routeId = routePresetIdFromFlags(rest, via);
     return { kind: "static", value: { routeId, presetId: routeId } };
   }
-  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | providers | env | test | route-id`);
+  throw new CliUsageError(`Unknown harness command: ${sub}. Try: daex harness routes | providers | env | test | route-id`);
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
@@ -8917,7 +8919,7 @@ function refuseStrandedNewChatTextFlags(args: string[]): void {
     || Boolean(textValue && !textValue.startsWith("-") && textValue !== "chat" && textValue !== "cli");
   const flag = stranded ?? (textCarriesMessage ? "--text" : null);
   if (flag) {
-    throw new CliUsageError(`ade new does not take ${flag}. Put the first message in --prompt or --prompt-file.`);
+    throw new CliUsageError(`daex new does not take ${flag}. Put the first message in --prompt or --prompt-file.`);
   }
 }
 
@@ -9007,7 +9009,7 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
 function buildNewPlan(args: string[]): CliPlan {
   const surface = firstStandalonePositional(args) ?? "chat";
   if (surface !== "chat" && surface !== "cli") {
-    throw new CliUsageError("ade new supports `chat` or `cli`. Try `ade new chat --mode chat|cli ...`.");
+    throw new CliUsageError("daex new supports `chat` or `cli`. Try `daex new chat --mode chat|cli ...`.");
   }
   return buildNewChatPlan(args, surface === "cli" ? "cli" : "chat");
 }
@@ -9074,7 +9076,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     if (!lane.autoCreateLane && lane.laneId) return lane.laneId;
     const createdLaneId = laneIdFromCreateLaneValue(values.lane);
     if (!createdLaneId) {
-      throw new CliUsageError("ade new chat could not resolve the auto-created lane id.");
+      throw new CliUsageError("daex new chat could not resolve the auto-created lane id.");
     }
     return createdLaneId;
   };
@@ -9222,7 +9224,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
       params: (values) => {
         const targetSession = sessionIdFromCreateChatValue(values.session);
         if (!targetSession) {
-          throw new CliUsageError("ade new chat could not resolve the new session id to send the prompt.");
+          throw new CliUsageError("daex new chat could not resolve the new session id to send the prompt.");
         }
         return {
           name: "run_ade_action",
@@ -9460,7 +9462,7 @@ function buildChatCreateConfigPreview(
     // The dry run resolves the mode before the host's ceiling, so from an
     // agent it can promise more than the chat gets.
     ...(asString(process.env.ADE_CHAT_SESSION_ID) || asString(input.orchestrationParentSessionId)
-      ? { permissionNote: "ADE may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
+      ? { permissionNote: `${BRAND.NAME} may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. \`chat create\` prints a note when it does.` }
       : {}),
   };
 }
@@ -9629,7 +9631,7 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
 function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[]): CliPlan {
   if (readFlag(args, ["--start-chat", "--launch", "--start-agent"])) {
     throw new CliUsageError(
-      "Multiple issues create lanes only. Use `ade lanes create --linear-issue-json ... --start-chat` for one issue.",
+      "Multiple issues create lanes only. Use `daex lanes create --linear-issue-json ... --start-chat` for one issue.",
     );
   }
   const startFlags = readLaneStartFlags(args);
@@ -9705,11 +9707,11 @@ function resolveStashSelectionForCli(listResult: unknown, stashRef: string | nul
   }
   if (stashOid) {
     throw new CliUsageError(
-      `Stash OID ${stashOid} is not saved for this lane. Run ade git stash list --lane <lane>.`,
+      `Stash OID ${stashOid} is not saved for this lane. Run daex git stash list --lane <lane>.`,
     );
   }
   throw new CliUsageError(
-    `Stash ${stashRef} is not saved for this lane. Run ade git stash list --lane <lane>.`,
+    `Stash ${stashRef} is not saved for this lane. Run daex git stash list --lane <lane>.`,
   );
 }
 
@@ -10012,7 +10014,7 @@ function buildGitPlan(args: string[]): CliPlan {
       clear: "stash_clear",
     };
     const toolName = toolNameByAction[action];
-    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'. Use push, list, apply, pop, drop or clear (ade help git).`);
+    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'. Use push, list, apply, pop, drop or clear (daex help git).`);
     const stashRefTool =
       toolName === "stash_apply" || toolName === "stash_pop" || toolName === "stash_drop";
     const common = withLane({
@@ -10686,7 +10688,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
     }
     const target = requireValue(
       prId ?? firstPositional(args),
-      "prId (an ADE PR id, a PR number, or a PR URL)",
+      `prId (a ${BRAND.NAME} PR id, a PR number, or a PR URL)`,
     );
     return {
       kind: "execute",
@@ -10847,7 +10849,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
     const id = requireValue(prId ?? firstPositional(args), "prId");
     const modeArg = (firstPositional(args) ?? "on").toLowerCase();
     if (!off && modeArg !== "on" && modeArg !== "off") {
-      throw new CliUsageError("prs auto-merge takes on or off, e.g. 'ade prs auto-merge <pr> on --method squash'.");
+      throw new CliUsageError("prs auto-merge takes on or off, e.g. 'daex prs auto-merge <pr> on --method squash'.");
     }
     const enabled = !off && modeArg === "on";
     const input: JsonObject = { prId: id, enabled };
@@ -10898,7 +10900,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
     const remove = readLogins(["--remove", "--remove-assignee"]);
     const id = requireValue(prId ?? firstPositional(args), "prId");
     if (add.length === 0 && remove.length === 0) {
-      throw new CliUsageError("prs assignees needs --add or --remove, e.g. 'ade prs assignees <pr> --add alice'.");
+      throw new CliUsageError("prs assignees needs --add or --remove, e.g. 'daex prs assignees <pr> --add alice'.");
     }
     return {
       kind: "execute",
@@ -11236,7 +11238,7 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       : readValue(args, ["--command", "-c"]);
     // Only with --machine (cliMachineTargeting.ts checks): follow the command to its end.
     const wait = readFlag(args, ["--wait"]);
-    if (wait && !startupCommand) throw new CliUsageError("--wait needs a command: ade shell start --machine <name> --wait -- <command>.");
+    if (wait && !startupCommand) throw new CliUsageError("--wait needs a command: daex shell start --machine <name> --wait -- <command>.");
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
@@ -11371,7 +11373,7 @@ function primaryLaneId(value: unknown): string {
   const primary = lanes.find((lane) => lane.laneType === "primary");
   const id = primary ? asString(primary.id) : null;
   if (!id) {
-    throw new CliUsageError("This project has no primary lane to run the shell in. Pass --lane <id> (see `ade lanes list --text`).");
+    throw new CliUsageError("This project has no primary lane to run the shell in. Pass --lane <id> (see `daex lanes list --text`).");
   }
   return id;
 }
@@ -11614,7 +11616,7 @@ function buildSearchPlan(args: string[]): CliPlan {
   const query = readValue(args, ["--query", "-q"]) ?? firstPositional(args);
   if (!query || !query.trim()) {
     throw new CliUsageError(
-      'search requires a query, e.g. ade search "login redirect" --text (or --status / --rebuild).',
+      'search requires a query, e.g. daex search "login redirect" --text (or --status / --rebuild).',
     );
   }
   // An option this command does not know is refused, never dropped. A
@@ -11624,8 +11626,8 @@ function buildSearchPlan(args: string[]): CliPlan {
   if (unknownOption) {
     throw new CliUsageError(
       unknownOption === "--socket" || unknownOption.startsWith("--socket=")
-        ? '--socket is a global option and goes before the command: ade --socket <path> search "<query>".'
-        : `Unknown search option: ${unknownOption}. Run 'ade help search' for the options it takes.`,
+        ? '--socket is a global option and goes before the command: daex --socket <path> search "<query>".'
+        : `Unknown search option: ${unknownOption}. Run 'daex help search' for the options it takes.`,
     );
   }
 
@@ -12216,11 +12218,11 @@ async function runChatLaunchCommand(
     connection = await createConnection(options, { autoRegisterProject: true });
   } catch (error) {
     throw new CliExecutionError(
-      "Failed to initialize ADE CLI connection for chat launch.",
+      `Failed to initialize ${BRAND.NAME} CLI connection for chat launch.`,
       {
         cause: error instanceof Error ? error.message : String(error),
         nextAction:
-          "Verify --project-root points at an ADE project and run ade doctor --json.",
+          `Verify --project-root points at a ${BRAND.NAME} project and run daex doctor --json.`,
       },
     );
   }
@@ -12340,7 +12342,7 @@ export function formatChatLaunch(value: unknown): string {
     ?? (wrapper && typeof wrapper.launchId === "string" && wrapper.phase !== undefined && Array.isArray(wrapper.stages) ? wrapper : null);
   if (!snapshot) {
     const error = asString(wrapper?.error);
-    return error === "launch_not_found" || !error ? "ADE chat launch\n(no launch)" : `ADE chat launch\n${error}`;
+    return error === "launch_not_found" || !error ? `${BRAND.NAME} chat launch\n(no launch)` : `${BRAND.NAME} chat launch\n${error}`;
   }
   const queued = Array.isArray(snapshot.queuedMessages) ? snapshot.queuedMessages.length : 0;
   const machine = wrapper && isRecord(wrapper.machine) ? wrapper.machine : null;
@@ -12349,10 +12351,10 @@ export function formatChatLaunch(value: unknown): string {
   // What the running stage says now ("…running again after the disk grew (restart 2)").
   const live = (Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : []).find((stage) => stage.status === "running");
   const liveDetail = live ? asString(live.detail) : null;
-  return renderKeyValues(`ADE ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
+  return renderKeyValues(`${BRAND.NAME} ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
     // A lane on ADE Cloud: the computer made for it.
-    ["machine", machine ? `ADE Cloud · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
+    ["machine", machine ? `${BRAND.CLOUD_NAME} · ${asString(machine.name) ?? ""}${asString(machine.machineKey) ? ` (${asString(machine.machineKey)})` : ""}` : null],
     // Why its computer is bigger than the size asked for ("Medium: this repo's setup needed more than 4 GB before.").
     ["size", isRecord(snapshot.cloud) ? asString(snapshot.cloud.sizeNote) : null],
     ["approve", wrapper?.approvalUrl],
@@ -12381,7 +12383,7 @@ export function formatChatLaunches(value: unknown): string {
       formatChatLaunchStages(launch),
       launch.title,
     ]),
-    "ADE chat launches\n(no launches)",
+    `${BRAND.NAME} chat launches\n(no launches)`,
   );
 }
 
@@ -12494,7 +12496,7 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
   if (!explicitDecision && !hasAnswer) {
     throw new CliUsageError(
       `chat respond needs an answer: --option <n|label>, --answer <question>=<value>, --text "<answer>", or --approve / --deny. `
-      + `See the question with: ade chat pending ${sessionId} --text`,
+      + `See the question with: daex chat pending ${sessionId} --text`,
     );
   }
   // Pure: params and shapeResult both derive from the listed inputs, so the
@@ -12587,7 +12589,7 @@ function buildChatDeletedPlan(args: string[]): CliPlan {
   }
   if (verb === "reopen" || verb === "restore" || verb === "undo") {
     const laneId = readLaneId(args);
-    const id = requireValue(firstPositional(args), "deleted chat id (see `ade chat deleted list`)");
+    const id = requireValue(firstPositional(args), "deleted chat id (see `daex chat deleted list`)");
     return {
       kind: "execute",
       label: "chat deleted reopen",
@@ -12596,7 +12598,7 @@ function buildChatDeletedPlan(args: string[]): CliPlan {
   }
   if (verb === "remove" || verb === "rm" || verb === "delete") {
     throw new CliUsageError(
-      "Remove chats from the list in ADE: Settings › Deleted & Archived › Recently deleted. The command line can list and reopen them.",
+      `Remove chats from the list in ${BRAND.NAME}: Settings › Deleted & Archived › Recently deleted. The command line can list and reopen them.`,
     );
   }
   throw new CliUsageError("chat deleted supports list [--query <text>] or reopen <id> [--lane <lane-id>].");
@@ -12648,7 +12650,7 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const machine = readMoveDestination(args);
     if (machine === null) {
-      throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
+      throw new CliUsageError("chat move requires --to <machine> (see `daex machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
     const includeDescendants = !readFlag(args, ["--no-descendants"]);
@@ -13366,7 +13368,7 @@ function buildChatPlan(args: string[]): CliPlan {
     const hasPrintFlag = args.some((token) => token === "--print" || token.startsWith("--print="));
     if (hasPrintFlag) {
       throw new CliUsageError(
-        "--print must be set at session creation time. Use `ade chat create --print ...`.",
+        "--print must be set at session creation time. Use `daex chat create --print ...`.",
       );
     }
     const afterValue = readValue(args, ["--after"]);
@@ -14063,8 +14065,8 @@ function buildChatPlan(args: string[]): CliPlan {
       } else if (!targetSession) {
         targetSession = callerChat;
       }
-      const cancelUsage = "Usage: ade chat scheduled-work cancel <session> <id>  (or --session <session> --id <id>; "
-        + "the job id and its session are in 'ade chat scheduled-work list --text').";
+      const cancelUsage = "Usage: daex chat scheduled-work cancel <session> <id>  (or --session <session> --id <id>; "
+        + "the job id and its session are in 'daex chat scheduled-work list --text').";
       if (!scheduleId) throw new CliUsageError(`scheduled-work cancel needs the job id. ${cancelUsage}`);
       if (!targetSession) throw new CliUsageError(`scheduled-work cancel needs the chat that owns the job. ${cancelUsage}`);
       return {
@@ -14085,7 +14087,7 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     if (scheduledWorkOperation === null) {
       throw new CliUsageError(
-        "chat scheduled-work needs one of: list, create, cancel, status, pause, resume. Run 'ade help chat'.",
+        "chat scheduled-work needs one of: list, create, cancel, status, pause, resume. Run 'daex help chat'.",
       );
     }
     // Per-session scheduled-work control. The state query works for both chat
@@ -14605,7 +14607,7 @@ function renderDraftsTable(rows: JsonObject[], nowMs = Date.now()): string {
       draftWhereText(entry) ?? "",
       draftPromptText(entry),
     ]),
-    "ADE drafts\n(no drafts)",
+    `${BRAND.NAME} drafts\n(no drafts)`,
     // The status is short but must never clip ("scheduled" vs "needs you" is the
     // whole point of the column); ids and times are what an agent copies.
     { fullColumns: ["status", "when"] },
@@ -14614,7 +14616,7 @@ function renderDraftsTable(rows: JsonObject[], nowMs = Date.now()): string {
 
 function draftEntriesLines(value: unknown, nowMs = Date.now()): string {
   const rows = draftEntriesFromResult(value);
-  if (rows.length === 0) return "ADE drafts\n(no drafts)";
+  if (rows.length === 0) return `${BRAND.NAME} drafts\n(no drafts)`;
   return rows.map((entry) => formatDraftRow(entry, nowMs)).join("\n");
 }
 
@@ -14624,7 +14626,7 @@ function formatDraftDetail(value: unknown, opts: { fullPrompt: boolean }): strin
     ? `${entry.attachmentCount}${entry.attachmentsAvailable === false ? " (on the originating machine)" : ""}`
     : null;
   return renderKeyValues(
-    `ADE draft ${asString(entry.id) ?? ""}`.trim(),
+    `${BRAND.NAME} draft ${asString(entry.id) ?? ""}`.trim(),
     [
       ["status", draftStatusLabel(entry)],
       ["when", draftWhenText(entry, Date.now())],
@@ -14688,7 +14690,7 @@ function buildDraftsCreatePlan(args: string[]): CliPlan {
   // for the composer, never the send's target — the target stays explicit.
   const originSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
   if ((prompt ?? "").trim() === "" && images.length === 0) {
-    throw new CliUsageError("ade drafts create needs --prompt \"<text>\" (or a prompt piped on stdin), or at least one --image.");
+    throw new CliUsageError("daex drafts create needs --prompt \"<text>\" (or a prompt piped on stdin), or at least one --image.");
   }
 
   const wantsSchedule = hasDraftTimeFlag(args);
@@ -14768,7 +14770,7 @@ function buildDraftsUpdatePlan(args: string[]): CliPlan {
       ...(unschedule ? { unschedule: true } : {}),
     };
     if (Object.keys(patch).length === 1) {
-      throw new CliUsageError("ade drafts update needs --prompt, --at/--in, or --unschedule.");
+      throw new CliUsageError("daex drafts update needs --prompt, --at/--in, or --unschedule.");
     }
     return {
       kind: "execute",
@@ -14884,7 +14886,7 @@ function buildDraftsPlan(args: string[]): CliPlan {
     case "show":
       return buildDraftsShowPlan(args);
     default:
-      throw new CliUsageError(`Unknown drafts subcommand '${sub}'. Run 'ade help drafts'.`);
+      throw new CliUsageError(`Unknown drafts subcommand '${sub}'. Run 'daex help drafts'.`);
   }
 }
 
@@ -14987,7 +14989,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
         actions: PERSONAL_CHAT_ACTIONS.map((action) => ({
           name: `personalChats.${action}`,
           description: "Machine-scoped personal chat action.",
-          example: `ade chat action --personal ${action} --input-json '{...}'`,
+          example: `daex chat action --personal ${action} --input-json '{...}'`,
         })),
       },
     };
@@ -14999,7 +15001,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     );
     if (!(PERSONAL_CHAT_ACTIONS as readonly string[]).includes(action)) {
       throw new CliUsageError(
-        `Unknown personal chat action '${action}'. Use \`ade chat actions --personal --text\` to list actions.`,
+        `Unknown personal chat action '${action}'. Use \`daex chat actions --personal --text\` to list actions.`,
       );
     }
     return {
@@ -15278,7 +15280,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("getSummary", { sessionId })],
     };
   }
-  throw new CliUsageError(`Unknown personal chat command '${sub}'. Run ade help chat for the --personal commands.`);
+  throw new CliUsageError(`Unknown personal chat command '${sub}'. Run daex help chat for the --personal commands.`);
 }
 
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
@@ -15295,7 +15297,7 @@ function buildScenePlan(args: string[]): CliPlan {
   if (!sub || sub === "help") return { kind: "help", text: HELP_BY_COMMAND.scene };
   // The short rules for writing a scene: local text, no runtime needed.
   if (sub === "guide") return { kind: "help", text: SCENE_GUIDE };
-  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: ade scene guide, or ade scene preview <file>`);
+  if (sub !== "preview") throw new CliUsageError(`Unknown scene command '${sub}'. Try: daex scene guide, or daex scene preview <file>`);
   let width: number | undefined;
   if (widthRaw) {
     width = Number(widthRaw);
@@ -15305,7 +15307,7 @@ function buildScenePlan(args: string[]): CliPlan {
   }
   // A bare "-" (stdin) is not a positional to firstPositional, which skips flags.
   const target = stdin ? "-" : firstPositional(args);
-  if (!target) throw new CliUsageError("ade scene preview needs a file, or - for stdin: ade scene preview /tmp/chart.html");
+  if (!target) throw new CliUsageError("daex scene preview needs a file, or - for stdin: daex scene preview /tmp/chart.html");
   let source: string;
   try {
     source = target === "-" ? readAllStdinSync() : fs.readFileSync(path.resolve(target), "utf8");
@@ -15615,10 +15617,10 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     // One file into or out of this chat's work copy on another machine
     // (cliRemoteWork.ts sends it in chunks); there is no local form.
     const usage = sub === "push"
-      ? "ade files push --machine <name> <local file> <path in your code there>"
-      : "ade files pull --machine <name> <path in your code there> <local file or folder>";
+      ? "daex files push --machine <name> <local file> <path in your code there>"
+      : "daex files pull --machine <name> <path in your code there> <local file or folder>";
     if (!machine) {
-      throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
+      throw new CliUsageError(`daex files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
     }
     const first = firstPositional(args);
     const second = firstPositional(args);
@@ -16036,7 +16038,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     const yTo = readNumberOption(args, ["--y-to"]);
     const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
     if (!artifactId && !chatSessionId) {
-      throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>, or a chat: ade proof review --chat <session-id>. Copy the id from a cite: line or the `id` field of `ade proof list --json`.");
+      throw new CliUsageError("daex proof review needs a proof id: daex proof review <id>, or a chat: daex proof review --chat <session-id>. Copy the id from a cite: line or the `id` field of `daex proof list --json`.");
     }
     return {
       kind: "execute",
@@ -16067,7 +16069,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     const flagText = readValue(args, ["--text", "--caption"]);
     const focusRaw = readValue(args, ["--focus"]);
     const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
-    if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
+    if (!text) throw new CliUsageError('daex proof step needs the step\'s text: daex proof step "Open the settings page"');
     if (text.length > DEMO_STEP_MAX_CHARS) {
       throw new CliUsageError(`The step caption is ${text.length} characters; keep it to ${DEMO_STEP_MAX_CHARS}: one short phrase about what happens next.`);
     }
@@ -16118,7 +16120,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         steps: proofIntoPrBodySteps({ pr: () => pr, explicitProjectRoot }),
       };
     }
-    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or the `id` fields of `ade proof list --json`.");
+    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or the `id` fields of `daex proof list --json`.");
     let uploadEnv: NodeJS.ProcessEnv = process.env;
     return {
       kind: "execute",
@@ -16151,7 +16153,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
             const missing = ids.filter((id) => !byId.has(id));
             if (missing.length) {
               throw new CliToolError(
-                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
+                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or the \`id\` field of \`daex proof list --json\`.`,
                 { missing },
               );
             }
@@ -16431,7 +16433,7 @@ function callerWorkspaceRoot(): string {
 }
 
 const IOS_SIM_ALIAS_DEPRECATION =
-  "ade ios-sim is now ade apple; the alias goes away next minor release";
+  "daex ios-sim is now daex apple; the alias goes away next minor release";
 const IOS_SIM_DEPRECATED_PRIMARIES = new Set(["ios-sim", "ios", "simulator"]);
 let iosSimAliasDeprecationPrinted = false;
 
@@ -16504,7 +16506,7 @@ function chatOtherMachineHint(argv: string[]): string | null {
       ? `No machine that answered has this chat (${unasked}).`
       : "No machine on your account has this chat.";
   }
-  return "If this chat lives on another machine, find it with: ade chat list --all-machines --text, then re-run with --machine <name>";
+  return "If this chat lives on another machine, find it with: daex chat list --all-machines --text, then re-run with --machine <name>";
 }
 
 /** The account-wide lookup this run made and found nothing in, for the hint above. */
@@ -16576,7 +16578,7 @@ async function runChatHereThenElsewhere(
   if (!match && report.restingCloud?.length && isChatSendCommand(parsed.command)) {
     const resting = await restingCloudChatLocation(parsed.options, report);
     if (resting) {
-      process.stderr.write(`· on ${resting.machineName} (asleep on ADE Cloud: waking it, which uses credits)\n`);
+      process.stderr.write(`· on ${resting.machineName} (asleep on ${BRAND.CLOUD_NAME}: waking it, which uses credits)\n`);
       return await runOnMachine(routedToLocation(parsed, resting));
     }
   }
@@ -16675,10 +16677,10 @@ function iosSimulatorErrorHint(
   subcommand: string | null = null,
 ): string | null {
   if (message.includes(IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE)) {
-    return "This target belongs to a different checkout — re-run: ade apple apps";
+    return "This target belongs to a different checkout — re-run: daex apple apps";
   }
   if (message.includes(IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE)) {
-    return "A launch is already running — wait for it, or run: ade apple shutdown --force";
+    return "A launch is already running — wait for it, or run: daex apple shutdown --force";
   }
   if (message.includes(IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE)) {
     return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
@@ -16688,17 +16690,17 @@ function iosSimulatorErrorHint(
     // at `shutdown --force` sends a caller to tear down an app session it was
     // not asking about.
     if (subcommand === "open-device" || subcommand === "open-sim" || subcommand === "boot") {
-      return "Another chat owns this simulator — wait for it to finish, or take the device with: ade apple open-device --force";
+      return "Another chat owns this simulator — wait for it to finish, or take the device with: daex apple open-device --force";
     }
     if (subcommand === "close-device" || subcommand === "close-sim") {
-      return "Another chat owns this simulator — wait for it to finish, or close it anyway with: ade apple close-device --force";
+      return "Another chat owns this simulator — wait for it to finish, or close it anyway with: daex apple close-device --force";
     }
     if (subcommand === "uninstall") {
-      return "Another chat owns this simulator — name your chat with --chat-session, or remove the app anyway with: ade apple uninstall --force";
+      return "Another chat owns this simulator — name your chat with --chat-session, or remove the app anyway with: daex apple uninstall --force";
     }
     return subcommand === "claim"
       ? "Another chat owns the simulator — wait for it to finish, or re-run this claim with --ignore-ownership to take it over without tearing the session down"
-      : "Another chat owns the simulator — wait for it to finish, or take it over with: ade apple shutdown --force";
+      : "Another chat owns the simulator — wait for it to finish, or take it over with: daex apple shutdown --force";
   }
   if (message.includes(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE)) {
     return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
@@ -16707,7 +16709,7 @@ function iosSimulatorErrorHint(
     return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a relative path (it resolves under that root, e.g. .ade/tmp/shot.png).";
   }
   if (message.includes(APPLE_DEVICE_ALREADY_RECORDING_CODE)) {
-    return "Another lane is recording this device — stop it there with: ade apple record-stop --lane <lane named above>";
+    return "Another lane is recording this device — stop it there with: daex apple record-stop --lane <lane named above>";
   }
   return null;
 }
@@ -17044,7 +17046,7 @@ function buildIosSimulatorPlan(
     const installFlags = flagNamesOutsideFreeText(args);
     if (installFlags.has("--app-bundle") || installFlags.has("--app")) {
       throw new CliUsageError(
-        "apple install builds the lane's app and does not take --app-bundle. For a prebuilt .app on the lane's device, use: ade apple launch --app-bundle <path> --no-build",
+        "apple install builds the lane's app and does not take --app-bundle. For a prebuilt .app on the lane's device, use: daex apple launch --app-bundle <path> --no-build",
       );
     }
     const launchAfter = readFlag(args, ["--launch", "--start"]);
@@ -17101,7 +17103,7 @@ function buildIosSimulatorPlan(
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
     const title =
-      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
+      readValue(args, ["--title", "--name"]) ?? caption ?? `${BRAND.NAME} iOS simulator proof`;
     const ownerBase = readProofOwnerBase(args);
     const screenshotArgs = {
       ...collectGenericObjectArgs(args, {
@@ -18039,7 +18041,7 @@ function buildIosSimulatorPlan(
     const detachFlags = flagNamesOutsideFreeText(args);
     if (detachFlags.has("--device") || detachFlags.has("--udid")) {
       throw new CliUsageError(
-        "apple device-detach gives up the lane's own device and does not take --device. To remove an extra device, use: ade apple device-delete --device <udid>",
+        "apple device-detach gives up the lane's own device and does not take --device. To remove an extra device, use: daex apple device-delete --device <udid>",
       );
     }
     return {
@@ -18142,7 +18144,7 @@ function buildIosSimulatorPlan(
       formatText: (value: unknown) => {
         const record = unwrapActionEnvelope(value);
         return (isRecord(record) ? asString(record.note) : null)
-          ?? `Deleted recording ${id}. Any proof record-stop filed from it stays in the proof drawer: ade proof list names it, ade proof rm <id> removes it.`;
+          ?? `Deleted recording ${id}. Any proof record-stop filed from it stays in the proof drawer: daex proof list names it, daex proof rm <id> removes it.`;
       },
     };
   }
@@ -18738,7 +18740,7 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
       command ?? (positionalCommand.length ? positionalCommand : null);
     if (!launchCommand)
       throw new CliUsageError(
-        'app-control launch requires a command, for example: ade app-control launch --command "pnpm dev".',
+        'app-control launch requires a command, for example: daex app-control launch --command "pnpm dev".',
       );
     return {
       kind: "execute",
@@ -19319,7 +19321,7 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
   }
   if (isWorkToolId(sub) || sub === "set" || sub === "set-active" || sub === "open") {
     throw new CliUsageError(
-      "work-tools is read-only. Which tool the pane shows is published by the desktop that owns it; open the tool in ADE Desktop instead.",
+      `work-tools is read-only. Which tool the pane shows is published by the desktop that owns it; open the tool in ${BRAND.NAME} Desktop instead.`,
     );
   }
   throw new CliUsageError(
@@ -19370,7 +19372,7 @@ export function workToolShowPlan(scope: ToolClaimArgs, surface: WorkToolShowSurf
     // Some agent shells (OpenCode) carry no ADE_CHAT_SESSION_ID, so the daemon
     // cannot tell which chat to show. That case is a known gap, not a bug.
     throw new CliUsageError(
-      "ui show needs the chat to show it in, and this shell has no ADE chat identity (ADE_CHAT_SESSION_ID is not set, as in OpenCode agent shells). Ask the user to open the tool. From a terminal, pass --session <chat-session-id>.",
+      `ui show needs the chat to show it in, and this shell has no ${BRAND.NAME} chat identity (ADE_CHAT_SESSION_ID is not set, as in OpenCode agent shells). Ask the user to open the tool. From a terminal, pass --session <chat-session-id>.`,
     );
   }
   return {
@@ -19400,7 +19402,7 @@ function buildUiPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "help";
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND.ui };
   if (sub !== "show" && sub !== "open" && sub !== "reveal") {
-    throw new CliUsageError(`Unknown ui command: ${sub}. Use "ade ui show <surface>".`);
+    throw new CliUsageError(`Unknown ui command: ${sub}. Use "daex ui show <surface>".`);
   }
   const raw = asString(rawSurfaceFlag ?? firstPositional(args))?.toLowerCase() ?? null;
   const surface = raw && Object.hasOwn(WORK_TOOL_SHOW_SURFACE_ALIASES, raw)
@@ -19542,7 +19544,7 @@ function buildBrowserPlan(args: string[]): CliPlan {
   // runtime has no tabs to drive or show, so fail clearly instead (this is what
   // agents used to pass `--socket` for).
   return placed.kind === "execute" && !placed.needsLiveRuntime
-    ? { ...placed, needsLiveRuntime: "The ADE browser" }
+    ? { ...placed, needsLiveRuntime: `The ${BRAND.NAME} browser` }
     : placed;
 }
 
@@ -19678,7 +19680,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         ?? tail.shift()
         ?? null;
       const port = parseOptionalPort(portText, "dev-servers stop <port>");
-      if (port == null) throw new CliUsageError("dev-servers stop needs the server's port: ade browser dev-servers stop 5173");
+      if (port == null) throw new CliUsageError("dev-servers stop needs the server's port: daex browser dev-servers stop 5173");
       return {
         kind: "execute",
         label: "browser dev server stop",
@@ -19781,7 +19783,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
         wrappedTail,
       );
     }
-    throw new CliUsageError(`Unknown browser session command '${mode}'. Run ade help browser.`);
+    throw new CliUsageError(`Unknown browser session command '${mode}'. Run daex help browser.`);
   }
   if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
     return buildBrowserHandoffPlan(args, tail);
@@ -20795,7 +20797,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
                           kind: "video_recording",
                           // The caption given at `record start` names the
                           // video in the drawer, as every other recorder does.
-                          title: titleFlag ?? caption ?? "ADE browser recording",
+                          title: titleFlag ?? caption ?? `${BRAND.NAME} browser recording`,
                           description: caption,
                           path: filePath,
                           ...(demo ? { metadata: { demo } } : {}),
@@ -20828,7 +20830,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
-    const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
+    const title = readValue(args, ["--title", "--name"]) ?? caption ?? `${BRAND.NAME} browser proof`;
     const ownerBase = readProofOwnerBase(args);
     const includeHar = readFlag(args, ["--har", "--with-har"]);
     // `--tab` and the lane claim are read once and used by both steps, rather
@@ -20874,7 +20876,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             const harPath = isRecord(harExport) ? asString(harExport.filePath) : null;
             if (includeHar && !harPath) {
               throw new CliUsageError(
-                "Browser proof could not find the exported HAR path. Turn network logging on for the tab (`ade browser network on`) and retry.",
+                "Browser proof could not find the exported HAR path. Turn network logging on for the tab (`daex browser network on`) and retry.",
               );
             }
             return {
@@ -21071,7 +21073,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
   // instead of sending an action name the runtime does not have.
   if (sub === "eval" || sub === "evaluate" || sub === "exec" || sub === "js") {
     throw new CliUsageError(
-      "ADE's browser does not run page JavaScript for agents. Read the page with `ade browser snapshot --tab <tab-id> --text`, then act with click, fill, type, select-option, scroll, key or wait.",
+      `${BRAND.NAME}'s browser does not run page JavaScript for agents. Read the page with \`daex browser snapshot --tab <tab-id> --text\`, then act with click, fill, type, select-option, scroll, key or wait.`,
     );
   }
   return refuseUnknownSubcommand("browser", "built_in_browser", sub);
@@ -21116,16 +21118,16 @@ function formatSettingsFind(value: unknown): string {
   if (results.length === 0) return "No setting matches. Try other words, or name the page (Providers, Notifications).";
   const lines = results.map((row) => `${row.path}  ${row.link}${row.onlyUser ? `  [user only: ${row.onlyUser}]` : ""}`);
   const userOnly = results.some((row) => row.onlyUser)
-    ? " [user only]: ADE refuses an agent's change, so do not look for another way; tell the user to change it there."
+    ? ` [user only]: ${BRAND.NAME} refuses an agent's change, so do not look for another way; tell the user to change it there.`
     : "";
-  return `${lines.join("\n")}\nPut the link in your reply; ADE shows it as a chip.${userOnly}`;
+  return `${lines.join("\n")}\nPut the link in your reply; ${BRAND.NAME} shows it as a chip.${userOnly}`;
 }
 
 function buildSettingsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "get";
   if (sub === "find" || sub === "search" || sub === "where") {
     const query = args.filter((arg) => !arg.startsWith("--")).join(" ").trim();
-    if (!query) throw new CliUsageError("ade settings find needs words, e.g. ade settings find providers");
+    if (!query) throw new CliUsageError("daex settings find needs words, e.g. daex settings find providers");
     return { kind: "static", value: findSettings(query), formatter: "settings-find" };
   }
   if (sub === "pr-transcript-gists" || sub === "transcript-gists" || sub === "gist-transcripts") {
@@ -21279,7 +21281,7 @@ function buildRouterPlan(args: string[]): CliPlan {
     const kind = readValue(args, ["--kind"]);
     const description = firstPositional(args);
     if (!description || !provider || !model) {
-      throw new CliUsageError('router pick needs a task and --provider and --model, e.g. ade router pick "summarize the sync code" --provider claude --model claude-opus-5-5');
+      throw new CliUsageError('router pick needs a task and --provider and --model, e.g. daex router pick "summarize the sync code" --provider claude --model claude-opus-5-5');
     }
     if (kind != null && !(ROUTER_TASK_KINDS as readonly string[]).includes(kind)) {
       throw new CliUsageError(`router pick --kind must be one of ${ROUTER_TASK_KINDS.join(", ")}.`);
@@ -21745,7 +21747,7 @@ function buildArchivePlan(args: string[]): CliPlan {
     // The runtime cannot tell this terminal from an agent's (both are `ade`
     // clients), and only the person may delete from the archive.
     throw new CliUsageError(
-      "Delete archived items in ADE: Project → Deleted & Archived → Archive (desktop or web). The command line can list and restore them.",
+      `Delete archived items in ${BRAND.NAME}: Project → Deleted & Archived → Archive (desktop or web). The command line can list and restore them.`,
     );
   }
   throw new CliUsageError("archive supports list, summary, or restore.");
@@ -21806,7 +21808,7 @@ function buildStoragePlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    "storage supports snapshot, compress, maintenance, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
+    "storage supports snapshot, compress, maintenance, actions, or action <name>. Use 'daex actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
   );
 }
 
@@ -21817,7 +21819,7 @@ function buildHealthPlan(args: string[]): CliPlan {
   if (args.some((arg) => /^--(un)?ignore(=|$)/.test(arg))) {
     // Person-only at the runtime, which cannot tell this terminal from an agent's.
     throw new CliUsageError(
-      "Ignore or show a check again in ADE: Settings → General (Needs attention) or Project → Location. The command line lists what is ignored.",
+      `Ignore or show a check again in ${BRAND.NAME}: Settings → General (Needs attention) or Project → Location. The command line lists what is ignored.`,
     );
   }
   const fixIndex = args.indexOf("--fix");
@@ -21848,7 +21850,7 @@ function formatProjectHealth(value: unknown): string {
   const lanes = (report as { lanes?: Array<{ name: string; stale: string | null; safeToArchive: boolean; laneType: string }> }).lanes ?? [];
   if (lanes.length) {
     const stale = lanes.filter((lane) => lane.stale);
-    lines.push(`Lanes: ${lanes.filter((lane) => lane.laneType !== "primary").length} active, ${stale.length} stale (${stale.filter((lane) => lane.safeToArchive).length} safe to archive with \`ade lanes archive-and-reclaim <lane> --confirm RECLAIM\`)`);
+    lines.push(`Lanes: ${lanes.filter((lane) => lane.laneType !== "primary").length} active, ${stale.length} stale (${stale.filter((lane) => lane.safeToArchive).length} safe to archive with \`daex lanes archive-and-reclaim <lane> --confirm RECLAIM\`)`);
   }
   if (!report.issues.length) lines.push("", `Everything looks good (${report.checks?.length ?? 0} checks).`);
   for (const issue of report.issues) {
@@ -21937,7 +21939,7 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
  * come instead of reading the silence as done.
  */
 const CLOUD_PERSON_WAIT_NOTICE =
-  "Waiting for the person: when this needs their yes, ADE asks on a card in this chat (5 minutes at most) and prints what happened here. Keep this command running until it ends.";
+  `Waiting for the person: when this needs their yes, ${BRAND.NAME} asks on a card in this chat (5 minutes at most) and prints what happened here. Keep this command running until it ends.`;
 
 function cloudStep(label: string, action: string, input: JsonObject, formatter: FormatterId = "cloud-result", waitsForPerson = false): CliPlan {
   const machineScoped = isMachineScopedAdeAction("cloud", action);
@@ -21993,14 +21995,14 @@ function buildCloudWorkStatePlan(): CliPlan {
 function buildCloudPrepareStopPlan(args: string[]): CliPlan {
   const raw = readValue(args, ["--timeout"]);
   const seconds = raw == null ? 40 : Number(raw);
-  if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("ade cloud prepare-stop --timeout <seconds>");
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new CliUsageError("daex cloud prepare-stop --timeout <seconds>");
   // A disk-only grow (the lane's size-change job): keep the turns, note the restart as a disk grow.
   const growRaw = readValue(args, ["--disk-grow"]);
   const growId = readValue(args, ["--grow-id"]);
-  if (growId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(growId)) throw new CliUsageError("ade cloud prepare-stop --disk-grow <GB> --grow-id <job id>");
+  if (growId != null && !/^[A-Za-z0-9_-]{1,80}$/.test(growId)) throw new CliUsageError("daex cloud prepare-stop --disk-grow <GB> --grow-id <job id>");
   const diskGrowToGb = growRaw == null ? null : Number(growRaw);
   if (diskGrowToGb != null && (!Number.isFinite(diskGrowToGb) || diskGrowToGb <= 0)) {
-    throw new CliUsageError("ade cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
+    throw new CliUsageError("daex cloud prepare-stop --timeout <seconds> --disk-grow <GB>");
   }
   // `--for-delete`: the server deletes the computer next, so new work is frozen (`cloudDeleteFreeze.ts`).
   // `--for-sleep`: the person's Sleep comes next, so new work is frozen until it (a short freeze).
@@ -22059,7 +22061,7 @@ function buildCloudSaveForRestPlan(args: string[]): CliPlan {
 /** `ade cloud messages drain --json`: sends the messages queued for this computer's chats (the server runs it after a wake). */
 function buildCloudMessagesPlan(args: string[]): CliPlan {
   const action = args.filter((arg) => !arg.startsWith("-"))[1];
-  if (action !== "drain") throw new CliUsageError("ade cloud messages drain --json");
+  if (action !== "drain") throw new CliUsageError("daex cloud messages drain --json");
   return {
     kind: "execute",
     label: "cloud messages drain",
@@ -22097,7 +22099,7 @@ function buildCloudPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   const target = () => {
     const machine = firstPositional(args);
-    if (!machine) throw new CliUsageError(`ade cloud ${sub} needs the machine: its name or id (ade cloud list).`);
+    if (!machine) throw new CliUsageError(`daex cloud ${sub} needs the machine: its name or id (daex cloud list).`);
     return machine;
   };
   switch (sub) {
@@ -22113,7 +22115,7 @@ function buildCloudPlan(args: string[]): CliPlan {
     // A tester's pick of who runs their ADE Cloud iPhones: the account's, from any folder.
     case "phone-provider": {
       const provider = firstPositional(args)?.toLowerCase();
-      if (provider !== "auto" && provider !== "nomac" && provider !== "revyl") throw new CliUsageError("ade cloud phone-provider <auto|nomac|revyl>");
+      if (provider !== "auto" && provider !== "nomac" && provider !== "revyl") throw new CliUsageError("daex cloud phone-provider <auto|nomac|revyl>");
       return cloudStep("phone provider", "phone_provider", { provider }, "cloud-phone-provider");
     }
     case "invite":
@@ -22123,7 +22125,7 @@ function buildCloudPlan(args: string[]): CliPlan {
       // Entering an invite sets the account's referrer forever: the person's
       // own call in the app, never a terminal an agent or ADE MCP app can run.
       if (verb === "redeem" || verb === "enter") throw new CliUsageError(CLOUD_ENTER_INVITE_HINT);
-      throw new CliUsageError("ade cloud invite");
+      throw new CliUsageError("daex cloud invite");
     }
     case "create":
     case "new":
@@ -22136,7 +22138,7 @@ function buildCloudPlan(args: string[]): CliPlan {
     // An agent's Index search on ADE Cloud Free: a Sponsored card in its chat, nothing installed.
     case "recommend": {
       const need = readValue(args, ["--need"]) ?? firstPositional(args);
-      if (!need) throw new CliUsageError("ade cloud recommend --need \"what the person needs right now\"");
+      if (!need) throw new CliUsageError("daex cloud recommend --need \"what the person needs right now\"");
       return cloudStep("recommend", "recommend", { need });
     }
     case "resize": {
@@ -22144,10 +22146,10 @@ function buildCloudPlan(args: string[]): CliPlan {
       const free = readValue(args, ["--free", "--need-free"]);
       const disk = readValue(args, ["--disk"]);
       if (free != null || disk != null) {
-        if (!reason) throw new CliUsageError("ade cloud resize --free <GB> | --disk <GB> --reason \"why\"");
+        if (!reason) throw new CliUsageError("daex cloud resize --free <GB> | --disk <GB> --reason \"why\"");
         // It grows only the computer it runs on: a machine named here would be ignored, and the wrong one would grow.
         if (firstPositional(args)) {
-          throw new CliUsageError("ade cloud resize --free|--disk grows the disk of the ADE Cloud computer this runs on. Leave out the machine name, and run it on that computer.");
+          throw new CliUsageError(`daex cloud resize --free|--disk grows the disk of the ${BRAND.CLOUD_NAME} computer this runs on. Leave out the machine name, and run it on that computer.`);
         }
         return cloudStep("disk grow", "grow_disk", {
           ...(free != null ? { needFreeGb: Number(free) } : {}),
@@ -22158,13 +22160,13 @@ function buildCloudPlan(args: string[]): CliPlan {
       // An agent asks; the person confirms on the card in its chat.
       if (args.includes("--request")) {
         const size = shape;
-        if (!size || !reason) throw new CliUsageError("ade cloud resize [machine] --request --size large --reason \"why\"");
+        if (!size || !reason) throw new CliUsageError("daex cloud resize [machine] --request --size large --reason \"why\"");
         const machine = firstPositional(args);
         return cloudStep("resize request", "tier_request", { size, reason, ...(machine ? { machine } : {}) });
       }
       const machine = target();
       const size = shape ?? firstPositional(args);
-      if (!size) throw new CliUsageError("ade cloud resize <machine> --shape 4x8");
+      if (!size) throw new CliUsageError("daex cloud resize <machine> --shape 4x8");
       return cloudStep("resize", "resize", { machine, shape: size }, "cloud-result", true);
     }
     case "copy":
@@ -22173,7 +22175,7 @@ function buildCloudPlan(args: string[]): CliPlan {
     case "move": {
       const machine = target();
       const destination = to ?? firstPositional(args);
-      if (destination !== "vm" && destination !== "box") throw new CliUsageError("ade cloud move <machine> --to vm|box");
+      if (destination !== "vm" && destination !== "box") throw new CliUsageError("daex cloud move <machine> --to vm|box");
       return cloudStep("move", "move", { machine, to: destination, ...(shape ? { shape } : {}) }, "cloud-result", true);
     }
     case "delete":
@@ -22209,9 +22211,9 @@ function buildCloudPlan(args: string[]): CliPlan {
         }, "cloud-chats");
       }
       const chatId = firstPositional(args);
-      if (!chatId) throw new CliUsageError(`ade cloud chats ${verb} <chat id> (ade cloud chats lists them)`);
+      if (!chatId) throw new CliUsageError(`daex cloud chats ${verb} <chat id> (daex cloud chats lists them)`);
       if (verb === "read" || verb === "show") {
-        if (before != null && !Number.isFinite(Number(before))) throw new CliUsageError("ade cloud chats read <chat id> --before <number> (the number an older page names)");
+        if (before != null && !Number.isFinite(Number(before))) throw new CliUsageError("daex cloud chats read <chat id> --before <number> (the number an older page names)");
         return cloudStep("chat read", "saved_chats_read", {
           chatId,
           ...(machineKey ? { machineKey } : {}),
@@ -22219,7 +22221,7 @@ function buildCloudPlan(args: string[]): CliPlan {
         }, "cloud-chat-read");
       }
       if (verb === "delete" || verb === "rm") return cloudStep("chat delete", "saved_chat_delete", { chatId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
-      throw new CliUsageError("ade cloud chats [list | read <chat id> | delete <chat id>]");
+      throw new CliUsageError("daex cloud chats [list | read <chat id> | delete <chat id>]");
     }
     case "sessions":
     case "session":
@@ -22229,10 +22231,10 @@ function buildCloudPlan(args: string[]): CliPlan {
         return cloudStep("sessions", "sessions_list", { ...(machineKey ? { machineKey } : {}), ...(project ? { project } : {}), ...(cursor ? { cursor } : {}) }, "cloud-sessions");
       }
       const sessionId = firstPositional(args);
-      if (!sessionId) throw new CliUsageError(`ade cloud sessions ${verb} <session id> (ade cloud sessions lists them)`);
+      if (!sessionId) throw new CliUsageError(`daex cloud sessions ${verb} <session id> (daex cloud sessions lists them)`);
       if (verb === "read" || verb === "show") return cloudStep("session read", "session_read", { sessionId, ...(machineKey ? { machineKey } : {}) }, "cloud-sessions");
       if (verb === "delete" || verb === "rm") return cloudStep("session delete", "session_delete", { sessionId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
-      throw new CliUsageError("ade cloud sessions [list | read <session id> | delete <session id>]");
+      throw new CliUsageError("daex cloud sessions [list | read <session id> | delete <session id>]");
     }
     case "backups":
     case "backup": {
@@ -22243,10 +22245,10 @@ function buildCloudPlan(args: string[]): CliPlan {
       }
       if (verb === "forget" || verb === "delete" || verb === "rm") {
         const laneId = firstPositional(args);
-        if (!laneId) throw new CliUsageError("ade cloud backups forget <lane id> (ade cloud backups lists them)");
+        if (!laneId) throw new CliUsageError("daex cloud backups forget <lane id> (daex cloud backups lists them)");
         return cloudStep("backup forget", "backup_forget", { laneId, ...(machineKey ? { machineKey } : {}) }, "cloud-result", true);
       }
-      throw new CliUsageError("ade cloud backups [list [lane id] | forget <lane id>]");
+      throw new CliUsageError("daex cloud backups [list [lane id] | forget <lane id>]");
     }
     case "jobs":
     case "job": {
@@ -22254,10 +22256,10 @@ function buildCloudPlan(args: string[]): CliPlan {
       if (verb === "list" || verb === "ls") return cloudStep("jobs", "jobs_list", {}, "cloud-jobs");
       if (verb === "cancel" || verb === "stop") {
         const jobId = firstPositional(args);
-        if (!jobId) throw new CliUsageError("ade cloud jobs cancel <job id> (ade cloud jobs lists them)");
+        if (!jobId) throw new CliUsageError("daex cloud jobs cancel <job id> (daex cloud jobs lists them)");
         return cloudStep("job cancel", "job_cancel", { jobId }, "cloud-result", true);
       }
-      throw new CliUsageError("ade cloud jobs [list | cancel <job id>]");
+      throw new CliUsageError("daex cloud jobs [list | cancel <job id>]");
     }
     case "project":
       // No --origin: this folder's project names it, so the call runs in that project (the account route has no folder).
@@ -22266,7 +22268,7 @@ function buildCloudPlan(args: string[]): CliPlan {
         : { kind: "execute", label: "cloud project", formatter: "cloud-project", steps: [actionStep("result", "cloud", "project_overview", {})] };
     case "ready":
       // Ready machines are gone: a new lane gets its own computer when it starts.
-      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
+      throw new CliUsageError(`daex cloud ready no longer exists: ${BRAND.NAME} makes a computer for each new lane. Use daex chat create --machine cloud --provider <p> --model <id> --prompt \"…\".`);
     default:
       throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, lanes, chats, sessions, backups, jobs, project, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, phone-provider, prepare-stop, push-work, work-state.`);
   }
@@ -22290,7 +22292,7 @@ function buildCloudLanesPlan(args: string[], flags: { project: string | null; si
     }, "cloud-lanes");
   }
   const lane = verb === "show" && first !== "show" ? first : firstPositional(args);
-  if (!lane) throw new CliUsageError(`ade cloud lanes ${verb} <lane>: its name, id, branch or link (ade cloud lanes lists them)`);
+  if (!lane) throw new CliUsageError(`daex cloud lanes ${verb} <lane>: its name, id, branch or link (daex cloud lanes lists them)`);
   switch (verb) {
     case "show":
       return cloudStep("lane", "lane_show", { lane }, "cloud-lane");
@@ -22305,7 +22307,7 @@ function buildCloudLanesPlan(args: string[], flags: { project: string | null; si
     default:
       // The person picks on the card; an agent can't keep the chats behind it.
       if (args.includes("--keep-chats")) {
-        throw new CliUsageError("--keep-chats is gone: the delete card asks the person. Delete lane deletes the lane, its computer and its saved chats; to keep the lane and its chats, run: ade cloud lanes free <lane>");
+        throw new CliUsageError("--keep-chats is gone: the delete card asks the person. Delete lane deletes the lane, its computer and its saved chats; to keep the lane and its chats, run: daex cloud lanes free <lane>");
       }
       return cloudStep("lane delete", "lane_delete", { lane }, "cloud-result", true);
   }
@@ -22317,7 +22319,7 @@ function formatCloudList(value: unknown): string {
   const lines: string[] = [];
   const account = isRecord(raw) && isRecord(raw.account) ? raw.account : null;
   const words = cloudUnitWords(account as Pick<CloudAccountState, "credits"> | null);
-  if (!machines.length) lines.push("No ADE Cloud computers. A new lane on ADE Cloud makes one: ade chat create --machine cloud, or ade lanes create --machine cloud --name <name>.");
+  if (!machines.length) lines.push(`No ${BRAND.CLOUD_NAME} computers. A new lane on ${BRAND.CLOUD_NAME} makes one: daex chat create --machine cloud, or daex lanes create --machine cloud --name <name>.`);
   for (const box of machines) {
     const sleep = isRecord(box.sleep) && box.sleep.state !== "auto" ? "sleep pending" : "";
     const rate = typeof box.hoursRate === "number" ? formatCloudHoursRate(box.hoursRate, words) : "—";
@@ -22345,7 +22347,7 @@ function formatCloudAccount(value: unknown): string {
     : null;
   const computers = counted ? ` ${counted.total} of ${counted.limit} cloud computers in use (asleep or not).` : "";
   // One balance, which the ADE Cloud iPhone draws from too.
-  const unitLine = ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ADE Cloud iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`;
+  const unitLine = ` Medium computers use ${words.count(1)} an hour, Large ${words.count(2.5)}, X-Large ${words.count(4)}; the ${BRAND.CLOUD_NAME} iPhone ${words.count(words.phoneMilliPerMinute / 1000)} a minute.`;
   const smallLine = `\nUnlimited Small computers. They never use your credits.${unitLine}${computers}`;
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
@@ -22355,7 +22357,7 @@ function formatCloudAccount(value: unknown): string {
   // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
   const github = freePlan.github;
   const githubLine = github && github.state !== "ok" && github.sentence
-    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
+    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? ` Add the card in Settings › ${BRAND.CLOUD_NAME}.` : ""}`
     : "";
   const out = "out of credits (Small keeps working; bigger computers and the iPhone stop)";
   return (hours.state === "zero" ? `${plan}: ${out}. ${left}` : `${plan}: ${left}`) + smallLine + earnedLine + freeLine + githubLine;
@@ -22371,7 +22373,7 @@ function formatCloudInvite(value: unknown): string {
   if (!referral) return JSON.stringify(raw, null, 2);
   const lines = [
     `Your invite link: ${referral.link}`,
-    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ADE Cloud.`,
+    `A friend who enters it gets ${formatCloudHours(referral.rewardMilli)} extra free cloud credits, and so do you once their first chat runs on ${BRAND.CLOUD_NAME}.`,
     `${referral.friendsJoined} ${referral.friendsJoined === 1 ? "friend" : "friends"} joined, ${referral.rewardsPaid} of ${referral.rewardLimit} rewards paid, ${formatCloudHours(referral.hoursEarnedMilli)} credits earned.`,
   ];
   if (referral.canEnterCode && referral.enterCodeUntil != null) {
@@ -22436,7 +22438,7 @@ function buildMcpServersPlan(args: string[]): CliPlan {
     const envNames = fieldNames("--env");
     const headerNames = fieldNames("--header");
     const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
-    if (!name) throw new CliUsageError("Name the server: ade mcp servers add <name> --reason \"…\" …");
+    if (!name) throw new CliUsageError("Name the server: daex mcp servers add <name> --reason \"…\" …");
     if (!reason?.trim()) {
       throw new CliUsageError("mcp servers add needs --reason \"…\": one line telling the person why you want it.");
     }
@@ -22476,7 +22478,7 @@ function buildMcpServersPlan(args: string[]): CliPlan {
     const timeoutValue = readValue(args, ["--timeout"]);
     const sessionId = readValue(args, ["--session", "--session-id"]);
     const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
-    if (!name) throw new CliUsageError("Name the server: ade mcp servers remove <name>");
+    if (!name) throw new CliUsageError("Name the server: daex mcp servers remove <name>");
     const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
     return {
       kind: "execute",
@@ -22492,7 +22494,7 @@ function buildMcpServersPlan(args: string[]): CliPlan {
       progressNotice: `Asked the user to remove the MCP server ${name} in the chat. Waiting for them to answer…`,
     };
   }
-  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
+  throw new CliUsageError(`Unknown 'daex mcp servers' command "${sub}". Use list, add or remove.`);
 }
 
 function buildSecretsPlan(args: string[], target: { remote: boolean } = { remote: false }): CliPlan {
@@ -22504,7 +22506,7 @@ function buildSecretsPlan(args: string[], target: { remote: boolean } = { remote
   const sub = firstPositional(args) ?? "list";
   if (sub === "exec" || sub === "run") {
     if (!execTail?.length) {
-      throw new CliUsageError("secrets exec needs the command after `--`: ade secrets exec [--env NAME] -- npm run deploy");
+      throw new CliUsageError("secrets exec needs the command after `--`: daex secrets exec [--env NAME] -- npm run deploy");
     }
     const names = readRepeatedValues(args, ["--env", "--name"]);
     const timeoutValue = readValue(args, ["--timeout"]);
@@ -22741,7 +22743,7 @@ function buildProxyPlan(args: string[]): CliPlan {
 function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-status", args: string[]): CliPlan {
   if (group === "sign-in") {
     if (!readFlag(args, ["--remote"])) {
-      throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
+      throw new CliUsageError("daex providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
     }
     const provider = requireValue(firstPositional(args), "signInProvider").trim().toLowerCase();
     return {
@@ -22762,7 +22764,7 @@ function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-stat
     };
   }
   const code = readFlag(args, ["--stdin"]) ? readAllStdinSync().trim() : "";
-  if (!code) throw new CliUsageError("ade providers sign-in-code <job> --stdin (the code on stdin)");
+  if (!code) throw new CliUsageError("daex providers sign-in-code <job> --stdin (the code on stdin)");
   return {
     kind: "execute",
     label: "providers sign-in-code",
@@ -23505,7 +23507,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       };
     }
     throw new CliUsageError(
-      "automations webhook supports create, list, new, url <wh-id>, rotate <wh-id>, retire <wh-id>, deliveries <wh-id>, delivery <whd-id>, replay <whd-id>, or test <wh-id>. See `ade help automations`.",
+      "automations webhook supports create, list, new, url <wh-id>, rotate <wh-id>, retire <wh-id>, deliveries <wh-id>, delivery <whd-id>, replay <whd-id>, or test <wh-id>. See `daex help automations`.",
     );
   }
 
@@ -23852,7 +23854,7 @@ function linearFieldWriteSteps(
   if (needs.options) {
     steps.push(derivedActionStep("options", LINEAR_TRACKER, "getIssueCreateOptions", (values) => {
       const team = context(values).teamKey;
-      if (!team) throw new Error("ADE could not tell which Linear team this issue is in.");
+      if (!team) throw new Error(`${BRAND.NAME} could not tell which Linear team this issue is in.`);
       return { argsList: [team] };
     }));
   }
@@ -25025,7 +25027,7 @@ function buildCliPlan(
     if (sub === "run" || sub === "foreground") {
       const socketPath = readValue([...runtimeArgs], ["--socket"]) ?? options.socketPath;
       if (!socketPath) {
-        throw new CliUsageError("ade runtime run requires --socket <path>.");
+        throw new CliUsageError("daex runtime run requires --socket <path>.");
       }
       if (!readValue([...runtimeArgs], ["--socket"])) {
         runtimeArgs.push("--socket", socketPath);
@@ -25102,7 +25104,7 @@ function buildCliPlan(
     const session = readValue(args, ["--session"]);
     const problem = customNotificationProblem({ title, body, open });
     if (problem) {
-      throw new CliUsageError(`${problem} Usage: ade notify --title "<text>" [--body "<text>"] [--open <ade link>]`);
+      throw new CliUsageError(`${problem} Usage: daex notify --title "<text>" [--body "<text>"] [--open <daex link>]`);
     }
     return {
       kind: "execute",
@@ -25164,7 +25166,7 @@ function buildCliPlan(
   }
   if (primary === "reset") {
     if (!readFlag(args, ["--all"])) {
-      throw new CliUsageError("ade reset needs --all. It removes everything ADE put on this computer; run `ade reset --all --dry-run` to see what that is.");
+      throw new CliUsageError(`daex reset needs --all. It removes everything ${BRAND.NAME} put on this computer; run \`daex reset --all --dry-run\` to see what that is.`);
     }
     const rescueRaw = (readValue(args, ["--rescue"]) ?? "commit").trim().toLowerCase();
     if (rescueRaw !== "commit" && rescueRaw !== "move" && rescueRaw !== "none") {
@@ -25355,7 +25357,7 @@ function buildCliPlan(
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
     // The server runs this before a stop; it's for this computer's own brain.
-    if (!cliCloudEnabled) throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+    if (!cliCloudEnabled) throw new CliUsageError(`Unknown command '${primary}'. Run 'daex help'.`);
     const buildOnComputerPlan = CLOUD_ON_COMPUTER_PLANS.get(firstPositional([...args]) ?? "");
     if (buildOnComputerPlan) return buildOnComputerPlan(args);
     return buildCloudPlan(args);
@@ -25380,7 +25382,7 @@ function buildCliPlan(
   if (primary === "issue") return buildIssuePlan(args);
   if (primary === "jira") return buildJiraPlan(args);
   if (primary === "github" || primary === "gh") return buildGithubPlan(args);
-  throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+  throw new CliUsageError(`Unknown command '${primary}'. Run 'daex help'.`);
 }
 
 function buildGithubPlan(args: string[]): CliPlan {
@@ -25442,7 +25444,7 @@ function buildCursorPlan(args: string[]): CliPlan {
   }
   if (surface !== "cloud") {
     throw new CliUsageError(
-      `Unknown 'ade cursor' surface '${surface}'. The only supported surface is 'cloud'.`,
+      `Unknown 'daex cursor' surface '${surface}'. The only supported surface is 'cloud'.`,
     );
   }
   if (hasHelpFlag(args)) {
@@ -25548,9 +25550,10 @@ async function runAccountMachineConnect(
       { autoRegisterProject: false, machineRuntimeOnly: true },
     );
   } catch (error) {
-    throw new CliExecutionError("Failed to initialize the ADE brain for account machine connection.", {
+    // Older clients match this text; keep until released desktops read both names.
+    throw new CliExecutionError(`Failed to initialize the ADE brain for account machine connection.`, {
       cause: error instanceof Error ? error.message : String(error),
-      nextAction: "Start the machine ADE brain with `ade brain start`, then retry.",
+      nextAction: `Start the machine ${BRAND.NAME} brain with \`daex brain start\`, then retry.`,
     });
   }
 
@@ -25574,7 +25577,7 @@ async function runAccountMachineConnect(
   const name = asString(paired.name) ?? plan.machine;
   const result = {
     ...paired,
-    message: `Saved ${name} on this ADE install. Open it from ADE desktop or the web client.`,
+    message: `Saved ${name} on this ${BRAND.NAME} install. Open it from ${BRAND.NAME} desktop or the web client.`,
   };
   return { output: formatOutput(result, options, undefined), exitCode: 0 };
 }
@@ -25604,7 +25607,7 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
       ready: false,
       status: "missing",
       message: "git is not available on PATH.",
-      nextAction: "Install git and rerun ade doctor.",
+      nextAction: "Install git and rerun daex doctor.",
     };
   }
   const inside = runLocalCommand(
@@ -25617,7 +25620,7 @@ function checkGitReadiness(projectRoot: string): ReadinessCheck {
       ready: false,
       status: "missing",
       message: "Project root is not inside a git worktree.",
-      nextAction: "Run ade with --project-root pointing at a git repository.",
+      nextAction: "Run daex with --project-root pointing at a git repository.",
     };
   }
   const root = runLocalCommand(
@@ -25675,7 +25678,7 @@ function checkGitHubReadiness(projectRoot: string): ReadinessCheck {
       ? undefined
       : hasGitHubRemote
         ? "Run gh auth login or set ADE_GITHUB_TOKEN/GITHUB_TOKEN for headless PR workflows."
-        : "Add a GitHub origin remote if this project should use ADE PR workflows.",
+        : `Add a GitHub origin remote if this project should use ${BRAND.NAME} PR workflows.`,
     details: {
       ghInstalled,
       tokenEnvPresent: envTokenPresent,
@@ -25712,7 +25715,7 @@ function checkLinearReadiness(projectRoot: string): ReadinessCheck {
       : "No Linear token was detected in local stores or environment variables.",
     nextAction: ready
       ? undefined
-      : "Configure Linear in ADE desktop or set ADE_LINEAR_API/LINEAR_API_KEY for headless mode.",
+      : `Configure Linear in ${BRAND.NAME} desktop or set ADE_LINEAR_API/LINEAR_API_KEY for headless mode.`,
     details: {
       encryptedTokenPresent:
         legacyEncryptedTokenPresent || projectCredentialStoreTokenPresent,
@@ -25798,11 +25801,11 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     ready,
     status: ready ? "ready" : "warning",
     message: ready
-      ? "AI provider configuration or one of ADE's provider runtimes was detected locally."
-      : "No AI provider configuration or ADE provider runtime was detected locally.",
+      ? `AI provider configuration or one of ${BRAND.NAME}'s provider runtimes was detected locally.`
+      : `No AI provider configuration or ${BRAND.NAME} provider runtime was detected locally.`,
     nextAction: ready
       ? undefined
-      : "Configure AI providers in ADE desktop or sign in to a provider; ADE downloads each agent the first time this machine uses it.",
+      : `Configure AI providers in ${BRAND.NAME} desktop or sign in to a provider; ${BRAND.NAME} downloads each agent the first time this machine uses it.`,
     details: {
       defaultProvider,
       apiKeyProviders,
@@ -25831,8 +25834,8 @@ function checkComputerUseReadiness(): ReadinessCheck {
       : isDarwin
         ? "Install or expose screencapture/open/swift/osascript on PATH, or use an external proof backend."
         : process.platform === "linux"
-          ? "On Linux, capture from the lane's own screen: ade screen start --text, then ade proof screenshot (or ade screen proof)."
-          : "Use ADE desktop on macOS or an external proof backend for computer-use capture.",
+          ? "On Linux, capture from the lane's own screen: daex screen start --text, then daex proof screenshot (or daex screen proof)."
+          : `Use ${BRAND.NAME} desktop on macOS or an external proof backend for computer-use capture.`,
     details: {
       platform: process.platform,
       screenshotReady,
@@ -25857,12 +25860,12 @@ function checkPathReadiness(): ReadinessCheck {
     ready: onPath,
     status: onPath ? "ready" : "warning",
     message: onPath
-      ? "ade is available on PATH."
-      : "ade is not available on PATH.",
+      ? "daex is available on PATH."
+      : "daex is not available on PATH.",
     nextAction: onPath
       ? undefined
       : process.platform === "win32"
-        ? "Install ade from ADE desktop General settings or run the packaged install-path.cmd script."
+        ? `Install daex from ${BRAND.NAME} desktop General settings or run the packaged install-path.cmd script.`
         : "Run npm link in apps/ade-cli or the packaged install-path.sh script.",
     details: {
       currentCliPath: current || null,
@@ -25898,9 +25901,9 @@ function checkStorageReadiness(projectRoot: string): ReadinessCheck {
         ? `Disk has headroom (${summary}).`
         : `Disk pressure is ${summary}.`,
       nextAction: urgent
-        ? "Free up disk space; ADE pauses new agent work and CLI launches when storage is critical."
+        ? `Free up disk space; ${BRAND.NAME} pauses new agent work and CLI launches when storage is critical.`
         : snap.state === "warning"
-          ? "Disk is getting low; run 'ade storage snapshot --text' to see what ADE is holding."
+          ? `Disk is getting low; run 'daex storage snapshot --text' to see what ${BRAND.NAME} is holding.`
           : undefined,
       details: {
         state: snap.state,
@@ -25939,7 +25942,7 @@ function checkSyncReadiness(value: unknown): ReadinessCheck & {
       usable: false,
       status: "unavailable",
       message: "Sync route health is unavailable.",
-      nextAction: "Run 'ade sync status --text' against the live ADE runtime.",
+      nextAction: `Run 'daex sync status --text' against the live ${BRAND.NAME} runtime.`,
       failingRoutes: [],
     };
   }
@@ -25981,7 +25984,7 @@ function checkSyncReadiness(value: unknown): ReadinessCheck & {
       : `Sync route failure: ${failures.join("; ")}`,
     nextAction: usable
       ? undefined
-      : "Run 'ade sync status --text' and resolve the named listener or route failure.",
+      : "Run 'daex sync status --text' and resolve the named listener or route failure.",
     failingRoutes: failures,
     details: { routeHealth },
   };
@@ -25995,7 +25998,7 @@ function checkRelaySelfProbeReadiness(
     return {
       ready: true,
       status: "unavailable",
-      message: "Skipped — no running ADE brain.",
+      message: `Skipped — no running ${BRAND.NAME} brain.`,
     };
   }
   if (!isRecord(value)) {
@@ -26026,7 +26029,7 @@ function checkRelaySelfProbeReadiness(
     ready: false,
     status: "warning",
     message: `FAILED: ${detail}`,
-    nextAction: "Run 'ade sync status --text' and resolve the Relay failure.",
+    nextAction: "Run 'daex sync status --text' and resolve the Relay failure.",
   };
 }
 
@@ -26098,13 +26101,13 @@ function buildReadinessSnapshot(args: {
     .map(([key, check]) => `${key}: ${check.nextAction}`);
   if (!attachedSocketAvailable) {
     recommendations.unshift(
-      "runtime: Start ADE runtime or remove --headless when Work chat or shared proof state is required.",
+      `runtime: Start ${BRAND.NAME} runtime or remove --headless when Work chat or shared proof state is required.`,
     );
   }
   const projectInitialized = fs.existsSync(adeDir);
   if (!projectInitialized) {
     recommendations.unshift(
-      "project: Run ade doctor from an ADE project or pass --project-root <repo>.",
+      `project: Run daex doctor from a ${BRAND.NAME} project or pass --project-root <repo>.`,
     );
   }
   const actionCountsByDomain = actionDomainCounts(values.actions);
@@ -26148,12 +26151,12 @@ function buildReadinessSnapshot(args: {
       socketMode: connection.mode,
       message:
         connection.mode === "runtime-socket"
-          ? "Connected to ADE runtime endpoint."
+          ? `Connected to ${BRAND.NAME} runtime endpoint.`
           : desktopSocketAvailable
-            ? "Connected to legacy ADE desktop socket."
+            ? `Connected to legacy ${BRAND.NAME} desktop socket.`
             : socketExists
               ? "Socket path exists but CLI is running in headless mode; the socket may be stale or unavailable."
-              : "No live ADE runtime endpoint was detected.",
+              : `No live ${BRAND.NAME} runtime endpoint was detected.`,
     },
     actions: {
       rpcActionCount: rpcActions.length,
@@ -26172,7 +26175,7 @@ function buildReadinessSnapshot(args: {
     auth: {
       localProjectAccess: projectInitialized && actions.length > 0,
       providerSecretsExposed: false,
-      note: "ADE CLI auth is local project access. Provider and integration readiness is reported as presence-only metadata.",
+      note: `${BRAND.NAME} CLI auth is local project access. Provider and integration readiness is reported as presence-only metadata.`,
     },
     networkChecks: {
       performed: false,
@@ -26183,8 +26186,8 @@ function buildReadinessSnapshot(args: {
     recommendation:
       recommendations[0] ??
       (attachedSocketAvailable
-        ? "Using live ADE runtime state."
-        : "Headless mode is ready for local ADE actions; start ADE runtime for shared runtime state."),
+        ? `Using live ${BRAND.NAME} runtime state.`
+        : `Headless mode is ready for local ${BRAND.NAME} actions; start ${BRAND.NAME} runtime for shared runtime state.`),
     summary,
   };
 }
@@ -26209,10 +26212,10 @@ async function assertBrainSocketUnowned(socketPath: string): Promise<void> {
   const liveness = await probeLocalSocketForLiveness(socketPath);
   if (liveness !== "live" && liveness !== "unknown") return;
   throw Object.assign(
-    new CliExecutionError("ADE brain socket is already in use.", {
+    new CliExecutionError(`${BRAND.NAME} brain socket is already in use.`, {
       socketPath,
       cause: brainSocketOwnedCause(socketPath, liveness),
-      nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+      nextAction: `Stop the existing ${BRAND.NAME} brain or choose a different --socket path.`,
     }),
     { code: "socket_owned_by_other" as const },
   );
@@ -26232,14 +26235,14 @@ function brainSocketOwnedCause(
 ): string {
   if (isAdeRuntimeNamedPipePath(socketPath)) {
     return liveness === "live"
-      ? "Another ADE brain is accepting connections on this named pipe."
+      ? `Another ${BRAND.NAME} brain is accepting connections on this named pipe.`
       : "Another process holds this named pipe. Windows releases a pipe name as "
-        + "soon as its owner exits, so the name being taken means an ADE brain "
-        + "(or another build of ADE) is still running.";
+        + `soon as its owner exits, so the name being taken means a ${BRAND.NAME} brain `
+        + `(or another build of ${BRAND.NAME}) is still running.`;
   }
   return liveness === "live"
-    ? "Another ADE brain is accepting connections on this socket."
-    : "ADE could not prove the existing socket is stale.";
+    ? `Another ${BRAND.NAME} brain is accepting connections on this socket.`
+    : `${BRAND.NAME} could not prove the existing socket is stale.`;
 }
 
 /**
@@ -26382,14 +26385,14 @@ class SocketJsonRpcClient {
     socket.on("close", () =>
       this.failConnection(this.pending.size > 0 || this.describeLoss
         ? brainConnectionLostError(null, this.describeLoss)
-        : new Error("ADE runtime endpoint closed.")),
+        : new Error(`${BRAND.NAME} runtime endpoint closed.`)),
     );
   }
 
   static async connect(
     socketPath: string,
     timeoutMs: number,
-    label = "ADE endpoint",
+    label = `${BRAND.NAME} endpoint`,
     options: {
       connectWindowMs?: number;
       /** A relay's explanation for calls in flight when the brain's socket goes. */
@@ -26510,7 +26513,7 @@ class SocketJsonRpcClient {
     } catch (error) {
       this.rejectAll(
         new Error(
-          `Failed to parse ADE endpoint response: ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to parse ${BRAND.NAME} endpoint response: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
       return;
@@ -26659,7 +26662,7 @@ function withRpcAuthTokenGate(
       if (!params || !safeRpcAuthTokenEquals(provided, authToken)) {
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
-          "ADE RPC TCP authentication failed.",
+          `${BRAND.NAME} RPC TCP authentication failed.`,
         );
       }
       delete params[ADE_RPC_AUTH_PARAM];
@@ -26745,7 +26748,7 @@ function reportContainedJsonRpcError(
 ): void {
   const message = formatDiagnosticError(error);
   try {
-    process.stderr.write(`ade jsonrpc ${context} error: ${message}\n`);
+    process.stderr.write(`daex jsonrpc ${context} error: ${message}\n`);
   } catch {
     // Stderr may be gone during shutdown; contained errors should stay contained.
   }
@@ -26763,7 +26766,7 @@ function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
   });
   try {
     process.stderr.write(
-      `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
+      `daex jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
     );
   } catch {
     // Stderr may be gone during shutdown; contained errors should stay contained.
@@ -26941,7 +26944,7 @@ function createHeadlessRpcServer(
         if (conn.writableLength > HEADLESS_RPC_MAX_PENDING_WRITE_BYTES) {
           try {
             process.stderr.write(
-              `ade jsonrpc client dropped: ${conn.writableLength} bytes unread (limit ${HEADLESS_RPC_MAX_PENDING_WRITE_BYTES})\n`,
+              `daex jsonrpc client dropped: ${conn.writableLength} bytes unread (limit ${HEADLESS_RPC_MAX_PENDING_WRITE_BYTES})\n`,
             );
           } catch {}
           conn.destroy();
@@ -27288,7 +27291,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
     }
     if (!fromChat && confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
-        `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
+        `machines ${sub} requires --confirm REMOVE. Run "daex machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
     }
     if (firstStandalonePositional(args)) {
@@ -27316,7 +27319,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
             // The wait for the person is the point of the command; the
             // transport must outlive it.
             minTimeoutMs: timeoutMs + 30_000,
-            progressNotice: `Pending approval: removing ${machine.trim()} from the ADE account needs the person's yes. Waiting for their Remove or Keep…`,
+            progressNotice: `Pending approval: removing ${machine.trim()} from the ${BRAND.NAME} account needs the person's yes. Waiting for their Remove or Keep…`,
             exitCodeFromResult: (result: unknown) => {
               const answer = unwrapActionEnvelope(result);
               const status = isRecord(answer) ? answer.status : undefined;
@@ -27564,7 +27567,7 @@ function buildSyncPlan(args: string[]): CliPlan {
     }
     throw new CliUsageError(`Unsupported sync security action: ${action}`);
   }
-  throw new CliUsageError(`Unknown sync command '${sub}'. Run ade help sync.`);
+  throw new CliUsageError(`Unknown sync command '${sub}'. Run daex help sync.`);
 }
 
 /** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
@@ -27623,7 +27626,7 @@ function buildProjectsPlan(args: string[], target: { remote: boolean } = { remot
         const hidden = hiddenMissingProjects(result);
         if (hidden === 0) return table;
         return `${table}\n${hidden} project${hidden === 1 ? " whose folder is" : "s whose folders are"} gone ${hidden === 1 ? "is" : "are"} hidden: `
-          + "`ade projects list --include-missing` lists them, `ade projects prune` removes them from ADE (it never deletes folders).";
+          + `\`daex projects list --include-missing\` lists them, \`daex projects prune\` removes them from ${BRAND.NAME} (it never deletes folders).`;
       },
     };
   }
@@ -27855,7 +27858,7 @@ async function resolveDesktopSocketProjectId(
       try {
         process.stderr.write(
           `ade: could not register this project with the desktop (${formatDiagnosticError(error)}). `
-          + "Project-scoped commands may fail until ADE Desktop is restarted.\n",
+          + `Project-scoped commands may fail until ${BRAND.NAME} Desktop is restarted.\n`,
         );
       } catch {
         // Stderr may be gone; a diagnostic must never break the command.
@@ -27868,9 +27871,9 @@ async function resolveDesktopSocketProjectId(
 /** The one line a live-session command prints instead of going headless. */
 export function liveRuntimeRequiredMessage(feature: string, socketPath: string | null): string {
   const where = socketPath ? `no brain answered at ${socketPath}` : "--headless runs without one";
-  return `${feature} needs the running ADE brain; ${where}. `
-    + "Use the `ade` on PATH in an ADE terminal or agent shell (it names its brain), "
-    + "or pass --socket <endpoint> from that brain's `ade brain status`.";
+  return `${feature} needs the running ${BRAND.NAME} brain; ${where}. `
+    + `Use the \`daex\` on PATH in a ${BRAND.NAME} terminal or agent shell (it names its brain), `
+    + "or pass --socket <endpoint> from that brain's `daex brain status`.";
 }
 
 async function createConnection(
@@ -28015,7 +28018,7 @@ async function createConnection(
   }
 
   if (options.requireSocket) {
-    throw new Error(`ADE endpoint is not available at ${legacySocketPath}.`);
+    throw new Error(`${BRAND.NAME} endpoint is not available at ${legacySocketPath}.`);
   }
   if (args.needsLiveRuntime) {
     throw await liveRuntimeRequiredError(args.needsLiveRuntime);
@@ -28025,7 +28028,7 @@ async function createConnection(
   // either: it would write into the other install's database.
   if (isOtherAdeInstallHome(roots.projectRoot)) {
     throw new CliToolError(
-      `${roots.projectRoot} is where another ADE install keeps its data, so ADE will not open it as a project. Run this from a project folder.`,
+      `${roots.projectRoot} is where another ${BRAND.NAME} install keeps its data, so ${BRAND.NAME} will not open it as a project. Run this from a project folder.`,
       undefined,
     );
   }
@@ -28420,7 +28423,7 @@ class RuntimeVersionSkewError extends CliToolError {
 class UnmanagedRuntimeMismatchError extends Error {
   constructor(socketPath: string, mismatch: string) {
     super(
-      `ADE runtime at ${socketPath}: ${mismatch}. This ade did not start it, so it is left running. Use the ade that started it, or stop it first.`,
+      `${BRAND.NAME} runtime at ${socketPath}: ${mismatch}. This daex did not start it, so it is left running. Use the daex that started it, or stop it first.`,
     );
     this.name = "UnmanagedRuntimeMismatchError";
   }
@@ -28578,7 +28581,7 @@ class RuntimeSelfShutdownBlockedError extends Error {}
 /** Say once, on stderr, that this CLI and the brain it uses are different builds. */
 function warnUsingMismatchedRuntime(runtimeInfo: MachineRuntimeInfo, mismatch: string): void {
   process.stderr.write(
-    `ade: using the running ADE brain as is: ${mismatch}. `
+    `ade: using the running ${BRAND.NAME} brain as is: ${mismatch}. `
       + "It cannot be restarted from inside its own session; "
       + `use the brain's own CLI${runtimeInfo.version ? ` (${runtimeInfo.version})` : ""} to remove this warning.\n`,
   );
@@ -28594,9 +28597,9 @@ function runtimeSelfShutdownMessage(
 ): string {
   const verb = action === "repair" ? "repair/restart" : "stop";
   return (
-    `Refusing to ${verb} ADE runtime from a command running inside that runtime ` +
+    `Refusing to ${verb} ${BRAND.NAME} runtime from a command running inside that runtime ` +
     `(pid ${runtimePid}). Run this from an external terminal, or set ` +
-    "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions."
+    `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ${BRAND.NAME} sessions.`
   );
 }
 
@@ -28707,7 +28710,7 @@ function describeMachineEndpointName(args: {
     if (isMachineEndpointName(args.socketPath, [layout.socketPath])) return null;
     return {
       pid: null,
-      text: `This brain answers on the pipe name an older ADE used (${args.socketPath}). `
+      text: `This brain answers on the pipe name an older ${BRAND.NAME} used (${args.socketPath}). `
         + `It moves to ${layout.socketPath} when it restarts on this version.`,
     };
   }
@@ -28718,19 +28721,19 @@ function describeMachineEndpointName(args: {
   if (recorded) {
     return {
       pid: recorded.pid,
-      text: `An ADE brain (pid ${recorded.pid}) for ${layout.adeDir} listens on ${recorded.endpoint}, `
-        + `not on ${args.socketPath}: an older ADE started it from a Windows session whose account settings differ. `
-        + `Reach it with \`ade --socket "${recorded.endpoint}" ...\`, or restart it (quit and reopen ADE, `
-        + "or run `ade brain restart`) to move it to the name every session computes.",
+      text: `A ${BRAND.NAME} brain (pid ${recorded.pid}) for ${layout.adeDir} listens on ${recorded.endpoint}, `
+        + `not on ${args.socketPath}: an older ${BRAND.NAME} started it from a Windows session whose account settings differ. `
+        + `Reach it with \`daex --socket "${recorded.endpoint}" ...\`, or restart it (quit and reopen ${BRAND.NAME}, `
+        + "or run `daex brain restart`) to move it to the name every session computes.",
     };
   }
   const beat = readBrainHeartbeat(layout.runtimeDir);
   if (!beat || Date.now() - beat.ts > BRAIN_HEARTBEAT_STALE_MS || !isPidAlive(beat.pid)) return null;
   return {
     pid: beat.pid,
-    text: `An ADE brain (pid ${beat.pid}) is running for ${layout.adeDir}, but not on ${args.socketPath} `
-      + "or any older pipe name this ade knows. Another ADE version or Windows session probably started it. "
-      + "Restart it (quit and reopen ADE, or run `ade brain restart`) so this session can reach it.",
+    text: `A ${BRAND.NAME} brain (pid ${beat.pid}) is running for ${layout.adeDir}, but not on ${args.socketPath} `
+      + `or any older pipe name this daex knows. Another ${BRAND.NAME} version or Windows session probably started it. `
+      + `Restart it (quit and reopen ${BRAND.NAME}, or run \`daex brain restart\`) so this session can reach it.`,
   };
 }
 
@@ -28770,7 +28773,7 @@ export function shouldBlockManualMachineRuntimeSpawn(
 
 function manualMachineRuntimeSpawnBlockedError(socketPath: string): Error {
   return new Error(
-    `ADE runtime is unavailable at ${socketPath}, and ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 forbids starting a manual replacement for this service-managed socket.`,
+    `${BRAND.NAME} runtime is unavailable at ${socketPath}, and ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 forbids starting a manual replacement for this service-managed socket.`,
   );
 }
 
@@ -28809,7 +28812,7 @@ async function repairMachineRuntimeServiceConnection(args: {
       connect: () => SocketJsonRpcClient.connect(
         args.socketPath,
         args.options.timeoutMs,
-        "ADE runtime endpoint",
+        `${BRAND.NAME} runtime endpoint`,
         { describeLoss: args.describeLoss },
       ),
     });
@@ -28954,7 +28957,7 @@ async function connectMachineRuntimeDaemon(
 ): Promise<SocketJsonRpcClient> {
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
   const describeLoss = connectOptions.describeLoss ?? null;
-  const label = "ADE runtime endpoint";
+  const label = `${BRAND.NAME} runtime endpoint`;
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
   const isLocalRuntime = isLocalRuntimeSocketPath(socketPath);
@@ -29012,7 +29015,7 @@ async function connectMachineRuntimeDaemon(
       if (!allowSpawn || isTcpSocket) {
         client.close();
         throw new Error(
-          `ADE runtime ${mismatch}.`,
+          `${BRAND.NAME} runtime ${mismatch}.`,
         );
       }
       // Off the machine socket the build and version checks are skipped, so a
@@ -29054,7 +29057,7 @@ async function connectMachineRuntimeDaemon(
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
         throw new Error(
-          `ADE runtime ${mismatch}.`,
+          `${BRAND.NAME} runtime ${mismatch}.`,
         );
       }
       const restarted = await SocketJsonRpcClient.connect(
@@ -29095,7 +29098,7 @@ async function connectMachineRuntimeDaemon(
         }
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
-          `ADE runtime ${restartedMismatch}.`,
+          `${BRAND.NAME} runtime ${restartedMismatch}.`,
         );
       }
       return restarted;
@@ -29152,7 +29155,7 @@ async function connectMachineRuntimeDaemon(
         }
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
-          `ADE runtime ${mismatch}.`,
+          `${BRAND.NAME} runtime ${mismatch}.`,
         );
       }
       return client;
@@ -29167,7 +29170,7 @@ async function connectMachineRuntimeDaemon(
           ? secondError.message
           : String(secondError);
       throw new Error(
-        `Unable to attach to ADE runtime at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`,
+        `Unable to attach to ${BRAND.NAME} runtime at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`,
       );
     }
   }
@@ -29201,7 +29204,7 @@ async function runRuntimeCommand(
       const client = await SocketJsonRpcClient.connect(
         socketPath,
         Math.min(options.timeoutMs, 3_000),
-        "ADE runtime endpoint",
+        `${BRAND.NAME} runtime endpoint`,
       );
       try {
         const runtimeInfo = await initializeMachineRuntimeDaemon(
@@ -29221,7 +29224,7 @@ async function runRuntimeCommand(
           packageChannel: runtimeInfo.packageChannel,
           projectRoot: runtimeInfo.projectRoot,
           pid: runtimeInfo.pid,
-          message: "ADE runtime endpoint is running.",
+          message: `${BRAND.NAME} runtime endpoint is running.`,
         };
       } finally {
         client.close();
@@ -29253,7 +29256,7 @@ async function runRuntimeCommand(
         // produced the message above it.
         detail,
         message: starting
-          ? `ADE brain is still starting; it has not answered on ${socketPath} yet. Keep waiting — there is nothing to repair.`
+          ? `${BRAND.NAME} brain is still starting; it has not answered on ${socketPath} yet. Keep waiting — there is nothing to repair.`
           : elsewhere?.text ?? detail,
       };
     }
@@ -29278,7 +29281,7 @@ async function runRuntimeCommand(
         packageChannel: runtimeInfo?.packageChannel ?? null,
         projectRoot: runtimeInfo?.projectRoot ?? null,
         pid: runtimeInfo?.pid ?? null,
-        message: "ADE runtime endpoint is running.",
+        message: `${BRAND.NAME} runtime endpoint is running.`,
       };
     } finally {
       client.close();
@@ -29290,7 +29293,7 @@ async function runRuntimeCommand(
       const client = await SocketJsonRpcClient.connect(
         socketPath,
         Math.min(options.timeoutMs, 3_000),
-        "ADE runtime endpoint",
+        `${BRAND.NAME} runtime endpoint`,
       );
       try {
         const runtimeInfo = await initializeMachineRuntimeDaemon(client, options).catch(() => null);
@@ -29331,7 +29334,7 @@ async function runRuntimeCommand(
         ok: true,
         running: false,
         socketPath,
-        message: "ADE runtime endpoint stopped.",
+        message: `${BRAND.NAME} runtime endpoint stopped.`,
       };
     } catch (error) {
       // The stop did not happen: a later stop must not read it as one for good.
@@ -29364,7 +29367,7 @@ async function runRuntimeCommand(
   }
 
   throw new CliUsageError(
-    "runtime supports status, start, stop, install-service, uninstall-service, or service-status. Prefer ade brain for the service-managed lifecycle.",
+    "runtime supports status, start, stop, install-service, uninstall-service, or service-status. Prefer daex brain for the service-managed lifecycle.",
   );
 }
 
@@ -29445,7 +29448,7 @@ export async function readProjectHostReadiness(args: {
       ...snapshot,
       state: "unavailable",
       headline: "Not hosting",
-      body: "This machine's ADE brain is not running, so nothing hosts the project connection. Run `ade brain start`.",
+      body: `This machine's ${BRAND.NAME} brain is not running, so nothing hosts the project connection. Run \`daex brain start\`.`,
       recoveryEligible: false,
     };
   }
@@ -29518,13 +29521,13 @@ async function verifyMachinePublished(
       // heartbeat and a fresh install can outrun its first attempt.
       return {
         ok: true,
-        detail: `ade ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
+        detail: `daex ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
       };
     }
     if (state === "published") {
       return {
         ok: true,
-        detail: `ade ${VERSION}, brain running, ${identity ?? "your account"} — machine published`,
+        detail: `daex ${VERSION}, brain running, ${identity ?? "your account"} — machine published`,
       };
     }
     const { describeUnpublishedMachine } = await import("./commands/setup");
@@ -29533,7 +29536,7 @@ async function verifyMachinePublished(
   } catch {
     return {
       ok: true,
-      detail: `ade ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
+      detail: `daex ${VERSION}, brain running, signed in as ${identity ?? "your account"}`,
     };
   } finally {
     try {
@@ -29577,7 +29580,7 @@ async function runSetupCli(
               receivedBytes: progress.receivedBytes ?? null,
               totalBytes: progress.totalBytes ?? null,
               item: progress.phase === "waiting"
-                ? `${progress.tool} (waiting for another ADE install)`
+                ? `${progress.tool} (waiting for another ${BRAND.NAME} install)`
                 : progress.tool,
             });
           },
@@ -29599,7 +29602,7 @@ async function runSetupCli(
               const client = await SocketJsonRpcClient.connect(
                 socketPath,
                 options.timeoutMs,
-                "ADE runtime endpoint",
+                `${BRAND.NAME} runtime endpoint`,
               );
               client.close();
               return true;
@@ -29619,7 +29622,7 @@ async function runSetupCli(
         const connect = await runConnectCli([], options);
         return connect.exitCode === 0
           ? { ok: true, detail: "linked" }
-          : { ok: false, detail: "sign-in didn't finish", nextAction: "ade connect" };
+          : { ok: false, detail: "sign-in didn't finish", nextAction: "daex connect" };
       },
       readInstalledDesktop: () => readInstalledDesktopVersion(),
       // "The files copied" is a different claim from "it works". This is the
@@ -29630,8 +29633,8 @@ async function runSetupCli(
         if (service.running === false) {
           return {
             ok: false,
-            detail: "the ADE brain is not running",
-            nextAction: "ade brain start",
+            detail: `the ${BRAND.NAME} brain is not running`,
+            nextAction: "daex brain start",
           };
         }
         const account = await readSetupAccountStatus(options);
@@ -29639,7 +29642,7 @@ async function runSetupCli(
           return {
             ok: false,
             detail: "sign-in didn't finish",
-            nextAction: "ade connect",
+            nextAction: "daex connect",
           };
         }
         // Signed in is NOT the outcome the user wants -- published is. A
@@ -29690,9 +29693,10 @@ async function runConnectCli(
       { autoRegisterProject: false, machineRuntimeOnly: true },
     );
   } catch (error) {
-    throw new CliExecutionError("Failed to initialize the ADE brain for `ade connect`.", {
+    // Older clients match this text; keep until released desktops read both names.
+    throw new CliExecutionError(`Failed to initialize the ADE brain for \`daex connect\`.`, {
       cause: error instanceof Error ? error.message : String(error),
-      nextAction: "Start the machine ADE brain with `ade brain start`, then retry `ade connect`.",
+      nextAction: `Start the machine ${BRAND.NAME} brain with \`daex brain start\`, then retry \`daex connect\`.`,
     });
   }
 
@@ -29705,10 +29709,10 @@ async function runConnectCli(
       try {
         raw = await connection.request("account.call", { action, args: {} });
       } catch (error) {
-        throw new CliExecutionError(`The ADE brain rejected account.${action}.`, {
+        throw new CliExecutionError(`The ${BRAND.NAME} brain rejected account.${action}.`, {
           cause: error instanceof Error ? error.message : String(error),
           nextAction:
-            "Run `ade doctor --text` to inspect this machine's brain, then retry `ade connect`.",
+            "Run `daex doctor --text` to inspect this machine's brain, then retry `daex connect`.",
         });
       }
       const result = unwrapActionEnvelope(raw);
@@ -29752,8 +29756,8 @@ async function runConnectCli(
           options,
         );
         if (login.exitCode !== 0) {
-          throw new CliExecutionError("ADE account sign-in did not complete.", {
-            nextAction: "Retry `ade connect`, or `ade connect --headless` without a browser.",
+          throw new CliExecutionError(`${BRAND.NAME} account sign-in did not complete.`, {
+            nextAction: "Retry `daex connect`, or `daex connect --headless` without a browser.",
           });
         }
         return readAccountStatus();
@@ -29914,7 +29918,7 @@ async function runBrainCommand(
     // a minute (`tryRepairServiceConnection`). Say so, so the stop does not
     // seem to have failed.
     return stopped.ok
-      ? { ...stopped, message: `${stopped.message} An open ADE app starts the brain again; quit the app to keep it stopped.` }
+      ? { ...stopped, message: `${stopped.message} An open ${BRAND.NAME} app starts the brain again; quit the app to keep it stopped.` }
       : stopped;
   }
 
@@ -29937,14 +29941,14 @@ async function runBrainCommand(
       stopped,
       started,
       message: !stopped.ok
-        ? `ADE brain restart attempted after stop warning: ${stopped.message}`
+        ? `${BRAND.NAME} brain restart attempted after stop warning: ${stopped.message}`
         : started.ok
           // `starting` means the replacement is alive but has not answered on
           // the socket yet. Claiming "restarted." there reads as "ready now"
           // and sends callers into a connect that is not due to succeed yet.
           ? started.starting
             ? started.message
-            : "ADE brain restarted."
+            : `${BRAND.NAME} brain restarted.`
           : started.message,
     };
   }
@@ -29979,11 +29983,11 @@ async function runBrainCommand(
         ? { at: report.quarantine.at, recoverable: report.quarantine.recoverable }
         : null,
       message: !readable
-        ? "ADE could not read the stored credentials on this computer. Sign in again in the ADE app."
+        ? `${BRAND.NAME} could not read the stored credentials on this computer. Sign in again in the ${BRAND.NAME} app.`
         : report.recoveredKeys > 0
-          ? `Restored ${report.recoveredKeys} stored credential${report.recoveredKeys === 1 ? "" : "s"}. Run \`ade brain restart\` so the brain picks them up.`
+          ? `Restored ${report.recoveredKeys} stored credential${report.recoveredKeys === 1 ? "" : "s"}. Run \`daex brain restart\` so the brain picks them up.`
           : report.quarantine?.recoverable === false
-            ? "An unreadable credential file was set aside earlier. Sign in again in the ADE app."
+            ? `An unreadable credential file was set aside earlier. Sign in again in the ${BRAND.NAME} app.`
             : "Stored credentials are readable; nothing needed repairing.",
     };
   }
@@ -30129,7 +30133,7 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
         platform: process.platform,
         appName,
         message:
-          `Unable to find the installed ${appName} executable. Reinstall ADE or set ADE_DESKTOP_APP_PATH.`,
+          `Unable to find the installed ${appName} executable. Reinstall ${BRAND.NAME} or set ADE_DESKTOP_APP_PATH.`,
       };
     }
     return await launchDetachedDesktopApp(executablePath, appName);
@@ -30141,7 +30145,7 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
         ok: false,
         platform: process.platform,
         appName,
-        message: `On Linux, ade desktop opens this install's own app (${defaultAppName}) and can't pick another by name.`,
+        message: `On Linux, daex desktop opens this install's own app (${defaultAppName}) and can't pick another by name.`,
       };
     }
     const installed = readInstalledDesktopApp();
@@ -30160,7 +30164,7 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
     ok: false,
     platform: process.platform,
     appName,
-    message: "Launching ADE desktop from the CLI is supported on macOS, Windows and Linux.",
+    message: `Launching ${BRAND.NAME} desktop from the CLI is supported on macOS, Windows and Linux.`,
   };
 }
 
@@ -30188,7 +30192,7 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         return null;
       }
       if (!client) {
-        throw new Error("ADE runtime is not connected.");
+        throw new Error(`${BRAND.NAME} runtime is not connected.`);
       }
       try {
         const result = await client.request(method, request.params);
@@ -30295,11 +30299,11 @@ function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): v
     });
     if (health.state !== "unreadable" && !health.quarantine) return;
     const summary = health.state === "unreadable"
-      ? `ADE brain cannot read the stored account credentials (${health.reason}).`
-      : "ADE brain set aside an unreadable credential file earlier.";
+      ? `${BRAND.NAME} brain cannot read the stored account credentials (${health.reason}).`
+      : `${BRAND.NAME} brain set aside an unreadable credential file earlier.`;
     const nextStep = health.quarantine?.recoverable === true
-      ? " Opening the ADE app on this computer restores it; no sign-in needed."
-      : " Sign in again in the ADE app.";
+      ? ` Opening the ${BRAND.NAME} app on this computer restores it; no sign-in needed.`
+      : ` Sign in again in the ${BRAND.NAME} app.`;
     process.stderr.write(`${summary}${nextStep}\n`);
     logger.warn("brain.credential_store_unreadable", {
       state: health.state,
@@ -30375,7 +30379,7 @@ async function runServe(
     describeDroppedAgentEnv(droppedAgentEnvKeys),
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
-  for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
+  for (const note of brainIdentityNotes) process.stderr.write(`${BRAND.NAME}: ${note}\n`);
   // A dev test machine (`npm run dev:machine`): this checkout's brain as its
   // own machine on the account, beside the installed one. Set before anything
   // reads the home, the sync lease or Tailscale; see devTestMachine.ts.
@@ -30387,7 +30391,7 @@ async function runServe(
     const adeDir = resolveMachineAdeLayout().adeDir;
     if (!isSyncCapableAdeHome(adeDir, { ...process.env, [DEV_TEST_MACHINE_ENV]: "1" })) {
       throw new CliUsageError(
-        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine -- start.`,
+        `A dev test machine needs its own ${BRAND.NAME} home; ${adeDir} belongs to an installed ${BRAND.NAME}. Start it with npm run dev:machine -- start.`,
       );
     }
     markDevTestMachineHome(adeDir);
@@ -30449,7 +30453,7 @@ async function runServe(
     // Lead with the recorded detail so the log says what actually broke.
     const reason = describeLastFailureForStartupLog(previousFailure);
     process.stderr.write(
-      `ADE brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${reason}\n`,
+      `${BRAND.NAME} brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${reason}\n`,
     );
     await new Promise<void>((resolve) => setTimeout(resolve, startupBackoffMs));
   }
@@ -30477,16 +30481,16 @@ async function runServe(
       // site id. Refuse; the next start runs the rest of the reset.
       const lines = hostGuard.failures.map((failure) => `  ${failure.path}: ${failure.error}`);
       throw new CliToolError(
-        `This ADE home was copied from ${hostGuard.previousInstanceId}, and ADE couldn't finish giving this box and every project its own identity, `
+        `This ${BRAND.NAME} home was copied from ${hostGuard.previousInstanceId}, and ${BRAND.NAME} couldn't finish giving this box and every project its own identity, `
           + "so the brain won't start (it would write as the machine it was copied from):\n"
           + `${lines.join("\n")}\n`
-          + "Fix the problem above (usually file permissions), then start ADE again; it picks up where it stopped.",
+          + `Fix the problem above (usually file permissions), then start ${BRAND.NAME} again; it picks up where it stopped.`,
         undefined,
       );
     }
     if (hostGuard.action === "reset") {
       process.stderr.write(
-        `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
+        `${BRAND.NAME}: this ${BRAND.NAME} home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
           + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
       );
     }
@@ -30498,10 +30502,10 @@ async function runServe(
     // vault can give each key back (fix B1, providerLoginBoot.ts).
     const { applyCloudSignIns } = await import("../../desktop/src/main/services/adeCloud/cloudSignInBoot");
     if (applyCloudSignIns() === "failed") {
-      process.stderr.write("ADE: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n");
+      process.stderr.write(`${BRAND.NAME}: couldn't write Codex's sign-in on this machine; Codex asks to sign in here instead.\n`);
     }
   }
-  const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
+  const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary(`${BRAND.NAME} brain`);
   const [
     { brainLogPath, resolveMachineAdeLayout, isSyncCapableAdeHome },
     { ProjectRegistry },
@@ -30804,7 +30808,7 @@ async function runServe(
   const syncCapableHome = isSyncCapableAdeHome(path.dirname(layout.secretsDir));
   const syncRequested = !readFlag(args, ["--no-sync"]);
   if (!syncCapableHome && syncRequested) {
-    process.stderr.write("ADE: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n");
+    process.stderr.write(`${BRAND.NAME}: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n`);
   }
   let serviceBrainPid: number | null = null;
   if (syncRequested && syncCapableHome) {
@@ -30816,7 +30820,7 @@ async function runServe(
     if (!isDevTestMachineProcess()) serviceBrainPid = serviceBrainPidBesideHandRunBrain();
   }
   if (serviceBrainPid != null) {
-    process.stderr.write(`ADE: sync disabled because the installed ADE brain (pid ${serviceBrainPid}) hosts phone sync on this computer. Pass --no-sync to silence this.\n`);
+    process.stderr.write(`${BRAND.NAME}: sync disabled because the installed ${BRAND.NAME} brain (pid ${serviceBrainPid}) hosts phone sync on this computer. Pass --no-sync to silence this.\n`);
     headlessProjectLogger.info("sync.host_left_to_service_brain", { servicePid: serviceBrainPid });
   }
   const syncEnabled = syncRequested && syncCapableHome && serviceBrainPid == null;
@@ -30911,7 +30915,7 @@ async function runServe(
       ).projectId;
     } catch (error) {
       process.stderr.write(
-        `ADE brain could not register ADE_PROJECT_ROOT for phone sync: ${
+        `${BRAND.NAME} brain could not register ADE_PROJECT_ROOT for phone sync: ${
           error instanceof Error ? error.message : String(error)
         }\n`,
       );
@@ -31242,7 +31246,7 @@ async function runServe(
         // The launch's own record says whether its size was ADE's default; 404: not a server launch.
         readLaunch: async (launchId) => {
           const base = getSharedAccountDirectoryBaseUrl();
-          if (!base || !brainAccountAuthService.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          if (!base || !brainAccountAuthService.getStatus().signedIn) throw new Error(`not signed in to a ${BRAND.NAME} account`);
           const { createCloudApiClient, CloudApiError } = await import("../../desktop/src/shared/cloudApiClient");
           const api = createCloudApiClient({ baseUrl: base, accessToken: async () => await brainAccountAuthService.getAccessToken() });
           try {
@@ -31393,7 +31397,7 @@ async function runServe(
       instanceId: cloudInstanceId,
       send: async (instanceId, report) => {
         const api = await accountCloudApi();
-        if (!api) throw new Error("not signed in to an ADE account");
+        if (!api) throw new Error(`not signed in to a ${BRAND.NAME} account`);
         // Null is a 404: a server with no activity route yet. Not stored, so
         // it is tried again (the reporter spaces the tries out and logs once).
         if (await api.reportActivity(instanceId, report) == null) {
@@ -31421,7 +31425,7 @@ async function runServe(
         readBusy: readCloudBusy,
         requestIdleSleep: async (instanceId, extras) => {
           const client = await (await getCloudBrainAccess()).client();
-          if (!client) throw new Error("no ADE Cloud access");
+          if (!client) throw new Error(`no ${BRAND.CLOUD_NAME} access`);
           await client.requestIdleSleep(instanceId, { backupReportId: extras?.backupReportId ?? null });
         },
         growDiskIfNeeded: async (stillIdle) => await cloudDiskGrower?.growIfNeeded(stillIdle) ?? false,
@@ -31442,7 +31446,7 @@ async function runServe(
         onIdleFacts: cloudActivityReporter ? (idle) => cloudActivityReporter?.noteIdle(idle) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
-          if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          if (!auth?.getStatus().signedIn) throw new Error(`not signed in to a ${BRAND.NAME} account`);
           const base = getSharedAccountDirectoryBaseUrl();
           if (!base) throw new Error("no account directory");
           const token = await auth.getAccessToken();
@@ -31615,7 +31619,7 @@ async function runServe(
     if (!record) {
       return {
         ok: true,
-        message: "Project is already removed from this ADE machine.",
+        message: `Project is already removed from this ${BRAND.NAME} machine.`,
         projectId: requestedId || null,
         rootPath: requestedRootPath || null,
       };
@@ -31654,7 +31658,7 @@ async function runServe(
     if (!record) {
       return {
         ok: false,
-        message: "That project is not on this ADE machine.",
+        message: `That project is not on this ${BRAND.NAME} machine.`,
         projectId: requestedId || null,
         rootPath: requestedRootPath || null,
       };
@@ -31744,7 +31748,7 @@ async function runServe(
       if (!record) {
         return {
           ok: false,
-          message: "That project is not registered on this ADE machine.",
+          message: `That project is not registered on this ${BRAND.NAME} machine.`,
           project,
         };
       }
@@ -32103,13 +32107,13 @@ async function runServe(
         if (!accountMachinePublisher) {
           const owner = (await readCompetingSyncHostOwnerFresh?.()) ?? null;
           const why = owner
-            ? `${owner.appName ?? "Another ADE app"} (pid ${owner.pid}) is hosting sync on this computer, so this ADE can't put it on your account.`
-            : `No ADE on this computer is hosting sync right now, so it can't be put on your account.${
+            ? `${owner.appName ?? `Another ${BRAND.NAME} app`} (pid ${owner.pid}) is hosting sync on this computer, so this ${BRAND.NAME} can't put it on your account.`
+            : `No ${BRAND.NAME} on this computer is hosting sync right now, so it can't be put on your account.${
               (startError ?? latestSyncHostStartFailure) ? ` ${startError ?? latestSyncHostStartFailure}` : ""
             }`;
           unavailable = {
             state: "sync_host_not_running",
-            reason: `${why} Repair restarts ADE's background service on this computer.`,
+            reason: `${why} Repair restarts ${BRAND.NAME}'s background service on this computer.`,
           };
           headlessProjectLogger.warn("account.machine_repair_sync_host_not_running", {
             ownerApp: owner?.appName ?? null,
@@ -32468,7 +32472,7 @@ async function runServe(
         check: async (target) => {
           // An ADE Cloud computer updates itself from the account's server.
           if (isAdeCloudComputer()) {
-            return { allowed: false, target, reason: "ADE Cloud updates itself, so its track isn't switched from here." };
+            return { allowed: false, target, reason: `${BRAND.CLOUD_NAME} updates itself, so its track isn't switched from here.` };
           }
           const { checkTrackSwitch } = await import("../../desktop/src/main/services/updates/trackSwitchGuard");
           try {
@@ -32951,7 +32955,7 @@ async function runServe(
         const cloud = (await machineAccountDomains()).cloud as Record<string, ((args?: unknown) => Promise<unknown>) | undefined>;
         const call = async (action: string, args?: unknown): Promise<CloudSignInStatus["claude"]> => {
           const run = cloud[action];
-          if (typeof run !== "function") throw new Error("ADE on this computer can't run Claude's sign-in.");
+          if (typeof run !== "function") throw new Error(`${BRAND.NAME} on this computer can't run Claude's sign-in.`);
           const status = await run(args) as CloudSignInStatus | null;
           return status?.claude ?? null;
         };
@@ -33023,7 +33027,7 @@ async function runServe(
     message: { text: string; clientSendId: string; attachments?: Array<{ path: string; type: "image" | "file" }>; compactFirst?: boolean },
   ) => {
     const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-    if (!chat) throw new Error("This ADE runtime has no chats.");
+    if (!chat) throw new Error(`This ${BRAND.NAME} runtime has no chats.`);
     await chat.sendMessage({
       sessionId,
       text: message.text,
@@ -33036,7 +33040,7 @@ async function runServe(
   // A tracked agent CLI takes a queued message at its prompt, held for a running turn.
   const typeIntoCloudCli = async (projectId: string, sessionId: string, message: { text: string; clientMessageId: string }) => {
     const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-    if (!chat) throw new Error("This ADE runtime has no chats.");
+    if (!chat) throw new Error(`This ${BRAND.NAME} runtime has no chats.`);
     const typed = await chat.typeIntoAgentCliWhenFree({
       sessionId,
       text: message.text,
@@ -33096,8 +33100,8 @@ async function runServe(
         if (!api || !machineKey) return null;
         const outcome = await laneBackup.restoreLaneBackupIfNeeded({ api, instanceId: cloudInstanceId, machineKey, laneId, worktreePath, projectRoot, logger: headlessProjectLogger });
         return outcome === "kept_newer_local_work" || outcome === "kept_branch_differs"
-          ? "This lane has other work than its saved work on ADE Cloud, so ADE left the lane as it is. Download the saved work from the lane to compare."
-          : outcome === "applied" ? "ADE put back this lane's work that wasn't on GitHub." : null;
+          ? `This lane has other work than its saved work on ${BRAND.CLOUD_NAME}, so ${BRAND.NAME} left the lane as it is. Download the saved work from the lane to compare.`
+          : outcome === "applied" ? `${BRAND.NAME} put back this lane's work that wasn't on GitHub.` : null;
       },
     });
   }
@@ -33139,7 +33143,7 @@ async function runServe(
       // Fork-continue: the chat's old computer is gone; restore it here with the same id.
       continueChat: async (projectId, args) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-        if (!chat) throw new Error("This ADE runtime has no chats.");
+        if (!chat) throw new Error(`This ${BRAND.NAME} runtime has no chats.`);
         const api = await accountCloudApi();
         if (!api) throw new Error("This computer isn't signed in to the account, so it can't read the saved chat.");
         const [{ restoreCloudChat }, { adoptRestoredCloudChat, holdRestoringCloudChat, releaseRestoringCloudChat }] = await Promise.all([
@@ -33183,7 +33187,7 @@ async function runServe(
       // failed rather than holding its computer until the server's stop limit.
       waitForChatEnd: async (projectId, sessionId) => {
         const chat = (await scopeRegistry.get(projectId)).runtime.agentChatService;
-        if (!chat) return { ok: false, error: "This ADE runtime has no chats." };
+        if (!chat) return { ok: false, error: `This ${BRAND.NAME} runtime has no chats.` };
         const ASKED_FOR_INPUT = { ok: false, error: "The agent asked for input." } as const;
         return await new Promise((resolve) => {
           let settled = false;
@@ -33646,7 +33650,7 @@ async function runServe(
       activeScope = await scopeRegistry.resolveActiveSyncHost((record) => {
         if (reportedMissingSyncProjectIds.has(record.projectId)) return;
         reportedMissingSyncProjectIds.add(record.projectId);
-        const message = `ADE brain is hosting sync without project "${record.displayName}". ${projectRegistry.projectDataMissingMessage(record, { commandHints: false })}`;
+        const message = `${BRAND.NAME} brain is hosting sync without project "${record.displayName}". ${projectRegistry.projectDataMissingMessage(record, { commandHints: false })}`;
         process.stderr.write(`${message}\n`);
         headlessProjectLogger.warn("sync.host_project_missing", {
           projectId: record.projectId,
@@ -34078,18 +34082,18 @@ async function runServe(
         const importMessage = importError instanceof Error
           ? importError.message
           : String(importError);
-        process.stderr.write(`ADE brain could not classify its sync host failure: ${importMessage}\n`);
+        process.stderr.write(`${BRAND.NAME} brain could not classify its sync host failure: ${importMessage}\n`);
         headlessProjectLogger.warn("sync.host_failure_unclassifiable", { error: importMessage });
       }
       if (conflict) {
-        syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
+        syncHostStartupFailure = new CliExecutionError(`${BRAND.NAME} brain refusing to run without mobile sync.`, {
           cause: message,
           socketPath,
           nextAction:
-            "Stop the other ADE brain that owns mobile sync, then start this build again.",
+            `Stop the other ${BRAND.NAME} brain that owns mobile sync, then start this build again.`,
         });
       } else {
-        process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+        process.stderr.write(`${BRAND.NAME} brain sync host startup loop failed: ${message}\n`);
         // The Error itself keeps its stack in the log file; `errorText` keeps the
         // sentence for the stderr mirror, which writes an Error as `{}`.
         headlessProjectLogger.error("sync.host_startup_loop_failed", {
@@ -34147,10 +34151,10 @@ async function runServe(
       if ((error as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
         await disposeServeResources();
         throw Object.assign(
-          new CliExecutionError("ADE brain socket is already in use.", {
+          new CliExecutionError(`${BRAND.NAME} brain socket is already in use.`, {
             socketPath: target,
             cause: brainSocketOwnedCause(target, "live"),
-            nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+            nextAction: `Stop the existing ${BRAND.NAME} brain or choose a different --socket path.`,
           }),
           { code: "socket_owned_by_other" as const },
         );
@@ -34361,7 +34365,7 @@ async function runServe(
     provideAccountProjectMainHandler(async (checkoutId) => {
       const publisher = accountMachinePublisher;
       if (!syncEnabled || !publisher) {
-        return { ok: false, code: "not_publishing", message: "This computer is not sending its projects to your ADE account right now." };
+        return { ok: false, code: "not_publishing", message: `This computer is not sending its projects to your ${BRAND.NAME} account right now.` };
       }
       const sync = getAccountProjectSync();
       const result = await sync.setMainCheckout(checkoutId);
@@ -34561,7 +34565,7 @@ async function runServe(
       ensureAccountMachinePublisher("sync_host_lease_held_at_boot");
     } else {
       headlessProjectLogger.info("account_publisher.start_skipped", {
-        reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
+        reason: `This brain does not hold the machine-wide sync host lease; another ${BRAND.NAME} process publishes this machine.`,
       });
     }
     // A directory refusal used to dead-end: heartbeats stopped and the machine
@@ -34748,7 +34752,7 @@ async function runServe(
     });
     const sharedHomeSentence = describeOtherBrains(otherBrains);
     if (sharedHomeSentence) {
-      process.stderr.write(`ADE: ${sharedHomeSentence}\n`);
+      process.stderr.write(`${BRAND.NAME}: ${sharedHomeSentence}\n`);
       headlessProjectLogger.warn("brain.home_shared", {
         home: layout.adeDir,
         others: otherBrains.map((other) => ({
@@ -35048,7 +35052,7 @@ async function runServe(
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
-        message: "ADE's background service could not start.",
+        message: `${BRAND.NAME}'s background service could not start.`,
         detail: details,
         socketPath: serveSocketPath,
         component: /sync host|mobile sync/i.test(details) ? "sync_host" : "brain_startup",
@@ -35287,12 +35291,12 @@ function unwrapToolResult(result: unknown): unknown {
     const structured = result.structuredContent;
     const message =
       isRecord(structured) && isRecord(structured.error)
-        ? (asString(structured.error.message) ?? "ADE tool call failed.")
-        : "ADE tool call failed.";
+        ? (asString(structured.error.message) ?? `${BRAND.NAME} tool call failed.`)
+        : `${BRAND.NAME} tool call failed.`;
     throw new CliToolError(message, structured ?? result);
   }
   if (result.ok === false && isRecord(result.error)) {
-    const message = asString(result.error.message) ?? "ADE action call failed.";
+    const message = asString(result.error.message) ?? `${BRAND.NAME} action call failed.`;
     throw new CliToolError(message, result.error);
   }
   if (Object.prototype.hasOwnProperty.call(result, "structuredContent")) {
@@ -35355,7 +35359,7 @@ function renderLaneGraph(result: unknown): string {
   const lanesRaw =
     isRecord(result) && Array.isArray(result.lanes) ? result.lanes : [];
   const lanes = lanesRaw.filter(isRecord);
-  if (lanes.length === 0) return "ADE lanes\n(no lanes)";
+  if (lanes.length === 0) return `${BRAND.NAME} lanes\n(no lanes)`;
   if (lanes.some((lane) => MACHINE_ROW_KEY in lane)) {
     // `--all-machines`: lanes on different machines have no shared graph.
     const table = withMachineColumns(["lane", "name", "branch"], lanes, (lane) => [
@@ -35363,10 +35367,10 @@ function renderLaneGraph(result: unknown): string {
       lane.name,
       lane.branchRef ?? lane.branch,
     ]);
-    return renderTable(table.headers, table.rows, "ADE lanes\n(no lanes)", { fullColumns: ["lane"] });
+    return renderTable(table.headers, table.rows, `${BRAND.NAME} lanes\n(no lanes)`, { fullColumns: ["lane"] });
   }
 
-  return ["ADE lanes", ...lanes.map((lane) => {
+  return [`${BRAND.NAME} lanes`, ...lanes.map((lane) => {
     const issues = linearIssueIdentifiers(lane);
     return `${asString(lane.name) ?? asString(lane.id) ?? "(unknown)"} (id: ${asString(lane.id) ?? ""}) [${asString(lane.branchRef) ?? ""}]${issues.length > 0 ? ` {${issues.join(", ")}}` : ""}`;
   })].join("\n");
@@ -35725,7 +35729,7 @@ export function formatUsageStats(value: unknown): string {
 /** `ade usage stats --by chat|lane|account --text`. */
 export function formatUsageCostBreakdown(value: unknown): string {
   const breakdown = isRecord(value) ? value : {};
-  if (breakdown.available === false) return "This host keeps no per-turn ledger, so ADE chat spend is not available.";
+  if (breakdown.available === false) return `This host keeps no per-turn ledger, so ${BRAND.NAME} chat spend is not available.`;
   const rows = Array.isArray(breakdown.rows) ? breakdown.rows.filter(isRecord) : [];
   const totals = isRecord(breakdown.totals) ? breakdown.totals : {};
   const by = asString(breakdown.by) ?? "chat";
@@ -35740,16 +35744,16 @@ export function formatUsageCostBreakdown(value: unknown): string {
       tokensText(row.totalTokens),
       String(row.turns ?? 0),
     ]),
-    "No ADE chat turns in this range.",
+    `No ${BRAND.NAME} chat turns in this range.`,
   );
   const other = isRecord(breakdown.other) ? breakdown.other : null;
   return [
-    `ADE chat spend by ${by} · ${usdText(totals.costUsd)} API-equivalent · billed ${usdText(totals.billedUsd)} · plan value ${usdText(totals.planValueUsd)}`,
+    `${BRAND.NAME} chat spend by ${by} · ${usdText(totals.costUsd)} API-equivalent · billed ${usdText(totals.billedUsd)} · plan value ${usdText(totals.planValueUsd)}`,
     "",
     table,
     ...(other ? [`Other (${String(other.count)}): ${usdText(other.costUsd)}`] : []),
     "",
-    "From ADE's per-turn ledger: chats ADE ran on this machine, kept for three months.",
+    `From ${BRAND.NAME}'s per-turn ledger: chats ${BRAND.NAME} ran on this machine, kept for three months.`,
   ].join("\n");
 }
 
@@ -35760,7 +35764,7 @@ export function formatUsageModelDetail(value: unknown): string {
   const hit = typeof detail.cacheHitRate === "number" ? `${Math.round(detail.cacheHitRate * 100)}%` : "-";
   const perM = typeof detail.costPerMillionUsd === "number" ? `$${detail.costPerMillionUsd.toFixed(2)}/1M` : "-";
   const priceText = price.unpriced === true
-    ? "unpriced (set one with ade usage prices set)"
+    ? "unpriced (set one with daex usage prices set)"
     : `${asString(price.source) ?? "list"} · $${Number(price.input) || 0} in / $${Number(price.output) || 0} out per 1M`;
   const daily = Array.isArray(detail.daily) ? detail.daily.filter(isRecord) : [];
   return [
@@ -35853,7 +35857,7 @@ export function formatUsageLimits(value: unknown): string {
     : undefined;
   const chatAccountName = chatRow ? providerAccountName({ account: chatRow }) : null;
   const lines = [
-    `ADE usage limits${readAt && !merged ? ` · read ${relativeTime(readAt)}` : ""}`,
+    `${BRAND.NAME} usage limits${readAt && !merged ? ` · read ${relativeTime(readAt)}` : ""}`,
     ...(chat && chatAccountName
       ? [chatAccountName === PROVIDER_ACCOUNT_NOT_SIGNED_IN
         ? `this chat runs on a ${usageProviderTextLabel(chat.provider)} account that is not signed in`
@@ -35873,7 +35877,7 @@ export function formatUsageLimits(value: unknown): string {
   const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
   if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
   if (accounts.some((account) => asString(account.instanceId))) {
-    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --model <id> --instance <email>");
+    lines.push("", "Start a chat on an account: daex chat create --provider <provider> --model <id> --instance <email>");
   }
   return lines.join("\n");
 }
@@ -36025,7 +36029,7 @@ export function formatUsageSnapshot(value: unknown): string {
     });
 
   const sections = [
-    renderKeyValues("ADE usage quota", [
+    renderKeyValues(`${BRAND.NAME} usage quota`, [
       ["updated", snapshot.lastPolledAt],
       ["costs updated", snapshot.costsLastPolledAt],
       [
@@ -36311,7 +36315,7 @@ function formatModelsCatalog(value: unknown): string {
     renderTable(
       ["harness", "model", "billing", "registry variant", "index", "evals", "modalities", "tok/s", "$/M in/out", "efforts (*default)", "data"],
       rows,
-      "No runnable models. Sign in to a provider, or check `ade router refresh --text`.",
+      "No runnable models. Sign in to a provider, or check `daex router refresh --text`.",
       { fullColumns: ["model", "registry variant"] },
     ),
     "",
@@ -36395,7 +36399,7 @@ function formatModelsSheet(value: unknown): string {
     renderTable(
       ["family", ...kinds.map((kind) => short[kind] ?? kind), "speed", "cost", "you run it via"],
       rows,
-      "No runnable models. Sign in to a provider, or check `ade router refresh --text`.",
+      "No runnable models. Sign in to a provider, or check `daex router refresh --text`.",
       { fullColumns: ["family"] },
     ),
     "",
@@ -36574,7 +36578,7 @@ function formatSyncStatus(value: unknown): string {
     return [`transfer blocker ${index + 1}`, detail ? `${label}: ${detail}` : label];
   });
 
-  return renderKeyValues("ADE sync status", [
+  return renderKeyValues(`${BRAND.NAME} sync status`, [
     ["mode", snapshot.mode],
     ["role", snapshot.role],
     ["runtime role", snapshot.runtimeRole],
@@ -36594,7 +36598,7 @@ function formatSyncStatus(value: unknown): string {
     ["directory success", lastSuccess],
     ["this computer", refusal ? thisMachineRefusalState(refusal) : null],
     ["auto repair stopped", recoveryGaveUpAt],
-    ["reconnect with", refusal ? "ade machines reconnect" : null],
+    ["reconnect with", refusal ? "daex machines reconnect" : null],
     ["transfer readiness", transferState],
     ...transferRows,
     ["pairing code", describeSyncPairingCode(snapshot)],
@@ -36616,10 +36620,10 @@ function describeSyncPairingCode(snapshot: JsonObject): string | null {
   const pin = asString(snapshot.pairingPin);
   if (pin) return pin;
   if (snapshot.pairingPinConfigured === true) {
-    return "set — hidden since the brain restarted (ade brain pin generate for a new one)";
+    return "set — hidden since the brain restarted (daex brain pin generate for a new one)";
   }
   if (snapshot.pairingConnectInfo == null) return null;
-  return "not set — run: ade brain pin generate";
+  return "not set — run: daex brain pin generate";
 }
 
 /**
@@ -36630,16 +36634,16 @@ function describeSyncPairingCode(snapshot: JsonObject): string | null {
  * of the first two dozen keys of a snapshot.
  */
 function formatSyncPin(value: unknown): string {
-  const noCode = "No pairing code is set — run: ade brain pin generate";
+  const noCode = "No pairing code is set — run: daex brain pin generate";
   if (!isRecord(value)) return noCode;
   const pin = asString(value.pin) ?? asString(value.pairingPin);
-  if (pin) return `Pairing code ${pin}\n\nEnter it on the phone or web client. Show the link too: ade sync web`;
+  if (pin) return `Pairing code ${pin}\n\nEnter it on the phone or web client. Show the link too: daex sync web`;
   if (value.pairingPinConfigured === true) {
-    return "A pairing code is set, but ADE cannot show it — only the run that set it knows the digits."
-      + "\n\nUse the code you already have, or set a new one: ade brain pin generate";
+    return `A pairing code is set, but ${BRAND.NAME} cannot show it — only the run that set it knows the digits.`
+      + "\n\nUse the code you already have, or set a new one: daex brain pin generate";
   }
   if ("pairingConnectInfo" in value && value.pairingConnectInfo == null) {
-    return "This machine is not hosting pairing right now — check: ade sync status --text";
+    return "This machine is not hosting pairing right now — check: daex sync status --text";
   }
   return noCode;
 }
@@ -36655,7 +36659,7 @@ function formatSyncDevices(value: unknown): string {
       asString(device.platform) ?? "",
       asString(device.lastSeenAt) ?? "",
     ]),
-    "No paired devices yet — run: ade brain pin generate",
+    "No paired devices yet — run: daex brain pin generate",
   );
 }
 
@@ -36664,7 +36668,7 @@ function formatSyncWebPairing(value: unknown): string {
     ? value
     : buildSyncWebPairingOutput(value);
   if (!info.pairingUrl) {
-    return "No machine addresses are published yet — is the sync host running? (ade sync status)";
+    return "No machine addresses are published yet — is the sync host running? (daex sync status)";
   }
   const hasVisibleCode = info.pinConfigured && Boolean(info.code);
   let codeLines: string[];
@@ -36676,15 +36680,15 @@ function formatSyncWebPairing(value: unknown): string {
     codeLines = [
       "  Code   (PIN configured but hidden after runtime restart)",
       "  Known  Use the existing code if you already know it.",
-      "  New    ade brain pin generate",
-      "  Set    ade brain pin set <6-digit-code>",
+      "  New    daex brain pin generate",
+      "  Set    daex brain pin set <6-digit-code>",
     ];
     nextStep =
       "Open the link and enter the existing code if you know it. " +
-      "Generate or set a new code only if you need ADE to display or copy one.";
+      `Generate or set a new code only if you need ${BRAND.NAME} to display or copy one.`;
   } else {
-    codeLines = ["  Code   (no PIN set — run: ade brain pin generate)"];
-    nextStep = "Generate or set a new code on this machine, then run ade sync web again.";
+    codeLines = ["  Code   (no PIN set — run: daex brain pin generate)"];
+    nextStep = "Generate or set a new code on this machine, then run daex sync web again.";
   }
   return [
     "Web client pairing",
@@ -36693,7 +36697,7 @@ function formatSyncWebPairing(value: unknown): string {
     ...codeLines,
     "",
     nextStep,
-    "Off your LAN or tailnet? Sign in to ADE so the browser can reach this machine through the relay.",
+    `Off your LAN or tailnet? Sign in to ${BRAND.NAME} so the browser can reach this machine through the relay.`,
   ].join("\n");
 }
 
@@ -36705,7 +36709,7 @@ function formatAutomationRunDetail(value: unknown): string {
     : Array.isArray(run.actions)
       ? run.actions
       : [];
-  const header = renderKeyValues("ADE automation run", [
+  const header = renderKeyValues(`${BRAND.NAME} automation run`, [
     ["id", run.id],
     ["rule", run.automationId ?? run.ruleId],
     ["status", run.status],
@@ -36749,7 +36753,7 @@ function formatAutomationIngress(value: unknown): string {
   const tailscale = isRecord(gateway.tailscale) ? gateway.tailscale : {};
   const localWebhook = isRecord(result.localWebhook) ? result.localWebhook : null;
   const githubRelay = isRecord(result.githubRelay) ? result.githubRelay : null;
-  const gatewayLines = renderKeyValues("ADE automation ingress", [
+  const gatewayLines = renderKeyValues(`${BRAND.NAME} automation ingress`, [
     ["gateway", gateway.ready === true ? "online" : asString(gateway.status) ?? "not ready"],
     ["publicUrl", gateway.publicUrl],
     ["localUrl", gateway.localUrl],
@@ -36808,7 +36812,7 @@ function formatDeliveryStatus(value: unknown): string {
 function formatAutomationLinearIngress(value: unknown): string {
   const result = unwrapActionEnvelope(value);
   if (!isRecord(result)) return JSON.stringify(result, null, 2);
-  return renderKeyValues("ADE Linear ingress", [
+  return renderKeyValues(`${BRAND.NAME} Linear ingress`, [
     ["state", result.state],
     ["appManaged", result.appManaged],
     ["webhookId", result.webhookId],
@@ -36845,17 +36849,17 @@ function formatWebhookSetup(value: unknown): string {
       lines.push(`Signature: required · ${name} is saved in this project.`);
     } else if (signature.secretSource === "sender") {
       lines.push(`Signature: required · paste the service's signing secret into project secret ${name}`);
-      lines.push(`  (from a chat: ade secrets request ${name} --reason "…"; or the automation's webhook panel).`);
+      lines.push(`  (from a chat: daex secrets request ${name} --reason "…"; or the automation's webhook panel).`);
     } else {
       lines.push(`Signature: required · save a secret as ${name}, then paste the same value into the service`);
-      lines.push(`  (from a chat: ade secrets request ${name} --reason "…" --generate).`);
+      lines.push(`  (from a chat: daex secrets request ${name} --reason "…" --generate).`);
     }
   } else {
     lines.push("Signature: not required (anyone with the URL can start a run).");
   }
   const filters = Array.isArray(setup.filters) ? setup.filters.map(String) : [];
   lines.push(filters.length ? `Only runs when: ${filters.join(" and ")}` : "Runs on every request.");
-  lines.push("", `Check it: ade automations webhook test ${textOr(result.hookId)} · then ade automations webhook deliveries ${textOr(result.hookId)}`);
+  lines.push("", `Check it: daex automations webhook test ${textOr(result.hookId)} · then daex automations webhook deliveries ${textOr(result.hookId)}`);
   return lines.join("\n");
 }
 
@@ -36885,7 +36889,7 @@ function formatWebhookList(value: unknown): string {
 function formatWebhookEndpoint(value: unknown): string {
   const result = unwrapActionEnvelope(value);
   if (!isRecord(result)) return JSON.stringify(result, null, 2);
-  return renderKeyValues("ADE webhook URL", [
+  return renderKeyValues(`${BRAND.NAME} webhook URL`, [
     ["webhook", result.hookId],
     ["url", result.url ?? "(none on this machine)"],
     ["route", result.route],
@@ -36912,7 +36916,7 @@ function formatWebhookDelivery(value: unknown): string {
   if (!isRecord(result)) return "(that delivery is no longer in the log)";
   const headers = isRecord(result.headers) ? Object.entries(result.headers).map(([name, header]) => `  ${name}: ${String(header)}`) : [];
   return [
-    renderKeyValues("ADE webhook delivery", [
+    renderKeyValues(`${BRAND.NAME} webhook delivery`, [
       ["id", result.id],
       ["outcome", result.outcome],
       ["why", result.detail],
@@ -36940,7 +36944,7 @@ function formatWebhookTest(value: unknown): string {
   if (!isRecord(result)) return JSON.stringify(result, null, 2);
   const ok = result.ok === true;
   return `${ok ? "Delivered" : "Not delivered"} through ${textOr(result.route, "?")} (HTTP ${String(result.status)}). `
-    + (ok ? "See it with: ade automations webhook deliveries <wh-id>" : textOr(result.response));
+    + (ok ? "See it with: daex automations webhook deliveries <wh-id>" : textOr(result.response));
 }
 
 function formatAutomationCleanups(value: unknown): string {
@@ -37050,7 +37054,7 @@ function formatArchiveSummary(value: unknown): string {
     });
     return parts.length > 0 ? parts.join(", ") : "none";
   };
-  return renderKeyValues("ADE archive", [
+  return renderKeyValues(`${BRAND.NAME} archive`, [
     ["archived", `${Number(value.total) || 0} (${perKind(byKind)})`],
     [`${Number(value.olderThanDays) || 0}+ days old`, `${Number(value.staleTotal) || 0} (${perKind(staleByKind)})`],
     ["old items on disk", typeof value.staleBytes === "number" ? formatBytes(value.staleBytes) : "not measured"],
@@ -37076,9 +37080,9 @@ function formatStorageSnapshot(value: unknown): string {
   const volumeSummary = freeBytes != null && totalBytes != null
     ? `${formatBytes(freeBytes)} free of ${formatBytes(totalBytes)}`
     : null;
-  const header = renderKeyValues("ADE storage", [
+  const header = renderKeyValues(`${BRAND.NAME} storage`, [
     ["project", value.projectRoot],
-    ["ade data", formatBytes(value.totalAdeBytes)],
+    ["daex data", formatBytes(value.totalAdeBytes)],
     ["volume", volumeSummary],
     ["scanned", value.generatedAt],
     ["truncated", value.truncated === true ? "yes (scan incomplete)" : undefined],
@@ -37106,7 +37110,7 @@ function formatStorageSnapshot(value: unknown): string {
 
 function formatStorageCompression(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
-  return renderKeyValues("ADE storage compression", [
+  return renderKeyValues(`${BRAND.NAME} storage compression`, [
     ["files compressed", value.filesCompressed],
     ["reclaimed", formatBytes(value.savedBytes)],
   ]);
@@ -37114,7 +37118,7 @@ function formatStorageCompression(value: unknown): string {
 
 function formatStorageMaintenance(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
-  const header = renderKeyValues("ADE storage maintenance", [
+  const header = renderKeyValues(`${BRAND.NAME} storage maintenance`, [
     ["trigger", value.trigger],
     ["reclaimed", formatBytes(value.reclaimedBytes)],
     ["db size", typeof value.dbSizeBytes === "number" ? formatBytes(value.dbSizeBytes) : undefined],
@@ -37188,7 +37192,7 @@ function formatUpdateStatus(value: unknown): string {
     // short enough that the retry hint survives a long version string.
     ? `${asString(lastInstallFailed.targetVersion) ?? "unknown"} did not land`
       + `${failedAttempt != null ? ` · attempt ${failedAttempt}` : ""}`
-      + " · relaunched on old version — retry: ade update install"
+      + " · relaunched on old version — retry: daex update install"
     : null;
 
   const parkedLine = parked
@@ -37217,7 +37221,7 @@ function formatUpdateStatus(value: unknown): string {
     ? `${asString(checkFailure.kind) ?? "unknown"}${checkFailureAt ? ` at ${checkFailureAt}` : ""}`
     : null;
 
-  return renderKeyValues("ADE update", [
+  return renderKeyValues(`${BRAND.NAME} update`, [
     ["status", value.status],
     ["current version", value.currentVersion],
     ["latest known", value.latestKnownVersion],
@@ -37375,7 +37379,7 @@ function describeActionFromCatalog(catalog: unknown, domain: string, action: str
     || (asString(candidate.domain) === domain && asString(candidate.action) === action));
   if (!entry) {
     throw new CliUsageError(
-      `${domain}.${action} is not an action this caller can run here. List them with: ade actions list --domain ${domain} --text`,
+      `${domain}.${action} is not an action this caller can run here. List them with: daex actions list --domain ${domain} --text`,
     );
   }
   const input = asString(entry.input);
@@ -37405,7 +37409,7 @@ function formatActionDescription(value: unknown): string {
     `  input:       ${asString(record.input) ?? "(not documented)"}`,
   ];
   const example = asString(record.example);
-  lines.push(`  example:     ${example ?? `ade actions run ${name} --input-json '{"key":"value"}'`}`);
+  lines.push(`  example:     ${example ?? `daex actions run ${name} --input-json '{"key":"value"}'`}`);
   const note = asString(record.note);
   if (note) lines.push("", `  ${note}`);
   return lines.join("\n");
@@ -37415,7 +37419,7 @@ function formatActionsList(value: unknown): string {
   const actionResult =
     isRecord(value) && isRecord(value.actions) ? value.actions : value;
   const actions = firstArray(actionResult, ["actions"]);
-  if (actions.length === 0) return "ADE actions\n(no actions)";
+  if (actions.length === 0) return `${BRAND.NAME} actions\n(no actions)`;
   const byDomain = new Map<string, JsonObject[]>();
   for (const action of actions) {
     const name = asString(action.name);
@@ -37430,12 +37434,12 @@ function formatActionsList(value: unknown): string {
   const personalOnly = actions.every((action) => asString(action.name)?.startsWith("personalChats."));
   const lines = personalOnly
     ? [
-        "ADE personal chat actions",
-        'Use: ade chat action --personal <action> --input-json \'{"key":"value"}\'',
+        `${BRAND.NAME} personal chat actions`,
+        'Use: daex chat action --personal <action> --input-json \'{"key":"value"}\'',
       ]
     : [
-        "ADE actions",
-        'Use: ade actions run <domain.action> --input-json \'{"key":"value"}\'',
+        `${BRAND.NAME} actions`,
+        'Use: daex actions run <domain.action> --input-json \'{"key":"value"}\'',
         'For multi-parameter methods: --args-list-json \'["first",{"second":true}]\'',
       ];
   for (const [domain, list] of [...byDomain.entries()].sort(([left], [right]) =>
@@ -37466,7 +37470,7 @@ function formatLaneDetail(value: unknown): string {
   const root = isRecord(value) ? value : {};
   const lane = firstRecord(value, ["lane"]) ?? (isRecord(value) ? value : {});
   const linearLabels = linearIssueLabels(lane);
-  return renderKeyValues("ADE lane", [
+  return renderKeyValues(`${BRAND.NAME} lane`, [
     ["id", lane.id],
     ["name", lane.name],
     ["branch", lane.branchRef ?? lane.branch],
@@ -37503,21 +37507,21 @@ function formatPrList(value: unknown): string {
       pr.headBranch ?? pr.headRefName ?? pr.branchRef ?? pr.branch,
       pr.title,
     ]),
-    "ADE pull requests\n(no PRs)",
+    `${BRAND.NAME} pull requests\n(no PRs)`,
   );
 }
 
 function formatPrCreate(value: unknown): string {
   const { pr, githubUrl, adeUrl } = getPrCreateLinks(value);
   const prNumber = positiveInteger(pr.githubPrNumber ?? pr.prNumber ?? pr.number);
-  return renderKeyValues("ADE pull request created", [
+  return renderKeyValues(`${BRAND.NAME} pull request created`, [
     ["id", pr.id],
     ["number", prNumber ? `#${prNumber}` : null],
     ["title", pr.title],
     ["state", pr.state ?? pr.status],
     ["lane", pr.laneId],
     ["GitHub URL", githubUrl],
-    ["ADE URL", adeUrl],
+    [`${BRAND.NAME} URL`, adeUrl],
   ]) + formatPrTextNotes(value, prNumber ? String(prNumber) : null);
 }
 
@@ -37529,7 +37533,7 @@ function formatPrTextNotes(value: unknown, prRef: string | null): string {
   const record = isRecord(value) ? value : {};
   const lines: string[] = [];
   const proof = isRecord(record.proofInText) ? record.proofInText : null;
-  const uploadCommand = `ade proof publish --pr ${prRef ?? "<number or URL>"} --in-body`;
+  const uploadCommand = `daex proof publish --pr ${prRef ?? "<number or URL>"} --in-body`;
   if (proof) {
     const posted = firstArray(proof, ["posted"]);
     lines.push(`proof: ${posted.length} item${posted.length === 1 ? "" : "s"} uploaded into the PR text`);
@@ -37553,7 +37557,7 @@ function formatPrTextNotes(value: unknown, prRef: string | null): string {
       "",
       "For the reader (the PR is made; these are optional):",
       ...hints.map((hint) => `  - ${hint}`),
-      `  Update the text: ade prs body ${prRef ?? "<pr>"} --body-file <file>`,
+      `  Update the text: daex prs body ${prRef ?? "<pr>"} --body-file <file>`,
     );
   }
   return lines.length ? `\n${lines.join("\n")}` : "";
@@ -37596,10 +37600,10 @@ function formatPrChecks(value: unknown): string {
   const summary = isRecord(value) ? value.summary : null;
   const verdict = formatPrChecksVerdict(value);
   const header = verdict
-    ? `ADE PR checks - ${verdict}`
+    ? `${BRAND.NAME} PR checks - ${verdict}`
     : summary
-    ? `ADE PR checks - ${cell(summary, 80)}`
-    : "ADE PR checks";
+    ? `${BRAND.NAME} PR checks - ${cell(summary, 80)}`
+    : `${BRAND.NAME} PR checks`;
   return `${header}\n${renderTable(
     ["status", "name", "details"],
     checks.map((check) => [
@@ -37614,7 +37618,7 @@ function formatPrChecks(value: unknown): string {
 function formatPrComments(value: unknown): string {
   const threads = firstArray(value, ["reviewThreads", "threads"]);
   const comments = firstArray(value, ["comments", "issueComments"]);
-  const lines = ["ADE PR comments"];
+  const lines = [`${BRAND.NAME} PR comments`];
   if (threads.length > 0) {
     lines.push(
       "",
@@ -37667,7 +37671,7 @@ function formatFileTree(value: unknown): string {
       entry.path ?? entry.name,
       entry.sizeBytes ?? entry.size,
     ]),
-    "ADE files\n(no entries)",
+    `${BRAND.NAME} files\n(no entries)`,
   );
 }
 
@@ -37702,7 +37706,7 @@ function formatFilesSearch(value: unknown): string {
         match.preview ?? match.text ?? match.match,
       ];
     }),
-    "ADE file search\n(no matches)",
+    `${BRAND.NAME} file search\n(no matches)`,
   );
 }
 
@@ -37716,7 +37720,7 @@ function formatDiffSummary(value: unknown): string {
       file.additions ?? file.added ?? "",
       file.deletions ?? file.deleted ?? "",
     ]),
-    "ADE diff\n(no changed files)",
+    `${BRAND.NAME} diff\n(no changed files)`,
     // Paths are what the next command takes; a shortened one is a wrong one.
     { fullColumns: ["file"] },
   );
@@ -37755,11 +37759,11 @@ function formatSearchResults(value: unknown): string {
       .trimEnd();
   const lines = results.length > 0
     ? [
-        "ADE search",
+        `${BRAND.NAME} search`,
         renderRow("KIND", "PROJECT", "TITLE", "SNIPPET", "ID"),
         ...rows.map((row) => renderRow(row.kind, row.project, row.title, row.snippet, row.id)),
       ]
-    : ["ADE search", "(no results)"];
+    : [`${BRAND.NAME} search`, "(no results)"];
   const totalByKind = isRecord(record.totalByKind) ? record.totalByKind : {};
   const breakdown = Object.entries(totalByKind)
     .filter(([, count]) => typeof count === "number" && count > 0)
@@ -37790,7 +37794,7 @@ function formatSearchResults(value: unknown): string {
 function formatSearchStatus(value: unknown): string {
   const record = isRecord(value) ? value : {};
   if (record.docCount === undefined && record.started !== undefined) {
-    return renderKeyValues("ADE search index", [
+    return renderKeyValues(`${BRAND.NAME} search index`, [
       ["rebuild started", record.started],
     ]);
   }
@@ -37799,7 +37803,7 @@ function formatSearchStatus(value: unknown): string {
     .filter(([, count]) => typeof count === "number" && count > 0)
     .map(([kind, count]) => `${kind} ${count}`)
     .join(", ");
-  return renderKeyValues("ADE search index", [
+  return renderKeyValues(`${BRAND.NAME} search index`, [
     ["ready", record.ready],
     ["docs", record.docCount],
     ["by kind", kindLine],
@@ -37813,7 +37817,7 @@ function formatSearchStatus(value: unknown): string {
 
 function formatExternalSessions(value: unknown): string {
   if (isRecord(value) && (value.kind === "cli" || value.kind === "chat")) {
-    return renderKeyValues("ADE external session import", [
+    return renderKeyValues(`${BRAND.NAME} external session import`, [
       ["kind", value.kind],
       ["session", value.sessionId ?? value.chatSessionId],
       ["pty", value.ptyId],
@@ -37829,7 +37833,7 @@ function formatExternalSessions(value: unknown): string {
   ) {
     const events = Array.isArray(value.events) ? value.events.length : 0;
     const messages = Array.isArray(value.messages) ? value.messages.length : 0;
-    return renderKeyValues("ADE external session detail", [
+    return renderKeyValues(`${BRAND.NAME} external session detail`, [
       ["provider", value.provider],
       ["session", value.id],
       ["source", value.sourcePath],
@@ -37850,7 +37854,7 @@ function formatExternalSessions(value: unknown): string {
       session.alreadyImported ? "imported" : session.possiblyActive ? "active" : "",
       session.title ?? session.preview,
     ]),
-    "ADE external sessions\n(no sessions)",
+    `${BRAND.NAME} external sessions\n(no sessions)`,
     { fullColumns: ["id"] },
   );
 }
@@ -37952,7 +37956,7 @@ export function formatChatStatus(value: unknown, nowMs = Date.now()): string {
   // too old to answer `chat.getSessionSummary` simply has neither.
   const record = isRecord(value) ? value : null;
   if (!record || typeof record.sessionId !== "string" || typeof record.phase !== "string") {
-    return "ADE chat status\n(no session)";
+    return `${BRAND.NAME} chat status\n(no session)`;
   }
   const resumeRow = formatChatUsageLimitResume(
     record.usageLimitResume,
@@ -37981,7 +37985,7 @@ function formatCliProcessEndRow(value: unknown): string | null {
     ? "stopped"
     : status === "failed" || (exitCode != null && exitCode !== 0)
       ? "exited with an error"
-      : status === "detached" ? "detached from this ADE" : "exited";
+      : status === "detached" ? `detached from this ${BRAND.NAME}` : "exited";
   return chatTurnStatusRow("process", `${label}${exitCode != null ? ` (exit ${exitCode})` : ""}`);
 }
 
@@ -38013,7 +38017,7 @@ export function formatChatSwitchAccount(value: unknown): string {
   const reason = asString(record?.message)
     ?? asString(record?.reason)
     ?? error
-    ?? "ADE could not switch this chat's account.";
+    ?? `${BRAND.NAME} could not switch this chat's account.`;
   return reason.replace(/\s+/g, " ").trim();
 }
 
@@ -38044,7 +38048,7 @@ function formatChatList(value: unknown): string {
       session.laneId,
       session.title,
     ]);
-    return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session"] });
+    return renderTable(table.headers, table.rows, `${BRAND.NAME} chats\n(no sessions)`, { fullColumns: ["session"] });
   }
   // A tracked CLI child reads its terminal status (and exit code) in place of
   // a chat's; its parent column is what an agent polling its children needs.
@@ -38064,7 +38068,7 @@ function formatChatList(value: unknown): string {
       ];
     },
   );
-  return renderTable(table.headers, table.rows, "ADE chats\n(no sessions)", { fullColumns: ["session", "parent"] });
+  return renderTable(table.headers, table.rows, `${BRAND.NAME} chats\n(no sessions)`, { fullColumns: ["session", "parent"] });
 }
 
 function formatChatSummary(value: unknown): string {
@@ -38075,7 +38079,7 @@ function formatChatSummary(value: unknown): string {
   const activityLabel = rawActivity
     ? `${rawActivity.slice(0, 1).toUpperCase()}${rawActivity.slice(1)}`
     : null;
-  return renderKeyValues("ADE chat session", [
+  return renderKeyValues(`${BRAND.NAME} chat session`, [
     ["session", record.sessionId],
     ["title", record.title],
     ["provider", record.provider],
@@ -38152,7 +38156,7 @@ function formatChatModels(value: unknown): string {
       model.displayName,
       asString(model.family),
     ]),
-    "ADE chat models\n(no models)",
+    `${BRAND.NAME} chat models\n(no models)`,
     { fullColumns: ["MODEL ID"] },
   );
 }
@@ -38178,7 +38182,7 @@ function formatSessionLifecycle(value: unknown): string {
   const wakeLabel = snoozed ? snoozeWakeLabel(snoozedUntil, now) : null;
   const indefinite = isIndefiniteSnooze(snoozedUntil, now);
 
-  return renderKeyValues("ADE session lifecycle", [
+  return renderKeyValues(`${BRAND.NAME} session lifecycle`, [
     ["session", record.sessionId ?? record.id],
     ["title", record.title],
     ["lane", record.laneId],
@@ -38315,7 +38319,7 @@ function formatLaneDrift(value: unknown): string {
   const lane = firstRecord(record, ["lane"]);
   const resolution = asString(record.resolution);
   if (resolution) {
-    return renderKeyValues("ADE lane branch drift resolved", [
+    return renderKeyValues(`${BRAND.NAME} lane branch drift resolved`, [
       ["lane", lane?.id ?? record.laneId],
       ["resolution", resolution],
       ["previous branch", record.previousBranchRef],
@@ -38325,12 +38329,12 @@ function formatLaneDrift(value: unknown): string {
   }
   const headBranchRef = asString(record.headBranchRef);
   if (!headBranchRef) return "No branch drift: this lane is on its recorded branch.";
-  return renderKeyValues("ADE lane branch drift", [
+  return renderKeyValues(`${BRAND.NAME} lane branch drift`, [
     ["expected branch", record.expectedBranchRef],
     ["head branch", headBranchRef],
     [
       "resolve with",
-      "ade lane drift resolve --lane <id> --switch-back | --keep-head",
+      "daex lane drift resolve --lane <id> --switch-back | --keep-head",
     ],
   ]);
 }
@@ -38363,7 +38367,7 @@ function formatChatRead(value: unknown): string {
     rows.push(message);
   }
   rows.push(...timed.slice(next), ...failures.filter((failure) => !failure.timestamp));
-  const lines = ["ADE chat transcript"];
+  const lines = [`${BRAND.NAME} chat transcript`];
   if (!entries.length) lines.push("(no messages in this physical page)");
   for (const row of rows) {
     lines.push("");
@@ -38387,7 +38391,7 @@ function formatTestsRuns(value: unknown): string {
       run.suiteId ?? run.suiteName,
       run.durationMs,
     ]),
-    "ADE test runs\n(no runs)",
+    `${BRAND.NAME} test runs\n(no runs)`,
   );
 }
 
@@ -38469,9 +38473,9 @@ function formatProofReview(value: unknown): string {
   lines.push(...findings.map((finding) => `fix   ${finding}`));
   const otherProof = Array.isArray(record.otherProof) ? record.otherProof as Array<Record<string, unknown>> : [];
   if (otherProof.length) {
-    lines.push(`also  ${otherProof.map((entry) => `${String(entry.id)} (${String(entry.kind)})`).join(", ")}: \`ade proof review <id>\``);
+    lines.push(`also  ${otherProof.map((entry) => `${String(entry.id)} (${String(entry.kind)})`).join(", ")}: \`daex proof review <id>\``);
   }
-  lines.push("look  Open the image. Only the subject on screen (no banners, toasts, dev overlays, other windows)? Subject fills the frame (no big empty areas) and reads at phone size? Captions short? No secrets? If not: fix the stage, record again, `ade proof rm` this one.");
+  lines.push("look  Open the image. Only the subject on screen (no banners, toasts, dev overlays, other windows)? Subject fills the frame (no big empty areas) and reads at phone size? Captions short? No secrets? If not: fix the stage, record again, `daex proof rm` this one.");
   return lines.join("\n");
 }
 
@@ -38540,7 +38544,7 @@ function formatProofPublished(value: unknown): string {
   return [
     `${record.inBody === true ? "Put" : "Posted"} ${posted.length} proof item${posted.length === 1 ? "" : "s"} ${record.inBody === true ? "in the text of" : "to"} ${asString(record.prUrl) ?? "the PR"}`,
     ...(asString(record.commentUrl) ? [`comment: ${asString(record.commentUrl)}`] : []),
-    ...(typeof record.replaced === "number" ? [`replaced: ${record.replaced} earlier ADE proof comment(s) deleted`] : []),
+    ...(typeof record.replaced === "number" ? [`replaced: ${record.replaced} earlier ${BRAND.NAME} proof comment(s) deleted`] : []),
     ...posted.map((entry) => `  posted  ${asString(entry.id)}  ${asString(entry.caption)}`),
     ...skipped.map((entry) => `  skipped ${asString(entry.id)}  ${asString(entry.reason)}`),
     ...warnings.map((warning) => `warning: ${warning}`),
@@ -38566,7 +38570,7 @@ function formatProofFiled(value: unknown): string {
       { fullColumns: ["artifact"] },
     ),
     record.verified === true
-      ? "verified: re-read through ade proof list"
+      ? "verified: re-read through daex proof list"
       : "verified: skipped (--no-verify)",
     ...warnings.map((warning) => `warning: ${warning}`),
     ...(asString(record.capturedFrom) ? [`captured from: ${asString(record.capturedFrom)}`] : []),
@@ -38601,7 +38605,7 @@ function formatIosSimStatus(value: unknown): string {
     const laneState = activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : "";
     laneDeviceText = `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${laneState}`;
   } else if (status.supported !== false) {
-    laneDeviceText = "none yet (ade apple start gives this lane its own)";
+    laneDeviceText = "none yet (daex apple start gives this lane its own)";
   }
   // The device half and the live view, because `status` is the one command an
   // agent is told to poll. Leaving them to `--json` only meant a reader saw no
@@ -38613,7 +38617,7 @@ function formatIosSimStatus(value: unknown): string {
     stream.bitrateKbps == null ? null : `${String(stream.bitrateKbps)} kbit/s`,
   ].filter((part): part is string => part != null).join(", ");
   return [
-    renderKeyValues("ADE iOS simulator", [
+    renderKeyValues(`${BRAND.NAME} iOS simulator`, [
       ["supported", status.supported],
       ["platform", status.platform],
       ["lane device", laneDeviceText],
@@ -38648,7 +38652,7 @@ function formatIosSimStatus(value: unknown): string {
     ),
     // No simulator here (Windows, Linux): name the one that runs anywhere.
     ...(status.supported === false
-      ? ["", "No simulator on this machine. The ADE Cloud iPhone runs from any machine: ade devices use ios@cloud (or one command with --machine cloud). ade devices --kind ios --text shows the minutes its credits have left."]
+      ? ["", `No simulator on this machine. The ${BRAND.CLOUD_NAME} iPhone runs from any machine: daex devices use ios@cloud (or one command with --machine cloud). daex devices --kind ios --text shows the minutes its credits have left.`]
       : []),
   ].join("\n");
 }
@@ -38665,7 +38669,7 @@ function formatIosSimDevices(value: unknown): string {
       device.runtime,
       device.state,
     ]),
-    "ADE iOS simulators\n(no installed simulators)",
+    `${BRAND.NAME} iOS simulators\n(no installed simulators)`,
     { fullColumns: ["udid"] },
   );
 }
@@ -38682,7 +38686,7 @@ function formatIosSimApps(value: unknown): string {
       target.name,
       target.bundleId ?? target.detail,
     ]),
-    "ADE iOS launchable apps\n(no apps)",
+    `${BRAND.NAME} iOS launchable apps\n(no apps)`,
     { fullColumns: ["target"] },
   );
 }
@@ -38699,7 +38703,7 @@ function formatIosSimLaunch(value: unknown): string {
     ? abbreviatePathTail(buildRootPath, 4)
     : "unknown";
   const lines = [
-    renderKeyValues("ADE iOS simulator launch", [
+    renderKeyValues(`${BRAND.NAME} iOS simulator launch`, [
       ["app", session.appName ?? session.bundleId],
       ["bundle", session.bundleId],
       [
@@ -38742,7 +38746,7 @@ function formatIosSimLaunch(value: unknown): string {
 
 function formatIosSimStream(value: unknown): string {
   const status = isRecord(value) ? value : {};
-  return renderKeyValues("ADE iOS simulator live view", [
+  return renderKeyValues(`${BRAND.NAME} iOS simulator live view`, [
     ["running", status.running],
     ["device", status.deviceUdid],
     ["refresh rate", status.fps ?? status.targetFps],
@@ -38780,7 +38784,7 @@ function formatIosSimRotate(value: unknown): string {
   const asked = typeof result.orientation === "string" && isAppleDeviceOrientation(result.orientation)
     ? result.orientation
     : null;
-  return renderKeyValues("ADE Apple device rotate", [
+  return renderKeyValues(`${BRAND.NAME} Apple device rotate`, [
     ["applied", result.applied],
     ["orientation", result.orientation],
     ["verification", result.verification],
@@ -38826,11 +38830,11 @@ function formatAppleRender(value: unknown): string {
     ? result.proofArtifactIds.filter((id): id is string => typeof id === "string" && id.length > 0)
     : [];
   return [
-    renderKeyValues("ADE Apple device render", [
+    renderKeyValues(`${BRAND.NAME} Apple device render`, [
       ["filed", result.filed],
       ["error", result.error],
       // A live pane files to the chat it shows; the off-screen host to the asking chat.
-      ["where", ids.length ? "the proof drawer and the lane's proof (ade proof list); cite below" : null],
+      ["where", ids.length ? "the proof drawer and the lane's proof (daex proof list); cite below" : null],
     ]),
     ...ids.map((id, index) => `cite: ${proofCitationMarkdown(id, ids.length > 1 ? `3D render ${index + 1}` : "3D render")}`),
   ].join("\n");
@@ -38841,7 +38845,7 @@ function formatAppleRender(value: unknown): string {
 function formatAppleDeviceDetach(value: unknown): string {
   if (!isRecord(value)) {
     // The service answers null when the lane held no device: nothing changed.
-    return "This lane had no Apple device, so there was nothing to detach. ade apple start gives it one.";
+    return "This lane had no Apple device, so there was nothing to detach. daex apple start gives it one.";
   }
   const name = asString(value.name) ?? asString(value.udid) ?? "The lane's device";
   const udid = asString(value.udid) ?? "<udid>";
@@ -38854,19 +38858,19 @@ function formatAppleDeviceDetach(value: unknown): string {
   const latestMinutes = Math.round((APPLE_RELEASED_DEVICE_GRACE_MS + APPLE_DEVICE_CLEANUP_INTERVAL_MS) / 60_000);
   const adeMade = Boolean(deletesAfter) || (isAppleLaneDeviceOrigin(value.origin) && isAdeOwnedLaneDevice(value.origin));
   const fate = value.kept === true
-    ? "ADE made this device, and it is kept as a free simulator: nothing deletes it. Delete it from the Apple Development picker when you are done, or attach it to a lane again."
+    ? `${BRAND.NAME} made this device, and it is kept as a free simulator: nothing deletes it. Delete it from the Apple Development picker when you are done, or attach it to a lane again.`
     : adeMade
-    ? `ADE made this device, so it is now a leftover: the cleanup pass deletes it ${
+    ? `${BRAND.NAME} made this device, so it is now a leftover: the cleanup pass deletes it ${
       Number.isFinite(deletesAfterMs)
         ? `at its first run after ${new Date(deletesAfterMs).toLocaleTimeString()} (within about ${latestMinutes} minutes)`
         : `${graceMinutes} to ${latestMinutes} minutes from now`
-    }. To keep it, attach it again before then: ade apple device-attach --simulator ${udid} (or detach with --keep next time, when the user wants it kept)`
-    : "The simulator stays installed and keeps its power state; ADE uninstalls only the apps it put on it.";
+    }. To keep it, attach it again before then: daex apple device-attach --simulator ${udid} (or detach with --keep next time, when the user wants it kept)`
+    : `The simulator stays installed and keeps its power state; ${BRAND.NAME} uninstalls only the apps it put on it.`;
   return [
     `Detached ${name}; this lane has no device now.`,
     fate,
     "",
-    renderKeyValues("ADE Apple device detach", [
+    renderKeyValues(`${BRAND.NAME} Apple device detach`, [
       ["udid", value.udid],
       ["device", value.name],
       ["origin", value.origin],
@@ -38891,9 +38895,9 @@ function formatAppleDevicePromote(value: unknown): string {
       ? `${name} is now this lane's device.`
       : `${name} is this lane's device.`,
     ...(kept ? [kept] : []),
-    "ade apple start boots it and streams it.",
+    "daex apple start boots it and streams it.",
     "",
-    renderKeyValues("ADE Apple device promote", [
+    renderKeyValues(`${BRAND.NAME} Apple device promote`, [
       ["device", device.name],
       ["udid", device.udid],
       ["previous", previous ? `${asString(previous.name) ?? ""} (${asString(previous.udid) ?? ""})` : null],
@@ -38920,7 +38924,7 @@ function formatAppleDerivedData(value: unknown): string {
     asString(entry.folderName) ?? "",
   ]);
   return [
-    renderKeyValues("ADE Xcode derived data", [
+    renderKeyValues(`${BRAND.NAME} Xcode derived data`, [
       ["root", root],
       ["folders", entries.length],
       ["total", typeof data.totalBytes === "number" ? formatBytes(data.totalBytes) : null],
@@ -38931,7 +38935,7 @@ function formatAppleDerivedData(value: unknown): string {
     renderTable(["name", "size", "last used", "note", "folder"], rows, "(no DerivedData folders)", { fullColumns: ["folder"] }),
     ...(measured ? [] : ["", "Sizes not measured. Re-run with --measure (walks every file; can take a while)."]),
     "",
-    "Deleting build data is the person's call, from ADE's Settings.",
+    `Deleting build data is the person's call, from ${BRAND.NAME}'s Settings.`,
   ].join("\n");
 }
 
@@ -38939,13 +38943,13 @@ function formatApplePosture(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const posture = (isRecord(result.posture) ? result.posture : result) as AppleDevicePosture;
   if (posture.supported === false) {
-    return renderKeyValues("ADE Apple device posture", [
+    return renderKeyValues(`${BRAND.NAME} Apple device posture`, [
       ["applied", result.applied],
       ["supported", false],
       ["detail", "This device has no hinge."],
     ]);
   }
-  return renderKeyValues("ADE Apple device posture", [
+  return renderKeyValues(`${BRAND.NAME} Apple device posture`, [
     ["applied", result.applied],
     ["angle", posture.angle],
     // In `rotate`'s names: CoreDevice names the device's turn, which swaps
@@ -38954,7 +38958,7 @@ function formatApplePosture(value: unknown): string {
     ["table mode", posture.tableMode],
     ...appleDuoPictureRows(posture),
     ["note", result.settled === false
-      ? "Still turning when the wait ran out, so the picture above may be the old one. Run `ade apple posture` in a moment."
+      ? "Still turning when the wait ran out, so the picture above may be the old one. Run `daex apple posture` in a moment."
       : null],
   ], ["note"]);
 }
@@ -39015,7 +39019,7 @@ function formatIosSimSnapshot(value: unknown): string {
   };
   const walkLimits = `${walkLimit("elements", 500)} elements, depth ${walkLimit("depth", 80)}, ${walkLimit("probe-points", 600)} probe points`;
   return [
-    renderKeyValues("ADE iOS simulator snapshot", [
+    renderKeyValues(`${BRAND.NAME} iOS simulator snapshot`, [
       ["device", snapshot.deviceUdid],
       ["captured", snapshot.capturedAt],
       [
@@ -39051,10 +39055,10 @@ function formatIosSimSnapshot(value: unknown): string {
       ? `note: the accessibility walk stopped at its cap (${truncatedBy.join(", ") || "a cap"}; limits: ${walkLimits}), so some elements are missing here and from find and tap-element. Scroll or open the part you need, then snapshot again.`
       : "",
     providers.some((provider) => provider.unplaced === true)
-      ? "note: an iPadOS window could not be placed on the screen this time, so rows marked (unplaced) have frames relative to their window; snapshot again, or run ade apple window --fill."
+      ? "note: an iPadOS window could not be placed on the screen this time, so rows marked (unplaced) have frames relative to their window; snapshot again, or run daex apple window --fill."
       : "",
     elements.some(isInferred)
-      ? "note: (inferred) rows are tabs ADE placed from the source, as slices of the Tab Bar; the bar showed no tab items. Their frames are guesses and tap-element refuses them."
+      ? `note: (inferred) rows are tabs ${BRAND.NAME} placed from the source, as slices of the Tab Bar; the bar showed no tab items. Their frames are guesses and tap-element refuses them.`
       : "",
     // Every element, not the first 20: rows further down and toolbar items
     // were missing while `tap-element` could still find them. `ref` is what
@@ -39093,7 +39097,7 @@ function formatIosSimSelection(value: unknown): string {
   const item =
     firstRecord(value, ["item", "selection"]) ?? (isRecord(value) ? value : {});
   const metadata = isRecord(item.metadata) ? item.metadata : {};
-  return renderKeyValues("ADE iOS simulator selection", [
+  return renderKeyValues(`${BRAND.NAME} iOS simulator selection`, [
     ["component", item.componentId],
     [
       "source",
@@ -39124,7 +39128,7 @@ function formatIosSimPreview(value: unknown): string {
         target.sourceFilePath ?? target.sourceFile,
         target.kind,
       ]),
-      "ADE iOS previews\n(no #Preview definitions found)",
+      `${BRAND.NAME} iOS previews\n(no #Preview definitions found)`,
     );
   }
   const record = isRecord(value) ? value : {};
@@ -39136,7 +39140,7 @@ function formatIosSimPreview(value: unknown): string {
         ? match.target
         : null;
     const render = isRecord(record.render) ? record.render : null;
-    return renderKeyValues("ADE iOS Preview current", [
+    return renderKeyValues(`${BRAND.NAME} iOS Preview current`, [
       ["ok", record.ok],
       ["status", match.status],
       ["confidence", match.confidence],
@@ -39160,7 +39164,7 @@ function formatIosSimPreview(value: unknown): string {
   }
   if (typeof record.status === "string" && "confidence" in record) {
     const target = isRecord(record.target) ? record.target : null;
-    return renderKeyValues("ADE iOS Preview match", [
+    return renderKeyValues(`${BRAND.NAME} iOS Preview match`, [
       ["status", record.status],
       ["confidence", record.confidence],
       [
@@ -39187,7 +39191,7 @@ function formatIosSimPreview(value: unknown): string {
   const selectedWindow = isRecord(capability.selectedWindow)
     ? capability.selectedWindow
     : {};
-  return renderKeyValues("ADE iOS Preview Lab", [
+  return renderKeyValues(`${BRAND.NAME} iOS Preview Lab`, [
     ["supported", capability.supported ?? record.ok],
     ["xcode", capability.xcodeVersion],
     ["mcpbridge", capability.mcpbridgeAvailable],
@@ -39211,7 +39215,7 @@ function formatAppControlStatus(value: unknown): string {
       ? status
       : {};
   return [
-    renderKeyValues("ADE App Control", [
+    renderKeyValues(`${BRAND.NAME} App Control`, [
       ["supported", status.supported],
       ["platform", status.platform],
       ["active app", session.label],
@@ -39256,7 +39260,7 @@ function formatAppControlRecording(value: unknown): string {
   const proofArtifactId = asString(status.proofArtifactId);
   const finished = status.running !== true && Boolean(status.filePath);
   const permissions = firstRecord(status, ["permissions"]);
-  return renderKeyValues("ADE App Control recording", [
+  return renderKeyValues(`${BRAND.NAME} App Control recording`, [
     ["lane", status.laneId],
     ["running", status.running],
     ["engine", status.engine],
@@ -39389,7 +39393,7 @@ function formatBrowserAttach(value: unknown): string {
     ]),
     ...notes.map((note) => `note: ${note}`),
     "",
-    "This chat's ade browser commands now act in this tab. Tell the user which machine and tab, and run ade browser detach when you are done.",
+    "This chat's daex browser commands now act in this tab. Tell the user which machine and tab, and run daex browser detach when you are done.",
   ].join("\n");
 }
 
@@ -39405,7 +39409,7 @@ function formatUserBrowserStatus(userBrowser: JsonObject): string {
       ["since", userBrowser.attachedAt],
     ]
     : [
-      ["attached", "no — this chat uses ADE's browser"],
+      ["attached", `no — this chat uses ${BRAND.NAME}'s browser`],
       [
         "remote debugging on",
         available.filter((entry) => entry.remoteDebugging === true).map((entry) => entry.label).join(", ") || "none",
@@ -39441,7 +39445,7 @@ function formatBrowserHandoff(value: unknown): string {
         ? "The handoff timed out; the tab is back with this chat. Check the page before going on."
         : `Handed back${by && by !== "human" ? ` (${by})` : ""}. Observe the tab before acting.`);
     } else {
-      lines.push(`Still with the user: the wait ended before they handed it back. Do not retry; \`ade browser status --tab ${tabId}\` shows when it ends.`);
+      lines.push(`Still with the user: the wait ended before they handed it back. Do not retry; \`daex browser status --tab ${tabId}\` shows when it ends.`);
     }
   } else {
     lines.push("Not waiting (--no-wait): actions on the tab fail with handoff_active until the user hands it back.");
@@ -39456,7 +39460,7 @@ function formatBrowserStatus(value: unknown): string {
     const { userBrowser: _userBrowser, builtInUnavailable, ...builtIn } = status;
     const unavailable = asString(builtInUnavailable);
     const rest = unavailable
-      ? `ADE browser: ${unavailable}`
+      ? `${BRAND.NAME} browser: ${unavailable}`
       : Object.keys(builtIn).length ? formatBrowserStatus(builtIn) : "";
     return [formatUserBrowserStatus(userBrowser), ...(rest ? ["", rest] : [])].join("\n");
   }
@@ -39466,7 +39470,7 @@ function formatBrowserStatus(value: unknown): string {
   if (status.status === "forwarded_to_desktop") {
     const desktop = asString(status.desktopLabel);
     const reason = asString(status.reason);
-    return renderKeyValues("ADE browser", [
+    return renderKeyValues(`${BRAND.NAME} browser`, [
       ["url", status.url],
       [
         "opened",
@@ -39475,10 +39479,10 @@ function formatBrowserStatus(value: unknown): string {
         // with `awaitingApproval` instead of leaving the CLI to print a
         // failure for a request that is very much alive.
         status.awaitingApproval === true
-          ? `waiting for approval on ${desktop ?? "the attached desktop"} — reaching this port needs a yes in ADE`
+          ? `waiting for approval on ${desktop ?? "the attached desktop"} — reaching this port needs a yes in ${BRAND.NAME}`
           : status.acknowledged === true
             ? `on ${desktop ?? "the attached desktop"} via tunnel`
-            : "no desktop is attached to this machine; open ADE Desktop with this lane pinned",
+            : `no desktop is attached to this machine; open ${BRAND.NAME} Desktop with this lane pinned`,
       ],
       ["request", status.requestId],
       ["note", reason],
@@ -39538,11 +39542,11 @@ function formatBrowserStatus(value: unknown): string {
       return idle ? `this chat · ${idle}` : "this chat";
     }
     if (tab.claimable === true) {
-      if (chat || lane) return `free (its chat went idle) — ade browser claim --tab ${id}`;
+      if (chat || lane) return `free (its chat went idle) — daex browser claim --tab ${id}`;
       // The user's own page is free too, but it is theirs: ask before using it.
       return asString(tab.openedBy) === "human" || tab.keptByPerson === true
-        ? `free (the user's tab; ask first) — ade browser claim --tab ${id}`
-        : `free — ade browser claim --tab ${id}`;
+        ? `free (the user's tab; ask first) — daex browser claim --tab ${id}`
+        : `free — daex browser claim --tab ${id}`;
     }
     const chatTitle = asString(tab.ownerChatTitle);
     const laneName = asString(tab.ownerLaneName);
@@ -39601,13 +39605,13 @@ function formatBrowserStatus(value: unknown): string {
     return [
       targetLine,
       "",
-      renderKeyValues("ADE browser", [
+      renderKeyValues(`${BRAND.NAME} browser`, [
         ["title", targetTab?.title],
         ["loading", targetTab?.isLoading ?? targetTab?.loading],
         ["load failed", loadFailureForTab(targetTab)],
         ["owner", targetTab ? ownerForTab(targetTab) : null],
         ["sign-in", targetTab ? signInForTab(targetTab) : null],
-        ["other tabs", otherTabs > 0 ? `${otherTabs} (ade browser status lists them)` : null],
+        ["other tabs", otherTabs > 0 ? `${otherTabs} (daex browser status lists them)` : null],
       ]),
     ].join("\n");
   }
@@ -39615,7 +39619,7 @@ function formatBrowserStatus(value: unknown): string {
   const showMachines = tabs.some((tab) => isRecord(tab.machine));
   return [
     ...(closedLine ? [closedLine, ""] : []),
-    renderKeyValues("ADE browser", [
+    renderKeyValues(`${BRAND.NAME} browser`, [
       ["route", route ? `${machineLabel(route.browser) ?? "?"} — ${asString(route.reason) ?? ""}` : null],
       ["isolated tabs", route?.isolatedTabs],
       ["--tab commands", route?.tabCommands],
@@ -39672,12 +39676,12 @@ function formatBrowserText(value: unknown): string {
   const total = typeof result.totalChars === "number" ? result.totalChars : text.length;
   const nextOffset = typeof result.nextOffset === "number" ? result.nextOffset : null;
   const header = [
-    asString(result.title) ?? asString(result.url) ?? "ADE browser text",
+    asString(result.title) ?? asString(result.url) ?? `${BRAND.NAME} browser text`,
     `chars ${offset}-${offset + text.length} of ${total} (${asString(result.source) ?? "body"})`,
   ];
   const footer = nextOffset == null
     ? []
-    : ["", `(more: ade browser text --offset ${nextOffset}${result.tabId ? ` --tab ${String(result.tabId)}` : ""})`];
+    : ["", `(more: daex browser text --offset ${nextOffset}${result.tabId ? ` --tab ${String(result.tabId)}` : ""})`];
   return [...header, "", text || "(no text on this page)", ...footer].join("\n");
 }
 
@@ -39696,7 +39700,7 @@ function formatBrowserDevServers(value: unknown): string {
         server.detectedAt,
       ];
     }),
-    "ADE dev servers\n(no dev servers detected in ADE terminals for this chat)",
+    `${BRAND.NAME} dev servers\n(no dev servers detected in ${BRAND.NAME} terminals for this chat)`,
     { fullColumns: ["lane", "terminal"] },
   );
 }
@@ -39714,7 +39718,7 @@ function formatBrowserDevServerStop(value: unknown): string {
 
 function formatWorkToolShow(value: unknown): string {
   const result = isRecord(value) ? value : {};
-  return renderKeyValues("ADE show", [
+  return renderKeyValues(`${BRAND.NAME} show`, [
     ["surface", result.surface],
     ["status", result.status],
     ["desktop", result.desktopLabel],
@@ -39744,7 +39748,7 @@ function formatWorkToolsState(value: unknown): string {
   const tabs = browser ? firstArray(browser, ["tabs"]) : [];
   const activeTabId = browser ? asString(browser.activeTabId) : null;
   return [
-    renderKeyValues("ADE work tools", [
+    renderKeyValues(`${BRAND.NAME} work tools`, [
       ["lane", state.laneId],
       ["active tool", state.activeTool ?? "(desktop has published none)"],
       // The pane is a tab strip; the active tool is only the tab on screen.
@@ -39797,7 +39801,7 @@ function formatBrowserSessions(value: unknown): string {
     : firstArray(result, ["sessions"]);
   const activeSessions = sessions.filter((entry) => !entry.endedAt);
   return [
-    renderKeyValues(session ? "ADE browser session" : "ADE browser sessions", [
+    renderKeyValues(session ? `${BRAND.NAME} browser session` : `${BRAND.NAME} browser sessions`, [
       ["session", session?.id],
       ["tab", session?.tabId],
       ["created", session?.createdAt],
@@ -39888,9 +39892,9 @@ export function formatActionAnswerLines(
     // A `next:` line replaces the generic advice with the specific step.
     effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}${nextReason ? "" : "; observe again before you continue"}`;
   } else if (status === "waiting_for_approval") {
-    effectLine = `effect: waiting — ${reason || "a navigation is waiting for the user's approval in ADE"}; observe again after they answer`;
+    effectLine = `effect: waiting — ${reason || `a navigation is waiting for the user's approval in ${BRAND.NAME}`}; observe again after they answer`;
   } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
-  else effectLine = "effect: not checked — this ADE did not report an effect";
+  else effectLine = `effect: not checked — this ${BRAND.NAME} did not report an effect`;
   if (!nextReason) return [hit, effectLine];
   const nextCommand = asString(next?.command);
   return [hit, effectLine, `next: ${nextReason}${nextCommand ? ` — run: ${nextCommand}` : ""}`];
@@ -39933,9 +39937,9 @@ function formatBrowserAction(value: unknown): string {
   const signinLine = !signin
     ? null
     : signin.created === true
-      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`ade browser signin\` uses it from now on.`
+      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`daex browser signin\` uses it from now on.`
       : signin.signInYourself === true
-        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`daex browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
         : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
     ...(signinLine ? [signinLine] : []),
@@ -39957,7 +39961,7 @@ function formatAppControlAction(value: unknown): string {
   const observation = firstRecord(result, ["observation"]);
   const dom = observation ? firstRecord(observation, ["dom"]) : null;
   const elements = firstArray(dom ?? {}, ["elements"]);
-  const header = renderKeyValues("ADE App Control action", [
+  const header = renderKeyValues(`${BRAND.NAME} App Control action`, [
     ["ok", result.ok ?? true],
     ["action", trace?.action],
     ["url", observation?.url],
@@ -39997,7 +40001,7 @@ function formatAppleAction(value: unknown, action: string): string {
   return [
     ...lines,
     "",
-    renderKeyValues("ADE Apple device action", [
+    renderKeyValues(`${BRAND.NAME} Apple device action`, [
       ["ok", result.ok ?? true],
       ["action", asString(result.action) ?? action],
       ["matches", typeof result.matchCount === "number" && result.matchCount > 1 ? result.matchCount : null],
@@ -40025,7 +40029,7 @@ function formatBrowserObservation(value: unknown): string {
   const consoleDiagnostics = firstArray(diagnostics ?? {}, ["console"]);
   const networkDiagnostics = firstArray(diagnostics ?? {}, ["network"]);
   const elements = firstArray(dom ?? {}, ["elements"]);
-  const header = renderKeyValues("ADE browser observation", [
+  const header = renderKeyValues(`${BRAND.NAME} browser observation`, [
     ["ok", result.ok ?? true],
     ["session", session?.id ?? observation.sessionId ?? trace?.sessionId],
     ["tab", observation.tabId ?? status?.activeTabId],
@@ -40105,7 +40109,7 @@ function formatBrowserTrace(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const entries = firstArray(result, ["entries"]);
   return [
-    renderKeyValues("ADE browser trace", [
+    renderKeyValues(`${BRAND.NAME} browser trace`, [
       ["session", result.sessionId],
       ["tab", result.tabId],
       ["entries", entries.length],
@@ -40150,7 +40154,7 @@ function formatAppControlSnapshot(value: unknown): string {
     )
     .join(", ");
   return [
-    renderKeyValues("ADE App Control snapshot", [
+    renderKeyValues(`${BRAND.NAME} App Control snapshot`, [
       ["title", snapshot.title],
       ["url", snapshot.url],
       ["captured", snapshot.capturedAt],
@@ -40216,7 +40220,7 @@ function formatHistoryList(value: unknown): string {
       operation.preHeadSha,
       operation.postHeadSha,
     ]),
-    "ADE operation history\n(no operations found)",
+    `${BRAND.NAME} operation history\n(no operations found)`,
     { fullColumns: ["id"] },
   );
 }
@@ -40234,13 +40238,13 @@ function formatHistoryCommits(value: unknown): string {
       commit.authoredAt,
       commit.pushed,
     ]),
-    "ADE lane commits\n(no commits found)",
+    `${BRAND.NAME} lane commits\n(no commits found)`,
   );
 }
 
 function formatHistoryShow(value: unknown): string {
   const operation = isRecord(value) ? value : {};
-  return renderKeyValues("ADE operation", [
+  return renderKeyValues(`${BRAND.NAME} operation`, [
     ["id", operation.id],
     ["lane", operation.laneName ?? operation.laneId],
     ["kind", operation.kind],
@@ -40271,7 +40275,7 @@ function formatTerminalList(value: unknown): string {
       terminal.endedAt && (terminal.resumeCommand || terminal.resumeMetadata) ? "yes" : "",
       terminal.title,
     ]),
-    "ADE attached terminals\n(no terminals found)",
+    `${BRAND.NAME} attached terminals\n(no terminals found)`,
     { fullColumns: ["terminal", "pty", "chat"] },
   );
 }
@@ -40286,8 +40290,8 @@ function formatPtyCreate(value: unknown, remote: ShellRemoteTarget | null = null
   const onMachine = remote
     ? ` --machine ${quoteShellArg(remote.machine)}${remote.project ? ` --machine-project ${quoteShellArg(remote.project)}` : ""}`
     : "";
-  const readCommand = sessionId ? `ade terminal read --terminal ${sessionId}${onMachine} --text` : null;
-  const details = renderKeyValues("ADE shell session", [
+  const readCommand = sessionId ? `daex terminal read --terminal ${sessionId}${onMachine} --text` : null;
+  const details = renderKeyValues(`${BRAND.NAME} shell session`, [
     ["session", sessionId],
     ["pty", ptyId],
     ["pid", result.pid],
@@ -40300,7 +40304,7 @@ function formatPtyCreate(value: unknown, remote: ShellRemoteTarget | null = null
 function formatTerminalRead(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const data = typeof result.data === "string" ? result.data : "";
-  const header = renderKeyValues("ADE terminal scrollback", [
+  const header = renderKeyValues(`${BRAND.NAME} terminal scrollback`, [
     ["terminal", result.terminalId],
     ["nextSince", result.nextSince],
     ["bytes", Buffer.byteLength(data, "utf8")],
@@ -40332,7 +40336,7 @@ function formatHarnessRoutes(value: unknown): string {
       const via = formatViaSourceSpec(source.source);
       lines.push(`  ${source.label} (--via ${via}) · ${reachable.length} models`);
       for (const { model, route } of reachable) {
-        const tag = route.kind === "proxy" ? "  via ADE proxy" : route.kind === "native" ? "  native" : "";
+        const tag = route.kind === "proxy" ? `  via ${BRAND.NAME} proxy` : route.kind === "native" ? "  native" : "";
         lines.push(`    ${model.id}${tag}`);
       }
     }
@@ -40343,7 +40347,7 @@ function formatHarnessRoutes(value: unknown): string {
 function formatHarnessTest(value: unknown): string {
   const record = isRecord(value) ? value : {};
   if (record.ok === true) {
-    const route = record.route === "proxy" ? " (via ADE proxy)" : "";
+    const route = record.route === "proxy" ? ` (via ${BRAND.NAME} proxy)` : "";
     return `OK · ${cell(record.protocol)} · ${cell(record.latencyMs)} ms${route}`;
   }
   return `Failed: ${typeof record.error === "string" ? record.error : "unknown error"}`;
@@ -40358,7 +40362,7 @@ function formatIntegrations(value: unknown): string {
       const account = typeof row.account === "string" && row.account ? ` as ${row.account}` : "";
       const detail = typeof row.detail === "string" && row.detail ? ` (${row.detail})` : "";
       return row.connected ? `${label}: connected${account}` : `${label}: not connected${detail}`;
-    }).join("\n") + "\n\nConnect one from a chat: ade integrations connect <provider> --reason \"…\"";
+    }).join("\n") + "\n\nConnect one from a chat: daex integrations connect <provider> --reason \"…\"";
   }
   const record = isRecord(value) ? value : {};
   const label = isConnectProviderId(record.provider) ? connectProviderSpec(record.provider).label : cell(record.provider);
@@ -40379,7 +40383,7 @@ function formatMcpServers(value: unknown): string {
     const lines: string[] = [];
     if (typeof record.notice === "string" && record.notice) lines.push(record.notice, "");
     const servers = record.servers.filter(isRecord);
-    lines.push(servers.length ? "In ADE (every agent ADE launches gets these):" : "ADE's MCP registry is empty.");
+    lines.push(servers.length ? `In ${BRAND.NAME} (every agent ${BRAND.NAME} launches gets these):` : `${BRAND.NAME}'s MCP registry is empty.`);
     for (const server of servers) {
       const where = server.state === "on" ? "on"
         : server.state === "off-account" ? "off everywhere"
@@ -40393,7 +40397,7 @@ function formatMcpServers(value: unknown): string {
     }
     const found = record.found.filter(isRecord);
     if (found.length) {
-      lines.push("", "Found in other tools' configs on this machine, not in ADE:");
+      lines.push("", `Found in other tools' configs on this machine, not in ${BRAND.NAME}:`);
       for (const server of found) {
         const runs = server.transport === "stdio"
           ? [server.command, ...(Array.isArray(server.args) ? server.args : [])].map((part) => String(part ?? "")).join(" ")
@@ -40402,7 +40406,7 @@ function formatMcpServers(value: unknown): string {
         lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  from ${providers}`);
         lines.push(`    ${server.transport === "stdio" ? "runs" : "url"}: ${runs}`);
       }
-      lines.push("", "Ask to add one from a chat: ade mcp servers add <name> --import --reason \"…\"");
+      lines.push("", "Ask to add one from a chat: daex mcp servers add <name> --import --reason \"…\"");
     }
     return lines.join("\n");
   }
@@ -40413,7 +40417,7 @@ function formatMcpServers(value: unknown): string {
     const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
     return `${next}${missing}`;
   }
-  if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
+  if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ${BRAND.NAME}.`;
   if (typeof record.integration === "string" && typeof record.next === "string") return record.next;
   if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
   return JSON.stringify(value, null, 2);
@@ -40439,7 +40443,7 @@ function formatProjectSecrets(value: unknown): string {
       return [
         `${record.reused ? "Still in" : "Saved to"} a private file: ${record.file}`,
         `Use it inside a command, e.g. TOKEN="$(cat ${quoted})" your-cli …; never print it.`,
-        `ADE deletes it ${typeof record.expiresAt === "string" ? `at ${record.expiresAt}` : "after 24 hours"} or when this chat is archived.`,
+        `${BRAND.NAME} deletes it ${typeof record.expiresAt === "string" ? `at ${record.expiresAt}` : "after 24 hours"} or when this chat is archived.`,
       ].join("\n");
     }
     if (record.saved) {
@@ -40481,7 +40485,7 @@ function formatProjectSecrets(value: unknown): string {
   const header = renderTable(
     ["name", "chars", "on", "updated"],
     rows,
-    "This project's secrets\n(none yet: add one in Settings › Passwords & Secrets, or ade secrets request)",
+    "This project's secrets\n(none yet: add one in Settings › Passwords & Secrets, or daex secrets request)",
   );
   return `${header}\n\nIn Passwords & Secrets: those for every project, then this project's own.`;
 }
@@ -40502,14 +40506,14 @@ function formatProviderLogins(value: unknown): string {
   // The sign-ins are shared between a person's own computers either way; only
   // an account with ADE Cloud reads what ADE Cloud does with them.
   const lines = [
-    renderKeyValues(cliCloudEnabled ? "Sign-ins for ADE Cloud" : "Sign-ins in your account", [
+    renderKeyValues(cliCloudEnabled ? `Sign-ins for ${BRAND.CLOUD_NAME}` : "Sign-ins in your account", [
       ["this computer", here.label],
       ["copies sign-ins", here.capture === "on" ? "yes" : `no (${asString(here.reason) ?? "unknown"})`],
       ["why", here.message],
       ...(cliCloudEnabled
         ? [
           ["cloud computer", here.cloudComputer === true ? "yes" : "no"],
-          ["ADE Cloud sign-ins", cloud.enabled === false ? "switched off" : "on"],
+          [`${BRAND.CLOUD_NAME} sign-ins`, cloud.enabled === false ? "switched off" : "on"],
         ] as Array<[string, unknown]>
         : []),
       ["last pass", here.lastPassAt],
@@ -40521,8 +40525,8 @@ function formatProviderLogins(value: unknown): string {
     const origin = isRecord(signIn.origin) ? signIn.origin : {};
     const account = isRecord(signIn.account) ? (asString(signIn.account.email) ?? asString(signIn.account.id)) : null;
     const flags = [
-      cliCloudEnabled && signIn.inUseOnCloud === true ? "in use on ADE Cloud" : null,
-      cliCloudEnabled && signIn.onForCloud === false ? "off for ADE Cloud" : null,
+      cliCloudEnabled && signIn.inUseOnCloud === true ? `in use on ${BRAND.CLOUD_NAME}` : null,
+      cliCloudEnabled && signIn.onForCloud === false ? `off for ${BRAND.CLOUD_NAME}` : null,
       origin.thisComputer === true ? "this computer" : null,
     ].filter(Boolean).join(", ");
     lines.push(`  ${cell(signIn.provider, 12)} ${cell(account ?? `Sign-in from ${asString(origin.label) ?? "a computer"}`, 40)} `
@@ -40565,7 +40569,7 @@ function formatProviderAccounts(value: unknown): string {
   const accountEmail = (instance: JsonObject): string =>
     providerAccountName(isRecord(instance.account) ? { account: { email: asString(instance.account.email), plan: asString(instance.account.plan) } } : null);
   const describe = (instance: JsonObject): string =>
-    renderKeyValues("ADE provider account", [
+    renderKeyValues(`${BRAND.NAME} provider account`, [
       ["account", accountEmail(instance)],
       ["provider", instance.provider],
       ["plan", isRecord(instance.account) ? instance.account.plan : undefined],
@@ -40622,7 +40626,7 @@ function formatProviderAccounts(value: unknown): string {
       ? record
       : null;
   if (settingsRecord && typeof settingsRecord.smartBalance === "boolean") {
-    return renderKeyValues("ADE provider account settings", [
+    return renderKeyValues(`${BRAND.NAME} provider account settings`, [
       ["smart balance", settingsRecord.smartBalance ? "on" : "off"],
       ["auto-start (Windows)", settingsRecord.autoStartWindows === true ? "on" : "off"],
     ]);
@@ -40645,15 +40649,15 @@ function formatProviderAccounts(value: unknown): string {
       instance.configHome,
       instance.id,
     ]),
-    "ADE provider accounts\n(no provider accounts found)",
+    `${BRAND.NAME} provider accounts\n(no provider accounts found)`,
     // The path is copied into commands, so it is never cut short.
     { fullColumns: ["account", "config home", "id"] },
   );
 }
 
 const ACCOUNT_SIGN_IN_NEXT_STEP =
-  "Sign in with `ade login` (`ade login --headless` on a computer with no browser), "
-  + "or set ADE_ACCOUNT_TOKEN from `ade account token create` for CI and agents.";
+  "Sign in with `daex login` (`daex login --headless` on a computer with no browser), "
+  + "or set ADE_ACCOUNT_TOKEN from `daex account token create` for CI and agents.";
 
 /**
  * `ade projects list --account`: the account's projects with a computer name
@@ -40663,13 +40667,13 @@ const ACCOUNT_SIGN_IN_NEXT_STEP =
 function shapeAccountProjects(list: unknown, roster: unknown): JsonObject {
   const state = isRecord(list) ? asString(list.state) : null;
   if (state === "signed_out") {
-    throw new CliUsageError(`ADE projects belong to your ADE account. ${ACCOUNT_SIGN_IN_NEXT_STEP}`);
+    throw new CliUsageError(`${BRAND.NAME} projects belong to your ${BRAND.NAME} account. ${ACCOUNT_SIGN_IN_NEXT_STEP}`);
   }
   if (state !== "ready") {
     // A usage error (exit 2), as for signed out: a script treats both the same.
     throw new CliUsageError(
-      "ADE has not read your account's projects on this computer yet. "
-      + "Keep the ADE brain running for a minute (`ade brain start`), then run this again. `ade doctor` shows the account state.",
+      `${BRAND.NAME} has not read your account's projects on this computer yet. `
+      + `Keep the ${BRAND.NAME} brain running for a minute (\`daex brain start\`), then run this again. \`daex doctor\` shows the account state.`,
     );
   }
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
@@ -40718,7 +40722,7 @@ function formatAccountProjects(value: unknown): string {
   return renderTable(
     ["repository", "account project", "computer", "folder"],
     rows,
-    "ADE account projects\n(no projects on your account yet: `ade projects clone <owner/name>` adds one)",
+    `${BRAND.NAME} account projects\n(no projects on your account yet: \`daex projects clone <owner/name>\` adds one)`,
     { fullColumns: ["account project"] },
   );
 }
@@ -40747,7 +40751,7 @@ function formatProjectsList(value: unknown): string {
     // A projects row is a project; it has no other project to name.
     { projectColumn: false },
   );
-  return renderTable(table.headers, table.rows, "ADE projects\n(no projects registered)", { fullColumns: ["project"] });
+  return renderTable(table.headers, table.rows, `${BRAND.NAME} projects\n(no projects registered)`, { fullColumns: ["project"] });
 }
 
 function formatLinearQuickView(value: unknown): string {
@@ -40813,7 +40817,7 @@ function formatAppControlSelection(value: unknown): string {
   const selected = isRecord(metadata.selectedElement)
     ? metadata.selectedElement
     : {};
-  return renderKeyValues("ADE App Control selection", [
+  return renderKeyValues(`${BRAND.NAME} App Control selection`, [
     ["component", item.componentId],
     [
       "source",
@@ -40835,15 +40839,15 @@ function formatAccountMachines(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const state = asString(result.state) ?? "unavailable";
   if (state === "signed_out") {
-    return "Not signed in — run `ade login`. Local, PIN, and explicit remote paths still work.";
+    return "Not signed in — run `daex login`. Local, PIN, and explicit remote paths still work.";
   }
   if (state === "auth_expired") {
     const message = asString(result.message)
-      ?? "ADE account session expired — run `ade login` again.";
+      ?? `${BRAND.NAME} account session expired — run \`daex login\` again.`;
     return `${message} Local and explicit remote paths still work.`;
   }
   if (state !== "ok") {
-    return asString(result.message) ?? "The ADE account machine directory is unavailable.";
+    return asString(result.message) ?? `The ${BRAND.NAME} account machine directory is unavailable.`;
   }
   const machines = Array.isArray(result.machines)
     ? result.machines.flatMap((entry) => {
@@ -40879,10 +40883,10 @@ function formatAccountMachines(value: unknown): string {
     renderTable(
       ["machine key", "name", "status", "presence", "last seen"],
       rows,
-      "No machines are registered to this ADE account.",
+      `No machines are registered to this ${BRAND.NAME} account.`,
     ),
     "",
-    "Connect with: ade machines connect <machine-key>",
+    "Connect with: daex machines connect <machine-key>",
     // Connecting IS what wakes a sleeping machine — the same thing the desktop
     // row and the phone say by labelling the button "Wake". Stated only when a
     // machine on this account is actually asleep, so the hint never becomes
@@ -40923,14 +40927,14 @@ export function formatBrainStatus(value: unknown): string {
       .filter((entry): entry is string => Boolean(entry))
       .join(" \u00b7 ")
     : null;
-  const rendered = renderKeyValues("ADE brain", [
+  const rendered = renderKeyValues(`${BRAND.NAME} brain`, [
     ["ok", result.ok],
     [
       "endpoint",
       runtime.running === true
         ? "running"
         : typeof runtime.unreachableBrainPid === "number"
-          ? `brain pid ${runtime.unreachableBrainPid} is running on a pipe name this ade does not know`
+          ? `brain pid ${runtime.unreachableBrainPid} is running on a pipe name this daex does not know`
           : "not responding",
     ],
     ["socket", runtime.socketPath],
@@ -41020,18 +41024,18 @@ export function formatGithubAppUserAuth(value: unknown): string {
   const accountState = deriveGithubAccountAuthState(value as unknown as GitHubAppUserAuthStatus);
   const headline = ((): string => {
     if (value.configured !== true) {
-      return "The ADE GitHub App is not configured on this machine.";
+      return `The ${BRAND.NAME} GitHub App is not configured on this machine.`;
     }
     if (accountState === "valid") {
-      return `Authorized${userLogin ? ` as ${userLogin}` : ""}. ADE renews this credential on its own.`;
+      return `Authorized${userLogin ? ` as ${userLogin}` : ""}. ${BRAND.NAME} renews this credential on its own.`;
     }
     if (accountState === "blocked") {
-      return "Authorized, but renewal is paused after a transient failure. ADE retries on its own — do not re-authorize.";
+      return `Authorized, but renewal is paused after a transient failure. ${BRAND.NAME} retries on its own — do not re-authorize.`;
     }
     if (accountState === "needs_reauth") {
-      return "Re-authorization is needed. Run `ade --role cto github app-auth login`.";
+      return "Re-authorization is needed. Run `daex --role cto github app-auth login`.";
     }
-    return "Not authorized. Run `ade --role cto github app-auth login`.";
+    return "Not authorized. Run `daex --role cto github app-auth login`.";
   })();
   const rows: Array<[string, unknown]> = [
     ["state", credentialState],
@@ -41073,7 +41077,7 @@ function formatTextOutput(
     case "settings-find":
       return formatSettingsFind(value);
     case "status":
-      return renderKeyValues("ADE status", [
+      return renderKeyValues(`${BRAND.NAME} status`, [
         ["ok", isRecord(value) ? value.ok : null],
         ["mode", isRecord(value) ? value.mode : null],
         ["project", isRecord(value) ? value.projectRoot : null],
@@ -41104,7 +41108,7 @@ function formatTextOutput(
         // `ade report-issue` exists for: it reads local files only, so it still
         // works on the machine where the brain will not come up.
         if (!doctorRows.some((row) => row.status === "fail")) return table;
-        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue --send\` to send the report to the ADE team privately.`;
+        return `${table}\n\nIf a failure above is unexplained, run \`daex report-issue --send\` to send the report to the ${BRAND.NAME} team privately.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -41136,7 +41140,7 @@ function formatTextOutput(
           ? value.recommendations
           : [];
       return [
-        renderKeyValues("ADE doctor", [
+        renderKeyValues(`${BRAND.NAME} doctor`, [
           ["ok", isRecord(value) ? value.ok : null],
           ["cli version", isRecord(value) ? value.cliVersion : null],
           ["mode", isRecord(value) ? value.mode : null],
@@ -41174,7 +41178,7 @@ function formatTextOutput(
       const github = isRecord(checks.github) ? checks.github : {};
       const linear = isRecord(checks.linear) ? checks.linear : {};
       const providers = isRecord(checks.providers) ? checks.providers : {};
-      return renderKeyValues("ADE auth", [
+      return renderKeyValues(`${BRAND.NAME} auth`, [
         ["authenticated", isRecord(value) ? value.authenticated : null],
         ["mode", isRecord(value) ? value.authMode : null],
         ["role", isRecord(value) ? value.role : null],
@@ -41195,17 +41199,17 @@ function formatTextOutput(
         // merely unreadable makes them destroy a still-valid session.
         const sessionState = isRecord(value) ? asString(value.sessionState) : null;
         if (sessionState === "unreadable") {
-          return "ADE couldn't read this computer's saved sign-in — nothing changed. Try again in a moment; if it keeps failing, run `ade login`.";
+          return `${BRAND.NAME} couldn't read this computer's saved sign-in — nothing changed. Try again in a moment; if it keeps failing, run \`daex login\`.`;
         }
         if (sessionState === "expired") {
-          return "Your ADE account sign-in expired — run `ade login` again.";
+          return `Your ${BRAND.NAME} account sign-in expired — run \`daex login\` again.`;
         }
-        return "Not signed in — run `ade login`.";
+        return "Not signed in — run `daex login`.";
       }
       const identity = asString(value.email)
         ?? asString(value.name)
         ?? asString(value.userId)
-        ?? "ADE account";
+        ?? `${BRAND.NAME} account`;
       const source = asString(value.source);
       const signedIn = `Signed in as ${identity}${source ? ` (${source})` : ""}`;
       const refusal = parseThisMachineRefusal(value.thisComputerRefusal);
@@ -41213,9 +41217,9 @@ function formatTextOutput(
     }
     case "account-token": {
       const token = isRecord(value) ? asString(value.token) : null;
-      if (!token) return "No durable ADE account token is available. Run `ade login` and retry.";
+      if (!token) return `No durable ${BRAND.NAME} account token is available. Run \`daex login\` and retry.`;
       return `${token}\n\nSet this secret as ADE_ACCOUNT_TOKEN in the agent or CI environment. ` +
-        "It grants ADE account access; store it in your secret manager and do not commit or log it.";
+        `It grants ${BRAND.NAME} account access; store it in your secret manager and do not commit or log it.`;
     }
     case "account-machines":
       return formatAccountMachines(value);
@@ -41242,7 +41246,7 @@ function formatTextOutput(
     case "account-machine-reconnect": {
       const result = readReconnectResult(value);
       if (!result) {
-        return renderKeyValues("ADE result", Object.entries(isRecord(value) ? value : {}));
+        return renderKeyValues(`${BRAND.NAME} result`, Object.entries(isRecord(value) ? value : {}));
       }
       return describeReconnectOutcome(result).message;
     }
@@ -41252,18 +41256,18 @@ function formatTextOutput(
       if (isRecord(answer) && typeof answer.status === "string" && typeof answer.next === "string") {
         const machine = isRecord(answer.machine) ? asString(answer.machine.name) ?? asString(answer.machine.machineKey) : null;
         const head = answer.status === "removed"
-          ? `Removed ${machine ?? "the computer"} from the ADE account.`
+          ? `Removed ${machine ?? "the computer"} from the ${BRAND.NAME} account.`
           : answer.status === "pending_approval"
             ? `Pending approval: ${machine ?? "the computer"} was not removed.`
-            : `Not removed: ${machine ?? "the computer"} stays on the ADE account.`;
+            : `Not removed: ${machine ?? "the computer"} stays on the ${BRAND.NAME} account.`;
         return `${head}\n${answer.next}`;
       }
       const removed = isRecord(value) ? asString(value.machineKey) : null;
       // The directory purges the removed machine's Activity as part of the same
       // request, so a plain success here means both landed; a partial removal
       // arrives as an error, not as this line.
-      return `Removed ${removed ?? "the machine"} from your ADE account and cleared its Activity. ` +
-        "It rejoins only when someone runs `ade machines reconnect` (or Reconnect this computer) on that computer.";
+      return `Removed ${removed ?? "the machine"} from your ${BRAND.NAME} account and cleared its Activity. ` +
+        "It rejoins only when someone runs `daex machines reconnect` (or Reconnect this computer) on that computer.";
     }
     case "projects-list":
       return formatProjectsList(value);
@@ -41277,7 +41281,7 @@ function formatTextOutput(
       return formatLaneDetail(value);
     case "git-status":
       return renderKeyValues(
-        "ADE git status",
+        `${BRAND.NAME} git status`,
         Object.entries(isRecord(value) ? value : {}),
       );
     case "diff-summary":
@@ -41298,7 +41302,7 @@ function formatTextOutput(
     }
     case "pr-detail":
       return renderKeyValues(
-        "ADE pull request",
+        `${BRAND.NAME} pull request`,
         Object.entries(
           firstRecord(value, ["pr", "detail"]) ??
             (isRecord(value) ? value : {}),
@@ -41721,7 +41725,7 @@ function formatTextOutput(
     default:
       if (isRecord(value))
         return renderKeyValues(
-          "ADE result",
+          `${BRAND.NAME} result`,
           Object.entries(value).slice(0, 24),
           // A session's deeplink is copied, not read: never clip it.
           ["link"],
@@ -42023,7 +42027,7 @@ function summarizeProofFiling(
   if (!hasDrawerOwner(owners)) {
     fail(
       `filed ${artifactIds.join(", ")} with no lane, chat session, automation run, PR or issue, so no proof drawer can show it`
-      + " — run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>",
+      + " — run daex from inside the lane worktree, or pass --owner lane --owner-id <lane>",
     );
   }
 
@@ -42123,7 +42127,7 @@ function summarizeExecution(args: {
       recommendations: readiness.recommendations,
       note: isRecord(readiness.auth)
         ? readiness.auth.note
-        : "ADE CLI auth is local project access.",
+        : `${BRAND.NAME} CLI auth is local project access.`,
     };
   }
 
@@ -42175,7 +42179,7 @@ function summarizeExecution(args: {
     const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(link) as JsonObject, ["artifacts"]);
     const warnings = [
       ...(Array.isArray(published.warnings) ? published.warnings : []),
-      ...(linkFailure ? [`posted, but ADE could not record the PR on the items: ${linkFailure}`] : []),
+      ...(linkFailure ? [`posted, but ${BRAND.NAME} could not record the PR on the items: ${linkFailure}`] : []),
     ];
     return { ok: true, ...published, warnings, linked: linked.length, inBody: values.proofLink !== undefined };
   }
@@ -42201,7 +42205,7 @@ function summarizeExecution(args: {
               ...(Array.isArray(values.publish.warnings) ? values.publish.warnings : []),
               // The pictures are in the text; only ADE's own record of the PR is missing.
               ...(isRecord(values.proofLink) && values.proofLink.ok === false
-                ? [`uploaded, but ADE could not record the PR on the items: ${asString(values.proofLink.error) ?? "the runtime refused the link"}`]
+                ? [`uploaded, but ${BRAND.NAME} could not record the PR on the items: ${asString(values.proofLink.error) ?? "the runtime refused the link"}`]
                 : []),
             ],
           },
@@ -42319,8 +42323,8 @@ function summarizeExecution(args: {
       ok: true,
       accepted: true,
       note: plan.label === "chat steer"
-        ? "Message accepted by the ADE chat steer path."
-        : "Message accepted by the ADE chat message path; provider dispatch continues asynchronously.",
+        ? `Message accepted by the ${BRAND.NAME} chat steer path.`
+        : `Message accepted by the ${BRAND.NAME} chat message path; provider dispatch continues asynchronously.`,
     };
   }
 
@@ -42538,10 +42542,11 @@ async function runAccountLogin(
     );
   } catch (error) {
     throw new CliExecutionError(
-      "Failed to initialize the ADE brain for account login.",
+      // Older clients match this text; keep until released desktops read both names.
+      `Failed to initialize the ADE brain for account login.`,
       {
         cause: error instanceof Error ? error.message : String(error),
-        nextAction: "Start the machine ADE brain with `ade brain start`, then retry `ade login`.",
+        nextAction: `Start the machine ${BRAND.NAME} brain with \`daex brain start\`, then retry \`daex login\`.`,
       },
     );
   }
@@ -42598,14 +42603,14 @@ async function runAccountLogin(
         }
         throw new CliExecutionError(
           "ADE_ACCOUNT_TOKEN is expired or invalid.",
-          { nextAction: "Replace it with a current access token or durable refresh token, then restart the ADE brain." },
+          { nextAction: `Replace it with a current access token or durable refresh token, then restart the ${BRAND.NAME} brain.` },
         );
       }
     }
     if (mode === "env-token") {
       throw new CliExecutionError(
-        "ADE_ACCOUNT_TOKEN is set in this shell, but the running ADE brain did not inherit it.",
-        { nextAction: "Restart the ADE brain from this environment, then retry `ade login`." },
+        `ADE_ACCOUNT_TOKEN is set in this shell, but the running ${BRAND.NAME} brain did not inherit it.`,
+        { nextAction: `Restart the ${BRAND.NAME} brain from this environment, then retry \`daex login\`.` },
       );
     }
 
@@ -42613,7 +42618,7 @@ async function runAccountLogin(
       const identity = asString(authStatus.email)
         ?? asString(authStatus.name)
         ?? asString(authStatus.userId)
-        ?? "ADE account";
+        ?? `${BRAND.NAME} account`;
       process.stderr.write(`Signed in as ${identity}\n`);
       pendingSessionId = null;
       return { output: formatOutput(authStatus, options, "account-auth"), exitCode: 0 };
@@ -42638,7 +42643,7 @@ async function runAccountLogin(
       const finalPollStatus = asString(finalPoll.status);
       const authStatus = isRecord(finalPoll.authStatus) ? finalPoll.authStatus : finalPoll;
       if (finalPollStatus === "signed_in") return finishSignedIn(authStatus);
-      process.stderr.write("ADE account sign-in timed out.\n");
+      process.stderr.write(`${BRAND.NAME} account sign-in timed out.\n`);
       return {
         output: formatOutput({ signedIn: false }, options, "account-auth"),
         exitCode: 1,
@@ -42666,7 +42671,7 @@ async function runAccountLogin(
       });
       const device = readDeviceSignInStart(answer);
       if (!device) {
-        throw new CliExecutionError("ADE account device login did not start.", { start: answer });
+        throw new CliExecutionError(`${BRAND.NAME} account device login did not start.`, { start: answer });
       }
       await onStarted?.();
       pendingSessionId = device.sessionId;
@@ -42691,7 +42696,7 @@ async function runAccountLogin(
           }
           continue;
         }
-        process.stderr.write(`${poll.message ?? "ADE account device sign-in failed."}\n`);
+        process.stderr.write(`${poll.message ?? `${BRAND.NAME} account device sign-in failed.`}\n`);
         return { output: formatOutput(poll.authStatus, options, "account-auth"), exitCode: 1 };
       }
     };
@@ -42703,7 +42708,7 @@ async function runAccountLogin(
     const authorizeUrl = asString(start.authorizeUrl);
     const expiresAt = asString(start.expiresAt);
     if (!sessionId || !authorizeUrl) {
-      throw new CliExecutionError("ADE account login did not start.", { start });
+      throw new CliExecutionError(`${BRAND.NAME} account login did not start.`, { start });
     }
     pendingSessionId = sessionId;
     process.stderr.write(legalLineOnce());
@@ -42752,7 +42757,7 @@ async function runAccountLogin(
       }
     }
     process.stderr.write(
-      `\nSign in or create your ADE account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
+      `\nSign in or create your ${BRAND.NAME} account in your browser. If it did not open, visit:\n  ${authorizeUrl}\n` +
       (otherDevice ? `\n${deviceSignInInstructions("Or, to sign in on another device", otherDevice)}` : "") +
       "\nWaiting for sign-in…\n",
     );
@@ -42787,7 +42792,7 @@ async function runAccountLogin(
     }
     // The browser sign-in was still open at the deadline: one last look at it.
     if (!result.browserStatus) return timedOut("pollLogin", sessionId);
-    if (result.timedOut) process.stderr.write("ADE account sign-in timed out.\n");
+    if (result.timedOut) process.stderr.write(`${BRAND.NAME} account sign-in timed out.\n`);
     return { output: formatOutput(result.browserStatus, options, "account-auth"), exitCode: 1 };
   } finally {
     // Best-effort and idempotent: cancellation must not mask the real result.
@@ -42821,11 +42826,11 @@ async function runGithubAppLogin(
     connection = await createConnection(options);
   } catch (error) {
     throw new CliExecutionError(
-      "Failed to initialize ADE CLI connection for github app-auth login.",
+      `Failed to initialize ${BRAND.NAME} CLI connection for github app-auth login.`,
       {
         cause: error instanceof Error ? error.message : String(error),
         nextAction:
-          "Verify --project-root points at an ADE project and run ade doctor --json.",
+          `Verify --project-root points at a ${BRAND.NAME} project and run daex doctor --json.`,
       },
     );
   }
@@ -42846,7 +42851,7 @@ async function runGithubAppLogin(
       const message = error instanceof Error ? error.message : String(error);
       if (/elevated role/i.test(message)) {
         throw new CliUsageError(
-          "github app-auth login authorizes the machine GitHub App and requires --role cto (e.g. `ade --role cto github app-auth login`).",
+          "github app-auth login authorizes the machine GitHub App and requires --role cto (e.g. `daex --role cto github app-auth login`).",
         );
       }
       throw error;
@@ -42886,7 +42891,7 @@ async function runGithubAppLogin(
         : Number.POSITIVE_INFINITY,
     );
     process.stderr.write(
-      `\nAuthorize the ADE GitHub App:\n` +
+      `\nAuthorize the ${BRAND.NAME} GitHub App:\n` +
         `  1. Open ${verificationUri}\n` +
         `  2. Enter code: ${userCode}\n` +
         (verificationUriComplete
@@ -43148,9 +43153,9 @@ function chatOwnerSocketWarning(value: unknown, connection: Pick<CliConnection, 
     if (same) return null;
   }
   return [
-    `ADE: this chat runs under another ADE brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""}),`,
+    `${BRAND.NAME}: this chat runs under another ${BRAND.NAME} brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""}),`,
     `not the one this CLI reached${cliSocketPath ? ` (${cliSocketPath})` : ""}. Its status here is not live and sends are refused.`,
-    owner.socketPath ? `Use: ade --socket "${owner.socketPath}" …` : "Use the ade CLI of the brain that owns it.",
+    owner.socketPath ? `Use: daex --socket "${owner.socketPath}" …` : "Use the ade CLI of the brain that owns it.",
   ].join(" ");
 }
 
@@ -43182,7 +43187,7 @@ function permissionLoweredNotice(
   // An unreadable posture counts as the top rung, so it never reads as lowered.
   const applied = sessionPermissionLevel(session as SessionPermissionFields, "full-auto");
   if (permissionLevelRank(applied) >= permissionLevelRank(requestedLevel)) return null;
-  return `note: ADE started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${requestedMode}': `
+  return `note: ${BRAND.NAME} started this chat at '${GENERIC_PERMISSION_WORD_BY_LEVEL[applied]}', not '${requestedMode}': `
     + "an agent cannot start a chat with more access than its own chat or parent has.";
 }
 
@@ -43270,7 +43275,7 @@ async function followShellToExit(
   const createdValue = unwrapActionEnvelope(started);
   const created = isRecord(createdValue) ? createdValue : {};
   const terminalId = asString(created.sessionId);
-  if (!terminalId) throw new CliExecutionError("The shell started, but ADE did not say which terminal it is.", { result: created });
+  if (!terminalId) throw new CliExecutionError(`The shell started, but ${BRAND.NAME} did not say which terminal it is.`, { result: created });
   const call = async (domain: string, action: string, args: JsonObject): Promise<unknown> =>
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
@@ -43319,8 +43324,8 @@ async function followShellToExit(
     ? ` --machine ${quoteShellArg(options.machine.trim())}${options.machineProject?.trim() ? ` --machine-project ${quoteShellArg(options.machineProject.trim())}` : ""}`
     : "";
   const ptyId = asString(created.ptyId);
-  const readAndStop = `Read it: ade terminal read --terminal ${terminalId}${onMachine} --text`
-    + (ptyId ? ` · stop it: ade shell close ${ptyId}${onMachine}` : "");
+  const readAndStop = `Read it: daex terminal read --terminal ${terminalId}${onMachine} --text`
+    + (ptyId ? ` · stop it: daex shell close ${ptyId}${onMachine}` : "");
   for (;;) {
     const read = await readMore();
     // A brain older than the read's status falls back to the terminal list.
@@ -43344,7 +43349,7 @@ async function followShellToExit(
     const quietMs = Date.now() - lastOutputAt;
     if (quietMs >= FOLLOW_SHELL_QUIET_LIMIT_MS) {
       throw new CliToolError(
-        `The command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_LIMIT_MS / 60_000)} minutes and still runs, so ADE stopped waiting for it. `
+        `The command printed nothing for ${Math.round(FOLLOW_SHELL_QUIET_LIMIT_MS / 60_000)} minutes and still runs, so ${BRAND.NAME} stopped waiting for it. `
           + `It can wait for input (a pager or a prompt). ${readAndStop}`,
         { terminalId, ...(ptyId ? { ptyId } : {}), status: "running" },
       );
@@ -43368,7 +43373,7 @@ async function followShellToExit(
  * machine's lanes.
  */
 async function laneNotFoundHint(connection: CliConnection): Promise<JsonObject> {
-  const nextAction = "The lane id is not in this project. `ade lanes list --text` lists its lanes; pass one of their ids with --lane.";
+  const nextAction = "The lane id is not in this project. `daex lanes list --text` lists its lanes; pass one of their ids with --lane.";
   const listed = await withTimeout(
     connection.request("ade/actions/call", { name: "list_lanes", arguments: { includeArchived: false } }).then((raw) => unwrapToolResult(raw)),
     3_000,
@@ -43488,7 +43493,7 @@ async function executePlan(
     const cause = error instanceof Error ? error.message : String(error);
     const sourceRuntimeInterop = isSourceRuntimeInteropError(cause);
     throw new CliExecutionError(
-      `Failed to initialize ADE CLI connection for ${plan.label}.`,
+      `Failed to initialize ${BRAND.NAME} CLI connection for ${plan.label}.`,
       {
         cause,
         requestedMode,
@@ -43496,12 +43501,12 @@ async function executePlan(
         workspaceRoot: roots.workspaceRoot,
         socketPath,
         nextAction: plan.machineOnly
-          ? "Start the machine-owned ADE brain with `ade brain start`, then retry."
+          ? `Start the machine-owned ${BRAND.NAME} brain with \`daex brain start\`, then retry.`
           : options.requireSocket
-            ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
+            ? `Open the ${BRAND.NAME} app for this channel, or run the \`daex\` on PATH in a ${BRAND.NAME} terminal or agent shell. \`--socket <endpoint>\` picks another brain.`
           : sourceRuntimeInterop
             ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
-            : "Verify --project-root points at an ADE project and run ade doctor --json.",
+            : `Verify --project-root points at a ${BRAND.NAME} project and run daex doctor --json.`,
       },
     );
   }
@@ -43549,7 +43554,7 @@ async function executePlan(
             }).then(() => true, () => false);
             throw new CliToolError(CLOUD_COMPUTER_MOVING_SENTENCE, {
               code: CLOUD_COMPUTER_MOVING_CODE,
-              ...(deleted ? {} : { sessionId: madeChatId, nextAction: `Delete the empty chat: \`ade chat delete ${madeChatId}\`.` }),
+              ...(deleted ? {} : { sessionId: madeChatId, nextAction: `Delete the empty chat: \`daex chat delete ${madeChatId}\`.` }),
             });
           }
           const createdSessionId = (
@@ -43560,14 +43565,14 @@ async function executePlan(
           if (createdSessionId && step.key === "result") {
             const cause = error instanceof Error ? error.message : String(error);
             throw new CliExecutionError(
-              `ADE created chat ${createdSessionId}, but the connected brain could not start its first turn.`,
+              `${BRAND.NAME} created chat ${createdSessionId}, but the connected brain could not start its first turn.`,
               {
                 cause,
                 sessionId: createdSessionId,
                 hostName: os.hostname(),
                 nextAction:
-                  `Update and restart ADE on ${os.hostname()}, then retry with `
-                  + `\`ade chat message ${createdSessionId} --kind auto --text \"<prompt>\"\`.`,
+                  `Update and restart ${BRAND.NAME} on ${os.hostname()}, then retry with `
+                  + `\`daex chat message ${createdSessionId} --kind auto --text \"<prompt>\"\`.`,
               },
             );
           }
@@ -43627,8 +43632,8 @@ async function executePlan(
         plan.label === "projects clone" && /already exists/i.test(cause)
           ? "Clone into another folder: add --name <dir> (a new folder name) or --path <folder> (where it goes)."
           : connection.mode === "desktop-socket"
-          ? "Check ADE desktop logs or retry with --headless if the workflow does not need UI-owned state."
-          : "Run ade doctor --json to inspect local project readiness, or start ADE desktop and retry with --socket.",
+          ? `Check ${BRAND.NAME} desktop logs or retry with --headless if the workflow does not need UI-owned state.`
+          : `Run daex doctor --json to inspect local project readiness, or start ${BRAND.NAME} desktop and retry with --socket.`,
     });
   } finally {
     await connection.close();
@@ -43674,7 +43679,7 @@ async function waitThroughBrowserApproval<T>(
       }
       if (now() >= deadline) {
         throw new CliToolError(
-          `${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}: the user has not answered the prompt to ${pending.waitingFor} after ${minutes} minutes. The prompt is still open in ADE; run the command again once they answer, or ask them to.`,
+          `${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}: the user has not answered the prompt to ${pending.waitingFor} after ${minutes} minutes. The prompt is still open in ${BRAND.NAME}; run the command again once they answer, or ask them to.`,
           { code: BUILT_IN_BROWSER_APPROVAL_PENDING_CODE, waitingFor: pending.waitingFor },
         );
       }
@@ -43694,11 +43699,11 @@ async function runChatWaitCommand(
     connection = await createConnection(options, { autoRegisterProject: true });
   } catch (error) {
     throw new CliExecutionError(
-      "Failed to initialize ADE CLI connection for chat wait.",
+      `Failed to initialize ${BRAND.NAME} CLI connection for chat wait.`,
       {
         cause: error instanceof Error ? error.message : String(error),
         nextAction:
-          "Verify --project-root points at an ADE project and run ade doctor --json.",
+          `Verify --project-root points at a ${BRAND.NAME} project and run daex doctor --json.`,
       },
     );
   }
@@ -43844,11 +43849,11 @@ async function runChatRecoverCommand(
     connection = await createConnection(options, { autoRegisterProject: true });
   } catch (error) {
     throw new CliExecutionError(
-      "Failed to initialize ADE CLI connection for chat recovery.",
+      `Failed to initialize ${BRAND.NAME} CLI connection for chat recovery.`,
       {
         cause: error instanceof Error ? error.message : String(error),
         nextAction:
-          "Verify --project-root points at an ADE project and run ade doctor --json.",
+          `Verify --project-root points at a ${BRAND.NAME} project and run daex doctor --json.`,
       },
     );
   }
@@ -43955,7 +43960,7 @@ function proofReviewNudgeLines(value: unknown, formatter?: FormatterId): string[
     if (isRecord(artifact) && (filedByScreen || asString(artifact.citation))) add(artifact.id);
   }
   if (!ids.size) return [];
-  return [`next: for proof a person will see, run ${[...ids].map((id) => `\`ade proof review ${id} --text\``).join(", ")} and fix what it shows (skill: ade-proof-artifacts)`];
+  return [`next: for proof a person will see, run ${[...ids].map((id) => `\`daex proof review ${id} --text\``).join(", ")} and fix what it shows (skill: ade-proof-artifacts)`];
 }
 
 /** The first line of a browser command's text output: which browser it ran in, when that needs saying. */
@@ -44051,7 +44056,7 @@ async function runResetCommand(
     planMachineReset,
   } = await import("./services/reset/machineReset");
   const deps = defaultMachineResetDeps({
-    log: (line) => process.stderr.write(`ade reset: ${line}\n`),
+    log: (line) => process.stderr.write(`daex reset: ${line}\n`),
   });
   if (plan.dryRun) {
     const resetPlan = planMachineReset(deps);
@@ -44068,13 +44073,13 @@ async function runResetCommand(
     const ancestor = findAdeAncestor(deps, { allowPid: plan.waitPid });
     if (ancestor) {
       throw new CliUsageError(
-        "This terminal runs inside ADE, and the reset would stop it half-way. Run `ade reset --all` from a terminal outside ADE (for example Terminal.app), or use Settings → About → Reset ADE.",
+        `This terminal runs inside ${BRAND.NAME}, and the reset would stop it half-way. Run \`daex reset --all\` from a terminal outside ${BRAND.NAME} (for example Terminal.app), or use Settings → About → Reset ${BRAND.NAME}.`,
       );
     }
   }
   if (!plan.yes) {
     if (!process.stdin.isTTY) {
-      throw new CliUsageError("ade reset --all asks you to type RESET first. Run it in a terminal, or pass --yes.");
+      throw new CliUsageError("daex reset --all asks you to type RESET first. Run it in a terminal, or pass --yes.");
     }
     process.stderr.write(formatMachineResetPlan(planMachineReset(deps)));
     const readline = await import("node:readline/promises");
@@ -44095,7 +44100,7 @@ async function runResetCommand(
     );
   } catch (error) {
     failure = error;
-    process.stderr.write(`ade reset: stopped before changing anything: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`daex reset: stopped before changing anything: ${error instanceof Error ? error.message : String(error)}\n`);
   }
   if (plan.relaunch) {
     try {
@@ -44116,7 +44121,7 @@ async function runResetCommand(
         : spawn(plan.relaunch, [], { detached: true, stdio: "ignore", windowsHide: false, env: appEnv });
       child.unref();
     } catch (error) {
-      process.stderr.write(`ade reset: could not reopen ${plan.relaunch}: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(`daex reset: could not reopen ${plan.relaunch}: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
   if (!receipt) throw failure instanceof Error ? failure : new Error(String(failure));
@@ -44244,16 +44249,16 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
   }
   if (selector.kind === "id" && !listed) {
     throw new CliUsageError(
-      `ADE has not read your account's projects on this computer, so it cannot find ${selector.id}. `
-      + `${ACCOUNT_SIGN_IN_NEXT_STEP} \`ade doctor\` shows the account state.`,
+      `${BRAND.NAME} has not read your account's projects on this computer, so it cannot find ${selector.id}. `
+      + `${ACCOUNT_SIGN_IN_NEXT_STEP} \`daex doctor\` shows the account state.`,
     );
   }
   const resolved = resolveAccountProject(selector, listed ? state.projects : {});
   if (resolved.kind === "unknown") {
-    throw new CliUsageError(`Your ADE account has no project ${typed}. \`ade projects list --account\` lists them.`);
+    throw new CliUsageError(`Your ${BRAND.NAME} account has no project ${typed}. \`daex projects list --account\` lists them.`);
   }
   if (resolved.kind === "removed") {
-    throw new CliUsageError(`${resolved.name} was removed from your ADE account. Add it again from ADE to use it.`);
+    throw new CliUsageError(`${resolved.name} was removed from your ${BRAND.NAME} account. Add it again from ${BRAND.NAME} to use it.`);
   }
   if (remote) {
     // The other machine matches the final id or the repository address.
@@ -44273,8 +44278,8 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
     throw new CliUsageError(
       `${resolved.name} has no copy on this computer. `
       + (elsewhere > 0
-        ? `It has ${elsewhere} ${elsewhere === 1 ? "copy" : "copies"} on other computers: \`ade projects list --account\` shows where; add --machine <name> to run there.`
-        : "No computer has a copy yet: `ade projects clone <owner/name>` adds one here."),
+        ? `It has ${elsewhere} ${elsewhere === 1 ? "copy" : "copies"} on other computers: \`daex projects list --account\` shows where; add --machine <name> to run there.`
+        : "No computer has a copy yet: `daex projects clone <owner/name>` adds one here."),
     );
   }
   options.projectRoot = copy.rootPath;
@@ -44445,7 +44450,7 @@ async function runParsedCli(
       });
       if (!catalog) {
         const topic = plan.catalogTopic ?? "";
-        throw new CliUsageError(`Unknown help topic '${topic}'. Run 'ade help'.`);
+        throw new CliUsageError(`Unknown help topic '${topic}'. Run 'daex help'.`);
       }
       output = `${JSON.stringify(catalog, null, 2)}\n`;
     } else {
@@ -44488,7 +44493,7 @@ async function runParsedCli(
     && parsed.options.headless
   ) {
     throw new CliUsageError(
-      "Personal chats require the machine-owned ADE brain; remove --headless and run `ade brain start` if the brain is not already available.",
+      `Personal chats require the machine-owned ${BRAND.NAME} brain; remove --headless and run \`daex brain start\` if the brain is not already available.`,
     );
   }
   // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime
@@ -44663,11 +44668,11 @@ async function runParsedCli(
       if (parsed.options.text) {
         const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
         const nextStep = !plan.send
-          ? "\nTo send this report to the ADE team privately, run `ade report-issue --send`. Do not post it on a public page."
+          ? `\nTo send this report to the ${BRAND.NAME} team privately, run \`daex report-issue --send\`. Do not post it on a public page.`
           : publicUrl
             ? opened
-              ? `\nOpened a public GitHub issue that holds only the reference, ADE version and OS:\n${publicUrl}`
-              : `\nTo also open a public GitHub issue (it holds only the reference, ADE version and OS), use:\n${publicUrl}`
+              ? `\nOpened a public GitHub issue that holds only the reference, ${BRAND.NAME} version and OS:\n${publicUrl}`
+              : `\nTo also open a public GitHub issue (it holds only the reference, ${BRAND.NAME} version and OS), use:\n${publicUrl}`
             : "";
         const openNote = plan.open && !publicUrl
           ? "\nNothing opened: a public GitHub issue needs a report sent with --send."
@@ -44788,9 +44793,9 @@ async function runParsedCli(
       // A company root CA the OS trusts (a TLS-inspecting proxy) is not in
       // Node's bundled set; read the OS store off the loop and add it.
       // The brain's log says once whether the environment's proxy is in use.
-      if (outboundProxyConfigured) process.stderr.write("ADE: outbound requests use the proxy from HTTPS_PROXY/HTTP_PROXY.\n");
+      if (outboundProxyConfigured) process.stderr.write(`${BRAND.NAME}: outbound requests use the proxy from HTTPS_PROXY/HTTP_PROXY.\n`);
       if (outboundProxyUnsupported) {
-        process.stderr.write(`ADE: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.14 or newer can); outbound requests go direct.\n`);
+        process.stderr.write(`${BRAND.NAME}: HTTPS_PROXY/HTTP_PROXY is set, but Node ${process.versions.node} cannot apply it (Node 24.14 or newer can); outbound requests go direct.\n`);
       }
       void trustSystemCertificates(networkWarningLogger);
       const result = await runServe(plan.rest, parsed.options);
@@ -44853,7 +44858,7 @@ async function runParsedCli(
       const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath, surface);
       return {
         output: parsed.options.text
-          ? `${surface === "browser" ? browserTargetLine(unwrapActionEnvelope(result)) : ""}${renderKeyValues(surface === "browser" ? "ADE browser screenshot" : "ADE App Control screenshot", [
+          ? `${surface === "browser" ? browserTargetLine(unwrapActionEnvelope(result)) : ""}${renderKeyValues(surface === "browser" ? `${BRAND.NAME} browser screenshot` : `${BRAND.NAME} App Control screenshot`, [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],
@@ -44941,7 +44946,7 @@ const networkWarningLogger = {
       outboundProxyUnsupported = true;
       return;
     }
-    process.stderr.write(`ADE: ${event} ${JSON.stringify(meta ?? {})}\n`);
+    process.stderr.write(`${BRAND.NAME}: ${event} ${JSON.stringify(meta ?? {})}\n`);
   },
 };
 
@@ -45016,7 +45021,7 @@ async function main(): Promise<void> {
     if (error instanceof CliUsageError) {
       await writeProcessOutput(
         process.stderr,
-        `ade: ${error.message}\nRun 'ade help'.\n`,
+        `ade: ${error.message}\nRun 'daex help'.\n`,
       );
       process.exitCode = 2;
       return;

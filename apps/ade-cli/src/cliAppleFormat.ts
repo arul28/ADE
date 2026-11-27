@@ -10,6 +10,7 @@
  */
 import { asString, isRecord, renderKeyValues, unwrapActionEnvelope } from "./cli";
 import { describeAppleWindowOffScreen } from "../../desktop/src/main/services/ios/appleWindowLayout";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /** The answer inside an `ade apple lease` result, however it was wrapped. */
 export function appleLeaseAnswer(result: unknown): unknown {
@@ -41,14 +42,14 @@ export function appleLeaseNotAcquired(result: unknown): boolean {
 export function shapeAppleLeaseAnswer(result: unknown, sent: { askedDevice: boolean; tokenSent: boolean }): unknown {
   const value = appleLeaseAnswer(result);
   if (!isRecord(value) || Object.prototype.hasOwnProperty.call(value, "device")) return value;
-  const upgrade = "Update the ADE brain on that machine (ade brain update, or update ADE.app) for per-device leases.";
+  const upgrade = `Update the ${BRAND.NAME} brain on that machine (daex brain update, or update ADE.app) for per-device leases.`;
   if (value.acquired === true && value.renewed === true && !sent.tokenSent) {
     const { token: _othersToken, ...rest } = value;
     return {
       ...rest,
       acquired: false,
       olderBrain: true,
-      message: `This ADE brain is older: it renews a lease by holder name, so this call matched the turn of ${asString(value.holder) ?? "another agent"} `
+      message: `This ${BRAND.NAME} brain is older: it renews a lease by holder name, so this call matched the turn of ${asString(value.holder) ?? "another agent"} `
         + "(another agent of this chat, or your own earlier call) instead of queueing. That turn is not yours; its token is not shown. "
         + `Pass a distinct --holder <name>, or renew your own with --token <t>. ${upgrade}`,
     };
@@ -58,9 +59,9 @@ export function shapeAppleLeaseAnswer(result: unknown, sent: { askedDevice: bool
       ...value,
       ...(value.acquired === true ? { acquired: false } : {}),
       olderBrain: true,
-      message: "This ADE brain is older and has one lease per lane: it ignored --device and answered for the lane's own device. "
+      message: `This ${BRAND.NAME} brain is older and has one lease per lane: it ignored --device and answered for the lane's own device. `
         + (value.acquired === true && asString(value.token)
-          ? `It gave you that lease; release it with ade apple lease release --token ${asString(value.token)}. `
+          ? `It gave you that lease; release it with daex apple lease release --token ${asString(value.token)}. `
           : "")
         + upgrade,
     };
@@ -95,7 +96,7 @@ export function formatAppleWindow(value: unknown): string {
   } else {
     lines.push(`${action} did not land: ${asString(result.reason) ?? `the window is ${frame(result.after) ?? "unreadable"}`}`);
   }
-  lines.push("", renderKeyValues("ADE Apple window", [
+  lines.push("", renderKeyValues(`${BRAND.NAME} Apple window`, [
     ["action", action],
     ["applied", result.applied === true ? "yes" : "no"],
     ["app", result.bundleId],
@@ -127,10 +128,10 @@ export function formatAppleInstall(value: unknown): string {
   const lines = [
     `${verb} ${asString(result.bundleId) ?? "the app"} on ${where}.`,
     result.launched === true
-      ? `Started it${typeof result.pid === "number" ? ` (pid ${result.pid})` : ""}. Check it with: ade apple foreground --device ${asString(result.deviceUdid) ?? "<udid>"} --text`
-      : `Start it with: ade apple relaunch --bundle-id ${asString(result.bundleId) ?? "<id>"} --device ${asString(result.deviceUdid) ?? "<udid>"} --text`,
+      ? `Started it${typeof result.pid === "number" ? ` (pid ${result.pid})` : ""}. Check it with: daex apple foreground --device ${asString(result.deviceUdid) ?? "<udid>"} --text`
+      : `Start it with: daex apple relaunch --bundle-id ${asString(result.bundleId) ?? "<id>"} --device ${asString(result.deviceUdid) ?? "<udid>"} --text`,
     "",
-    renderKeyValues("ADE Apple app install", [
+    renderKeyValues(`${BRAND.NAME} Apple app install`, [
       ["device", result.deviceName],
       ["udid", result.deviceUdid],
       ["extra", result.extra === true ? "yes" : "no"],
@@ -194,7 +195,7 @@ export function formatAppleLease(value: unknown): string {
   const DeviceName = asString(device.name) ?? (device.extra === true ? "The extra device" : "The lane's device");
   const deviceFlag = device.extra === true && asString(device.udid) ? ` --device ${asString(device.udid)}` : "";
   if (result.olderBrain === true) {
-    return [asString(result.message) ?? "This ADE brain is older and does not support per-device lease turns.", "", renderKeyValues("ADE Apple device lease", [
+    return [asString(result.message) ?? `This ${BRAND.NAME} brain is older and does not support per-device lease turns.`, "", renderKeyValues(`${BRAND.NAME} Apple device lease`, [
       ["acquired", "no"],
       ["holder", result.holder ?? (isRecord(result.current) ? result.current.holder : null)],
     ])].join("\n");
@@ -206,7 +207,7 @@ export function formatAppleLease(value: unknown): string {
     return [
       leaseHeldLine(result, DeviceName),
       "",
-      renderKeyValues("ADE Apple device lease", [
+      renderKeyValues(`${BRAND.NAME} Apple device lease`, [
         ["held", result.held ? "yes" : "no"],
         ["holder", current.holder],
         ["since", current.acquiredAt],
@@ -223,9 +224,9 @@ export function formatAppleLease(value: unknown): string {
   if (result.acquired === true) {
     const token = asString(result.token) ?? "<token>";
     return [
-      ...leaseAcquiredLines(result, deviceName, { renew: `ade apple lease${deviceFlag}`, release: `ade apple lease release${deviceFlag}` }),
+      ...leaseAcquiredLines(result, deviceName, { renew: `daex apple lease${deviceFlag}`, release: `daex apple lease release${deviceFlag}` }),
       "",
-      renderKeyValues("ADE Apple device lease", [
+      renderKeyValues(`${BRAND.NAME} Apple device lease`, [
         ["acquired", "yes"],
         ["renewed", result.renewed === true ? "yes" : "no"],
         ["holder", result.holder],
@@ -246,7 +247,7 @@ export function formatAppleLease(value: unknown): string {
     lines.push("It is held under your own holder name: another agent of this chat has it, or it is your own turn and this call had no token. "
       + "Renew your own with --token <t>; otherwise wait for it (lease --wait <seconds>).");
   }
-  lines.push("", renderKeyValues("ADE Apple device lease", [
+  lines.push("", renderKeyValues(`${BRAND.NAME} Apple device lease`, [
     ["acquired", "no"],
     ["holder", current.holder],
     ["expires", current.expiresAt],
@@ -306,12 +307,12 @@ export function formatAppleTests(value: unknown): string {
 /** `device-delete`: which device went, or that the lane had none. */
 export function formatAppleDeviceDelete(value: unknown): string {
   // An ADE from before the answer named the device sends nothing back.
-  if (!isRecord(value)) return "Done. Run ade apple device-list --text to see the devices this lane holds now.";
+  if (!isRecord(value)) return "Done. Run daex apple device-list --text to see the devices this lane holds now.";
   const deleted = isRecord(value.deleted) ? value.deleted : null;
   if (!deleted) {
     const notFound = asString(value.notFound);
     return notFound
-      ? `This lane holds no device ${notFound}, so nothing was deleted. ade apple device-list --text shows the ones it holds.`
+      ? `This lane holds no device ${notFound}, so nothing was deleted. daex apple device-list --text shows the ones it holds.`
       : "This lane had no Apple device, so nothing was deleted.";
   }
   const name = asString(deleted.name) ?? asString(deleted.udid) ?? "The device";
@@ -319,11 +320,11 @@ export function formatAppleDeviceDelete(value: unknown): string {
     ? `Released ${name} from this lane; the user attached it, so the simulator stays installed.`
     : deleted.extra === true
     ? `Deleted the extra device ${name}; the lane's own device is unchanged.`
-    : `Deleted ${name}, this lane's device; the lane has no device now. ade apple start gives it a new one.`;
+    : `Deleted ${name}, this lane's device; the lane has no device now. daex apple start gives it a new one.`;
   return [
     summary,
     "",
-    renderKeyValues("ADE Apple device delete", [
+    renderKeyValues(`${BRAND.NAME} Apple device delete`, [
       ["udid", deleted.udid],
       ["device", deleted.name],
       ["extra", deleted.extra === true],
@@ -355,7 +356,7 @@ export function formatAppleDeviceStop(value: unknown): string {
   const udid = asString(result.udid);
   if (!udid) return "This lane has no Apple device, so nothing was powered off.";
   const power = result.poweredOff === true ? "powered off" : "off";
-  const kept = result.stillRegistered === true ? " and stays this lane's device: the next ade apple start boots it again" : "";
+  const kept = result.stillRegistered === true ? " and stays this lane's device: the next daex apple start boots it again" : "";
   return asString(result.note) ?? `${udid} is ${power}${kept}.`;
 }
 

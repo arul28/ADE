@@ -35,6 +35,7 @@ import {
   GH_TOKEN_SOURCE_ENV,
 } from "../../desktop/src/main/services/github/githubSessionEnv";
 import { GH_TOKEN_ENDPOINT_ENV, GH_TOKEN_USE_UPLOAD } from "../../desktop/src/main/services/github/githubShellShim";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 export type ProofPublishResult = {
   prUrl: string;
@@ -47,7 +48,9 @@ export type ProofPublishResult = {
 };
 
 /** The last line of every proof comment ADE posts; `replace` finds earlier ones by it. */
-const PROOF_COMMENT_FOOTER = "<sub>Posted by ADE from the chat's proof.</sub>";
+const PROOF_COMMENT_FOOTER = `<sub>Posted by ${BRAND.NAME} from the chat's proof.</sub>`;
+/** The footer comments posted before the rename carry; `replace` still finds them. */
+const LEGACY_PROOF_COMMENT_FOOTER = "<sub>Posted by ADE from the chat's proof.</sub>";
 
 /** How long each `gh` call may run. An upload of up to 100 MB gets the longest. */
 export const GH_TIMEOUTS_MS = { quick: 30_000, upload: 10 * 60_000 } as const;
@@ -77,8 +80,8 @@ export function assertGhSupportsAttach(run: typeof spawnSync = spawnSync): void 
 
 /** What to do when only ADE's GitHub App sign-in could upload, which GitHub refuses. */
 export const GH_UPLOAD_NEEDS_GH_LOGIN =
-  "GitHub does not take file uploads from ADE's GitHub App sign-in, and it is the only GitHub sign-in this command has. " +
-  "Run gh auth login on this computer, or on one of your own computers (ADE shares that login with your account), then run this again.";
+  `GitHub does not take file uploads from ${BRAND.NAME}'s GitHub App sign-in, and it is the only GitHub sign-in this command has. ` +
+  `Run gh auth login on this computer, or on one of your own computers (${BRAND.NAME} shares that login with your account), then run this again.`;
 
 /** GitHub App tokens: user-to-server and installation. The upload endpoint refuses most of them. */
 const isGithubAppToken = (token: string): boolean => /^gh[us]_/.test(token);
@@ -245,7 +248,7 @@ function deleteEarlierProofComments(args: {
   }
   const list = args.run(
     "gh",
-    ["api", "--paginate", `repos/${owner}/${repo}/issues/${number}/comments`, "--jq", `.[] | [.id, .user.login, (.body | contains(${JSON.stringify(PROOF_COMMENT_FOOTER)}))] | @tsv`],
+    ["api", "--paginate", `repos/${owner}/${repo}/issues/${number}/comments`, "--jq", `.[] | [.id, .user.login, (.body | (contains(${JSON.stringify(PROOF_COMMENT_FOOTER)}) or contains(${JSON.stringify(LEGACY_PROOF_COMMENT_FOOTER)})))] | @tsv`],
     { encoding: "utf8", cwd: args.cwd, env: args.env, timeout: GH_TIMEOUTS_MS.upload },
   );
   if (list.status !== 0) {

@@ -44,6 +44,7 @@ import {
   resolveGithubMilestone,
   type GithubRepoRef,
 } from "./issueCliFields";
+import { BRAND } from "../../desktop/src/shared/brand";
 /**
  * The repo a `github issue` command works on: `--repo`, a repo named in the
  * issue reference (`owner/name#12` or a URL), else the project's origin read
@@ -186,7 +187,7 @@ export function buildGithubIssuePlan(args: string[]): CliPlan {
     derivedActionStep("current", "github", "getIssue", (values) => ({ args: { ...repo(values), number } }));
   const currentIssue = (values: JsonObject, number: number): JsonObject => {
     const issue = unwrapActionEnvelope(values.current);
-    if (!isRecord(issue)) throw new CliUsageError(`GitHub issue #${number} was not found, or ADE could not read it.`);
+    if (!isRecord(issue)) throw new CliUsageError(`GitHub issue #${number} was not found, or ${BRAND.NAME} could not read it.`);
     return issue;
   };
 
@@ -198,7 +199,7 @@ export function buildGithubIssuePlan(args: string[]): CliPlan {
   const writableIssue = (values: JsonObject, number: number): JsonObject => {
     const issue = currentIssue(values, number);
     if (issue.pull_request != null) {
-      throw new CliUsageError(`#${number} is a pull request, not an issue. Use 'ade prs' for pull requests.`);
+      throw new CliUsageError(`#${number} is a pull request, not an issue. Use 'daex prs' for pull requests.`);
     }
     return issue;
   };
@@ -242,7 +243,7 @@ export function buildGithubIssuePlan(args: string[]): CliPlan {
       shapeResult: (values) => {
         const issue = unwrapActionEnvelope(values.result);
         if (!isRecord(issue)) {
-          throw new CliToolError(`GitHub issue #${ref.number} was not found, or ADE could not read it.`, {});
+          throw new CliToolError(`GitHub issue #${ref.number} was not found, or ${BRAND.NAME} could not read it.`, {});
         }
         if (!withComments) return issue;
         const comments = unwrapActionEnvelope(values.comments);

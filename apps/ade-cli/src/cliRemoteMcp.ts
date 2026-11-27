@@ -15,38 +15,39 @@ import {
 } from "../../desktop/src/shared/types/remoteMcp";
 import { CliUsageError, isRecord, readFlag, readValue, type CliPlan } from "./cli";
 import { rosterStateWords } from "./services/remoteMcp/remoteMcpForward";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 export const REMOTE_MCP_HELP = `
-  ADE MCP
+  ${BRAND.NAME} MCP
 
   Lets AI apps you choose (claude.ai, ChatGPT, Cursor, Claude Code, VS Code,
-  Grok, or anything that speaks remote MCP) run ade on the machines of your
-  ADE account through ADE Relay: one server URL for the account, and an app
+  Grok, or anything that speaks remote MCP) run daex on the machines of your
+  ${BRAND.NAME} account through ${BRAND.NAME} Relay: one server URL for the account, and an app
   can name the machine each call runs on. Off until you turn it on. Each app
   or token is read only or read & write (full access), and you can change or
   remove it any time.
 
-    $ ade mcp status --text                  On or off, the server URL, the machines and every connection
-    $ ade mcp on | off                       Turn ADE MCP on or off for your ADE account
-    $ ade mcp machine exclude "Mac mini"     Leave a machine out (include brings it back)
-    $ ade mcp machine include "Mac mini"
-    $ ade mcp token create --label "Grok" --read-only --text
-    $ ade mcp token create --label "Grok" --full-access --text
-    $ ade mcp token create --label "Grok" --scope read|write --text
+    $ daex mcp status --text                  On or off, the server URL, the machines and every connection
+    $ daex mcp on | off                       Turn ${BRAND.NAME} MCP on or off for your ${BRAND.NAME} account
+    $ daex mcp machine exclude "Mac mini"     Leave a machine out (include brings it back)
+    $ daex mcp machine include "Mac mini"
+    $ daex mcp token create --label "Grok" --read-only --text
+    $ daex mcp token create --label "Grok" --full-access --text
+    $ daex mcp token create --label "Grok" --scope read|write --text
                                              A token for apps that send a header (shown once)
-    $ ade mcp scope <connection-id> read|write
+    $ daex mcp scope <connection-id> read|write
                                              Change what a connection may do
-    $ ade mcp remove <connection-id>         Disconnect an app or revoke a token
-    $ ade mcp activity [--limit 50] --text   What connected apps ran on this machine, newest first
+    $ daex mcp remove <connection-id>         Disconnect an app or revoke a token
+    $ daex mcp activity [--limit 50] --text   What connected apps ran on this machine, newest first
 
-  The MCP servers your agents get are a different list: 'ade mcp servers --help'.
-  'ade mcp remove' does not touch them; 'ade mcp servers remove <name>' does.
+  The MCP servers your agents get are a different list: 'daex mcp servers --help'.
+  'daex mcp remove' does not touch them; 'daex mcp servers remove <name>' does.
 
   Two ways to connect an app:
-    Sign in   Add the server URL from 'ade mcp status' as a custom connector.
-              The app opens ADE sign-in: sign in to your ADE account, pick
+    Sign in   Add the server URL from 'daex mcp status' as a custom connector.
+              The app opens ${BRAND.NAME} sign-in: sign in to your ${BRAND.NAME} account, pick
               the access, and allow it.
-    Token     Run 'ade mcp token create', then send the token in the app's
+    Token     Run 'daex mcp token create', then send the token in the app's
               MCP settings as "Authorization: Bearer <token>".
 `;
 
@@ -55,7 +56,7 @@ function call(label: string, action: RemoteMcpAction, args: Record<string, unkno
     kind: "execute",
     label,
     formatter: "remote-mcp",
-    needsLiveRuntime: "ADE MCP",
+    needsLiveRuntime: `${BRAND.NAME} MCP`,
     // Like `ade logout`: the person's terminal asserts the operator role. The
     // brain clamps it to its ceiling and refuses any chat-bound agent.
     connectRole: "cto",
@@ -98,14 +99,14 @@ export function buildRemoteMcpPlan(input: readonly string[]): CliPlan {
       // Names may have spaces: the words after the verb are the name.
       const name = words.slice(2).join(" ").trim();
       if ((verb !== "include" && verb !== "exclude") || !name) {
-        throw new CliUsageError("Usage: ade mcp machine include|exclude <name or machine key>");
+        throw new CliUsageError("Usage: daex mcp machine include|exclude <name or machine key>");
       }
       return call(`mcp machine ${verb}`, "setMachineIncluded", { machine: name, included: verb === "include" });
     }
     case "token": {
       if ((words[1] ?? "create") !== "create") {
         throw new CliUsageError(
-          "Usage: ade mcp token create [--label <name>] (--read-only | --full-access | --scope read|write)",
+          "Usage: daex mcp token create [--label <name>] (--read-only | --full-access | --scope read|write)",
         );
       }
       const accessOptions = Number(readOnly) + Number(fullAccess) + Number(scopeFlag !== null);
@@ -120,12 +121,12 @@ export function buildRemoteMcpPlan(input: readonly string[]): CliPlan {
     }
     case "scope": {
       const id = words[1];
-      if (!id || !words[2]) throw new CliUsageError("Usage: ade mcp scope <connection-id> read|write");
+      if (!id || !words[2]) throw new CliUsageError("Usage: daex mcp scope <connection-id> read|write");
       return call("mcp scope", "updateConnection", { id, scope: parseScopeWord(words[2]) });
     }
     case "remove": {
       const id = words[1];
-      if (!id) throw new CliUsageError("Usage: ade mcp remove <connection-id>");
+      if (!id) throw new CliUsageError("Usage: daex mcp remove <connection-id>");
       return call("mcp remove", "removeConnection", { id });
     }
     case "activity": {
@@ -133,7 +134,7 @@ export function buildRemoteMcpPlan(input: readonly string[]): CliPlan {
       return call("mcp activity", "listActivity", { limit: Number.isFinite(limit) ? limit : 50 });
     }
     default:
-      throw new CliUsageError(`Unknown 'ade mcp' command '${sub}'. Run 'ade mcp help'.`);
+      throw new CliUsageError(`Unknown 'daex mcp' command '${sub}'. Run 'daex mcp help'.`);
   }
 }
 
@@ -179,7 +180,7 @@ function connectionLine(connection: Record<string, unknown>): string {
 export function formatRemoteMcpResult(value: unknown): string {
   const result = isRecord(value) && "result" in value ? value.result : value;
   if (Array.isArray(result)) {
-    if (result.length === 0) return "No ADE MCP activity yet.";
+    if (result.length === 0) return `No ${BRAND.NAME} MCP activity yet.`;
     return result.filter(isRecord).map((entry) => {
       const exit = entry.exitCode === null || entry.exitCode === undefined ? "" : ` exit ${String(entry.exitCode)}`;
       const detail = typeof entry.detail === "string" ? ` — ${entry.detail}` : "";
@@ -207,13 +208,13 @@ export function formatRemoteMcpResult(value: unknown): string {
   }
   if (Array.isArray(result.connections)) {
     if (result.signedIn === false) {
-      return "ADE MCP needs an ADE account. Sign in on this computer (ade login), then run 'ade mcp on'.";
+      return `${BRAND.NAME} MCP needs a ${BRAND.NAME} account. Sign in on this computer (daex login), then run 'daex mcp on'.`;
     }
     const accountOn = result.enabled === true;
     const thisServing = result.thisMachineServing === true;
     const lines = [
-      `ADE MCP for your ADE account: ${accountOn ? "ON" : "off"}`,
-      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? "not on this computer yet (no relay address, or the account's ADE MCP key hasn't arrived: see below)" : "made when you turn it on"}`,
+      `${BRAND.NAME} MCP for your ${BRAND.NAME} account: ${accountOn ? "ON" : "off"}`,
+      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? `not on this computer yet (no relay address, or the account's ${BRAND.NAME} MCP key hasn't arrived: see below)` : "made when you turn it on"}`,
       `This computer (${String(result.machineName)}): ${thisServing ? "serving" : "not serving"}, relay ${result.relayConnected === true ? "connected" : "not connected"}`,
       ...(isRecord(result.vault) ? [vaultLine(result.vault)] : []),
     ];
@@ -223,7 +224,7 @@ export function formatRemoteMcpResult(value: unknown): string {
       for (const machine of machines) lines.push(machineLine(machine));
     }
     const connections = result.connections.filter(isRecord);
-    lines.push(connections.length ? `Connections (${connections.length}):` : "No connections yet. Add the server URL to an app, or run 'ade mcp token create'.");
+    lines.push(connections.length ? `Connections (${connections.length}):` : "No connections yet. Add the server URL to an app, or run 'daex mcp token create'.");
     for (const connection of connections) lines.push(connectionLine(connection));
     return lines.join("\n");
   }

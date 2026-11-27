@@ -12,6 +12,7 @@ import { ANDROID_ACCESSIBILITY_LABELS, ANDROID_ACCESSIBILITY_OPTIONS } from "../
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 import { appleLeaseAnswer, leaseAcquiredLines, leaseHeldLine, leaseReleasedLine } from "./cliAppleFormat";
+import { BRAND } from "../../desktop/src/shared/brand";
 
 /* ── Text output ──────────────────────────────────────────────────────────── */
 
@@ -47,7 +48,7 @@ function laneDeviceLines(lane: JsonObject): string[] {
   const running = avd && isRecord(avd.running) ? avd.running : null;
   const error = isRecord(lane.error) ? lane.error : null;
   const lines = [
-    renderKeyValues("ADE Android emulator (lane)", [
+    renderKeyValues(`${BRAND.NAME} Android emulator (lane)`, [
       ["lane", lane.laneId],
       ["state", lane.state],
       ["avd", device?.avdName ?? avd?.name ?? null],
@@ -64,7 +65,7 @@ function laneDeviceLines(lane: JsonObject): string[] {
       ["keep running", lane.keepRunning === true
         ? "yes"
         : lane.keepRunning === false
-          ? typeof lane.idleStopMinutes === "number" ? `no (ADE stops it after ${lane.idleStopMinutes} min unused)` : "no"
+          ? typeof lane.idleStopMinutes === "number" ? `no (${BRAND.NAME} stops it after ${lane.idleStopMinutes} min unused)` : "no"
           : null],
     ]),
   ];
@@ -78,7 +79,7 @@ function laneDeviceLines(lane: JsonObject): string[] {
   if (crash) {
     const app = asString(crash.packageName) ?? "the app";
     lines.push("", `app crash: ${app}: ${asString(crash.summary) ?? ""}`.trimEnd());
-    lines.push(`next: ade android log${asString(crash.packageName) ? ` --package ${asString(crash.packageName)}` : ""} --level error`);
+    lines.push(`next: daex android log${asString(crash.packageName) ? ` --package ${asString(crash.packageName)}` : ""} --level error`);
   }
   // The lane's extra devices (`device-create --extra`), each reached with --device.
   const extras = records(lane.extras);
@@ -99,13 +100,13 @@ function laneDeviceLines(lane: JsonObject): string[] {
   }
   if (!device) {
     lines.push("", extras.length
-      ? "next: ade android device-promote --device <avd> makes an extra the lane's device, or ade android device-create --profile <id>"
-      : "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
+      ? "next: daex android device-promote --device <avd> makes an extra the lane's device, or daex android device-create --profile <id>"
+      : "next: daex android device-create --profile <id> (daex android devices --profiles lists them), or daex android device-attach --avd <name>");
   } else if (lane.state === "off" || lane.state === "crashed") {
     // Parity: the idle stop (`ADE_ANDROID_IDLE_POWER_OFF_MINUTES`) or `device-cleanup --power-off-idle` powered it off; the device stays the lane's.
     const poweredOff = isRecord(lane.poweredOff) ? lane.poweredOff : null;
     if (poweredOff) lines.push("", `powered off: idle ${String(poweredOff.idleMinutes)} min, at ${asString(poweredOff.at) ?? "?"}`);
-    lines.push("", "next: ade android start");
+    lines.push("", "next: daex android start");
   }
   return lines;
 }
@@ -116,7 +117,7 @@ export function formatAndroidStatus(value: unknown): string {
   const acceleration = isRecord(sdk.acceleration) ? sdk.acceleration : {};
   const tools = records(sdk.tools);
   const lines = [
-    renderKeyValues("ADE Android emulator", [
+    renderKeyValues(`${BRAND.NAME} Android emulator`, [
       ["supported", yesNo(status.platformSupported)],
       ["unsupported", status.unsupportedReason],
       ["sdk", sdk.found === true ? asString(sdk.root) ?? "found" : "not found"],
@@ -149,12 +150,12 @@ export function formatAndroidStatus(value: unknown): string {
       capabilities.logcat === true ? "logcat" : null,
       capabilities.gradle === true ? "gradle" : null,
     ].filter(Boolean);
-    lines.push("", `can: ${can.length ? can.join(", ") : "nothing yet (set up the SDK: ade android sdk status --text)"}`);
+    lines.push("", `can: ${can.length ? can.join(", ") : "nothing yet (set up the SDK: daex android sdk status --text)"}`);
     if ("jdk" in capabilities) {
       const jdk = isRecord(capabilities.jdk) ? capabilities.jdk : null;
       lines.push(jdk
         ? `jdk: ${asString(jdk.version) ?? "version unknown"} (${asString(jdk.source) ?? "found"}) ${asString(jdk.home) ?? ""}`.trimEnd()
-        : "jdk: none found, so Gradle builds cannot run. Install Android Studio or a JDK 17+, or set JAVA_HOME for ADE.");
+        : `jdk: none found, so Gradle builds cannot run. Install Android Studio or a JDK 17+, or set JAVA_HOME for ${BRAND.NAME}.`);
     }
   }
   if (isRecord(status.lane)) lines.push("", ...laneDeviceLines(status.lane));
@@ -176,7 +177,7 @@ function formatAvdTable(avds: JsonObject[]): string {
         yesNo(avd.adeCreated),
       ];
     }),
-    "No AVDs on this machine. Make one: ade android device-create --profile <id>.",
+    "No AVDs on this machine. Make one: daex android device-create --profile <id>.",
     { fullColumns: ["avd", "lane"] },
   );
 }
@@ -208,7 +209,7 @@ export function formatAndroidDevices(value: unknown, options: { profiles?: boole
       { fullColumns: ["id"] },
     ));
   } else {
-    lines.push(`Hardware profiles  ${profiles.length} (list them: ade android devices --profiles --text)`);
+    lines.push(`Hardware profiles  ${profiles.length} (list them: daex android devices --profiles --text)`);
   }
   return lines.join("\n");
 }
@@ -219,7 +220,7 @@ export function formatAndroidDevice(value: unknown): string {
 
 export function formatAndroidRelease(value: unknown): string {
   const result = record(value);
-  return renderKeyValues("ADE Android emulator release", [
+  return renderKeyValues(`${BRAND.NAME} Android emulator release`, [
     ["released", yesNo(result.released)],
     ["extra device", result.extra === true ? "yes" : null],
     ["deleted avd", result.deletedAvd ?? (result.released === true ? "(kept)" : null)],
@@ -242,7 +243,7 @@ export function formatAndroidDevicePromote(value: unknown): string {
   return [
     previous ? `${name} is now this lane's device.` : `${name} is this lane's device.`,
     ...(kept ? [kept] : []),
-    lane?.state === "booted" ? "It runs: ade android show opens it." : "ade android start boots it.",
+    lane?.state === "booted" ? "It runs: daex android show opens it." : "daex android start boots it.",
     "",
     ...(lane ? laneDeviceLines(lane) : []),
   ].join("\n");
@@ -252,12 +253,12 @@ export function formatAndroidScreenshot(value: unknown): string {
   const shot = record(value);
   const filePath = asString(shot.path);
   return [
-    renderKeyValues("ADE Android screenshot", [
+    renderKeyValues(`${BRAND.NAME} Android screenshot`, [
       ["size", shot.width && shot.height ? `${shot.width}x${shot.height}` : null],
       ["bytes", shot.bytes],
       ["captured", shot.capturedAt],
       ["caption", shot.caption],
-      ["proof", asString(shot.proofArtifactId) ? "filed (ade proof list)" : null],
+      ["proof", asString(shot.proofArtifactId) ? "filed (daex proof list)" : null],
     ]),
     // Printed raw rather than as a table cell: agents Read this path back,
     // and the key/value renderer truncates long values.
@@ -306,7 +307,7 @@ export function formatAndroidSettings(value: unknown): string {
   const network = record(settings.network);
   const density = record(settings.density);
   const onOff = (flag: unknown) => (flag === true ? "on" : flag === false ? "off" : null);
-  return renderKeyValues("ADE Android emulator settings", [
+  return renderKeyValues(`${BRAND.NAME} Android emulator settings`, [
     ["changed", settings.changed],
     ["appearance", settings.appearance],
     ["text size", settings.textSize ?? (typeof settings.fontScale === "number" ? `${settings.fontScale}x` : null)],
@@ -329,7 +330,7 @@ export function formatAndroidPosture(value: unknown): string {
   const posture = record(value);
   if (posture.supported === false) return "android posture: this emulator has no hinge (fold works on a foldable AVD).";
   const screen = record(posture.screen);
-  return renderKeyValues("ADE Android emulator posture", [
+  return renderKeyValues(`${BRAND.NAME} Android emulator posture`, [
     ["hinge", typeof posture.angle === "number" ? `${posture.angle}°` : null],
     ["state", posture.state ?? "changing"],
     ["screen", typeof screen.width === "number" ? `${screen.width}x${screen.height}` : null],
@@ -344,7 +345,7 @@ export function formatAndroidPreviews(value: unknown): string {
     const previews = result.previews.filter(isRecord);
     if (previews.length === 0) return `android preview list: ${asString(result.module) ?? "the module"} has no @Preview functions.`;
     return [
-      `ADE Compose previews in ${asString(result.module) ?? "the module"} (${previews.length})`,
+      `${BRAND.NAME} Compose previews in ${asString(result.module) ?? "the module"} (${previews.length})`,
       // The fqn is what `--fqn` takes: never shortened.
       renderTable(["name", "fqn"], previews.map((preview) => [preview.name, preview.fqn]), "No previews.", { fullColumns: ["fqn"] }),
     ].join("\n");
@@ -353,7 +354,7 @@ export function formatAndroidPreviews(value: unknown): string {
   const drawn = images.filter((image) => asString(image.path));
   const seconds = typeof result.durationMs === "number" ? `${(result.durationMs / 1000).toFixed(1)} s` : null;
   return [
-    renderKeyValues("ADE Compose preview render", [
+    renderKeyValues(`${BRAND.NAME} Compose preview render`, [
       ["module", result.module],
       ["rendered", `${drawn.length} of ${images.length}${seconds ? ` in ${seconds}` : ""}`],
       ["skipped", typeof result.skipped === "number" && result.skipped > 0 ? `${result.skipped} more (name them with --fqn)` : null],
@@ -376,10 +377,10 @@ export function formatAndroidRender(value: unknown): string {
     : [];
   const paths = Array.isArray(result.paths) ? result.paths.filter((entry): entry is string => typeof entry === "string") : [];
   return [
-    renderKeyValues("ADE Android device render", [
+    renderKeyValues(`${BRAND.NAME} Android device render`, [
       ["filed", result.filed],
       ["error", result.error],
-      ["proof", ids.length ? `${ids.length} row${ids.length === 1 ? "" : "s"} (ade proof list)` : null],
+      ["proof", ids.length ? `${ids.length} row${ids.length === 1 ? "" : "s"} (daex proof list)` : null],
     ]),
     ...paths.map((entry) => `file: ${entry}`),
   ].join("\n");
@@ -399,7 +400,7 @@ function formatBytes(bytes: unknown): string | null {
 export function formatAndroidApps(value: unknown): string {
   const apps = records(record(value).apps);
   return renderTable(
-    ["package", "launch activity", "ade installed"],
+    ["package", "launch activity", "daex installed"],
     apps.map((app) => [app.packageName, app.launchActivity, yesNo(app.adeInstalled)]),
     "No apps found on the emulator.",
     { fullColumns: ["package", "launch activity"] },
@@ -435,7 +436,7 @@ export function formatAndroidInstall(value: unknown): string {
   const install = record(value);
   return [
     installLine(install),
-    `Open it: ade android launch --package ${asString(install.packageName) ?? "<name>"}${deviceFlag(install)} --text`,
+    `Open it: daex android launch --package ${asString(install.packageName) ?? "<name>"}${deviceFlag(install)} --text`,
   ].join("\n");
 }
 
@@ -447,7 +448,7 @@ export function formatAndroidLaunch(value: unknown): string {
     // `activity` is the component (`pkg/.Main`) when the app's launcher named it.
     `Opened ${asString(launch.activity)?.includes("/") ? asString(launch.activity) : `${asString(launch.packageName) ?? "?"}/${asString(launch.activity) ?? "?"}`}`
       + `${onDeviceSentence(launch)}${typeof launch.totalTimeMs === "number" ? ` (started in ${launch.totalTimeMs} ms)` : ""}.`,
-    "Check the screen: ade android snapshot --text",
+    "Check the screen: daex android snapshot --text",
   ].join("\n");
 }
 
@@ -491,7 +492,7 @@ export function formatAndroidSnapshot(value: unknown): string {
     ),
   ];
   if (shown.length < elements.length) lines.push(`${elements.length - shown.length} layout elements with no name are not listed (--json lists every element).`);
-  lines.push("Aim with --ref <ref> (or --label, --text, --identifier): ade android tap-element --ref <ref> --text");
+  lines.push("Aim with --ref <ref> (or --label, --text, --identifier): daex android tap-element --ref <ref> --text");
   return lines.join("\n");
 }
 
@@ -536,7 +537,7 @@ export function formatAndroidLog(value: unknown): string {
   return [
     ...(lines.length ? lines : [`No log lines${asString(log.packageName) ? ` from ${asString(log.packageName)}` : ""}.`]),
     ...(log.truncated === true ? ["(older lines left out; --lines <n> reads more)"] : []),
-    ...(asString(log.cursor) ? [`next: ade android log --since ${asString(log.cursor)}${asString(log.packageName) ? ` --package ${asString(log.packageName)}` : ""} --text reads only newer lines`] : []),
+    ...(asString(log.cursor) ? [`next: daex android log --since ${asString(log.cursor)}${asString(log.packageName) ? ` --package ${asString(log.packageName)}` : ""} --text reads only newer lines`] : []),
   ].join("\n");
 }
 
@@ -545,7 +546,7 @@ export function formatAndroidRecording(value: unknown): string {
   if (recording.active === true) {
     return [
       `Recording ${String(recording.id)} started${asString(recording.label) ? ` (${asString(recording.label)})` : ""}.`,
-      "Stop it, and file it as proof: ade android record-stop --text",
+      "Stop it, and file it as proof: daex android record-stop --text",
     ].join("\n");
   }
   const segments = records(recording.segments);
@@ -558,7 +559,7 @@ export function formatAndroidRecording(value: unknown): string {
   const idleCut = proofIdleCutLabel(typeof recording.idleCutMs === "number" ? recording.idleCutMs : null);
   const caption = asString(recording.label) ?? "Emulator recording";
   return [
-    renderKeyValues("ADE Android recording", [
+    renderKeyValues(`${BRAND.NAME} Android recording`, [
       ["id", recording.id],
       ["label", recording.label],
       ["mode", recording.mode === "auto" ? "automatic (an agent's input started it)" : null],
@@ -582,7 +583,7 @@ export function formatAndroidRecording(value: unknown): string {
 export function formatAndroidAutoRecord(value: unknown): string {
   const state = record(value);
   return [
-    renderKeyValues("ADE Android auto-record", [
+    renderKeyValues(`${BRAND.NAME} Android auto-record`, [
       ["lane", state.laneId],
       ["lane switch", state.lane === false ? "off" : "on"],
       ["machine switch", state.machine === false ? "off (Settings › Android devices)" : "on"],
@@ -590,7 +591,7 @@ export function formatAndroidAutoRecord(value: unknown): string {
     ]),
     state.enabled === true
       ? "An agent's input starts a recording when none runs. It stops when the turn ends."
-      : "An agent's input does not start a recording. Start one: ade android record-start --text",
+      : "An agent's input does not start a recording. Start one: daex android record-start --text",
   ].join("\n");
 }
 
@@ -606,7 +607,7 @@ export function formatAndroidRecordings(value: unknown): string {
       yesNo(entry.active),
       entry.label,
     ]),
-    "No recordings in this lane. Start one: ade android record-start --text",
+    "No recordings in this lane. Start one: daex android record-start --text",
     { fullColumns: ["id"] },
   );
 }
@@ -630,7 +631,7 @@ export function formatAndroidLease(value: unknown): string {
   if (typeof result.released === "boolean") return leaseReleasedLine(result, name);
   if (typeof result.held === "boolean") return leaseHeldLine(result, Name);
   if (result.acquired === true) {
-    return leaseAcquiredLines(result, name, { renew: "ade android lease renew", release: "ade android lease release" }).join("\n");
+    return leaseAcquiredLines(result, name, { renew: "daex android lease renew", release: "daex android lease release" }).join("\n");
   }
   const current = isRecord(result.current) ? result.current : {};
   return result.sameHolder === true
@@ -659,14 +660,14 @@ export function formatAndroidSdkInstall(value: unknown): string {
     case "running":
       return [
         formatAndroidSdkInstallLine(state) ?? "Installing.",
-        `Into ${String(state.sdkRoot)}. Follow it: ade android sdk status --text. Stop it: ade android sdk cancel.`,
+        `Into ${String(state.sdkRoot)}. Follow it: daex android sdk status --text. Stop it: daex android sdk cancel.`,
       ].join("\n");
     case "done":
-      return `Installed ${installed} into ${String(state.sdkRoot)}.\nnext: ade android status --text`;
+      return `Installed ${installed} into ${String(state.sdkRoot)}.\nnext: daex android status --text`;
     case "failed": {
       const error = isRecord(state.error) ? state.error : {};
       return `The install failed${asString(state.partId) ? ` at ${asString(state.partId)}` : ""}: ${String(error.code ?? "?")}: ${String(error.message ?? "")}\n`
-        + `Finished parts stay: ${installed}. Run ade android sdk status --text, then install again.`;
+        + `Finished parts stay: ${installed}. Run daex android sdk status --text, then install again.`;
     }
     case "cancelled":
       return `The install was cancelled. Finished parts stay: ${installed}.`;
@@ -715,8 +716,8 @@ export function formatAndroidSdkStatus(value: unknown): string {
       : ["  none"]));
     lines.push(
       "",
-      "Read them: ade android sdk licenses --text. Only the user installs the SDK and accepts the licences, "
-        + "in the ADE desktop app: the setup card in the Android tool, or Settings › Android devices.",
+      "Read them: daex android sdk licenses --text. Only the user installs the SDK and accepts the licences, "
+        + `in the ${BRAND.NAME} desktop app: the setup card in the Android tool, or Settings › Android devices.`,
     );
   }
   const install = isRecord(plan.install) ? plan.install : null;
@@ -789,7 +790,7 @@ export function formatAndroidSdkImages(value: unknown): string {
   if (install.state === "running") lines.push("", `install running: ${formatAndroidSdkInstallLine(install) ?? ""}`);
   lines.push(
     "",
-    "Only the user installs or removes system images, in the ADE desktop app: the device picker's System images.",
+    `Only the user installs or removes system images, in the ${BRAND.NAME} desktop app: the device picker's System images.`,
   );
   return lines.join("\n");
 }
@@ -820,7 +821,7 @@ export function formatAndroidTest(value: unknown): string {
 
 export function formatAndroidAppState(value: unknown): string {
   const state = record(value);
-  return renderKeyValues(`ADE Android app ${asString(state.packageName) ?? ""}`.trimEnd(), [
+  return renderKeyValues(`${BRAND.NAME} Android app ${asString(state.packageName) ?? ""}`.trimEnd(), [
     ["installed", yesNo(state.installed)],
     ["running", yesNo(state.running)],
     ["foreground", yesNo(state.foreground)],
@@ -841,7 +842,7 @@ export function formatAndroidFrame(value: unknown): string {
   const frame = record(value);
   const filePath = asString(frame.filePath);
   return [
-    `ADE Android frame ${frame.width && frame.height ? `${String(frame.width)}x${String(frame.height)}` : ""}`.trimEnd()
+    `${BRAND.NAME} Android frame ${frame.width && frame.height ? `${String(frame.width)}x${String(frame.height)}` : ""}`.trimEnd()
       + `${frame.streamRunning === true ? " (the live view runs)" : ""}, not filed as proof.`,
     // Raw, not a table cell: agents Read this path back.
     filePath ? `file: ${filePath}` : "",
@@ -860,7 +861,7 @@ export function formatAndroidInspect(value: unknown): string {
   const file = asString(item.sourceFile) ?? asString(candidate?.sourceFile);
   const line = item.sourceFile ? item.sourceLine : candidate?.sourceLine;
   return [
-    renderKeyValues("ADE Android element", [
+    renderKeyValues(`${BRAND.NAME} Android element`, [
       ["element", element ? `${asString(element.role) ?? asString(element.className) ?? "element"} ${elementName(element)}`.trimEnd() : "none (a point only)"],
       ["ref", element?.ref ?? null],
       ["id", element?.identifier ?? null],
@@ -882,10 +883,10 @@ export function formatAndroidCleanup(value: unknown): string {
   };
   const lines = [
     ...list("released", "release (lane ended)", (row) => `${asString(row.avdName) ?? "?"} (lane ${asString(row.laneId) ?? "?"})`),
-    ...list("stoppedOrphans", "stop (ADE started it, no lane holds it)", (row) => `${asString(row.avdName) ?? "?"} on ${asString(row.serial) ?? "?"}`),
+    ...list("stoppedOrphans", `stop (${BRAND.NAME} started it, no lane holds it)`, (row) => `${asString(row.avdName) ?? "?"} on ${asString(row.serial) ?? "?"}`),
     ...list("forgottenRows", "forget (the AVD is gone from disk)", (row) => `${asString(row.avdName) ?? "?"} (lane ${asString(row.laneId) ?? "?"})`),
     ...list("poweredOff", "power off (idle)", (row) => `${asString(row.avdName) ?? "?"} (lane ${asString(row.laneId) ?? "?"}, idle ${String(row.idleMinutes)} min)`),
-    ...list("unheld", "kept (an ADE AVD no lane holds; delete it in Android Studio or `avdmanager` when you do not need it)", (row) => `${asString(row.avdName) ?? "?"}`, false),
+    ...list("unheld", `kept (a ${BRAND.NAME} AVD no lane holds; delete it in Android Studio or \`avdmanager\` when you do not need it)`, (row) => `${asString(row.avdName) ?? "?"}`, false),
     ...list("errors", "failed", (row) => `${asString(row.avdName) ?? "(pass)"}: ${asString(row.message) ?? ""}`, false),
   ];
   if (!lines.length) lines.push(result.dryRun === true ? "Nothing to clean up." : "Nothing to clean up; nothing changed.");
@@ -908,7 +909,7 @@ export function formatAndroidStoreShots(value: unknown): string {
   const result = record(value);
   const shots = Array.isArray(result.shots) ? result.shots.filter(isRecord) : [];
   return [
-    renderKeyValues("ADE Google Play screenshots", [
+    renderKeyValues(`${BRAND.NAME} Google Play screenshots`, [
       ["device", result.foldable === true ? "foldable (cover shut, inner open)" : "one screen"],
       ["shots", String(shots.length)],
     ]),
@@ -931,7 +932,7 @@ export function formatAndroidWindow(value: unknown): string {
     return `${String(f.width)}x${String(f.height)} at ${String(f.x)},${String(f.y)}`;
   };
   return [
-    renderKeyValues(`ADE Android window ${asString(result.action) ?? "status"}`, [
+    renderKeyValues(`${BRAND.NAME} Android window ${asString(result.action) ?? "status"}`, [
       ["screen", screen ? `${String(screen.width)}x${String(screen.height)}` : null],
       ["app", result.packageName],
       ["applied", result.applied === false ? `no: ${asString(result.reason) ?? "the window did not move"}` : "yes"],
@@ -959,7 +960,7 @@ export function androidDeviceSettingsLines(settings: JsonObject): Array<[string,
     lines.push(["status bar", settings.statusBarOverridden === true ? "overridden (demo mode)" : settings.statusBarOverridden === false ? "the device's own" : null]);
   }
   if (settings.location !== undefined) {
-    lines.push(["location", location ? `${String(location.latitude)}, ${String(location.longitude)} (set by ADE)` : "not set by ADE on this boot"]);
+    lines.push(["location", location ? `${String(location.latitude)}, ${String(location.longitude)} (set by ${BRAND.NAME})` : `not set by ${BRAND.NAME} on this boot`]);
   }
   if (settings.orientation !== undefined) lines.push(["orientation", settings.orientation]);
   return lines;
