@@ -30,6 +30,7 @@ import { applyWindowsDesktopUpdate } from "./windowsDesktopRescue";
 import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath } from "../services/projects/machineLayout";
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
 import { clearBrainStopIntent, noteBrainStopIntent } from "../../../desktop/src/main/services/runtime/liveTurnProjects";
+import { BRAND } from "../../../desktop/src/shared/brand";
 
 type BrainUpdateExecFile = (
   file: string,
@@ -132,7 +133,7 @@ async function resolveRequestedBrainVersion(
   const runningTrack = deps.currentVersion ? updateTrackOfVersion(deps.currentVersion) : track;
   if (runningTrack !== track) {
     throw new Error(
-      `This machine's switch to ${updateTrackLabel(track)} didn't finish. Finish it in ADE › Settings › About, or pass --version.`,
+      `This machine's switch to ${updateTrackLabel(track)} didn't finish. Finish it in ${BRAND.NAME} › Settings › About, or pass --version.`,
     );
   }
   if (track !== "beta") return { version: options.version, track };
@@ -166,10 +167,10 @@ export function detectRuntimeTarget(
   const detected = detectRuntimeTargetResult(platform, arch);
   if (detected.ok) return detected.target;
   if (detected.reason === "unsupported-target") {
-    throw new BrainUpdateUsageError(`Unsupported ADE runtime target: ${detected.target}.`);
+    throw new BrainUpdateUsageError(`Unsupported ${BRAND.NAME} runtime target: ${detected.target}.`);
   }
   throw new BrainUpdateUsageError(
-    `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
+    `${BRAND.NAME} brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
   );
 }
 
@@ -177,10 +178,10 @@ export function brainUpdateAssetUrl(repo: string, version: string, assetName: st
   const trimmedRepo = repo.trim();
   const trimmedVersion = version.trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(trimmedRepo)) {
-    throw new BrainUpdateUsageError("ADE brain update --repo must be in owner/repo form.");
+    throw new BrainUpdateUsageError(`${BRAND.NAME} brain update --repo must be in owner/repo form.`);
   }
   if (trimmedVersion && trimmedVersion !== "latest" && !/^v?[A-Za-z0-9_.-]+$/.test(trimmedVersion)) {
-    throw new BrainUpdateUsageError("ADE brain update --version must be a release tag such as v1.2.13.");
+    throw new BrainUpdateUsageError(`${BRAND.NAME} brain update --version must be a release tag such as v1.2.13.`);
   }
   return releaseAssetUrl(trimmedRepo, trimmedVersion, assetName);
 }
@@ -188,7 +189,7 @@ export function brainUpdateAssetUrl(repo: string, version: string, assetName: st
 function readValue(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
   if (!value || value.startsWith("-")) {
-    throw new BrainUpdateUsageError(`ADE brain update ${flag} requires a value.`);
+    throw new BrainUpdateUsageError(`${BRAND.NAME} brain update ${flag} requires a value.`);
   }
   return value;
 }
@@ -267,7 +268,7 @@ function parseBrainUpdateArgs(rest: string[], env: NodeJS.ProcessEnv): BrainUpda
       manifestPath = arg.slice("--apply-staged=".length);
       continue;
     }
-    throw new BrainUpdateUsageError(`Unknown ADE brain update option: ${arg}`);
+    throw new BrainUpdateUsageError(`Unknown ${BRAND.NAME} brain update option: ${arg}`);
   }
 
   return {
@@ -289,13 +290,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readManifest(manifestPath: string): BrainUpdateManifest {
   const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
   if (!isRecord(parsed)) {
-    throw new BrainUpdateUsageError("Invalid ADE brain update manifest.");
+    throw new BrainUpdateUsageError(`Invalid ${BRAND.NAME} brain update manifest.`);
   }
   const manifest = parsed as Record<string, unknown>;
   const stringField = (key: keyof BrainUpdateManifest): string => {
     const value = manifest[key];
     if (typeof value !== "string" || !value) {
-      throw new BrainUpdateUsageError(`Invalid ADE brain update manifest: missing ${key}.`);
+      throw new BrainUpdateUsageError(`Invalid ${BRAND.NAME} brain update manifest: missing ${key}.`);
     }
     return value;
   };
@@ -341,7 +342,7 @@ export function readBrainUpdateStatus(env: NodeJS.ProcessEnv = process.env): Bra
   return {
     state: "idle",
     updatedAt: new Date(0).toISOString(),
-    message: "No ADE brain update has run on this machine.",
+    message: `No ${BRAND.NAME} brain update has run on this machine.`,
     version: null,
     target: null,
     binaryPath: null,
@@ -488,7 +489,7 @@ function runtimeSidecarEnv(
 async function verifySha256(filePath: string, expectedHex: string, label: string): Promise<void> {
   const actual = await sha256File(filePath);
   if (actual !== expectedHex.toLowerCase()) {
-    throw new Error(`ADE brain update checksum mismatch for ${label}: expected ${expectedHex}, got ${actual}.`);
+    throw new Error(`${BRAND.NAME} brain update checksum mismatch for ${label}: expected ${expectedHex}, got ${actual}.`);
   }
 }
 
@@ -503,10 +504,10 @@ async function verifyDownloadedAssetChecksums(args: {
   const binarySum = sums.get(args.binaryName);
   const nativeArchiveSum = sums.get(args.nativeArchiveName);
   if (!binarySum) {
-    throw new Error(`ADE brain update checksum file is missing ${args.binaryName}.`);
+    throw new Error(`${BRAND.NAME} brain update checksum file is missing ${args.binaryName}.`);
   }
   if (!nativeArchiveSum) {
-    throw new Error(`ADE brain update checksum file is missing ${args.nativeArchiveName}.`);
+    throw new Error(`${BRAND.NAME} brain update checksum file is missing ${args.nativeArchiveName}.`);
   }
   await verifySha256(args.binaryPath, binarySum, args.binaryName);
   await verifySha256(args.nativeArchivePath, nativeArchiveSum, args.nativeArchiveName);
@@ -524,7 +525,7 @@ async function extractArchiveToDirectory(
   const tarCommand = platform === "win32" ? resolveTrustedWindowsTool("tar") : "tar";
   const result = (deps.runCommand ?? runCommand)(tarCommand, ["-xzf", archivePath, "-C", targetDir]);
   if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || "Failed to extract ADE native runtime dependencies.");
+    throw new Error(result.stderr || result.stdout || `Failed to extract ${BRAND.NAME} native runtime dependencies.`);
   }
 }
 
@@ -543,7 +544,7 @@ function isNodeErrnoException(error: unknown): error is NodeJS.ErrnoException {
 
 async function promoteStagedNativeRuntime(manifest: BrainUpdateManifest): Promise<string | null> {
   if (!(await pathExists(path.join(manifest.stagedRuntimeRoot, "node_modules")))) {
-    throw new Error("Staged ADE native runtime dependencies are missing node_modules.");
+    throw new Error(`Staged ${BRAND.NAME} native runtime dependencies are missing node_modules.`);
   }
 
   const parent = path.dirname(manifest.runtimeTargetDir);
@@ -570,7 +571,7 @@ async function promoteStagedNativeRuntime(manifest: BrainUpdateManifest): Promis
         await fsp.rename(backupPath, manifest.runtimeTargetDir);
       } catch (restoreError) {
         throw new Error(
-          `ADE native runtime promotion failed (${error instanceof Error ? error.message : String(error)}); `
+          `${BRAND.NAME} native runtime promotion failed (${error instanceof Error ? error.message : String(error)}); `
           + `restoring the previous runtime also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}. `
           + `Recovery files remain at ${backupPath}.`,
           { cause: error },
@@ -639,7 +640,7 @@ async function applyStagedBrainUpdate(
   const manifest = readManifest(manifestPath);
   if (manifest.target === "win32-x64" && !manifest.restartService) {
     throw new BrainUpdateUsageError(
-      "ADE brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.",
+      `${BRAND.NAME} brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.`,
     );
   }
   const stagingDir = path.dirname(manifestPath);
@@ -720,7 +721,7 @@ async function applyStagedBrainUpdate(
       deps.runCommand ?? runCommand,
     );
     if (rollbackRestart.status === 0) return null;
-    return serviceCommandFailure(rollbackRestart, "ADE brain service rollback restart failed.");
+    return serviceCommandFailure(rollbackRestart, `${BRAND.NAME} brain service rollback restart failed.`);
   };
 
   // The staged binary is this release's code, already checked against the
@@ -737,7 +738,7 @@ async function applyStagedBrainUpdate(
   // writes so a runtime-only update says so.
   let desktopAppSkipped: string | null = null;
   const withAppNote = (message: string) =>
-    desktopAppSkipped ? `${message} The ADE app was left alone because ${desktopAppSkipped}.` : message;
+    desktopAppSkipped ? `${message} The ${BRAND.NAME} app was left alone because ${desktopAppSkipped}.` : message;
   // macOS: the app updated (or already matched) and its runtime now runs the
   // service. The standalone `ade` is still brought to the same version, as a
   // command only: the service stays on the app.
@@ -807,12 +808,12 @@ async function applyStagedBrainUpdate(
         return result(ok, applied, applied, ok ? await cleanupStagingAfterSuccess(message) : message, applied ? { desktopAppUpdated: true } : {});
       }
     }
-    await writeStatus("applying", withAppNote("Applying staged ADE brain runtime update."));
+    await writeStatus("applying", withAppNote(`Applying staged ${BRAND.NAME} brain runtime update.`));
     if (platform === "win32" && await pathExists(manifest.binaryPath)) {
       const statusResult = requestBrainServiceStatus(stagedServiceCommand, deps.runCommand ?? runCommand);
       if (statusResult.status !== 0 || statusResult.installed === null) {
         throw new Error(
-          statusResult.stderr || statusResult.stdout || "ADE brain service state could not be read before replacing the Windows runtime.",
+          statusResult.stderr || statusResult.stdout || `${BRAND.NAME} brain service state could not be read before replacing the Windows runtime.`,
         );
       }
       windowsServiceWasInstalled = statusResult.installed;
@@ -821,7 +822,7 @@ async function applyStagedBrainUpdate(
       if (stopResult.status !== 0) {
         clearAcceptedUpdateStop();
         throw new Error(
-          stopResult.stderr || stopResult.stdout || "ADE brain service could not be stopped before replacing the Windows runtime.",
+          stopResult.stderr || stopResult.stdout || `${BRAND.NAME} brain service could not be stopped before replacing the Windows runtime.`,
         );
       }
       windowsServiceStopped = true;
@@ -893,7 +894,7 @@ async function applyStagedBrainUpdate(
         await rollbackPromotedAssets();
       } catch (rollbackError) {
         throw new Error(
-          `ADE runtime asset promotion failed (${error instanceof Error ? error.message : String(error)}); `
+          `${BRAND.NAME} runtime asset promotion failed (${error instanceof Error ? error.message : String(error)}); `
           + `rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. `
           + `Recovery files were retained beside ${manifest.binaryPath} and ${manifest.runtimeTargetDir}.`,
           { cause: error },
@@ -903,7 +904,7 @@ async function applyStagedBrainUpdate(
     }
 
     if (macAppOutcome != null) {
-      const successMessage = `${macAppOutcome} The standalone ade at ${manifest.binaryPath} is on ${manifest.version} too.`;
+      const successMessage = `${macAppOutcome} The standalone daex at ${manifest.binaryPath} is on ${manifest.version} too.`;
       await writeStatus("succeeded", successMessage);
       await discardPromotedBackups();
       const message = await cleanupStagingAfterSuccess(successMessage);
@@ -911,14 +912,14 @@ async function applyStagedBrainUpdate(
     }
 
     if (!manifest.restartService) {
-      const successMessage = withAppNote("ADE brain runtime updated. Service restart was skipped.");
+      const successMessage = withAppNote(`${BRAND.NAME} brain runtime updated. Service restart was skipped.`);
       await writeStatus("succeeded", successMessage);
       await discardPromotedBackups();
       const message = await cleanupStagingAfterSuccess(successMessage);
       return result(true, true, false, message);
     }
 
-    await writeStatus("restarting", "Restarting ADE brain service with the updated runtime.");
+    await writeStatus("restarting", `Restarting ${BRAND.NAME} brain service with the updated runtime.`);
     const env = serviceEnv();
     noteAcceptedUpdateStop();
     const restart = requestBrainServiceRestart(
@@ -931,7 +932,7 @@ async function applyStagedBrainUpdate(
     );
     if (restart.status !== 0) {
       clearAcceptedUpdateStop();
-      const message = serviceCommandFailure(restart, "ADE brain service restart failed.");
+      const message = serviceCommandFailure(restart, `${BRAND.NAME} brain service restart failed.`);
       let rollbackMessage = "Update was rolled back.";
       try {
         await rollbackPromotedAssets();
@@ -946,7 +947,7 @@ async function applyStagedBrainUpdate(
       return result(false, false, false, failureMessage);
     }
 
-    const successMessage = withAppNote("ADE brain updated and service restart requested.");
+    const successMessage = withAppNote(`${BRAND.NAME} brain updated and service restart requested.`);
     await writeStatus("succeeded", successMessage);
     await discardPromotedBackups();
     const message = await cleanupStagingAfterSuccess(successMessage);
@@ -956,7 +957,7 @@ async function applyStagedBrainUpdate(
     // The app half already landed: say so, so the failed command is not read
     // as an app and brain left apart.
     const baseMessage = macAppOutcome
-      ? `${macAppOutcome} Bringing the standalone ade at ${manifest.binaryPath} along failed: ${failure}`
+      ? `${macAppOutcome} Bringing the standalone daex at ${manifest.binaryPath} along failed: ${failure}`
       : failure;
     const rollbackRestartError = restartRolledBackWindowsService();
     const message = withAppNote(rollbackRestartError
@@ -982,14 +983,14 @@ async function describeMacDesktopAppForPlan(
         state: "found",
         path: lookup.app.appPath,
         version: lookup.app.version,
-        note: `The ADE app at ${lookup.app.appPath} (${lookup.app.version}) is updated to the same version, and the background service runs its runtime.`,
+        note: `The ${BRAND.NAME} app at ${lookup.app.appPath} (${lookup.app.version}) is updated to the same version, and the background service runs its runtime.`,
       };
     case "channel":
       return { state: "channel", path: null, version: null, note: `${lookup.appName} has no update feed and is left alone.` };
     case "unreadable":
       return { state: "unreadable", path: lookup.appPath, version: null, note: `The version of ${lookup.appPath} can't be read, so the update would change nothing.` };
     default:
-      return { state: "none", path: null, version: null, note: "No ADE app is installed; only the brain is updated." };
+      return { state: "none", path: null, version: null, note: `No ${BRAND.NAME} app is installed; only the brain is updated.` };
   }
 }
 
@@ -1018,7 +1019,7 @@ export async function runBrainUpdateCommand(
   }
   if (options.action === "apply-staged") {
     if (!options.manifestPath) {
-      throw new BrainUpdateUsageError("ADE brain update --apply-staged requires a manifest path.");
+      throw new BrainUpdateUsageError(`${BRAND.NAME} brain update --apply-staged requires a manifest path.`);
     }
     return applyStagedBrainUpdate(options.manifestPath, deps);
   }
@@ -1030,7 +1031,7 @@ export async function runBrainUpdateCommand(
   const target = detectRuntimeTarget(deps.platform ?? process.platform, deps.arch ?? os.arch());
   if (target === "win32-x64" && !options.restartService) {
     throw new BrainUpdateUsageError(
-      "ADE brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.",
+      `${BRAND.NAME} brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.`,
     );
   }
   const binaryName = runtimeBinaryAssetName(target);
@@ -1066,14 +1067,14 @@ export async function runBrainUpdateCommand(
   if (options.dryRun) {
     return {
       ...summary,
-      message: `ADE brain update check passed. Runtime assets are available at the listed release URLs.${desktopApp?.note ? ` ${desktopApp.note}` : ""}`,
+      message: `${BRAND.NAME} brain update check passed. Runtime assets are available at the listed release URLs.${desktopApp?.note ? ` ${desktopApp.note}` : ""}`,
     };
   }
 
   await writeBrainUpdateStatus(layout.runtimeDir, {
     state: "staging",
     updatedAt: nowIso(deps),
-    message: "Downloading ADE brain runtime update.",
+    message: `Downloading ${BRAND.NAME} brain runtime update.`,
     version: options.version,
     currentVersion,
     target,
@@ -1109,7 +1110,7 @@ export async function runBrainUpdateCommand(
       },
       timeout: 30_000,
     });
-    const stagedVersion = String(versionResult.stdout ?? "").trim().replace(/^ade\s+/, "") || options.version;
+    const stagedVersion = String(versionResult.stdout ?? "").trim().replace(/^(?:daex|ade)\s+/, "") || options.version;
     const manifest: BrainUpdateManifest = {
       version: stagedVersion,
       repo: options.repo,
@@ -1128,7 +1129,7 @@ export async function runBrainUpdateCommand(
     await writeBrainUpdateStatus(layout.runtimeDir, {
       state: "staged",
       updatedAt: nowIso(deps),
-      message: "ADE brain update staged. Applying in a detached helper.",
+      message: `${BRAND.NAME} brain update staged. Applying in a detached helper.`,
       version: stagedVersion,
       currentVersion,
       target,
@@ -1159,7 +1160,7 @@ export async function runBrainUpdateCommand(
       detached: true,
       statusPath: updateStatusPath(layout.runtimeDir),
       message:
-        "ADE brain update staged. The current connection may disconnect while the helper restarts the brain service.",
+        `${BRAND.NAME} brain update staged. The current connection may disconnect while the helper restarts the brain service.`,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
