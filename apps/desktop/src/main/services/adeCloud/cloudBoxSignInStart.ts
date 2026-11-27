@@ -139,7 +139,7 @@ async function startCloudBoxSignIn(
     exitCode: started.exitCode,
     reason: userCode ? null : cloudSignInFailureReason(output),
     // A newer image's `ade login` retries an unreachable account service itself and says so.
-    retriedOnItsOwn: !userCode && /\bADE kept trying\b/.test(output),
+    retriedOnItsOwn: !userCode && /\b(?:ADE|Daex) kept trying\b/.test(output),
   };
 }
 
