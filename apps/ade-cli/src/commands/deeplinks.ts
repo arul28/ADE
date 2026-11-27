@@ -58,7 +58,7 @@ const HELP_OPEN = [
   "  daex open <url>",
   "  daex open --linear-issue <id> --branch <branch>",
   "",
-  "  Opens an `ade://` or `https://ade-app.dev/open?...` URL via the OS, which",
+  "  Opens a `daex://` (or `ade://`) or `https://ade-app.dev/open?...` URL via the OS, which",
   `  routes it back to the running ${BRAND.NAME} desktop app (or launches it cold).`,
   "",
   "  The --linear-issue / --branch form is what Linear's 'Open in coding",
@@ -79,7 +79,7 @@ const HELP_LINK = [
   "  daex link <url>            # round-trip — parse + re-print canonical form",
   "",
   "Options:",
-  "  --ade           Emit the custom `ade://` form (default: https)",
+  "  --ade           Emit the custom `daex://` form (default: https)",
   "  --no-envelope   Skip the best-effort lookup of repo/branch/PR and of the",
   "                  computer and project a lane, chat or PR link opens on",
   "  --web           Emit the hosted web client form (app.ade-app.dev)",
@@ -170,8 +170,8 @@ export function runOpenCommand(args: string[]): DeeplinkCliResult {
     throw new CliDeeplinkUsageError("daex open <url>  (or --linear-issue / --branch)");
   }
   const parsed = parseDeeplink(url);
-  // A `daex://` link is opened as `ade://`: the installed app may be a version
-  // that registers only `ade://`.
+  // An `ade://` link is opened as `daex://`, the scheme new links use; the
+  // installed app registers both.
   if (parsed.ok) return openAndReport(withNewLinkScheme(url.trim()));
   // Allow unknown_type URLs (like the linear-issue form above) to still pass
   // through to the OS opener — the landing page / desktop can decide what

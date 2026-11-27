@@ -28,7 +28,7 @@ Agent-focused command-line interface for Daex.
     $ daex desktop                                  Launch the installed Daex desktop app
     $ daex screen start | observe | click | proof   Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
-    $ daex open <url>                               Open an ade:// or ade-app.dev deeplink via the OS
+    $ daex open <url>                               Open a daex:// or ade-app.dev deeplink via the OS
     $ daex link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ daex linear install                           Register Daex as Linear's "Open in coding tool" target
@@ -929,7 +929,7 @@ Agent-focused command-line interface for Daex.
     $ daex desktop                                  Launch the installed Daex desktop app
     $ daex screen start | observe | click | proof   Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
-    $ daex open <url>                               Open an ade:// or ade-app.dev deeplink via the OS
+    $ daex open <url>                               Open a daex:// or ade-app.dev deeplink via the OS
     $ daex link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ daex linear install                           Register Daex as Linear's "Open in coding tool" target
@@ -1224,7 +1224,7 @@ Agent-focused command-line interface for Daex.
     $ daex desktop                                  Launch the installed Daex desktop app
     $ daex screen start | observe | click | proof   Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
-    $ daex open <url>                               Open an ade:// or ade-app.dev deeplink via the OS
+    $ daex open <url>                               Open a daex:// or ade-app.dev deeplink via the OS
     $ daex link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ daex linear install                           Register Daex as Linear's "Open in coding tool" target

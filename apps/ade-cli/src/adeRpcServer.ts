@@ -7040,7 +7040,7 @@ async function runTool(args: {
         ? ownerOnlyProjectConfigChange(current.local as Record<string, unknown>, candidateLocal)
         : null;
       if (change) {
-        const link = change.entryId ? ` It is at ade://settings/${change.entryId}.` : "";
+        const link = change.entryId ? ` It is at daex://settings/${change.entryId}.` : "";
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
           `Only the user can change '${change.key}' in the project config, so nothing was saved.${link} Tell the user where it is.`,

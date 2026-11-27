@@ -852,7 +852,7 @@ export const CLOUD_INVITE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 /** The invite page on the website; the link is this plus the code. */
 export const CLOUD_INVITE_URL_BASE = "https://ade-app.dev/invite/";
 /** What the website's "Open in ADE" button opens: the app fills the code in Settings › Account. */
-export const CLOUD_INVITE_DEEPLINK_BASE = "ade://invite/";
+export const CLOUD_INVITE_DEEPLINK_BASE = "daex://invite/";
 
 export const cloudInviteLink = (code: string): string => `${CLOUD_INVITE_URL_BASE}${code}`;
 

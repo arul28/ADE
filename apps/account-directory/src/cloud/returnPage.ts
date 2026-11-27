@@ -19,7 +19,7 @@ import { CLOUD_PLANS, isPaidPlanId, type CloudPaidPlanId } from "./plans";
  * where the plan, extra hours and Manage billing are.
  */
 
-const OPEN_ADE_CLOUD = "ade://settings/integrations.ade-cloud";
+const OPEN_ADE_CLOUD = "daex://settings/integrations.ade-cloud";
 const DOCS = "https://ade-app.dev/docs/cloud/overview";
 const LINKS = {
   firstLane: `${DOCS}#start-a-lane-on-ade-cloud`,

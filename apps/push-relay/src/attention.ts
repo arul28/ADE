@@ -225,7 +225,7 @@ function deepLinkForItem(item: ParsedAttentionItem): string | null {
     if (itemId) query.set("item", itemId);
     if (eventId) query.set("event", eventId);
     if (accountMachineKey) query.set("accountMachineKey", accountMachineKey);
-    return `ade://session/${encodeURIComponent(sessionId)}${query.size ? `?${query}` : ""}`;
+    return `daex://session/${encodeURIComponent(sessionId)}${query.size ? `?${query}` : ""}`;
   }
   if (destination.kind === "pull_request") {
     const number = Number(destination.number);
@@ -238,8 +238,8 @@ function deepLinkForItem(item: ParsedAttentionItem): string | null {
     if (accountMachineKey) query.set("accountMachineKey", accountMachineKey);
     const suffix = query.size ? `?${query}` : "";
     return owner && repo
-      ? `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}${suffix}`
-      : `ade://pr/${number}${suffix}`;
+      ? `daex://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${number}${suffix}`
+      : `daex://pr/${number}${suffix}`;
   }
   return null;
 }

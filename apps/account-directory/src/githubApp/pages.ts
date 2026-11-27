@@ -191,7 +191,7 @@ export function installedPage(): Response {
     title: "Daex GitHub App installed",
     heading: "The Daex GitHub App is installed",
     card: `<p class="sub">Go back to Daex to keep working with your repositories.</p>
-<a class="primary" href="ade://github/installed">Open Daex</a>`,
+<a class="primary" href="daex://github/installed">Open Daex</a>`,
     foot: "On a computer, you can close this page.",
   });
   return page(document, 200);

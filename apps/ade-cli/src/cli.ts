@@ -1698,7 +1698,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ daex desktop                                  Launch the installed ${BRAND.NAME} desktop app
     $ daex screen start | observe | click | proof   Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
-    $ daex open <url>                               Open an ade:// or ade-app.dev deeplink via the OS
+    $ daex open <url>                               Open a daex:// or ade-app.dev deeplink via the OS
     $ daex link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ daex linear install                           Register ${BRAND.NAME} as Linear's "Open in coding tool" target
@@ -2119,16 +2119,16 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
 
     $ daex notify --title "Deploy finished"
     $ daex notify --title "Tests failed" --body "3 failures in apps/desktop" --text
-    $ daex notify --title "Review ready" --open "ade://pr/1514"
+    $ daex notify --title "Review ready" --open "daex://pr/1514"
 
   Flags:
     --title <text>                 Required. Up to 64 characters.
     --body <text>                  Optional second line. Up to 160 characters.
-    --open <daex link>              Optional. What a tap opens: an ade:// or
+    --open <daex link>              Optional. What a tap opens: a daex:// or
                                    https://ade-app.dev/open link for a chat,
                                    PR, lane, file, commit, branch or Linear
                                    issue (make one with \`daex link\`), or
-                                   ade://activity[?state=needs_you].
+                                   daex://activity[?state=needs_you].
 
   Notes:
     Needs a signed-in account (\`daex login\`) and the running brain.
@@ -2410,15 +2410,15 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   open: `${ADE_BANNER}
   ${BRAND.NAME} Open
 
-  Hand an "ade://" or "https://ade-app.dev/open?..." deeplink to the OS so the
+  Hand a "daex://" (or "ade://") or "https://ade-app.dev/open?..." deeplink to the OS so the
   installed ${BRAND.NAME} desktop receives it (single-instance lock focuses the existing
   window). Also accepts the Linear coding-tool hand-off form.
 
-    $ daex open ade://lane/<lane-uuid>
-    $ daex open ade://session/<session-id>
-    $ daex open ade://repo/<owner>/<repo>/branch/<branch>?pr=42
-    $ daex open ade://pr/<owner>/<repo>/<number>
-    $ daex open ade://linear-issue/ADE-123?branch=arul/ade-123-fix
+    $ daex open daex://lane/<lane-uuid>
+    $ daex open daex://session/<session-id>
+    $ daex open daex://repo/<owner>/<repo>/branch/<branch>?pr=42
+    $ daex open daex://pr/<owner>/<repo>/<number>
+    $ daex open daex://linear-issue/ADE-123?branch=arul/ade-123-fix
     $ daex open https://ade-app.dev/open?type=lane&id=<lane-uuid>
     $ daex open --linear-issue ADE-123 --branch arul/ade-123-fix
 
@@ -2443,7 +2443,7 @@ export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
     $ daex link <url>                               Round-trip parse + re-emit a deeplink
 
   Flags:
-    --ade           Emit the custom "ade://" form. Defaults to the https mirror.
+    --ade           Emit the custom "daex://" form. Defaults to the https mirror.
     --no-envelope   Skip best-effort repo/branch/PR envelope lookup.
     --web           Emit the hosted web client URL (app.ade-app.dev).
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
@@ -5312,7 +5312,7 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
   To move one chat and its lane to another computer: daex chat move.
 `,
   "mcp servers": `${ADE_BANNER}
-  ${BRAND.NAME} MCP servers (ade://settings/mcp.servers)
+  ${BRAND.NAME} MCP servers (daex://settings/mcp.servers)
 
   The MCP servers every agent ${BRAND.NAME} launches gets, defined once for the
   person's account. Values (tokens, keys) live in the account vault and are
@@ -5351,7 +5351,7 @@ ${CHAT_CLOUD_HELP}    $ daex chat actions --personal --text            List mach
       its saved values and sign-in.
       Prints {name, removed: true, next} | {name, removed: false, declined: true}
       GitHub, Linear and Jira are ${BRAND.NAME} integrations: link
-      ade://settings/integrations.github (or .linear, .jira) instead.
+      daex://settings/integrations.github (or .linear, .jira) instead.
 
   When to ask: if the person named the server ("add the GitHub MCP"), raise
   the card at once. If it was your own idea, ask in words first and raise the
@@ -21097,7 +21097,7 @@ function findSettings(query: string): { query: string; results: SettingsFindRow[
     const access = settingAgentAccess(entry.id);
     return {
       path: settingsEntryLabel(entry),
-      link: `ade://settings/${entry.id}`,
+      link: `${BRAND.URL_SCHEME}://settings/${entry.id}`,
       onlyUser: access.agent === "owner-only" ? access.explanation : null,
     };
   });
@@ -21108,7 +21108,7 @@ function findSettings(query: string): { query: string; results: SettingsFindRow[
     // from a word inside a longer question.
     const names = [place.id, place.label.toLowerCase(), ...place.keywords];
     if (names.some((name) => name.split(" ").every((part) => words.has(part)))) {
-      rows.push({ path: place.label, link: `ade://open/${place.id}`, onlyUser: null });
+      rows.push({ path: place.label, link: `${BRAND.URL_SCHEME}://open/${place.id}`, onlyUser: null });
     }
   }
   return { query, results: rows };
@@ -40411,7 +40411,7 @@ function formatMcpServers(value: unknown): string {
   }
   if (record.added === true) {
     const missing = Array.isArray(record.missing) && record.missing.length
-      ? ` Not set yet (the person can add them at ade://settings/mcp.servers): ${record.missing.join(", ")}.`
+      ? ` Not set yet (the person can add them at daex://settings/mcp.servers): ${record.missing.join(", ")}.`
       : "";
     const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
     return `${next}${missing}`;

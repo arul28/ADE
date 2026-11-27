@@ -4568,7 +4568,7 @@ describe("adeRpcServer", () => {
     // Turning on PR chat transcripts publishes chats: refused, with the link to the setting.
     const publish = await save(agentHandler, { shared: {}, local: { ...local, github: { prTranscriptGists: { enabled: true } } } });
     expect(publish?.isError).toBe(true);
-    expect(JSON.stringify(publish)).toContain("ade://settings/lanes-git.pr-chat-transcripts");
+    expect(JSON.stringify(publish)).toContain("daex://settings/lanes-git.pr-chat-transcripts");
     // Save writes `local`; leaving it out would write an empty file and drop the key.
     const wipe = await save(agentHandler, { shared: {} });
     expect(wipe?.isError).toBe(true);
