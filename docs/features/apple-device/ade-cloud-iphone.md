@@ -325,7 +325,14 @@ action on this machine's brain:
   `--out` must be inside the project or the temp folder);
   `record start|stop` answers an MP4 link valid 7 days.
 - `launch [--path sub] [--scheme] [--configuration] [--env] [--clean]` packs
-  this checkout and builds it there; `launch --no-build --bundle-id B [-- …]`,
+  this checkout and builds it there. With no `--path` (`--project` is the
+  same flag), the brain finds the project in the files that go up, where a
+  Mac's own launch looks (`discoverXcodeProjectPaths`): the top, each top
+  folder and `apps/*`, by a `.xcodeproj`, `.xcworkspace` or `project.yml`
+  (`cloudPhoneBuildFolder`). Two or more, none, or a `--path` that doesn't
+  go up is refused before the upload, naming `--path`. Launch arguments
+  after `--` are refused on a build (the phone starts the app without them):
+  build, then `relaunch --bundle-id B -- …`; `launch --no-build --bundle-id B [-- …]`,
   `relaunch --bundle-id B [-- …]` and `terminate --bundle-id B` use an app
   already on the phone. `install --app <path to a Simulator .app>
   [--no-launch]` uploads and installs an app built elsewhere (Expo/EAS with
@@ -470,6 +477,16 @@ to read with `snapshot`, batch steps in one `act`, and mind the idle stop.
   `ade apple install --app <path to a Simulator .app>` uploads the whole
   bundle, installs it and launches it. Expo/EAS needs `"simulator": true`;
   Flutter needs `flutter build ios --simulator`.
+- **Metal shaders.** Xcode 26 and later ship the Metal compiler as a separate
+  download (`xcodebuild -downloadComponent MetalToolchain`, about 870 MB for
+  27.2). NoMac's build hosts don't have it (seen 2026-11-27), and its
+  `app_run` takes no build command, so any project that compiles a `.metal`
+  file fails there, the ADE iOS app included (SwiftTerm's
+  `Shaders.metal`). The brain leads that failure with one sentence
+  (`explainBuildFailure`). Revyl's build step, which ADE writes
+  (`buildCommand` in `phoneRevyl.ts`), fetches the toolchain only after a
+  build failed for want of it (at most 420 s, inside the build's 900 s)
+  and builds once more. NoMac has to add it to their hosts.
 - No Android. The cloud phone is iOS only.
 - **ADE Web.** The hosted web client's phone is a flat iframe of NoMac's view,
   without the 3D body or the rail: Home, Screenshot and Record stay in the

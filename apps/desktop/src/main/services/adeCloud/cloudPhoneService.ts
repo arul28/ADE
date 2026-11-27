@@ -195,12 +195,62 @@ async function packWithTar(noun: "project" | "app", tarArgs: (out: string) => st
   }
 }
 
+/**
+ * The folder inside the upload to build, from the files that go up. The phone
+ * looks only at the folder it is given, so with no `path`, ADE finds the
+ * project where a Mac's own `ade apple launch` looks (`discoverXcodeProjectPaths`
+ * in `iosSimulatorService.ts`): the top, each folder at the top, and `apps/*`.
+ * A `.xcodeproj`, `.xcworkspace` or XcodeGen `project.yml` marks a folder; a
+ * `Package.swift` at the top leaves the choice to the phone. A named `path`
+ * must be something that goes up. Throws a sentence that names `--path`.
+ */
+function cloudPhoneBuildFolder(files: readonly string[], requested: string | undefined, root: string): string | undefined {
+  if (requested) {
+    const named = requested.replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+$/, "");
+    if (!named || named === ".") return undefined;
+    if (!files.some((file) => file === named || file.startsWith(`${named}/`))) {
+      throw new CloudPhoneError(`Nothing in ${requested} goes up from ${root}: it isn't there, or git doesn't track it. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "bad_request");
+    }
+    return requested;
+  }
+  const folders = new Set<string>();
+  let packageAtTop = false;
+  for (const file of files) {
+    const parts = file.split("/");
+    if (file === "Package.swift") packageAtTop = true;
+    const marker = parts.findIndex((part, index) => /\.(xcodeproj|xcworkspace)$/i.test(part) || (part === "project.yml" && index === parts.length - 1));
+    if (marker < 0) continue;
+    const folder = parts.slice(0, marker);
+    if (folder.length <= 1 || (folder.length === 2 && folder[0] === "apps")) folders.add(folder.join("/"));
+  }
+  if (folders.has("") || packageAtTop) return undefined;
+  const found = [...folders].sort();
+  if (found.length === 1) return found[0];
+  if (found.length > 1) {
+    const shown = found.slice(0, 8).join(", ");
+    throw new CloudPhoneError(`This project has ${found.length} Xcode projects (${shown}${found.length > 8 ? ", …" : ""}). Pass --path <folder> to build one, e.g. --path ${found[0]}.`, "bad_request");
+  }
+  throw new CloudPhoneError(`No Xcode project, workspace or XcodeGen project.yml in ${root}, its folders, or apps/*. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.`, "no_project");
+}
+
+/** Xcode 26 and later ship the Metal compiler as a separate download; a build host without it fails on any `.metal` file. */
+const MISSING_METAL = /missing Metal Toolchain/i;
+const METAL_SENTENCE = "The cloud iPhone's Xcode doesn't have Apple's Metal Toolchain, and this project compiles Metal shaders (a .metal file in the app or in one of its Swift packages), so it can't be built there yet. Build it on a Mac and send the app with ade apple install --app <path to the Simulator .app>.";
+
+/** A failed build's answer, led by one sentence when the build host lacked the Metal Toolchain. */
+function explainBuildFailure(answer: CloudPhoneToolAnswer): CloudPhoneToolAnswer {
+  if (!answer.failed || !MISSING_METAL.test(answer.text)) return answer;
+  return { ...answer, text: `${METAL_SENTENCE}\n\n${answer.text}` };
+}
+
 /** A `.tar.gz` of those files, made with the system's tar (Windows 10+, macOS and Linux all ship one that reads `--null -T -`). */
-async function packProject(root: string): Promise<Packed & { count: number }> {
+async function packProject(root: string, requested?: string): Promise<Packed & { count: number; sub: string | undefined }> {
   const files = await projectFiles(root);
   if (!files.length) throw new CloudPhoneError("The project has no files to send.", "pack_failed");
+  // Before packing: a project that can't build spends no upload and starts no phone.
+  const sub = cloudPhoneBuildFolder(files, requested, root);
   const packed = await packWithTar("project", (out) => ["--null", "-czf", out, "-T", "-"], { cwd: root, input: Buffer.from(`${files.join("\0")}\0`, "utf8") });
-  return { ...packed, count: files.length };
+  return { ...packed, count: files.length, sub };
 }
 
 /**
@@ -811,19 +861,19 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const chatSessionId = cloudPhoneCallerChat(args);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const env = textArg(args?.env, "env", 8_000);
-      const packed = await packProject(root);
+      const packed = await packProject(root, sub);
       try {
         // env values need a phone that passes them to the app.
         const answer = await withPhone(chatSessionId, (phone, driver) => driver.run(phone, {
           project: packed,
           name: cloudPhoneProjectName(root),
-          ...(sub ? { sub } : {}),
+          ...(packed.sub ? { sub: packed.sub } : {}),
           ...(scheme ? { scheme } : {}),
           ...(configuration ? { configuration } : {}),
           ...(env ? { env } : {}),
           ...(args?.clean === true ? { clean: true } : {}),
         }), env ? "launchEnv" : undefined);
-        return { ...answer, files: packed.count, bytes: packed.size };
+        return { ...explainBuildFailure(answer), files: packed.count, bytes: packed.size };
       } finally {
         fs.rmSync(packed.file, { force: true });
       }
@@ -924,15 +974,15 @@ export function createCloudPhoneService(deps: CloudPhoneServiceDeps) {
       const chatSessionId = cloudPhoneCallerChat(args);
       const scheme = textArg(args?.scheme, "scheme", 200);
       const only = textArg(args?.only, "only", 2_000);
-      const packed = await packProject(root);
+      const packed = await packProject(root, sub);
       try {
-        return await withPhone(chatSessionId, (phone, driver) => abilityCall(driver.test, "tests").call(driver, phone, {
+        return explainBuildFailure(await withPhone(chatSessionId, (phone, driver) => abilityCall(driver.test, "tests").call(driver, phone, {
           project: packed,
           name: cloudPhoneProjectName(root),
-          ...(sub ? { sub } : {}),
+          ...(packed.sub ? { sub: packed.sub } : {}),
           ...(scheme ? { scheme } : {}),
           ...(only ? { only } : {}),
-        }), "tests");
+        }), "tests"));
       } finally {
         fs.rmSync(packed.file, { force: true });
       }

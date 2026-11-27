@@ -179,7 +179,13 @@ For one command, `ade apple … --machine cloud`. What differs:
 
 - `launch` and `test` (on a phone that runs tests: `status` says) pack this checkout as it is (uncommitted changes too,
   git-ignored files left out), upload it, and build it with Xcode there
-  (Xcode projects only). For an app built elsewhere, install its Simulator
+  (Xcode projects only). With no `--path`, the project is found where a
+  Mac looks (the top, each top folder, `apps/*`); with two or more, pass
+  `--path <folder>`. Launch arguments (`-- …`) don't go with a build: build,
+  then `ade apple relaunch --bundle-id <id> -- <args>`. A project with Metal
+  shaders (a `.metal` file, also in a Swift package such as SwiftTerm) may not
+  build there: the answer says so; build on a Mac and `install --app` it.
+  For an app built elsewhere, install its Simulator
   `.app` instead: `ade apple install --app <path>` (`--no-launch` installs
   without starting it). From any machine, Expo builds one in its cloud:
   `npx eas-cli build -p ios --profile <a profile with "ios": {"simulator": true}>`,

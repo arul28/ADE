@@ -552,27 +552,54 @@ function passthrough(response: Response): Response {
 /** Single-quoted for sh. */
 const shellQuote = (value: string): string => `'${value.replace(/'/g, "'\\''")}'`;
 
+/** How long the runner may spend fetching Apple's Metal Toolchain (about 870 MB for Xcode 27.2) inside the build's own limit. */
+const METAL_DOWNLOAD_SECONDS = 420;
+
 /**
  * The build step ADE runs on Revyl's runner, from the brain's choices only
- * (never a command it sends): find the workspace or project in `path`, the
- * scheme (the first, unless named), then build for the Simulator into
- * `build/` at the project's top, where the artifact is collected.
+ * (never a command it sends): find the workspace or project in `path` (or
+ * take the one `path` names), the scheme (the first, unless named), then
+ * build for the Simulator into `build/` at the project's top, where the
+ * artifact is collected. Xcode 26 and later ship the Metal compiler as a
+ * separate download: a build that failed for want of it (a `.metal` file in
+ * the app or a Swift package) fetches it, time-bound, and builds once more,
+ * so a project without Metal never pays for the download.
  */
 function buildCommand(input: { sub: string; scheme: string | null; configuration: "Debug" | "Release"; clean: boolean }): string {
+  // A `path` that names the project or workspace itself builds that one, from its folder.
+  const named = /\.(xcodeproj|xcworkspace)\/?$/i.test(input.sub) ? input.sub.replace(/\/+$/, "") : null;
+  const folder = named ? (named.includes("/") ? named.slice(0, named.lastIndexOf("/")) : ".") : input.sub;
+  const find = named
+    ? [named.toLowerCase().endsWith(".xcworkspace") ? `WS=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}; PJ=` : `WS=; PJ=${shellQuote(`./${named.slice(named.lastIndexOf("/") + 1)}`)}`]
+    : [
+      "WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1)",
+      "PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1)",
+      "if [ -z \"$WS$PJ\" ] && [ -f project.yml ] && command -v xcodegen >/dev/null 2>&1; then xcodegen generate; PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1); fi",
+      "if [ -f Podfile ] && [ ! -d Pods ] && command -v pod >/dev/null 2>&1; then pod install; WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1); fi",
+    ];
   return [
     "set -eu",
     "ROOT=$(pwd)",
-    `cd ${shellQuote(input.sub)}`,
-    "WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1)",
-    "PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1)",
-    "if [ -z \"$WS$PJ\" ] && [ -f project.yml ] && command -v xcodegen >/dev/null 2>&1; then xcodegen generate; PJ=$(find . -maxdepth 1 -name '*.xcodeproj' | head -n 1); fi",
-    "if [ -f Podfile ] && [ ! -d Pods ] && command -v pod >/dev/null 2>&1; then pod install; WS=$(find . -maxdepth 1 -name '*.xcworkspace' ! -name 'project.xcworkspace' | head -n 1); fi",
-    "if [ -n \"$WS\" ]; then set -- -workspace \"$WS\"; elif [ -n \"$PJ\" ]; then set -- -project \"$PJ\"; else echo 'No Xcode workspace or project found to build.' >&2; exit 65; fi",
+    `cd ${shellQuote(folder)}`,
+    ...find,
+    "if [ -n \"$WS\" ]; then set -- -workspace \"$WS\"; elif [ -n \"$PJ\" ]; then set -- -project \"$PJ\"; else echo 'No Xcode workspace or project found to build. Pass --path <folder>: the folder inside the project with the .xcodeproj or .xcworkspace.' >&2; exit 65; fi",
     `SCHEME=${shellQuote(input.scheme ?? "")}`,
     "if [ -z \"$SCHEME\" ]; then SCHEME=$(xcodebuild \"$@\" -list 2>/dev/null | awk '/Schemes:/{f=1;next} f&&NF{sub(/^ +/,\"\");print;exit}'); fi",
     "if [ -z \"$SCHEME\" ]; then echo 'No scheme found to build.' >&2; exit 65; fi",
     "echo \"ADE: building $SCHEME (" + input.configuration + ")\"",
-    `xcodebuild "$@" -scheme "$SCHEME" -configuration ${input.configuration} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/build" ARCHS=arm64 CODE_SIGNING_ALLOWED=NO ${input.clean ? "clean " : ""}build`,
+    "mkdir -p \"$ROOT/build\"",
+    "LOG=\"$ROOT/build/ade-xcodebuild.log\"",
+    "CODE_FILE=\"$ROOT/build/ade-xcodebuild.code\"",
+    `ACTION=${shellQuote(input.clean ? "clean build" : "build")}`,
+    // The log is kept to tell why it failed; the exit code goes through a file because a pipe answers tee's.
+    `ade_build() { { if xcodebuild "$@" -scheme "$SCHEME" -configuration ${input.configuration} -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$ROOT/build" ARCHS=arm64 CODE_SIGNING_ALLOWED=NO $ACTION; then echo 0 > "$CODE_FILE"; else echo $? > "$CODE_FILE"; fi; } 2>&1 | tee "$LOG"; return "$(cat "$CODE_FILE")"; }`,
+    "if ade_build \"$@\"; then exit 0; else CODE=$?; fi",
+    "if ! grep -q 'missing Metal Toolchain' \"$LOG\"; then exit \"$CODE\"; fi",
+    `echo "ADE: this project compiles Metal shaders and the runner's Xcode has no Metal Toolchain; fetching it (up to ${METAL_DOWNLOAD_SECONDS} s), then building again."`,
+    `if command -v perl >/dev/null 2>&1; then FETCH="perl -e 'alarm shift; exec @ARGV' ${METAL_DOWNLOAD_SECONDS}"; else FETCH=""; fi`,
+    "if ! eval \"$FETCH xcodebuild -downloadComponent MetalToolchain\"; then echo \"error: The build runner couldn't fetch Apple's Metal Toolchain, which this project needs for its .metal shaders (missing Metal Toolchain).\" >&2; exit \"$CODE\"; fi",
+    "ACTION=build",
+    "ade_build \"$@\"",
   ].join("\n");
 }
 
