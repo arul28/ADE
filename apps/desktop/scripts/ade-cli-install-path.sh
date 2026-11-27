@@ -45,6 +45,23 @@ case "$TARGET_NAME" in
   *) ALIAS_PATH="" ;;
 esac
 
+# Never replace a `daex` someone else installed. Ours is a link into an
+# ade-cli/bin folder (this app or an older copy of it) or an AppImage shim.
+if [ -n "$ALIAS_PATH" ] && { [ -e "$ALIAS_PATH" ] || [ -L "$ALIAS_PATH" ]; }; then
+  alias_ours=""
+  if [ -L "$ALIAS_PATH" ]; then
+    case "$(readlink "$ALIAS_PATH")" in
+      "$ADE_BIN"|*/ade-cli/bin/*) alias_ours=1 ;;
+    esac
+  elif [ -f "$ALIAS_PATH" ] && grep -q ADE_APPIMAGE_CLI "$ALIAS_PATH" 2>/dev/null; then
+    alias_ours=1
+  fi
+  if [ -z "$alias_ours" ]; then
+    echo "ade install: left the existing $ALIAS_PATH alone; the ade command still works." >&2
+    ALIAS_PATH=""
+  fi
+fi
+
 if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ -n "${APPIMAGE:-}" ] && [ -f "$APPIMAGE" ]; then
   # A symlink into an AppImage mount dies when the app exits. Keep a shim to
   # the image itself instead; its launcher resolves the mounted CLI at runtime.

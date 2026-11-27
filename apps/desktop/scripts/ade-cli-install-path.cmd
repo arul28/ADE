@@ -51,6 +51,14 @@ for %%I in ("%TARGET_PATH%") do set "TARGET_EXT=%%~xI"
 set "ALIAS_PATH="
 if /I "%TARGET_NAME%"=="ade" set "ALIAS_PATH=%TARGET_DIR%daex%TARGET_EXT%"
 if /I "%TARGET_NAME:~0,4%"=="ade-" set "ALIAS_PATH=%TARGET_DIR%daex%TARGET_NAME:~3%%TARGET_EXT%"
+rem Never replace a `daex` someone else wrote. Ours runs binde.cmd.
+if defined ALIAS_PATH if exist "%ALIAS_PATH%" (
+  findstr /I /C:"ade.cmd" /C:"ADE_APPIMAGE_CLI" "%ALIAS_PATH%" >nul 2>nul
+  if errorlevel 1 (
+    echo ade install: left the existing %ALIAS_PATH% alone; the ade command still works. 1>&2
+    set "ALIAS_PATH="
+  )
+)
 if defined ALIAS_PATH (
   (
     echo @echo off
