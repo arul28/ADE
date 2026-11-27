@@ -264,7 +264,7 @@ export const UPDATE_RESUME_SCHEDULED_WORK_SOURCE = "update_restart";
  * under it, so the agent needs the reason as much as the instruction.
  */
 export const UPDATE_RESUME_PROMPT =
-  "ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.";
+  `${BRAND.NAME} restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.`;
 
 export const UPDATE_RESUME_REASON = `Resume after ${BRAND.NAME} restart`;
 
@@ -328,7 +328,7 @@ export function stripHostOnlyChatMetadata<T extends Record<string, unknown>>(
  * and reason differ: the agent is told the truth about why it stopped.
  */
 export const RESTART_RESUME_PROMPT =
-  "ADE restarted while your last turn was running, so it ended early. Continue the task from where it stopped; do not restart work that already completed.";
+  `${BRAND.NAME} restarted while your last turn was running, so it ended early. Continue the task from where it stopped; do not restart work that already completed.`;
 
 export const RESTART_RESUME_REASON = `Resume after ${BRAND.NAME} restarted`;
 
@@ -338,7 +338,7 @@ export const RESTART_RESUME_REASON = `Resume after ${BRAND.NAME} restarted`;
  * that was only waiting on them must hear that their reports will never come.
  */
 export const CLI_RESTART_RESUME_PROMPT =
-  "ADE restarted while you were working, so your last turn ended early and any background agents or tasks you started were stopped before they reported back. Continue the task from where it stopped: re-run the stopped work you still need, and do not redo work that already completed.";
+  `${BRAND.NAME} restarted while you were working, so your last turn ended early and any background agents or tasks you started were stopped before they reported back. Continue the task from where it stopped: re-run the stopped work you still need, and do not redo work that already completed.`;
 
 /**
  * What a reopened agent CLI that ADE did not see at work is told. ADE's
@@ -355,9 +355,9 @@ function requesterLabel(requestedBy: UpdateRequestedBy | null | undefined): stri
   if (name) return `"${name}"`;
   switch (requestedBy?.clientKind) {
     case "ios":
-      return "the ADE phone app";
+      return `the ${BRAND.NAME} phone app`;
     case "web":
-      return "ADE Web";
+      return `${BRAND.NAME} Web`;
     case "cli":
       return "the ade CLI";
     case "agent":
@@ -407,7 +407,7 @@ function restartCauseLead(cause: RestartCause | null | undefined): string | null
       const version = cause.version?.trim();
       const requester = requesterLabel(cause.requestedBy);
       const update = version ? `an update to ${version}` : "an update";
-      return `ADE restarted${atClause} for ${update}${requester ? ` that ${requester} asked for` : ""}`;
+      return `${BRAND.NAME} restarted${atClause} for ${update}${requester ? ` that ${requester} asked for` : ""}`;
     }
     case "computer_restarted":
       return `The computer restarted${atClause}`;
@@ -415,14 +415,14 @@ function restartCauseLead(cause: RestartCause | null | undefined): string | null
       const why = cause.freezeCause === "drive"
         ? " because a drive stopped answering"
         : cause.freezeCause === "memory" ? " because the computer was short of memory" : "";
-      return `ADE's background service froze${why}, and ADE restarted it${atClause}`;
+      return `${BRAND.NAME}'s background service froze${why}, and ${BRAND.NAME} restarted it${atClause}`;
     }
     case "service_restarted":
-      return `ADE's background service was restarted${atClause}`;
+      return `${BRAND.NAME}'s background service was restarted${atClause}`;
     case "disk_grow":
-      return `ADE grew this computer's disk${cause.fromGb != null ? ` from ${cause.fromGb} GB` : ""} to ${cause.toGb} GB, which restarted the computer${atClause}`;
+      return `${BRAND.NAME} grew this computer's disk${cause.fromGb != null ? ` from ${cause.fromGb} GB` : ""} to ${cause.toGb} GB, which restarted the computer${atClause}`;
     case "unknown":
-      return `ADE's background service stopped unexpectedly${atClause} and started again`;
+      return `${BRAND.NAME}'s background service stopped unexpectedly${atClause} and started again`;
   }
 }
 
@@ -437,7 +437,7 @@ function memoryWords(cause: RestartCause | null | undefined): { clause: string; 
   const facts = memoryFactsPhrase(memory);
   return {
     clause: facts ? ` (memory was low: ${facts})` : memory ? " (memory was low)" : "",
-    note: restartCauseInvolvesMemory(cause) ? " ADE is running again; if memory is still low, say so." : "",
+    note: restartCauseInvolvesMemory(cause) ? ` ${BRAND.NAME} is running again; if memory is still low, say so.` : "",
   };
 }
 
@@ -475,7 +475,7 @@ export function cliRestartResumePrompt(cause: RestartCause | null | undefined): 
  */
 export function cliReopenedIdlePrompt(cause: RestartCause | null | undefined): string {
   const memory = memoryWords(cause);
-  return `${restartCauseLead(cause) ?? "ADE restarted"}${memory.clause}, and ADE reopened this session.${memory.note} ${CLI_REOPENED_IDLE_INSTRUCTION}`;
+  return `${restartCauseLead(cause) ?? `${BRAND.NAME} restarted`}${memory.clause}, and ${BRAND.NAME} reopened this session.${memory.note} ${CLI_REOPENED_IDLE_INSTRUCTION}`;
 }
 
 /** A few words for the terminal line: "The computer restarted (memory was low)". */
@@ -773,7 +773,7 @@ export function isAwaitedCancelledWork(work: RestartCancelledWork): boolean {
  * provider puts ahead of this prompt.
  */
 export const BACKGROUND_WORK_LOST_RESUME_PROMPT =
-  "Background work you were waiting on was stopped before it reported back (ADE's notice above lists it). Re-run what you still need, then carry on; do not redo work that already finished.";
+  `Background work you were waiting on was stopped before it reported back (${BRAND.NAME}'s notice above lists it). Re-run what you still need, then carry on; do not redo work that already finished.`;
 
 export const BACKGROUND_WORK_LOST_RESUME_REASON = "Resume after background work was lost";
 
@@ -915,8 +915,8 @@ export function buildRestartNote(args: {
   if (!args.interruptedTurn && args.cancelled.length === 0) return null;
   const lines = [
     args.interruptedTurn
-      ? "ADE restarted while your previous turn was running, so that turn ended early."
-      : "ADE restarted since your previous turn.",
+      ? `${BRAND.NAME} restarted while your previous turn was running, so that turn ended early.`
+      : `${BRAND.NAME} restarted since your previous turn.`,
   ];
   if (args.cancelled.length > 0) {
     lines.push("This background work was cancelled by the restart and is no longer running:");
