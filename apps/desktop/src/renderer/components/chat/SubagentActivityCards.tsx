@@ -22,7 +22,6 @@ import {
 } from "./chatCardPrimitives";
 import { deriveSubagentCardName, formatSubagentModelLabel, subagentSummaryPlainText } from "../../../shared/chatSubagents";
 import { modelMentionEffortLabel } from "../../../shared/modelMentions";
-import { BRAND } from "../../../shared/brand";
 import {
   CHAT_STOP_REASON_BRAIN_RESTARTED,
   CHAT_STOP_REASON_FOREIGN_BRAIN,
