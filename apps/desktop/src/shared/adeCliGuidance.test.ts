@@ -71,8 +71,8 @@ describe("Work board status guidance", () => {
     expect(guidance).not.toContain("Work-board column is derived");
     expect(guidance).not.toContain("moveOnBoard");
     // The mechanics an agent does need here are still present.
-    expect(guidance).toContain("ade chat note");
-    expect(guidance).toContain("ade chat ask");
+    expect(guidance).toContain("daex chat note");
+    expect(guidance).toContain("daex chat ask");
     // ...and so is the index that names the skill carrying the rest.
     expect(guidance).toContain("`ade-cli-control-plane`");
   });

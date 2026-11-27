@@ -74,7 +74,7 @@ export function adeAdvertisedAgentSkillNames(): string[] {
 // subagent's report, settling, the other rename commands) live in the "Board
 // and status" section of the ade-cli-control-plane skill. The 2026-11-16
 // discovery bench found agents still find note, ask and rename from this line.
-export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = `Work row: \`ade chat note "<${STATUS_NOTE_GUIDELINE_WORDS} words>"\` sets your status, also when done; a question for the user goes only through \`ade chat ask "<question>"\`, never a note; rename with \`ade chat update --title\`.`;
+export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = `Work row: \`daex chat note "<${STATUS_NOTE_GUIDELINE_WORDS} words>"\` sets your status, also when done; a question for the user goes only through \`daex chat ask "<question>"\`, never a note; rename with \`daex chat update --title\`.`;
 
 /**
  * Pin every ADE CLI socket selector to the same runtime. Different command
@@ -198,7 +198,7 @@ export function buildAdeSessionActivityGuidance(args: {
  */
 export function buildAdeWindowsTrackedCliActivityGuidance(): string {
   return [
-    "Activity detail for this tracked ADE CLI session:",
+    "Activity detail for this tracked Daex CLI session:",
     "- When ADE_CLI_PATH and ADE_ACTIVITY_SESSION_ID are available, first identify your command shell. In PowerShell, report activity with `& \"$env:ADE_CLI_PATH\" chat activity testing` and clear it with `& \"$env:ADE_CLI_PATH\" chat activity clear`.",
     "  In cmd.exe, use `\"%ADE_CLI_PATH%\" chat activity testing` and `\"%ADE_CLI_PATH%\" chat activity clear`. Replace testing with one value from "
       + `${SESSION_ACTIVITY_VALUES.join(", ")}.`,
@@ -210,9 +210,9 @@ export function buildAdeWindowsTrackedCliActivityGuidance(): string {
 export function buildAdePosixTrackedCliActivityGuidance(): string {
   const command = '"$ADE_CLI_PATH"';
   return [
-    "Activity detail for this tracked ADE CLI session:",
+    "Activity detail for this tracked Daex CLI session:",
     `- When your command shell exposes ADE_CLI_PATH and ADE_ACTIVITY_SESSION_ID, report activity with \`${command} chat activity testing\`; clear it with \`${command} chat activity clear\`. Replace testing with one value from ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
-    "  ADE scopes this command to the tracked terminal row; do not pass another session id.",
+    "  Daex scopes this command to the tracked terminal row; do not pass another session id.",
   ].join("\n");
 }
 
@@ -244,7 +244,7 @@ export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 export const ADE_CLI_SESSION_SCREEN_RULES = [
   "Screens and proof: every `ade` command works from this terminal.",
   "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
-  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade screen`, and you stop it when you finish.",
+  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `daex browser`; an Electron app's DOM is `daex app-control`; an iOS app is `daex apple`; only a desktop app none of those reach goes on this lane's own screen, `daex screen`, and you stop it when you finish.",
   "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
   "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
 ].join("\n");
@@ -254,9 +254,9 @@ export const ADE_CLI_SESSION_SCREEN_RULES = [
  * for both, so a chat subagent and a terminal subagent are told the same thing.
  */
 export const ADE_PARENT_REPORT_COMMAND_GUIDANCE = [
-  "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
-  "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
-  "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --text-file $f`.",
+  "Send reports with the typed `daex chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `daex.cmd` cuts an argument at its first line break.",
+  "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `daex chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
+  "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `daex chat message $env:ADE_PARENT_CHAT_SESSION_ID --text-file $f`.",
 ].join(" ");
 
 /**
@@ -275,10 +275,10 @@ export function buildCliSpawnReportGuidance(
   // same id; it is named here too in case a shell loses the variable.
   // `peer` is the stored name of a chat that does not report back.
   if (lineage?.spawnKind === "peer") {
-    return `ADE chat ${parent} started you. Nobody waits for your result. If that chat needs it, report it with \`ade chat message\`. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
+    return `Daex chat ${parent} started you. Nobody waits for your result. If that chat needs it, report it with \`daex chat message\`. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
   }
   return [
-    `You are a subagent of ADE chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,
+    `You are a subagent of Daex chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,
     "- When you finish a task, send a report: what you did, what you checked, and anything left open. Send one for each task you finish, not only when you exit.",
     "- When you need a decision, put the question and your recommendation in a report and wait; do not ask the user. That chat asks them when it cannot decide.",
     `- ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`,
@@ -334,41 +334,43 @@ export function buildAdeBootstrapGuidance(
   options: AdeBootstrapGuidanceOptions = {},
 ): string {
   return [
+    // The heading stays "## ADE": external-session discovery (this build's and
+    // older ones') recognizes Daex's own ACP chats by it (`discoverAcpShared.ts`).
     "## ADE",
-    "ADE is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `ade` CLI controls ADE state.",
+    "Daex (formerly ADE) is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `daex` CLI controls Daex state. `ade` is the same command and still works.",
     ...(options.nativeSkillListing
-      ? ["Before a task in an ADE area, read its `ade:ade-*` skill."]
+      ? ["Before a task in a Daex area, read its `ade:ade-*` skill."]
       : [
         `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
         formatAdeAgentSkillRootsForPrompt(skillRoots),
-        "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
+        "No native skills? `daex skill list --text`, then `daex skill show <name> --text`.",
       ]),
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
-    "Visuals: for a chart, a comparison or a choice, add a ```scene block; run `ade scene guide` first.",
+    "Visuals: for a chart, a comparison or a choice, add a ```scene block; run `daex scene guide` first.",
     // The one proof line every agent sees. Chat shows a picture only from the
     // project's own files or the proof store; an agent that linked a screenshot
     // it saved to /tmp left the user a chip saying "Outside this project".
     // Naming the case ("an existing image file") matters: without it agents
     // opened the browser skill for "put this screenshot in your answer". Do
     // not add "a chart" here; it pulls chart requests away from scenes.
-    "Images in answers: to show an existing image file, such as a screenshot, run `ade proof attach <file>` and paste its `cite:` line; a plain path may not show. Proof or demos for people: **ade-proof-artifacts**.",
+    "Images in answers: to show an existing image file, such as a screenshot, run `daex proof attach <file>` and paste its `cite:` line; a plain path may not show. Proof or demos for people: **ade-proof-artifacts**.",
     // Agents opened about two thirds of recent PRs with `gh`, and rewrote the
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
-    "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
+    "PRs: open with `daex prs create`, rewrite text with `daex prs body`; `gh` skips proof upload and the lane link.",
     ...(options.computerUseDirectiveIncluded
       ? []
       : ["`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`."]),
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
-    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them or `.env` files.",
+    "Credentials: never ask in chat. `daex secrets request` (a key), `daex integrations connect` (GitHub/Linear/Jira) and `daex mcp servers add` (MCP) show the user a card. Read only requested `daex secrets`; never print them or `.env` files.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
     // `ade drafts` and `ade settings find` stay named here: without them the
     // 2026-11-16 discovery bench lost both features.
-    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat --provider <p> --model <id>`)."} Subagents report back; to wait on a PR use \`ade prs watch\`, on a terminal \`ade terminal watch\`, else \`ade chat scheduled-work create\`. \`ade drafts\` sends a message as the user. ADE settings: \`ade settings find <words>\`. Stop processes you start; \`ade help <command>\` shows usage.`,
+    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`daex new chat --mode chat --provider <p> --model <id>`)."} Subagents report back; to wait on a PR use \`daex prs watch\`, on a terminal \`daex terminal watch\`, else \`daex chat scheduled-work create\`. \`daex drafts\` sends a message as the user. Daex settings: \`daex settings find <words>\`. Stop processes you start; \`daex help <command>\` shows usage.`,
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }
