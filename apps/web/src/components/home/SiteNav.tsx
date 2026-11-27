@@ -109,7 +109,8 @@ export function SiteNav() {
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 bg-[#0a0a0f]/75 backdrop-blur-xl" />
       <div className="mx-auto flex h-[60px] max-w-[1320px] items-center gap-7 px-5 sm:px-8">
         <Link to="/" aria-label={`${BRAND.NAME} home`} className="focus-ring flex shrink-0 items-center rounded-md">
-          <img src="/logo.png" alt={BRAND.NAME} className="h-[22px] w-auto" />
+          <img src="/icon.png" alt="" aria-hidden className="h-6 w-6" />
+          <span className="ml-2 text-[17px] font-semibold tracking-tight text-white">{BRAND.NAME}</span>
         </Link>
 
         <nav className="hidden items-center gap-6 md:flex" aria-label="Main">

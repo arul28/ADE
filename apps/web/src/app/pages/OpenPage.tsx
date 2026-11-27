@@ -728,7 +728,10 @@ export function OpenPage() {
   return (
     <Page className="relative grid min-h-screen place-items-center overflow-hidden px-5 py-24 sm:px-6">
       <Link to="/" className="focus-ring absolute left-6 top-6 rounded-md sm:left-7" aria-label={`${BRAND.NAME} home`}>
-        <img src="/logo.png" alt={BRAND.NAME} className="h-9 w-auto" draggable={false} />
+        <span className="flex items-center gap-2.5">
+          <img src="/icon.png" alt="" aria-hidden className="h-8 w-8" draggable={false} />
+          <span className="text-xl font-semibold tracking-tight text-white">{BRAND.NAME}</span>
+        </span>
       </Link>
       {/* The same soft accent glow the ADE app puts behind its start screens. */}
       <div

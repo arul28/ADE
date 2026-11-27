@@ -21,14 +21,18 @@ export function SiteFooter() {
         <div className="grid gap-10 md:grid-cols-3">
           <div>
             <div className="flex flex-col gap-2">
-              <img
-                src="/logo.png"
-                alt={BRAND.NAME}
-                className="h-9 w-auto object-contain object-left sm:h-10"
-                width={200}
-                height={40}
-                decoding="async"
-              />
+              <div className="flex items-center gap-2.5">
+                <img
+                  src="/icon.png"
+                  alt=""
+                  aria-hidden
+                  className="h-8 w-8 sm:h-9 sm:w-9"
+                  width={36}
+                  height={36}
+                  decoding="async"
+                />
+                <span className="text-xl font-semibold tracking-tight text-fg sm:text-2xl">{BRAND.NAME}</span>
+              </div>
               <div className="text-xs text-muted-fg">Agentic Development Environment</div>
             </div>
             <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-fg">
