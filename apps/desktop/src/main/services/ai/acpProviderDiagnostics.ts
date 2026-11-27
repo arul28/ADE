@@ -21,6 +21,7 @@ import { grokConfigHome } from "../shared/providerConfigHomes";
 import { acpProbeConfigHome, getCachedAcpAuthProbe } from "./acpAuthProbe";
 import { resolveAcpExecutable } from "./acpExecutables";
 import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
+import { BRAND } from "../../../shared/brand";
 
 const VERSION_TIMEOUT_MS = 6_000;
 const DOCTOR_TIMEOUT_MS = 25_000;
@@ -85,7 +86,7 @@ export type CollectAcpProviderDiagnosticsArgs = {
 function missingBinaryReason(provider: AcpChatProvider): string {
   const pinned = pinnedToolForProvider(provider);
   const blocker = pinned ? pinnedToolState(pinned.tool, pinned.label).blocker : null;
-  return blocker ?? `ADE's copy of \`${provider}\` is not on this machine.`;
+  return blocker ?? `${BRAND.NAME}'s copy of \`${provider}\` is not on this machine.`;
 }
 
 export async function collectAcpProviderDiagnostics(
@@ -124,8 +125,8 @@ export async function collectAcpProviderDiagnostics(
     const pinnedVersion = status?.runningVersion ?? status?.version ?? null;
     return {
       ...base,
-      version: pinnedVersion ? `agy ${pinnedVersion} (ADE's pinned copy)` : null,
-      versionError: pinnedVersion ? null : "ADE could not read its Antigravity version.",
+      version: pinnedVersion ? `agy ${pinnedVersion} (${BRAND.NAME}'s pinned copy)` : null,
+      versionError: pinnedVersion ? null : `${BRAND.NAME} could not read its Antigravity version.`,
     };
   }
 

@@ -42,6 +42,7 @@ import type { Logger } from "../logging/logger";
 import { resolveClaudeCodeExecutable, type ClaudeCodeExecutableResolution } from "./claudeCodeExecutable";
 import type { ClaudeVersionRejection } from "./providerVersionRejection";
 import { fallForwardOnce, fetchVendorJson, runProbeProcess } from "./providerFallForward";
+import { BRAND } from "../../../shared/brand";
 
 const TOOL = "claude-code";
 const NPM_REGISTRY = "https://registry.npmjs.org";
@@ -323,20 +324,20 @@ export function handleClaudeVersionRejection(args: {
 }
 
 function versionLabel(version: string | null): string {
-  return version ? `Claude Code ${version}` : "ADE's Claude Code";
+  return version ? `Claude Code ${version}` : `${BRAND.NAME}'s Claude Code`;
 }
 
 const FAILURE_WORDS: Readonly<Record<ClaudeFallForwardFailure, string>> = {
-  "not-allowed": "This ADE process does not download Claude Code builds, so it did not switch.",
-  "env-override": "This ADE runs a developer-set Claude Code (CLAUDE_CODE_EXECUTABLE_PATH), so it did not switch.",
-  "no-pin": "This ADE has no Claude Code for this machine.",
-  "newest-refused": "ADE had already switched to Anthropic's newest build, and Anthropic refused that too.",
+  "not-allowed": `This ${BRAND.NAME} process does not download Claude Code builds, so it did not switch.`,
+  "env-override": `This ${BRAND.NAME} runs a developer-set Claude Code (CLAUDE_CODE_EXECUTABLE_PATH), so it did not switch.`,
+  "no-pin": `This ${BRAND.NAME} has no Claude Code for this machine.`,
+  "newest-refused": `${BRAND.NAME} had already switched to Anthropic's newest build, and Anthropic refused that too.`,
   "no-newer-build": "Anthropic has published no newer build yet.",
   "below-required": "Anthropic's newest build is still older than that.",
-  "lookup-failed": "ADE could not look up Anthropic's newest build.",
-  "download-failed": "ADE could not download Anthropic's newest build.",
-  "probe-failed": "Anthropic's newest build did not pass ADE's start-up check.",
-  "write-failed": "ADE could not record the switch.",
+  "lookup-failed": `${BRAND.NAME} could not look up Anthropic's newest build.`,
+  "download-failed": `${BRAND.NAME} could not download Anthropic's newest build.`,
+  "probe-failed": `Anthropic's newest build did not pass ${BRAND.NAME}'s start-up check.`,
+  "write-failed": `${BRAND.NAME} could not record the switch.`,
 };
 
 /**
@@ -350,13 +351,13 @@ export function claudeFallForwardNotice(
   options: { after: "restart" | "resend" | "retry" },
 ): string {
   if (outcome.switched) {
-    const switched = `Anthropic stopped supporting ${versionLabel(outcome.rejectedClaudeCodeVersion)}; ADE switched to the untested ${outcome.claudeCodeVersion}`;
+    const switched = `Anthropic stopped supporting ${versionLabel(outcome.rejectedClaudeCodeVersion)}; ${BRAND.NAME} switched to the untested ${outcome.claudeCodeVersion}`;
     if (options.after === "restart") return `${switched} and is starting this chat again.`;
     return options.after === "resend" ? `${switched}. Send the message again.` : `${switched}. Try again.`;
   }
   const required = outcome.requiredVersion ? ` (it requires ${outcome.requiredVersion} or newer)` : "";
   return `Anthropic no longer accepts ${versionLabel(outcome.rejectedClaudeCodeVersion)}${required}. `
-    + `${FAILURE_WORDS[outcome.reason]} Update ADE to get a newer Claude Code.`;
+    + `${FAILURE_WORDS[outcome.reason]} Update ${BRAND.NAME} to get a newer Claude Code.`;
 }
 
 /**
@@ -368,6 +369,6 @@ export function claudeFallForwardStatusLine(): string | null {
   const active = resolveActiveToolVersionOverride(TOOL);
   if (!active) return null;
   const running = active.override.overrideToolVersion ?? active.override.overrideVersion;
-  const refused = active.override.rejectedToolVersion ?? `ADE's pinned build (${active.override.pinnedVersion})`;
+  const refused = active.override.rejectedToolVersion ?? `${BRAND.NAME}'s pinned build (${active.override.pinnedVersion})`;
   return `Running untested Claude Code ${running}: Anthropic stopped supporting ${refused}.`;
 }

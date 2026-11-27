@@ -8,6 +8,7 @@
  */
 import { isDevRun } from "../../../../../ade-cli/src/services/tools/muse";
 import type { MuseExecutableResolution } from "../../../../../ade-cli/src/services/tools/muse";
+import { BRAND } from "../../../shared/brand";
 
 export {
   ensureMuseBinary,
@@ -34,9 +35,9 @@ export function museProviderOverride(env: NodeJS.ProcessEnv): string | null {
  */
 export function museBinaryBlocker(resolution: MuseExecutableResolution): string | null {
   if (resolution.path) return null;
-  if (resolution.source === "unsupported") return "ADE has no pinned Muse build for this platform.";
+  if (resolution.source === "unsupported") return `${BRAND.NAME} has no pinned Muse build for this platform.`;
   const version = resolution.pinnedVersion ? ` (${resolution.pinnedVersion})` : "";
   return resolution.fetchPending
-    ? `ADE's pinned Muse build${version} is not downloaded yet. Download it from Settings > Providers.`
-    : `ADE's pinned Muse build${version} is not available.`;
+    ? `${BRAND.NAME}'s pinned Muse build${version} is not downloaded yet. Download it from Settings > Providers.`
+    : `${BRAND.NAME}'s pinned Muse build${version} is not available.`;
 }

@@ -33,6 +33,7 @@ import {
   type ProviderAuthResolver,
   type ProviderAuthResult,
 } from "./providerProbeSeams";
+import { BRAND } from "../../../shared/brand";
 
 // ---------------------------------------------------------------------------
 // Per-provider credentials
@@ -242,7 +243,7 @@ export const DEFAULT_AUTH: Record<ShippedProvider, ProviderAuthResolver> = {
   opencode: async () => ({
     authenticated: false,
     authMethod: null,
-    detail: "OpenCode stores credentials per model provider inside its own server; ADE cannot read them without starting it.",
+    detail: `OpenCode stores credentials per model provider inside its own server; ${BRAND.NAME} cannot read them without starting it.`,
   }),
   /**
    * File and environment only: `META_API_KEY` (ADE's or one saved in ADE's

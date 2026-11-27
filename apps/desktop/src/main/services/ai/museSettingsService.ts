@@ -61,6 +61,7 @@ import type {
   MuseSettingsSkill,
   MuseSettingsSnapshot,
 } from "../../../shared/museSettings";
+import { BRAND } from "../../../shared/brand";
 
 /** A page left open and untouched this long gives its host back. */
 const IDLE_CLOSE_MS = 10 * 60_000;
@@ -265,7 +266,7 @@ function toSkill(raw: unknown): MuseSettingsSkill {
 /** A setup answer, or an error when Muse sent something that is not one. */
 function readSetupState(value: unknown): ComputerUseSetupState {
   const state = parseSetupState(value);
-  if (!state) throw new Error("Muse answered computer-use setup in a shape ADE does not understand.");
+  if (!state) throw new Error(`Muse answered computer-use setup in a shape ${BRAND.NAME} does not understand.`);
   return state;
 }
 
@@ -400,7 +401,7 @@ async function readComputerUse(state: SettingsHost): Promise<MuseComputerUseStat
   } catch (error) {
     if (isMuseErrorKind(error, "computerUseUnavailable")) return { available: false, reason: describeMuseError(error) };
     if (isMuseErrorKind(error, "capabilityRequired")) {
-      setupError = "This Muse host did not grant computer-use setup to ADE.";
+      setupError = `This Muse host did not grant computer-use setup to ${BRAND.NAME}.`;
     } else {
       setupError = describeMuseError(error);
     }
@@ -507,7 +508,7 @@ async function run(state: SettingsHost, request: MuseSettingsRequest): Promise<M
     }
     case "computerUseSetupCheck": {
       if (!state.host.grantedCapabilities.has("computerUseHostSetup")) {
-        throw new Error("This Muse host did not grant computer-use setup to ADE, so it cannot check permissions.");
+        throw new Error(`This Muse host did not grant computer-use setup to ${BRAND.NAME}, so it cannot check permissions.`);
       }
       const checked = readSetupState(await state.host.request<unknown>("computerUseSetup/check", {}));
       const current = await readComputerUse(state);
@@ -516,7 +517,7 @@ async function run(state: SettingsHost, request: MuseSettingsRequest): Promise<M
     }
     case "feedback": {
       if (!state.host.grantedCapabilities.has("feedback")) {
-        throw new Error("This Muse host does not accept feedback from ADE.");
+        throw new Error(`This Muse host does not accept feedback from ${BRAND.NAME}.`);
       }
       const classification = oneOf(request.classification, ["bug", "badResult", "goodResult", "other"] as const, "Feedback type");
       const note = requireText(request.note, "Feedback", MAX_FEEDBACK_NOTE_CHARS);

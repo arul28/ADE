@@ -51,6 +51,7 @@ import {
   reportProviderRuntimeReady,
   type ProviderRuntimeFailureDetail,
 } from "./providerRuntimeHealth";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The probe waits as long as a real chat would: a slower answer here than a
@@ -294,7 +295,7 @@ export async function probeAcpProviderAuth(
       state: "runtime-failed",
       message: tool
         ? pinnedToolNotReadyError(tool.tool, tool.label).message
-        : `ADE has no ${provider} runtime on this machine.`,
+        : `${BRAND.NAME} has no ${provider} runtime on this machine.`,
     };
   }
 
@@ -401,7 +402,7 @@ export async function probeAcpProviderAuth(
       const detail = error instanceof Error ? error.message : String(error);
       return {
         state: "runtime-failed",
-        message: `ADE could not start its ${dialect.displayName} at ${executable.path}: ${detail}`,
+        message: `${BRAND.NAME} could not start its ${dialect.displayName} at ${executable.path}: ${detail}`,
       };
     } finally {
       probeOutput.stderrTail = connection?.readStderrTail().trim() || null;

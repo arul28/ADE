@@ -58,6 +58,7 @@ import {
   runPiTask,
   runQwenTask,
 } from "./pinnedCliTaskRunners";
+import { BRAND } from "../../../shared/brand";
 
 export type { ProviderTaskRunnerArgs, ProviderTaskRunnerResult } from "./providerTaskCommon";
 
@@ -633,6 +634,6 @@ export async function runProviderTask(args: ProviderTaskRunnerArgs): Promise<Pro
       return await runAntigravityTask(args);
     default:
       // Claude, Codex, Cursor and Muse were routed above by family.
-      throw new Error(`ADE has no one-shot runner for ${cliProvider} model '${args.descriptor.id}'.`);
+      throw new Error(`${BRAND.NAME} has no one-shot runner for ${cliProvider} model '${args.descriptor.id}'.`);
   }
 }

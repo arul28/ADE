@@ -48,6 +48,7 @@ import { kimiItems } from "./providerContext/providers/kimi";
 import { openCodeItems } from "./providerContext/providers/opencode";
 import { piItems } from "./providerContext/providers/pi";
 import { qwenItems } from "./providerContext/providers/qwen";
+import { BRAND } from "../../../shared/brand";
 
 const MEASURE_WINDOW_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -82,79 +83,79 @@ const PROVIDER_CONTEXT_SPECS: Record<ProviderContextProvider, ProviderContextSpe
   claude: {
     name: "Claude Code",
     coverage: "good",
-    note: "ADE's text is exact; CLAUDE.md files, rules, memory, skills, agents, plugins and MCP servers follow Claude Code's documented rules, so their sizes are estimates and MCP tool sizes are unknown until the servers connect.",
+    note: `${BRAND.NAME}'s text is exact; CLAUDE.md files, rules, memory, skills, agents, plugins and MCP servers follow Claude Code's documented rules, so their sizes are estimates and MCP tool sizes are unknown until the servers connect.`,
     discover: claudeItems,
   },
   codex: {
     name: "Codex",
     coverage: "good",
-    note: "ADE's text is exact; AGENTS.md files, skills and MCP servers follow Codex's documented rules, so their sizes are estimates and Codex's own prompt and tools are only known from measured chats.",
+    note: `${BRAND.NAME}'s text is exact; AGENTS.md files, skills and MCP servers follow Codex's documented rules, so their sizes are estimates and Codex's own prompt and tools are only known from measured chats.`,
     discover: codexItems,
   },
   cursor: {
     name: "Cursor",
     coverage: "good",
-    note: "ADE's text is exact; project rules, AGENTS.md, skills and MCP servers follow Cursor's documented rules, while user and team rules kept in Cursor's settings cannot be read here.",
+    note: `${BRAND.NAME}'s text is exact; project rules, AGENTS.md, skills and MCP servers follow Cursor's documented rules, while user and team rules kept in Cursor's settings cannot be read here.`,
     discover: cursorItems,
   },
   droid: {
     name: "Droid",
     coverage: "good",
-    note: "ADE's text is exact; AGENTS.md and CLAUDE.md files, skills, custom droids and MCP servers follow Droid's rules, so their sizes are estimates.",
+    note: `${BRAND.NAME}'s text is exact; AGENTS.md and CLAUDE.md files, skills, custom droids and MCP servers follow Droid's rules, so their sizes are estimates.`,
     discover: droidItems,
   },
   opencode: {
     name: "OpenCode",
     coverage: "good",
-    note: "ADE's text is exact; AGENTS.md, skills, agents, plugins and MCP servers follow OpenCode's documented rules, so their sizes are estimates and plugins can change the prompt in ways no list can show.",
+    note: `${BRAND.NAME}'s text is exact; AGENTS.md, skills, agents, plugins and MCP servers follow OpenCode's documented rules, so their sizes are estimates and plugins can change the prompt in ways no list can show.`,
     discover: openCodeItems,
   },
   pi: {
     name: "Pi",
     coverage: "good",
-    note: "ADE replaces Pi's base prompt, so most of it is exact; context files, the append file and ADE's skills follow Pi's loader, and Pi's own tools are not counted.",
+    note: `${BRAND.NAME} replaces Pi's base prompt, so most of it is exact; context files, the append file and ${BRAND.NAME}'s skills follow Pi's loader, and Pi's own tools are not counted.`,
     discover: (ctx) => piItems(ctx),
   },
   muse: {
     name: "Muse",
     coverage: "basic",
-    note: "Only ADE's own text is listed: Muse lists its skills and plugins only inside a running session.",
+    note: `Only ${BRAND.NAME}'s own text is listed: Muse lists its skills and plugins only inside a running session.`,
     discover: museItems,
   },
   qwen: {
     name: "Qwen Code",
     coverage: "good",
-    note: "ADE's text is exact; QWEN.md files, skills and MCP servers follow Qwen Code's documented settings, so their sizes are estimates.",
+    note: `${BRAND.NAME}'s text is exact; QWEN.md files, skills and MCP servers follow Qwen Code's documented settings, so their sizes are estimates.`,
     discover: qwenItems,
   },
   kimi: {
     name: "Kimi Code",
     coverage: "good",
-    note: "ADE's text is exact; AGENTS.md files, skills and MCP servers follow Kimi Code's documented rules, so their sizes are estimates.",
+    note: `${BRAND.NAME}'s text is exact; AGENTS.md files, skills and MCP servers follow Kimi Code's documented rules, so their sizes are estimates.`,
     discover: kimiItems,
   },
   grok: {
     name: "Grok",
     coverage: "basic",
-    note: "Only ADE's own text and the MCP servers in Grok's config are listed: Grok does not document what else it loads.",
+    note: `Only ${BRAND.NAME}'s own text and the MCP servers in Grok's config are listed: Grok does not document what else it loads.`,
     discover: configMcpOnlyItems("grok"),
   },
   copilot: {
     name: "Copilot",
     coverage: "good",
-    note: "ADE's text is exact; instruction files, skills, agents and MCP servers follow Copilot's documented rules, so their sizes are estimates.",
+    note: `${BRAND.NAME}'s text is exact; instruction files, skills, agents and MCP servers follow Copilot's documented rules, so their sizes are estimates.`,
     discover: copilotItems,
   },
   devin: {
     name: "Devin",
     coverage: "basic",
-    note: "Only ADE's own text and the MCP servers in Devin's config are listed: Devin does not document what else it loads.",
+    note: `Only ${BRAND.NAME}'s own text and the MCP servers in Devin's config are listed: Devin does not document what else it loads.`,
     discover: configMcpOnlyItems("devin"),
   },
   antigravity: {
     name: "Antigravity",
     coverage: "basic",
-    note: "Only ADE's own text and the MCP servers in Antigravity's config are listed: its harness does not document what else it loads.",
+    note: `Only ${BRAND.NAME}'s own text and the MCP servers in Antigravity's config are listed: its harness does not document what else it loads.`,
     discover: configMcpOnlyItems("antigravity"),
   },
 };
@@ -222,8 +223,8 @@ export async function getProviderContextInventory(
   if (preview && discovered.adeSkillsNative) {
     // ADE's own skill roots, ahead of the user's: a same-named user skill is a
     // different skill, but listing ADE's first matches the catalogue order.
-    items.push(...await skillItems(ctx, preview.adeSkillRoots.map((dir) => ({ dir, label: "ADE skills", owner: "ade" as const })), {
-      detail: "ADE's bundled skills, handed to the provider as its own; names and descriptions are listed.",
+    items.push(...await skillItems(ctx, preview.adeSkillRoots.map((dir) => ({ dir, label: `${BRAND.NAME} skills`, owner: "ade" as const })), {
+      detail: `${BRAND.NAME}'s bundled skills, handed to the provider as its own; names and descriptions are listed.`,
     }));
   }
   items.push(...discovered.items);

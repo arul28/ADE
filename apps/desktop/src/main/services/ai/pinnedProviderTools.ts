@@ -34,6 +34,7 @@ import { claudeFallForwardStatusLine } from "./claudeFallForward";
 import { codexFallForwardStatusLine } from "./codexFallForward";
 import { museFallForwardStatusLine } from "./museFallForward";
 import { getMuseBinaryStatus, startMuseBinaryFetch } from "./museExecutable";
+import { BRAND } from "../../../shared/brand";
 
 /** The pinned tool behind a provider id, or null for a provider ADE pins nothing for. */
 export function pinnedToolForProvider(provider: string): { tool: string; label: string } | null {
@@ -107,7 +108,7 @@ function capitalized(label: string): string {
 
 const ERROR_KIND_WORDS: Readonly<Partial<Record<ToolErrorKind, string>>> = {
   network: "the download failed",
-  integrity: "the download did not match ADE's checksum",
+  integrity: `the download did not match ${BRAND.NAME}'s checksum`,
   "disk-space": "not enough free disk space",
   extract: "the download could not be unpacked",
   "lock-timeout": "the install lock was never released",
@@ -133,7 +134,7 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
     case "ready":
       return null;
     case "downloading":
-      return `ADE is downloading ${label} for this machine. Chats with it start when it finishes.`;
+      return `${BRAND.NAME} is downloading ${label} for this machine. Chats with it start when it finishes.`;
     case "failed":
       // The install lock outlived this process's wait and names a process on
       // this machine that is still running: another ADE is still installing
@@ -141,17 +142,17 @@ export function pinnedToolBlocker(label: string, status: PinnedToolStatus): stri
       // lands. Nothing here failed. A lock with no live holder is a real
       // failure and keeps the generic message.
       if (isLiveLockTimeout(status)) {
-        return `Another ADE on this machine is still installing ${label}. Try again when it finishes.`;
+        return `Another ${BRAND.NAME} on this machine is still installing ${label}. Try again when it finishes.`;
       }
       return `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`;
     case "unavailable":
       return status.errorKind === "unsupported-target"
         ? `${capitalized(label)} is not available on this machine (${hostTarget()}).`
-        : `This ADE build has no pinned ${label}.`;
+        : `This ${BRAND.NAME} build has no pinned ${label}.`;
     case "missing":
       return status.fetchAllowed
-        ? `ADE has not downloaded ${label} for this machine yet. It downloads the first time this machine uses it.`
-        : `ADE has not downloaded ${label} for this machine, and downloads are turned off in this ADE process.`;
+        ? `${BRAND.NAME} has not downloaded ${label} for this machine yet. It downloads the first time this machine uses it.`
+        : `${BRAND.NAME} has not downloaded ${label} for this machine, and downloads are turned off in this ${BRAND.NAME} process.`;
   }
 }
 
@@ -206,7 +207,7 @@ export class PinnedToolNotReadyError extends Error {
   readonly errorKind: ToolErrorKind | null;
 
   constructor(tool: string, label: string, status: PinnedToolStatus) {
-    super(pinnedToolBlocker(label, status) ?? `ADE could not start ${label} on this machine.`);
+    super(pinnedToolBlocker(label, status) ?? `${BRAND.NAME} could not start ${label} on this machine.`);
     this.name = "PinnedToolNotReadyError";
     this.tool = tool;
     this.state = status.state;
@@ -258,7 +259,7 @@ export function requireInstalledPinnedProviderExecutable<T extends { path: strin
   const resolved = resolve();
   if (resolved.source === "fallback-command" || !resolved.path) {
     const tool = pinnedToolForProvider(provider);
-    throw tool ? pinnedToolNotReadyError(tool.tool, tool.label) : new Error(`ADE has no ${provider} runtime on this machine.`);
+    throw tool ? pinnedToolNotReadyError(tool.tool, tool.label) : new Error(`${BRAND.NAME} has no ${provider} runtime on this machine.`);
   }
   return resolved;
 }
@@ -290,12 +291,12 @@ function museToolStatus(status: MuseBinaryStatus): PinnedProviderToolStatus {
   const message = state === "ready"
     ? null
     : state === "downloading"
-      ? `ADE is downloading ${label} for this machine. Chats with it start when it finishes.`
+      ? `${BRAND.NAME} is downloading ${label} for this machine. Chats with it start when it finishes.`
       : state === "failed"
         ? `Couldn't download ${label}: ${failureReason(status.errorKind)}. Retry from Settings > Providers.`
         : state === "unavailable"
           ? `${label} is not available on this machine (${hostTarget()}).`
-          : `ADE has not downloaded ${label} for this machine yet. It downloads the first time this machine uses it.`;
+          : `${BRAND.NAME} has not downloaded ${label} for this machine yet. It downloads the first time this machine uses it.`;
   return {
     provider: "muse",
     tool: "muse",
@@ -317,7 +318,7 @@ function museToolStatus(status: MuseBinaryStatus): PinnedProviderToolStatus {
 
 function requireProviderTool(provider: string): { tool: string; label: string } {
   const pinned = pinnedToolForProvider(provider);
-  if (!pinned) throw new Error(`ADE pins no tool for provider '${provider}'.`);
+  if (!pinned) throw new Error(`${BRAND.NAME} pins no tool for provider '${provider}'.`);
   return pinned;
 }
 
