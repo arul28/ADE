@@ -3032,7 +3032,7 @@
 		4D1F82E3A56C0E19BB85CF13 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADE_APP_DISPLAY_NAME = ADE;
+				ADE_APP_DISPLAY_NAME = Daex;
 				ADE_URL_SCHEME = ade;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -3171,7 +3171,7 @@
 		6B022E2FBBEEACDE98A6318A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADE_APP_DISPLAY_NAME = ADE;
+				ADE_APP_DISPLAY_NAME = Daex;
 				ADE_URL_SCHEME = ade;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -3201,7 +3201,7 @@
 		F0EA61DF1CB04655FF33C0BA /* Beta */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ADE_APP_DISPLAY_NAME = "ADE Beta";
+				ADE_APP_DISPLAY_NAME = "Daex Beta";
 				ADE_URL_SCHEME = ade-beta;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIconBeta;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -3342,7 +3342,7 @@
 				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ADEWidgets/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_CFBundleDisplayName = "Daex Widgets";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3472,7 +3472,7 @@
 				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ADEWidgets/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_CFBundleDisplayName = "Daex Widgets";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -3502,7 +3502,7 @@
 				DEVELOPMENT_TEAM = VQ372F39G6;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = ADEWidgets/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Widgets";
+				INFOPLIST_KEY_CFBundleDisplayName = "Daex Widgets";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (

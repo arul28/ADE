@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>ADE</string>
+	<string>Daex</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
@@ -67,7 +67,7 @@
 		</dict>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>ADE connects to your computer on the local network to pair this device.</string>
+	<string>Daex connects to your computer on the local network to pair this device.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_ade-sync._tcp</string>
