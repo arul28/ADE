@@ -1,5 +1,6 @@
 import { PHONE_CREDIT_MILLI_PER_MINUTE, liveUsedWithPhones } from "./credits";
 import { sponsoredAccountState } from "./gravity";
+import { freeModelsAccountState } from "./freeModels";
 import { smallUsesNoHours } from "./sponsoredSmall";
 import { sponsoredRequester } from "./sponsoredConsent";
 import { timedWakesCancelledOf } from "./accountNotices";
@@ -98,12 +99,19 @@ export async function buildAccountState(env: CloudEnv, userId: string, now: numb
   // The idle cleanup's warnings, and computers it kept because their work couldn't be saved.
   const due = idleCleanupEntries(account, computers, live, now);
   // Sponsored cards (`gravity.ts`): left out while the switch doesn't reach the account. A read that fails never costs the account read.
-  const sponsored = await sponsoredAccountState(env, account, sponsoredRequester(request ?? null), now).catch((error: unknown) => {
+  const who = sponsoredRequester(request ?? null);
+  const sponsored = await sponsoredAccountState(env, account, who, now).catch((error: unknown) => {
     reportCloudFailure("cloud.sponsored.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
+    return undefined;
+  });
+  // ADE Free Models (`freeModels.ts`), any plan: left out while their switch doesn't reach the account or a key is missing.
+  const freeModels = await freeModelsAccountState(env, userId, who, now).catch((error: unknown) => {
+    reportCloudFailure("cloud.free_models.state_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
     return undefined;
   });
   return {
     ...(sponsored ? { sponsored } : {}),
+    ...(freeModels ? { freeModels } : {}),
     credits: { phoneMilliPerMinute: PHONE_CREDIT_MILLI_PER_MINUTE },
     plan: shownPlan === "free" ? "free" : "paid",
     rules,

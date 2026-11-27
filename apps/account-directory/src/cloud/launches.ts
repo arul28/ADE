@@ -3,6 +3,8 @@ import { expectCloudComputerSignIn } from "../newDeviceEmail";
 import { unsettledPhoneMilli } from "./credits";
 import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "../deviceAuthorization";
 import { sha256Hex } from "../sinkUtils";
+import { isAdeFreeModelId } from "../../../desktop/src/shared/adeFreeModels";
+import { noteFreeModelLaunch } from "./freeModels";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
   CLOUD_AUTO_SIZE,
@@ -676,6 +678,12 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   }
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  // A person's chat on an ADE Free Model: the launch says they watch it until the chat reports itself (`freeModels.ts`).
+  if (parsed.chat && isAdeFreeModelId(parsed.chat.modelId) && (!parsed.madeBy || parsed.madeBy.kind === "person")) {
+    await noteFreeModelLaunch(env, userId, request, parsed.launchId, deps.now).catch((error: unknown) => {
+      reportCloudFailure("cloud.free_models.launch_note_failed", { message: error instanceof Error ? error.message : "unknown" });
+    });
+  }
   let restarted = false;
   if (body.retry === true) {
     const answer = await restartFailedLaunch(env, userId, parsed.launchId, deps);

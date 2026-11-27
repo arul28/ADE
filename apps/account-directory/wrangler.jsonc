@@ -126,6 +126,19 @@
   // unset, none: the contract has no daily limit). Turning ads on is
   // the owner's call, asked for on its own.
   //
+  // SECRET — GRAVITY_INFERENCE_KEY (ADE Free Models, src/cloud/freeModels.ts)
+  // Gravity's inference key (`gr_inf_…`): the proxy to Gravity's hosted
+  // models. Only this Worker holds it. Set out of band, here and with
+  // `--env production`; apply migrations/0071_free_models.sql first. Also
+  // needs GRAVITY_API_KEY (the cards that pay for these chats). Vars: the
+  // instant `gravity_inference` setting (off | testers | all, starts off) is
+  // held under GRAVITY_INFERENCE (unset or `off`: a hard off; `all` reaches
+  // non-testers only while `gravity_live` is in force);
+  // GRAVITY_INFERENCE_COUNTRIES (default `US,CA`, where Gravity serves its
+  // models); GRAVITY_INFERENCE_BASE (default
+  // `https://inference.trygravity.ai/v1`). Left unset in every environment
+  // until the owner adds the key and turns it on.
+  //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
   // that encrypts saved chats. Set out of band. Rotating it makes existing saved

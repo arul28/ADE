@@ -1,7 +1,7 @@
 import { isSponsoredFormat, type GravityEnv } from "./gravity";
 import { sponsoredAbReport } from "./sponsoredReport";
 import { smallUsesNoHours, syncAllSmallRates, syncSmallRates } from "./sponsoredSmall";
-import { gravitySwitches } from "./sponsoredSwitch";
+import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
 import { fail, json } from "./http";
 import { CLOUD_SPONSORED_FORMATS, type CloudSponsoredFormat } from "./contract";
 import { accountWithUnsettledPhones } from "./credits";
@@ -356,11 +356,17 @@ export async function handleOwnerSettings(env: GravityEnv, body: Record<string, 
   }
   const settings = await readCloudSettings(env);
   const switches = await gravitySwitches(env, settings);
+  const inference = await inferenceSwitch(env, settings);
   return json({
     ok: true,
     settings,
-    ceilings: { gravity_ads: env.GRAVITY_ADS?.trim() || "off", gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off" },
-    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off" },
+    ceilings: {
+      gravity_ads: env.GRAVITY_ADS?.trim() || "off",
+      gravity_live: env.GRAVITY_LIVE?.trim() === "1" ? "on" : "off",
+      // Off whatever the variable says while a key is missing (`GRAVITY_INFERENCE_KEY`, `GRAVITY_API_KEY`).
+      gravity_inference: env.GRAVITY_INFERENCE_KEY?.trim() && env.GRAVITY_API_KEY?.trim() ? env.GRAVITY_INFERENCE?.trim() || "off" : "off (no key)",
+    },
+    inForce: { ...settings, gravity_ads: switches.mode, gravity_live: switches.live ? "on" : "off", gravity_inference: inference.mode },
   });
 }
 

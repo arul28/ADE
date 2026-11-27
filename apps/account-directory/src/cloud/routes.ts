@@ -11,6 +11,7 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { routeSponsored } from "./gravity";
+import { routeFreeModels } from "./freeModels";
 import { noteComputerNetwork, rateMilliFor, smallUsesNoHours } from "./sponsoredSmall";
 import { requestNetwork } from "./sponsoredConsent";
 import { trustedHttpsOrigin } from "../trustedOrigin";
@@ -2162,6 +2163,11 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
     const sponsored = await routeSponsored(request, path, env, caller.userId, now, waitUntil);
     if (sponsored) return sponsored;
   }
+  // ADE Free Models (`freeModels.ts`): rows and Gravity only, no provider. Each route takes its own minute.
+  if (path.startsWith("/cloud/free-models/")) {
+    const freeModels = await routeFreeModels(request, path, env, caller.userId, now, waitUntil);
+    if (freeModels) return freeModels;
+  }
   // ADE without a computer: rows and R2 only; a send wakes or launches through the provider.
   const writeBucket = writeBucketOf(path, request.method);
   if (writeBucket && !await takeRequest(env, caller.userId, writeBucket, now)) return tooManyRequests();
@@ -2215,7 +2221,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_EDGE_PATHS.jiraIssue) return routeJiraIssue(request, env, caller.userId, now);
   const eventWakes = EVENT_WAKES_ROUTE.exec(path);
   if (eventWakes) return CLOUD_INSTANCE_ID.test(eventWakes[1]!) ? routeEventWakeSubscription(request, env, caller.userId, eventWakes[1]!, now) : notFound();
-  if (path === CLOUD_PATHS.models) return handleCloudModels(request);
+  if (path === CLOUD_PATHS.models) return handleCloudModels(request, env);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
     return providerCall(() => routeLaunches(request, path, env, caller.userId, launchDepsFor(request, env, caller.userId, provider, ctx)));

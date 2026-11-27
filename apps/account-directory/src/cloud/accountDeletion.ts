@@ -127,6 +127,10 @@ export async function deleteCloudAccount(
     env.DB.prepare("delete from cloud_sponsored_turns where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_formats where user_id = ?").bind(userId),
     env.DB.prepare("delete from cloud_sponsored_days where user_id = ?").bind(userId),
+    // ADE Free Models (`freeModels.ts`): the answer, where the person watched from, the chats served.
+    env.DB.prepare("delete from cloud_free_model_consent where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_free_model_viewers where user_id = ?").bind(userId),
+    env.DB.prepare("delete from cloud_free_model_chats where user_id = ?").bind(userId),
     // The owner's change log of the account test tool (`ownerAccounts.ts`).
     env.DB.prepare("delete from cloud_owner_log where user_id = ?").bind(userId),
     env.DB.prepare("update cloud_referrals set friend_user_id = ? where friend_user_id = ?").bind(gone, userId),

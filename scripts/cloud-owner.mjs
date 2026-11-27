@@ -30,6 +30,7 @@ Accounts (an email, or a Clerk user id that starts with user_):
 Switches:
   settings                               every switch, its deploy ceiling and what is in force
   set <key> <value> [--note "why"]       gravity_ads off|testers|all, gravity_live off|on,
+                                         gravity_inference off|testers|all (ADE Free Models),
                                          gravity_format below_reply|above_prompt|inline|split,
                                          gravity_format_split 70-20-10|80-15-5|60-25-15|50-30-20|34-33-33
                                          (under the reply - inline - above the prompt box)

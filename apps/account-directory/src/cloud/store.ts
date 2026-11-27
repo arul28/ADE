@@ -362,6 +362,15 @@ const REQUESTS_PER_MINUTE = {
   settings: 120,
   /** Sponsored cards and the Index (`gravity.ts`): a few per finished reply and open chat; this stops a loop. */
   sponsored: 30,
+  /**
+   * ADE Free Models' model calls (`freeModels.ts`), per account: under
+   * Gravity's 60 a minute for one person, with room for a tool loop.
+   */
+  free_models: 50,
+  /** Every account's ADE Free Models calls together (counted under `*`): under Gravity's 600 a minute for ADE. */
+  free_models_all: 550,
+  /** ADE Free Models' answer and "this chat is open" notes: a few per open chat and minute. */
+  free_models_seen: 60,
 } as const;
 
 export type CloudRequestBucket = keyof typeof REQUESTS_PER_MINUTE;

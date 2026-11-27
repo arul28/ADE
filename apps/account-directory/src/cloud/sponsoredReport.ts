@@ -2,13 +2,16 @@ import type { CloudSponsoredFormat } from "./contract";
 import { ALL, INDEX_REPORT_URL, PLACEMENTS, PLATFORM_URL, SPLIT_ARMS, TURN_TTL_MS, type GravityEnv } from "./gravity";
 import { utcDay } from "./plans";
 import { readCloudSettings } from "./settings";
-import { gravitySwitches } from "./sponsoredSwitch";
+import { gravitySwitches, inferenceSwitch } from "./sponsoredSwitch";
 
 // The owner's side of sponsored cards (`gravity.ts` serves them): the
 // twice-hourly clean-up, the formats' A/B scoreboard, and the daily report's
 // lines with what Gravity paid.
 
 /* ---- The owner's report ---- */
+
+/** How long a chat ADE Free Models served is kept: its cards need a day; its token totals stay a week. */
+const FREE_MODEL_CHAT_KEEP_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * The clean-up, twice an hour (minutes 23 and 53, every account, whatever the
@@ -24,6 +27,9 @@ export async function pruneSponsored(env: GravityEnv, scheduledTime: number): Pr
   await env.DB.batch([
     env.DB.prepare("delete from cloud_sponsored_turns where created_at < ?").bind(now - TURN_TTL_MS),
     env.DB.prepare("delete from cloud_sponsored_viewers where seen_at < ?").bind(now - TURN_TTL_MS),
+    // ADE Free Models (`freeModels.ts`): where a person watched a chat from, after a day; a chat served, after a week.
+    env.DB.prepare("delete from cloud_free_model_viewers where seen_at < ?").bind(now - TURN_TTL_MS),
+    env.DB.prepare("delete from cloud_free_model_chats where last_at < ?").bind(now - FREE_MODEL_CHAT_KEEP_MS),
   ]);
 }
 
@@ -121,7 +127,8 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
     .bind(day, ALL).all<{ kind: string; count: number }>()).results ?? [];
   const counts = new Map(rows.map((row) => [row.kind, row.count]));
   const { mode, live } = await gravitySwitches(env);
-  if (mode === "off" && rows.length === 0) return [];
+  const inference = await inferenceSwitch(env);
+  if (mode === "off" && inference.mode === "off" && rows.length === 0) return [];
   const n = (kind: string) => counts.get(kind) ?? 0;
   const lines = [
     `Sponsored (${mode}${live ? ", live" : ", test ads"}): ${n("ad_request")} ad requests, ${n("ad_fill")} filled; ${n("index_request")} Index searches, ${n("index_pick")} picks.`,
@@ -129,6 +136,18 @@ export async function sponsoredReportLines(env: GravityEnv, day: string, freeCos
   const byFormat = SPLIT_ARMS.filter((format) => n(`ad_request:${format}`) + n(`ad_fill:${format}`) + n(`ad_hide:${format}`) > 0)
     .map((format) => `${FORMAT_WORDS[format]} ${n(`ad_request:${format}`)} asked, ${n(`ad_fill:${format}`)} filled, ${n(`ad_hide:${format}`)} hidden`);
   if (byFormat.length) lines.push(`Formats (${(await readCloudSettings(env)).gravity_format}): ${byFormat.join("; ")}.`);
+  const refused = rows.filter((row) => row.kind.startsWith("fm_refused:") && row.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .map((row) => `${row.kind.slice("fm_refused:free_models_".length) || row.kind} ${row.count}`);
+  if (inference.mode !== "off" || n("fm_request") + n("fm_ad") + refused.length > 0) {
+    const accounts = await env.DB.prepare("select count(*) as total from cloud_sponsored_days where day = ? and kind = 'fm_request' and user_id <> ? and count > 0")
+      .bind(day, ALL).first<{ total: number }>();
+    lines.push(
+      `ADE Free Models (${inference.mode}${inference.live ? ", live" : ", test ads"}): ${n("fm_request")} requests from ${accounts?.total ?? 0} accounts; `
+      + `${n("fm_input_tokens")} tokens in (${n("fm_cached_input_tokens")} cached), ${n("fm_output_tokens")} out; `
+      + `cards ${n("fm_ad")} asked, ${n("fm_ad_fill")} filled; refused ${refused.length ? refused.join(", ") : "none"}.`,
+    );
+  }
   if (!env.GRAVITY_API_KEY?.trim()) return lines;
   const key = env.GRAVITY_API_KEY.trim();
   const read = async (url: string): Promise<Record<string, unknown> | null> => {

@@ -6012,6 +6012,14 @@ describe("sponsored cards", () => {
     Object.assign(harness.env, { GRAVITY_LIVE: "1" });
     setting("gravity_live", "on");
   };
+  // ADE Free Models (`freeModels.ts`) reach the account: both keys, the deploy ceiling, and the account a tester.
+  const freeModelsOn = () => {
+    Object.assign(harness.env, { GRAVITY_INFERENCE_KEY: "gr_inf_test", GRAVITY_INFERENCE: "all" });
+    setting("gravity_inference", "testers");
+    harness.insert("cloud_sponsored_testers", { user_id: OWNER, added_at: NOW });
+  };
+  const freeModelChat = (chatId: string, overrides: Row = {}) =>
+    harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: chatId, first_at: NOW, last_at: NOW, requests: 1, ...overrides });
 
   beforeEach(() => {
     gravityCalls = [];
@@ -6094,11 +6102,42 @@ describe("sponsored cards", () => {
     ["the chat doesn't run on that computer", () => undefined, { chatId: "chat-elsewhere" }, "not_cloud"],
     ["the chat is a subagent's", () => { harness.exec("update cloud_chat_copies set parent_chat_id = 'chat-0' where chat_id = 'chat-1'"); }, {}, "not_cloud"],
     ["the account used today's ads", () => { harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "ad_request", count: 120 }); }, {}, "limit"],
+    ["a chat ADE Free Models served, without the account's yes to them", () => { freeModelsOn(); freeModelChat("chat-1"); }, { instanceId: null }, "consent"],
+    ["a chat ADE Free Models never served names no computer", () => { freeModelsOn(); }, { instanceId: null }, "not_cloud"],
+    ["a chat ADE Free Models served, used today's free-model cards", () => {
+      freeModelsOn();
+      freeModelChat("chat-1");
+      harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, terms_version: 1 });
+      harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "fm_ad", count: 400 });
+    }, { instanceId: null }, "limit"],
   ])("no card and nothing sent to Gravity when %s", async (_label, arrange, overrides, reason) => {
     arrange();
     const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody(overrides))).json();
     expect(answer).toEqual({ ad: null, reason });
     expect(gravityCalls).toEqual([]);
+  });
+
+  it("a chat ADE Free Models served gets cards on a paid plan and on the person's own machine, with their own yes and the last call's usage", async () => {
+    freeModelsOn();
+    harness.exec("update cloud_accounts set plan = 'paid', paid_plan = 'pro' where user_id = ?", OWNER);
+    // The Free plan's answer doesn't count here; the answer to ADE Free Models does.
+    harness.exec("delete from cloud_sponsored_consent");
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "f".repeat(64), decided_at: NOW, terms_version: 1 });
+    freeModelChat("chat-free", { last_usage_json: JSON.stringify({ model: "@cf/zai-org/glm-5.3-flash", inputTokens: 1200, cachedInputTokens: 200, outputTokens: 80 }) });
+    const answer = await (await send(OWNER, "/cloud/sponsored/ad", adBody({ instanceId: null, chatId: "chat-free" }))).json() as { ad: Row | null };
+    expect(answer.ad).toMatchObject({ brand: "Neon" });
+    expect(gravityCalls).toHaveLength(1);
+    expect(gravityCalls[0]!.body).toMatchObject({
+      user: { hashed_email: "f".repeat(64) },
+      usage: { model: "@cf/zai-org/glm-5.3-flash", inputTokens: 1200, cachedInputTokens: 200, outputTokens: 80 },
+    });
+    // Counted against the free-model cards' own day, not the Free plan's.
+    expect(harness.rows("select kind, count from cloud_sponsored_days where user_id = ? and kind in ('fm_ad', 'ad_request')", OWNER)).toEqual([{ kind: "fm_ad", count: 1 }]);
+    // The paid plan's other chats get none, and a chat served more than a day ago is like any other again.
+    expect(await (await send(OWNER, "/cloud/sponsored/ad", adBody({ turnId: "turn-2" }))).json()).toEqual({ ad: null, reason: "plan" });
+    clock = NOW + DAY + 60_000;
+    expect(await (await send(OWNER, "/cloud/sponsored/ad", adBody({ instanceId: null, chatId: "chat-free", turnId: "turn-3" }))).json()).toEqual({ ad: null, reason: "plan" });
+    expect(gravityCalls).toHaveLength(1);
   });
 
   // Gravity's renderer: only a client that draws Gravity's design gets it, and only what that renderer draws.
@@ -6542,5 +6581,174 @@ describe("sponsored cards", () => {
     clock = NOW + 11 * 60_000;
     expect(await (await index()).json()).toEqual({ pick: null, reason: "nobody_watching" });
     expect(gravityCalls).toHaveLength(1);
+  });
+});
+
+describe("ADE Free Models", () => {
+  const KEY = "gr_inf_secret_key_1";
+  const CHAT = "/cloud/free-models/v1/chat/completions";
+  const PERSON_IP = "203.0.113.7";
+  const MACHINE_IP = "198.51.100.9";
+  const GRAVITY_DEEPSEEK = "@cf/deepseek-ai/deepseek-v4.1-flash-1017";
+  const SSE = [
+    `data: {"id":"c1","object":"chat.completion.chunk","model":"${GRAVITY_DEEPSEEK}","choices":[{"index":0,"delta":{"content":"Hi"}}],"usage":null}`,
+    `data: {"id":"c1","object":"chat.completion.chunk","model":"${GRAVITY_DEEPSEEK}","choices":[],"usage":{"prompt_tokens":1500,"completion_tokens":40,"total_tokens":1540,"prompt_tokens_details":{"cached_tokens":1000}}}`,
+    "data: [DONE]",
+    "",
+  ].join("\n\n");
+  /** The stream in small, uneven pieces, as a network delivers it. */
+  const streamed = () => new Response(new ReadableStream({
+    start(controller) {
+      const bytes = new TextEncoder().encode(SSE);
+      for (let at = 0; at < bytes.length; at += 37) controller.enqueue(bytes.slice(at, at + 37));
+      controller.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  type Call = { url: string; authorization: string | null; body: Row };
+  let inference: Call[];
+  let adRequests: Row[];
+  let upstream: () => Response;
+  const setting = (key: string, value: string) => harness.exec("insert or replace into cloud_settings (key, value, updated_at) values (?, ?, ?)", key, value, NOW);
+  const chat = (body: Row = {}, headers: Record<string, string> = {}) => harness.send(OWNER, "POST", CHAT, {
+    model: "ade-free/deepseek-v4.1-flash", messages: [{ role: "user", content: "hi" }], stream: true, ...body,
+  }, { "x-ade-chat-id": "chat-1", "cf-connecting-ip": MACHINE_IP, ...headers });
+  const DEVICE = { type: "desktop", os: "macos", osVersion: "15.1", ua: "ADE/1.2.133" };
+  /** A request from the person's own device, in the US unless `cf` says otherwise. */
+  const fromPerson = (method: string, path: string, body?: Row, cf: Row = { country: "US", regionCode: "TX" }) => {
+    const request = new Request(`https://directory.test${path}`, {
+      method,
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json", "cf-connecting-ip": PERSON_IP },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    Object.defineProperty(request, "cf", { value: cf });
+    return handleCloudRequest(request, harness.env);
+  };
+
+  beforeEach(() => {
+    inference = [];
+    adRequests = [];
+    upstream = streamed;
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.startsWith("https://inference.trygravity.ai/")) {
+        inference.push({ url, authorization: new Headers(init?.headers).get("authorization"), body: JSON.parse(String(init?.body)) as Row });
+        return upstream();
+      }
+      if (/trygravity\./.test(url)) {
+        adRequests.push(JSON.parse(String(init?.body)) as Row);
+        return new Response(JSON.stringify([{ adText: "Serverless Postgres.", title: "Neon", brandName: "Neon", clickUrl: "https://api.trygravity.ai/track/click?p=1" }]), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return inner(input as RequestInfo, init);
+    });
+    Object.assign(harness.env, { GRAVITY_API_KEY: "gravity-key", GRAVITY_INFERENCE_KEY: KEY, GRAVITY_INFERENCE: "all", GRAVITY_LIVE: "1" });
+    setting("gravity_inference", "all");
+    setting("gravity_live", "on");
+    seedAccount(harness, OWNER, { plan: "paid", paid_plan: "pro" });
+    harness.insert("cloud_free_model_consent", { user_id: OWNER, consent: "granted", email_hash: "e".repeat(64), decided_at: NOW, country: "US", terms_version: 1 });
+    harness.insert("cloud_free_model_viewers", { user_id: OWNER, chat_id: "chat-1", ip: PERSON_IP, ua: "ADE/1", device_type: "desktop", os: "macos", country: "US", seen_at: NOW });
+  });
+
+  it.each<[string, () => void, Row, Record<string, string>, number, string]>([
+    ["the switch is off", () => { setting("gravity_inference", "off"); }, {}, {}, 403, "free_models_off"],
+    ["the inference key is missing", () => { delete (harness.env as unknown as Row).GRAVITY_INFERENCE_KEY; }, {}, {}, 403, "free_models_off"],
+    ["ads are test ads and the account is no tester", () => { setting("gravity_live", "off"); }, {}, {}, 403, "free_models_off"],
+    ["the account never agreed", () => { harness.exec("delete from cloud_free_model_consent"); }, {}, {}, 403, "free_models_consent"],
+    ["the account agreed to older terms", () => { harness.exec("update cloud_free_model_consent set terms_version = 0"); }, {}, {}, 403, "free_models_consent"],
+    ["the call names no chat", () => undefined, {}, { "x-ade-chat-id": "" }, 403, "free_models_not_watched"],
+    ["nobody looked at the chat for 11 minutes", () => { harness.exec("update cloud_free_model_viewers set seen_at = ?", NOW - 11 * 60_000); }, {}, {}, 403, "free_models_not_watched"],
+    ["a running turn's watcher left over an hour ago", () => {
+      harness.exec("update cloud_free_model_viewers set seen_at = ?", NOW - 61 * 60_000);
+      harness.insert("cloud_free_model_chats", { user_id: OWNER, chat_id: "chat-1", first_at: NOW - HOUR, last_at: NOW - 60_000, requests: 9 });
+    }, {}, {}, 403, "free_models_not_watched"],
+    ["the person watches from outside the US and Canada", () => { harness.exec("update cloud_free_model_viewers set country = 'BR'"); }, {}, {}, 403, "free_models_country"],
+    ["the account used its minute", () => { harness.insert("cloud_request_windows", { user_id: OWNER, bucket: "free_models", window_start: Math.floor(NOW / 60_000) * 60_000, count: 50 }); }, {}, {}, 403, "free_models_limit"],
+    ["every account together used ADE's minute", () => { harness.insert("cloud_request_windows", { user_id: "*", bucket: "free_models_all", window_start: Math.floor(NOW / 60_000) * 60_000, count: 550 }); }, {}, {}, 403, "free_models_limit"],
+    ["the account used its day", () => { harness.insert("cloud_sponsored_days", { day: new Date(NOW).toISOString().slice(0, 10), user_id: OWNER, kind: "fm_request", count: 2900 }); }, {}, {}, 403, "free_models_limit"],
+    ["the model isn't one of them", () => undefined, { model: "gpt-5.5" }, {}, 400, "free_models_unknown_model"],
+    ["the request is past Gravity's size", () => undefined, { messages: [{ role: "user", content: "x".repeat(8 * 1024 * 1024) }] }, {}, 413, "free_models_too_large"],
+  ])("refused, and nothing sent to Gravity, when %s", async (_label, arrange, body, headers, status, code) => {
+    arrange();
+    const response = await chat(body, headers);
+    expect([response.status, ((await response.json()) as { error: Row }).error.code]).toEqual([status, code]);
+    expect(inference).toEqual([]);
+  });
+
+  it("sends the call with the chat's ad session, the watching person's address and the usage asked for, and keeps the usage for the chat's next card", async () => {
+    harness.exec("delete from cloud_free_model_viewers");
+    // The person opens the chat at home; the chat runs on another machine, elsewhere.
+    expect(await (await fromPerson("POST", "/cloud/free-models/seen", { chatId: "chat-1", device: DEVICE })).json()).toEqual({ ok: true });
+    const response = await chat({ n: 3, max_tokens: 100_000, stream_options: { include_usage: false } });
+    expect(response.status).toBe(200);
+    // The stream comes back as Gravity sent it.
+    expect(await response.text()).toBe(SSE);
+    expect(inference).toHaveLength(1);
+    const sent = inference[0]!;
+    expect([sent.url, sent.authorization]).toEqual(["https://inference.trygravity.ai/v1/chat/completions", `Bearer ${KEY}`]);
+    expect(sent.body).toMatchObject({ model: GRAVITY_DEEPSEEK, max_tokens: 65_536, stream: true, stream_options: { include_usage: true }, email_hash: "e".repeat(64), user_ip: PERSON_IP });
+    expect(sent.body.n).toBeUndefined();
+    expect(JSON.stringify(sent.body)).not.toContain(OWNER);
+    // The usage of the last call is on the chat's row.
+    expect(harness.row("select requests, input_tokens, cached_input_tokens, output_tokens, last_usage_json from cloud_free_model_chats where user_id = ? and chat_id = 'chat-1'", OWNER)).toEqual({
+      requests: 1, input_tokens: 1500, cached_input_tokens: 1000, output_tokens: 40,
+      last_usage_json: JSON.stringify({ model: GRAVITY_DEEPSEEK, inputTokens: 1500, cachedInputTokens: 1000, outputTokens: 40 }),
+    });
+    // The chat's card, asked from the person's own machine on a paid plan: the same Gravity session, with that usage.
+    const card = await (await fromPerson("POST", "/cloud/sponsored/ad", {
+      instanceId: null, chatId: "chat-1", turnId: "turn-1", device: DEVICE, messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "Hi" }],
+    })).json() as { ad: Row | null };
+    expect(card.ad).toMatchObject({ brand: "Neon" });
+    expect(adRequests).toHaveLength(1);
+    expect(adRequests[0]).toMatchObject({ sessionId: sent.body.session_id, usage: { model: GRAVITY_DEEPSEEK, inputTokens: 1500, cachedInputTokens: 1000, outputTokens: 40 } });
+    // A turn that runs on: the record is 30 minutes old, the last call a minute ago.
+    clock = NOW + 30 * 60_000;
+    harness.exec("update cloud_free_model_chats set last_at = ?", clock - 60_000);
+    expect((await chat()).status).toBe(200);
+    expect(inference[1]!.body.session_id).toBe(sent.body.session_id);
+  });
+
+  it("a person's ADE Cloud launch counts as watching its first chat until that chat reports itself; an automation's launch never does", async () => {
+    harness.exec("delete from cloud_free_model_viewers");
+    const launch = (launchId: string, madeBy?: Row) => fromPerson("POST", "/cloud/launches", {
+      launchId, kind: "chat", sizeId: "small", project: { origin: "https://github.com/Acme/Widgets.git" },
+      lane: { id: "5d1e8a3c-2b4f-4e6a-9c7d-1f0b3a5e8c21", name: "Try a free model" },
+      chat: { provider: "opencode", modelId: "opencode/ade-free/glm-5.3-flash", permissions: "full-auto", prompt: "Hi." },
+      ...(madeBy ? { madeBy } : {}),
+    });
+    await launch("0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a11", { kind: "automation", ruleId: "rule-1" });
+    expect(((await (await chat({}, { "x-ade-chat-id": "chat-new" })).json()) as { error: Row }).error.code).toBe("free_models_not_watched");
+    await launch("0b7c2f4e-9a51-4d0e-8c1a-3f6b2d9e7a10");
+    // The new computer's first call: the launching person's address goes, once, to that one chat.
+    expect((await chat({}, { "x-ade-chat-id": "chat-new" })).status).toBe(200);
+    expect(inference[0]!.body.user_ip).toBe(PERSON_IP);
+    expect(((await (await chat({}, { "x-ade-chat-id": "chat-other" })).json()) as { error: Row }).error.code).toBe("free_models_not_watched");
+    expect(inference).toHaveLength(1);
+  });
+
+  it.each<[string, number, Row, number, string]>([
+    ["Gravity's retry-safe busy answer stays a 429", 429, { code: "provider_rate_limited", message: "busy" }, 429, "provider_rate_limited"],
+    ["the person's limit at Gravity is a 4xx OpenCode doesn't retry", 429, { code: "rate_limit_error", message: "limit" }, 403, "free_models_limit"],
+    ["a context too long becomes OpenAI's code, for OpenCode to compact", 400, { code: "context_length_exceeded", message: "prompt is too long" }, 400, "context_length_exceeded"],
+    ["a refused key is unavailable, with nothing of Gravity's words", 401, { code: "invalid_api_key", message: `Invalid key ${KEY}` }, 424, "free_models_unavailable"],
+    ["Gravity failing is unavailable, never a 5xx", 503, { code: "upstream_error", message: "down" }, 424, "free_models_unavailable"],
+  ])("%s", async (_label, gravityStatus, error, status, code) => {
+    upstream = () => new Response(JSON.stringify({ error }), { status: gravityStatus, headers: { "content-type": "application/json" } });
+    const response = await chat();
+    const text = await response.text();
+    expect([response.status, (JSON.parse(text) as { error: Row }).error.code]).toEqual([status, code]);
+    expect(text).not.toContain(KEY);
+  });
+
+  it("the account state has them only while the switch and keys reach the account; a no on one machine stops them and forgets where the person watched from", async () => {
+    const state = async (cf?: Row) => ((await (await fromPerson("GET", "/cloud/account", undefined, cf)).json()) as CloudAccountState).freeModels;
+    expect(await state()).toEqual({ modelIds: ["opencode/ade-free/deepseek-v4.1-flash", "opencode/ade-free/glm-5.3-flash"], available: true, consent: "granted", format: "below_reply", test: false });
+    expect(await state({ country: "BR" })).toMatchObject({ available: false, reason: "country" });
+    expect((await fromPerson("PUT", "/cloud/free-models/consent", { consent: "declined" })).status).toBe(200);
+    expect([harness.row("select consent, email_hash from cloud_free_model_consent where user_id = ?", OWNER), harness.rows("select * from cloud_free_model_viewers")]).toEqual([{ consent: "declined", email_hash: null }, []]);
+    expect((await state())?.consent).toBe("declined");
+    expect(((await (await chat()).json()) as { error: Row }).error.code).toBe("free_models_consent");
+    delete (harness.env as unknown as Row).GRAVITY_INFERENCE_KEY;
+    expect(await state()).toBeUndefined();
+    expect(inference).toEqual([]);
   });
 });

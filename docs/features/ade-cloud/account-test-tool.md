@@ -93,6 +93,7 @@ real one, so:
 |---|---|---|---|
 | `gravity_ads` | `off`, `testers`, `all` | `GRAVITY_ADS` | Sponsored cards, the Index and the Free rule: nobody, the testers list, or every Free account |
 | `gravity_live` | `off`, `on` | `GRAVITY_LIVE=1` | Real ads instead of Gravity's free test ads |
+| `gravity_inference` | `off`, `testers`, `all` | `GRAVITY_INFERENCE` (and both `GRAVITY_INFERENCE_KEY` and `GRAVITY_API_KEY` set) | ADE Free Models on any plan: nobody, the testers list, or everyone; `all` reaches non-testers only while `gravity_live` is in force |
 | `gravity_format` | `below_reply`, `above_prompt`, `inline`, `split` | none | Where cards show for every account; `split` holds each account to one of the three by its id (the same on every machine). An account set with `ad-format` keeps its own |
 | `gravity_format_split` | `70-20-10`, `80-15-5`, `60-25-15`, `50-30-20`, `34-33-33` | none | Under `split`, the share of new accounts for under the reply, inline and above the prompt box, in that order. An account keeps the format it was first given (`cloud_sponsored_formats`), so a change moves only accounts ads reach for the first time |
 
@@ -105,6 +106,13 @@ A switch with no row reads `off`. A deploy variable is the highest its switch
 may go: `GRAVITY_ADS=off` in `wrangler.jsonc` is a hard off whatever the switch
 says. Turning ads on (which also turns on the Free rule) or real ads for real
 users is the owner's call, asked for each time.
+
+`gravity_inference` (ADE Free Models, `freeModels.ts`) is off whatever it
+says until `GRAVITY_INFERENCE_KEY` is a Worker secret and `GRAVITY_INFERENCE`
+is set in the deploy's vars; `settings` shows `off (no key)` as its ceiling
+then. To try them on your own account first: add yourself with `tester <you>
+on`, then `set gravity_inference testers`. Testers get them under test ads;
+everyone else needs `all` with `gravity_live` on.
 
 ### The Free rule
 

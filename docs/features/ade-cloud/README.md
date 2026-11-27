@@ -362,6 +362,75 @@ Chats on the person's own machines never get a card.
 - Consent rules by law (`sponsoredConsent.ts`) are written once in
   [account-test-tool.md](account-test-tool.md#where-cards-start-on).
 
+### ADE Free Models (any plan, behind a switch)
+
+Gravity's hosted models (`apps/account-directory/src/cloud/freeModels.ts`;
+consent and country rules in `freeModelsConsent.ts`; migration `0071`), paid
+for by the sponsored cards in the chats that use them. Any plan, any machine
+(the person's own computer, their other machines, ADE Cloud), chat only,
+through OpenCode's provider `ade-free` (`opencode/ade-free/<alias>`,
+`apps/desktop/src/shared/adeFreeModels.ts`). The account server holds
+Gravity's inference key (`GRAVITY_INFERENCE_KEY`, a Worker secret) and is
+the only caller of `inference.trygravity.ai`.
+
+- **Switch:** the instant `gravity_inference` setting (`off` | `testers` |
+  `all`, starts `off`), held under the deploy variable `GRAVITY_INFERENCE`
+  (unset or `off`: a hard off), and off without both `GRAVITY_INFERENCE_KEY`
+  and `GRAVITY_API_KEY`. `all` reaches non-testers only while real ads are on
+  (`gravity_live` under `GRAVITY_LIVE=1`): no free inference behind test ads.
+  Off, the account state leaves `freeModels` out and every route answers
+  `free_models_off`.
+- **Routes** (`CLOUD_PATHS.freeModels*`, the account's own sign-in):
+  `PUT /cloud/free-models/consent` (`granted` | `declined`, per account, with
+  the hashed email and `CLOUD_FREE_MODELS_TERMS_VERSION`; an older version
+  reads as no answer; a no clears the viewer rows; Global Privacy Control
+  from the US turns a yes not given from such a browser into a no);
+  `POST /cloud/free-models/seen` (`chatId`, `device`: someone has that chat
+  open, kept with Cloudflare's `cf-connecting-ip`, user agent, device and
+  country, only while the yes holds); OpenAI-compatible
+  `GET /cloud/free-models/v1/models` and `POST /cloud/free-models/v1/chat/completions`
+  with the chat in `X-ADE-Chat-Id`.
+- **Each call** is checked in order: the switch, the yes, the chat id, a
+  viewer record no older than 10 minutes (or a call in the last 5 minutes
+  with a record no older than an hour: a turn that runs on; a person's ADE
+  Cloud launch on one of these models leaves a stand-in record,
+  `launch:<launchId>`, that the first unreported chat of the account takes
+  over once within 10 minutes; an automation's or agent's launch leaves
+  none), the viewer's
+  country (`GRAVITY_INFERENCE_COUNTRIES`, default `US,CA`), the hashed email
+  (an iPhone viewer without tracking allowed has none), then 50 a minute per
+  account, 550 a minute for every account together and 2,900 a UTC day per
+  account (`fm_request`), and Gravity's 8 MiB. The alias becomes Gravity's
+  model id, `n` and audio go, the output limit is held to 1-65,536, and the
+  server adds `session_id` (the chat's ad session, the same hash the cards
+  send), `email_hash`, `user_ip` (the viewer's address, never the chat
+  machine's) and `stream_options.include_usage`. The stream passes through;
+  its usage chunk is added to `cloud_free_model_chats`.
+- **Errors** are OpenAI-shaped (`{error: {message, type, code}}`,
+  `CloudFreeModelsErrorCode`). Only Gravity's retry-safe
+  `provider_rate_limited` stays a 429; every other refusal is a 4xx OpenCode
+  doesn't retry (Gravity failing is 424). A context too long is OpenAI's
+  `context_length_exceeded`, which OpenCode compacts on. A refused key or a
+  suspended account reaches Sentry (`cloud.free_models.gravity_refused`)
+  and reads as unavailable; Gravity's words pass only for a request it found
+  wrong.
+- **Cards:** a chat the proxy served in the last day gets cards on any plan
+  and machine (`POST /cloud/sponsored/ad` with `instanceId: null`), under the
+  ADE Free Models yes and countries instead of the Free plan's, with their
+  own day (`fm_ad`, 400 per account). The last call's usage rides on the
+  card request (Gravity's `usage`). Inference doesn't stop when the cards'
+  day is used.
+- **Not for unattended work:** an ADE Cloud automation can't be saved with
+  one of these models, and a run of an older rule fails with the reason.
+- **Clean-up and report:** viewer rows go after a day, served chats after a
+  week (minutes 23 and 53). The daily report has a line: requests, accounts,
+  tokens, cards asked and filled in these chats, and refusals by reason.
+- **Catalog:** `GET /cloud/models` lists them in OpenCode's group with
+  `free: {source: "ade-free", badge: "ad-supported"}`, beside OpenCode Zen's
+  free tier (`source: "opencode-zen"`) from the newest models.dev snapshot.
+  The list is the same for every account; clients show ADE Free Models only
+  with `freeModels` in the account state.
+
 ## Referrals and the free plan
 
 All server-enforced (`referrals.ts`, `freePlan.ts`, `freePlanGithub.ts`).
