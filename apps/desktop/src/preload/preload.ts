@@ -202,7 +202,7 @@ import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
   type AttentionDesktopAlert,
-  type AttentionPreferenceScope,
+  type AttentionScopePatch,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionPresenceReceipt,
@@ -7661,7 +7661,7 @@ const adeBridge = {
     putMachinePreferences: async (
       accountOwnerId: string,
       machineKey: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionPutMachinePreferences, {
         accountOwnerId,
@@ -7673,11 +7673,21 @@ const adeBridge = {
     putDevicePreferences: async (
       accountOwnerId: string,
       deviceId: string,
-      preferences: Partial<AttentionPreferenceScope>,
+      preferences: AttentionScopePatch,
     ): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionPutDevicePreferences, {
         accountOwnerId,
         deviceId,
+        preferences,
+      }),
+    putProjectPreferences: async (
+      accountOwnerId: string,
+      projectId: string,
+      preferences: AttentionScopePatch,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionPutProjectPreferences, {
+        accountOwnerId,
+        projectId,
         preferences,
       }),
     setSessionMuted: async (

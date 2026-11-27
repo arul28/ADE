@@ -710,7 +710,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("strips device and machine overrides from account preference saves", async () => {
+  it("strips device, machine and project overrides from account preference saves", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -738,12 +738,13 @@ describe("createAdeWebAdapter", () => {
       ...DEFAULT_ATTENTION_PREFERENCES,
       devices: { browser: { notificationsEnabled: false } },
       machines: { studio: { notificationsEnabled: false } },
+      projects: { project_a: { notificationsEnabled: false } },
+      relayFeatures: ["scope-event-policies"],
     });
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(init.body))).toEqual({
       account: DEFAULT_ATTENTION_PREFERENCES.account,
-      projects: DEFAULT_ATTENTION_PREFERENCES.projects,
       mutedSessionIds: DEFAULT_ATTENTION_PREFERENCES.mutedSessionIds,
     });
     adapter.dispose();

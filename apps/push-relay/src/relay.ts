@@ -1249,7 +1249,7 @@ const BROWSER_ACCOUNT_ROUTES: ReadonlyArray<{ pattern: RegExp; methods: readonly
   { pattern: /^\/attention\/account\/(?:ack|presence)$/, methods: ["POST"] },
   { pattern: /^\/attention\/account\/preferences$/, methods: ["GET", "PUT"] },
   { pattern: /^\/attention\/account\/devices$/, methods: ["GET"] },
-  { pattern: /^\/attention\/account\/preferences\/(?:devices|machines|sessions)\/[^/]+$/, methods: ["PATCH"] },
+  { pattern: /^\/attention\/account\/preferences\/(?:devices|machines|projects|sessions)\/[^/]+$/, methods: ["PATCH"] },
   { pattern: /^\/attention\/account\/settings$/, methods: ["GET", "PUT"] },
   { pattern: /^\/attention\/account\/settings\/[^/]+\/[^/]+$/, methods: ["DELETE"] },
 ];

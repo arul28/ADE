@@ -10,6 +10,7 @@ import {
   ArrowUp,
   Bell,
   BellSlash,
+  GearSix,
   Check,
   CheckCircle,
   ClockCountdown,
@@ -34,6 +35,7 @@ import {
   ArrowSquareOut,
 } from "@phosphor-icons/react";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
+import { navigateToAppTarget } from "../../lib/openExternal";
 import type {
   AgentChatSessionMetadataField,
   AutomationRuleSummary,
@@ -353,9 +355,19 @@ function SessionContextMenuPanel({
   const [scopedHandoffRules, setScopedHandoffRules] = useState<AutomationRuleSummary[] | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const finalizedRef = useRef(false);
+  const {
+    session,
+    binding = null,
+    laneActions = null,
+    openIn = null,
+    laneType = null,
+    x,
+    y,
+  } = menu;
+  const notificationMute = useSessionNotificationMute(session.id);
   const { ref: menuRef, position: clampedPosition } = useClampedFixedPosition(
-    { x: menu.x, y: menu.y },
-    renaming || tagging,
+    { x, y },
+    `${renaming || tagging}:${notificationMute.available}`,
   );
 
   // Reset inline edit state when the target menu changes.
@@ -374,15 +386,6 @@ function SessionContextMenuPanel({
     }
   }, [renaming, tagging]);
 
-  const {
-    session,
-    binding = null,
-    laneActions = null,
-    openIn = null,
-    laneType = null,
-    x,
-    y,
-  } = menu;
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
@@ -426,7 +429,6 @@ function SessionContextMenuPanel({
   const changeStatus = (target: WorkBoardMoveTarget): void => {
     onChangeStatus(session, target, binding);
   };
-  const notificationMute = useSessionNotificationMute(session.id);
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
   const isSettled = canonicalPhase === "settled"
     // A settled row that is mid-turn reads Working (a settle only holds at
@@ -840,6 +842,20 @@ function SessionContextMenuPanel({
           >
             <MenuRowIcon icon={notificationMute.muted ? Bell : BellSlash} />
             {notificationMute.muted ? "Unmute notifications" : "Mute notifications"}
+          </button>
+        ) : null}
+        {notificationMute.available ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            title="What each event does, per project, computer and phone"
+            onClick={() => {
+              onClose();
+              navigateToAppTarget({ kind: "settings", tab: "notifications", entryId: "notifications.events" });
+            }}
+          >
+            <MenuRowIcon icon={GearSix} />
+            Notification settings…
           </button>
         ) : null}
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleNotch, GitMerge, GithubLogo, HandPalm } from "@phosphor-icons/react";
+import { Bell, CircleNotch, GitMerge, GithubLogo, HandPalm } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   GitHubPrListFilters,
@@ -16,6 +16,7 @@ import {
 import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
 import { EmptyState } from "../../ui/EmptyState";
 import { dialogBus } from "../../../lib/dialogBus";
+import { navigateToAppTarget } from "../../../lib/openExternal";
 import { Banner } from "../../ui/notice";
 import {
   COLORS,
@@ -256,6 +257,15 @@ function GitHubTabListColumn({
             placeholder={chrome.listFilters ? "Search, or label:x author:y assignee:z" : undefined}
           />
         </div>
+        <button
+          type="button"
+          aria-label="Pull request notification settings"
+          title="Pull request notification settings"
+          style={{ ...outlineButton({ height: 28, width: 28 }), padding: 0, flexShrink: 0 }}
+          onClick={() => navigateToAppTarget({ kind: "settings", entryId: "notifications.pull-requests" })}
+        >
+          <Bell size={14} aria-hidden />
+        </button>
         {chrome.searchRowAction}
       </div>
       <div

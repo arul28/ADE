@@ -299,6 +299,7 @@ GET    /attention/account/preferences
 PUT    /attention/account/preferences
 PATCH  /attention/account/preferences/devices/:deviceId
 PATCH  /attention/account/preferences/machines/:machineKey
+PATCH  /attention/account/preferences/projects/:projectId
 PUT    /attention/account/devices/:deviceId
 DELETE /attention/account/devices/:deviceId
 PUT    /attention/account/devices/:deviceId/activities/:activityId
@@ -637,6 +638,35 @@ category on one phone. Its size is capped like the other scopes:
 
 Registration provides defaults that the account, project, machine, and device
 can override. Turning notifications off at any of those levels stops delivery.
+Event policies merge per event (`resolveScopedDeliveryPreferences` on the relay,
+`resolveAttentionScope` on the desktop): a project, machine or phone that sets
+one event keeps the account's choice for every other event. A project scope is
+keyed by the normalized Git repository identity so different checkout paths
+share settings. Folders without an origin use their checkout identity. The relay
+and desktop also read existing overrides under earlier project ids.
+
+The three scope routes take the same patch (`AttentionScopePatch`): any scope
+field, plus `eventPolicies` that merges into the scope's map. `null`, for a
+field or one event, removes that override so the scope follows the account
+again; a scope left empty is removed. Unknown events or levels answer 400.
+Settings › Notifications › Events edits them: a scope switcher (Everywhere,
+Project, Computer, Phone) above the matrix, and "Choose events" on each
+computer and phone under Machines. A phone scope is what reaches that phone.
+Settings shows the scope switcher when the relay advertises support for scoped
+events. If a project save returns 404, Settings hides the Project choice and
+explains why.
+
+The event matrix includes messages from agents and automations, goal outcomes,
+chat resumes after a usage limit, and background-service notices. Messages
+have a phone delivery policy. Goal outcomes, usage-limit resumes, and
+background-service notices are computer events. Background-service notices
+can be configured everywhere or for one computer.
+
+Quiet hours hold a push when an account, project, computer, or phone window
+covers now. Each window uses its saved time zone. The default schedule takes
+the local zone when enabled. Time edits keep the saved zone, and **Use** with
+the local zone's name switches it explicitly. Desktop alerts check the same
+scoped windows.
 The **Send notifications to** switch in desktop and web settings controls
 account delivery to one iPhone or iPad. The iOS **Notifications on this device**
 switch controls that device's own preference. iOS shows when account settings
@@ -799,22 +829,16 @@ Run outside a chat, `ade notify` keeps the plain account push described next.
 
 ## Desktop notifications
 
-`desktopAlertPresenter.ts` (Electron main) turns Needs you, failures, goal
-outcomes and agent messages into system notifications. Two sources feed it:
-this computer's brain announces its own chats at once (`attention_alert`
-events on the machine event bridge, which works while every window is hidden),
-and the account snapshots the windows already poll carry other machines'
-chats, at no extra request. Each state entry notifies once, whichever source
-reports it first. It obeys the same settings as a push, layered the same way
-(account, project, owning machine by its push key, then this desktop's device):
-notifications on, chat and machine not muted, the event set to notify (messages
-and goals always count), and Hide details, which cuts a system notification to
-"Agent: Needs you" or a message's title alone. It only fires while no ADE window
-is focused. Goal outcomes are not Activity items, so they pop up only on the
-computer that runs the chat. In a focused
-window a message becomes an in-app toast instead (`useAgentMessageToasts`);
-Needs you is already on the header badge. Clicking opens the chat, through
-Activity's cross-machine open for another machine's chat.
+A fresh, unseen Activity event set to Notify can raise a desktop notification
+when ADE is in the background. The local brain reports questions, failures,
+goals and messages immediately. Account snapshots carry events from all
+machines, including pull requests. The same event only alerts once when both
+sources report it. Clicking opens the associated chat or pull request.
+
+Desktop alerts respect the event's project and computer settings, chat mutes,
+quiet hours and Hide previews. The phone delivery switch applies to phones.
+Goal and background service outcomes are desktop notices. A message received
+while ADE is focused appears as an in-app toast.
 
 ## Custom notifications
 

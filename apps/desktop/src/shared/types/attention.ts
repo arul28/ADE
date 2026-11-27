@@ -55,12 +55,28 @@ export const ATTENTION_EVENT_KINDS = [
 export type AttentionEventKind = (typeof ATTENTION_EVENT_KINDS)[number];
 
 /**
- * The event of a `message` item. Deliberately not in `ATTENTION_EVENT_KINDS`:
- * that list is the event-policy vocabulary every saved preference document must
- * cover, and a message has no policy — the user asked for it.
+ * The event of a `message` item. Not in `ATTENTION_EVENT_KINDS`: that list is
+ * the vocabulary of agent and PR items, which every saved preference document
+ * covers. A message has a delivery setting of its own (see
+ * `ATTENTION_POLICY_EVENT_KINDS`), which defaults to Notify: the user asked for it.
  */
 export const ATTENTION_MESSAGE_EVENT_KIND = "agent_message" as const;
 export type AttentionItemEventKind = AttentionEventKind | typeof ATTENTION_MESSAGE_EVENT_KIND;
+
+/**
+ * Every event with a delivery setting: the item events, messages, and the
+ * notices only a computer shows (a goal outcome, the ADE background service).
+ * A preference document saved before one of these existed has no entry for it;
+ * readers fall back to the catalog default.
+ */
+export const ATTENTION_POLICY_EVENT_KINDS = [
+  ...ATTENTION_EVENT_KINDS,
+  ATTENTION_MESSAGE_EVENT_KIND,
+  "agent_goal",
+  "agent_usage_limit_resumed",
+  "ade_service",
+] as const;
+export type AttentionPolicyEventKind = (typeof ATTENTION_POLICY_EVENT_KINDS)[number];
 
 export type AttentionDeliveryPolicy = "off" | "ambient" | "notify";
 
@@ -93,6 +109,14 @@ export type AttentionProjectRef = {
    * on `rootPath`, and only then on `projectId`.
    */
   canonicalId?: string | null;
+  /**
+   * The key notification settings use for this project: its repository
+   * (`repo_<hash of the canonical git origin>`), so one choice holds for every
+   * checkout of it on every machine; `canonicalId` for a folder with no
+   * origin. Optional because an older publisher omits it; readers fall back to
+   * `canonicalId`.
+   */
+  settingsKey?: string | null;
   name: string;
   rootPath?: string | null;
 };
@@ -296,8 +320,8 @@ export type AttentionDesktopAlert = {
   /** The Activity item this alert is about; both sources name it the same way. */
   itemId: string;
   /** `goal`: a chat reached, or got blocked on, the goal the user gave it. */
-  kind: "needs_you" | "failed" | "goal" | "message";
-  sessionId: string;
+  kind: "needs_you" | "failed" | "goal" | "message" | "activity";
+  sessionId: string | null;
   title: string;
   body: string | null;
   /** When the state began; stale alerts are dropped. */
@@ -311,6 +335,10 @@ export type AttentionDesktopAlert = {
    */
   machineKey?: string | null;
   projectId?: string | null;
+  /** The project's machine-independent id. */
+  canonicalProjectId?: string | null;
+  /** The key project notification settings use (`AttentionProjectRef.settingsKey`). */
+  projectSettingsKey?: string | null;
   /** The Activity alert identity, so marking it seen cannot clear a newer one. */
   alertFingerprint?: string | null;
   /** Set for alerts read from an account snapshot: opening goes through Activity. */
@@ -340,8 +368,16 @@ export type AttentionPresenceReceipt = {
   userActive: boolean | null;
 };
 
+/**
+ * A scope's event policies. The item events are always present on the
+ * account; the newer events appear only once someone changed them, so read
+ * them through `attentionEventPolicy`, which falls back to the default.
+ */
+export type AttentionEventPolicies = Record<AttentionEventKind, AttentionDeliveryPolicy>
+  & Partial<Record<AttentionPolicyEventKind, AttentionDeliveryPolicy>>;
+
 export type AttentionPreferenceScope = {
-  eventPolicies: Record<AttentionEventKind, AttentionDeliveryPolicy>;
+  eventPolicies: AttentionEventPolicies;
   /**
    * Which default event policies `eventPolicies` was saved against. Absent
    * means version 1, when review requests, requested changes and merge-ready
@@ -408,7 +444,17 @@ export type AttentionPreferences = {
   machines: Record<string, Partial<AttentionPreferenceScope>>;
   projects: Record<string, Partial<AttentionPreferenceScope>>;
   mutedSessionIds: string[];
+  /**
+   * What the account service said it supports when these were read
+   * (`features` on the GET). Never saved: every writer strips it.
+   */
+  relayFeatures?: string[];
+  /** Revision of the account document returned by the relay. */
+  relayUpdatedAt?: string | null;
 };
+
+/** The account service merges scoped event policies per event and has the projects route. */
+export const ATTENTION_SCOPE_EVENT_POLICIES_FEATURE = "scope-event-policies";
 
 /**
  * The most item ids ONE acknowledgment request may carry.
@@ -578,11 +624,11 @@ export async function runAcknowledgmentChunks(
 }
 
 export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
-  AttentionEventKind,
+  AttentionPolicyEventKind,
   AttentionDeliveryPolicy
 > = Object.fromEntries(
   ACTIVITY_EVENT_CATALOG.map(({ kind, defaultPolicy }) => [kind, defaultPolicy]),
-) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
+) as Record<AttentionPolicyEventKind, AttentionDeliveryPolicy>;
 
 /**
  * Version 2: only the urgent events (a question, a failure, red CI) notify by
@@ -636,9 +682,19 @@ export function upgradeAttentionEventPolicies<T extends Partial<AttentionPrefere
   };
 }
 
+/**
+ * The defaults a saved document holds: the item events only. The newer events
+ * are written once the user changes one, because a web client from before them
+ * refuses a document that names them; readers take their default from
+ * `BALANCED_ATTENTION_EVENT_POLICIES`.
+ */
+const SAVED_EVENT_POLICY_DEFAULTS = Object.fromEntries(
+  ATTENTION_EVENT_KINDS.map((kind) => [kind, BALANCED_ATTENTION_EVENT_POLICIES[kind]]),
+) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
+
 export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   account: {
-    eventPolicies: BALANCED_ATTENTION_EVENT_POLICIES,
+    eventPolicies: SAVED_EVENT_POLICY_DEFAULTS,
     eventPolicyDefaultsVersion: ATTENTION_EVENT_POLICY_DEFAULTS_VERSION,
     notificationsEnabled: true,
     liveActivitiesEnabled: true,
@@ -659,6 +715,18 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   machines: {},
   projects: {},
   mutedSessionIds: [],
+};
+
+/**
+ * A change to one project, machine or phone scope (relay
+ * `PATCH /attention/account/preferences/{projects|machines|devices}/:id`).
+ * `eventPolicies` merges into the scope's map; a `null` value, for an event or
+ * a field, removes the override so the scope inherits again.
+ */
+export type AttentionScopePatch = {
+  [K in Exclude<keyof AttentionPreferenceScope, "eventPolicies">]?: AttentionPreferenceScope[K] | null;
+} & {
+  eventPolicies?: Partial<Record<AttentionPolicyEventKind, AttentionDeliveryPolicy | null>> | null;
 };
 
 export const ATTENTION_PHASE_PRIORITY: Readonly<Record<AttentionPhase, number>> = {

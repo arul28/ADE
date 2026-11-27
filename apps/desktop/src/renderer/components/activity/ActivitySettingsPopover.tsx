@@ -195,7 +195,7 @@ export function ActivitySettingsPopover() {
                   className="activity-settings-open-full"
                   onClick={() => {
                     closePopover(true);
-                    navigateToAppTarget({ kind: "settings", tab: "notifications" });
+                    navigateToAppTarget({ kind: "settings", tab: "notifications", entryId: "notifications.events" });
                   }}
                 >
                   All Activity settings
