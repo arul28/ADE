@@ -72,7 +72,7 @@ describe("planImport", () => {
       session("claude", { home: { ...APPLE, atLaneRoot: false } }),
       { surface: "chat", targetLaneId: "apple" },
     );
-    expect(plan.primary).toMatchObject({ mode: "fork", label: "Open as ADE chat" });
+    expect(plan.primary).toMatchObject({ mode: "fork", label: "Open as Daex chat" });
   });
 
   it("locks the lane for Cursor CLI and says why", () => {
@@ -90,7 +90,7 @@ describe("planImport", () => {
   it("keeps chat mode open to any lane through the replay copy", () => {
     const plan = planImport(session("grok"), { surface: "chat", targetLaneId: "other" });
     expect(plan.laneLocked).toBe(false);
-    expect(plan.primary).toMatchObject({ target: "chat", mode: "fork", label: "Open as ADE chat", needsModel: true });
+    expect(plan.primary).toMatchObject({ target: "chat", mode: "fork", label: "Open as Daex chat", needsModel: true });
   });
 
   it("lets Codex continue anywhere", () => {

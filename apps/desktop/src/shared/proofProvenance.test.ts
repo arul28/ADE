@@ -23,17 +23,17 @@ describe("proof provenance", () => {
 
   it("writes the source line for each source, and nothing for an old row", () => {
     const recorded = readProofProvenance({ proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 25) });
-    expect(plain(proofSourceLine(recorded, "en-US"))).toBe("Recorded by ADE · 10:24–10:25 AM");
-    expect(plain(proofSourceLine(readProofProvenance({ proofSource: "ade-recorder" }), "en-US"))).toBe("Recorded by ADE");
-    expect(proofSourceLine(readProofProvenance({ proofSource: "ade-capture" }))).toBe("Captured by ADE");
+    expect(plain(proofSourceLine(recorded, "en-US"))).toBe("Recorded by Daex · 10:24–10:25 AM");
+    expect(plain(proofSourceLine(readProofProvenance({ proofSource: "ade-recorder" }), "en-US"))).toBe("Recorded by Daex");
+    expect(proofSourceLine(readProofProvenance({ proofSource: "ade-capture" }))).toBe("Captured by Daex");
     expect(proofSourceLine(readProofProvenance({ proofSource: "attached" }))).toBe("Attached by the agent");
     expect(proofSourceLine(readProofProvenance({}))).toBeNull();
   });
 
   it("says how much still time the recorder cut, and only when it cut a second or more", () => {
     const cut = readProofProvenance({ proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 27), idleCutMs: 127_000 });
-    expect(plain(proofSourceLine(cut, "en-US"))).toBe("Recorded by ADE · 10:24–10:27 AM · idle cut 2:07");
-    expect(proofSourceLine(readProofProvenance({ proofSource: "ade-recorder", idleCutMs: 400 }))).toBe("Recorded by ADE");
+    expect(plain(proofSourceLine(cut, "en-US"))).toBe("Recorded by Daex · 10:24–10:27 AM · idle cut 2:07");
+    expect(proofSourceLine(readProofProvenance({ proofSource: "ade-recorder", idleCutMs: 400 }))).toBe("Recorded by Daex");
     expect(readProofProvenance({ idleCutMs: "lots" }).idleCutMs).toBeNull();
   });
 

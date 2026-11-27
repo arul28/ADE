@@ -1,5 +1,6 @@
 import type { AdeAccountMachinePairingRepairResult } from "./types";
 import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "./types/account";
+import { BRAND } from "./brand";
 
 /**
  * What "Reconnect this computer" did, in one sentence. The desktop's reconnect
@@ -55,7 +56,7 @@ export function describeReconnectOutcome(
       : {
           tone: "warning",
           message:
-            "This computer is back on your account, but it isn't delivering Activity yet. Reopen ADE on this computer to finish.",
+            `This computer is back on your account, but it isn't delivering Activity yet. Reopen ${BRAND.NAME} on this computer to finish.`,
         };
   }
   // Nothing on this computer hosts sync, so there is no publisher to re-pair

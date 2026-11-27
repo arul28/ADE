@@ -21,7 +21,7 @@ describe("describeUnpublishedAccountDirectory http_error refusal branches", () =
       lastHttpReason: "machine_revoked",
     });
     expect(describeUnpublishedAccountDirectory("http_error", health)).toEqual({
-      summary: "this computer was removed from your ADE account",
+      summary: "this computer was removed from your Daex account",
       nextAction: "Reconnect this computer",
     });
   });
@@ -43,12 +43,12 @@ describe("describeUnpublishedAccountDirectory http_error refusal branches", () =
       lastHttpReason: null,
     });
     expect(describeUnpublishedAccountDirectory("http_error", serverError)).toEqual({
-      summary: "ADE's account service is having trouble right now, retrying",
+      summary: "Daex's account service is having trouble right now, retrying",
       nextAction: null,
     });
     // A caller with only the state (the CLI) keeps the same text.
     expect(describeUnpublishedAccountDirectory("http_error")).toEqual({
-      summary: "ADE's account service is having trouble right now, retrying",
+      summary: "Daex's account service is having trouble right now, retrying",
       nextAction: null,
     });
   });
@@ -63,7 +63,7 @@ describe("describeUnpublishedAccountDirectory http_error refusal branches", () =
  */
 describe("account directory no-reply contract", () => {
   const NO_INTERNET = "no internet connection, retrying";
-  const SIGN_IN = "can't refresh your ADE sign-in right now, retrying";
+  const SIGN_IN = "can't refresh your Daex sign-in right now, retrying";
   it.each([
     { state: "http_timeout", failedLeg: "http", noReply: true, summary: NO_INTERNET },
     { state: "transport_error", failedLeg: "http", noReply: true, summary: NO_INTERNET },
@@ -72,9 +72,9 @@ describe("account directory no-reply contract", () => {
     { state: "transport_error", failedLeg: "token", noReply: false, summary: SIGN_IN },
     { state: "transport_error", failedLeg: "token_refresh_401", noReply: false, summary: SIGN_IN },
     { state: "token_timeout", failedLeg: "token", noReply: false, summary: SIGN_IN },
-    { state: "transport_error", failedLeg: "setup", noReply: false, summary: "ADE couldn't publish this computer to your account, retrying" },
-    { state: "http_error", failedLeg: "http", noReply: false, summary: "ADE's account service is having trouble right now, retrying" },
-    { state: "published", failedLeg: null, noReply: false, summary: "published to your ADE account" },
+    { state: "transport_error", failedLeg: "setup", noReply: false, summary: "Daex couldn't publish this computer to your account, retrying" },
+    { state: "http_error", failedLeg: "http", noReply: false, summary: "Daex's account service is having trouble right now, retrying" },
+    { state: "published", failedLeg: null, noReply: false, summary: "published to your Daex account" },
   ] as const)("$state on the $failedLeg leg: no reply $noReply", ({ state, failedLeg, noReply, summary }) => {
     const health = createSyncAccountDirectoryHealth(state, null, failedLeg === undefined ? {} : { failedLeg });
     expect(isAccountDirectoryNoReply(health)).toBe(noReply);
@@ -96,8 +96,8 @@ describe("describeUnpublishedAccountDirectory competing sync host", () => {
       competingSyncHostSkipReason({ appName: "ADE Alpha", pid: 9253 }),
     );
     expect(describeUnpublishedAccountDirectory("no_active_sync_scope", health)).toEqual({
-      summary: "another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253)",
-      nextAction: "Quit that ADE to let this one host sync.",
+      summary: "another Daex app on this computer owns sync for this machine (ADE Alpha, pid 9253)",
+      nextAction: "Quit that Daex to let this one host sync.",
     });
   });
 
@@ -116,7 +116,7 @@ describe("describeUnpublishedAccountDirectory competing sync host", () => {
     // An older brain, or a genuinely unreadable lock. The state is still
     // truthful and the CLI still has the one command that can show the detail.
     expect(describeUnpublishedAccountDirectory("no_active_sync_scope")).toEqual({
-      summary: "another ADE app on this computer owns sync for this machine",
+      summary: "another Daex app on this computer owns sync for this machine",
       nextAction: "ade doctor",
     });
     expect(readCompetingSyncHostOwner(

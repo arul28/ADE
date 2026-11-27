@@ -43,6 +43,7 @@ import type {
 import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
 import { readAccountRefusalCode } from "../accountMachineRefusal";
+import { BRAND } from "../brand";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -609,10 +610,10 @@ export function competingSyncHostSkipReason(owner: CompetingSyncHostOwner): stri
     ? Math.floor(owner.pid as number)
     : null;
   if (pid == null) {
-    return "Another ADE app on this computer owns sync for this machine.";
+    return `Another ${BRAND.NAME} app on this computer owns sync for this machine.`;
   }
-  const name = owner.appName?.trim() || "ADE";
-  return `Another ADE app on this computer owns sync for this machine (${name}, pid ${pid}).`;
+  const name = owner.appName?.trim() || `${BRAND.NAME}`;
+  return `Another ${BRAND.NAME} app on this computer owns sync for this machine (${name}, pid ${pid}).`;
 }
 
 /**
@@ -625,7 +626,7 @@ export function readCompetingSyncHostOwner(
   const reason = health?.skipReason;
   if (!reason) return null;
   const match =
-    /^Another ADE app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
+    /^Another (?:ADE|Daex) app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
   if (!match) return null;
   const pid = Number.parseInt(match[2]!, 10);
   if (!Number.isFinite(pid) || pid <= 0) return null;
@@ -636,10 +637,10 @@ export function readCompetingSyncHostOwner(
  * A sign-in refresh that failed for a reason that clears on its own: no reply,
  * a sign-in service answering 429 or 5xx, or another process mid-refresh.
  */
-const SIGN_IN_REFRESH_RETRYING = "can't refresh your ADE sign-in right now, retrying";
+const SIGN_IN_REFRESH_RETRYING = `can't refresh your ${BRAND.NAME} sign-in right now, retrying`;
 
 /** The one next step that ends a competing sync host: quit the other ADE app. */
-export const QUIT_COMPETING_SYNC_HOST_ADVICE = "Quit that ADE to let this one host sync.";
+export const QUIT_COMPETING_SYNC_HOST_ADVICE = `Quit that ${BRAND.NAME} to let this one host sync.`;
 
 /**
  * User-facing advice for a machine that is signed in but not published.
@@ -666,7 +667,7 @@ export function describeUnpublishedAccountDirectory(
 ): UnpublishedMachineAdvice {
   switch (state) {
     case "published":
-      return { summary: "published to your ADE account", nextAction: null };
+      return { summary: `published to your ${BRAND.NAME} account`, nextAction: null };
     case "no_active_sync_scope": {
       // NOT "open a project" any more. A brain with no project registered now
       // publishes on its own, so the only way to reach this state is another ADE
@@ -680,18 +681,18 @@ export function describeUnpublishedAccountDirectory(
       const owner = readCompetingSyncHostOwner(health ?? null);
       if (owner?.pid != null) {
         return {
-          summary: `another ADE app on this computer owns sync for this machine (${owner.appName ?? "ADE"}, pid ${owner.pid})`,
+          summary: `another ${BRAND.NAME} app on this computer owns sync for this machine (${owner.appName ?? `${BRAND.NAME}`}, pid ${owner.pid})`,
           nextAction: QUIT_COMPETING_SYNC_HOST_ADVICE,
         };
       }
       return {
-        summary: "another ADE app on this computer owns sync for this machine",
+        summary: `another ${BRAND.NAME} app on this computer owns sync for this machine`,
         nextAction: "ade doctor",
       };
     }
     case "not_host":
       return {
-        summary: "this computer publishes through your main ADE host",
+        summary: `this computer publishes through your main ${BRAND.NAME} host`,
         nextAction: null,
       };
     case "sync_disabled":
@@ -715,13 +716,13 @@ export function describeUnpublishedAccountDirectory(
     case "machine_key_unavailable":
       return {
         summary: "this computer isn't registered yet",
-        nextAction: "restart ADE",
+        nextAction: `restart ${BRAND.NAME}`,
       };
     case "account_signed_out":
       // The window has a session but the brain does not, so signing in again is
       // what hands the brain one it can use.
       return {
-        summary: "the ADE background service is signed out",
+        summary: `the ${BRAND.NAME} background service is signed out`,
         nextAction: "ade connect",
       };
     case "token_unreadable":
@@ -729,7 +730,7 @@ export function describeUnpublishedAccountDirectory(
       // (isBrainAccountSessionFailure), so the summary names the fault and lets
       // the button carry the verb.
       return {
-        summary: "the ADE background service can't read your account session",
+        summary: `the ${BRAND.NAME} background service can't read your account session`,
         nextAction: "ade brain restart",
       };
     case "http_error": {
@@ -739,7 +740,7 @@ export function describeUnpublishedAccountDirectory(
       const refusalCode = readAccountRefusalCode(health ?? null);
       if (refusalCode === "machine_revoked") {
         return {
-          summary: "this computer was removed from your ADE account",
+          summary: `this computer was removed from your ${BRAND.NAME} account`,
           nextAction: "Reconnect this computer",
         };
       }
@@ -752,7 +753,7 @@ export function describeUnpublishedAccountDirectory(
       // The directory answered, just not with a yes (a 5xx, or a 4xx with no
       // refusal code). The network is fine; the service is not.
       return {
-        summary: "ADE's account service is having trouble right now, retrying",
+        summary: `${BRAND.NAME}'s account service is having trouble right now, retrying`,
         nextAction: null,
       };
     }
@@ -771,13 +772,13 @@ export function describeUnpublishedAccountDirectory(
       if (failedLeg === "token" || failedLeg === "token_refresh_401") {
         return { summary: SIGN_IN_REFRESH_RETRYING, nextAction: null };
       }
-      return { summary: "ADE couldn't publish this computer to your account, retrying", nextAction: null };
+      return { summary: `${BRAND.NAME} couldn't publish this computer to your account, retrying`, nextAction: null };
     }
     case "snapshot_failed":
     case "invalid_directory_url":
       return {
         summary: "this computer isn't published yet",
-        nextAction: "restart ADE",
+        nextAction: `restart ${BRAND.NAME}`,
       };
   }
 }

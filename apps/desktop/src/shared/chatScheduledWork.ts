@@ -7,6 +7,7 @@ import type {
   AgentChatScheduledWorkStatus,
 } from "./types";
 import { isRealSubagent, normalizeSubagentLifecycleEvent } from "./chatSubagents";
+import { BRAND } from "./brand";
 
 export type ChatScheduledWorkSnapshot = {
   id: string;
@@ -564,7 +565,7 @@ export function resolveScheduledWorkTiming(
     if (fireAt == null) {
       throw new Error(timeZone
         ? `Scheduled work cron must be a valid 5-field cron expression, read in ${timeZone}.`
-        : "Scheduled work cron must be a valid 5-field cron expression in the ADE brain machine's local timezone.");
+        : `Scheduled work cron must be a valid 5-field cron expression in the ${BRAND.NAME} brain machine's local timezone.`);
     }
     return {
       kind: input.recurring === false ? "wakeup" : "cron",

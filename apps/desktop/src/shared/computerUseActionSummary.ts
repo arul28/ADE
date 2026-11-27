@@ -41,6 +41,7 @@ import {
 import { androidSummaryParts, resolveAndroidVerb } from "./computerUseAndroid";
 import { appNameFromBundleId, flagValue, NUMBER, type TargetShape, type VerbSpec } from "./computerUseCommandReaders";
 import { readRecord } from "./readRecord";
+import { BRAND } from "./brand";
 
 export type ComputerUseSurfaceKind =
   | "lane_screen"
@@ -859,7 +860,7 @@ function buildSummary(invocations: ParsedInvocation[], output: string, input: Co
   if (filesProof && sawOutput && outcome !== "failed" && outcome !== "running" && parsed.proofIds.length === 0) {
     if (invocation.outputFilter === "other") {
       outcome = "unconfirmed";
-      missingProof = "Its output was cut off, so ADE could not see the proof filed.";
+      missingProof = `Its output was cut off, so ${BRAND.NAME} could not see the proof filed.`;
     } else {
       outcome = "failed";
       missingProof = "No proof was filed.";

@@ -7,6 +7,7 @@ import type {
   ComputerUseActionEffect,
 } from "./agentObservation";
 import { RECORDING_MAX_MS, type DemoArtifactMetadata } from "../demoVideo/demoContract";
+import { BRAND } from "../brand";
 
 export type BuiltInBrowserProvider = "cdp";
 
@@ -16,9 +17,9 @@ export type BuiltInBrowserProvider = "cdp";
  * refused. One sentence for the brain's reason, the desktop's log and the
  * app-wide banner.
  */
-export const ELEVATED_DESKTOP_TITLE = "ADE is running as administrator";
+export const ELEVATED_DESKTOP_TITLE = `${BRAND.NAME} is running as administrator`;
 export const ELEVATED_DESKTOP_MESSAGE =
-  "The ADE background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ADE and open it normally.";
+  `The ${BRAND.NAME} background service cannot reach it, so agents cannot use the browser, record App Control, or make demo videos. Quit ${BRAND.NAME} and open it normally.`;
 
 export type BuiltInBrowserFrame = AgentFrame;
 
@@ -359,11 +360,11 @@ export function parseBuiltInBrowserApprovalPending(message: string): { waitingFo
   const index = message.indexOf(`${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}:`);
   if (index < 0) return null;
   const tail = message.slice(index);
-  const current = /waiting for the user to (allow this (?:chat|lane) to use the ADE browser)/.exec(tail);
+  const current = /waiting for the user to (allow this (?:chat|lane) to use the (?:ADE|Daex) browser)/.exec(tail);
   if (current) return { waitingFor: current[1]! };
   // An older desktop's per-site prompt.
   const legacy = /approve (\S+) in ADE/.exec(tail);
-  return { waitingFor: legacy ? `approve ${legacy[1]} in ADE` : "answer the ADE browser prompt" };
+  return { waitingFor: legacy ? `approve ${legacy[1]} in ${BRAND.NAME}` : `answer the ${BRAND.NAME} browser prompt` };
 }
 
 /**

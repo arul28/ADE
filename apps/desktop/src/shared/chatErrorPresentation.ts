@@ -1,6 +1,7 @@
 import { cut } from "./cutText";
 import { providerDisplayLabel } from "./pendingInputLabels";
 import type { ProviderAccountRefusal } from "./providerAccountRefusal";
+import { BRAND } from "./brand";
 
 /**
  * Host-emitted failed-turn copy. Clients (desktop, iOS, hosted web, CLI)
@@ -201,10 +202,10 @@ function failureCopy(
       return {
         title: TITLE_COULDNT_START,
         fallbackBody: isCursorProviderLabel(provider)
-          ? "This ADE runtime can't use Cursor's sandbox. ADE still blocks writes through its own hooks."
+          ? `This ${BRAND.NAME} runtime can't use Cursor's sandbox. ${BRAND.NAME} still blocks writes through its own hooks.`
           : provider
-            ? `This ADE runtime can't provide the sandbox ${provider} asked for.`
-            : "This ADE runtime can't provide the sandbox this agent asked for.",
+            ? `This ${BRAND.NAME} runtime can't provide the sandbox ${provider} asked for.`
+            : `This ${BRAND.NAME} runtime can't provide the sandbox this agent asked for.`,
         nextAction: "Retry the turn.",
       };
     // `not_found` lands here on purpose: ADE recycles the agent and resumes
@@ -257,10 +258,10 @@ export function presentExternalProcessStop(args: {
   const subject = provider ? `${provider}'s process` : "The agent's process";
   const other = args.otherBrain;
   return {
-    title: "Stopped from outside ADE",
+    title: `Stopped from outside ${BRAND.NAME}`,
     body: other
-      ? `${subject} was stopped from outside this ADE (${args.signal}) while another ADE brain (pid ${other.pid}${other.socketPath ? `, socket ${other.socketPath}` : ""}) was running this chat.`
-      : `${subject} was stopped from outside ADE (${args.signal}). ADE did not end this turn.`,
+      ? `${subject} was stopped from outside this ${BRAND.NAME} (${args.signal}) while another ${BRAND.NAME} brain (pid ${other.pid}${other.socketPath ? `, socket ${other.socketPath}` : ""}) was running this chat.`
+      : `${subject} was stopped from outside ${BRAND.NAME} (${args.signal}). ${BRAND.NAME} did not end this turn.`,
     nextAction: other
       ? "Continue the chat from the brain that runs it."
       : "Retry the turn.",
@@ -276,7 +277,7 @@ export function presentExternalProcessStop(args: {
 export function presentDiskFullRefusal(message: string | null | undefined): ChatErrorPresentation {
   return {
     title: "Not enough storage",
-    body: trimText(message) ?? "This computer is almost out of storage, so ADE didn't start this turn.",
+    body: trimText(message) ?? `This computer is almost out of storage, so ${BRAND.NAME} didn't start this turn.`,
     nextAction: "Free up space, then retry.",
   };
 }

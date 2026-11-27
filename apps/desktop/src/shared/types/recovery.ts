@@ -1,3 +1,4 @@
+import { BRAND } from "../brand";
 export const ADE_RECOVERY_ERROR_CODES = [
   "disk_full",
   "insufficient_headroom",
@@ -183,11 +184,11 @@ export type RepairStepId =
  */
 export const REPAIR_STEP_LABELS: Record<RepairStepId, string> = {
   check_space: "Checking free space",
-  stop_service: "Stopping ADE",
-  validate_database: "Checking this project's ADE data",
+  stop_service: `Stopping ${BRAND.NAME}`,
+  validate_database: `Checking this project's ${BRAND.NAME} data`,
   resolve_migrations: "Finishing anything that was interrupted",
-  restart_service: "Starting ADE again",
-  verify_endpoint: "Checking that ADE answers",
+  restart_service: `Starting ${BRAND.NAME} again`,
+  verify_endpoint: `Checking that ${BRAND.NAME} answers`,
   verify_project_rpc: "Opening the project",
   reconcile_chats: "Checking chats",
 };
@@ -212,13 +213,13 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   steps?: readonly string[];
 }> = {
   healthy: {
-    headline: "ADE is ready",
+    headline: `${BRAND.NAME} is ready`,
     body: "Nothing needs fixing.",
     canAutoRepair: false,
   },
   disk_full: {
     headline: "Your computer is out of space",
-    body: "ADE needs a little free space to open this project. Your work is safe.",
+    body: `${BRAND.NAME} needs a little free space to open this project. Your work is safe.`,
     canAutoRepair: true,
     steps: [
       "Free up some space. Emptying the Trash is often enough.",
@@ -227,7 +228,7 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   },
   insufficient_headroom: {
     headline: "Your computer is almost out of space",
-    body: "ADE keeps a little space free so it never loses your work. Your work is safe.",
+    body: `${BRAND.NAME} keeps a little space free so it never loses your work. Your work is safe.`,
     canAutoRepair: true,
     steps: [
       "Free up a few GB. Emptying the Trash is often enough.",
@@ -236,11 +237,11 @@ export const RECOVERY_COPY: Record<RecoveryState, {
   },
   db_repair_needed: {
     headline: "This project needs a quick fix",
-    body: "ADE was interrupted while it was saving. Fix it finishes the job.",
+    body: `${BRAND.NAME} was interrupted while it was saving. Fix it finishes the job.`,
     canAutoRepair: true,
   },
   storage_unreadable: {
-    headline: "ADE can't read this project's files",
+    headline: `${BRAND.NAME} can't read this project's files`,
     body: "This usually happens when the folder is in iCloud Drive, Dropbox or OneDrive, and the files aren't downloaded to this computer.",
     canAutoRepair: false,
     steps: [
@@ -249,8 +250,8 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     ],
   },
   drive_unreadable: {
-    headline: "ADE can't read this project's data from its drive",
-    body: "The drive stopped answering while ADE opened the project.",
+    headline: `${BRAND.NAME} can't read this project's data from its drive`,
+    body: `The drive stopped answering while ${BRAND.NAME} opened the project.`,
     canAutoRepair: false,
     steps: [
       "Check that the drive is connected, awake and has free space.",
@@ -258,79 +259,79 @@ export const RECOVERY_COPY: Record<RecoveryState, {
     ],
   },
   data_missing: {
-    headline: "This project's ADE data is missing",
-    body: "Your code is safe. Only ADE's lanes and chat history for it are gone.",
+    headline: `This project's ${BRAND.NAME} data is missing`,
+    body: `Your code is safe. Only ${BRAND.NAME}'s lanes and chat history for it are gone.`,
     canAutoRepair: false,
   },
   data_replaced: {
-    headline: "This project's ADE data changed",
-    body: "Your code is safe. A different copy of ADE's data appeared while the project was open.",
+    headline: `This project's ${BRAND.NAME} data changed`,
+    body: `Your code is safe. A different copy of ${BRAND.NAME}'s data appeared while the project was open.`,
     canAutoRepair: false,
   },
   not_git_repository: {
     headline: "This project's folder is no longer a Git repository",
-    body: "ADE can't find the .git folder in it, so it can't show lanes or changes. ADE didn't change your files.",
+    body: `${BRAND.NAME} can't find the .git folder in it, so it can't show lanes or changes. ${BRAND.NAME} didn't change your files.`,
     canAutoRepair: false,
     steps: [
-      "If you moved or deleted the .git folder, put it back. ADE opens the project when it's back.",
-      "Or clone the repository again, then open the new folder in ADE.",
-      "If you don't need this project in ADE, choose Remove from recent projects.",
+      `If you moved or deleted the .git folder, put it back. ${BRAND.NAME} opens the project when it's back.`,
+      `Or clone the repository again, then open the new folder in ${BRAND.NAME}.`,
+      `If you don't need this project in ${BRAND.NAME}, choose Remove from recent projects.`,
     ],
   },
   brain_not_installed: {
-    headline: "ADE's background service is missing",
-    body: "Nothing in ADE can run until it's set up again. Your work is safe.",
+    headline: `${BRAND.NAME}'s background service is missing`,
+    body: `Nothing in ${BRAND.NAME} can run until it's set up again. Your work is safe.`,
     canAutoRepair: true,
   },
   brain_crash_looping: {
-    headline: "ADE's background service keeps stopping",
+    headline: `${BRAND.NAME}'s background service keeps stopping`,
     body: "It stopped several times in a row. Your work is safe.",
     canAutoRepair: true,
   },
   brain_not_running: {
-    headline: "ADE's background service didn't start",
+    headline: `${BRAND.NAME}'s background service didn't start`,
     body: "It's set up, but it isn't running. Your work is safe.",
     canAutoRepair: true,
   },
   background_blocked: {
-    headline: "macOS isn't letting ADE's background service run",
-    body: "ADE is switched off under \"Allow in the Background\" in System Settings.",
+    headline: `macOS isn't letting ${BRAND.NAME}'s background service run`,
+    body: `${BRAND.NAME} is switched off under "Allow in the Background" in System Settings.`,
     canAutoRepair: false,
     steps: [
       "Choose Open System Settings.",
-      "Under \"Allow in the Background\", turn on ADE. On some Macs it shows under the name of ADE's developer instead.",
+      `Under "Allow in the Background", turn on ${BRAND.NAME}. On some Macs it shows under the name of ${BRAND.NAME}'s developer instead.`,
     ],
   },
   socket_stale_no_owner: {
-    headline: "ADE didn't close properly last time",
+    headline: `${BRAND.NAME} didn't close properly last time`,
     body: "Something left over from the last run is in the way. Your work is safe.",
     canAutoRepair: true,
   },
   socket_owned_by_other: {
-    headline: "Another copy of ADE is open",
-    body: "Only one copy of ADE can run on a computer at a time.",
+    headline: `Another copy of ${BRAND.NAME} is open`,
+    body: `Only one copy of ${BRAND.NAME} can run on a computer at a time.`,
     canAutoRepair: false,
     steps: [
-      "Quit the other copy of ADE.",
+      `Quit the other copy of ${BRAND.NAME}.`,
       "Then choose Try again.",
     ],
   },
   project_busy: {
-    headline: "Another ADE process is using this project",
+    headline: `Another ${BRAND.NAME} process is using this project`,
     body: "Your work is safe.",
     canAutoRepair: false,
     steps: [
-      "Wait a moment, or close the other ADE.",
+      `Wait a moment, or close the other ${BRAND.NAME}.`,
       "Then choose Try again.",
     ],
   },
   brain_starting: {
-    headline: "ADE is starting",
+    headline: `${BRAND.NAME} is starting`,
     body: "This can take a minute the first time, or right after an update. The project opens by itself.",
     canAutoRepair: false,
   },
   unknown_failure: {
-    headline: "ADE couldn't open this project",
+    headline: `${BRAND.NAME} couldn't open this project`,
     body: "Your files and chats stay where they are.",
     canAutoRepair: true,
   },

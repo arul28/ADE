@@ -16,6 +16,7 @@ import type {
   WindowsDesktopPrivateUnavailableReason,
   WindowsDesktopSeatMode,
 } from "./types/macDesktop";
+import { BRAND } from "./brand";
 
 /** The product name a host's lane screen goes by. */
 export function desktopProductName(platform: string | null | undefined): string {
@@ -83,7 +84,7 @@ export function windowsDesktopPrivateUnavailableMessage(
     case "unsupported_platform":
       return "Private Windows screens need Windows Pro, Enterprise, or Education.";
     case "not_console_session":
-      return "ADE is running in a Remote Desktop or other session, not on this PC's console, so it cannot start a private screen.";
+      return `${BRAND.NAME} is running in a Remote Desktop or other session, not on this PC's console, so it cannot start a private screen.`;
     case "setup_required":
       return "Private screens are not set up on this PC yet.";
     case "held":

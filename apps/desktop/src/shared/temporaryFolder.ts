@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * Whether a project folder sits in a place the operating system clears on its
  * own: macOS's per-user temp (`/var/folders/…`), `/tmp` and `/var/tmp` on macOS
@@ -34,5 +35,5 @@ export function isTemporaryFolderPath(rootPath: string | null | undefined): bool
 export function temporaryFolderWarning(rootPath: string | null | undefined): string | null {
   if (!isTemporaryFolderPath(rootPath)) return null;
   return `This project's folder (${rootPath!.trim()}) is in a temporary folder, which the system can empty without asking. `
-    + "Move it somewhere permanent (Settings › Location › Move… in ADE) so its lanes and chats are not lost.";
+    + `Move it somewhere permanent (Settings › Location › Move… in ${BRAND.NAME}) so its lanes and chats are not lost.`;
 }

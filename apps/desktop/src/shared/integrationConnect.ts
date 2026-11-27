@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "./types/chat";
+import { BRAND } from "./brand";
 
 /**
  * The connect card: an agent that needs an integration which is not set up
@@ -100,7 +101,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
       {
         id: "oauth",
         label: "Sign in",
-        hint: "Opens Linear in your browser. Approve ADE and you are done.",
+        hint: `Opens Linear in your browser. Approve ${BRAND.NAME} and you are done.`,
         fields: [],
         signIn: "browser",
       },
@@ -155,8 +156,8 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         // PRs, so the token stays first. The host offers it only while reads
         // do not work yet.
         id: "app",
-        label: "ADE app",
-        hint: "Sign in with ADE's GitHub app. It reads and edits issues, but cannot push or open PRs.",
+        label: `${BRAND.NAME} app`,
+        hint: `Sign in with ${BRAND.NAME}'s GitHub app. It reads and edits issues, but cannot push or open PRs.`,
         fields: [],
         signIn: "device",
       },

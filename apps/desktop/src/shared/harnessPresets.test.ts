@@ -255,7 +255,7 @@ describe("labels", () => {
 
   it("says what pinning a built-in agent costs", () => {
     expect(harnessPresetAgentOverrideNote("explore")).toBe(
-      "Explore now runs on ADE's copy of Anthropic's Explore prompt. Updates to Claude Code do not change it.",
+      "Explore now runs on Daex's copy of Anthropic's Explore prompt. Updates to Claude Code do not change it.",
     );
   });
 });

@@ -22,6 +22,7 @@
  */
 
 import { CLOUD_PHONE_SPEND_ACTIONS, CLOUD_PHONE_USER_ONLY_ACTIONS } from "./cloudPhone";
+import { BRAND } from "./brand";
 
 export type AdeActionAccess = "read" | "write";
 
@@ -823,14 +824,14 @@ export function adeActionAccess(domain: string, action: string): AdeActionAccess
  */
 export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   passwords: {
-    resolveForFill: "Saved logins are filled by ADE on the computer whose browser shows the page.",
-    revealValue: "A saved value is shown only in ADE on the computer you are using, after Touch ID or Windows Hello.",
-    passkeysForRp: "Passkeys are used by ADE's browser on the computer you are using.",
-    savePasskey: "Passkeys are saved by ADE's browser on the computer you are using.",
+    resolveForFill: `Saved logins are filled by ${BRAND.NAME} on the computer whose browser shows the page.`,
+    revealValue: `A saved value is shown only in ${BRAND.NAME} on the computer you are using, after Touch ID or Windows Hello.`,
+    passkeysForRp: `Passkeys are used by ${BRAND.NAME}'s browser on the computer you are using.`,
+    savePasskey: `Passkeys are saved by ${BRAND.NAME}'s browser on the computer you are using.`,
     exportSecrets: "A .env export is written on the computer you are using, after Touch ID or Windows Hello.",
   },
   provider_logins: {
-    allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",
+    allowKeychain: `Run this on that computer. ${BRAND.NAME} reads a computer's OS keyring only on the computer you are using.`,
   },
 };
 
@@ -849,7 +850,7 @@ export function thisDesktopOnlyRefusal(domain: string, action: string): string |
 const ADE_ACTION_THIS_DESKTOP_ONLY_FOR_INPUT: Readonly<Record<string, Readonly<Record<string, { refusal: string; allows: (input: unknown) => boolean }>>>> = {
   provider_logins: {
     allowGitHubCli: {
-      refusal: "Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ADE reads it only on the computer you are using.",
+      refusal: `Turn this on at that computer. The GitHub CLI can ask there to unlock its keychain, so ${BRAND.NAME} reads it only on the computer you are using.`,
       allows: (input) => Boolean(input) && typeof input === "object" && (input as { on?: unknown }).on === false,
     },
   },

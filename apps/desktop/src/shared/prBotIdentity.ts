@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * Who wrote a PR comment, review, or thread: a person, an agent reviewer, or
  * another bot. One rule for desktop and (ported) iOS.
@@ -74,7 +75,7 @@ const KNOWN_BOTS: readonly KnownBot[] = [
   { kind: "augment", displayName: "Augment", role: "agent-reviewer", brandColor: "#22D3EE", logins: ["augmentcode", "augment-code"] },
   { kind: "whatthediff", displayName: "What The Diff", role: "agent-reviewer", brandColor: "#F97316", logins: ["what-the-diff"] },
   { kind: "opencode", displayName: "OpenCode", role: "agent-reviewer", brandColor: "#E5E5E5", logins: ["opencode-agent", "opencode"] },
-  { kind: "ade", displayName: "ADE", role: "agent-reviewer", brandColor: "#A78BFA", logins: ["ade-dev", "ade-agent", "ade-bot"] },
+  { kind: "ade", displayName: `${BRAND.NAME}`, role: "agent-reviewer", brandColor: "#A78BFA", logins: ["ade-dev", "ade-agent", "ade-bot"] },
   // Deploy previews
   { kind: "vercel", displayName: "Vercel", role: "deploy", brandColor: "#EDEDED", logins: ["vercel"] },
   { kind: "netlify", displayName: "Netlify", role: "deploy", brandColor: "#32E6E2", logins: ["netlify"] },

@@ -1,3 +1,4 @@
+import { BRAND } from "../brand";
 /**
  * Moving a project to a new folder, usually on another drive. The main
  * process copies the project, rewrites every path inside the copy, verifies
@@ -90,7 +91,7 @@ export const PROJECT_MOVE_STEPS: ReadonlyArray<{ id: ProjectMoveStepId; label: s
   { id: "prepare", label: "Close the project" },
   { id: "copy", label: "Copy files" },
   { id: "git", label: "Update git links" },
-  { id: "data", label: "Update ADE data" },
+  { id: "data", label: `Update ${BRAND.NAME} data` },
   { id: "verify", label: "Check the copy" },
   { id: "switch", label: "Switch over" },
 ];

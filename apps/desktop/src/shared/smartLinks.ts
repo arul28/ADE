@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 // Detection and classification of link-shaped text ONLY. Display labels and
 // glyphs belong to the shared chip model (`./chips`), which every surface
 // renders from; keeping a second set here is what let the composer and the
@@ -134,7 +135,7 @@ export function deriveSmartLinkPreview(rawValue: string): SmartLinkPreview | nul
         url: rawUrl,
         provider: "ade",
         kind: "ade_deeplink",
-        label: target ? `ADE · ${target}` : "ADE link",
+        label: target ? `${BRAND.NAME} · ${target}` : `${BRAND.NAME} link`,
       };
     } catch {
       return null;

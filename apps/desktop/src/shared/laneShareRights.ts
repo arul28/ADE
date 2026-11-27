@@ -1,6 +1,7 @@
 import type { LaneSharePreset, LaneShareRisk } from "../../../account-directory/src/laneShares/contract";
 import type { LaneShareMoveView } from "./laneShareMove";
 import { AGENT_CHAT_PERMISSION_MODE_VALUES, type AgentChatPermissionMode } from "./types/chat";
+import { BRAND } from "./brand";
 
 /**
  * The rights one lane share gives its guest (lane sharing, package 5).
@@ -454,11 +455,11 @@ export type LaneShareCaller = "person" | "agent";
 export type LaneShareCreatedBy = LaneShareCaller;
 
 /** The answer to an agent that asks for an action only a person may take. */
-export const LANE_SHARE_PERSON_ONLY_MESSAGE = "Only a person in the ADE app can do this.";
+export const LANE_SHARE_PERSON_ONLY_MESSAGE = `Only a person in the ${BRAND.NAME} app can do this.`;
 
 /** What an agent is told when it asks for more than a Watch share. */
 export const LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE =
-  "An agent or the CLI can make only a Watch share. Open the share sheet in the ADE app for more rights.";
+  `An agent or the CLI can make only a Watch share. Open the share sheet in the ${BRAND.NAME} app for more rights.`;
 
 /** The account settings key of the person's default rights for a new share (Settings › Sharing). */
 export const LANE_SHARE_DEFAULT_RIGHTS_KEY = "laneShare.defaultRights";

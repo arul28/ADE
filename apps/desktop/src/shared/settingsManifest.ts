@@ -22,6 +22,7 @@ import { PROVIDER_DISPLAY_NAME } from "./providers";
  * the account store and needs `SettingScope` to do it.
  */
 import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "./types/settingsScope";
+import { BRAND } from "./brand";
 export type { SettingScope, SettingWebScope } from "./types/settingsScope";
 
 export const SETTINGS_TAB_IDS = [
@@ -226,19 +227,19 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // GitHub, Linear and Jira (saved for this project or your account) and the
   // MCP servers (your account), as one grid of what ADE connects to. A tile
   // opens its own page.
-  { id: "integrations", label: "Integrations", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
+  { id: "integrations", label: "Integrations", description: `GitHub, Linear, Jira and MCP servers: the services ${BRAND.NAME} and your agents use.`, group: "app" },
   // Shown only to an account ADE Cloud lets in: every entry on it is an ADE
   // Cloud entry, and those exist only with access (`isSettingAvailable`).
-  { id: "ade-cloud", label: "ADE Cloud", description: "Your plan and what it has left, cloud computers and lanes, the sizes, and the sign-ins your cloud computers use.", group: "app" },
+  { id: "ade-cloud", label: `${BRAND.CLOUD_NAME}`, description: "Your plan and what it has left, cloud computers and lanes, the sizes, and the sign-ins your cloud computers use.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.
-  { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor use ADE on your computers.", group: "app" },
-  { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "app" },
+  { id: "ade-mcp", label: `${BRAND.NAME} MCP`, description: `Let AI apps like claude.ai, ChatGPT and Cursor use ${BRAND.NAME} on your computers.`, group: "app" },
+  { id: "notifications", label: "Notifications", description: `What ${BRAND.NAME} tells you about running work, and where.`, group: "app" },
   // Appearance is per computer: each screen has its own theme, fonts and
   // terminal, and none of it follows the account.
-  { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts and terminal.", group: "app" },
-  { id: "behaviour", label: "Behaviour", description: "Sleep, screen capture, links, and the ADE browser on this computer.", group: "app" },
+  { id: "appearance", label: "Appearance", description: `How ${BRAND.NAME} looks on this computer: theme, fonts and terminal.`, group: "app" },
+  { id: "behaviour", label: "Behaviour", description: `Sleep, screen capture, links, and the ${BRAND.NAME} browser on this computer.`, group: "app" },
   // Apple devices is per computer: each Mac has its own simulators and its own
   // network. Values are filed under this device's account scope so the brain
   // on this computer can read the remote streaming cap (see accountSettingsSync).
@@ -256,7 +257,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
   { id: "project-agents", label: "Agents", description: "What agents keep about this project: PR chat transcripts.", group: "project" },
   { id: "deleted", label: "Deleted & Archived", description: "Lanes and chats you deleted or archived, on every computer.", group: "project" },
-  { id: "storage", label: "Disk space", description: "The space this project takes, and what ADE cleans up on its own.", group: "project" },
+  { id: "storage", label: "Disk space", description: `The space this project takes, and what ${BRAND.NAME} cleans up on its own.`, group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
 
   // ── System ──────────────────────────────────────────────────────────────
@@ -510,7 +511,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.about",
-    label: "ADE version",
+    label: `${BRAND.NAME} version`,
     keywords: ["version", "build", "license", "logs", "support", "about", "about ade", "update", "restart"],
     tab: "general",
     anchor: "about",
@@ -552,7 +553,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.ade-cli",
-    label: "ADE command line",
+    label: `${BRAND.NAME} command line`,
     keywords: ["cli", "terminal", "install", "path", "shell"],
     tab: "advanced",
     anchor: "ade-cli",
@@ -565,7 +566,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
     // and two identically named search hits pointing at different tabs is a
     // coin flip for whoever is looking for the report button.
-    label: "Send a report to ADE",
+    label: `Send a report to ${BRAND.NAME}`,
     keywords: ["diagnostics", "crash", "report", "report issue", "error", "send", "support"],
     tab: "advanced",
     anchor: "diagnostics-sharing",
@@ -587,7 +588,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.reset",
-    label: "Reset ADE",
+    label: `Reset ${BRAND.NAME}`,
     keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
     tab: "advanced",
     anchor: "reset-ade",
@@ -660,7 +661,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.browser-agent-access",
-    label: "Agents can use the ADE browser",
+    label: `Agents can use the ${BRAND.NAME} browser`,
     keywords: ["browser", "agent", "approve", "approval", "allow", "block", "lane", "chat", "permission", "consent", "signed in"],
     tab: "behaviour",
     anchor: "browser-agent-access",
@@ -668,7 +669,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // The ADE browser and its signed-in profile live in the desktop main
     // process; a hosted tab has neither.
     web: "hidden",
-    group: "ADE browser",
+    group: `${BRAND.NAME} browser`,
   },
   {
     id: "general.browser-settings",
@@ -684,7 +685,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "browser-settings",
     scope: "machine",
     web: "hidden",
-    group: "ADE browser",
+    group: `${BRAND.NAME} browser`,
   },
   {
     id: "general.browser-auto-grant",
@@ -694,7 +695,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "browser-auto-grant",
     scope: "machine",
     web: "hidden",
-    group: "ADE browser",
+    group: `${BRAND.NAME} browser`,
   },
 
   // ── Project → Location ───────────────────────────────────────────────────
@@ -1747,7 +1748,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "integrations.ade-cloud",
-    label: "ADE Cloud",
+    label: `${BRAND.CLOUD_NAME}`,
     keywords: [
       "cloud", "machine", "box", "vm", "linux", "sandbox", "ade cloud",
       // The machines themselves live in Your computers; the page header opens it.
@@ -1759,73 +1760,73 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // and pays through the account server (`webclient/adapter/cloud.ts`).
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "integrations.ade-cloud-sign-ins",
-    label: "Sign-ins on ADE Cloud",
+    label: `Sign-ins on ${BRAND.CLOUD_NAME}`,
     keywords: ["sign in", "sign-in", "login", "api key", "token", "claude", "codex", "cursor", "droid", "grok", "copilot", "devin", "muse", "openrouter", "new machine", "cloud machine"],
     tab: "ade-cloud",
     anchor: "cloud-sign-ins",
     // The provider sign-ins ADE Cloud uses: one line and one off switch (Settings › Providers › ADE Cloud has the rest).
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "integrations.ade-cloud-spending",
-    label: "ADE Cloud lanes and computers",
+    label: `${BRAND.CLOUD_NAME} lanes and computers`,
     keywords: ["machines", "computers", "cloud lanes", "disk", "free up space", "clear caches", "delete lane", "change size", "sleep", "awake", "idle"],
     tab: "ade-cloud",
     anchor: "cloud-lanes",
     // Every lane and every computer the account pays for, read from the server.
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "ade-cloud.plans",
-    label: "ADE Cloud plans and billing",
+    label: `${BRAND.CLOUD_NAME} plans and billing`,
     keywords: ["plan", "plans", "upgrade", "plus", "pro", "max", "free", "price", "billing", "extra hours", "extra credits", "credits", "manage billing", "subscription", "invoice", "cancel"],
     tab: "ade-cloud",
     anchor: "cloud-plan",
     // The plans side by side and extra hours; the account's Stripe subscription.
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "ade-cloud.invite",
-    label: "Invite friends to ADE Cloud",
+    label: `Invite friends to ${BRAND.CLOUD_NAME}`,
     keywords: ["invite", "invite friends", "referral", "refer", "free hours", "free credits", "invite code", "earn hours", "earn credits"],
     tab: "ade-cloud",
     anchor: "cloud-invite",
     // The account's invite link and code box; the Work sidebar's invite pill lands here.
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "ade-cloud.sizes",
-    label: "ADE Cloud sizes",
+    label: `${BRAND.CLOUD_NAME} sizes`,
     keywords: ["size", "sizes", "small", "medium", "large", "x-large", "cpu", "memory", "ram", "disk", "docker", "android", "default size", "tier"],
     tab: "ade-cloud",
     anchor: "cloud-sizes",
     // The size new cloud lanes start on: an account setting.
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "integrations.ade-cloud-agent-limits",
-    label: "What agents may spend on ADE Cloud",
+    label: `What agents may spend on ${BRAND.CLOUD_NAME}`,
     keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "budget", "ask me", "balanced", "hands-off"],
     tab: "ade-cloud",
     anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.
     scope: "account",
     web: "account",
-    group: "ADE Cloud",
+    group: `${BRAND.CLOUD_NAME}`,
   },
   {
     id: "integrations.jira-projects",
@@ -1883,7 +1884,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "notifications.focus-suppression",
-    label: "Quiet while ADE is focused",
+    label: `Quiet while ${BRAND.NAME} is focused`,
     keywords: ["focus", "quiet", "suppress", "do not disturb", "dnd", "mute"],
     tab: "notifications",
     anchor: "focus-suppression",
@@ -2045,7 +2046,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   // ── ADE MCP: the account's one MCP server ────────────────────────────
   {
     id: "ade-mcp.server",
-    label: "ADE MCP: let AI apps use ADE",
+    label: `${BRAND.NAME} MCP: let AI apps use ${BRAND.NAME}`,
     keywords: ["mcp", "ade mcp", "remote", "server", "url", "address", "connector", "oauth", "relay", "ai apps", "turn on"],
     tab: "ade-mcp",
     anchor: "ade-mcp",
@@ -2053,17 +2054,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // Granting an outside app your computers is done from a desktop, never
     // from a browser tab.
     web: "hidden",
-    group: "ADE MCP",
+    group: `${BRAND.NAME} MCP`,
   },
   {
     id: "ade-mcp.connect",
-    label: "Connect an AI app to ADE",
+    label: `Connect an AI app to ${BRAND.NAME}`,
     keywords: ["mcp", "connect", "setup", "custom connector", "claude.ai", "chatgpt", "claude code", "codex", "grok", "grok bot", "cursor", "vs code", "copilot", "gemini", "perplexity", "le chat", "windsurf", "zed", "goose", "opencode", "amp", "factory", "raycast", "xai api", "openai api"],
     tab: "ade-mcp",
     anchor: "ade-mcp-connect",
     scope: "account",
     web: "hidden",
-    group: "ADE MCP",
+    group: `${BRAND.NAME} MCP`,
   },
   {
     id: "ade-mcp.computers",
@@ -2073,7 +2074,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "ade-mcp-computers",
     scope: "account",
     web: "hidden",
-    group: "ADE MCP",
+    group: `${BRAND.NAME} MCP`,
   },
   {
     id: "ade-mcp.connections",
@@ -2083,7 +2084,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "ade-mcp-connections",
     scope: "account",
     web: "hidden",
-    group: "ADE MCP",
+    group: `${BRAND.NAME} MCP`,
   },
 ] as const;
 
@@ -2217,7 +2218,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /** ADE Cloud's settings: they do not exist for an account not on its access list. */
-export const ADE_CLOUD_SETTINGS_GROUP = "ADE Cloud";
+export const ADE_CLOUD_SETTINGS_GROUP = `${BRAND.CLOUD_NAME}`;
 
 export function isAdeCloudSettingEntry(entry: Pick<SettingEntry, "group">): boolean {
   return entry.group === ADE_CLOUD_SETTINGS_GROUP;

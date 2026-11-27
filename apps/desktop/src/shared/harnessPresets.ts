@@ -27,6 +27,7 @@
 
 import { openCodeHouseProviderName } from "./opencodeProviders";
 import { formatPiProviderLabel } from "./modelRegistry";
+import { BRAND } from "./brand";
 
 /** The harnesses a preset can name — the `AgentChatProvider` ids ADE can run. */
 export const HARNESS_PRESET_BODIES = [
@@ -244,7 +245,7 @@ export const HARNESS_SUBAGENT_SUPPORT: Record<HarnessPresetBody, HarnessSubagent
     model: false,
     effort: false,
     agentTypes: [],
-    reason: "Droid resolves its subagents from droid definitions ADE does not manage, so it runs them on the main model.",
+    reason: `Droid resolves its subagents from droid definitions ${BRAND.NAME} does not manage, so it runs them on the main model.`,
   },
   qwen: {
     model: false,
@@ -362,7 +363,7 @@ export function clampEffortToLadder(
  */
 export function harnessPresetAgentOverrideNote(agent: HarnessPresetAgentKey): string {
   const name = HARNESS_PRESET_AGENT_LABELS[agent];
-  return `${name} now runs on ADE's copy of Anthropic's ${name} prompt. Updates to Claude Code do not change it.`;
+  return `${name} now runs on ${BRAND.NAME}'s copy of Anthropic's ${name} prompt. Updates to Claude Code do not change it.`;
 }
 
 /** `#rrggbb` only — the renderer renders it raw, so anything else is rejected. */
@@ -883,7 +884,7 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
   const notes: string[] = [];
   let logo = normalizeLogo(preset.logo);
   if ((logo.kind === "upload" || logo.kind === "generated") && dataUrlByteLength(logo.dataUrl) > HARNESS_PRESET_LOGO_EXPORT_MAX_BYTES) {
-    notes.push("The logo was too large to share, so this preset carries the ADE mark instead.");
+    notes.push(`The logo was too large to share, so this preset carries the ${BRAND.NAME} mark instead.`);
     logo = { ...DEFAULT_HARNESS_PRESET_LOGO };
   }
   if (preset.source.kind === "key") {
@@ -967,18 +968,18 @@ export function importHarnessPreset(
     try {
       parsed = JSON.parse(input) as unknown;
     } catch {
-      throw new HarnessPresetImportError("That file is not a harness ADE can read.");
+      throw new HarnessPresetImportError(`That file is not a harness ${BRAND.NAME} can read.`);
     }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new HarnessPresetImportError("That file is not a harness ADE can read.");
+    throw new HarnessPresetImportError(`That file is not a harness ${BRAND.NAME} can read.`);
   }
   const envelope = parsed as Record<string, unknown>;
   if (envelope.kind !== HARNESS_PRESET_EXPORT_KIND) {
-    throw new HarnessPresetImportError("That file is not a harness ADE can read.");
+    throw new HarnessPresetImportError(`That file is not a harness ${BRAND.NAME} can read.`);
   }
   if (typeof envelope.version !== "number" || envelope.version > HARNESS_PRESET_EXPORT_VERSION) {
-    throw new HarnessPresetImportError("That harness was saved by a newer version of ADE.");
+    throw new HarnessPresetImportError(`That harness was saved by a newer version of ${BRAND.NAME}.`);
   }
   const body = envelope.preset;
   if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -986,7 +987,7 @@ export function importHarnessPreset(
   }
   const raw = body as Record<string, unknown>;
   if (!isHarnessPresetBody(raw.harness)) {
-    throw new HarnessPresetImportError("That file names a harness ADE cannot run.");
+    throw new HarnessPresetImportError(`That file names a harness ${BRAND.NAME} cannot run.`);
   }
   const source = normalizeSource(raw.source);
   if (!source) {

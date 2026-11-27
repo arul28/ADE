@@ -18,6 +18,7 @@ import { GITHUB_DIRECT_ACCOUNT_CHANGED } from "../types/githubDirect";
 import type { AccountAppTokenClient } from "./accountAppTokenClient";
 import { isRecord, str, bool, mapRepository, mapBranch, mapContentEntry, mapFileContent, mapCommit, mapPull, mapPullDetail, mapCheckRun, mapReview, mapComment, mapIssue, mapIssueDetail, listOf } from "./directMappers";
 import { appGrantMissingPermissions, appGrantNeedsApproval, appInstallationGrantForOwner } from "./githubAppGrant";
+import { BRAND } from "../brand";
 
 /**
  * Direct GitHub reads with the ADE account's GitHub App sign-in, with no ADE
@@ -322,14 +323,14 @@ export function classifyGithubDirectResponse(input: {
   if (status === 403 || status === 429) {
     const retryAfter = headerInt(headers, "retry-after");
     if (retryAfter != null) {
-      return { kind: "rate_limited", message: message || "GitHub asked ADE to slow down.", retryAt: now + retryAfter * 1000, secondary: true };
+      return { kind: "rate_limited", message: message || `GitHub asked ${BRAND.NAME} to slow down.`, retryAt: now + retryAfter * 1000, secondary: true };
     }
     if (headerInt(headers, "x-ratelimit-remaining") === 0) {
       const reset = headerInt(headers, "x-ratelimit-reset");
       return { kind: "rate_limited", message: message || "GitHub rate limit reached.", retryAt: reset != null ? reset * 1000 : null, secondary: false };
     }
     if (/secondary rate limit|abuse/i.test(message) || status === 429) {
-      return { kind: "rate_limited", message: message || "GitHub asked ADE to slow down.", retryAt: now + SECONDARY_LIMIT_DEFAULT_MS, secondary: true };
+      return { kind: "rate_limited", message: message || `GitHub asked ${BRAND.NAME} to slow down.`, retryAt: now + SECONDARY_LIMIT_DEFAULT_MS, secondary: true };
     }
     if (headers.get("x-github-sso")) {
       return { kind: "repo_not_reachable", message: message || "This organization needs a single sign-on session.", sso: true, ...where };
@@ -445,9 +446,9 @@ export function accountAppDirectCredential(
         case "unsupported":
           return { ok: false, error: { kind: "not_connected", message: "the account directory has no GitHub sign-in yet", reason: "unsupported" } };
         case "signed_out":
-          return { ok: false, error: { kind: "not_connected", message: "no ADE account on this device", reason: "signed_out" } };
+          return { ok: false, error: { kind: "not_connected", message: `no ${BRAND.NAME} account on this device`, reason: "signed_out" } };
         default:
-          return { ok: false, error: { kind: "not_connected", message: "GitHub is not connected to the ADE account", reason: result.reason } };
+          return { ok: false, error: { kind: "not_connected", message: `GitHub is not connected to the ${BRAND.NAME} account`, reason: result.reason } };
       }
     },
     onRejected: async (token) => {
@@ -768,7 +769,7 @@ export function createGithubDirectClient(options: GithubDirectClientOptions) {
     // account's data nor the new account's token may cross over.
     const scope = options.credential.scopeKey() ?? "anonymous";
     const accountChanged = (): boolean => (options.credential.scopeKey() ?? "anonymous") !== scope;
-    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: "The ADE account changed during the read.", reason: GITHUB_DIRECT_ACCOUNT_CHANGED } };
+    const changedAnswer = { ok: false as const, error: { kind: "github_unavailable" as const, message: `The ${BRAND.NAME} account changed during the read.`, reason: GITHUB_DIRECT_ACCOUNT_CHANGED } };
     const tokenAnswer = await options.credential.getToken().catch(() => null);
     if (accountChanged()) return changedAnswer;
     if (!tokenAnswer) return { ok: false, error: { kind: "github_unavailable", message: "The GitHub sign-in could not be read." } };

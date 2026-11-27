@@ -1,4 +1,5 @@
 import { ADE_GITHUB_URL } from "./productLinks";
+import { BRAND } from "./brand";
 
 /**
  * The one public GitHub link a report can lead to, after the report itself
@@ -62,12 +63,12 @@ export function publicIssueBody(input: PublicIssueLinkInput): string {
     "---",
     "",
     `- Report reference: ${reference ?? "unknown"}`,
-    `- ADE version: ${versionLine}`,
+    `- ${BRAND.NAME} version: ${versionLine}`,
     `- OS: ${os ?? "unknown"}`,
     "",
     reference
-      ? `The private report is with the ADE team under reference ${reference}.`
-      : "The private report is with the ADE team.",
+      ? `The private report is with the ${BRAND.NAME} team under reference ${reference}.`
+      : `The private report is with the ${BRAND.NAME} team.`,
     "",
   ].join("\n");
 }

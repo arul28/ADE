@@ -16,6 +16,7 @@ import type {
   ChatLaunchStageId,
   ChatLaunchStageStatus,
 } from "./types/chatLaunch";
+import { BRAND } from "./brand";
 
 /**
  * Pure helpers for chat launches, shared by the host (`chatLaunchService`),
@@ -344,7 +345,7 @@ export function isChatLaunchRefused(launch: Pick<ChatLaunchSnapshot, "phase" | "
  * error class name or a person's refusal code (`withoutRefusalCode`: a launch
  * refused while its computer moves reads as the sentence).
  */
-export function chatLaunchErrorMessage(error: unknown, fallback = "ADE couldn't start this launch."): string {
+export function chatLaunchErrorMessage(error: unknown, fallback = `${BRAND.NAME} couldn't start this launch.`): string {
   const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return withoutRefusalCode(stripElectronErrorWrapper(raw)) || fallback;
 }

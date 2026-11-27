@@ -1,4 +1,5 @@
 import type { ChatLaunchStage, OpenProjectBinding } from "./types";
+import { BRAND } from "./brand";
 
 /**
  * The CTO's home on ADE Cloud: one small computer per repository, made on a
@@ -14,8 +15,8 @@ import type { ChatLaunchStage, OpenProjectBinding } from "./types";
 /** Metadata that marks the computer as a CTO's home; its value is "1". */
 export const CTO_CLOUD_HOME_METADATA = "ade_cto_home";
 
-export const CTO_CLOUD_HOME_NEEDS_PAID_PLAN = "ADE Cloud as the CTO's home needs a paid plan. Upgrade to use it.";
-export const CTO_CLOUD_HOME_NEEDS_GITHUB = "The CTO can live on ADE Cloud only for a GitHub repository.";
+export const CTO_CLOUD_HOME_NEEDS_PAID_PLAN = `${BRAND.CLOUD_NAME} as the CTO's home needs a paid plan. Upgrade to use it.`;
+export const CTO_CLOUD_HOME_NEEDS_GITHUB = `The CTO can live on ${BRAND.CLOUD_NAME} only for a GitHub repository.`;
 
 export type CtoCloudHomePhase = "running" | "failed" | "ready" | "cancelled";
 

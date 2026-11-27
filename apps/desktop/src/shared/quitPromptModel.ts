@@ -5,6 +5,7 @@ import type {
   QuitPromptChoice,
   QuitPromptRequest,
 } from "./types";
+import { BRAND } from "./brand";
 
 /**
  * Agents survive a quit unless this desktop is running the service itself:
@@ -50,10 +51,10 @@ function appOwnedFix(
   canRepair: boolean,
 ): string {
   if (repair === "system_settings") {
-    return "Turn on ADE under Allow in the Background, and agents keep going after you quit.";
+    return `Turn on ${BRAND.NAME} under Allow in the Background, and agents keep going after you quit.`;
   }
-  if (repair === "wait") return "ADE keeps trying to restart the service on its own.";
-  const where = canRepair ? "" : " from the banner in ADE";
+  if (repair === "wait") return `${BRAND.NAME} keeps trying to restart the service on its own.`;
+  const where = canRepair ? "" : ` from the banner in ${BRAND.NAME}`;
   if (count === 0) return `Repair it${where}, and agents keep going after you quit.`;
   return `Repair it${where} first: they pick up where they left off and keep going after you quit.`;
 }
@@ -63,8 +64,8 @@ function updateOnQuitSentence(request: QuitPromptRequest): string {
   const update = request.relaunch ? null : request.updateOnQuit;
   if (!update) return "";
   return update.installs
-    ? ` ADE ${update.version} installs as ADE quits, and the background service restarts on it.`
-    : ` ADE ${update.version} is downloaded. It installs later, when no agent is running, so quitting doesn't stop them.`;
+    ? ` ${BRAND.NAME} ${update.version} installs as ${BRAND.NAME} quits, and the background service restarts on it.`
+    : ` ${BRAND.NAME} ${update.version} is downloaded. It installs later, when no agent is running, so quitting doesn't stop them.`;
 }
 
 /**
@@ -80,38 +81,38 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
   if (owned) {
     const stopping = request.relaunch ? "restarting" : "quitting";
     const stops = count == null
-      ? `ADE is running it itself for now and couldn't check what is running, so ${stopping} may stop agents.`
+      ? `${BRAND.NAME} is running it itself for now and couldn't check what is running, so ${stopping} may stop agents.`
       : count > 0
-        ? `ADE is running ${pluralCount(count, "agent")} itself for now, so ${stopping} stops ${agentsPronoun(count, "object")}.`
-        : "ADE is running it itself for now.";
+        ? `${BRAND.NAME} is running ${pluralCount(count, "agent")} itself for now, so ${stopping} stops ${agentsPronoun(count, "object")}.`
+        : `${BRAND.NAME} is running it itself for now.`;
     const offerRepair = options.canRepair && owned.repair !== "wait";
     const fixAction: QuitPromptAction = owned.repair === "system_settings"
       ? { choice: "system_settings", label: "Open System Settings", primary: true }
       : { choice: "repair", label: "Repair service", primary: true };
     return {
-      title: "ADE's background service isn't running",
+      title: `${BRAND.NAME}'s background service isn't running`,
       // Unknown is treated as "something is running": the fix that keeps agents is the safe advice.
       description: `${stops} ${appOwnedFix(owned.repair, count ?? 1, options.canRepair)}${updateOnQuitSentence(request)}`,
       tone: "warning",
       dontAskAgainLabel: null,
       actions: [
-        { choice: "keep", label: "Keep ADE open", primary: !offerRepair },
+        { choice: "keep", label: `Keep ${BRAND.NAME} open`, primary: !offerRepair },
         { choice: "quit", label: `${verb} anyway` },
         ...(offerRepair ? [fixAction] : []),
       ],
     };
   }
-  let description = "Your agents keep running in the background. Open ADE any time to check on them.";
+  let description = `Your agents keep running in the background. Open ${BRAND.NAME} any time to check on them.`;
   if (count != null && count > 0) description = `${agentsAre(count)} working and will keep going in the background.`;
-  else if (request.relaunch) description = "Your agents keep running in the background while ADE restarts.";
+  else if (request.relaunch) description = `Your agents keep running in the background while ${BRAND.NAME} restarts.`;
   return {
-    title: `${verb} ADE?`,
+    title: `${verb} ${BRAND.NAME}?`,
     description: `${description}${updateOnQuitSentence(request)}`,
     tone: "accent",
     dontAskAgainLabel: "Don't ask again",
     actions: [
-      { choice: "keep", label: "Keep ADE open" },
-      { choice: "quit", label: `${verb} ADE`, primary: true },
+      { choice: "keep", label: `Keep ${BRAND.NAME} open` },
+      { choice: "quit", label: `${verb} ${BRAND.NAME}`, primary: true },
     ],
   };
 }

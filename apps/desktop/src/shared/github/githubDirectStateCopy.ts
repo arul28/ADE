@@ -1,4 +1,5 @@
 import type { GithubDirectError, GithubDirectErrorKind } from "../types";
+import { BRAND } from "../brand";
 
 /**
  * The words for each state a direct GitHub read can end in (spec section 5,
@@ -76,8 +77,8 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
     case "not_connected":
       if (error.reason === "signed_out") {
         return {
-          title: "Sign in to ADE",
-          body: `Sign in to your ADE account to see ${items} here.`,
+          title: `Sign in to ${BRAND.NAME}`,
+          body: `Sign in to your ${BRAND.NAME} account to see ${items} here.`,
           primary: null,
           secondary: null,
         };
@@ -99,29 +100,29 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
       if (error.reason === "read_only") {
         return {
           title: "Read only",
-          body: `You can read ${repoLabel(context)}, but ADE can't change it until the ADE GitHub App is installed on ${ownerLabel(context)}.`,
+          body: `You can read ${repoLabel(context)}, but ${BRAND.NAME} can't change it until the ${BRAND.NAME} GitHub App is installed on ${ownerLabel(context)}.`,
           primary: { label: "Install on GitHub", kind: "link", url: ADE_GITHUB_APP_INSTALL_URL },
           secondary: null,
         };
       }
       return {
-        title: "Install the ADE GitHub App",
-        body: `ADE can't read ${repoLabel(context)} yet. Install the ADE GitHub App on ${ownerLabel(context)}.`,
+        title: `Install the ${BRAND.NAME} GitHub App`,
+        body: `${BRAND.NAME} can't read ${repoLabel(context)} yet. Install the ${BRAND.NAME} GitHub App on ${ownerLabel(context)}.`,
         primary: { label: "Install on GitHub", kind: "link", url: ADE_GITHUB_APP_INSTALL_URL },
         secondary: null,
       };
     case "rights_not_accepted": {
       const until = context.changesUseOtherSignIn === "gh"
-        ? "Until then, ADE uses your GitHub CLI sign-in for changes."
+        ? `Until then, ${BRAND.NAME} uses your GitHub CLI sign-in for changes.`
         : context.changesUseOtherSignIn === "token"
-          ? "Until then, ADE uses your token for changes."
+          ? `Until then, ${BRAND.NAME} uses your token for changes.`
           : `Until then, you can read ${items} here but not change them.`;
       const orgLine = error.accountType === "Organization"
         ? ` If you don't own ${ownerLabel(context)}, ask an owner to approve it.`
         : "";
       return {
-        title: "Approve the ADE GitHub App's update",
-        body: `The ADE GitHub App on ${ownerLabel(context)} still has its old permissions. Approve the update so ADE can push and open pull requests. ${until}${orgLine}`,
+        title: `Approve the ${BRAND.NAME} GitHub App's update`,
+        body: `The ${BRAND.NAME} GitHub App on ${ownerLabel(context)} still has its old permissions. Approve the update so ${BRAND.NAME} can push and open pull requests. ${until}${orgLine}`,
         primary: { label: "Review on GitHub", kind: "link", url: installationUrl(error.manageUrl) },
         secondary: null,
       };
@@ -139,7 +140,7 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
       }
       return {
         title: "Repository not reachable",
-        body: `ADE can't reach ${repoLabel(context)}. Add it to the ADE GitHub App's repositories${context.githubLogin ? `, or check that @${context.githubLogin} has access to it` : ", or check that your GitHub account has access to it"}.`,
+        body: `${BRAND.NAME} can't reach ${repoLabel(context)}. Add it to the ${BRAND.NAME} GitHub App's repositories${context.githubLogin ? `, or check that @${context.githubLogin} has access to it` : ", or check that your GitHub account has access to it"}.`,
         primary: { label: "Choose repositories", kind: "link", url: installationUrl(error.manageUrl) },
         secondary: null,
       };
@@ -158,7 +159,7 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
       const at = when(error.retryAt);
       return {
         title: "GitHub isn't answering",
-        body: at ? `GitHub isn't answering right now. ADE tries again at ${at}.` : "GitHub isn't answering right now. ADE tries again soon.",
+        body: at ? `GitHub isn't answering right now. ${BRAND.NAME} tries again at ${at}.` : `GitHub isn't answering right now. ${BRAND.NAME} tries again soon.`,
         primary: null,
         secondary: null,
       };
@@ -166,7 +167,7 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
     case "forbidden":
       return {
         title: "GitHub refused",
-        body: `GitHub didn't let ADE read ${repoLabel(context)}.`,
+        body: `GitHub didn't let ${BRAND.NAME} read ${repoLabel(context)}.`,
         primary: null,
         secondary: null,
       };

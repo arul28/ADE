@@ -20,6 +20,7 @@ import type {
   LaneShareReceivedResult,
   LaneShareRevokeGivenResult,
 } from "./types/laneShare";
+import { BRAND } from "./brand";
 
 /**
  * The guest's account calls to the account directory (lane sharing). Pure:
@@ -228,7 +229,7 @@ export function createLaneShareGuestDirectory(options: {
       if (record.relayUrl != null && !relayUrl) {
         throw new Error(encodeCodedErrorMessage(
           "untrusted_relay",
-          "The owner's computer published a relay address ADE does not trust. Ask the owner to update ADE.",
+          `The owner's computer published a relay address ${BRAND.NAME} does not trust. Ask the owner to update ${BRAND.NAME}.`,
         ));
       }
       const ticket = typeof record.ticket === "string" && TICKET_PATTERN.test(record.ticket) ? record.ticket : null;

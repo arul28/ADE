@@ -26,6 +26,7 @@ import type { AgentChatFileRef } from "./types/chat";
 import { DEFAULT_LANE_START } from "./laneStart";
 import { isChatLaunchSucceeded } from "./chatLaunch";
 import { CLOUD_LANE_METADATA, CLOUD_LAUNCH_MAX_ARGS_BYTES } from "../../../account-directory/src/cloud/contract";
+import { BRAND } from "./brand";
 
 export type { CloudLaneWithoutComputer } from "../../../account-directory/src/cloud/contract";
 
@@ -239,16 +240,16 @@ export function cloudLaneLaunchStartRefusal(input: { args: ChatLaunchArgs; origi
   if (args?.kind !== "cli" && args?.kind !== "lane" && !args?.chat) {
     return { message: "A chat launch needs its first message.", short: "Add a message first." };
   }
-  if (!args.cloud?.sizeId) return { message: "Pick a size for the ADE Cloud computer.", short: "Pick a size first." };
+  if (!args.cloud?.sizeId) return { message: `Pick a size for the ${BRAND.CLOUD_NAME} computer.`, short: "Pick a size first." };
   if (!isGithubOrigin(input.originUrl)) {
     return {
-      message: "ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin.",
-      short: "ADE Cloud needs a GitHub origin.",
+      message: `${BRAND.CLOUD_NAME} sets up GitHub repositories only, and this project has no GitHub origin.`,
+      short: `${BRAND.CLOUD_NAME} needs a GitHub origin.`,
     };
   }
   if (args.laneConfig?.start?.on === "uncommitted") {
     return {
-      message: "An ADE Cloud lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.",
+      message: `A ${BRAND.CLOUD_NAME} lane starts from the pushed copy of its branch, so it can't bring uncommitted changes.`,
       short: "Uncommitted changes stay here.",
     };
   }

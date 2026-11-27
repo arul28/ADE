@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 const MARKER_OPEN_RE = /<!--\s*ade:transcript-gists\s+v=\d+[^>]*-->/i;
 const MARKER_CLOSE = "<!-- /ade:transcript-gists -->";
 const MARKER_CLOSE_RE = /<!--\s*\/ade:transcript-gists\s*-->/i;
@@ -13,7 +14,7 @@ export type AdePrTranscriptGistLink = {
 export function renderAdePrTranscriptGistLinks(links: AdePrTranscriptGistLink[]): string {
   const normalized = links
     .map((link) => ({
-      title: normalizeInline(link.title) || "ADE chat transcript",
+      title: normalizeInline(link.title) || `${BRAND.NAME} chat transcript`,
       url: link.url.trim(),
       provider: normalizeInline(link.provider),
       entryCount: Number.isFinite(Number(link.entryCount)) ? Math.max(0, Math.floor(Number(link.entryCount))) : null,
@@ -21,12 +22,12 @@ export function renderAdePrTranscriptGistLinks(links: AdePrTranscriptGistLink[])
     .filter((link) => link.url.length > 0);
   const lines = [
     `<!-- ade:transcript-gists v=1 count=${normalized.length} -->`,
-    "## ADE chat transcripts",
+    `## ${BRAND.NAME} chat transcripts`,
     "",
     ...normalized.map((link, index) => {
       const linkTitle = normalized.length === 1
-        ? "ADE chat transcripts"
-        : `ADE chat transcript ${index + 1}`;
+        ? `${BRAND.NAME} chat transcripts`
+        : `${BRAND.NAME} chat transcript ${index + 1}`;
       const details = [
         link.provider,
         link.entryCount != null ? `${link.entryCount} message${link.entryCount === 1 ? "" : "s"}` : null,

@@ -13,13 +13,14 @@ import type {
   AdeThemePalette,
   ThemeBaseMode,
 } from "./types";
+import { BRAND } from "../brand";
 
 /** Which shelf of the gallery a family sits on. */
 export type ThemeCollection = "ade" | "originals" | "classics";
 
 export const THEME_COLLECTIONS: readonly { id: ThemeCollection; label: string; blurb: string }[] = [
-  { id: "ade", label: "ADE", blurb: "Quiet palettes, made to live in all day." },
-  { id: "originals", label: "Originals", blurb: "Made for ADE, with their own shapes, type and light." },
+  { id: "ade", label: `${BRAND.NAME}`, blurb: "Quiet palettes, made to live in all day." },
+  { id: "originals", label: "Originals", blurb: `Made for ${BRAND.NAME}, with their own shapes, type and light.` },
   { id: "classics", label: "Editor classics", blurb: "The colour schemes you already know, with their code colours." },
 ];
 

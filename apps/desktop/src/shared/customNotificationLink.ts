@@ -1,5 +1,6 @@
 import { buildDeeplink, parseDeeplink } from "./deeplinks";
 import { isWorkBoardColumn, WORK_BOARD_COLUMN_LABEL } from "./types/chat";
+import { BRAND } from "./brand";
 
 /**
  * The link a custom notification (`ade notify`, the automations "Send
@@ -39,7 +40,7 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
   try {
     url = new URL(value);
   } catch {
-    return { ok: false, problem: `"${value}" is not a link. Use an ADE link such as ade://pr/123.` };
+    return { ok: false, problem: `"${value}" is not a link. Use a ${BRAND.NAME} link such as ade://pr/123.` };
   }
   if (url.protocol === "ade:" && PHONE_ONLY_HOSTS.has(url.host.toLowerCase())) {
     if (url.pathname.replace(/\//g, "")) {
@@ -63,7 +64,7 @@ export function normalizeCustomNotificationLink(raw: string): CustomNotification
   const parsed = parseDeeplink(value);
   if (!parsed.ok) {
     const reason = "reason" in parsed.error ? parsed.error.reason : parsed.error.kind.replace(/_/g, " ");
-    return { ok: false, problem: `ADE can't open "${value}" (${reason}).` };
+    return { ok: false, problem: `${BRAND.NAME} can't open "${value}" (${reason}).` };
   }
   return {
     ok: true,

@@ -58,7 +58,7 @@ describe("presentChatFailure", () => {
       message: "seatbelt sandboxing was requested, but sandboxing is not supported in this environment.",
       provider: "Codex",
     });
-    expect(codexSandbox.body).toBe("This ADE runtime can't provide the sandbox Codex asked for.");
+    expect(codexSandbox.body).toBe("This Daex runtime can't provide the sandbox Codex asked for.");
     expect(codexSandbox.technicalDetail).toContain("seatbelt sandboxing was requested");
 
     for (const presented of [droidUnknown, droidNetwork, droidBusy, codexSandbox]) {
@@ -74,7 +74,7 @@ describe("presentChatFailure", () => {
       .toBe("The connection dropped mid-run.");
     expect(presentChatFailure({ kind: "busy" }).title).toBe("This chat is already working");
     expect(presentChatFailure({ kind: "configuration", message: "sandboxing is not supported" }).body)
-      .toBe("This ADE runtime can't provide the sandbox this agent asked for.");
+      .toBe("This Daex runtime can't provide the sandbox this agent asked for.");
   });
 
   // Each field is matched on its own. Joined, a "Sandbox" word in `message`

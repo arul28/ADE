@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * ADE Cloud is one machine that every account always has. Each cloud lane has
  * its own computer underneath, but the person sees one machine, "ADE Cloud",
@@ -12,7 +13,7 @@
 export const ADE_CLOUD_MACHINE_ID = "__ade_cloud__";
 
 /** The name a person sees for ADE Cloud, everywhere. */
-export const ADE_CLOUD_NAME = "ADE Cloud";
+export const ADE_CLOUD_NAME = `${BRAND.CLOUD_NAME}`;
 
 /**
  * What a window knows about ADE Cloud for the signed-in account:
@@ -40,10 +41,10 @@ export type CloudAccessIpcAnswer = {
 };
 
 /** The sentence when ADE is signed out here. */
-export const ADE_CLOUD_SIGNED_OUT_SENTENCE = "Sign in to ADE to use ADE Cloud.";
+export const ADE_CLOUD_SIGNED_OUT_SENTENCE = `Sign in to ${BRAND.NAME} to use ${BRAND.CLOUD_NAME}.`;
 
 /** The sentence for a blocked account when the server sent none (an old server). */
-export const ADE_CLOUD_BLOCKED_SENTENCE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
+export const ADE_CLOUD_BLOCKED_SENTENCE = `${BRAND.CLOUD_NAME} is turned off for this account. Contact ${BRAND.NAME} support if you think this is a mistake.`;
 
 /** `window.ade.cloud.sendChatMessage`'s request: a message for one existing ADE Cloud chat. */
 export type CloudChatSendRequest = {

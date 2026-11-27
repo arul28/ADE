@@ -43,6 +43,7 @@ import { LANE_SHARE_GRANT_ID_PATTERN } from "./laneShareDirectory";
 import { isUuid } from "./uuid";
 import type { AppNavigationTarget } from "./types/core";
 import { cloudInviteLink, parseCloudInviteCode } from "../../../account-directory/src/cloud/contract";
+import { BRAND } from "./brand";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
@@ -1159,13 +1160,13 @@ export function describeTarget(target: DeeplinkTarget): string {
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
     case "settings":
-      return "ADE setting";
+      return `${BRAND.NAME} setting`;
     case "lane-share":
       return "shared lane";
     case "open":
-      return `ADE ${target.place}`;
+      return `${BRAND.NAME} ${target.place}`;
     case "invite":
-      return "ADE Cloud invite";
+      return `${BRAND.CLOUD_NAME} invite`;
   }
 }
 

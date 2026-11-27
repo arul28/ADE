@@ -1,6 +1,7 @@
 import { parseCodedErrorMessage } from "./codedError";
 import { LANE_SHARE_GRANT_ID_PATTERN as GRANT_ID } from "./laneShareDirectory";
 import type { LaneShareRights } from "./laneShareRights";
+import { BRAND } from "./brand";
 
 /**
  * Moving a chat, with its lane's work, to a machine of the OTHER person of a
@@ -217,7 +218,7 @@ function exactKeys(value: unknown, keys: readonly string[], label: string): Reco
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`The moved ${label} is malformed.`);
   const record = value as Record<string, unknown>;
   for (const key of Object.keys(record)) {
-    if (!keys.includes(key)) throw new Error(`The moved ${label} carries a field ADE does not accept (${key.slice(0, 40)}).`);
+    if (!keys.includes(key)) throw new Error(`The moved ${label} carries a field ${BRAND.NAME} does not accept (${key.slice(0, 40)}).`);
   }
   return record;
 }
@@ -275,7 +276,7 @@ function parseLaneShareMoveBundleInfo(value: unknown): LaneShareMoveBundleInfo {
  */
 export function parseLaneShareMovePayload(value: unknown, expectedMoveId?: string): LaneShareMovePayload {
   const record = exactKeys(value, LANE_SHARE_MOVE_PAYLOAD_KEYS as readonly string[], "chat");
-  if (record.version !== 1) throw new Error("This move comes from a newer ADE. Update ADE on this computer.");
+  if (record.version !== 1) throw new Error(`This move comes from a newer ${BRAND.NAME}. Update ${BRAND.NAME} on this computer.`);
   if (!isLaneShareMoveId(record.moveId) || (expectedMoveId && record.moveId !== expectedMoveId)) {
     throw new Error("The moved chat belongs to another move.");
   }

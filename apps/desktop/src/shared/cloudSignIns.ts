@@ -12,6 +12,7 @@
  */
 
 import type { ProviderLoginProvider } from "./types/providerLogins";
+import { BRAND } from "./brand";
 
 /** One sign-in kept for new machines. Pi shares OpenCode's OpenRouter key. */
 export type CloudSignInId =
@@ -53,7 +54,7 @@ export const CLOUD_SIGN_INS: readonly CloudSignInSpec[] = [
     env: "CLAUDE_CODE_OAUTH_TOKEN",
     keyName: "Claude sign-in",
     keyUrl: null,
-    note: "Uses your Claude plan. You sign in once in the browser; ADE keeps the long-lived token Claude Code makes for this.",
+    note: `Uses your Claude plan. You sign in once in the browser; ${BRAND.NAME} keeps the long-lived token Claude Code makes for this.`,
   },
   {
     id: "codex",

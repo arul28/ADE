@@ -91,7 +91,7 @@ export function stripElectronErrorWrapper(message: string): string {
     // behind that wrapper, and without stripping it no brain-side failure can
     // ever be recognised by its code — which is how a project whose data files
     // were unreadable reached the user as a raw libuv errno.
-    .replace(/^Remote ADE service method \S+ failed(?:\s*\(code -?\d+\))?:\s*/i, "")
+    .replace(/^Remote (?:ADE|Daex) service method \S+ failed(?:\s*\(code -?\d+\))?:\s*/i, "")
     .trim();
 }
 
@@ -173,7 +173,7 @@ export const ACTION_NOT_CALLABLE_CODE = "action_not_callable";
 export const ACTION_NOT_EXPOSED_CODE = "action_not_exposed";
 
 const UNSUPPORTED_ADE_ACTION_MESSAGE =
-  /^Action ['"][^'"]+['"] is (?:not callable|not exposed through ADE actions)\.?$/i;
+  /^Action ['"][^'"]+['"] is (?:not callable|not exposed through (?:ADE|Daex) actions)\.?$/i;
 
 /** Mixed-version hosts still send the English sentence; current brains prefix a code. */
 export function isUnsupportedAdeActionError(error: unknown): boolean {

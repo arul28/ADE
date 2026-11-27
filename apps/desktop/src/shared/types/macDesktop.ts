@@ -29,6 +29,7 @@ import { MCP_SERVER_REMOVE_METADATA_KEY, MCP_SERVER_REQUEST_METADATA_KEY } from 
 import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 import { ADE_CLOUD_APPROVAL_METADATA_KEY } from "../adeCloud";
 import { MACHINE_REMOVAL_REQUEST_METADATA_KEY } from "../machineRemovalRequest";
+import { BRAND } from "../brand";
 
 /**
  * `mac_desktop` reads about the machine: status, the window list and the
@@ -170,7 +171,7 @@ export const MAC_DESKTOP_MACOS_ONLY_MESSAGE =
  * runtime, or a service built without one).
  */
 export const LANE_SCREEN_LINUX_UNSUPPORTED_MESSAGE =
-  "This ADE runtime has no Linux lane screen. Update ADE on this machine.";
+  `This ${BRAND.NAME} runtime has no Linux lane screen. Update ${BRAND.NAME} on this machine.`;
 
 /** The one sentence every non-Linux rejection of the Linux seat carries. */
 export const LINUX_DESKTOP_LINUX_ONLY_MESSAGE =

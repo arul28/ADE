@@ -14,6 +14,7 @@ import type { CloudTierId } from "./cloudTiers";
 import { sameMachineKey } from "./machineAddress";
 import type { MachineProjectRef } from "./projectIdentity";
 import type { OpenProjectBinding, RemoteOpenProjectBinding } from "./types/core";
+import { BRAND } from "./brand";
 
 /** The size request a change names (`CloudLaneChangeTierArgs`), trimmed; null for each one left out. */
 export function cloudTierRequestIdsOf(
@@ -98,7 +99,7 @@ export function buildCloudTierRequestCard(request: CloudTierRequest, labels: { f
       { id: CLOUD_TIER_REQUEST_ACTIONS.now, label: "Do it now", kind: "default" },
       { id: CLOUD_TIER_REQUEST_ACTIONS.dismiss, label: "Keep the size", kind: "default" },
     ],
-    fallbackText: `The agent asks to change ${request.computerName} to ${to}: ${request.reason} Change it in ADE (Settings › ADE Cloud).`,
+    fallbackText: `The agent asks to change ${request.computerName} to ${to}: ${request.reason} Change it in ${BRAND.NAME} (Settings › ${BRAND.CLOUD_NAME}).`,
   };
 }
 
@@ -216,7 +217,7 @@ export function cloudTierRequestChatMachineKey(input: {
     && !sameMachineKey(job.machineKey, fromMachineKey) && sameMachineKey(pinKey, fromMachineKey);
   if (movedWithLane) return job.machineKey;
   if (!isAccountAnsweredPin(pin)) return null;
-  if (!pinKey) throw new Error("ADE doesn't know which computer this chat is on, so it can't tell the agent.");
+  if (!pinKey) throw new Error(`${BRAND.NAME} doesn't know which computer this chat is on, so it can't tell the agent.`);
   return pinKey;
 }
 
@@ -388,7 +389,7 @@ function tierRequestWords(
     default: {
       const now = input.answer === "now";
       return {
-        sentence: now ? `You said yes. ADE changes it to ${to} now.` : `You said yes. ADE changes it to ${to} once the agent is idle.`,
+        sentence: now ? `You said yes. ${BRAND.NAME} changes it to ${to} now.` : `You said yes. ${BRAND.NAME} changes it to ${to} once the agent is idle.`,
         // True after the change too, when the agent reads it later.
         agent: { via: "next_turn", text: `The person said yes to your request to change ${name} to ${to}. ADE changes it ${now ? "at once (ADE stops the running turn for it)" : "once you are idle"}; the lane's computer restarts for it, and your files and this chat stay. ADE tells you in this chat when the change is done.` },
       };

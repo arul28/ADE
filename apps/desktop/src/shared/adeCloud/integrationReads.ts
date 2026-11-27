@@ -39,6 +39,7 @@ import type {
 import type { JiraConnectionStatus, JiraIssueDetail, JiraIssuePage, JiraListIssuesArgs } from "../types/jira";
 import type { CloudLinearOp } from "../../../../account-directory/src/cloud/contract";
 import type { AdeCloudAccountCallFn } from "./accountCalls";
+import { BRAND } from "../brand";
 
 type Request = { domain: string; action: string; args?: unknown; arg?: unknown };
 
@@ -202,7 +203,7 @@ export function createAdeCloudIntegrationReads(accountCall: () => AdeCloudAccoun
     const viewId = str(input.customViewId);
     if (viewId) {
       const view = nodes((await linear(origin, "customViews")).data.customViews).find((node) => node.id === viewId);
-      if (!view || !isRecord(view.filterData)) throw refusal("invalid", 400, "This Linear view has no issue filter ADE can apply.");
+      if (!view || !isRecord(view.filterData)) throw refusal("invalid", 400, `This Linear view has no issue filter ${BRAND.NAME} can apply.`);
       viewFilter = view.filterData;
     }
     const filter = andFilters(viewFilter, buildLinearIssueBaseFilter(input));

@@ -1,4 +1,5 @@
 import type { LaneFreeUpSpaceMode } from "./config";
+import { BRAND } from "../brand";
 
 export type DiskPressureState = "normal" | "warning" | "critical" | "exhausted";
 
@@ -59,7 +60,7 @@ const LANE_SETUP_OUT_OF_MEMORY_LEAD = "Setup used nearly all of this computer's 
  */
 export function laneSetupOutOfMemoryError(totalMb: number): string {
   const gb = Math.max(1, Math.round(totalMb / 1024));
-  return `${LANE_SETUP_OUT_OF_MEMORY_LEAD} (${gb} GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.`;
+  return `${LANE_SETUP_OUT_OF_MEMORY_LEAD} (${gb} GB), so ${BRAND.NAME} stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.`;
 }
 
 /**
@@ -73,7 +74,7 @@ export function isLaneSetupOutOfMemoryText(text: string | null | undefined): boo
 }
 
 /** A setup filled the disk, and the note that a grow is under way couldn't be saved: no grow without it. */
-export const LANE_SETUP_NO_ROOM_TO_SAVE_ERROR = "Setup filled this computer's disk, and ADE couldn't save its place to grow it. Free some space (or use Clear caches in Settings > ADE Cloud), then retry.";
+export const LANE_SETUP_NO_ROOM_TO_SAVE_ERROR = `Setup filled this computer's disk, and ${BRAND.NAME} couldn't save its place to grow it. Free some space (or use Clear caches in Settings > ${BRAND.CLOUD_NAME}), then retry.`;
 
 /** The setup's disk-full sentence with the line that said so (`diskFullLine`), for the person and for the host's own check. */
 export function laneSetupDiskFullError(line: string | null): string {

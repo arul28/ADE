@@ -40,6 +40,7 @@ import type {
   CloudInviteRefusalReason,
   CloudReferralSummary,
 } from "../../../account-directory/src/cloud/contract";
+import { BRAND } from "./brand";
 export {
   CLOUD_INVITE_REFUSAL_REASONS,
   CLOUD_REFERRAL_ENTER_DAYS,
@@ -382,7 +383,7 @@ export function cloudAndroidNeedsVmCost(boxShape: CloudShape | null, kind: Cloud
  */
 export function cloudAndroidNeedsVmMessage(boxShape: CloudShape | null): string {
   return `${cloudAndroidNeedsVmCost(boxShape)} `
-    + "ADE can start a new lane on this lane's pushed branch with a full computer of that size and continue the task there. "
+    + `${BRAND.NAME} can start a new lane on this lane's pushed branch with a full computer of that size and continue the task there. `
     + "This computer stays, and you can delete it later.";
 }
 
@@ -444,7 +445,7 @@ export const CLOUD_WAKE_WAIT_MS = 120_000;
 
 /** The line for a box that signed in but whose row wasn't ready to connect yet. */
 export function cloudStillStartingMessage(name: string): string {
-  return `${name} is still starting. It will appear under Your computers; ADE will connect when it's ready.`;
+  return `${name} is still starting. It will appear under Your computers; ${BRAND.NAME} will connect when it's ready.`;
 }
 
 /**
@@ -697,7 +698,7 @@ export function cloudDiskGrowRefusedWayOut(
   const value = exactReason || reason;
   if (!value) return null;
   if (value === "tier_limit") return "This size can't have a bigger disk. Move it to a bigger size.";
-  if (value === "unavailable") return "ADE Cloud can't grow it right now.";
+  if (value === "unavailable") return `${BRAND.CLOUD_NAME} can't grow it right now.`;
   return "Free up space on it, or move it to a bigger size.";
 }
 
@@ -720,7 +721,7 @@ export type CloudWakeForUseResult =
 
 /** "Sleeps when idle" / "Sleeps once ADE on it updates". */
 export function describeCloudSleepPolicy(policy: CloudSleepPolicy): string {
-  return policy.state === "auto" ? "Sleeps when idle" : "Sleeps once ADE on it updates";
+  return policy.state === "auto" ? "Sleeps when idle" : `Sleeps once ${BRAND.NAME} on it updates`;
 }
 
 /**
@@ -789,10 +790,10 @@ export type { CloudComputerActivityReport, CloudComputerStatus };
 export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup; freeing?: string[] };
 
 /** The server's sentence for what needs credits at 0. The server enforces it; these two only stop a request that can't work. */
-export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud credits for this period.";
+export const CLOUD_OUT_OF_HOURS_MESSAGE = `You're out of ${BRAND.CLOUD_NAME} credits for this period.`;
 
 export const CLOUD_HOURS_UNKNOWN_MESSAGE =
-  "ADE couldn't read your ADE Cloud credits, so it didn't start or change a computer. Try again in a minute.";
+  `${BRAND.NAME} couldn't read your ${BRAND.CLOUD_NAME} credits, so it didn't start or change a computer. Try again in a minute.`;
 
 export function cloudOutOfHours(account: Pick<CloudAccountState, "hours"> | null | undefined): boolean {
   return account?.hours.state === "zero";
@@ -996,7 +997,7 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     return {
       id: "cloud-hours-past-due",
       tone: "warning",
-      title: "Your last ADE Cloud payment failed",
+      title: `Your last ${BRAND.CLOUD_NAME} payment failed`,
       detail: "Your account follows the free plan until it's paid. Update your card to bring your plan back.",
     };
   }
@@ -1014,8 +1015,8 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     // Small computers usually never use hours, so they keep working: only the bigger sizes stop.
     // A Free account whose Small uses hours (sponsored cards off) stops every size.
     const bigger = cloudSmallUsesHours(catalog)
-      ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ADE Cloud to keep Small computers unlimited.`
-      : `Medium, Large and X-Large computers${account.phone?.access === "on" ? " and the ADE Cloud iPhone" : ""} are stopped until ${resetDate}. Small computers keep working.`;
+      ? `Your cloud computers are stopped until ${resetDate}. Turn on sponsored cards in Settings › ${BRAND.CLOUD_NAME} to keep Small computers unlimited.`
+      : `Medium, Large and X-Large computers${account.phone?.access === "on" ? ` and the ${BRAND.CLOUD_NAME} iPhone` : ""} are stopped until ${resetDate}. Small computers keep working.`;
     const plans = cloudCatalogHasMax(catalog)
       ? ` Plus has ${formatCloudHours(catalog.plans.plus.includedMilli)} ${noun} a month, Pro ${formatCloudHours(catalog.plans.pro.includedMilli)} and Max ${formatCloudHours(catalog.plans.max.includedMilli)}.`
       : cloudCatalogHasPro(catalog)
@@ -1033,12 +1034,12 @@ export function cloudAccountBanner(account: CloudAccountState): CloudAccountBann
     return {
       id: `cloud-hours-${percent}`,
       tone: percent === 95 ? "warning" : "info",
-      title: `You've used ${percent}% of your ADE Cloud ${noun}`,
+      title: `You've used ${percent}% of your ${BRAND.CLOUD_NAME} ${noun}`,
       detail: `${words.milli(account.hours.leftMilli)} left until ${resetDate}.`,
     };
   }
   if (account.billing.notice === "restored") {
-    return { id: "cloud-hours-restored", tone: "info", title: "Your ADE Cloud plan is back", detail: "Your payment went through. Thanks." };
+    return { id: "cloud-hours-restored", tone: "info", title: `Your ${BRAND.CLOUD_NAME} plan is back`, detail: "Your payment went through. Thanks." };
   }
   return null;
 }

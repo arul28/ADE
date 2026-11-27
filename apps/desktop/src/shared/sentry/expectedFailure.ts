@@ -35,26 +35,26 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /That chat does not exist on this machine/,
   /\bchat session '[^']+' was not found/i,
   // The project's runtime is still starting (or reconnecting) after a launch or switch.
-  /unavailable until ADE is connected to the project runtime/,
+  /unavailable until (?:ADE|Daex) is connected to the project runtime/,
   /Local runtime project is not available for this window/,
   // The brain restarting to apply an update, or a project mid-move or mid-switch: the window retries when it is back.
-  /ADE is applying an update\. The background service is restarting/,
+  /(?:ADE|Daex) is applying an update\. The background service is restarting/,
   /\bproject_moving: This project is being moved/,
   /Project is switching\. Wait for the current project to finish loading/,
   // A project that is set to follow another ADE machine. Hosting it here is not
   // a thing this computer can do, and the message names the machine to open it
   // on, so a caller (or a retrying brain) is being answered, not broken.
-  /^This project is set to follow another ADE machine\b/,
+  /^This project is set to follow another (?:ADE|Daex) machine\b/,
   // Mac-only surfaces asked for before the runtime that owns them connected.
   /^(Mac Desktop is not available on this machine|iOS Simulator service is not available)\.$/,
   // A paired machine that is asleep, offline or stopped.
-  /Can't reach .+ it may be asleep or ADE may be stopped there/,
-  /Remote ADE service connection failed recently/,
-  /Remote ADE service timed out waiting for method/,
+  /Can't reach .+ it may be asleep or (?:ADE|Daex) may be stopped there/,
+  /Remote (?:ADE|Daex) service connection failed recently/,
+  /Remote (?:ADE|Daex) service timed out waiting for method/,
   /Account Activity is reconnecting/,
   /is not sharing this project/,
   // The link to a paired machine dropping or lagging; the pool reconnects on its own.
-  /Remote ADE service connection closed\b/,
+  /Remote (?:ADE|Daex) service connection closed\b/,
   /Runtime RPC channel fell behind the sync connection/,
   /^Sync WebSocket is not open\.$/,
   // streamEvents is a poll with its own 120 s answer; the 150 s IPC timer wins
@@ -109,11 +109,11 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   GITHUB_AUTOLINKS_NOT_ADMIN,
   GITHUB_AUTOLINKS_SIGN_IN_LACKS_ADMIN,
   /^SSH authentication failed for user\(s\) /,
-  /^ADE couldn't connect to this machine\. Check that ADE is open there/,
+  /^(?:ADE|Daex) couldn't connect to this machine\. Check that (?:ADE|Daex) is open there/,
   /\bWINDOWS_DESKTOP_SIGN_IN_FAILED: Windows could not verify the password\.|^(?:invalid_argument: )?Enter a Windows user name and password\.$/,
   // A remote machine the user disconnected, or a reconnect mid-call; the pool reconnects on its own.
   /^Remote machine was manually disconnected\. Connect again to use this remote project\.$/,
-  /^Remote ADE service connection was interrupted before ADE could confirm the action result\./,
+  /^Remote (?:ADE|Daex) service connection was interrupted before (?:ADE|Daex) could confirm the action result\./,
   // ADE quitting while a call was still in flight.
   /^Local runtime connection pool is disposed\.$/,
   // A project whose folder or database moved or vanished; ADE tells the user where.
@@ -127,7 +127,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /\bENOSPC: no space left on device\b/,
   // A project folder this user may not write to (marked where thrown; the
   // text is for a desktop that reads an older brain's reply).
-  /\bADE can't write to this folder: /,
+  /\b(?:ADE|Daex) can't write to this folder: /,
   // A chat waiting on the user: a recovery choice, a pending question, a turn still running.
   /This chat requires an explicit continuity recovery action before another turn can be sent/,
   new RegExp(`^${escapeRegExp(PENDING_INPUT_SEND_BLOCKED_MESSAGE)}`),
@@ -135,7 +135,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // `turn_in_flight` refusals (marked where thrown now; older brains send only the text).
   /^(?:turn_in_flight: )?(?:Turn is already active\.$|A turn is running\. Stop it first)/,
   /^This chat is still responding\. Wait for the turn to end/,
-  /\bis still owned by another ADE runtime\. Stop it from that runtime/,
+  /\bis still owned by another (?:ADE|Daex) runtime\. Stop it from that runtime/,
   // Lane rules the user is told about.
   /^Primary lane cannot be (?:deleted|renamed|archived)$/,
   /^Lane delete is already running: /,
@@ -156,8 +156,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // ADE's own fetch boundaries (shared/fetchTransportFailure.ts) name undici's
   // reason in the text, because the cause chain does not cross RPC. The same
   // offline reasons as NETWORK_FAILURE below; a bare reset stays an issue.
-  /^(?:Can't reach GitHub|ADE can't reach its account service) \((?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|TLS handshake cut off)\)/,
-  /^ADE's account service did not answer in time\.$/,
+  /^(?:Can't reach GitHub|(?:ADE|Daex) can't reach its account service) \((?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|TLS handshake cut off)\)/,
+  /^(?:ADE|Daex)'s account service did not answer in time\.$/,
   // Added from Sentry traffic, 2026-11-02.
   // Answers to a caller (often an agent) that fixes its input and retries.
   new RegExp(`^${escapeRegExp(SECRET_NAME_RULE)}$`),
@@ -171,22 +171,22 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // The network between this machine and GitHub, the account vault or an SSH host.
   /^GitHub API (?:request|response body) timed out\. Check network access on this machine\.$/,
   /^Couldn't read this PR's Actions runs from GitHub: Can't reach GitHub\b/,
-  /ADE couldn't reach your ADE account's vault from this (?:computer|machine)/,
+  /(?:ADE|Daex) couldn't reach your (?:ADE|Daex) account's vault from this (?:computer|machine)/,
   /^Nothing is accepting SSH connections at \S+\. /,
   // A peer (phone, web) holding a project id from another machine.
-  /^This project is not on this ADE machine\b/,
+  /^This project is not on this (?:ADE|Daex) machine\b/,
   // The ADE Cloud tab refusing an action that needs a lane's computer
   // (`ADE_CLOUD_NEEDS_LANE_SENTENCE`). Preload marks it "user", but the mark
   // does not survive contextBridge, so the window's report reads only the
   // text (ADE-DESKTOP-DD, -DE, -DF; 2026-11-23).
-  /^ADE Cloud runs this on a lane's own computer\. Open a lane, or start one on ADE Cloud\.$/,
+  /^(?:ADE|Daex) Cloud runs this on a lane's own computer\. Open a lane, or start one on (?:ADE|Daex) Cloud\.$/,
   // A second viewer asking for a lane's live stream while the first start is
   // still running; the answer says to try again once it answers.
   /^capture_starting: Lane \S+'s (?:live stream|recording) is already starting\. Try again once that start answers\.$/,
   // Added from Sentry traffic, 2026-11-07. Marked where thrown now; the text
   // stays for older brains. A Claude Code that is signed out (the chat shows
   // the re-login card), and a move refused until the user publishes or commits.
-  /^Claude Code is detected, but ADE chat could not authenticate it\. /,
+  /^Claude Code is detected, but (?:ADE|Daex) chat could not authenticate it\. /,
   /^(?:Lane '.+'|Chat '.+'|This chat) can't move yet:\n/,
   // Added from Sentry traffic, 2026-11-09. Cursor refusing a Cloud Agent on a
   // plan that has none ("upgrade to Pro"): the account's state, shown to the user.
@@ -210,8 +210,8 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // Refusals the person or agent acts on, from the throw sites marked in this
   // pass: ADE Cloud not on this account, a cloud launch that can't run there,
   // a protected branch.
-  /^ADE Cloud isn't available on this account yet\.$/,
-  /^ADE Cloud sets up GitHub repositories only, and this project has no GitHub origin\.$/,
+  /^(?:ADE|Daex) Cloud isn't available on this account yet\.$/,
+  /^(?:ADE|Daex) Cloud sets up GitHub repositories only, and this project has no GitHub origin\.$/,
   /^Refusing to clean up protected branch "/,
   /^A move to .+ may have landed\. Retry it, or open .+ to check, or dismiss it\.$/,
   // Added from Sentry traffic, 2026-11-17. Marked where thrown now; the text
@@ -219,7 +219,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // a branch switch with uncommitted files, a pasted pairing code that is not one.
   /^Lane \S+ was not found\.$/,
   /^This lane has uncommitted changes\. Commit or stash them before switching branches\.$/,
-  /^Invalid ADE pairing link or code\.$/,
+  /^Invalid (?:ADE|Daex) pairing link or code\.$/,
   // A project folder that stopped answering (StorageNotAnsweringError), when
   // only its text arrives, as in a provider's turn failure.
   /\bon this computer right now: it is not answering\./,
@@ -232,7 +232,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // stays for older brains. Inputs an agent or a person fixes and retries.
   /^Artifact path is outside allowed import roots: /,
   /^`ade secrets exec` runs only inside this project or one of its lanes\.$/,
-  /^The lane folder is outside ADE's managed worktree folder\.$/,
+  /^The lane folder is outside (?:ADE|Daex)'s managed worktree folder\.$/,
   /^Missing confirmation: /,
   /^sessionId is required\.$/,
 ];

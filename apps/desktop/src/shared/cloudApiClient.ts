@@ -113,6 +113,7 @@ import {
   type CloudSponsoredHideRequest,
   type CloudSponsoredState,
 } from "../../../account-directory/src/cloud/contract";
+import { BRAND } from "./brand";
 
 export type CloudApiFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -166,7 +167,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     // One limit for the whole call: the sign-in token's wait counts against it, and the fetch gets what is left.
     const limitMs = init.timeoutMs ?? timeoutMs;
     const startedAt = Date.now();
-    const outOfTime = () => new CloudApiError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+    const outOfTime = () => new CloudApiError(`${BRAND.CLOUD_NAME} did not answer in time. Try again.`, "timeout", 0);
     const headers: Record<string, string> = { accept: "application/json", ...init.headers };
     if (!init.anonymous) {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -178,7 +179,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       // A token that fails after the limit has nobody waiting for it.
       tokenWait.catch(() => undefined);
       const token = await Promise.race([tokenWait, late]).finally(() => clearTimeout(timer));
-      if (!token) throw new CloudApiError("Sign in to ADE to use ADE Cloud.", "unauthorized", 401);
+      if (!token) throw new CloudApiError(`Sign in to ${BRAND.NAME} to use ${BRAND.CLOUD_NAME}.`, "unauthorized", 401);
       headers.authorization = `Bearer ${token}`;
     }
     const leftMs = limitMs - (Date.now() - startedAt);
@@ -193,7 +194,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     }
     const noAnswer = (error: unknown): CloudApiError => {
       const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-      return new CloudApiError(timedOut ? "ADE Cloud did not answer in time. Try again." : "ADE Cloud can't be reached. Check your connection.", timedOut ? "timeout" : "network", 0);
+      return new CloudApiError(timedOut ? `${BRAND.CLOUD_NAME} did not answer in time. Try again.` : `${BRAND.CLOUD_NAME} can't be reached. Check your connection.`, timedOut ? "timeout" : "network", 0);
     };
     let response: Response;
     try {
@@ -218,7 +219,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     if (!response.ok) {
       const error = parsed && typeof parsed === "object" ? (parsed as { error?: { code?: unknown; message?: unknown; reason?: unknown } }).error : undefined;
       throw new CloudApiError(
-        typeof error?.message === "string" ? error.message : `ADE Cloud answered ${response.status}.`,
+        typeof error?.message === "string" ? error.message : `${BRAND.CLOUD_NAME} answered ${response.status}.`,
         typeof error?.code === "string" ? error.code : "http_error",
         response.status,
         typeof error?.reason === "string" ? error.reason : null,

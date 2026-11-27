@@ -11,6 +11,7 @@ import type { MachinePower, MachineSleepState } from "./types/power";
 import type { MachineInventorySummary } from "./types/machineInventory";
 import { isTailnetHostname } from "./tailnet";
 import { appPackageChannelDisplayName, packageChannelNameSuffix } from "./packageChannel";
+import { BRAND } from "./brand";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const MAX_MACHINES = 500;
@@ -400,7 +401,7 @@ export function accountMachineRemovalConfirmBody(
   return [
     accountMachineRecentActivityWarning(machine, nowMs),
     home ? `This install uses ${home}.` : null,
-    "It will no longer connect through your account. To add it back, open ADE on that computer and choose Reconnect this computer.",
+    `It will no longer connect through your account. To add it back, open ${BRAND.NAME} on that computer and choose Reconnect this computer.`,
   ].filter(Boolean).join("\n\n");
 }
 
@@ -623,8 +624,8 @@ export async function fetchAccountMachines(args: {
         state: "auth_expired",
         machines: [],
         message: reason
-          ? `The machine directory rejected your ADE account session. Sign in again. Reason: ${reason}`
-          : "Your ADE account session expired. Sign in again.",
+          ? `The machine directory rejected your ${BRAND.NAME} account session. Sign in again. Reason: ${reason}`
+          : `Your ${BRAND.NAME} account session expired. Sign in again.`,
       };
     }
     if (!response.ok) {

@@ -41,6 +41,7 @@ import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
 export type { AgentChatClaudeUsageArgs, ClaudeUsageReport } from "../claudeUsageReport";
 import type { CursorCloudServiceTier } from "./config";
 import type { ExternalSessionProvider } from "./externalSessions";
+import { BRAND } from "../brand";
 
 /** Plain-language causes the interrupted-turn card renders verbatim. */
 export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
@@ -587,7 +588,7 @@ export function spawnParentGoneNoticeMessage(): string {
  * retries. Recovery commands stay in logs, not in this sentence.
  */
 export function spawnCompletionDeliveryFailedNoticeMessage(): string {
-  return "ADE couldn't send this turn's update to the chat that started this one. This chat will keep working here.";
+  return `${BRAND.NAME} couldn't send this turn's update to the chat that started this one. This chat will keep working here.`;
 }
 
 /**
@@ -687,7 +688,7 @@ export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContin
   interrupted_turn_recovery: "Resuming your last request after a restart",
   stall_nudge: "Asked for a status check",
   cto_stall_nudge: "A chat it started looks stuck",
-  continuity_recovery: "Rebuilt this chat's thread from ADE history",
+  continuity_recovery: `Rebuilt this chat's thread from ${BRAND.NAME} history`,
   plan_followup: "Sent your plan decision",
   background_work_ended: "A background job it was waiting on finished",
   background_work_lost: "Background work it was waiting on was lost",

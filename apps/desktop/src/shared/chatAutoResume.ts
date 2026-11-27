@@ -29,6 +29,7 @@ import {
   CHAT_STOP_REASON_FOREIGN_BRAIN,
   type AgentChatEventEnvelope,
 } from "./types/chat";
+import { BRAND } from "./brand";
 
 /** Tag written to the scheduled-work record so cancel-on-activity is scoped. */
 export const AUTO_RESUME_SCHEDULED_WORK_SOURCE = "auto_resume_limit";
@@ -187,12 +188,12 @@ export function autoResumeScheduledMessage(fireAtMs: number): string {
 }
 
 export const AUTO_RESUME_ARMED_NOTICE_DETAIL =
-  'ADE sends "continue" when the usage limit lifts.';
+  `${BRAND.NAME} sends "continue" when the usage limit lifts.`;
 export const AUTO_RESUME_EARLY_NOTICE_MESSAGE = "Usage is back early";
 export const AUTO_RESUME_EARLY_NOTICE_DETAIL =
-  'Usage shows room again, so ADE sends "continue" now instead of waiting for the reset.';
+  `Usage shows room again, so ${BRAND.NAME} sends "continue" now instead of waiting for the reset.`;
 export const AUTO_RESUME_RETRY_NOTICE_DETAIL =
-  "The provider refused the resume at its reset time, so ADE tries once more.";
+  `The provider refused the resume at its reset time, so ${BRAND.NAME} tries once more.`;
 
 /**
  * A resume sent right at the reset can be refused with that same reset time.
@@ -265,7 +266,7 @@ export const UPDATE_RESUME_SCHEDULED_WORK_SOURCE = "update_restart";
 export const UPDATE_RESUME_PROMPT =
   "ADE restarted, so your last turn ended early. Continue the task from where it stopped; do not restart work that already completed.";
 
-export const UPDATE_RESUME_REASON = "Resume after ADE restart";
+export const UPDATE_RESUME_REASON = `Resume after ${BRAND.NAME} restart`;
 
 /**
  * Deterministic per-chat id. A repeat arm for the same chat upserts this row
@@ -329,7 +330,7 @@ export function stripHostOnlyChatMetadata<T extends Record<string, unknown>>(
 export const RESTART_RESUME_PROMPT =
   "ADE restarted while your last turn was running, so it ended early. Continue the task from where it stopped; do not restart work that already completed.";
 
-export const RESTART_RESUME_REASON = "Resume after ADE restarted";
+export const RESTART_RESUME_REASON = `Resume after ${BRAND.NAME} restarted`;
 
 /**
  * The continue a reopened agent CLI gets. The restart stopped the CLI process,
@@ -482,17 +483,17 @@ function restartCauseShort(cause: RestartCause): string {
   const memory = restartCauseInvolvesMemory(cause) ? " (memory was low)" : "";
   switch (cause.kind) {
     case "update":
-      return `ADE restarted for an update${cause.version?.trim() ? ` to ${cause.version.trim()}` : ""}`;
+      return `${BRAND.NAME} restarted for an update${cause.version?.trim() ? ` to ${cause.version.trim()}` : ""}`;
     case "computer_restarted":
       return `The computer restarted${memory}`;
     case "service_restarted_by_watchdog":
-      return `ADE's background service froze and restarted${memory}`;
+      return `${BRAND.NAME}'s background service froze and restarted${memory}`;
     case "service_restarted":
-      return "ADE's background service was restarted";
+      return `${BRAND.NAME}'s background service was restarted`;
     case "disk_grow":
-      return `ADE grew the disk to ${cause.toGb} GB (the computer restarted)`;
+      return `${BRAND.NAME} grew the disk to ${cause.toGb} GB (the computer restarted)`;
     case "unknown":
-      return `ADE restarted unexpectedly${memory}`;
+      return `${BRAND.NAME} restarted unexpectedly${memory}`;
   }
 }
 
@@ -512,7 +513,7 @@ export function cliReopenedNotice(args: {
 }): string {
   const restarted = args.cause
     ? restartCauseShort(args.cause)
-    : args.unexpected ? "ADE restarted unexpectedly" : "ADE restarted";
+    : args.unexpected ? `${BRAND.NAME} restarted unexpectedly` : `${BRAND.NAME} restarted`;
   if (args.told === "continued") return `${restarted} during a turn. It reopened this session and tells the agent to continue.`;
   if (args.told === "informed") return `${restarted} and reopened this session. It tells the agent what happened.`;
   return `${restarted} and reopened this session.`;
@@ -524,7 +525,7 @@ export function cliReopenedNotice(args: {
  * the line, so the person knows why it stays closed.
  */
 export const CLI_NOT_REOPENED_NOTICE =
-  "ADE is stopping and cannot reopen this Devin session after it starts again. Start Devin again to go on.";
+  `${BRAND.NAME} is stopping and cannot reopen this Devin session after it starts again. Start Devin again to go on.`;
 
 /**
  * Automatic resumes in a row before a chat waits for the user. A chat whose
@@ -567,11 +568,13 @@ export function restartResumeHold(args: {
   return null;
 }
 
-const RESTART_INTERRUPTED_NOTICE_PREFIX = "ADE restarted while ";
+const RESTART_INTERRUPTED_NOTICE_PREFIX = `${BRAND.NAME} restarted while `;
+// Notices written before the rename start with the old name.
+const LEGACY_RESTART_INTERRUPTED_NOTICE_PREFIX = `${BRAND.FORMER_NAME} restarted while `;
 
 /** A notice `restartInterruptedNotice` wrote. The transcript adds its time. */
 export function isRestartInterruptedNotice(message: string | null | undefined): boolean {
-  return typeof message === "string" && message.startsWith(RESTART_INTERRUPTED_NOTICE_PREFIX);
+  return typeof message === "string" && (message.startsWith(RESTART_INTERRUPTED_NOTICE_PREFIX) || message.startsWith(LEGACY_RESTART_INTERRUPTED_NOTICE_PREFIX));
 }
 
 /** The notice for a turn a restart cut short, by what happens next. */
@@ -582,18 +585,18 @@ export function restartInterruptedNotice(args: {
 }): string {
   const { hold, cancelledLine } = args;
   if (args.announceThisTurn) {
-    return `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`;
+    return `${BRAND.NAME} restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`;
   }
   if (hold === null) {
-    return `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`;
+    return `${BRAND.NAME} restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`;
   }
   if (hold === "awaiting_user") {
-    return `ADE restarted while this chat was waiting for your answer, so it doesn't continue on its own. Send your answer as a message to continue.${cancelledLine}`;
+    return `${BRAND.NAME} restarted while this chat was waiting for your answer, so it doesn't continue on its own. Send your answer as a message to continue.${cancelledLine}`;
   }
   if (hold === "capped") {
-    return `ADE restarted while this response was running, again. It already continued this chat ${MAX_CONSECUTIVE_RESTART_RESUMES} times in a row, so it waits for you now. Send a message to continue.${cancelledLine}`;
+    return `${BRAND.NAME} restarted while this response was running, again. It already continued this chat ${MAX_CONSECUTIVE_RESTART_RESUMES} times in a row, so it waits for you now. Send a message to continue.${cancelledLine}`;
   }
-  return `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`;
+  return `${BRAND.NAME} restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`;
 }
 
 /**
@@ -821,14 +824,14 @@ export type BackgroundLossCause =
 
 /** The parenthetical that says why the process ended, for the note and the notice. */
 export const BACKGROUND_LOSS_CAUSE_COPY: Record<BackgroundLossCause, string> = {
-  reconfigure: "ADE restarted it after the chat's model, MCP servers, account or settings changed",
+  reconfigure: `${BRAND.NAME} restarted it after the chat's model, MCP servers, account or settings changed`,
   runtime_exit: "it exited on its own",
-  shutdown: "ADE shut down",
-  brain_restart: "ADE restarted",
+  shutdown: `${BRAND.NAME} shut down`,
+  brain_restart: `${BRAND.NAME} restarted`,
   explicit_restart: "the agent session was restarted",
   user_stop: "the chat was stopped",
   closed: "the chat was closed",
-  eviction: "it was silent for hours and ADE reclaimed it",
+  eviction: `it was silent for hours and ${BRAND.NAME} reclaimed it`,
 };
 
 /** The cause a runtime teardown reason stands for. */
@@ -861,9 +864,9 @@ export function backgroundLossCauseForQueryReset(reason: string): BackgroundLoss
 export type BackgroundLossWake = "now" | "already_pending" | "after_restart" | "this_turn" | "none";
 
 const BACKGROUND_LOSS_WAKE_COPY: Record<BackgroundLossWake, string> = {
-  now: "ADE asked the agent to re-run what it still needs.",
+  now: `${BRAND.NAME} asked the agent to re-run what it still needs.`,
   already_pending: "The agent's pending re-run turn is told about it too.",
-  after_restart: "When ADE starts again, it asks the agent to re-run what it still needs.",
+  after_restart: `When ${BRAND.NAME} starts again, it asks the agent to re-run what it still needs.`,
   this_turn: "The agent is told on this turn.",
   none: "The agent is told on its next turn.",
 };

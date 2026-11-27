@@ -1,3 +1,4 @@
+import { BRAND } from "./brand";
 /**
  * How long a computer may keep running the automations it is home to without
  * hearing from the ADE account. A home that has not synced for this long
@@ -24,7 +25,7 @@ export const AUTOMATION_HOME_LEASE_MINUTES = Math.round(AUTOMATION_HOME_LEASE_MS
  * another computer's home and never runs the rule (`runsHere` false).
  */
 export const ADE_CLOUD_HOME_DEVICE_ID = "ade-cloud";
-export const ADE_CLOUD_HOME_NAME = "ADE Cloud";
+export const ADE_CLOUD_HOME_NAME = `${BRAND.CLOUD_NAME}`;
 
 /** True for the ADE Cloud home. */
 export function isAdeCloudHome(home: { deviceId?: string | null; kind?: string | null } | null | undefined): boolean {

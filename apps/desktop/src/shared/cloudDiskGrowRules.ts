@@ -10,6 +10,7 @@ import {
   cloudMachineKindOf,
   type CloudMachine,
 } from "./adeCloud";
+import { BRAND } from "./brand";
 
 /** Room beyond what is asked for, for the filesystem's share of a grown disk. */
 const CLOUD_DISK_GROW_MARGIN_MB = 256;
@@ -52,7 +53,7 @@ export function cloudDiskGrowFit(
     return { kind: "limit", fromGb, toGb, reason: "tier_limit", sentence: `This size's disk grows to ${maxGb} GB, and ${toGb} GB is needed. Move it to a bigger size.` };
   }
   if (!account) {
-    return { kind: "limit", fromGb, toGb, reason: "unavailable", sentence: "ADE couldn't read your ADE Cloud account, so it didn't grow this disk. Try again in a minute." };
+    return { kind: "limit", fromGb, toGb, reason: "unavailable", sentence: `${BRAND.NAME} couldn't read your ${BRAND.CLOUD_NAME} account, so it didn't grow this disk. Try again in a minute.` };
   }
   return { kind: "plan", fromGb, toGb, sentence: `Grow this computer's disk from ${fromGb} GB to ${toGb} GB. The computer restarts.` };
 }
@@ -73,7 +74,7 @@ export function cloudDiskGrowPlan(box: CloudMachine, account: CloudAccountState 
   const resources = box.resources;
   const currentGb = resources?.diskGb ?? null;
   if (!resources || currentGb == null || currentGb <= 0) {
-    return { grow: false, sentence: "ADE Cloud didn't say how big this computer's disk is, so ADE can't offer a bigger one." };
+    return { grow: false, sentence: `${BRAND.CLOUD_NAME} didn't say how big this computer's disk is, so ${BRAND.NAME} can't offer a bigger one.` };
   }
   const fit = cloudDiskGrowFit(
     { type: cloudInstanceType(cloudMachineKindOf(box.type)), cpu: resources.cpu, memoryGb: resources.memoryGb, diskGb: currentGb },

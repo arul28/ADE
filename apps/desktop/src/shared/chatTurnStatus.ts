@@ -9,6 +9,7 @@ import type {
   AgentChatRuntimeOwnerRef,
 } from "./types/chat";
 import type { CliSessionFacts } from "./cliChildSession";
+import { BRAND } from "./brand";
 
 /**
  * `waiting`: no turn is running, but background work the chat started (a
@@ -219,7 +220,7 @@ export function formatChatTurnStatus(
   const phaseLabel = owner && status.phase === "running" ? "BUSY" : status.phase.toUpperCase();
   const headlineBits: string[] = [];
   if (owner && status.phase === "running") {
-    headlineBits.push(`runs under another ADE brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""})`);
+    headlineBits.push(`runs under another ${BRAND.NAME} brain (pid ${owner.pid}${owner.socketPath ? `, socket ${owner.socketPath}` : ""})`);
   } else if (status.phase === "running") {
     if (status.turnElapsedMs != null) headlineBits.push(`turn ${formatCompactDuration(status.turnElapsedMs)}`);
     if (status.lastActivityMsAgo != null) headlineBits.push(`last activity ${formatCompactDuration(status.lastActivityMsAgo)} ago`);

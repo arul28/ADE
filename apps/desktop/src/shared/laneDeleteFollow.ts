@@ -15,6 +15,7 @@
 
 import type { DeleteLaneResult, LaneDeleteProgress } from "./types/lanes";
 import { isRemoteOutcomeUnknownError } from "./runtimeErrors";
+import { BRAND } from "./brand";
 
 /** How often the progress is read while the delete runs there. */
 export const LANE_DELETE_FOLLOW_POLL_MS = 3_000;
@@ -32,7 +33,7 @@ export const LANE_DELETE_FOLLOW_MAX_MS = 47 * 60_000;
 const MAX_RESTARTS = 2;
 
 const OUTCOME_UNKNOWN_MESSAGE =
-  "The connection to that machine dropped before ADE could confirm the action result. The delete may still finish there.";
+  `The connection to that machine dropped before ${BRAND.NAME} could confirm the action result. The delete may still finish there.`;
 
 export type LaneDeleteFollowDeps = {
   laneId: string;
@@ -47,7 +48,7 @@ export type LaneDeleteFollowDeps = {
 /** A failure that says nothing about the delete: the call never reached the machine, or its answer was lost. */
 function isTransientStartError(error: unknown): boolean {
   if (isRemoteOutcomeUnknownError(error)) return true;
-  return /Remote ADE service connection failed recently|Remote target is not connected/i.test(errorText(error));
+  return /Remote (?:ADE|Daex) service connection failed recently|Remote target is not connected/i.test(errorText(error));
 }
 
 function errorText(error: unknown): string {

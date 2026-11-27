@@ -37,7 +37,7 @@ describe("computer-use command summary", () => {
     [
       "an unconfirmed effect is its own outcome, with the CLI's reason",
       ok("ade browser click --label Buy --text", 'hit: button "Buy now" (b3)\neffect: unconfirmed — no change seen yet'),
-      { text: "Clicked “Buy now” using ADE browser", surface: "ade_browser", outcome: "unconfirmed", reason: "no change seen yet" },
+      { text: "Clicked “Buy now” using Daex browser", surface: "ade_browser", outcome: "unconfirmed", reason: "no change seen yet" },
     ],
     [
       "an `ade:` error with a failing exit reads as a failure with its reason",
@@ -111,7 +111,7 @@ describe("computer-use command summary", () => {
         text: "Filed proof “Empty state”",
         surface: "proof",
         outcome: "unconfirmed",
-        reason: "Its output was cut off, so ADE could not see the proof filed.",
+        reason: "Its output was cut off, so Daex could not see the proof filed.",
       },
     ],
     [
@@ -127,12 +127,12 @@ describe("computer-use command summary", () => {
     [
       "a redirect after a value-less flag is not its value",
       ok("ade browser click --x 537 --y 411 --text 2>&1 | grep ok"),
-      { text: "Clicked at 537, 411 using ADE browser", surface: "ade_browser", outcome: "not_checked" },
+      { text: "Clicked at 537, 411 using Daex browser", surface: "ade_browser", outcome: "not_checked" },
     ],
     [
       "a quoted target that starts like a redirect is still the target",
       ok('ade browser click --text "<Submit>" 2>&1'),
-      { text: "Clicked “<Submit>” using ADE browser", surface: "ade_browser", outcome: "not_checked" },
+      { text: "Clicked “<Submit>” using Daex browser", surface: "ade_browser", outcome: "not_checked" },
     ],
     [
       "a quoted `>` does not swallow the flag after it",
@@ -151,7 +151,7 @@ describe("computer-use command summary", () => {
         text: "Filed proof “Login”",
         surface: "proof",
         outcome: "unconfirmed",
-        reason: "Its output was cut off, so ADE could not see the proof filed.",
+        reason: "Its output was cut off, so Daex could not see the proof filed.",
       },
     ],
     // A click never reads as a bare "Clicked": an element with no name is named
@@ -159,7 +159,7 @@ describe("computer-use command summary", () => {
     [
       "an unnamed element is named by its role",
       ok("ade browser click --handle e1", 'hit: button (e1)\neffect: observed'),
-      { text: "Clicked a button using ADE browser", surface: "ade_browser", outcome: "observed" },
+      { text: "Clicked a button using Daex browser", surface: "ade_browser", outcome: "observed" },
     ],
     [
       "an Accessibility role reads as words",

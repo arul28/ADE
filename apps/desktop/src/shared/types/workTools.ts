@@ -27,6 +27,7 @@ import type {
   LinuxDesktopHostFacts,
   WindowsDesktopStatus,
 } from "./macDesktop";
+import { BRAND } from "../brand";
 
 /**
  * Mirrors the renderer's `WorkSidebarTab`. It cannot import that union (this
@@ -73,7 +74,7 @@ export const WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT = "Take control here, or watch 
 
 /** Empty state when this machine has no desktop attached at all. */
 export const WORK_TOOLS_NO_DESKTOP_MESSAGE =
-  "Tools run on the desktop. Open ADE on your Mac to see them here.";
+  `Tools run on the desktop. Open ${BRAND.NAME} on your Mac to see them here.`;
 
 /** A lane-state read failed: the machine dropped or its brain is restarting. */
 export const WORK_TOOLS_UNREACHABLE_MESSAGE = "Can't reach this machine right now. Retrying…";
@@ -134,13 +135,13 @@ export function workToolsUnavailableMessage(
       // Distinct from the default on purpose: ADE Desktop *is* running, it just
       // doesn't have this project open, so "open ADE on your Mac" would send the
       // user to look at an app that is already in front of them.
-      return "ADE Desktop doesn't have this project open. Open it on your Mac to see its tabs.";
+      return `${BRAND.NAME} Desktop doesn't have this project open. Open it on your Mac to see its tabs.`;
     case "browser_pane_not_opened":
       // The project IS open on the desktop; only the Browser pane is unused, so
       // the instruction is one click, not "open the project".
       return "Open the Browser tool on the desktop to see tabs here.";
     default:
-      return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs.";
+      return `The browser runs in ${BRAND.NAME} Desktop. Open ${BRAND.NAME} on your Mac to see its tabs.`;
   }
 }
 

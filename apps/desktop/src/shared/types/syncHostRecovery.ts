@@ -1,3 +1,4 @@
+import { BRAND } from "../brand";
 /**
  * Typed project-host readiness and conflict recovery. The brain-level ingress
  * can answer these while no project sync host owns the peer.
@@ -64,8 +65,8 @@ export const SYNC_HOST_REDACTED_CONFLICT_DETAIL =
  * carrying a full snapshot — so both read it from here.
  * `apps/ios/ADE/Views/Hub/ProjectHostRecoveryScreen.swift` mirrors these.
  */
-export const SYNC_HOST_CONFLICT_HEADLINE = "Another ADE is blocking this machine";
+export const SYNC_HOST_CONFLICT_HEADLINE = `Another ${BRAND.NAME} is blocking this machine`;
 export const SYNC_HOST_CONFLICT_BODY =
-  "Another ADE runtime is using the connection your phone needs.";
+  `Another ${BRAND.NAME} runtime is using the connection your phone needs.`;
 export const SYNC_HOST_CONFLICT_BODY_DEV =
   "A development runtime is using the connection your phone needs.";

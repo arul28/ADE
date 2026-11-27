@@ -16,6 +16,7 @@
 
 import type { AutomationCapabilities } from "./types";
 import { compareUpdateVersions } from "./updateVersions";
+import { BRAND } from "./brand";
 
 export type AutomationFeatureKind = "trigger" | "step" | "laneMode" | "adeAction" | "cloudLanes" | "notifyLink";
 
@@ -66,7 +67,7 @@ const TRIGGER_MIN_VERSIONS: Record<string, VersionRow> = {
 export const AUTOMATION_CLOUD_LANES_ID = "cloud";
 
 /** "Run on ADE Cloud" for each run's lane. */
-const CLOUD_LANES_ROW: VersionRow = { label: "Run on ADE Cloud", minVersion: "1.2.130-beta.12" };
+const CLOUD_LANES_ROW: VersionRow = { label: `Run on ${BRAND.CLOUD_NAME}`, minVersion: "1.2.130-beta.12" };
 
 function versionRow(kind: AutomationFeatureKind, id: string): VersionRow | undefined {
   switch (kind) {
@@ -174,8 +175,8 @@ export function automationFeaturesNeedingNewerAde(
 export function automationFeatureGateReason(requirement: AutomationFeatureRequirement, machineName?: string | null): string {
   const where = machineName?.trim() ? ` on ${machineName.trim()}` : " on the machine that runs this rule";
   return requirement.minVersion
-    ? `Needs ADE ${requirement.minVersion}${where}`
-    : `Needs a newer ADE${where}`;
+    ? `Needs ${BRAND.NAME} ${requirement.minVersion}${where}`
+    : `Needs a newer ${BRAND.NAME}${where}`;
 }
 
 /**
@@ -186,8 +187,8 @@ export function explainAutomationActionError(message: string, machineName?: stri
   const match = /action_not_callable[^']*'([^']+)'/i.exec(message) ?? /Action '([^']+)' is not callable/i.exec(message);
   if (!match) return null;
   const known = ACTION_MIN_VERSIONS[match[1]!];
-  const where = machineName?.trim() ? `the ADE on ${machineName.trim()}` : "the ADE that runs this rule";
+  const where = machineName?.trim() ? `the ${BRAND.NAME} on ${machineName.trim()}` : `the ${BRAND.NAME} that runs this rule`;
   return known
-    ? `${known.label} needs ADE ${known.minVersion} or newer, and ${where} is older. Update it, then try again.`
+    ? `${known.label} needs ${BRAND.NAME} ${known.minVersion} or newer, and ${where} is older. Update it, then try again.`
     : `${where[0]!.toUpperCase()}${where.slice(1)} does not have this step yet. Update it, then try again.`;
 }
