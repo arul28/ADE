@@ -3,282 +3,8 @@ import UIKit
 
 // Text selection on an agent reply: copy the whole reply, copy the part that
 // was long-pressed, or open the reply in a sheet where any range can be
-// selected, copied, or commented on. A comment made here is the same thread
-// comment the desktop makes from its selection toolbar
-// (`apps/desktop/src/renderer/components/chat/threadCommentAnchors.ts`): the
-// anchor is the selected visible text, whitespace-collapsed, plus up to
-// `workThreadCommentContextChars` of context on each side.
-
-/// `THREAD_COMMENT_CONTEXT_CHARS` in `apps/desktop/src/shared/threadComments.ts`.
-let workThreadCommentContextChars = 32
-/// `MAX_THREAD_COMMENT_EXCERPT_CHARS`.
-let workThreadCommentExcerptChars = 120
-/// `MAX_THREAD_COMMENT_QUOTE_CHARS`. The host caps a longer quote; the sheet
-/// says so before the comment is sent rather than after.
-let workThreadCommentQuoteChars = 2_000
-
-/// The key desktop hangs a comment off: `sceneRowIdentity` in
-/// `apps/desktop/src/shared/chatScene.ts`. Nil when the event names neither a
-/// message nor a turn item, where desktop falls back to a render key the phone
-/// cannot know, so the phone offers no comment there.
-func workThreadCommentMessageKey(messageId: String?, turnId: String?, itemId: String?) -> String? {
-  if let messageId = nonEmptyTrimmed(messageId) { return "message:\(messageId)" }
-  if let turnId = nonEmptyTrimmed(turnId), let itemId = nonEmptyTrimmed(itemId) {
-    return "item:\(turnId):\(itemId)"
-  }
-  return nil
-}
-
-// MARK: - The selectable document
-
-/// Characters drawn for reading but not part of the reply's text: list
-/// markers. Desktop draws them with CSS, so they are not in its text either,
-/// and a quote that held one would not be found there.
-private let workSelectionIgnoredAttribute = NSAttributedString.Key("ade.threadCommentIgnore")
-
-/// One reply laid out as plain, selectable text, with each markdown block's
-/// range so the long-pressed block can be selected on open.
-struct WorkSelectableMessageDocument {
-  let attributed: NSAttributedString
-  /// Block id (`WorkMarkdownBlock.id`) to its range in `attributed`.
-  let blockRanges: [String: NSRange]
-
-  var string: String { attributed.string }
-
-  func text(in range: NSRange) -> String {
-    let ns = attributed.string as NSString
-    let clamped = NSIntersectionRange(range, NSRange(location: 0, length: ns.length))
-    return ns.substring(with: clamped)
-  }
-}
-
-private enum WorkSelectionFont {
-  static var body: UIFont { UIFont.preferredFont(forTextStyle: .body) }
-  static var mono: UIFont {
-    UIFontMetrics(forTextStyle: .callout).scaledFont(
-      for: .monospacedSystemFont(ofSize: 15, weight: .regular)
-    )
-  }
-
-  static func heading(_ level: Int) -> UIFont {
-    let style: UIFont.TextStyle = level <= 1 ? .title2 : level == 2 ? .title3 : .headline
-    let base = UIFont.preferredFont(forTextStyle: style)
-    return UIFont(descriptor: base.fontDescriptor.withSymbolicTraits(.traitBold) ?? base.fontDescriptor, size: 0)
-  }
-
-  static func with(_ font: UIFont, traits: UIFontDescriptor.SymbolicTraits) -> UIFont {
-    guard let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(traits)) else {
-      return font
-    }
-    return UIFont(descriptor: descriptor, size: 0)
-  }
-}
-
-/// Lays a reply out for the selection sheet. `monospaced` is the transcript's
-/// whole-message monospace rendering (a file tree, raw output).
-func workSelectableMessageDocument(markdown: String, monospaced: Bool = false) -> WorkSelectableMessageDocument {
-  let output = NSMutableAttributedString()
-  let paragraph = NSMutableParagraphStyle()
-  paragraph.paragraphSpacing = 12
-  paragraph.lineSpacing = 2
-  // Table cells are tab-separated; fixed stops keep the columns aligned.
-  paragraph.tabStops = (1...8).map { NSTextTab(textAlignment: .left, location: CGFloat($0) * 104) }
-  paragraph.defaultTabInterval = 104
-  let baseAttributes: [NSAttributedString.Key: Any] = [
-    .font: WorkSelectionFont.body,
-    .foregroundColor: UIColor.label,
-    .paragraphStyle: paragraph,
-  ]
-  if monospaced {
-    output.append(NSAttributedString(string: markdown, attributes: baseAttributes.merging([.font: WorkSelectionFont.mono]) { $1 }))
-    return WorkSelectableMessageDocument(attributed: output, blockRanges: [:])
-  }
-
-  func appendInline(_ text: String, font: UIFont = WorkSelectionFont.body, to target: NSMutableAttributedString) {
-    let parsed = markdownAttributedString(text)
-    for run in parsed.runs {
-      let piece = String(parsed[run.range].characters)
-      var attributes = baseAttributes
-      let intent = run.inlinePresentationIntent ?? []
-      var runFont = font
-      if intent.contains(.code) {
-        runFont = WorkSelectionFont.mono
-        attributes[.backgroundColor] = UIColor.secondarySystemFill
-      }
-      if intent.contains(.stronglyEmphasized) { runFont = WorkSelectionFont.with(runFont, traits: .traitBold) }
-      if intent.contains(.emphasized) { runFont = WorkSelectionFont.with(runFont, traits: .traitItalic) }
-      if intent.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-      if let link = run.link { attributes[.link] = link }
-      attributes[.font] = runFont
-      target.append(NSAttributedString(string: piece, attributes: attributes))
-    }
-  }
-
-  func appendPlain(_ text: String, font: UIFont = WorkSelectionFont.body, ignored: Bool = false) {
-    var attributes = baseAttributes
-    attributes[.font] = font
-    if ignored {
-      attributes[workSelectionIgnoredAttribute] = true
-      attributes[.foregroundColor] = UIColor.secondaryLabel
-    }
-    output.append(NSAttributedString(string: text, attributes: attributes))
-  }
-
-  var blockRanges: [String: NSRange] = [:]
-  let blocks = parseMarkdownBlocks(markdown)
-  for (index, block) in blocks.enumerated() {
-    // One line break: the paragraph spacing is the gap between blocks.
-    if index > 0 { appendPlain("\n") }
-    let start = output.length
-    switch block.kind {
-    case .paragraph(let text):
-      appendInline(text, to: output)
-    case .heading(let level, let text):
-      appendInline(text, font: WorkSelectionFont.heading(level), to: output)
-    case .list(let items):
-      for (itemIndex, item) in items.enumerated() {
-        if itemIndex > 0 { appendPlain("\n") }
-        let indent = String(repeating: "    ", count: item.depth)
-        if !indent.isEmpty { appendPlain(indent, ignored: true) }
-        appendPlain("\(item.markerLabel ?? "  ") ", ignored: true)
-        appendInline(item.text, to: output)
-      }
-    case .blockquote(let lines):
-      for (lineIndex, line) in lines.enumerated() {
-        if lineIndex > 0 { appendPlain("\n") }
-        appendPlain("\u{258E} ", ignored: true)
-        appendInline(line, font: WorkSelectionFont.with(WorkSelectionFont.body, traits: .traitItalic), to: output)
-      }
-    case .table(let headers, let rows):
-      // Cells are tab-separated: a tab collapses to the same single space
-      // desktop's text walk puts between two cells.
-      for (rowIndex, row) in ([headers] + rows).enumerated() where !row.isEmpty {
-        if output.length > start { appendPlain("\n") }
-        for (cellIndex, cell) in row.enumerated() {
-          if cellIndex > 0 { appendPlain("\t") }
-          appendInline(cell, font: rowIndex == 0 ? WorkSelectionFont.with(WorkSelectionFont.body, traits: .traitBold) : WorkSelectionFont.body, to: output)
-        }
-      }
-    case .code(_, let code):
-      appendPlain(code, font: WorkSelectionFont.mono)
-    case .rule:
-      appendPlain("\u{2014}\u{2014}\u{2014}", ignored: true)
-    case .proofCitation(_, let caption):
-      appendPlain(caption.isEmpty ? "[proof]" : caption, ignored: caption.isEmpty)
-    case .proofCompare(let compare):
-      appendPlain(compare.caption.isEmpty ? "[\(compare.before.label) \u{2192} \(compare.after.label)]" : compare.caption)
-    }
-    blockRanges[block.id] = NSRange(location: start, length: output.length - start)
-  }
-  return WorkSelectableMessageDocument(attributed: output, blockRanges: blockRanges)
-}
-
-/// The plain text of one transcript block, for "Copy this part". Markers and
-/// table layout stay, since this is what a person pastes.
-func workSelectableBlockText(_ block: WorkMarkdownBlock) -> String {
-  switch block.kind {
-  case .paragraph(let text), .heading(_, let text):
-    return String(markdownAttributedString(text).characters)
-  case .list(let items):
-    return items.map { item in
-      String(repeating: "    ", count: item.depth)
-        + "\(item.markerLabel ?? " ") "
-        + String(markdownAttributedString(item.text).characters)
-    }
-    .joined(separator: "\n")
-  case .blockquote(let lines):
-    return lines.map { "> " + String(markdownAttributedString($0).characters) }.joined(separator: "\n")
-  case .table(let headers, let rows):
-    return ([headers] + rows).filter { !$0.isEmpty }.map { $0.joined(separator: "\t") }.joined(separator: "\n")
-  case .code(_, let code):
-    return code
-  case .rule:
-    return ""
-  case .proofCitation(_, let caption):
-    return caption
-  case .proofCompare(let compare):
-    return compare.caption
-  }
-}
-
-// MARK: - The anchor
-
-struct WorkThreadCommentTextAnchor: Equatable {
-  let quote: String
-  let prefix: String
-  let suffix: String
-}
-
-/// The reply's text with whitespace runs collapsed to one space and the
-/// ignored characters left out, as desktop's `collapsedTextOf` reads the DOM.
-/// `offsets[i]` is the UTF-16 offset in the document of collapsed char `i`.
-private func workCollapsedSelectionText(_ document: WorkSelectableMessageDocument) -> (text: [Character], offsets: [Int]) {
-  let attributed = document.attributed
-  var ignored = IndexSet()
-  attributed.enumerateAttribute(
-    workSelectionIgnoredAttribute,
-    in: NSRange(location: 0, length: attributed.length)
-  ) { value, range, _ in
-    if value != nil { ignored.insert(integersIn: range.location..<(range.location + range.length)) }
-  }
-  var text: [Character] = []
-  var offsets: [Int] = []
-  var lastWasSpace = true
-  var offset = 0
-  for character in attributed.string {
-    let width = character.utf16.count
-    defer { offset += width }
-    if ignored.contains(offset) { continue }
-    if character.isWhitespace {
-      if lastWasSpace { continue }
-      text.append(" ")
-      lastWasSpace = true
-    } else {
-      text.append(character)
-      lastWasSpace = false
-    }
-    offsets.append(offset)
-  }
-  return (text, offsets)
-}
-
-/// The first 120 collapsed characters, so the agent knows which reply.
-func workThreadCommentExcerpt(_ document: WorkSelectableMessageDocument) -> String {
-  let collapsed = workCollapsedSelectionText(document).text
-  return String(collapsed.prefix(workThreadCommentExcerptChars)).trimmingCharacters(in: .whitespaces)
-}
-
-/// The anchor for a selected range of the document, or nil when the range
-/// holds no reply text (only markers or space).
-func workThreadCommentAnchor(
-  in document: WorkSelectableMessageDocument,
-  range: NSRange
-) -> WorkThreadCommentTextAnchor? {
-  guard range.length > 0 else { return nil }
-  let collapsed = workCollapsedSelectionText(document)
-  func index(atOrAfter utf16Offset: Int) -> Int {
-    // Offsets are increasing, so the first one at or past the point is a
-    // binary search away.
-    var low = 0
-    var high = collapsed.offsets.count
-    while low < high {
-      let mid = (low + high) / 2
-      if collapsed.offsets[mid] < utf16Offset { low = mid + 1 } else { high = mid }
-    }
-    return low
-  }
-  var start = index(atOrAfter: range.location)
-  var end = index(atOrAfter: range.location + range.length)
-  while start < end, collapsed.text[start] == " " { start += 1 }
-  while end > start, collapsed.text[end - 1] == " " { end -= 1 }
-  guard end > start else { return nil }
-  let context = workThreadCommentContextChars
-  return WorkThreadCommentTextAnchor(
-    quote: String(collapsed.text[start..<end]),
-    prefix: String(collapsed.text[max(0, start - context)..<start]),
-    suffix: String(collapsed.text[end..<min(collapsed.text.count, end + context)])
-  )
-}
+// selected, copied, or commented on. The text and the comment anchor are
+// built in `WorkMessageSelectableDocument.swift`.
 
 // MARK: - Presenting
 
@@ -332,15 +58,14 @@ struct WorkMessageTextMenuItems: View {
     Button(action: onCopyMessage) {
       Label("Copy message", systemImage: "doc.on.doc")
     }
-    if let block {
-      let text = workSelectableBlockText(block)
-      if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Button {
-          UIPasteboard.general.string = text
-          ADEHaptics.light()
-        } label: {
-          Label("Copy this part", systemImage: "text.badge.checkmark")
-        }
+    if let block, block.kind != .rule {
+      Button {
+        // The sheet's own layout of this block, built on tap rather than
+        // with every transcript row.
+        UIPasteboard.general.string = workSelectableMessageDocument(blocks: [block]).string
+        ADEHaptics.light()
+      } label: {
+        Label("Copy this part", systemImage: "text.badge.checkmark")
       }
     }
     if let selection {
@@ -351,7 +76,7 @@ struct WorkMessageTextMenuItems: View {
       }
       if selection.canComment {
         Button {
-          selection.open(messageId: messageId, blockId: block?.id, startComment: block != nil)
+          selection.open(messageId: messageId, blockId: block?.id, startComment: true)
         } label: {
           Label(block == nil ? "Comment…" : "Comment on this part", systemImage: "text.bubble")
         }
@@ -363,6 +88,9 @@ struct WorkMessageTextMenuItems: View {
 // MARK: - The sheet
 
 struct WorkThreadCommentDraft {
+  /// Made once per comment the person is writing: a retry after a lost
+  /// answer repeats it, and the host returns the comment it already made.
+  let clientId: String
   let messageKey: String
   let messageExcerpt: String
   let anchor: WorkThreadCommentTextAnchor
@@ -376,7 +104,7 @@ struct WorkMessageTextSelectionSheet: View {
   /// Nil when this reply cannot take a comment: the host predates comments,
   /// the reply is still streaming, or the reply has no key desktop shares.
   let commentKey: String?
-  /// Why commenting is off, shown under the text when the person asks.
+  /// Why commenting is off, shown when the person asked to comment.
   let commentUnavailableReason: String?
   let onCreateComment: (@MainActor (WorkThreadCommentDraft) async throws -> Void)?
   let onCommentAdded: @MainActor () -> Void
@@ -390,6 +118,7 @@ struct WorkMessageTextSelectionSheet: View {
   @State private var saving = false
   @State private var errorMessage: String?
   @State private var copiedFeedback = false
+  @State private var draftClientId = workThreadCommentClientId()
   @FocusState private var noteFocused: Bool
 
   private var canComment: Bool { commentKey != nil && onCreateComment != nil }
@@ -455,6 +184,29 @@ struct WorkMessageTextSelectionSheet: View {
 
   @ViewBuilder
   private var floatingControls: some View {
+    VStack(spacing: 8) {
+      if let commentNotice {
+        Text(commentNotice)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 8)
+          .glassEffect(in: Capsule(style: .continuous))
+      }
+      selectionControls
+    }
+  }
+
+  /// Why "Comment" did nothing: the person asked for it on a reply that cannot
+  /// take one (still streaming, or no key desktop shares).
+  private var commentNotice: String? {
+    guard intent.startComment, !canComment else { return nil }
+    return commentUnavailableReason ?? "This reply can't take comments."
+  }
+
+  @ViewBuilder
+  private var selectionControls: some View {
     Group {
       if let commentAnchor {
         composer(commentAnchor)
@@ -601,6 +353,7 @@ struct WorkMessageTextSelectionSheet: View {
       return
     }
     errorMessage = nil
+    if anchor != commentAnchor { draftClientId = workThreadCommentClientId() }
     commentAnchor = anchor
     // Focus after the card has animated in; focusing in the same pass as
     // the sheet's own presentation is dropped.
@@ -619,6 +372,7 @@ struct WorkMessageTextSelectionSheet: View {
     defer { saving = false }
     do {
       try await onCreateComment(WorkThreadCommentDraft(
+        clientId: draftClientId,
         messageKey: commentKey,
         messageExcerpt: workThreadCommentExcerpt(document),
         anchor: WorkThreadCommentTextAnchor(
@@ -675,6 +429,7 @@ private struct WorkSelectableTextView: UIViewRepresentable {
     view.adjustsFontForContentSizeCategory = true
     view.dataDetectorTypes = []
     view.attributedText = attributed
+    context.coordinator.shownText = attributed
     view.delegate = context.coordinator
     view.accessibilityIdentifier = "Work.Chat.TextSelectionSheet.Text"
     if let initialSelection {
@@ -691,13 +446,19 @@ private struct WorkSelectableTextView: UIViewRepresentable {
 
   func updateUIView(_ view: UITextView, context: Context) {
     context.coordinator.parent = self
-    if view.attributedText != attributed {
+    // By identity: text storage adds attributes (fallback fonts for emoji),
+    // so the text read back never equals the source, and reassigning it on
+    // every update would drop the selection.
+    if context.coordinator.shownText !== attributed {
+      context.coordinator.shownText = attributed
       view.attributedText = attributed
     }
   }
 
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: WorkSelectableTextView
+    /// The text last handed to the view.
+    var shownText: NSAttributedString?
 
     init(_ parent: WorkSelectableTextView) {
       self.parent = parent
@@ -724,4 +485,10 @@ private struct WorkSelectableTextView: UIViewRepresentable {
       return UIMenu(children: [comment] + suggestedActions)
     }
   }
+}
+
+/// A client id for a new thread comment (`normalizeThreadCommentClientId`'s
+/// alphabet).
+func workThreadCommentClientId() -> String {
+  "ios-\(UUID().uuidString.lowercased())"
 }

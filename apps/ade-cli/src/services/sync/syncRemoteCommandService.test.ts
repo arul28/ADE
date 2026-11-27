@@ -3911,6 +3911,28 @@ describe("remote command reply bounds", () => {
   });
 });
 
+describe("workTools.readBrowserTabFrame", () => {
+  // Any paired peer may watch a tab, but only a controller's viewport may lay
+  // the desktop's tab out at phone size: a viewer's read stays a read.
+  it.each([
+    { name: "a controller's viewport reaches the desktop", controller: true, forwards: true },
+    { name: "a viewer's viewport is dropped", controller: undefined, forwards: false },
+  ])("$name", async ({ controller, forwards }) => {
+    const readBrowserTabFrame = vi.fn(async () => null);
+    const { service } = createService({
+      workToolsStateService: { getLaneState: vi.fn(), readObservationPreview: vi.fn(), readBrowserTabFrame },
+    });
+    const viewport = { width: 390, height: 700, deviceScaleFactor: 3 };
+    await service.execute(
+      makePayload("workTools.readBrowserTabFrame", { tabId: "tab-a", maxWidth: 800, viewport }),
+      controller === undefined ? {} : { controller },
+    );
+    expect(readBrowserTabFrame).toHaveBeenCalledWith(
+      forwards ? { tabId: "tab-a", maxWidth: 800, viewport } : { tabId: "tab-a", maxWidth: 800 },
+    );
+  });
+});
+
 describe("workTools.openBrowserTab", () => {
   // A phone may only point the person's desktop browser at one of the lane's
   // own dev servers on this machine's loopback; anything else is refused
@@ -3943,9 +3965,14 @@ describe("workTools.openBrowserTab", () => {
     } else {
       await expect(run).resolves.toEqual(result);
     }
-    expect(listDevServers).toHaveBeenCalledWith({ laneId: "lane-1" });
     if (opens) {
-      expect(createTab).toHaveBeenCalledWith({ url: opens, groupLaneId: "lane-1", activate: false, openPanel: false });
+      expect(createTab).toHaveBeenCalledWith({
+        url: opens,
+        groupLaneId: "lane-1",
+        activate: false,
+        openPanel: false,
+        revealWhenForwarded: true,
+      });
     } else {
       expect(createTab).not.toHaveBeenCalled();
     }

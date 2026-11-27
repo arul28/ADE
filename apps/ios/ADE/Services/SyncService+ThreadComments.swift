@@ -32,7 +32,7 @@ extension SyncService {
     prefix: String,
     suffix: String,
     body: String,
-    clientId: String = "ios-\(UUID().uuidString.lowercased())"
+    clientId: String
   ) async throws {
     let action = chatActionName("chat.createThreadComment", sessionId: sessionId)
     guard supportsCreatingThreadComments(sessionId: sessionId) else {
@@ -67,7 +67,13 @@ extension SyncService {
         setThreadComments(list, sessionId: sessionId)
       }
     } else if !threadComments(sessionId: sessionId).contains(where: { $0.id == created.id }) {
-      try? await refreshThreadComments(sessionId: sessionId)
+      // The comment exists on the host either way; a failed re-read only
+      // delays the chip until the host's next list update.
+      do {
+        try await refreshThreadComments(sessionId: sessionId)
+      } catch {
+        CrashReporting.capture(error, context: ["area": "thread-comments.create-refresh"])
+      }
     }
   }
 

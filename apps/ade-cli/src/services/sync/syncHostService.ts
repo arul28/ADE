@@ -322,6 +322,7 @@ import {
   commandErrorResult,
   createSyncRemoteCommandService,
   evaluateRemoteCommandPolicy,
+  isInteractiveControllerPeer,
   remoteCommandArgsFingerprint,
   stableJsonKey,
   type SyncBrowserTabControl,
@@ -7540,6 +7541,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
                 // Credits an update to the paired device, never the client's claim.
                 ...(payload.action.startsWith("machine.") ? { requester: peer.pairingRecord } : {}),
+                // The pairing decides, as the policy gate above did; never the wire.
+                ...(isInteractiveControllerPeer(peer) ? { controller: true } : {}),
               });
           if (payload.action === "files.writeTextAtomic") args.onRemoteFileWrite?.();
         } finally {

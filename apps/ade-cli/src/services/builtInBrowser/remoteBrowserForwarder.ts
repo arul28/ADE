@@ -361,14 +361,20 @@ export function createRemoteBrowserForwarder(args: {
     const record = isRecord(input) ? input : {};
     const url = stringOrNull(record.url) ?? "";
     const tabId = stringOrNull(record.tabId);
+    // A person's open names the lane to group the tab with, not to lease it to.
+    const groupLaneId = stringOrNull(record.groupLaneId);
     const request: BuiltInBrowserRemoteRequest = {
       requestId: `bbr-${randomUUID()}`,
       url,
       laneId: stringOrNull(record.laneId),
       chatSessionId: stringOrNull(record.chatSessionId),
-      openPanel: record.openPanel !== false,
+      // `revealWhenForwarded`: a quiet open here that the person still wants
+      // to see (the phone's Open). A desktop elsewhere only takes a quiet
+      // request into a Browser pane already on screen, so it shows its pane.
+      openPanel: record.openPanel !== false || record.revealWhenForwarded === true,
       requestedAt: new Date().toISOString(),
       targetClientId,
+      ...(groupLaneId ? { groupLaneId } : {}),
       ...(tabId ? { tabId } : {}),
       ...(record.newTab === true ? { newTab: true } : {}),
       ...(record.reuseOwnedTab === true ? { reuseOwnedTab: true } : {}),
@@ -456,7 +462,7 @@ export function createRemoteBrowserForwarder(args: {
     const remoteTargetId = origin && !origin.local ? origin.clientId : null;
     // `--here`: to test a page on this OS, to record, to upload a file that lives here.
     const here = record.here === true;
-    const { here: _here, allMachines: _all, ...withoutRouting } = record;
+    const { here: _here, allMachines: _all, revealWhenForwarded: _reveal, ...withoutRouting } = record;
     // An isolated sign-in opens where the user sits, like every other tab: the
     // isolation is a partition on that desktop too, so their own sign-ins stay
     // untouched, and they see the tab (ledger R2).

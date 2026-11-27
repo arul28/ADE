@@ -2605,7 +2605,8 @@ struct WorkSessionDestinationView: View {
           quote: draft.anchor.quote,
           prefix: draft.anchor.prefix,
           suffix: draft.anchor.suffix,
-          body: draft.body
+          body: draft.body,
+          clientId: draft.clientId
         )
       }
     } else {

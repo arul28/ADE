@@ -328,8 +328,7 @@ import {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
-import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
-import type { BuiltInBrowserCreateTabArgs } from "../../../../desktop/src/shared/types/builtInBrowser";
+import { openLaneDevServerInBrowser, type WorkToolsBrowserTabOpener } from "./workToolsOpenBrowserTab";
 import type { ComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { ComputerUseArtifactListArgs } from "../../../../desktop/src/shared/types";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
@@ -627,9 +626,8 @@ export function measureSyncRemoteCommandResultBytes(result: unknown): number {
  * The two browser calls the sync surface makes, both as the person would: close
  * a tab, and open one of the lane's dev servers in a background tab.
  */
-export type SyncBrowserTabControl = {
+export type SyncBrowserTabControl = WorkToolsBrowserTabOpener & {
   closeTab(input: { tabId: string }): Promise<unknown>;
-  createTab(input: BuiltInBrowserCreateTabArgs): Promise<unknown>;
 };
 
 type SyncRemoteCommandServiceArgs = {
@@ -865,6 +863,13 @@ export type SyncRemoteCommandExecutionContext = {
    * rather than what the client says it is. Null: not a paired peer.
    */
   requester?: MachineUpdatePairing | null;
+  /**
+   * Set only by the host: the invoking peer may run controller commands (the
+   * owner's phone or web client, `isInteractiveControllerPeer`). A read that a
+   * viewer may also make leaves out what would change the desktop for anyone
+   * else (`workTools.readBrowserTabFrame`'s `viewport`). Absent: a viewer.
+   */
+  controller?: boolean;
 };
 
 /** The turn a host-set `expectedTurnId` names, added to a guest's args. */
@@ -6293,11 +6298,12 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
   // on the desktop, so frames flow only while the sheet is open. `viewport`
   // (the phone's picture in points) asks the desktop to lay the page out at
   // phone width for as long as the watch lasts; older hosts ignore it.
-  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload) =>
+  // A viewer still reads the frame, but only a controller may re-lay the tab out.
+  register("workTools.readBrowserTabFrame", { viewerAllowed: true, queueable: false }, async (payload, context) =>
     workToolsStateService.readBrowserTabFrame({
       tabId: requireString(payload.tabId, "workTools.readBrowserTabFrame requires tabId."),
       maxWidth: payload.maxWidth,
-      viewport: payload.viewport,
+      ...(context.controller === true ? { viewport: payload.viewport } : {}),
     }));
   // Take control of a browser tab from the phone: a tap, a scroll, typing.
   register(
@@ -6332,119 +6338,13 @@ function registerWorkToolsRemoteCommands({ args, register }: RemoteCommandRegist
   register(
     "workTools.openBrowserTab",
     { viewerAllowed: false, controllerAllowed: true, queueable: false },
-    async (payload): Promise<WorkToolsOpenBrowserTabResult> => {
-      const laneId = requireString(payload.laneId, "workTools.openBrowserTab requires laneId.");
-      const rawUrl = requireString(payload.url, "workTools.openBrowserTab requires url.");
-      const browser = args.builtInBrowserService;
-      if (!browser) throw new Error("The browser isn't available on this machine.");
-      const { servers } = await workToolsStateService.listDevServers({ laneId });
-      const url = laneDevServerUrl(rawUrl, servers.map((server) => server.port));
-      const port = loopbackPort(url);
-      // The page is already up in this lane: watch that tab rather than open
-      // a second copy of the same server.
-      const state = await workToolsStateService.getLaneState({ laneId });
-      const existing = state.browser?.tabs.find((tab) => tab.url && port != null && loopbackPortOf(tab.url) === port);
-      if (existing) return { ok: true, tabId: existing.id, reused: true };
-      let opened: unknown;
-      try {
-        // A background tab, grouped with the lane but owned by nobody: this is
-        // the person opening it, not an agent, so no lease and no consent gate,
-        // and the desktop user keeps the tab they are looking at.
-        opened = await browser.createTab({ url: url.toString(), groupLaneId: laneId, activate: false, openPanel: false });
-      } catch (error) {
-        if (error instanceof DesktopBridgeUnavailableError) throw new Error(NO_DESKTOP_FOR_PAGE_MESSAGE);
-        const message = error instanceof Error ? error.message : String(error);
-        if (/No ADE browser window is open for project/i.test(message)) {
-          throw new Error("ADE on this computer doesn't have this project open, so it can't show the page. Open the project in ADE first.");
-        }
-        throw error;
-      }
-      return openBrowserTabResult(opened);
-    },
+    async (payload) => openLaneDevServerInBrowser({
+      laneId: requireString(payload.laneId, "workTools.openBrowserTab requires laneId."),
+      rawUrl: requireString(payload.url, "workTools.openBrowserTab requires url."),
+      workTools: workToolsStateService,
+      browser: args.builtInBrowserService,
+    }),
   );
-}
-
-/** What `workTools.openBrowserTab` answers. */
-type WorkToolsOpenBrowserTabResult = {
-  ok: true;
-  /** The tab to watch. Null when a desktop on another machine opened the page. */
-  tabId: string | null;
-  /** The lane already had a tab on this server. */
-  reused: boolean;
-  /** The desktop on another machine that opened it, when it was not this one. */
-  openedOn?: string | null;
-  /** That desktop asks its person to allow the tunnel before the page loads. */
-  awaitingApproval?: boolean;
-};
-
-const NO_DESKTOP_FOR_PAGE_MESSAGE =
-  "No ADE desktop is open to show this page. Open ADE on a computer, or use the lane's Linux Desktop.";
-
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
-
-/** The loopback port a URL points at, or null for any other URL. */
-function loopbackPortOf(raw: string): number | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    return null;
-  }
-  return loopbackPort(parsed);
-}
-
-function loopbackPort(url: URL): number | null {
-  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-  if (!LOOPBACK_HOSTS.has(url.hostname.toLowerCase())) return null;
-  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
-  return Number.isInteger(port) && port > 0 && port <= 65_535 ? port : null;
-}
-
-/**
- * The URL a phone may open in the desktop browser: http(s) on this machine's
- * loopback, at a port one of the lane's dev servers is serving. Anything else
- * is refused, so a phone cannot point the person's signed-in browser at an
- * arbitrary site or at another lane's server.
- */
-function laneDevServerUrl(raw: string, lanePorts: readonly number[]): URL {
-  let url: URL;
-  try {
-    url = new URL(raw.trim());
-  } catch {
-    throw new Error("That isn't a web address ADE can open.");
-  }
-  if (url.username || url.password) {
-    throw new Error("ADE only opens a lane's own dev servers from the phone, and this address carries a sign-in.");
-  }
-  const port = loopbackPort(url);
-  if (port == null) {
-    throw new Error("ADE only opens a lane's own dev servers from the phone, on localhost.");
-  }
-  if (!lanePorts.includes(port)) {
-    throw new Error(`Nothing in this lane is serving port ${port}. Start the dev server, then try again.`);
-  }
-  return url;
-}
-
-/** Read the bridge's answer: this machine's tab, or a desktop elsewhere that took the page. */
-function openBrowserTabResult(opened: unknown): WorkToolsOpenBrowserTabResult {
-  const record = opened && typeof opened === "object" ? opened as Record<string, unknown> : {};
-  if (record.status === "forwarded_to_desktop") {
-    // No desktop here: the page went to one that holds this lane on another
-    // machine, which tunnels the port. Nobody took it, so nothing opened.
-    if (record.acknowledged !== true) throw new Error(NO_DESKTOP_FOR_PAGE_MESSAGE);
-    const openedOn = typeof record.desktopLabel === "string" && record.desktopLabel.trim() ? record.desktopLabel.trim() : null;
-    return {
-      ok: true,
-      tabId: null,
-      reused: false,
-      openedOn,
-      ...(record.awaitingApproval === true ? { awaitingApproval: true } : {}),
-    };
-  }
-  const tabId = typeof record.targetTabId === "string" && record.targetTabId.trim() ? record.targetTabId.trim() : null;
-  if (!tabId) throw new Error("The browser didn't say which tab it opened. Pull to refresh to find it.");
-  return { ok: true, tabId, reused: false };
 }
 
 /**

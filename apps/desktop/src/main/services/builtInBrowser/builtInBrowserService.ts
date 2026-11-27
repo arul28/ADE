@@ -133,6 +133,7 @@ import type {
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
 import {
+  BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE,
   BUILT_IN_BROWSER_RECORDING_VIEWPORT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
@@ -1496,7 +1497,7 @@ export function createBuiltInBrowserService(args: {
     if (!normalized) return activeService();
     const host = hostWindowForProjectRoot(normalized, sourceWindow);
     if (!host) {
-      throw new Error(`No ADE browser window is open for project: ${normalized}`);
+      throw new Error(`${BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE}: ${normalized}`);
     }
     const { win } = host;
     const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
@@ -5899,20 +5900,30 @@ function createBuiltInBrowserWindowService(args: {
     if (!tab) return { ok: false };
     const wc = tab.webContents;
     const event = input.event;
-    // Null when the page cannot say its size (mid-navigation, crashed): the
-    // input is refused rather than landing in the top-left corner.
     // The frame is the page as drawn, so a fraction of it is a fraction of the
     // page's viewport. Under a device preset or the recording viewport
     // Chromium draws the page smaller (the override's `scale`) and reads input
     // in drawn pixels, the same mapping `dispatchPageMouseEvent` makes.
     const point = async (at: { x: number; y: number }): Promise<{ x: number; y: number } | null> => {
+      const fx = Math.min(1, Math.max(0, Number(at.x) || 0));
+      const fy = Math.min(1, Math.max(0, Number(at.y) || 0));
+      // Under an emulation the drawn picture is the device's size. Not
+      // `innerWidth`: a mobile page with no viewport meta lays out at 980 CSS
+      // pixels inside a 390-wide device, and a tap mapped by that misses.
+      if (tab.emulation) {
+        const scale = tabCapabilities.emulationInputScale(tab);
+        return {
+          x: Math.round(fx * tab.emulation.width * scale),
+          y: Math.round(fy * tab.emulation.height * scale),
+        };
+      }
+      // Null when the page cannot say its size (mid-navigation, crashed): the
+      // input is refused rather than landing in the top-left corner.
       const size = await wc.executeJavaScript("[window.innerWidth, window.innerHeight]", true)
         .catch(() => null) as [number, number] | null;
       if (!size || !(size[0] > 0) || !(size[1] > 0)) return null;
       const zoom = wc.getZoomFactor?.() ?? 1;
-      const drawScale = pageDrawScale(tab);
-      const fx = Math.min(1, Math.max(0, Number(at.x) || 0));
-      const fy = Math.min(1, Math.max(0, Number(at.y) || 0));
+      const drawScale = recordingViewport.inputScale(tab);
       return {
         x: Math.round(fx * size[0] * zoom * drawScale),
         y: Math.round(fy * size[1] * zoom * drawScale),
@@ -6231,6 +6242,9 @@ function createBuiltInBrowserWindowService(args: {
     // would block exactly the sign-in the agent asked for.
     tab.agentNavigationGuard = null;
     suspendAgentCaptureForHandoff(tab);
+    // A phone watching at phone size gives the tab back: the person signs in
+    // at the desktop's own size. `tab.handoff` already blocks it coming back.
+    void tabCapabilities.releaseRemoteViewport(tab);
     handoff.timer = setTimeout(() => {
       if (tab.handoff !== handoff) return;
       endHandoffInternal(tab, "timeout");
@@ -8091,18 +8105,13 @@ function createBuiltInBrowserWindowService(args: {
    * "delivered" without doing anything. Every synthesized mouse event goes
    * through here.
    */
-  /** How much smaller than its CSS size Chromium draws the page: a preset's or the recording viewport's scale. */
-  const pageDrawScale = (tab: BrowserTabState): number => (
-    tab.emulation
-      ? tabCapabilities.emulationInputScale(tab)
-      : recordingViewport.inputScale(tab)
-  );
-
   const dispatchPageMouseEvent = async (
     tab: BrowserTabState,
     params: { type: string; x: number; y: number } & Record<string, unknown>,
   ): Promise<void> => {
-    const scale = pageDrawScale(tab);
+    const scale = tab.emulation
+      ? tabCapabilities.emulationInputScale(tab)
+      : recordingViewport.inputScale(tab);
     await sendDebuggerCommand(
       tab.webContents,
       "Input.dispatchMouseEvent",

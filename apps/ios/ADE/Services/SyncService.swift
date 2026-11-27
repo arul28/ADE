@@ -19089,7 +19089,7 @@ final class SyncService: ObservableObject {
       timeoutNanoseconds: 20_000_000_000,
       attemptedLiveFailurePolicy: .preserveForManualRetry
     )
-    return (try? decode(result, as: WorkToolsOpenedBrowserTab.self)) ?? WorkToolsOpenedBrowserTab()
+    return try decode(result, as: WorkToolsOpenedBrowserTab.self)
   }
 
   // MARK: - Mac Desktop live stream and takeover

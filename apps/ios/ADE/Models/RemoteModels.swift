@@ -4679,6 +4679,18 @@ func workAssistantMessageReactionKey(messageId: String?, itemId: String?, turnId
   return "\(base)#\(phase)"
 }
 
+/// The key desktop hangs a thread comment off: `sceneRowIdentity` in
+/// `apps/desktop/src/shared/chatScene.ts`; keep the two the same. Nil when the
+/// event names neither a message nor a turn item, where desktop falls back to
+/// a render key the phone cannot know, so the phone offers no comment there.
+func workThreadCommentMessageKey(messageId: String?, turnId: String?, itemId: String?) -> String? {
+  if let messageId = nonEmptyTrimmed(messageId) { return "message:\(messageId)" }
+  if let turnId = nonEmptyTrimmed(turnId), let itemId = nonEmptyTrimmed(itemId) {
+    return "item:\(turnId):\(itemId)"
+  }
+  return nil
+}
+
 /// The key a `user_message_reaction` names its message by: its steer id, else
 /// its message id, else its turn (each trimmed). Nil for a message with none.
 /// The same as desktop `userMessageReactionKey`; keep the two the same.
@@ -8940,8 +8952,6 @@ struct WorkToolsDevServerList: Codable, Equatable {
 /// computer (`openedOn`) took the page instead.
 struct WorkToolsOpenedBrowserTab: Codable, Equatable {
   var tabId: String?
-  /// The lane already had a tab on that server.
-  var reused: Bool?
   var openedOn: String?
   /// That desktop asks its person to allow the tunnel first.
   var awaitingApproval: Bool?

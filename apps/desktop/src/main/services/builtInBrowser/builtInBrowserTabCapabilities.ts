@@ -102,11 +102,11 @@ import {
   BUILT_IN_BROWSER_EMULATION_PRESETS,
   builtInBrowserEmulationMetrics,
   builtInBrowserEmulationUserAgentMetadata,
-  builtInBrowserRemoteViewportEmulation,
   resolveBuiltInBrowserEmulation,
 } from "../../../shared/builtInBrowserEmulation";
 import type { BuiltInBrowserRemoteViewport } from "../../../shared/types/builtInBrowser";
 import { awaitFoundInPage } from "./builtInBrowserFind";
+import { createRemoteViewport } from "./builtInBrowserRemoteViewport";
 import { createBuiltInBrowserPreviewStreams } from "./builtInBrowserPreviewStream";
 import {
   createBuiltInBrowserRecordingSession,
@@ -614,7 +614,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     });
     // A person or an agent chose this tab's size: a phone watching it stops
     // laying it out at phone size until its watch ends.
-    yieldRemoteEmulation(tab.id);
+    remoteViewport.yieldTo(tab.id);
     deps.onTabEmulationChanged?.(tab.id);
     emitStatus();
     return {
@@ -784,6 +784,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // lays out at its box while DevTools is open, and the service re-pins
         // it when DevTools closes (`tabUsesRecordingViewport`).
         if (tab.debuggerHolds.has("recording-viewport")) releaseDebuggerHold(tab, "recording-viewport");
+        // A phone's phone-size layout is not the person's ask either: it comes
+        // off (and stays off while DevTools is open) instead of refusing.
+        await remoteViewport.release(tab);
         if (tab.debuggerHolds.size > 0) {
           const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
           const fix = owner === "network"
@@ -1546,225 +1549,47 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       remoteWatchTimers.delete(tabId);
       remoteWatchedTabs.delete(tabId);
       stopPreviewStream({ tabId }, "remote");
-      endRemoteViewport(tabId);
+      remoteViewport.end(tabId);
     }, REMOTE_WATCH_LEASE_MS);
     (timer as { unref?: () => void }).unref?.();
     remoteWatchTimers.set(tabId, timer);
     const tab = tabById(tabId);
-    const viewport = tab ? syncRemoteViewport(tab, input.viewport ?? null) : {};
+    const viewport = tab ? remoteViewport.sync(tab, input.viewport ?? null) : {};
     return { frame: latestPreviewFrames.get(tabId) ?? null, ...viewport };
   }
   function stopRemoteWatches(): void {
     for (const [tabId, timer] of remoteWatchTimers) {
       clearTimeout(timer);
+      // Before `end`: the watch is over by the time phone size comes off.
+      remoteWatchTimers.delete(tabId);
       remoteWatchedTabs.delete(tabId);
       try {
         stopPreviewStream({ tabId }, "remote");
       } catch {
         // tab already gone
       }
-      endRemoteViewport(tabId);
-    }
-    remoteWatchTimers.clear();
-  }
-
-  /*
-    Phone size. A remote viewer that sends its picture size (`viewport`) gets
-    the page laid out at it: a touch-device emulation through the same
-    debugger-held override a device preset uses, labelled "Phone view" so the
-    person at the desktop knows why. It is the viewer's, never the desktop's:
-
-    - It is never put over an emulation someone else set, and a `setEmulation`
-      while it is on (the toolbar's device control, an agent's `emulate`)
-      takes the tab over for the rest of the watch.
-    - It yields while the person at the desktop has the tab in front of them,
-      or while the tab records, has DevTools open or is mid sign-in.
-    - It comes off when the watch lapses, or when reads keep arriving without
-      a viewport (the phone switched to desktop size). Two viewers can watch
-      one tab, so a read without a viewport clears it only once no read with
-      one has arrived for a moment.
-
-    Only this code clears it: `remoteEmulations` holds the exact state object
-    it put on the tab, and a tab whose `emulation` is any other object is not
-    its to touch.
-  */
-  const REMOTE_VIEWPORT_HOLD_MS = 2_000;
-  /** The phone-size emulation on each tab, by identity: what this code applied. */
-  const remoteEmulations = new Map<string, BuiltInBrowserEmulationState>();
-  /** The next phone-size state each tab should reach (null: off), not yet applied. */
-  const remoteEmulationTargets = new Map<string, BuiltInBrowserEmulationState | null>();
-  const remoteEmulationRunning = new Set<string>();
-  /** When a read last asked for a viewport, per tab. */
-  const remoteViewportAskedAt = new Map<string, number>();
-  /** Someone set the tab's size during this watch: phone size stays off until it ends. */
-  const remoteEmulationYielded = new Set<string>();
-  /** Phone size could not be put on the tab (no debugger): not retried until the watch ends. */
-  const remoteEmulationFailed = new Set<string>();
-
-  const ownsRemoteEmulation = (tab: BrowserTabState): boolean => {
-    const ours = remoteEmulations.get(tab.id);
-    return Boolean(ours && tab.emulation === ours);
-  };
-
-  /** Where the tab's phone-size emulation is heading: pending, else applied. */
-  const remoteEmulationHeading = (tabId: string): BuiltInBrowserEmulationState | null => (
-    remoteEmulationTargets.has(tabId)
-      ? remoteEmulationTargets.get(tabId) ?? null
-      : remoteEmulations.get(tabId) ?? null
-  );
-
-  const sameRemoteMetrics = (
-    a: BuiltInBrowserEmulationState | null,
-    b: BuiltInBrowserEmulationState | null,
-  ): boolean => Boolean(
-    a && b
-    && a.width === b.width
-    && a.height === b.height
-    && a.deviceScaleFactor === b.deviceScaleFactor
-    && a.userAgent === b.userAgent,
-  );
-
-  /** Why the tab keeps its own size for a remote viewer, as a sentence; null when phone size may apply. */
-  function remoteViewportBlocker(tab: BrowserTabState): string | null {
-    if (remoteEmulationYielded.has(tab.id)) {
-      return "The tab's size was changed on the desktop, so it stays at that size.";
-    }
-    if (tab.emulation && !ownsRemoteEmulation(tab)) {
-      return `The tab is set to ${tab.emulation.label} on the desktop, so it shows at that size.`;
-    }
-    if (deps.isTabOnScreen?.(tab.id)) return "Someone is looking at this tab on the desktop, so it keeps the desktop's size.";
-    if (tab.recording || tab.recordingStarting) return "The tab is being recorded, so it keeps the recording's size.";
-    if (tab.devToolsMode !== null) return "DevTools is open on this tab, so it keeps its own size.";
-    if (tab.handoff) return "Someone is signing in on this tab, so it keeps its own size.";
-    if (remoteEmulationFailed.has(tab.id)) return "The desktop couldn't lay this tab out at phone size.";
-    return null;
-  }
-
-  function syncRemoteViewport(
-    tab: BrowserTabState,
-    viewport: BuiltInBrowserRemoteViewport | null,
-  ): { viewportApplied?: boolean; viewportNote?: string | null } {
-    const now = Date.now();
-    if (viewport) remoteViewportAskedAt.set(tab.id, now);
-    const heading = remoteEmulationHeading(tab.id);
-    if (!viewport) {
-      const askedRecently = now - (remoteViewportAskedAt.get(tab.id) ?? 0) < REMOTE_VIEWPORT_HOLD_MS;
-      if (heading && !askedRecently) queueRemoteEmulation(tab, null);
-      return {};
-    }
-    const blocker = remoteViewportBlocker(tab);
-    if (blocker) {
-      if (heading) queueRemoteEmulation(tab, null);
-      return { viewportApplied: false, viewportNote: blocker };
-    }
-    const wanted = builtInBrowserRemoteViewportEmulation(viewport);
-    if (!sameRemoteMetrics(heading, wanted)) queueRemoteEmulation(tab, wanted);
-    return {
-      viewportApplied: ownsRemoteEmulation(tab) && sameRemoteMetrics(tab.emulation, wanted),
-      viewportNote: null,
-    };
-  }
-
-  /** One change at a time per tab; a newer target replaces one not yet started. */
-  function queueRemoteEmulation(tab: BrowserTabState, next: BuiltInBrowserEmulationState | null): void {
-    remoteEmulationTargets.set(tab.id, next);
-    if (remoteEmulationRunning.has(tab.id)) return;
-    remoteEmulationRunning.add(tab.id);
-    void (async () => {
-      try {
-        while (remoteEmulationTargets.has(tab.id)) {
-          const target = remoteEmulationTargets.get(tab.id) ?? null;
-          remoteEmulationTargets.delete(tab.id);
-          await applyRemoteEmulation(tab, target);
-        }
-      } finally {
-        remoteEmulationRunning.delete(tab.id);
-      }
-    })();
-  }
-
-  async function applyRemoteEmulation(tab: BrowserTabState, next: BuiltInBrowserEmulationState | null): Promise<void> {
-    const wc = tab.webContents;
-    if (wc.isDestroyed()) {
-      remoteEmulations.delete(tab.id);
-      return;
-    }
-    const ours = remoteEmulations.get(tab.id) ?? null;
-    try {
-      if (next) {
-        // Re-checked here: the desktop may have moved since the read queued it.
-        if (remoteViewportBlocker(tab)) return;
-        await acquireDebuggerHold(tab, "emulation");
-        await sendEmulationCommands(tab, next);
-        if (remoteEmulationYielded.has(tab.id) || (tab.emulation && tab.emulation !== ours)) {
-          // Someone set their own size while this was on its way: theirs stands.
-          if (tab.emulation) {
-            reapplyTabEmulation(tab);
-          } else {
-            try {
-              await sendEmulationCommands(tab, null);
-            } finally {
-              releaseDebuggerHold(tab, "emulation");
-            }
-          }
-          return;
-        }
-        tab.emulation = next;
-        remoteEmulations.set(tab.id, next);
-      } else {
-        // Not ours (any more): nothing to take off.
-        if (!ours || tab.emulation !== ours) {
-          remoteEmulations.delete(tab.id);
-          return;
-        }
-        remoteEmulations.delete(tab.id);
-        tab.emulation = null;
-        try {
-          await sendEmulationCommands(tab, null);
-        } finally {
-          releaseDebuggerHold(tab, "emulation");
-        }
-        deps.onRemoteEmulationCleared?.(tab);
-      }
-    } catch (error) {
-      logger()?.debug("built_in_browser.remote_viewport_failed", {
-        tabId: tab.id,
-        err: errorMessage(error),
-      });
-      if (next && !ownsRemoteEmulation(tab)) {
-        remoteEmulationFailed.add(tab.id);
-        // A half-applied phone size: let the tab go back to its own.
-        if (!tab.emulation && tab.debuggerHolds.has("emulation")) releaseDebuggerHold(tab, "emulation");
-      }
-      return;
-    }
-    // The newest frame is at the old size; the next capture is at the new one.
-    latestPreviewFrames.delete(tab.id);
-    deps.onTabEmulationChanged?.(tab.id);
-    emitStatus();
-  }
-
-  /** The watch on a tab ended: its phone size comes off. */
-  function endRemoteViewport(tabId: string): void {
-    remoteViewportAskedAt.delete(tabId);
-    remoteEmulationYielded.delete(tabId);
-    remoteEmulationFailed.delete(tabId);
-    const tab = tabById(tabId);
-    if (tab && remoteEmulationHeading(tabId)) {
-      queueRemoteEmulation(tab, null);
-    } else {
-      remoteEmulations.delete(tabId);
-      remoteEmulationTargets.delete(tabId);
+      remoteViewport.end(tabId);
     }
   }
 
-  /** Someone else set the tab's size: forget phone size for the rest of this watch. */
-  function yieldRemoteEmulation(tabId: string): void {
-    const hadOne = remoteEmulations.has(tabId) || remoteEmulationTargets.has(tabId);
-    remoteEmulations.delete(tabId);
-    remoteEmulationTargets.delete(tabId);
-    if (hadOne || remoteWatchTimers.has(tabId)) remoteEmulationYielded.add(tabId);
-  }
+  /** Phone size for a remote viewer that sends its picture size (`builtInBrowserRemoteViewport.ts`). */
+  const remoteViewport = createRemoteViewport({
+    logger,
+    tabById,
+    isWatched: (tabId) => remoteWatchTimers.has(tabId),
+    isTabOnScreen: deps.isTabOnScreen,
+    acquireDebuggerHold,
+    releaseDebuggerHold,
+    sendEmulationCommands,
+    reapplyTabEmulation,
+    onLayoutChanged: (tab) => {
+      // The newest frame is at the old size; the next capture is at the new one.
+      latestPreviewFrames.delete(tab.id);
+      deps.onTabEmulationChanged?.(tab.id);
+      emitStatus();
+    },
+    onCleared: deps.onRemoteEmulationCleared,
+  });
 
   /* ── Recording ─────────────────────────────────────────────────────────── */
 
@@ -1832,6 +1657,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     // the pane's size and jumps to 1280×800 part-way through.
     tab.recordingStarting = true;
     try {
+      // A phone watching at phone size gives the tab back first (the tab is
+      // now blocked for it), or the recording opens at the phone's layout.
+      await remoteViewport.release(tab);
       await deps.prepareRecordingViewport?.(tab);
     } catch (error) {
       tab.recordingStarting = false;
@@ -2158,6 +1986,8 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     stopPreviewStream,
     watchTabForRemote,
     stopRemoteWatches,
+    /** Takes a phone-size layout off the tab and waits for it (a sign-in handoff starting). */
+    releaseRemoteViewport: (tab: BrowserTabState): Promise<void> => remoteViewport.release(tab),
     startRecording,
     stopRecording,
     /** Drops any preview stream watching a tab the service just closed. */
@@ -2168,11 +1998,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       if (remoteTimer) clearTimeout(remoteTimer);
       remoteWatchTimers.delete(tabId);
       remoteWatchedTabs.delete(tabId);
-      remoteEmulations.delete(tabId);
-      remoteEmulationTargets.delete(tabId);
-      remoteViewportAskedAt.delete(tabId);
-      remoteEmulationYielded.delete(tabId);
-      remoteEmulationFailed.delete(tabId);
+      remoteViewport.forget(tabId);
     },
     /**
      * Drops every preview subscription one renderer holds, and reports the tabs

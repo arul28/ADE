@@ -15,10 +15,16 @@ export const BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT = "built_in_browser_remote_re
 export type BuiltInBrowserRemoteRequest = {
   requestId: string;
   url: string;
+  /** The lane whose agent asked: the tab is leased to it (and grouped with it). */
   laneId: string | null;
   chatSessionId: string | null;
   openPanel: boolean;
   requestedAt: string;
+  /**
+   * The lane a person's own open (the phone's Open) groups the tab with,
+   * without a lease. An older desktop ignores it and opens the tab ungrouped.
+   */
+  groupLaneId?: string;
   /**
    * The desktop that sent the chat its last message. Only that desktop takes
    * the request; null means any desktop holding a pin on this machine does.

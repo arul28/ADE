@@ -1986,6 +1986,13 @@ export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
 export const BUILT_IN_BROWSER_NARROW_PAGE_WIDTH = 640;
 
 /**
+ * How the error a desktop throws when no window has the project open starts
+ * (the project root follows). Matched by the runtime across the desktop
+ * bridge, where only an error's message survives.
+ */
+export const BUILT_IN_BROWSER_NO_PROJECT_WINDOW_MESSAGE = "No ADE browser window is open for project";
+
+/**
  * The page size of a tab that is being recorded.
  *
  * A page lays out at its native view's size, so a recording made in a narrow
