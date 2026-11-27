@@ -46,11 +46,12 @@ import { providerActionMessage } from "../providerErrorMessage";
 import { CompactionSettings } from "../CompactionSettings";
 import { AdeCloudPassLink, passAccountLine, passAccountTitle, useComputerPassRows } from "../cloud/passAccounts";
 import { claudePassKeyOfAccountId, isClaudePassAccountId } from "../../../../../shared/types/providerLogins";
+import { BRAND } from "../../../../../shared/brand";
 
 export const SMART_BALANCE_HINT =
   "On: each new chat goes to the account furthest behind the pace needed to use its weekly room before it resets, after counting the chats already running there, so no account's room expires unused and no account is stacked with more work than it can finish. A chat that hits a usage limit moves to another account that still has room. Off: new chats use the account marked New chats. Click an account to use it.";
 const AUTO_START_HINT =
-  "When a 5-hour window ends, ADE sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.";
+  `When a 5-hour window ends, ${BRAND.NAME} sends one tiny request on the cheapest model so the next window starts right away. Each request is logged with its cost.`;
 
 const HINT_TOOLTIP_WIDTH = 280;
 
@@ -294,7 +295,7 @@ export function ProviderAccountsPanel({
         const saved = (await api.list({ provider })).find((entry) => entry.id === instance.id);
         const dropped = (Object.keys(settings) as Array<keyof ClaudeAccountSettingPatch>)
           .some((key) => (saved?.[key] ?? null) !== (settings[key] ?? null));
-        if (dropped) throw new Error("That setting was not saved — update ADE on that computer and try again.");
+        if (dropped) throw new Error(`That setting was not saved — update ${BRAND.NAME} on that computer and try again.`);
       });
     },
     [pin, provider, run],

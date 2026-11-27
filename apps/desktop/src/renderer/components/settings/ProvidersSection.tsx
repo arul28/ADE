@@ -79,8 +79,9 @@ import type {
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { requirePin } from "../../state/repositoryScope";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
-const PROVIDER_STATUS_FAILED = "ADE couldn't read the provider status.";
+const PROVIDER_STATUS_FAILED = `${BRAND.NAME} couldn't read the provider status.`;
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 // Providers that have a tile of their own on this page. OpenCode's inventory
@@ -550,7 +551,7 @@ function MachineProvidersSection({
     } catch (err) {
       // Keep any previously loaded methods so an intermittent failure does not
       // wipe SuperGrok / ChatGPT OAuth rows mid-session.
-      setAuthMethodsError(plainErrorText(err, "ADE couldn't read the sign-in options."));
+      setAuthMethodsError(plainErrorText(err, `${BRAND.NAME} couldn't read the sign-in options.`));
     }
   }, [pin]);
 
@@ -682,7 +683,7 @@ function MachineProvidersSection({
   const apiKeyStoreNotice = useMemo((): { tone: "warning" | "info"; message: string } | null => {
     const warning = (message: string) => ({ tone: "warning" as const, message });
     if (status?.apiKeyStore?.legacyPlaintextDetected) {
-      return warning("Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ADE now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.");
+      return warning(`Legacy plaintext API keys were detected in .ade/secrets/api-keys.json. ${BRAND.NAME} now uses encrypted safeStorage, and plaintext keys are no longer loaded. Re-enter any keys you still need.`);
     }
     if (status?.apiKeyStore?.macosKeychainError) {
       return warning(status.apiKeyStore.macosKeychainError);
@@ -692,7 +693,7 @@ function MachineProvidersSection({
     if (status?.apiKeyStore?.secureStorageChecking) {
       return {
         tone: "info",
-        message: "ADE is waiting for the system keychain. Your saved API keys show here after you answer its prompt.",
+        message: `${BRAND.NAME} is waiting for the system keychain. Your saved API keys show here after you answer its prompt.`,
       };
     }
     if (status?.apiKeyStore?.decryptionFailed) {
@@ -702,7 +703,7 @@ function MachineProvidersSection({
       return warning("Encrypted API keys exist but could not be decrypted on this machine. Re-enter the affected keys to continue using them.");
     }
     if (status?.apiKeyStore?.secureStorageAvailable === false) {
-      return warning("OS secure storage is unavailable, so ADE cannot persist API keys locally right now.");
+      return warning(`OS secure storage is unavailable, so ${BRAND.NAME} cannot persist API keys locally right now.`);
     }
     return null;
   }, [status?.apiKeyStore]);
@@ -931,7 +932,7 @@ function MachineProvidersSection({
       showToast({ tone: "error", title: "Cursor verification failed", message: verification.message || undefined });
       return { ok: false, error: verification.message || "Cursor verification failed." };
     } catch (err) {
-      const message = plainErrorText(err, "ADE couldn't sign in to Cursor.");
+      const message = plainErrorText(err, `${BRAND.NAME} couldn't sign in to Cursor.`);
       showToast({ tone: "error", title: "Cursor sign-in failed", message });
       return { ok: false, error: message };
     } finally {
@@ -1122,7 +1123,7 @@ function MachineProvidersSection({
     } catch (err) {
       setAcpDiagnosticsError((prev) => ({
         ...prev,
-        [provider]: plainErrorText(err, "ADE couldn't read the diagnostics."),
+        [provider]: plainErrorText(err, `${BRAND.NAME} couldn't read the diagnostics.`),
       }));
     } finally {
       setAcpDiagnosticsBusy((current) => (current === provider ? null : current));
@@ -1168,7 +1169,7 @@ function MachineProvidersSection({
     } catch (err) {
       setAcpDiagnosticsError((prev) => ({
         ...prev,
-        [provider]: plainErrorText(err, "ADE couldn't run the diagnostics."),
+        [provider]: plainErrorText(err, `${BRAND.NAME} couldn't run the diagnostics.`),
       }));
     } finally {
       setAcpDoctorBusy((current) => (current === provider ? null : current));

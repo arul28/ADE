@@ -33,6 +33,7 @@ import type {
 import { statusProbeFailed } from "./types";
 import { providerStatusConnected } from "./providerConnected";
 import { signInStatusView } from "./providerSignInView";
+import { BRAND } from "../../../../shared/brand";
 
 type AcpProviderSpec = {
   id: AcpSettingsProviderId;
@@ -63,24 +64,24 @@ type AcpProviderSpec = {
  * and in its own Usage section.
  */
 const KIMI_DEGRADATION_NOTE =
-  "Token and context figures appear when Kimi reports them. Kimi sends no compaction events, so ADE detects compaction from a drop in context size.";
+  `Token and context figures appear when Kimi reports them. Kimi sends no compaction events, so ${BRAND.NAME} detects compaction from a drop in context size.`;
 
 export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
   {
     ...ACP_PROVIDER_METADATA.qwen,
     id: "qwen",
-    tagline: "ADE's pinned Qwen Code, with your Qwen configuration.",
+    tagline: `${BRAND.NAME}'s pinned Qwen Code, with your Qwen configuration.`,
     logoFamily: "qwen",
     credentialSource: "OPENAI_API_KEY (and optional OPENAI_BASE_URL), a custom provider in ~/.qwen/settings.json, or `qwen --auth-type=openai` / `qwen --auth-type=openai-responses`. Recent releases no longer ship the `qwen auth` subcommand.",
-    setup: "ADE downloads Qwen Code for this machine. Configure it the way Qwen documents; ADE does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.",
+    setup: `${BRAND.NAME} downloads Qwen Code for this machine. Configure it the way Qwen documents; ${BRAND.NAME} does not write ~/.qwen. Point Qwen at DashScope, OpenRouter, or any OpenAI-compatible server (OPENAI_BASE_URL plus a dummy or real key). Models you add with /model show up here after a refresh.`,
   },
   {
     ...ACP_PROVIDER_METADATA.kimi,
     id: "kimi",
     tagline: "Uses your Moonshot account through the kimi CLI.",
     logoFamily: "kimi",
-    credentialSource: "Signed in through `kimi login`; stored in its config.toml. ADE does not write that file.",
-    setup: "ADE downloads Kimi Code for this machine; sign in with `kimi login` (Sign in runs it with ADE's copy). Use `--region global` for kimi.ai or `--region mainland-cn` for kimi.com. ADE reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.",
+    credentialSource: `Signed in through \`kimi login\`; stored in its config.toml. ${BRAND.NAME} does not write that file.`,
+    setup: `${BRAND.NAME} downloads Kimi Code for this machine; sign in with \`kimi login\` (Sign in runs it with ${BRAND.NAME}'s copy). Use \`--region global\` for kimi.ai or \`--region mainland-cn\` for kimi.com. ${BRAND.NAME} reuses ~/.kimi-code and does not configure Kimi for you. On Windows the binary needs Git for Windows, because Git Bash is its shell.`,
     // Stated plainly rather than hidden behind a tooltip: Kimi's usage signals
     // are thinner than other providers', and a user who is not told why will
     // read a gap as a bug in ADE.
@@ -91,25 +92,25 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     id: "grok",
     tagline: "Uses your grok login, or XAI_API_KEY.",
     logoFamily: "xai",
-    credentialSource: "Signed in through `grok login` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ADE does not write Grok's config.",
-    setup: "ADE downloads the Grok CLI for this machine; sign in with `grok login` (Sign in runs it with ADE's copy), or set XAI_API_KEY. ADE passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ADE chats are the ones ADE can honour; Grok's own defaultMode is not the source of truth.",
+    credentialSource: `Signed in through \`grok login\` (GROK_HOME/auth.json, default ~/.grok/auth.json), or XAI_API_KEY. ${BRAND.NAME} does not write Grok's config.`,
+    setup: `${BRAND.NAME} downloads the Grok CLI for this machine; sign in with \`grok login\` (Sign in runs it with ${BRAND.NAME}'s copy), or set XAI_API_KEY. ${BRAND.NAME} passes GROK_HOME through to the ACP process and defaults to ~/.grok. Permission cards in ${BRAND.NAME} chats are the ones ${BRAND.NAME} can honour; Grok's own defaultMode is not the source of truth.`,
   },
   {
     ...ACP_PROVIDER_METADATA.devin,
     id: "devin",
-    tagline: "ADE's pinned Devin CLI, with your Devin login.",
+    tagline: `${BRAND.NAME}'s pinned Devin CLI, with your Devin login.`,
     logoFamily: "devin",
     credentialSource: "`devin auth login`, or WINDSURF_API_KEY.",
-    setup: "ADE downloads the Devin CLI for this machine; sign in with `devin auth login` (Sign in runs it with ADE's copy).",
+    setup: `${BRAND.NAME} downloads the Devin CLI for this machine; sign in with \`devin auth login\` (Sign in runs it with ${BRAND.NAME}'s copy).`,
     degradation: "No org Knowledge, Playbooks, or Secrets in local sessions.",
   },
   {
     ...ACP_PROVIDER_METADATA.antigravity,
     id: "antigravity",
-    tagline: "ADE's pinned Antigravity CLI (agy), with your Google sign-in.",
+    tagline: `${BRAND.NAME}'s pinned Antigravity CLI (agy), with your Google sign-in.`,
     logoFamily: "antigravity",
     credentialSource: "The agy CLI's own sign-in (Google account or Gemini Enterprise), kept in the OS keyring (Credential Manager, Keychain, Secret Service) or, where none works, ~/.gemini/antigravity-cli; or a Gemini API key / Agent Platform credentials. The same login as agy in your terminal.",
-    setup: "ADE downloads the Antigravity CLI for this machine and signs it in here: pick a method and choose Sign in. For a Google account, approve in a browser on any computer and paste the code Google shows. ADE does not write ~/.gemini; the CLI saves its own login.",
+    setup: `${BRAND.NAME} downloads the Antigravity CLI for this machine and signs it in here: pick a method and choose Sign in. For a Google account, approve in a browser on any computer and paste the code Google shows. ${BRAND.NAME} does not write ~/.gemini; the CLI saves its own login.`,
     degradation: "No rewind or edit of earlier turns.",
   },
 ];
@@ -160,7 +161,7 @@ function acpStatus(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provid
     // ADE's copy is not on this machine yet; the host's sentence says whether
     // it is downloading, failed, or has no build for this machine.
     const blocker = connection.blocker
-      ?? `ADE downloads ${spec.label} for this machine the first time it is used.`;
+      ?? `${BRAND.NAME} downloads ${spec.label} for this machine the first time it is used.`;
     return signInStatusView({ connected: false, connection, runtimeDetected: false, message: blocker, errorLine: connection.blocker ?? null });
   }
   return signInStatusView({
@@ -279,7 +280,7 @@ function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSetting
         Sign in
       </button>
       <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with ADE's copy in a terminal inside the
+        Runs <code style={{ fontFamily: MONO_FONT }}>{spec.loginCommand}</code> with {BRAND.NAME}'s copy in a terminal inside the
         sign-in sheet (downloading it first if needed). The sheet closes once you are signed in.
       </div>
     </div>

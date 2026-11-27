@@ -8,6 +8,7 @@
  */
 import type { AiClaudeAvailability, AiProviderConnectionStatus } from "../../../../shared/types";
 import { rendererPlatformAttribute } from "../../../lib/platform";
+import { BRAND } from "../../../../shared/brand";
 
 export type CliName = "claude" | "codex" | "cursor" | "droid" | "copilot";
 
@@ -53,7 +54,7 @@ export const CLI_TOOLS: CliTool[] = [
   {
     cli: "copilot",
     label: "GitHub Copilot",
-    authStory: "Runs on the Copilot runtime ADE downloads and reuses your GitHub sign-in.",
+    authStory: `Runs on the Copilot runtime ${BRAND.NAME} downloads and reuses your GitHub sign-in.`,
     loginCmd: "copilot login",
   },
 ];
@@ -81,16 +82,16 @@ export function buildCliMessage(
     return `Not signed in. Run: ${tool.loginCmd}`;
   }
   if (connection?.authAvailable && !connection.runtimeDetected) {
-    return `Signed in. ADE downloads ${tool.label} for this machine the first time it is used.`;
+    return `Signed in. ${BRAND.NAME} downloads ${tool.label} for this machine the first time it is used.`;
   }
-  return `ADE downloads ${tool.label} for this machine the first time it is used.`;
+  return `${BRAND.NAME} downloads ${tool.label} for this machine the first time it is used.`;
 }
 
 export function buildClaudeAvailabilityMessage(
   availability: AiClaudeAvailability | null | undefined,
 ): string {
   if (!availability?.binary.present) {
-    return "ADE's Claude Code is not on this machine yet. It downloads the first time this machine uses it.";
+    return `${BRAND.NAME}'s Claude Code is not on this machine yet. It downloads the first time this machine uses it.`;
   }
   if (!availability.auth.ready) {
     return availability.auth.detail || "Sign in to use Claude";
@@ -135,7 +136,7 @@ export function describeCredentialSource(
   if (localSource.source === "claude-credentials-file") return "Local credentials found in ~/.claude/.credentials.json.";
   if (localSource.source === "codex-auth-file") return "Local credentials found in ~/.codex/auth.json.";
   if (localSource.source === "cursor-env") return "Detected via CURSOR_API_KEY environment variable.";
-  if (localSource.source === "cursor-api-key-store") return "Cursor API key is stored in ADE encrypted storage.";
+  if (localSource.source === "cursor-api-key-store") return `Cursor API key is stored in ${BRAND.NAME} encrypted storage.`;
   if (localSource.source === "cursor-oauth") {
     const email = connection?.accountEmail?.trim();
     return email ? `Signed in as ${email}.` : "Signed in with Cursor.";
@@ -144,7 +145,7 @@ export function describeCredentialSource(
   if (localSource.source === "pi-auth-file") return "Detected via ~/.pi/agent/auth.json.";
   if (localSource.source === "pi-models-file") return "Detected via ~/.pi/agent/models.json.";
   if (localSource.source === "muse-env") return "Detected via META_API_KEY environment variable.";
-  if (localSource.source === "muse-api-key-store") return "Meta API key is stored in ADE encrypted storage.";
+  if (localSource.source === "muse-api-key-store") return `Meta API key is stored in ${BRAND.NAME} encrypted storage.`;
   if (localSource.source === "muse-auth-file") {
     return localSource.path ? `Signed in to Muse (${localSource.path}).` : "Signed in to Muse.";
   }

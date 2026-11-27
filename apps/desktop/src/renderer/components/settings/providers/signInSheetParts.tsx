@@ -22,6 +22,7 @@ import { providerBrand, providerThemeVars } from "./providerBrand";
 import { SolidLogo } from "./ProviderHero";
 import { CopyReportButton } from "./providerUi";
 import "./signInSheet.css";
+import { BRAND } from "../../../../shared/brand";
 
 /** The sign-in link's host ("claude.ai"), or null when there is no usable link. */
 export function linkHost(url: string | null): string | null {
@@ -288,9 +289,9 @@ export function SignInSteps({
 }) {
   const [one, two, three] = signInStepStates(stage);
   const steps: Array<{ state: StepState; label: string; hint?: string | null; body?: React.ReactNode }> = [
-    { state: one, label: "ADE started the sign-in", hint: one === "active" ? startHint ?? null : null },
+    { state: one, label: `${BRAND.NAME} started the sign-in`, hint: one === "active" ? startHint ?? null : null },
     { state: two, label: approveLabel, body: two === "active" ? children : null },
-    { state: three, label: "ADE checks the sign-in" },
+    { state: three, label: `${BRAND.NAME} checks the sign-in` },
   ];
   return (
     <ol className="ade-sis-steps" aria-label="Sign-in steps">

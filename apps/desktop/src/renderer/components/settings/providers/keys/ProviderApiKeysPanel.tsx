@@ -34,6 +34,7 @@ import {
 } from "./providerKeySpecs";
 import { providerActionMessage } from "../providerErrorMessage";
 import { accountKeyNameOf, useAccountProviderKeyNames } from "./useAccountProviderKeyNames";
+import { BRAND } from "../../../../../shared/brand";
 
 export type ProviderApiKeysPanelProps = {
   provider: SettingsProviderId;
@@ -49,8 +50,8 @@ export type ProviderApiKeysPanelProps = {
   onAfterRemove?: (credential: ApiCredentialSummary) => Promise<void>;
 };
 
-const READ_ONLY_LINE = "Managed outside ADE — clear the env/config value to remove.";
-const COMPUTER_ONLY_HINT = "Your ADE account doesn't hold this key, so other computers and ADE Cloud can't use it. Save it again while signed in to keep it in your account.";
+const READ_ONLY_LINE = `Managed outside ${BRAND.NAME} — clear the env/config value to remove.`;
+const COMPUTER_ONLY_HINT = `Your ${BRAND.NAME} account doesn't hold this key, so other computers and ${BRAND.CLOUD_NAME} can't use it. Save it again while signed in to keep it in your account.`;
 
 function KeyRow({
   credential,

@@ -39,6 +39,7 @@ import type { OpenCodeProviderDetail } from "../../OpenCodeProviderDetailModal";
 import { OpenCodeCustomProvidersPanel } from "../keys/OpenCodeCustomProvidersPanel";
 import type { ProvidersViewContext } from "../types";
 import { ProjectConfigNote } from "../ProjectConfigNote";
+import { BRAND } from "../../../../../shared/brand";
 
 function formatLocalModelLabel(modelId: string): string {
   const descriptor = getModelById(modelId);
@@ -176,9 +177,9 @@ function LocalModelServers({ ctx }: { ctx: ProvidersViewContext }) {
             ? entry.blocker
             : entry.detected
               ? entry.hasModels
-                ? `${entry.label} is reachable at ${entry.endpoint}. ADE can use ${entry.modelIds.length} loaded model${entry.modelIds.length === 1 ? "" : "s"} from this runtime${entry.health ? ` (${entry.health})` : ""}.`
+                ? `${entry.label} is reachable at ${entry.endpoint}. ${BRAND.NAME} can use ${entry.modelIds.length} loaded model${entry.modelIds.length === 1 ? "" : "s"} from this runtime${entry.health ? ` (${entry.health})` : ""}.`
                 : `${entry.label} responded, but no loaded models were reported yet. Load a model in ${entry.label} and refresh.`
-              : `${entry.label} was not detected. Start it, load at least one model, then refresh so ADE can discover its OpenAI-compatible server.`;
+              : `${entry.label} was not detected. Start it, load at least one model, then refresh so ${BRAND.NAME} can discover its OpenAI-compatible server.`;
 
           return (
             <div
@@ -344,7 +345,7 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.55 }}>
-          OpenCode powers every subscription, API key, and local model below. ADE runs its own pinned
+          OpenCode powers every subscription, API key, and local model below. {BRAND.NAME} runs its own pinned
           copy, never one you installed; download it from the left, then re-check.
         </div>
         <div>

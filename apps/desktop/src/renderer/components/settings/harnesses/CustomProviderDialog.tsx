@@ -53,6 +53,7 @@ import {
 import { routeTestKey, type HarnessReach } from "./useHarnessReach";
 import { FieldError } from "./wizardPrimitives";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Create or edit a Custom provider, on one page.
@@ -112,7 +113,7 @@ function keepAgentKeys<T extends Partial<Record<HarnessPresetAgentKey, unknown>>
 
 /** One sentence for a save that threw, rather than a form that froze. */
 function saveFailureText(error: unknown): string {
-  return plainErrorText(error, "ADE couldn't save the provider.");
+  return plainErrorText(error, `${BRAND.NAME} couldn't save the provider.`);
 }
 
 function normalizeHex(value: string): string {
@@ -584,7 +585,7 @@ export function CustomProviderDialog({
               model={{
                 id: "custom-provider-account-sync",
                 tone: "warning",
-                title: "Saved on this computer, but not on your ADE account yet",
+                title: `Saved on this computer, but not on your ${BRAND.NAME} account yet`,
                 detail: `${accountError} Until it reaches the account, another computer may not have it. Retry to send it again.`,
               }}
             />

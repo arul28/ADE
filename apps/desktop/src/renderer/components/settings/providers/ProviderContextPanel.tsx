@@ -39,6 +39,7 @@ import { formatTokens, ipcErrorMessage } from "../../../lib/format";
 import { isMacPlatform, isWindowsPlatform } from "../../../lib/platform";
 import { settingsRouteFor, settingsEntryById } from "../settingsManifest";
 import { showToast } from "../../app/toast/toastStore";
+import { BRAND } from "../../../../shared/brand";
 
 function revealLabel(): string {
   if (isMacPlatform()) return "Show in Finder";
@@ -59,8 +60,8 @@ function RowActions({ item, canReveal }: { item: ProviderContextItem; canReveal:
         <button
           type="button"
           className="ade-pv-ctx-action"
-          title={`Open ${entry.label} in ADE Settings`}
-          aria-label={`Open ${entry.label} in ADE Settings`}
+          title={`Open ${entry.label} in ${BRAND.NAME} Settings`}
+          aria-label={`Open ${entry.label} in ${BRAND.NAME} Settings`}
           onClick={() => navigate(settingsRouteFor(entry.id))}
         >
           <GearSix size={12} />
@@ -106,7 +107,7 @@ const TIMING_LABEL: Record<ProviderContextTiming, string> = {
   "on-demand": "When used",
 };
 
-const COVERAGE_LABEL = { good: "Most items", basic: "ADE's items" } as const;
+const COVERAGE_LABEL = { good: "Most items", basic: `${BRAND.NAME}'s items` } as const;
 
 function OwnerIcon({ owner, logo }: { owner: ProviderContextOwner; logo: React.ReactNode }) {
   switch (owner) {
@@ -120,7 +121,7 @@ function OwnerIcon({ owner, logo }: { owner: ProviderContextOwner; logo: React.R
 function ownerLabel(owner: ProviderContextOwner, providerLabel: string): string {
   switch (owner) {
     case "harness": return `${providerLabel} itself`;
-    case "ade": return "ADE";
+    case "ade": return BRAND.NAME;
     case "user": return "Your setup";
     case "project": return "This project";
   }
@@ -135,7 +136,7 @@ function tokenText(item: Pick<ProviderContextItem, "tokens" | "sizeKind">): stri
 
 function tokenTitle(item: Pick<ProviderContextItem, "sizeKind">): string {
   switch (item.sizeKind) {
-    case "exact": return "Estimated from the exact text ADE sends, at about 4 characters per token";
+    case "exact": return `Estimated from the exact text ${BRAND.NAME} sends, at about 4 characters per token`;
     case "estimated": return "Estimated from the file or setting, at about 4 characters per token";
     case "measured": return "From real chats on this machine";
     default: return "Not known before a chat starts";

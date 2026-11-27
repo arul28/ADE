@@ -12,6 +12,7 @@ import type { TerminalToolType } from "../../../../shared/types";
 import type { SignInStage } from "./signInSheetParts";
 import { SignInSheetFrame, useSuccessHold, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 /** The terminal sign-in re-reads the saved login this often (its old cadence). */
 const TERMINAL_AUTH_POLL_MS = 4_000;
@@ -120,7 +121,7 @@ export function TerminalSignInSheet({
         terminalRef.current = { ptyId: created.ptyId, sessionId: created.sessionId };
         setTerminal({ ptyId: created.ptyId, sessionId: created.sessionId });
       } catch (err) {
-        if (!cancelled) setError(plainErrorText(err, "ADE couldn't open the sign-in terminal."));
+        if (!cancelled) setError(plainErrorText(err, `${BRAND.NAME} couldn't open the sign-in terminal.`));
       }
     })();
     return () => {
@@ -199,7 +200,7 @@ export function TerminalSignInSheet({
     stepExtra: terminal ? (
       <>
         <span className="ade-sis-hint">
-          ADE runs <code>{command}</code> here. Answer its questions; the sheet closes once you are signed in.
+          {BRAND.NAME} runs <code>{command}</code> here. Answer its questions; the sheet closes once you are signed in.
         </span>
         {/*
           A definite height, not just a min-height: TerminalView fills its

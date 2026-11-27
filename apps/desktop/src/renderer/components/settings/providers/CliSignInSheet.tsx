@@ -19,6 +19,7 @@ import { linkHost, signInAccountMismatch, type SignInStage } from "./signInSheet
 import { isCheckingCode, SignInSheetFrame, STATUS_POLL_MS, useSuccessHold, verifyingHintFor, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import type { ProvidersViewContext } from "./types";
+import { BRAND } from "../../../../shared/brand";
 
 /** Status reads that may fail in a row (a relay hiccup) before the CLI sheet gives up. */
 const STATUS_READ_RETRIES = 3;
@@ -47,7 +48,7 @@ type CliPhase = "form" | "signing" | "success" | "failed";
 
 function cliStartFailure(err: unknown): string {
   if (isUnsupportedAdeActionError(err)) {
-    return "That machine runs an older ADE that cannot sign in here. Update ADE there, or sign in from its Settings.";
+    return `That machine runs an older ${BRAND.NAME} that cannot sign in here. Update ${BRAND.NAME} there, or sign in from its Settings.`;
   }
   return providerActionMessage(err, "That sign-in could not be started.");
 }
@@ -143,7 +144,7 @@ export function CliSignInSheet({ provider, providerLabel, pin, isThisMachine, ma
   const start = useCallback(async () => {
     const begin = window.ade?.ai?.cliLoginStart;
     if (!begin) {
-      setError("This window cannot run that sign-in. Update ADE, or sign in from a terminal.");
+      setError(`This window cannot run that sign-in. Update ${BRAND.NAME}, or sign in from a terminal.`);
       setPhase("failed");
       return;
     }
@@ -273,7 +274,7 @@ export function CliSignInSheet({ provider, providerLabel, pin, isThisMachine, ma
         ? { title: "The sign-in could not start.", detail: error }
         : {
             title: login.state === "cancelled" ? "The sign-in was stopped." : "Sign-in did not complete.",
-            detail: error ?? login.message ?? `ADE found no working ${providerLabel} login. It saves one only after you approve in the browser.`,
+            detail: error ?? login.message ?? `${BRAND.NAME} found no working ${providerLabel} login. It saves one only after you approve in the browser.`,
             stopped: login.state === "cancelled",
           }
       : null,
@@ -418,7 +419,7 @@ export function SettingsAgentCliSignIn({
       <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
         {again
           ? `Runs ${providerLabel}'s own sign-in again on ${where}, to switch accounts or renew the login. The new login replaces the one it has now.`
-          : `Runs ${providerLabel}'s own sign-in with ADE's copy on ${where} (downloading it first if needed). You approve in the browser, and ${providerLabel} keeps the login in its usual place.`}
+          : `Runs ${providerLabel}'s own sign-in with ${BRAND.NAME}'s copy on ${where} (downloading it first if needed). You approve in the browser, and ${providerLabel} keeps the login in its usual place.`}
       </div>
       {sheet.element}
     </div>

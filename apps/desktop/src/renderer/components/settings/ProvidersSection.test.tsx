@@ -1257,7 +1257,7 @@ describe("ProvidersSection", () => {
 
     renderProvidersSection("opencode");
 
-    expect(await screen.findByText(/ADE downloads it for this machine/)).toBeTruthy();
+    expect(await screen.findByText(/Daex downloads it for this machine/)).toBeTruthy();
     expect(screen.queryByText(/npm i -g/)).toBeNull();
     // The group body is hidden while uninstalled.
     expect(screen.queryByText(/^All providers/)).toBeNull();
@@ -1381,7 +1381,7 @@ describe("ProvidersSection", () => {
       card.click();
     });
 
-    expect(screen.getByText(/Managed outside ADE/)).toBeTruthy();
+    expect(screen.getByText(/Managed outside Daex/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Disconnect Z.AI" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Verify" })).toBeNull();
     expect(screen.queryByLabelText("Add Z.AI key")).toBeNull();

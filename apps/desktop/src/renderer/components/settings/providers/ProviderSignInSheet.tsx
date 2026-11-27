@@ -29,6 +29,7 @@ import { useState } from "react";
 import { isAntigravitySignInRunning, type AntigravitySignInState } from "../../../../shared/types";
 import { signInAccountMismatch, signInMachineWords, type SignInStage } from "./signInSheetParts";
 import { SignInSheetFrame, useSuccessHold, type SignInMachine, type SignInSheetView } from "./signInSheetFrame";
+import { BRAND } from "../../../../shared/brand";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ export function CursorSignInSheetView({
     startHint: running ? "Cursor opens its sign-in page in your browser…" : null,
     url: loginUrl,
     deviceCode: null,
-    codeHint: "Sign in on Cursor's page. ADE makes a Cursor key for itself; it does not copy Cursor app cookies.",
+    codeHint: `Sign in on Cursor's page. ${BRAND.NAME} makes a Cursor key for itself; it does not copy Cursor app cookies.`,
     expectedAccount,
     account,
     failure: outcome && !outcome.ok ? { title: "Sign-in did not complete.", detail: outcome.error || "Cursor sign-in failed." } : null,

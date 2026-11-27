@@ -5,6 +5,7 @@ import { providerSupportsManualCompact } from "../../../../shared/contextCompact
 import { ModernRow, ModernRows } from "../primitives/SettingsModern";
 import { showToast } from "../../app/toast/toastStore";
 import { plainErrorText } from "../../../lib/plainError";
+import { BRAND } from "../../../../shared/brand";
 
 const FIELD_CLASS = "rounded border border-border bg-background px-2 py-1 text-xs";
 const NUMBER_INPUT_CLASS = `w-28 ${FIELD_CLASS}`;
@@ -19,7 +20,7 @@ const CLAUDE_WINDOW_STEPS = Array.from({ length: 10 }, (_, i) => (i + 1) * 100_0
 function compactFirstIdleHint(provider: string): string {
   switch (provider) {
     case "claude":
-      return "After an hour idle, or 5 minutes when the account uses the 5-minute cache. In Always, ADE also compacts a large chat 54 minutes in, while the cache is still warm.";
+      return `After an hour idle, or 5 minutes when the account uses the 5-minute cache. In Always, ${BRAND.NAME} also compacts a large chat 54 minutes in, while the cache is still warm.`;
     case "codex":
       return "OpenAI's prompt cache lasts 30 minutes, so the pill offers to compact a large chat once it has been idle that long. Nothing runs on its own.";
     default:
@@ -50,10 +51,10 @@ export function CompactionSettings({ provider, value, account = false, onChange 
   const save = async (next: ProviderCompactionSettings | null) => {
     setSaving(true);
     try { await onChange(next); }
-    catch (error) { showToast({ tone: "error", title: "Could not save compaction setting", message: plainErrorText(error, "ADE couldn't save the compaction setting.") }); }
+    catch (error) { showToast({ tone: "error", title: "Could not save compaction setting", message: plainErrorText(error, `${BRAND.NAME} couldn't save the compaction setting.`) }); }
     finally { setSaving(false); }
   };
-  if (!supported) return <p className="text-xs text-muted-fg">This provider compacts by itself. ADE cannot change when.</p>;
+  if (!supported) return <p className="text-xs text-muted-fg">This provider compacts by itself. {BRAND.NAME} cannot change when.</p>;
   const settings = value ?? {};
   const control = (key: "atTokens" | "reserveTokens" | "keepRecentTokens", label: string, max?: number) => (
     <input aria-label={label} type="number" min={1} max={max} disabled={saving} key={settings[key] ?? "default"} defaultValue={settings[key] ?? ""} placeholder={key === "atTokens" ? "Auto" : "Default"}

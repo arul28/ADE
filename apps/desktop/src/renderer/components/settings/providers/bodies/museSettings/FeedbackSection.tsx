@@ -9,6 +9,7 @@ import type {
 } from "../../../../../../shared/museSettings";
 import type { MuseRun } from "./museSettingsShared";
 import { ErrorNotice, FIELD, SMALL_BUTTON, SectionHeader, TEXT_MUTED, isOneOf } from "./museSettingsShared";
+import { BRAND } from "../../../../../../shared/brand";
 
 const CLASSIFICATIONS: Record<MuseFeedbackClassification, string> = {
   bug: "Bug",
@@ -83,7 +84,7 @@ export function FeedbackSection({ run }: { run: MuseRun }) {
             value={note}
             onChange={(event) => setNote(event.target.value)}
             rows={4}
-            placeholder="What happened? This goes to Meta, not to ADE."
+            placeholder={`What happened? This goes to Meta, not to ${BRAND.NAME}.`}
             style={{ ...FIELD, fontFamily: SANS_FONT, resize: "vertical" }}
           />
           <label style={{ ...TEXT_MUTED, display: "flex", alignItems: "center", gap: 6 }}>

@@ -107,7 +107,7 @@ describe("ProviderApiKeysPanel", () => {
     render(<ProviderApiKeysPanel provider="claude" providerLabel="Claude Code" />);
 
     await screen.findByText("Environment");
-    expect(screen.getByText("Managed outside ADE — clear the env/config value to remove.")).toBeTruthy();
+    expect(screen.getByText("Managed outside Daex — clear the env/config value to remove.")).toBeTruthy();
     expect(screen.queryByText("Replace")).toBeNull();
     expect(screen.queryByText("Delete")).toBeNull();
   });

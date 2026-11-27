@@ -21,6 +21,7 @@ import {
 } from "../../../../../shared/types/providerInstances";
 import type { OpenProjectBinding } from "../../../../../shared/types/core";
 import { accountIdentityLine } from "./accountPresentation";
+import { BRAND } from "../../../../../shared/brand";
 
 export type RowMenuAction = "signIn" | "signOut" | "remove";
 
@@ -361,10 +362,10 @@ export function AccountCard({
             ) : menuView === "onExtraUsage" ? choicePage({
               title: "Extra usage",
               lead: "What happens when a turn passes the plan limit and Claude starts to bill extra usage.",
-              footnote: "Applies to ADE chats on this account, on this machine.",
+              footnote: `Applies to ${BRAND.NAME} chats on this account, on this machine.`,
               choices: [
                 { checked: !stopsOnExtraUsage, patch: { onExtraUsage: null }, text: "Continue", note: "Default. The turn keeps going and Claude bills the extra usage." },
-                { checked: stopsOnExtraUsage, patch: { onExtraUsage: "stop" }, text: "Stop the turn", note: "ADE stops the turn, as it does at a plan limit. One request can be billed before the stop." },
+                { checked: stopsOnExtraUsage, patch: { onExtraUsage: "stop" }, text: "Stop the turn", note: `${BRAND.NAME} stops the turn, as it does at a plan limit. One request can be billed before the stop.` },
               ],
             }) : menuView === "mainCache" ? choicePage({
               title: "Main chat cache",

@@ -22,6 +22,7 @@ import {
   useEnterOpensSignInPage,
 } from "./providers/signInSheetParts";
 import { plainErrorText } from "../../lib/plainError";
+import { BRAND } from "../../../shared/brand";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -31,7 +32,7 @@ export type OAuthOpenTarget = "ade-browser" | "system" | "copy" | "view";
 
 const OPEN_TARGET_OPTIONS: Array<{ id: OAuthOpenTarget; label: string }> = [
   { id: "system", label: "System browser" },
-  { id: "ade-browser", label: "ADE browser" },
+  { id: "ade-browser", label: `${BRAND.NAME} browser` },
   { id: "copy", label: "Copy link" },
   { id: "view", label: "View full link" },
 ];
@@ -253,7 +254,7 @@ export function OAuthConnectModal({
       startPendingRef.current = false;
       if (cancelRequestedRef.current) return;
       setPhase("error");
-      setErrorMessage(plainErrorText(err, "ADE couldn't start that sign-in."));
+      setErrorMessage(plainErrorText(err, `${BRAND.NAME} couldn't start that sign-in.`));
     }
   };
 
@@ -289,8 +290,8 @@ export function OAuthConnectModal({
   const waitingHint =
     openTarget === "ade-browser"
       ? host
-        ? `We opened ${host} in ADE’s browser.`
-        : "We opened ADE’s browser."
+        ? `We opened ${host} in ${BRAND.NAME}’s browser.`
+        : `We opened ${BRAND.NAME}’s browser.`
       : openTarget === "system"
         ? host
           ? `We opened ${host} in your system browser.`

@@ -26,6 +26,7 @@ import { useSettingsAction } from "../../useSettingsAction";
 import { usePolling } from "../../../../hooks/usePolling";
 import { isAntigravitySignInRunning, type AntigravityAuthMethod, type AntigravitySignInState } from "../../../../../shared/types/config";
 import type { ProvidersViewContext } from "../types";
+import { BRAND } from "../../../../../shared/brand";
 
 const POLL_MS = 1_000;
 
@@ -135,7 +136,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
 
   const start = useCallback(() => runAction("start", async () => {
     const begin = window.ade?.ai?.antigravitySignInStart;
-    if (!begin) throw new Error(`ADE on ${where} cannot sign in to Antigravity yet. Update ADE there and try again.`);
+    if (!begin) throw new Error(`${BRAND.NAME} on ${where} cannot sign in to Antigravity yet. Update ${BRAND.NAME} there and try again.`);
     apply(await begin({
       method,
       ...(method === "agent-platform"
@@ -213,7 +214,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <input aria-label="Google Cloud project" placeholder="Project (optional with an API key)" value={project} onChange={(event) => setProject(event.target.value)} style={textInput} />
               <input aria-label="Google Cloud location" placeholder="Location, e.g. global or us-central1" value={location} onChange={(event) => setLocation(event.target.value)} style={textInput} />
-              <input aria-label="Agent Platform API key" type="password" placeholder="API key (optional; saved in ADE's key store there)" value={apiKey} onChange={(event) => setApiKey(event.target.value)} style={textInput} />
+              <input aria-label="Agent Platform API key" type="password" placeholder={`API key (optional; saved in ${BRAND.NAME}'s key store there)`} value={apiKey} onChange={(event) => setApiKey(event.target.value)} style={textInput} />
             </div>
           ) : null}
           <button
@@ -228,7 +229,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
               : "Connect"}
           </button>
           <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            Runs ADE's copy of Antigravity on {where} (downloading it first if needed). The login is the
+            Runs {BRAND.NAME}'s copy of Antigravity on {where} (downloading it first if needed). The login is the
             agent's own, shared with other apps that use it there.
           </div>
         </>
