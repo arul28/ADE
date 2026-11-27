@@ -17,7 +17,7 @@ func displayLegacyDefaultName(_ name: String) -> String {
   }
   if rest.hasPrefix(" Cloud · "), rest.count > " Cloud · ".count { return "\(Brand.cloudName)\(rest.dropFirst(" Cloud".count))" }
   if rest == " computer" || rest == " computer copy" { return "\(Brand.name)\(rest)" }
-  for kind in [" CLI on ", " agents on "] where rest.hasPrefix(kind) && rest.count > kind.count {
+  for kind in [" CLI on ", " agents on ", " Desktop on "] where rest.hasPrefix(kind) && rest.count > kind.count {
     return "\(Brand.name)\(rest)"
   }
   return name
