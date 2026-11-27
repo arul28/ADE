@@ -148,7 +148,7 @@ describe("buildCodingAgentSystemPrompt", () => {
 
     expect(result).not.toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
     expect(result).not.toContain("/repo/.ade/worktrees/chat-lane/resources/agent-skills");
-    expect(result).toContain("read the matching `ade-*` skill");
+    expect(result).toContain("read the matching `daex-*` skill");
   });
 
   it("names an explicitly supplied skill root verbatim", () => {

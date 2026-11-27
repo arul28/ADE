@@ -274,7 +274,7 @@ describe("ctoStateService", () => {
     expect(preview.sections[3]?.content).toContain("createTerminal");
     expect(preview.sections[3]?.content).toContain("Model Selection");
     expect(preview.sections[3]?.content).toContain("daex actions run <domain.action>");
-    expect(preview.sections[3]?.content).toContain("bundled `ade-*` skills");
+    expect(preview.sections[3]?.content).toContain("bundled `daex-*` skills");
     // Capabilities section: schema authority plus cross-tool operating rules
     expect(preview.sections[4]?.content).toContain("Daex operator tools");
     expect(preview.sections[4]?.content).toContain("registered Daex operator tool schemas");
