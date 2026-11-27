@@ -146,61 +146,61 @@ function describe(target: OpenTarget): { title: string; description: string } {
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open lane in ADE",
-        description: `Open this ADE lane (${target.laneId.slice(0, 8)}…).`,
+        title: "Open lane in Daex",
+        description: `Open this Daex lane (${target.laneId.slice(0, 8)}…).`,
       };
     case "session":
       return {
-        title: "Open chat in ADE",
+        title: "Open chat in Daex",
         description: target.laneId
-          ? `Open this ADE chat in lane ${target.laneId.slice(0, 8)}…`
-          : "Open this ADE chat.",
+          ? `Open this Daex chat in lane ${target.laneId.slice(0, 8)}…`
+          : "Open this Daex chat.",
       };
     case "file":
       return {
-        title: "Open file in ADE",
+        title: "Open file in Daex",
         description: target.line
-          ? `Open ${target.path} at line ${target.line} in ADE.`
-          : `Open ${target.path} in ADE.`,
+          ? `Open ${target.path} at line ${target.line} in Daex.`
+          : `Open ${target.path} in Daex.`,
       };
     case "commit":
       return {
-        title: "Open commit in ADE",
-        description: `Open commit ${target.sha.slice(0, 12)} in ADE.`,
+        title: "Open commit in Daex",
+        description: `Open commit ${target.sha.slice(0, 12)} in Daex.`,
       };
     case "artifact":
       return {
-        title: "Open artifact in ADE",
-        description: `Open proof artifact ${target.artifactId} in ADE.`,
+        title: "Open artifact in Daex",
+        description: `Open proof artifact ${target.artifactId} in Daex.`,
       };
     case "branch":
       return {
-        title: `${target.repo} · ${target.branch} — Open in ADE`,
+        title: `${target.repo} · ${target.branch} — Open in Daex`,
         description: target.pr
-          ? `Branch ${target.branch} (PR #${target.pr}) shared via ADE. One click to open its worktree.`
-          : `Branch ${target.branch} shared via ADE. One click to open its worktree.`,
+          ? `Branch ${target.branch} (PR #${target.pr}) shared via Daex. One click to open its worktree.`
+          : `Branch ${target.branch} shared via Daex. One click to open its worktree.`,
       };
     case "pr":
       return {
-        title: `${target.repo} #${target.number} — Open in ADE`,
-        description: `Pull request #${target.number} in ${target.repo}. Open it in ADE.`,
+        title: `${target.repo} #${target.number} — Open in Daex`,
+        description: `Pull request #${target.number} in ${target.repo}. Open it in Daex.`,
       };
     case "linear-issue":
       return {
-        title: `${target.issue} — Open in ADE`,
+        title: `${target.issue} — Open in Daex`,
         description: target.branch
-          ? `Linear issue ${target.issue} on branch ${target.branch}. Click to open in ADE.`
-          : `Open Linear issue ${target.issue} in ADE.`,
+          ? `Linear issue ${target.issue} on branch ${target.branch}. Click to open in Daex.`
+          : `Open Linear issue ${target.issue} in Daex.`,
       };
     case "settings":
       return {
-        title: "Open a setting in ADE",
-        description: "Opens this setting in ADE's Settings.",
+        title: "Open a setting in Daex",
+        description: "Opens this setting in Daex's Settings.",
       };
     case "unknown":
       return {
-        title: "Open in ADE",
-        description: "ADE is a local-first desktop app for orchestrating parallel AI coding agents.",
+        title: "Open in Daex",
+        description: "Daex is a local-first desktop app for orchestrating parallel AI coding agents.",
       };
   }
 }
