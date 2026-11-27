@@ -1,4 +1,3 @@
-import { BRAND } from "./brand";
 /**
  * GitHub shows a repository's autolinks only to an account with admin rights
  * on it, through a token or app that has Administration read access, and
@@ -60,8 +59,11 @@ export function githubAutolinksAccessError(
     );
   }
   if (access?.admin === true) {
+    // Older clients match this text: a released desktop reads it from this
+    // machine's brain (Settings is pinned to the machine) and only then hides
+    // Add and shows the admin commands. Keep "ADE's" until those clients age out.
     return new Error(
-      `You're an admin of ${repo}, but ${BRAND.NAME}'s GitHub sign-in can't read its links. `
+      `You're an admin of ${repo}, but ADE's GitHub sign-in can't read its links. `
         + "It needs Administration read access: sign in with the GitHub CLI, or give the token that permission.",
     );
   }
