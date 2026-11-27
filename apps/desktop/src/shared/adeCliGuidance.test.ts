@@ -74,7 +74,7 @@ describe("Work board status guidance", () => {
     expect(guidance).toContain("daex chat note");
     expect(guidance).toContain("daex chat ask");
     // ...and so is the index that names the skill carrying the rest.
-    expect(guidance).toContain("`ade-cli-control-plane`");
+    expect(guidance).toContain("`daex-cli-control-plane`");
   });
 });
 

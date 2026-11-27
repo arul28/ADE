@@ -1,5 +1,12 @@
 import { STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
-import { adeWithheldAgentSkills, formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
+import {
+  adeWithheldAgentSkills,
+  formatAdeAgentSkillRootsForPrompt,
+  getAdeAgentSkillRootsForPrompt,
+  LEGACY_BUNDLED_AGENT_SKILL_NAMES,
+  withLegacyAgentSkillNames,
+  type BundledAgentSkillName,
+} from "./agentSkillRoots";
 import { SESSION_ACTIVITY_VALUES, type AgentSpawnLineage } from "./types/sessions";
 
 /**
@@ -10,46 +17,46 @@ import { SESSION_ACTIVITY_VALUES, type AgentSpawnLineage } from "./types/session
  *
  * This must name every directory under apps/desktop/resources/agent-skills — a
  * skill missing here is invisible to every agent, which is exactly what
- * happened to `ade-scene`. bundledAgentSkills.test.ts binds this list, the
+ * happened to the scene skill. bundledAgentSkills.test.ts binds this list, the
  * packaging roster in scripts/bundled-agent-skills.mjs, and the real directory
- * together; adding a skill to only one of the three fails that test.
+ * together; adding a skill to only one of the three fails that test. The set
+ * of names is `BUNDLED_AGENT_SKILL_NAMES` in agentSkillRoots.ts.
  */
 export const adeBundledAgentSkills = [
-  "ade-cli-control-plane",
-  "ade-computer-use",
-  "ade-apple",
-  "ade-android",
-  "ade-harnesses",
-  "ade-ios-simulator",
-  "ade-app-control",
-  "ade-desktop",
-  "ade-browser",
-  "ade-pr-workflows",
-  "ade-lanes-git",
-  "ade-linear",
-  "ade-webhooks",
-  "ade-mcp-client",
-  "ade-proof-artifacts",
-  "ade-deeplinks",
-  "ade-search",
-  "ade-scene",
-  "ade-cloud",
-] as const;
+  "daex-cli-control-plane",
+  "daex-computer-use",
+  "daex-apple",
+  "daex-android",
+  "daex-harnesses",
+  "daex-app-control",
+  "daex-browser",
+  "daex-pr-workflows",
+  "daex-lanes-git",
+  "daex-linear",
+  "daex-webhooks",
+  "daex-mcp-client",
+  "daex-proof-artifacts",
+  "daex-deeplinks",
+  "daex-search",
+  "daex-scene",
+  "daex-cloud",
+] as const satisfies readonly BundledAgentSkillName[];
 
 /**
- * Old skill names kept so `ade skill show <old name>` and `/ade:<old name>`
- * still resolve. They are not advertised: each SKILL.md declares
- * `disable-model-invocation`, and the prompt's skill line leaves them out, so
- * no agent pays for two names of one skill.
+ * Old skill names (`ade-browser`, and the retired `ade-desktop`) kept so
+ * `ade skill show <old name>` and ADE MCP prompts still resolve them
+ * (`LEGACY_BUNDLED_AGENT_SKILL_ALIASES`). They are never advertised, and a
+ * folder that still carries one (an older build's skill root) is left out of
+ * listings, so no agent pays for two names of one skill.
  */
-export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = new Set(["ade-desktop", "ade-ios-simulator"]);
+export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = LEGACY_BUNDLED_AGENT_SKILL_NAMES;
 
 /**
  * Skills for apps that reach ADE from outside, over ADE MCP (where they are
  * MCP prompts). An agent inside an ADE chat never needs them, so its prompt's
  * skill line leaves them out.
  */
-export const adeOutsideClientAgentSkills: ReadonlySet<string> = new Set(["ade-mcp-client"]);
+export const adeOutsideClientAgentSkills: ReadonlySet<string> = new Set(withLegacyAgentSkillNames(["daex-mcp-client"]));
 
 /** The names a prompt lists: no deprecated aliases, no outside-client skills, no skills withheld from this account. */
 export function adeAdvertisedAgentSkillNames(): string[] {

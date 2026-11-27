@@ -7,6 +7,7 @@ import { isPathEscapeError, readFileWithinRootSecure } from "../../../../desktop
 import {
   adeAccessWithheldAgentSkills,
   adeWithheldAgentSkills,
+  canonicalBundledAgentSkillName,
   getAgentSkillRootsWithSource,
   type AgentSkillRootSource,
 } from "../../../../desktop/src/shared/agentSkillRoots";
@@ -238,8 +239,15 @@ export function readAgentSkill(
   const nameKey = normalizedSkillName(name);
   if (!nameKey) return null;
   // Asked for by name: only the access rules hold a skill back, not this host's platform.
-  const skill = visibleCatalogFor(options, adeAccessWithheldAgentSkills())
-    .find((candidate) => normalizedSkillName(candidate.entry.name) === nameKey);
+  const visible = visibleCatalogFor(options, adeAccessWithheldAgentSkills());
+  // The exact name first, so a project skill that carries an old name still
+  // wins; then the bundled skill an old or plugin-scoped name means
+  // (`ade-browser`, `ade:ade-browser`, `daex:daex-browser` -> `daex-browser`).
+  const aliasKey = canonicalBundledAgentSkillName(name);
+  const skill = visible.find((candidate) => normalizedSkillName(candidate.entry.name) === nameKey)
+    ?? (aliasKey !== nameKey
+      ? visible.find((candidate) => normalizedSkillName(candidate.entry.name) === aliasKey)
+      : undefined);
   if (!skill) return null;
   return { entry: { ...skill.entry }, body: skill.body, content: skill.content };
 }
