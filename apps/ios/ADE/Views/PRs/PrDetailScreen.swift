@@ -457,7 +457,7 @@ struct PrDetailView: View {
     }
     // A bare `ADE-123` in the PR text links only with the workspace's team
     // keys. Work normally reads them; a PR opened first asks once.
-    .task(id: syncService.activeProjectId) {
+    .task(id: syncService.activeProjectId ?? syncService.activeAccountProjectId) {
       await syncService.ensureLinearWorkspaceTeamKeys()
     }
     .onChange(of: snapshot != nil) { _, loaded in

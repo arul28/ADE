@@ -12507,7 +12507,11 @@ final class SyncService: ObservableObject {
       WorkThreadEntityDirectory.shared.record(linearWorkspaceTeamKeys: [])
       return
     }
-    let scope = "\(activeProjectId ?? ""):\(readsThroughAccount ? "account" : activeProjectHostIdentity ?? "")"
+    // Account projects have no `activeProjectId`; their own id keeps one
+    // project's teams from linking in another's.
+    let scope = readsThroughAccount
+      ? "account:\(activeProjectId ?? activeAccountProjectId ?? "")"
+      : "\(activeProjectId ?? ""):\(activeProjectHostIdentity ?? "")"
     if let read = linearWorkspaceTeamKeysRead, read.scope == scope {
       if !force && Date().timeIntervalSince(read.at) < 60 * 60 { return }
     } else {
