@@ -3,6 +3,10 @@
 Typed Node / Electron-main client that spawns a slim Daex runtime as a sidecar
 and exposes chat as durable named threads.
 
+Formerly `@ade-dev/sdk`. To move, change your imports to `@daex-dev/sdk`; the
+`Ade*` names (`createAdeChat`, `AdeError`, ...) still work as deprecated aliases
+of the `Daex*` names.
+
 **Docs:** [Daex SDK](https://ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
 
 | Page | What it covers |

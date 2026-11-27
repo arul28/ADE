@@ -2,6 +2,10 @@
 
 Embeddable React chat components over `@daex-dev/sdk`.
 
+Formerly `@ade-dev/chat-ui`. To move, change your imports to `@daex-dev/chat-ui`;
+the `Ade*` names (`AdeChat`, `useAdeThread`, ...) still work as deprecated
+aliases of the `Daex*` names.
+
 **Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [Daex SDK](https://ade-app.dev/docs/sdk/overview)
 
 This package renders an agent conversation for **your** users, not for Daex
