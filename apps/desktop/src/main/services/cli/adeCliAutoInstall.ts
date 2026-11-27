@@ -25,6 +25,13 @@ import type { createAdeCliService } from "./adeCliService";
  * Failure is silent and non-fatal: this is a convenience and must never block
  * or error app startup. The Settings card remains the surface a user reads and
  * the way to repair or reinstall.
+ *
+ * `daex` is the command's name now and `ade` its permanent alias. A fresh
+ * install writes both. A machine settled before `daex` existed gets its
+ * `daex` once (`addDaexAliasOnce`), and only when the `ade` on PATH is the
+ * one ADE installed: the installer is re-run, which rewrites `ade` as it was
+ * and adds `daex` beside it, in a folder already on PATH, so no profile
+ * changes. Homebrew and install.sh add `daex` themselves.
  */
 
 export type AdeCliAutoInstallOutcome =
@@ -111,7 +118,10 @@ async function attemptAdeCliAutoInstall(
   }
   const repair = repairRequested || staleAppImageShim;
   const state = args.readState();
-  if (state.adeCliAutoInstall && !repair) return "already-settled";
+  if (state.adeCliAutoInstall && !repair) {
+    await addDaexAliasOnce(args, state.adeCliAutoInstall);
+    return "already-settled";
+  }
 
   const settle = (marker: AdeCliAutoInstall): void => {
     // Re-read: the state file is shared with the rest of main, and this task is
@@ -146,7 +156,8 @@ async function attemptAdeCliAutoInstall(
     });
     return "failed";
   }
-  settle({ completedAt, outcome: "installed", command: result.status.command });
+  // A fresh install writes `daex` beside `ade`, so there is nothing left to add.
+  settle({ completedAt, outcome: "installed", command: result.status.command, daexAliasCheckedAt: completedAt });
   args.logger.info("ade_cli.auto_install", {
     ok: true,
     command: result.status.command,
@@ -154,4 +165,48 @@ async function attemptAdeCliAutoInstall(
     message: result.message,
   });
   return "installed";
+}
+
+/**
+ * Add `daex` beside an `ade` that a launch before `daex` existed installed.
+ * Runs once per machine (the marker's `daexAliasCheckedAt`), whatever the
+ * outcome, except when this build cannot install at all: an update retries.
+ */
+async function addDaexAliasOnce(args: AdeCliAutoInstallArgs, marker: AdeCliAutoInstall): Promise<void> {
+  if (marker.daexAliasCheckedAt) return;
+  const checkedAt = (args.now ?? (() => new Date()))().toISOString();
+  const markChecked = (): void => {
+    const current = args.readState();
+    if (!current.adeCliAutoInstall) return;
+    args.writeState({ ...current, adeCliAutoInstall: { ...current.adeCliAutoInstall, daexAliasCheckedAt: checkedAt } });
+  };
+  // Another install owns `ade` (Homebrew, install.sh); it adds `daex` itself.
+  if (marker.outcome !== "installed") {
+    markChecked();
+    return;
+  }
+  const status = await args.adeCli.getStatus();
+  if (!status.aliasCommand || status.terminalAliasCommandPath) {
+    markChecked();
+    return;
+  }
+  // `ade` gone from PATH or now someone else's: deleting it was deliberate.
+  if (!status.terminalCommandPath || !isSameFile(status.terminalCommandPath, status.installTargetPath)) {
+    markChecked();
+    return;
+  }
+  if (!status.installAvailable) return;
+  const result = await args.adeCli.installForUser();
+  markChecked();
+  if (result.ok) {
+    args.logger.info("ade_cli.daex_alias_installed", {
+      command: result.status.aliasCommand ?? null,
+      installTargetPath: result.status.installTargetPath,
+    });
+  } else {
+    args.logger.warn("ade_cli.daex_alias_failed", {
+      command: status.aliasCommand ?? null,
+      message: result.message,
+    });
+  }
 }

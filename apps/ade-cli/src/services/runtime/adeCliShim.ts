@@ -272,6 +272,12 @@ export type InstalledAdeCliShim = {
  *   the shim folder keeps only the Git Bash `ade` (which also carries the
  *   brain defaults). No `ade.cmd`: it would shadow nothing and cut lines.
  *
+ * `daex` is the command's name and `ade` its permanent alias, so every shim
+ * above is written under both names (`daex`, `daex.cmd`), same content. On
+ * Windows with a native entry, `daex.cmd` stays: the standalone exe's folder
+ * may hold only `ade.exe`, and without it cmd and PowerShell would not find
+ * `daex`.
+ *
  * Null when the shim directory cannot be written.
  */
 export function installAdeCliShim(args: {
@@ -293,13 +299,23 @@ export function installAdeCliShim(args: {
     fs.mkdirSync(dir, { recursive: true });
     if (platform !== "win32") {
       const shimPath = path.join(dir, "ade");
-      writeIfChanged(shimPath, renderAdeCliShim({ ...args, platform, nodeModulePaths }));
+      const body = renderAdeCliShim({ ...args, platform, nodeModulePaths });
+      writeIfChanged(shimPath, body);
       fs.chmodSync(shimPath, 0o755);
+      try {
+        const daexPath = path.join(dir, "daex");
+        writeIfChanged(daexPath, body);
+        fs.chmodSync(daexPath, 0o755);
+      } catch {
+        // Best effort: `ade` still works.
+      }
       return { dir, commandPath: shimPath, pathDirs: [dir] };
     }
     // Git Bash runs `ade` only as an extensionless script.
     try {
-      writeIfChanged(path.join(dir, "ade"), renderAdeCliGitBashShim({ ...args, nodeModulePaths }));
+      const gitBashBody = renderAdeCliGitBashShim({ ...args, nodeModulePaths });
+      writeIfChanged(path.join(dir, "ade"), gitBashBody);
+      writeIfChanged(path.join(dir, "daex"), gitBashBody);
     } catch {
       // Best effort: the other shells still have their command.
     }
@@ -307,10 +323,21 @@ export function installAdeCliShim(args: {
       // An `ade.cmd` an older brain wrote here would win over nothing and cut
       // lines; the exe's own folder serves cmd and PowerShell.
       fs.rmSync(path.join(dir, "ade.cmd"), { force: true });
+      try {
+        writeIfChanged(path.join(dir, "daex.cmd"), renderAdeCliShim({ ...args, platform, nodeModulePaths }));
+      } catch {
+        // Best effort: `ade` still works.
+      }
       return { dir, commandPath: args.entryPath, pathDirs: [dir, path.win32.dirname(args.entryPath)] };
     }
     const cmdPath = path.join(dir, "ade.cmd");
-    writeIfChanged(cmdPath, renderAdeCliShim({ ...args, platform, nodeModulePaths }));
+    const cmdBody = renderAdeCliShim({ ...args, platform, nodeModulePaths });
+    writeIfChanged(cmdPath, cmdBody);
+    try {
+      writeIfChanged(path.join(dir, "daex.cmd"), cmdBody);
+    } catch {
+      // Best effort: `ade` still works.
+    }
     const launcher = installWindowsCliLauncher({
       launcherSource: resolveWindowsCliLauncherSource({ resourcesPath: args.resourcesPath, cliEntry: args.entryPath }),
       dir: path.join(dir, "launcher"),

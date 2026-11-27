@@ -155,6 +155,19 @@ function resolveCommandName(args: CreateAdeCliServiceArgs): string {
   return args.isPackaged ? "ade" : "ade-dev";
 }
 
+/**
+ * The `daex` name for an installed `ade` command name: `ade` -> `daex`,
+ * `ade-alpha` -> `daex-alpha`, `ade-dev` -> `daex-dev`. `daex` is the
+ * command's name and `ade` its permanent alias, so every place this service
+ * installs one installs the other beside it. Null for a custom name that is
+ * not an `ade` name.
+ */
+export function daexCommandName(commandName: string): string | null {
+  if (commandName === BRAND.LEGACY_CLI) return BRAND.CLI;
+  if (commandName.startsWith(`${BRAND.LEGACY_CLI}-`)) return `${BRAND.CLI}${commandName.slice(BRAND.LEGACY_CLI.length)}`;
+  return null;
+}
+
 function splitPathEntries(value: string | null | undefined): string[] {
   return (value ?? "").split(pathDelimiter()).map((entry) => entry.trim()).filter(Boolean);
 }
@@ -433,10 +446,16 @@ function writeDevShim(args: {
 
   try {
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(commandPath, script, process.platform === "win32"
-      ? { encoding: "utf8" }
-      : { encoding: "utf8", mode: 0o755 });
-    if (process.platform !== "win32") fs.chmodSync(commandPath, 0o755);
+    // The same shim under the `daex` name too, so agents with this folder on
+    // PATH can type either. The script does not read its own name.
+    const aliasName = daexCommandName(args.commandName);
+    const shimPaths = [commandPath, ...(aliasName ? [path.join(binDir, commandFileName(aliasName))] : [])];
+    for (const shimPath of shimPaths) {
+      fs.writeFileSync(shimPath, script, process.platform === "win32"
+        ? { encoding: "utf8" }
+        : { encoding: "utf8", mode: 0o755 });
+      if (process.platform !== "win32") fs.chmodSync(shimPath, 0o755);
+    }
     return { commandPath, binDir };
   } catch (error) {
     args.logger.warn("ade_cli.dev_shim_failed", {
@@ -568,6 +587,7 @@ function ensureUserBinOnShellPath(
 }
 
 function statusMessage(args: {
+  /** The name to show: the `daex` name when there is one. */
   commandName: string;
   terminalInstalled: boolean;
   bundledAvailable: boolean;
@@ -653,6 +673,7 @@ function resolvePackagedWindowsCliLauncher(
 
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const commandName = resolveCommandName(args);
+  const aliasCommandName = daexCommandName(commandName);
   const resolved = resolveCliPaths(args, commandName);
   const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);
   // Migrate away from the old user-global copies. New sessions receive the
@@ -743,6 +764,12 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
   const getStatus = async (): Promise<AdeCliStatus> => {
     const terminalCommandPath = resolveCommandOnPath(commandName, hostPathSnapshot, envSnapshot);
+    // `terminalInstalled` stays about `ade`: another install (Homebrew,
+    // install.sh) owning `ade` is what keeps the auto-install away. Whether
+    // `daex` resolves too is reported beside it.
+    const terminalAliasCommandPath = aliasCommandName
+      ? resolveCommandOnPath(aliasCommandName, hostPathSnapshot, envSnapshot)
+      : null;
     const targetPath = installTargetPath(commandName, envSnapshot);
     const targetDir = path.dirname(targetPath);
     const terminalInstalled = Boolean(terminalCommandPath);
@@ -753,8 +780,8 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     const packagedInstallAvailable = resolved.source === "packaged" && isExecutable(resolved.installerPath);
     const installAvailable = packagedInstallAvailable || (resolved.source === "dev" && bundledAvailable);
     const message = statusMessage({
-      commandName,
-      terminalInstalled,
+      commandName: aliasCommandName ?? commandName,
+      terminalInstalled: terminalInstalled && (aliasCommandName == null || terminalAliasCommandPath != null),
       bundledAvailable,
       agentPathReady,
       installAvailable,
@@ -763,6 +790,8 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
 
     return {
       command: commandName,
+      aliasCommand: aliasCommandName,
+      terminalAliasCommandPath,
       platform: process.platform,
       isPackaged: args.isPackaged,
       bundledAvailable,
@@ -799,6 +828,11 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
         fs.mkdirSync(path.dirname(targetPath), { recursive: true });
         fs.rmSync(targetPath, { force: true });
         fs.symlinkSync(resolved.commandPath!, targetPath);
+        if (aliasCommandName) {
+          const aliasTargetPath = installTargetPath(aliasCommandName, envSnapshot);
+          fs.rmSync(aliasTargetPath, { force: true });
+          fs.symlinkSync(resolved.commandPath!, aliasTargetPath);
+        }
       } else {
         const result = await spawnAsync(resolved.installerPath!, []);
         if (result.status !== 0) {
@@ -808,17 +842,20 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
       const targetDir = path.dirname(installTargetPath(commandName, envSnapshot));
       const profileResult = ensureUserBinOnShellPath(targetDir, envSnapshot);
       const status = await getStatus();
+      // "daex (and its ade alias)": both names went in side by side.
+      const installedNames = aliasCommandName ? `${aliasCommandName} (and its ${commandName} alias)` : commandName;
+      const doctorName = aliasCommandName ?? commandName;
       return {
         ok: true,
         message: process.platform === "win32"
-          ? `Installed ${commandName} for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ${commandName} doctor.`
+          ? `Installed ${installedNames} for Terminal access and added ${targetDir} to the user PATH if it was missing. Open a new terminal, then run: ${doctorName} doctor.`
           : profileResult
           ? profileResult.modified
-            ? `Installed ${commandName} for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
-            : `Installed ${commandName} for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
+            ? `Installed ${installedNames} for Terminal access and added ${targetDir} to ${profileResult.profilePath}. Open a new terminal or source that file.`
+            : `Installed ${installedNames} for Terminal access. PATH entry already present in ${profileResult.profilePath}; open a new terminal or source that file.`
           : status.installTargetDirOnPath
-          ? `Installed ${commandName} for Terminal access.`
-          : `Installed ${commandName} at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
+          ? `Installed ${installedNames} for Terminal access.`
+          : `Installed ${installedNames} at ${status.installTargetPath}. Add ${path.dirname(status.installTargetPath)} to PATH if your shell cannot find it.`,
         status,
       };
     } catch (error) {
