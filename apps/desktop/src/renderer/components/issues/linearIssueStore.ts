@@ -182,10 +182,14 @@ function loadCatalog(projectRoot: string | null, pin: OpenProjectBinding): Promi
   if (current?.data && Date.now() - current.fetchedAt < CATALOG_STALE_MS) return Promise.resolve(current.data);
   const read = window.ade?.cto?.getLinearIssuePickerData;
   if (!read) return Promise.resolve(null);
+  const generation = projectRoot ? teamKeyGeneration(projectRoot) : 0;
   const promise = read(pin)
     .then((data) => {
       catalogs.set(key, { data, fetchedAt: Date.now(), promise: null });
-      if (projectRoot) storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(data), checkedAt: Date.now() });
+      // A catalog asked for before Linear changed workspace names the old teams.
+      if (projectRoot && teamKeyGeneration(projectRoot) === generation) {
+        storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(data), checkedAt: Date.now() });
+      }
       notify();
       return data;
     })
@@ -246,7 +250,14 @@ export type LinearWorkspaceKeys = { keys: string[]; workspaceUrlKey?: string | n
 type TeamKeysEntry = LinearWorkspaceKeys;
 
 const teamKeys = new Map<string, TeamKeysEntry>();
+// The running read per project, and a count that moves whenever a read
+// starts over (Linear connected, switched or disconnected): a result from an
+// older count describes the old workspace and is dropped.
 const teamKeyReads = new Map<string, Promise<void>>();
+const teamKeyGenerations = new Map<string, number>();
+// The connection change each project last started over for: every mounted
+// hook hears the event, and one read is enough.
+const teamKeyRestartEvents = new Map<string, Event>();
 const EMPTY_TEAM_KEYS: string[] = [];
 
 function readStoredTeamKeys(projectRoot: string): TeamKeysEntry | null {
@@ -283,10 +294,21 @@ function teamKeysFromCatalog(catalog: CtoGetLinearIssuePickerDataResult): string
   return [...new Set(catalog.states.map((state) => state.teamKey?.trim().toUpperCase()).filter((key): key is string => Boolean(key)))].sort();
 }
 
-function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
-  if (teamKeyReads.has(projectRoot)) return;
+function teamKeyGeneration(projectRoot: string): number {
+  return teamKeyGenerations.get(projectRoot) ?? 0;
+}
+
+/** `restart`: the connection changed, so a running read is stale; start over. */
+function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding, restart = false): void {
+  if (teamKeyReads.has(projectRoot) && !restart) return;
   const cto = window.ade?.cto;
   if (!cto?.getLinearIssuePickerData) return;
+  const generation = teamKeyGeneration(projectRoot) + 1;
+  teamKeyGenerations.set(projectRoot, generation);
+  const isCurrent = () => teamKeyGeneration(projectRoot) === generation;
+  const store = (next: TeamKeysEntry) => {
+    if (isCurrent()) storeTeamKeys(projectRoot, next);
+  };
   const current = teamKeys.get(projectRoot);
   const readPicker = cto.getLinearIssuePickerData;
   // The status first: a disconnected workspace has no keys, so nothing it
@@ -297,15 +319,17 @@ function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
   const promise = readStatus
     .then(async (status) => {
       if (status && !status.connected) {
-        storeTeamKeys(projectRoot, { keys: [], workspaceUrlKey: null, checkedAt: Date.now() });
+        store({ keys: [], workspaceUrlKey: null, checkedAt: Date.now() });
         return;
       }
       const catalog = await readPicker(pin);
       const workspaceUrlKey = status ? status.organizationUrlKey?.trim() || null : current?.workspaceUrlKey ?? null;
-      storeTeamKeys(projectRoot, { keys: teamKeysFromCatalog(catalog), workspaceUrlKey, checkedAt: Date.now() });
+      store({ keys: teamKeysFromCatalog(catalog), workspaceUrlKey, checkedAt: Date.now() });
     })
-    .catch(() => storeTeamKeys(projectRoot, { keys: current?.keys ?? [], workspaceUrlKey: current?.workspaceUrlKey ?? null, checkedAt: Date.now() }))
-    .finally(() => teamKeyReads.delete(projectRoot));
+    .catch(() => store({ keys: current?.keys ?? [], workspaceUrlKey: current?.workspaceUrlKey ?? null, checkedAt: Date.now() }))
+    .finally(() => {
+      if (isCurrent()) teamKeyReads.delete(projectRoot);
+    });
   teamKeyReads.set(projectRoot, promise);
 }
 
@@ -348,8 +372,10 @@ export function useLinearWorkspaceTeamKeys(): string[] {
     const due = Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS || known.workspaceUrlKey === undefined;
     if (readPin && due) refreshTeamKeys(projectRoot, readPin);
     // Connecting, switching or disconnecting Linear changes the keys now, not in an hour.
-    const onConnectionChanged = () => {
-      if (pinRef.current) refreshTeamKeys(projectRoot, pinRef.current);
+    const onConnectionChanged = (event: Event) => {
+      if (!pinRef.current || teamKeyRestartEvents.get(projectRoot) === event) return;
+      teamKeyRestartEvents.set(projectRoot, event);
+      refreshTeamKeys(projectRoot, pinRef.current, true);
     };
     window.addEventListener(LINEAR_CONNECTION_CHANGED_EVENT, onConnectionChanged);
     return () => window.removeEventListener(LINEAR_CONNECTION_CHANGED_EVENT, onConnectionChanged);
