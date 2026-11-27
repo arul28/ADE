@@ -25,6 +25,7 @@ import {
 import type { PrSummary } from "../../../shared/types";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { DirectPrsList } from "./DirectPrsList";
+import { useLinearWorkspaceTeamKeys } from "../issues/linearIssueStore";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -86,6 +87,9 @@ function PRsPageInner({ active }: { active: boolean }) {
   const location = useLocation();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
+  // Keeps the Linear team keys fresh (at most hourly) for the PR markdown,
+  // which turns a typed `ADE-123` into a link to the issue in ADE.
+  useLinearWorkspaceTeamKeys();
   const {
     prs,
     lanes,

@@ -23,6 +23,10 @@ import {
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS, fgTint } from "../../lanes/laneDesignTokens";
 import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
+import { buildDeeplink, parseDeeplink } from "../../../../shared/deeplinks";
+import { issueRefFromUrl, issueRefLabel, linearIssueRef, type IssueRef } from "../../../../shared/issueRefs";
+import { openIssueRef } from "../../../lib/issueNavigation";
+import { useCachedLinearWorkspaceTeamKeys } from "../../issues/linearIssueStore";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { MermaidDiagram } from "../../shared/MermaidDiagram";
 import {
@@ -116,7 +120,7 @@ export const PR_SAFE_SCHEMA = (() => {
   } as typeof SAFE_PREVIEW_SCHEMA;
 })();
 
-/* ── Remark plugin: autolink #123 and @user ────────────────────────── */
+/* ── Remark plugin: autolink #123, @user and Linear keys ──────────── */
 
 /**
  * Keep a fence's info string past `rehype-raw`, which re-parses the tree and
@@ -135,13 +139,21 @@ function remarkCodeMeta() {
   };
 }
 
+// A Linear identifier as Linear prints it, never inside a path, branch name or
+// version (`feat/ADE-1`, `ADE-1.2`). Only the workspace's own team keys link,
+// so `UTF-8` and `SHA-256` stay text.
+const LINEAR_KEY_RE = /(?<![\w/#.-])([A-Z][A-Z0-9]{0,9})-(\d{1,9})(?![\w-]|\.\d)/g;
+
 function remarkPrAutolinks({
   repoOwner,
   repoName,
+  linearTeamKeys,
 }: {
   repoOwner: string;
   repoName: string;
+  linearTeamKeys: readonly string[];
 }) {
+  const teams = new Set(linearTeamKeys);
   return (tree: MarkdownRoot) => {
     findAndReplace(
       tree,
@@ -171,6 +183,19 @@ function remarkPrAutolinks({
               },
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
             ] as any,
+        ],
+        [
+          LINEAR_KEY_RE,
+          // An ADE link, so it opens in ADE's issue viewer here and in ADE from anywhere else.
+          (full: string, team: string) =>
+            teams.has(team)
+              ? ({
+                type: "link",
+                url: buildDeeplink({ kind: "linear-issue", issueIdentifier: full }),
+                children: [{ type: "text", value: full }],
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              } as any)
+              : false,
         ],
       ],
       { ignore: ["link", "linkReference", "code", "inlineCode"] },
@@ -618,8 +643,40 @@ function sameRepoRefPattern(repoOwner: string, repoName: string): RegExp {
   );
 }
 
+/** The Linear issue a link opens: a linear.app issue URL, or ADE's own linear-issue link. */
+function linearIssueOfHref(href: string | undefined): IssueRef | null {
+  if (!href) return null;
+  const fromUrl = issueRefFromUrl(href);
+  if (fromUrl) return fromUrl.provider === "linear" ? fromUrl : null;
+  const parsed = parseDeeplink(href);
+  return parsed.ok && parsed.target.kind === "linear-issue" ? linearIssueRef(parsed.target.issueIdentifier) : null;
+}
+
+/** A Linear issue link: opens in ADE's issue viewer, like an issue link in chat. */
+function PrLinearIssueLink({ href, issue, children }: { href: string; issue: IssueRef; children?: ReactNode }) {
+  return (
+    <a
+      href={href}
+      onClick={(event) => {
+        event.preventDefault();
+        if (!openIssueRef({ ref: issue, source: "pr" })) openExternalUrl(href);
+      }}
+      title={`Open ${issueRefLabel(issue)} in ADE`}
+      className="rounded-[4px] px-[3px] transition-colors"
+      style={{ color: COLORS.accent, background: COLORS.accentSubtle, textDecoration: "none" }}
+      data-pr-link-kind="linear-issue"
+    >
+      {children}
+    </a>
+  );
+}
+
 function PrRefOrLink({ href, children, repoOwner, repoName }: { href?: string; children?: ReactNode; repoOwner: string; repoName: string }) {
   const env = useContext(PrMarkdownEnvContext);
+  const linearIssue = linearIssueOfHref(href);
+  if (href && linearIssue) {
+    return <PrLinearIssueLink href={href} issue={linearIssue}>{children}</PrLinearIssueLink>;
+  }
   const label = textOf(children);
   const match = env && href ? sameRepoRefPattern(repoOwner, repoName).exec(href) : null;
   if (env && match && label.trim() === `#${match[1]}`) {
@@ -913,16 +970,19 @@ export const PrMarkdown = memo(function PrMarkdown({
     return base;
   }, [tone, overrides]);
 
+  // The connected workspace's team keys (cached; PRsPage keeps them fresh), so
+  // a typed `ADE-123` opens the issue in ADE without any GitHub setting.
+  const linearTeamKeys = useCachedLinearWorkspaceTeamKeys();
   const remarkPlugins = useMemo(
     () => [
       remarkGfm,
       remarkCodeMeta,
-      [remarkPrAutolinks, { repoOwner, repoName }] as [
+      [remarkPrAutolinks, { repoOwner, repoName, linearTeamKeys }] as [
         typeof remarkPrAutolinks,
-        { repoOwner: string; repoName: string },
+        { repoOwner: string; repoName: string; linearTeamKeys: readonly string[] },
       ],
     ],
-    [repoOwner, repoName],
+    [repoOwner, repoName, linearTeamKeys],
   );
 
   const markdown = useMemo(

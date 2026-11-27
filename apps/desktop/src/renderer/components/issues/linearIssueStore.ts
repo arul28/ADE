@@ -280,30 +280,53 @@ function refreshTeamKeys(projectRoot: string, pin: OpenProjectBinding): void {
   teamKeyReads.set(projectRoot, promise);
 }
 
+/** The keys this session holds for the project, filled from localStorage on first use. */
+function knownTeamKeys(projectRoot: string): TeamKeysEntry | null {
+  const held = teamKeys.get(projectRoot);
+  if (held) return held;
+  const stored = readStoredTeamKeys(projectRoot);
+  if (stored) {
+    teamKeys.set(projectRoot, stored);
+    notify();
+  }
+  return stored;
+}
+
+function useTeamKeysEntry(projectRoot: string | null): TeamKeysEntry | null {
+  return useSyncExternalStore(
+    subscribe,
+    () => (projectRoot ? teamKeys.get(projectRoot) ?? null : null),
+    () => null,
+  );
+}
+
 export function useLinearWorkspaceTeamKeys(): string[] {
   const projectRoot = useActiveProjectRoot();
   const pin = useLinearIssuePin();
   const pinRef = useRef(pin);
   pinRef.current = pin;
   const pinKey = pin?.key ?? null;
-  const entry = useSyncExternalStore(
-    subscribe,
-    () => (projectRoot ? teamKeys.get(projectRoot) ?? null : null),
-    () => null,
-  );
+  const entry = useTeamKeysEntry(projectRoot);
   useEffect(() => {
     if (!projectRoot) return;
-    let known = teamKeys.get(projectRoot) ?? null;
-    if (!known) {
-      known = readStoredTeamKeys(projectRoot);
-      if (known) {
-        teamKeys.set(projectRoot, known);
-        notify();
-      }
-    }
+    const known = knownTeamKeys(projectRoot);
     const readPin = pinRef.current;
     if (readPin && (!known || Date.now() - known.checkedAt > TEAM_KEYS_REFRESH_MS)) refreshTeamKeys(projectRoot, readPin);
   }, [pinKey, projectRoot]);
+  return entry?.keys ?? EMPTY_TEAM_KEYS;
+}
+
+/**
+ * The same keys, without ever asking Linear: for a view drawn many times on
+ * one page (every PR comment). The page above it keeps them fresh with
+ * `useLinearWorkspaceTeamKeys`.
+ */
+export function useCachedLinearWorkspaceTeamKeys(): string[] {
+  const projectRoot = useActiveProjectRoot();
+  const entry = useTeamKeysEntry(projectRoot);
+  useEffect(() => {
+    if (projectRoot) knownTeamKeys(projectRoot);
+  }, [projectRoot]);
   return entry?.keys ?? EMPTY_TEAM_KEYS;
 }
 
