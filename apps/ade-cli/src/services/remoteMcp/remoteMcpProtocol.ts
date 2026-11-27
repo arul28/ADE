@@ -636,14 +636,30 @@ export function createRemoteMcpProtocol(deps: {
   const firstText = (result: RemoteMcpToolResult): string =>
     result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text ?? "";
 
+  /**
+   * Older machines strip only a leading `ade`, so a leading `daex` (which the
+   * tool description now invites) is sent as `ade`, which every version accepts.
+   */
+  const withLegacyProgramName = (name: string, input: Record<string, unknown>): Record<string, unknown> => {
+    if (name !== TOOL_NAME) return input;
+    if (Array.isArray(input.args)) {
+      return input.args[0] === "daex" ? { ...input, args: ["ade", ...input.args.slice(1)] } : input;
+    }
+    if (typeof input.command === "string" && /^\s*daex(?=\s|$)/.test(input.command)) {
+      return { ...input, command: input.command.replace(/^(\s*)daex/, "$1ade") };
+    }
+    return input;
+  };
+
   const forwardTo = async (
     connection: RemoteMcpConnectionSummary,
     name: string,
-    input: Record<string, unknown>,
+    rawInput: Record<string, unknown>,
     machine: RemoteMcpRosterMachine,
     context: RemoteMcpCallContext,
     timeoutMs: number,
   ): Promise<RemoteMcpToolResult> => {
+    const input = withLegacyProgramName(name, rawInput);
     const started = Date.now();
     const result = await deps.machines.forward(machine, { name, arguments: input }, context, timeoutMs);
     deps.record({
