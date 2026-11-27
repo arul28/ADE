@@ -5527,9 +5527,12 @@ func workIsUndeliveredSchedule(summary: String?, error: String?) -> Bool {
 }
 
 /// A notice the host's `restartInterruptedNotice` wrote. Same as desktop
-/// `isRestartInterruptedNotice`.
+/// `isRestartInterruptedNotice`. Hosts from before the rename (and the notices
+/// they saved) say the old name.
 func workIsRestartInterruptedNotice(_ message: String?) -> Bool {
-  message?.hasPrefix("ADE restarted while ") == true
+  guard let message else { return false }
+  return message.hasPrefix("\(Brand.name) restarted while ")
+    || message.hasPrefix("\(Brand.formerName) restarted while ")
 }
 
 func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?) -> Bool {
