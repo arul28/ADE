@@ -190,7 +190,7 @@ Attached 1 artifact to lane improving-browser-4bb19b3f / chat 8f3c2a11 (Checkout
 
 They exit 0 only when that record exists. Any failure exits non-zero and prints
 one line containing `failed`, e.g.
-`ade: proof attach failed — Artifact path is outside allowed import roots: …`.
+`daex: proof attach failed — Artifact path is outside allowed import roots: …`.
 `daex proof list --text` names the scope it listed and carries an `owner` column,
 so you can see whether you are looking at your own lane and chat.
 

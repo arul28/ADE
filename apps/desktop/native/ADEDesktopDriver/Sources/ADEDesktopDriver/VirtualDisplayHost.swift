@@ -25,7 +25,7 @@ enum VirtualDisplayIdentity {
     static let productID: UInt32 = 0x0000_D15D
     /// Every ADE display's name starts with this. `macDesktopDisplayName` in
     /// `macDesktop.ts` produces the same prefix; the two must not drift.
-    static let namePrefix = "ADE · "
+    static let namePrefix = "Daex · "
 
     /// True for a display any ADE helper made, this one or another.
     static func isADEDisplay(_ displayId: CGDirectDisplayID) -> Bool {

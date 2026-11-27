@@ -53,7 +53,7 @@ namespace {
 
 void writeError(const std::wstring& message) {
   HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
-  std::wstring line = L"ade: " + message + L"\r\n";
+  std::wstring line = L"daex: " + message + L"\r\n";
   if (err == NULL || err == INVALID_HANDLE_VALUE) return;
   DWORD mode = 0;
   DWORD written = 0;
