@@ -71,7 +71,7 @@ final class ModelPickerStore: ObservableObject {
   /// for them (signed out, older server). Nil: keep the list shown.
   private func readFavorites(syncService: SyncService) async -> [String]? {
     do {
-      return try await accountFavorites.fetch()
+      return await addMachineFavoritesOnce(to: try await accountFavorites.fetch(), syncService: syncService)
     } catch AccountModelFavoritesClient.FavoritesError.signedOut, AccountModelFavoritesClient.FavoritesError.unsupported {
       return try? await syncService.getModelFavorites()
     } catch AccountModelFavoritesClient.FavoritesError.stale {
@@ -79,6 +79,35 @@ final class ModelPickerStore: ObservableObject {
     } catch {
       CrashReporting.breadcrumb("model-picker", message: "favorites read failed", data: ["error": String(describing: error)])
       return nil
+    }
+  }
+
+  /// Stars saved on the connected machine before favorites moved to the
+  /// account (this phone's, and an older desktop's) are added to the account
+  /// once per account and machine. Answers the account's list after it.
+  private func addMachineFavoritesOnce(to list: [String], syncService: SyncService) async -> [String] {
+    guard let userId = AccountService.shared.identity?.userId,
+          let machine = syncService.activeHostProfile?.hostIdentity ?? syncService.activeHostProfile?.lastHostDeviceId
+    else { return list }
+    let key = "ade.modelPicker.favorites.machineAdded.\(userId).\(machine)"
+    guard !UserDefaults.standard.bool(forKey: key),
+          let machineList = try? await syncService.getModelFavorites()
+    else { return list }
+    let missing = machineList.filter { !list.contains($0) }
+    guard !missing.isEmpty else {
+      UserDefaults.standard.set(true, forKey: key)
+      return list
+    }
+    do {
+      let next = try await accountFavorites.change(add: Array(missing.prefix(200)), remove: [])
+      UserDefaults.standard.set(true, forKey: key)
+      return next
+    } catch AccountModelFavoritesClient.FavoritesError.refused {
+      // The account's list is full: these can't land, so don't send them again.
+      UserDefaults.standard.set(true, forKey: key)
+      return list
+    } catch {
+      return list
     }
   }
 

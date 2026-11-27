@@ -28,6 +28,8 @@ const IMPORTED_KEY = "ade.modelPicker.favorites.imported.v1";
 const PENDING_KEY = "ade.modelPicker.favorites.pending.v1";
 /** Set once this client's list was queued for the account. */
 const ACCOUNT_SEEDED_KEY = "ade.modelPicker.favorites.accountSeeded.v1";
+/** The account the list, queue and flags here belong to (its user id). */
+const OWNER_KEY = "ade.modelPicker.favorites.owner.v1";
 /** Opening the picker reads the account again after this long. No timer. */
 const RESYNC_AFTER_MS = 15_000;
 
@@ -115,6 +117,21 @@ function isRefusedChange(answer: { status: number }): boolean {
   return answer.status === 400 || answer.status === 409 || answer.status === 413;
 }
 
+/**
+ * The signed-in account's user id; null when signed out. Undefined on an ADE
+ * without the account bridge: the list here is then not tied to an account.
+ */
+async function accountUserId(): Promise<string | null | undefined> {
+  const status = typeof window !== "undefined" ? window.ade?.account?.status : undefined;
+  if (typeof status !== "function") return undefined;
+  try {
+    const userId = (await status())?.userId;
+    return typeof userId === "string" && userId ? userId : null;
+  } catch {
+    return null;
+  }
+}
+
 function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ favorites: string[] }>) | null {
   if (typeof window === "undefined") return null;
   const getFavorites = window.ade?.modelPicker?.getFavorites;
@@ -174,7 +191,25 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
     setFlag(ACCOUNT_SEEDED_KEY);
   };
 
+  /**
+   * Another account signed in here: the list, the queue and the old machine
+   * list are the other account's, so this one starts from its own list.
+   */
+  const claimFor = (owner: string) => {
+    const previous = readStored(OWNER_KEY);
+    if (typeof previous === "string" && previous !== owner) {
+      setLocal([], { add: [], remove: [] });
+      setFlag(ACCOUNT_SEEDED_KEY);
+      setFlag(IMPORTED_KEY);
+    }
+    writeStored(OWNER_KEY, owner);
+  };
+
   const syncOnce = async (): Promise<void> => {
+    const owner = await accountUserId();
+    // Signed out: keep the list here and the changes for the next sync.
+    if (owner === null) return;
+    if (owner) claimFor(owner);
     await importFromMachine();
     seedAccount();
     // At most one list's worth each way per call; the rest goes with the next one.
@@ -183,6 +218,8 @@ const useFavoritesStore = create<FavoritesState>((set, get) => {
     const answer = sent.add.length || sent.remove.length
       ? await runAccountCall({ call: "changeModelFavorites", add: sent.add, remove: sent.remove })
       : await runAccountCall({ call: "modelFavorites" });
+    // The account changed while the call ran: the answer is the old account's.
+    if (owner && await accountUserId() !== owner) return;
     if (answer && !answer.ok && isRefusedChange(answer)) {
       // The adds can't land (a removal never makes the list too long). Drop
       // them, send the removals again, and show the account's list. A refused
