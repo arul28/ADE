@@ -24,6 +24,7 @@ import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { brainReportsAsRelease } from "./sentry/brainBuild";
 import { machineTelemetryIdReader } from "../../desktop/src/main/services/analytics/machineTelemetryId";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
+import { BRAND } from "../../desktop/src/shared/brand";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { sqliteErrorClass } from "../../desktop/src/main/services/state/sqliteErrors";
@@ -1091,13 +1092,13 @@ function projectDbOpenFailureMessage(
     case "storage_read_failed":
       return storageUnreadableMessage(dbPath, detectCloudStorageProvider(dbPath));
     case "storage_io_failed":
-      return `ADE couldn't read or write this project's data at ${dbPath}: the drive isn't answering. Check that the drive is connected and has free space, then open the project again.`;
+      return `${BRAND.NAME} couldn't read or write this project's data at ${dbPath}: the drive isn't answering. Check that the drive is connected and has free space, then open the project again.`;
     case "db_busy":
-      return "Another ADE process is still using this project's data. Wait a moment, then open the project again.";
+      return `Another ${BRAND.NAME} process is still using this project's data. Wait a moment, then open the project again.`;
     default:
       return sqliteClass
-        ? `ADE could not open the project data store (${sqliteClass}).`
-        : "ADE could not open the project data store.";
+        ? `${BRAND.NAME} could not open the project data store (${sqliteClass}).`
+        : `${BRAND.NAME} could not open the project data store.`;
   }
 }
 
@@ -3886,7 +3887,7 @@ export async function createAdeRuntime(args: {
         },
         setHookForward: async (hookId, forward) => {
           const token = await getAccountAccessToken().catch(() => null);
-          if (!token) throw new Error("Sign in to ADE to point this webhook at ADE Cloud.");
+          if (!token) throw new Error(`Sign in to ${BRAND.NAME} to point this webhook at ${BRAND.CLOUD_NAME}.`);
           const response = await fetch(`${resolveWebhookRelayBaseUrl(db)}/hooks/forward`, {
             method: "POST",
             headers: { "content-type": "application/json", [ACCOUNT_RELAY_TOKEN_HEADER]: token },
@@ -3895,7 +3896,7 @@ export async function createAdeRuntime(args: {
           });
           // A hook already gone (retired with its rule) forwards nowhere.
           if (!response.ok && !(response.status === 404 && forward === null)) {
-            throw new Error(`ADE's webhook relay answered HTTP ${response.status}.`);
+            throw new Error(`${BRAND.NAME}'s webhook relay answered HTTP ${response.status}.`);
           }
         },
         origin: () => readOrigin(),

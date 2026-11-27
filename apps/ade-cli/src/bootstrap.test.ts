@@ -853,7 +853,7 @@ describe("project database open failure", () => {
       (error: unknown) => error as Error & { code?: string; detail?: string },
     );
 
-    expect(failure?.message).toBe("ADE could not open the project data store (sqlite_cantopen).");
+    expect(failure?.message).toBe("Daex could not open the project data store (sqlite_cantopen).");
     expect(failure?.code).toBe("db_open_failed");
     expect(failure?.detail).toContain("unable to open database file");
 
