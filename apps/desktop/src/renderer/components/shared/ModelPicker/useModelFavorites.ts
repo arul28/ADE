@@ -87,12 +87,18 @@ let unsavedPending: Pending | null = null;
 
 /**
  * Read from storage each time, so a change another window queued is never
- * overwritten; the copy kept here when storage could not save the queue.
+ * overwritten. When storage could not save this window's queue, its own
+ * changes win for their ids and every other saved change is kept.
  */
 function readPending(): Pending {
-  if (unsavedPending) return unsavedPending;
   const raw = readStored(PENDING_KEY) as Partial<Pending> | null;
-  return { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
+  const saved: Pending = { add: idsOf(raw?.add), remove: idsOf(raw?.remove) };
+  if (!unsavedPending) return saved;
+  const mine = new Set([...unsavedPending.add, ...unsavedPending.remove]);
+  return {
+    add: [...saved.add.filter((id) => !mine.has(id)), ...unsavedPending.add],
+    remove: [...saved.remove.filter((id) => !mine.has(id)), ...unsavedPending.remove],
+  };
 }
 
 function savePending(pending: Pending): void {
