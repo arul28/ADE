@@ -23,7 +23,12 @@ import {
 import { deriveSubagentCardName, formatSubagentModelLabel, subagentSummaryPlainText } from "../../../shared/chatSubagents";
 import { modelMentionEffortLabel } from "../../../shared/modelMentions";
 import { BRAND } from "../../../shared/brand";
-import { CHAT_STOP_REASON_BRAIN_RESTARTED, CHAT_STOP_REASON_FOREIGN_BRAIN } from "../../../shared/types";
+import {
+  CHAT_STOP_REASON_BRAIN_RESTARTED,
+  CHAT_STOP_REASON_FOREIGN_BRAIN,
+  LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED,
+  LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN,
+} from "../../../shared/types";
 import { formatContextTokens } from "./usage/contextUsageModel";
 import {
   subagentCardGridSpan,
@@ -35,12 +40,11 @@ import {
   meaningfulStoppedSummary,
 } from "./chatTranscriptRows";
 
-// The stop reasons are wire strings that every version writes and compares
-// (chatAutoResume), so they keep the old product name; the card shows the
-// current one.
+// Transcripts from before the rename store the stop reasons with the old
+// product name; the card shows the current one.
 const STOP_REASON_DISPLAY: Readonly<Record<string, string>> = {
-  [CHAT_STOP_REASON_BRAIN_RESTARTED]: `the ${BRAND.NAME} brain restarted`,
-  [CHAT_STOP_REASON_FOREIGN_BRAIN]: `another ${BRAND.NAME} brain took over this chat`,
+  [LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED]: CHAT_STOP_REASON_BRAIN_RESTARTED,
+  [LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN]: CHAT_STOP_REASON_FOREIGN_BRAIN,
 };
 
 function displayStopReason(reason: string | null | undefined): string | null {

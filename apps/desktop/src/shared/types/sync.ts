@@ -610,16 +610,14 @@ export function competingSyncHostSkipReason(owner: CompetingSyncHostOwner): stri
   const pid = Number.isFinite(owner.pid) && (owner.pid as number) > 0
     ? Math.floor(owner.pid as number)
     : null;
-  // Older clients match this text (a remote-bound pane reads another machine's
-  // health, and `ade doctor` may be another install's CLI); keep it until no
-  // released reader parses only "Another ADE app". People never see it: the
-  // summary below is what they read.
+  // People never see it: the summary below is what they read. The reader
+  // accepts the pre-rename "Another ADE app" too.
   if (pid == null) {
-    return "Another ADE app on this computer owns sync for this machine.";
+    return `Another ${BRAND.NAME} app on this computer owns sync for this machine.`;
   }
   // The installed app's name (ADE, ADE Alpha), mapped for display by the reader.
-  const name = owner.appName?.trim() || "ADE";
-  return `Another ADE app on this computer owns sync for this machine (${name}, pid ${pid}).`;
+  const name = owner.appName?.trim() || BRAND.NAME;
+  return `Another ${BRAND.NAME} app on this computer owns sync for this machine (${name}, pid ${pid}).`;
 }
 
 /**

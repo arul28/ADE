@@ -15,6 +15,7 @@ import type {
   AgentChatCrossMachineTargetConfig,
   RemoteRuntimeHandoffStoragePreflightResult,
 } from "./types";
+import { BRAND } from "./brand";
 
 /**
  * The code a destination's definitive return refusal carries (it never
@@ -25,14 +26,15 @@ export const CROSS_MACHINE_RETURN_REFUSED_CODE = "cross_machine_return_refused";
 /**
  * A move's continuation instruction when the person gave none (the destination
  * then adds nothing of its own). It is a sentinel on the wire, never shown:
- * older destinations compare it byte-for-byte, so the text stays as shipped.
+ * destinations compare it byte-for-byte, under either product name.
  */
 export const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT =
-  "This chat was handed off from another ADE machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.";
+  `This chat was handed off from another ${BRAND.NAME} machine. Continue the same task from the handoff brief, verify the destination workspace state, and keep working from the next open action.`;
 
 const CROSS_MACHINE_HANDOFF_DEFAULT_PROMPTS: ReadonlySet<string> = new Set([
   CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT,
-  CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT.replace("another ADE machine", "another Daex machine"),
+  // What a source from before the rename sends.
+  CROSS_MACHINE_HANDOFF_DEFAULT_PROMPT.replace(`another ${BRAND.NAME} machine`, `another ${BRAND.FORMER_NAME} machine`),
 ]);
 
 /** Whether a capsule's continuation prompt is the default (either name), so the destination adds nothing. */

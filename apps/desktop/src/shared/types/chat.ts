@@ -44,8 +44,11 @@ import type { ExternalSessionProvider } from "./externalSessions";
 import { BRAND } from "../brand";
 
 /** Plain-language causes the interrupted-turn card renders verbatim. */
-export const CHAT_STOP_REASON_BRAIN_RESTARTED = "the ADE brain restarted";
-export const CHAT_STOP_REASON_FOREIGN_BRAIN = "another ADE brain took over this chat";
+export const CHAT_STOP_REASON_BRAIN_RESTARTED = `the ${BRAND.NAME} brain restarted`;
+export const CHAT_STOP_REASON_FOREIGN_BRAIN = `another ${BRAND.NAME} brain took over this chat`;
+/** The same two causes as stored before the rename; readers compare both. */
+export const LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED = `the ${BRAND.FORMER_NAME} brain restarted`;
+export const LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN = `another ${BRAND.FORMER_NAME} brain took over this chat`;
 export const CHAT_STOP_REASON_RUNTIME_EXITED = "the runtime process exited";
 export const CHAT_STOP_REASON_PROVIDER_ENDED_TURN = "the provider ended the turn";
 /** A workflow reached its end with agent rows still open — nothing crashed. */

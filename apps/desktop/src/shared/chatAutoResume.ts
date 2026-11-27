@@ -27,6 +27,8 @@ import type { UpdateRequestedBy } from "./types/remoteRuntime";
 import {
   CHAT_STOP_REASON_BRAIN_RESTARTED,
   CHAT_STOP_REASON_FOREIGN_BRAIN,
+  LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED,
+  LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN,
   type AgentChatEventEnvelope,
 } from "./types/chat";
 import { BRAND } from "./brand";
@@ -644,6 +646,8 @@ export type RestartCancelledWork = {
 const RESTART_STOP_REASONS: ReadonlySet<string> = new Set([
   CHAT_STOP_REASON_BRAIN_RESTARTED,
   CHAT_STOP_REASON_FOREIGN_BRAIN,
+  LEGACY_CHAT_STOP_REASON_BRAIN_RESTARTED,
+  LEGACY_CHAT_STOP_REASON_FOREIGN_BRAIN,
 ]);
 
 /** The summaries the orphan sweep gives rows whose process died. */
