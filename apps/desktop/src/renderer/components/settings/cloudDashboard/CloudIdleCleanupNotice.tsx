@@ -37,14 +37,19 @@ function idleSubject(entry: CloudIdleCleanupEntry): string {
   return entry.laneName ? `${entry.laneName}'s computer` : idleEntryName(entry);
 }
 
+/** The same opening before the rename; reasons stored then still start with it. */
+const LEGACY_CLOUD_BACKUP_NOT_SAVED_SENTENCE = "ADE couldn't save this lane's work.";
+
 /**
  * Why the save failed, without what the title already says. The server's
- * reason opens with "ADE couldn't save this lane's work." and names each lane
- * ("pricing-page: …"); a computer holds one lane, the one the notice names.
+ * reason opens with `CLOUD_BACKUP_NOT_SAVED_SENTENCE` (or its old wording) and
+ * names each lane ("pricing-page: …"); a computer holds one lane, the one the
+ * notice names.
  */
 function idleHeldReason(laneName: string | null | undefined, held: { reason: string }): string {
   let reason = held.reason.trim();
-  if (reason.startsWith(CLOUD_BACKUP_NOT_SAVED_SENTENCE)) reason = reason.slice(CLOUD_BACKUP_NOT_SAVED_SENTENCE.length).trim();
+  const opening = [CLOUD_BACKUP_NOT_SAVED_SENTENCE, LEGACY_CLOUD_BACKUP_NOT_SAVED_SENTENCE].find((sentence) => reason.startsWith(sentence));
+  if (opening) reason = reason.slice(opening.length).trim();
   if (laneName && reason.startsWith(`${laneName}: `)) reason = reason.slice(laneName.length + 2);
   return reason;
 }
