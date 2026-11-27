@@ -70,6 +70,7 @@ import { checkMuseVendorFloor } from "../ai/museFallForward";
 import { isRecord } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { redactProcessOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The params of each view notification ADE models, keyed by method. These are
@@ -299,7 +300,7 @@ export function describeMuseError(error: unknown): string {
     const reason = typeof error.data?.reason === "string" ? ` (${error.data.reason})` : "";
     return `${error.message}${reason}`;
   }
-  if (error instanceof ProtocolError) return `Muse sent a reply ADE could not read: ${error.message}`;
+  if (error instanceof ProtocolError) return `Muse sent a reply ${BRAND.NAME} could not read: ${error.message}`;
   return error instanceof Error ? error.message : String(error);
 }
 

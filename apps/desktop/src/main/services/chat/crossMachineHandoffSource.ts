@@ -51,6 +51,7 @@ import {
   type CrossMachineSourceInspection,
 } from "./crossMachineHandoffOrchestrator";
 import { redactGitOutput } from "../../utils/redaction";
+import { BRAND } from "../../../shared/brand";
 
 type RunGit = (args: string[], opts: GitRunOptions) => Promise<GitRunResult>;
 
@@ -327,7 +328,7 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
     const headSha = await gitText(["rev-parse", "HEAD"]);
     const status = await deps.runGit(["status", "--porcelain=v1"], { cwd, timeoutMs: 15_000 });
     if (status.exitCode !== 0) {
-      throw new Error(`ADE could not inspect the source lane. ${status.stderr.trim()}`.trim());
+      throw new Error(`${BRAND.NAME} could not inspect the source lane. ${status.stderr.trim()}`.trim());
     }
     const changedFiles = status.stdout.split(/\r?\n/).filter((line) => line.trim()).length;
     if (changedFiles > 0) {
@@ -369,7 +370,7 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
         blockers.push({
           id: "diverged",
           title: `${branchRef ?? "This branch"} has diverged from ${upstream}`,
-          detail: "Reconcile it (rebase or merge) yourself; ADE won't pick a strategy.",
+          detail: `Reconcile it (rebase or merge) yourself; ${BRAND.NAME} won't pick a strategy.`,
           clearedByIncludeChanges: false,
           fixHint: null,
         });
@@ -649,7 +650,7 @@ export function createCrossMachineBatchSource(deps: {
       cwd: summary.worktreePath,
       timeoutMs: 30_000,
     });
-    if (remote.exitCode !== 0) throw new Error(`ADE could not read '${branchRef}' on origin. ${redactGitOutput(remote.stderr.trim())}`.trim());
+    if (remote.exitCode !== 0) throw new Error(`${BRAND.NAME} could not read '${branchRef}' on origin. ${redactGitOutput(remote.stderr.trim())}`.trim());
     const remoteHeadSha = remote.stdout.trim().split(/\s+/)[0]?.trim() || null;
     const sourceMachineKey = deps.localMachineKey();
     const gitBundle = includeChanges
@@ -692,7 +693,7 @@ export function createCrossMachineBatchSource(deps: {
       deps.runGit,
       ["rev-parse", `${payload.gitBundle?.snapshotSha ?? payload.headSha}^{tree}`],
       summary.worktreePath,
-      "ADE could not verify the prepared lane changes.",
+      `${BRAND.NAME} could not verify the prepared lane changes.`,
     );
     if (payload.gitBundle) {
       validateHandoffGitBundle({ source: { headSha: payload.headSha }, gitBundle: payload.gitBundle });
@@ -716,7 +717,7 @@ export function createCrossMachineBatchSource(deps: {
     for (const item of batch.items) {
       if (item.kind !== "lane") continue;
       if (!item.carriedHeadSha || !item.carriedTreeSha) {
-        throw new Error("This move does not say what it carried, so ADE can't check the lane.");
+        throw new Error(`This move does not say what it carried, so ${BRAND.NAME} can't check the lane.`);
       }
       const summary = await laneService.getSummary(item.sourceLaneId, { includeStatus: false });
       if (!summary) throw new Error(`The source lane '${item.sourceLaneId}' could not be loaded.`);
@@ -725,7 +726,7 @@ export function createCrossMachineBatchSource(deps: {
         deps.runGit,
         ["rev-parse", "HEAD"],
         summary.worktreePath,
-        `ADE could not read ${label}.`,
+        `${BRAND.NAME} could not read ${label}.`,
       );
       if (head !== item.carriedHeadSha) {
         return { changed: true, reason: `${label} has commits the move did not carry.` };

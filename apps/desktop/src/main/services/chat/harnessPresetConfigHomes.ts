@@ -24,6 +24,7 @@ import {
   adeUpstreamId,
   removeCliProxyApiUpstreams,
 } from "../../../../../ade-cli/src/services/proxy/cliProxyApiUpstreams";
+import { BRAND } from "../../../shared/brand";
 
 export type HarnessCleanupLogger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -75,7 +76,7 @@ function ownedConfigHome(
   const root = path.resolve(adeHome, "provider-homes", namespace);
   const candidate = path.resolve(root, ...segments.map(configHomeSegment));
   if (pathEscapesRoot(root, candidate)) {
-    throw new Error(`Provider-home path escapes ADE's ${namespace} directory.`);
+    throw new Error(`Provider-home path escapes ${BRAND.NAME}'s ${namespace} directory.`);
   }
   return candidate;
 }

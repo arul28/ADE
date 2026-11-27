@@ -1,5 +1,6 @@
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 import type { AgentChatEvent, AgentChatStopSource } from "../../../shared/types/chat";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * OpenCode background shells for one chat runtime.
@@ -222,7 +223,7 @@ export function createOpenCodeBackgroundShells(args: {
     // its run time does not count against the confirmation budget below.
     await args.killProcessTree(pid);
     for (let waited = 0; args.isProcessAlive(pid); waited += STOP_CONFIRM_POLL_MS) {
-      if (waited >= STOP_CONFIRM_TIMEOUT_MS) return { gone: false, reason: "The command was still running after ADE stopped it." };
+      if (waited >= STOP_CONFIRM_TIMEOUT_MS) return { gone: false, reason: `The command was still running after ${BRAND.NAME} stopped it.` };
       await sleep(STOP_CONFIRM_POLL_MS);
     }
     return { gone: true };
@@ -298,7 +299,7 @@ export function createOpenCodeBackgroundShells(args: {
           continue;
         }
         // OpenCode drops a shell once its result is read, so a missing one ended.
-        settle({ shellId, status: "completed", exitCode: null }, { summary: "Ended while ADE was reconnecting" });
+        settle({ shellId, status: "completed", exitCode: null }, { summary: `Ended while ${BRAND.NAME} was reconnecting` });
       }
     },
   };

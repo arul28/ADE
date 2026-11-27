@@ -53,6 +53,7 @@ import type { Logger } from "../logging/logger";
 import { captureFeatureUsedAnalytics, type FeatureAnalytics } from "../analytics/featureProductAnalytics";
 import { startCodexVoiceHost, type CodexVoiceHost } from "./codexVoiceHost";
 import { createVoiceNarration, type VoiceNarrator } from "./codexVoiceNarration";
+import { BRAND } from "../../../shared/brand";
 
 const ANSWER_TIMEOUT_MS = 20_000;
 const CAPTION_LIMIT = 4;
@@ -595,7 +596,7 @@ export function createCodexVoiceSessions<
 
   const hostTransport = async (chat: TChat, session: VoiceSession<TRuntime>): Promise<Transport<TRuntime>> => {
     const { executable, env } = deps.resolveCodexExecutable(chat);
-    if (!executable) throw new Error("Voice needs ADE's Codex on this machine and a ChatGPT sign-in.");
+    if (!executable) throw new Error(`Voice needs ${BRAND.NAME}'s Codex on this machine and a ChatGPT sign-in.`);
     const host: CodexVoiceHost = await startCodexVoiceHost({
       executable,
       env,
@@ -847,7 +848,7 @@ export function createCodexVoiceSessions<
   const endAll = (lookupChat: (sessionId: string) => TChat | undefined): void => {
     for (const [sessionId, session] of [...sessions]) {
       const chat = lookupChat(sessionId);
-      if (chat) finish(chat, session, "ADE is shutting down.", true, true);
+      if (chat) finish(chat, session, `${BRAND.NAME} is shutting down.`, true, true);
       else session.transport?.release(true, true);
     }
   };

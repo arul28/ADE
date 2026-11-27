@@ -130,6 +130,7 @@ import {
   type ProxySubscriptionConnectionParts,
   type ProxySubscriptionConnectionUnavailable,
 } from "./harnessPresetProxyConnection";
+import { BRAND } from "../../../shared/brand";
 
 /** The OpenCode provider id ADE files a proxied subscription under. */
 const PROXY_OPENCODE_PROVIDER_ID = "ade-proxy";
@@ -300,7 +301,7 @@ export function resolveHarnessPresetForLaunch(
       status: "unsupported",
       presetId: id,
       provider: null,
-      unsupported: "ADE could not read this account's harness presets on this machine.",
+      unsupported: `${BRAND.NAME} could not read this account's harness presets on this machine.`,
       // Both of these say "ask again next turn": the cache is unreadable, or
       // the account's list has not landed here yet. Neither is a reason to
       // remember the failure for the life of the chat.
@@ -535,9 +536,9 @@ export function resolveHarnessPresetPlan(
       return codexLoginInKeyring(home);
     };
     const unavailableMessage = (connection: ProxySubscriptionConnectionUnavailable | null): string => {
-      if (connection?.reason === "proxy-stopped") return "ADE's proxy is stopped; start it and try again.";
+      if (connection?.reason === "proxy-stopped") return `${BRAND.NAME}'s proxy is stopped; start it and try again.`;
       if (codexKeyringBlocksLending()) {
-        return "Codex keeps this login in the macOS Keychain, where only Codex can read it, so ADE cannot lend it to another harness. Set `cli_auth_credentials_store = \"file\"` in Codex's config.toml and sign in to Codex again.";
+        return `Codex keeps this login in the macOS Keychain, where only Codex can read it, so ${BRAND.NAME} cannot lend it to another harness. Set \`cli_auth_credentials_store = "file"\` in Codex's config.toml and sign in to Codex again.`;
       }
       return borrowFailureMessage(subscriptionProvider);
     };
@@ -562,7 +563,7 @@ export function resolveHarnessPresetPlan(
           presetId: preset.id,
           provider: harness,
           unsupported:
-            `${harnessBodyLabel(harness)} cannot be pointed at ADE's proxy — it reads its own sign-in and takes no endpoint.`,
+            `${harnessBodyLabel(harness)} cannot be pointed at ${BRAND.NAME}'s proxy — it reads its own sign-in and takes no endpoint.`,
         };
       }
       // Grok, Droid and Qwen take an endpoint through their own config/env
@@ -704,7 +705,7 @@ export function resolveHarnessPresetPlan(
     // beats a control whose value is quietly discarded.
     if (subagentLaunch) {
       notes.push(
-        "An OpenCode sign-in keeps its subagent models in OpenCode's own config, which ADE does not write, so this preset's subagent settings are not applied. Use a key or a subscription source to pin them.",
+        `An OpenCode sign-in keeps its subagent models in OpenCode's own config, which ${BRAND.NAME} does not write, so this preset's subagent settings are not applied. Use a key or a subscription source to pin them.`,
       );
     }
     return {

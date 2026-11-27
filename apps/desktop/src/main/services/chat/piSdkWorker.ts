@@ -49,6 +49,7 @@ import {
   type PiUiBridge,
 } from "./piSdkUiBridge";
 import { errorMessage, nonEmpty, record, type Callable, type PiModule } from "./piSdkWorkerValues";
+import { BRAND } from "../../../shared/brand";
 
 // Deliberately no static import (or type import) from Pi. This process is
 // started by ADE and loads the user's installation only after init validation.
@@ -546,7 +547,7 @@ function withoutMissingSearchBinaries(tools: readonly string[], agentDir: string
 
 async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   if (!isNodeSupported()) {
-    throw new Error(`Pi SDK requires Node >= ${PI_SDK_MIN_NODE}; ADE worker is running Node ${process.versions.node}. Start ADE with a newer Node runtime.`);
+    throw new Error(`Pi SDK requires Node >= ${PI_SDK_MIN_NODE}; ${BRAND.NAME} worker is running Node ${process.versions.node}. Start ${BRAND.NAME} with a newer Node runtime.`);
   }
   assertAbsolute("cwd", init.cwd);
   assertAbsolute("agentDir", init.agentDir);
@@ -653,7 +654,7 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
   if (init.extensions && readOnly) {
     extensionsError = "Extensions stay off in a read-only Pi session, because their tools can change the workspace.";
   } else if (init.extensions && !extensionsAllowed) {
-    extensionsError = "This Pi build does not let ADE mark the project untrusted, so extensions stayed off.";
+    extensionsError = `This Pi build does not let ${BRAND.NAME} mark the project untrusted, so extensions stayed off.`;
   }
   // Pi's MCP support needs the same untrusted-project pin as extensions:
   // without it Pi would read a checkout's own `.pi/mcp.json` and start its
@@ -667,7 +668,7 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
     })
     : null;
   if (init.mcp && settingsManager === null) {
-    mcpRegistrationErrors.push("This Pi build does not let ADE mark the project untrusted, so MCP servers stayed off.");
+    mcpRegistrationErrors.push(`This Pi build does not let ${BRAND.NAME} mark the project untrusted, so MCP servers stayed off.`);
   }
   const mcpAllowed = mcpExtensions !== null;
   const resourceLoader = makeResourceLoader({ ...init, extensions: extensionsAllowed }, pi, settingsManager, mcpExtensions ?? []);
@@ -736,7 +737,7 @@ async function initWorker(init: PiSdkWorkerInit): Promise<PiSdkReady> {
       .map((failure) => record(failure))
       .find((failure) => String(failure?.path ?? "").includes(ADE_MCP_APPROVAL_EXTENSION));
     if (gateFailure) {
-      throw new Error(`Pi could not load ADE's MCP approval hook, so the chat did not start: ${nonEmpty(gateFailure.error) ?? "unknown error"}`);
+      throw new Error(`Pi could not load ${BRAND.NAME}'s MCP approval hook, so the chat did not start: ${nonEmpty(gateFailure.error) ?? "unknown error"}`);
     }
   }
   // `bindExtensions` fires `session_start`, which is also when Pi's MCP

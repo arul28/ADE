@@ -27,6 +27,7 @@ import {
   type TerminalResumeProvider,
   type TerminalSessionSummary,
 } from "../../../shared/types";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The `ade chat` commands a tracked agent CLI answers.
@@ -107,7 +108,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
   const { logger, sessionService } = deps;
 
   const requirePty = () => {
-    if (!deps.ptyService) throw new Error("Terminals are not available in this ADE runtime.");
+    if (!deps.ptyService) throw new Error(`Terminals are not available in this ${BRAND.NAME} runtime.`);
     return deps.ptyService;
   };
 
@@ -132,7 +133,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     if (deps.isTrackedAgentCliSession(id)) return row;
     if (isChatToolType(row.toolType)) return null;
     const what = isTrackedAgentCliToolType(row.toolType)
-      ? "an agent CLI that ADE does not track"
+      ? `an agent CLI that ${BRAND.NAME} does not track`
       : "a plain terminal";
     throw new Error(
       `Session '${id}' is ${what}, not an agent chat or a tracked agent CLI session, so \`ade chat\` cannot ${verb} it. `
@@ -142,7 +143,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
 
   const assertRunsHere = (sessionId: string, verb: string): void => {
     if (deps.agentCliOwnedByAnotherRuntime(sessionId)) {
-      throw new Error(`Terminal session '${sessionId}' runs under another live ADE runtime; ${verb} it from there.`);
+      throw new Error(`Terminal session '${sessionId}' runs under another live ${BRAND.NAME} runtime; ${verb} it from there.`);
     }
   };
 
@@ -235,7 +236,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     };
     if (kind === "interrupt-replace" && isBusy(row)) {
       const stopped = await requirePty().interruptAgentCli?.(sessionId);
-      if (!stopped) throw new Error("This ADE runtime cannot interrupt a CLI session.");
+      if (!stopped) throw new Error(`This ${BRAND.NAME} runtime cannot interrupt a CLI session.`);
       if (!(await waitUntilReady(sessionId, CLI_INTERRUPT_SEND_READY_WAIT_MS))) return await queue();
       const delivered = await deps.deliverWakeToSession({ sessionId, text: args.text, kind: "auto" });
       if (delivered === "deferred") return await queue();
@@ -273,7 +274,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     assertRunsHere(sessionId, "stop");
     const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
     const pty = requirePty();
-    if (!pty.interruptAgentCli) throw new Error("This ADE runtime cannot interrupt a CLI session.");
+    if (!pty.interruptAgentCli) throw new Error(`This ${BRAND.NAME} runtime cannot interrupt a CLI session.`);
     // Stop means stop: messages ADE queued for the CLI go too, unless the mode keeps them.
     const cancelledQueuedCount = stopModeClearsQueue(mode) ? await deps.cancelQueuedSends(sessionId) : 0;
     const result = await pty.interruptAgentCli(sessionId);
@@ -287,7 +288,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     options: Parameters<NonNullable<PtyService["restartAgentCli"]>>[1] = {},
   ) => {
     const pty = requirePty();
-    if (!pty.restartAgentCli) throw new Error("This ADE runtime cannot restart a CLI session.");
+    if (!pty.restartAgentCli) throw new Error(`This ${BRAND.NAME} runtime cannot restart a CLI session.`);
     const restarted = await pty.restartAgentCli({ sessionId: row.id, ...launch }, options);
     notifyResumed(restarted.sessionId, true);
     return restarted;
@@ -400,7 +401,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
     assertRunsHere(sessionId, "switch the account of");
     const provider = providerOf(row);
     if (provider !== "claude" && provider !== "codex") {
-      return { ok: false, reason: "failed", message: `${providerName(row)} CLI sessions do not run on a provider account ADE can switch.` };
+      return { ok: false, reason: "failed", message: `${providerName(row)} CLI sessions do not run on a provider account ${BRAND.NAME} can switch.` };
     }
     const launch = row.resumeMetadata?.launch;
     if (
@@ -450,7 +451,7 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
       throw new Error("A CLI session can only have its title generated. Pass --title, or leave the fields out.");
     }
     const pty = requirePty();
-    if (!pty.regenerateAgentCliTitle) throw new Error("This ADE runtime cannot name a CLI session.");
+    if (!pty.regenerateAgentCliTitle) throw new Error(`This ${BRAND.NAME} runtime cannot name a CLI session.`);
     const named = await pty.regenerateAgentCliTitle(row.id);
     return {
       sessionId: row.id,

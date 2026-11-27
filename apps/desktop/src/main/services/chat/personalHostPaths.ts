@@ -9,6 +9,7 @@ import {
   trimTrailingSeparators,
 } from "../../../shared/pathContainment";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * The directories a host may hand a personal (SDK) chat: its working
@@ -182,7 +183,7 @@ export function validatePersonalHostCwd(
   }
   if (pathIsWithinRoot(adeDir, resolved, platform)) {
     throw new Error(
-      `invalid_argument: ${field} must not be inside ADE's own state directory.`,
+      `invalid_argument: ${field} must not be inside ${BRAND.NAME}'s own state directory.`,
     );
   }
   return trimTrailingSeparators(resolved, impl);

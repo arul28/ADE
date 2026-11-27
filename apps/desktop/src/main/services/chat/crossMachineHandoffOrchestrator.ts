@@ -83,6 +83,7 @@ import {
   type CrossMachineBatchMoveCaller,
   type CrossMachineBatchMoveDeps,
 } from "./crossMachineBatchMove";
+import { BRAND } from "../../../shared/brand";
 
 /** One machine on the account, as the brain's machine bridge lists it. */
 export type CrossMachineHandoffMachine = {
@@ -332,7 +333,7 @@ export function crossMachineAgentTargetPermissions(
   targetModelId: string,
 ): { fields: Partial<AgentChatCrossMachineTargetConfig>; label: string } {
   const descriptor = getModelById(targetModelId) ?? resolveModelAlias(targetModelId);
-  if (!descriptor) throw new Error(`ADE doesn't know the model "${targetModelId}". Pick another model.`);
+  if (!descriptor) throw new Error(`${BRAND.NAME} doesn't know the model "${targetModelId}". Pick another model.`);
   const provider = resolveProviderGroupForModel(descriptor);
   // The source reads an unreadable posture as `ask` (sessionPermissionLevel).
   const level: PermissionLevel = isPermissionLevel(sourceLevel) ? sourceLevel : "ask";
@@ -423,7 +424,7 @@ class StaleCapsuleError extends Error {
 /** After a restart the source check itself failed, so the stored capsule was neither resent nor dropped. */
 class UncheckedCapsuleError extends Error {
   constructor(reason: string) {
-    super(`ADE couldn't check this chat after a restart: ${reason.replace(/[.\s]+$/, "")}. Retry when it's reachable.`);
+    super(`${BRAND.NAME} couldn't check this chat after a restart: ${reason.replace(/[.\s]+$/, "")}. Retry when it's reachable.`);
   }
 }
 
@@ -569,7 +570,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
 
   const requireTransport = (): CrossMachineHandoffTransport => {
     const transport = deps.transport();
-    if (!transport) throw new Error("This ADE runtime can't reach other machines.");
+    if (!transport) throw new Error(`This ${BRAND.NAME} runtime can't reach other machines.`);
     return transport;
   };
 
@@ -1029,24 +1030,24 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     // the absence of an explicit `true` refuses rather than degrades.
     if ((prepared.capsule.gitBundle || prepared.capsule.batchMove?.carriedChanges) && preflight.gitBundleSupport !== true) {
       throw new Error(
-        `${persisted.record.targetMachineName} needs an ADE update to take uncommitted changes. Update it, or push the branch and move without them.`,
+        `${persisted.record.targetMachineName} needs a ${BRAND.NAME} update to take uncommitted changes. Update it, or push the branch and move without them.`,
       );
     }
     if (prepared.capsule.batchMove && preflight.batchMoveSupport !== 1) {
       throw new Error(
-        `${persisted.record.targetMachineName} needs an ADE update to preserve batch lane trees, chat parents, scheduled work, and arrival instructions.`,
+        `${persisted.record.targetMachineName} needs a ${BRAND.NAME} update to preserve batch lane trees, chat parents, scheduled work, and arrival instructions.`,
       );
     }
     // An older destination would open a moved CLI as a chat: refuse instead.
     if (prepared.capsule.cli && preflight.cliMoveSupport !== 1) {
       throw new Error(
-        `${persisted.record.targetMachineName} needs an ADE update to take a CLI session. Update ADE there, then move it again.`,
+        `${persisted.record.targetMachineName} needs a ${BRAND.NAME} update to take a CLI session. Update ${BRAND.NAME} there, then move it again.`,
       );
     }
     if (persisted.record.mode === "fork" && preflight.forkHandoffSupport?.supported !== true) {
       throw new Error(
         preflight.forkHandoffSupport?.reason
-          ?? `${persisted.record.targetMachineName} needs an ADE update to take a full-history fork. Send a brief instead.`,
+          ?? `${persisted.record.targetMachineName} needs a ${BRAND.NAME} update to take a full-history fork. Send a brief instead.`,
       );
     }
     if (preflight.blockingErrors.length) throw new Error(preflight.blockingErrors.join(" "));
@@ -1072,7 +1073,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
     const transport = deps.transport();
     if (!transport) {
       // An outbox means acceptance may have started: keep the capsule.
-      end(sessionId, persisted, "failed", "This ADE runtime can't reach other machines.", {
+      end(sessionId, persisted, "failed", `This ${BRAND.NAME} runtime can't reach other machines.`, {
         acceptanceStarted: Boolean(deps.outbox.read(persisted.record.handoffId)),
       });
       return;
@@ -1300,7 +1301,7 @@ export function createCrossMachineHandoffOrchestrator(deps: CrossMachineHandoffO
           sessionId,
           current,
           "unknown",
-          `ADE lost the answer from ${current.record.targetMachineName}. The chat may already be there; check before retrying.`,
+          `${BRAND.NAME} lost the answer from ${current.record.targetMachineName}. The chat may already be there; check before retrying.`,
           { acceptanceStarted },
         );
         return;

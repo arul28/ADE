@@ -18,6 +18,7 @@ import { LAUNCH_PROFILE_TITLE } from "../../../shared/cliLaunch";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { lastMeaningfulTerminalLines } from "./cliChildSessions";
 import type { DeletedCliSnapshot, RecordDeletedCliInput } from "./deletedChats";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Delete, archive and Recently deleted for tracked agent CLI terminals
@@ -186,12 +187,12 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
   /** Stops the CLI's process when this runtime holds it. Throws when another runtime does. */
   const stopProcess = (row: TerminalSessionSummary, action: string): void => {
     if (peerOwned(row)) {
-      throw new Error(`Session '${row.id}' is still owned by another ADE runtime. Stop it from that runtime before you ${action} it.`);
+      throw new Error(`Session '${row.id}' is still owned by another ${BRAND.NAME} runtime. Stop it from that runtime before you ${action} it.`);
     }
     const ptyId = livePtyId(row);
     if (!ptyId) {
       if (row.status === "running") {
-        throw new Error(`The CLI session '${row.id}' is still running but ADE can't reach its terminal. Stop it first.`);
+        throw new Error(`The CLI session '${row.id}' is still running but ${BRAND.NAME} can't reach its terminal. Stop it first.`);
       }
       return;
     }
@@ -323,7 +324,7 @@ export function createCliSessionLifecycle(deps: CliSessionLifecycleDeps) {
     spawnLineage?: PtyCreateArgs["spawnLineage"];
   }): Promise<void> => {
     const provider = launchProviderOf(args.snapshot);
-    if (!provider) throw new Error("ADE doesn't know which agent this CLI ran, so it can't start it again.");
+    if (!provider) throw new Error(`${BRAND.NAME} doesn't know which agent this CLI ran, so it can't start it again.`);
     const metadata = args.snapshot.resumeMetadata;
     const launch = metadata?.launch ?? {};
     const savedMode = readAgentChatPermissionMode(launch.permissionMode) ?? readAgentChatPermissionMode(metadata?.permissionMode) ?? "default";

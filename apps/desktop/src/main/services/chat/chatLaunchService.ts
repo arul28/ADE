@@ -55,6 +55,7 @@ import { cloudLaneRestoreInstalled, prepareCloudLaneBranch, restoreCloudLaneWork
 import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLaunchTranscriptCard";
 import { isDiskFullText, isLaneSetupOutOfMemoryText, LANE_SETUP_NO_ROOM_TO_SAVE_ERROR } from "../../../shared/types/storage";
 import { cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Brain-owned "launch a chat into a new lane".
@@ -688,7 +689,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (!deps.projectRoot || !cloudLaneRestoreInstalled()) return null;
     return await restoreCloudLaneWork({ laneId, worktreePath, projectRoot: deps.projectRoot }).catch((error: unknown) => {
       logger.warn("chat_launch.cloud_restore_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
-      return `ADE couldn't put back this lane's saved work (${getErrorMessage(error).replace(/[.\s]+$/, "")}). It stays on ADE Cloud: download it from the lane.`;
+      return `${BRAND.NAME} couldn't put back this lane's saved work (${getErrorMessage(error).replace(/[.\s]+$/, "")}). It stays on ${BRAND.CLOUD_NAME}: download it from the lane.`;
     });
   };
 
@@ -803,7 +804,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         await deps.linkPullRequest({ laneId: lane.id, prUrlOrNumber: config.pullRequestUrl });
       } catch (error) {
         logger.warn("chat_launch.pr_link_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
-        linkNotes.push(`ADE couldn't link the lane to its pull request (${getErrorMessage(error).replace(/[.\s]+$/, "")}). Link it from the lane.`);
+        linkNotes.push(`${BRAND.NAME} couldn't link the lane to its pull request (${getErrorMessage(error).replace(/[.\s]+$/, "")}). Link it from the lane.`);
       }
     }
     // The start's fallbacks (no local branch, nothing to copy, a copy that
@@ -981,8 +982,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         logger.info("chat_launch.environment_making_room", { launchId, kind: memory ? "memory" : "disk" });
         if (await room.ready.catch(() => false)) return true;
         return memory
-          ? "ADE asked to move this computer to a bigger size, but it didn't change in time. Retry to set up again."
-          : "ADE asked for a bigger disk, but it didn't grow in time. Retry to set up again.";
+          ? `${BRAND.NAME} asked to move this computer to a bigger size, but it didn't change in time. Retry to set up again.`
+          : `${BRAND.NAME} asked for a bigger disk, but it didn't grow in time. Retry to set up again.`;
       }
     } catch (error) {
       logger.warn("chat_launch.environment_room_failed", { launchId, error: getErrorMessage(error) });

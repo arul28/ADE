@@ -3,6 +3,7 @@ import {
   AUTO_RESUME_SCHEDULED_WORK_SOURCE,
   UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
 } from "../../../shared/chatAutoResume";
+import { BRAND } from "../../../shared/brand";
 
 export { nextChatScheduledCronFireAt };
 
@@ -1162,7 +1163,7 @@ export function createChatScheduledWorkScheduler(
       // loses the claim instead of delivering a second time.
       const claimed = cloneSchedule(schedule);
       if (options.claimFire && !options.claimFire(claimed)) {
-        return { fired: false, reason: "Another ADE is running it right now." };
+        return { fired: false, reason: `Another ${BRAND.NAME} is running it right now.` };
       }
       inFlight.add(scheduleId);
       clearTimer(scheduleId);
@@ -1196,7 +1197,7 @@ export function createChatScheduledWorkScheduler(
         arm(schedule);
         return {
           fired: false,
-          reason: `ADE could not save the run, so nothing was sent. ${error instanceof Error ? error.message : String(error)}`,
+          reason: `${BRAND.NAME} could not save the run, so nothing was sent. ${error instanceof Error ? error.message : String(error)}`,
         };
       }
       let complete = false;

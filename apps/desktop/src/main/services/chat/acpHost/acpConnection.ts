@@ -52,6 +52,7 @@ import { prepareAcpScratchDir, removeAcpScratchDir } from "./acpScratchDirs";
 import { redactProcessOutput } from "../../../utils/redaction";
 import { attachAgentStderrTail } from "../agentProcessStderr";
 import { holdToolInstallsWhileRunning } from "../../../../../../ade-cli/src/services/tools/inUse";
+import { BRAND } from "../../../../shared/brand";
 
 /** Default ceiling for a single request. A prompt uses its own, much larger. */
 export const ACP_DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
@@ -773,8 +774,8 @@ export async function initializeAcpConnection(args: {
       // ACP requires the agent to name the protocol version it selected. An
       // answer without one has not established compatibility at all.
       throw new Error(
-        `${dialect.displayName} answered the ACP handshake without a protocol version, so ADE cannot tell `
-        + `whether it speaks ACP ${ACP_PROTOCOL_VERSION}. Update ${dialect.displayName}, or update ADE.`,
+        `${dialect.displayName} answered the ACP handshake without a protocol version, so ${BRAND.NAME} cannot tell `
+        + `whether it speaks ACP ${ACP_PROTOCOL_VERSION}. Update ${dialect.displayName}, or update ${BRAND.NAME}.`,
       );
     }
     if (advertised > ACP_PROTOCOL_VERSION) {
@@ -782,8 +783,8 @@ export async function initializeAcpConnection(args: {
       // would fail later on an unrecognized request or session update, so stop
       // at the handshake with a message that names the CLI and both ways out.
       throw new Error(
-        `${dialect.displayName} answered with ACP protocol version ${advertised}, but this build of ADE speaks `
-        + `version ${ACP_PROTOCOL_VERSION}. Update ADE, or update ${dialect.displayName} to a build that speaks `
+        `${dialect.displayName} answered with ACP protocol version ${advertised}, but this build of ${BRAND.NAME} speaks `
+        + `version ${ACP_PROTOCOL_VERSION}. Update ${BRAND.NAME}, or update ${dialect.displayName} to a build that speaks `
         + `ACP ${ACP_PROTOCOL_VERSION}.`,
       );
     }

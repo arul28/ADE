@@ -1574,7 +1574,7 @@ describe("createAgentChatService", () => {
         const error = await machineBrain.sendMessage({ sessionId, text: "continue here" }).then(() => null, (caught: unknown) => caught);
 
         expect(error).toBeInstanceOf(ChatRuntimeOwnedElsewhereError);
-        expect((error as Error).message).toContain("still working in another copy of ADE");
+        expect((error as Error).message).toContain("still working in another copy of Daex");
         expect(send).not.toHaveBeenCalled();
         expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/test-brain.sock");
       });

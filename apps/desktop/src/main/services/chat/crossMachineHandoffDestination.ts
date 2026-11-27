@@ -46,6 +46,7 @@ import type { ChatScheduledWorkScheduler } from "./chatScheduledWorkScheduler";
 import type { CrossMachineHandoffPersisted } from "./crossMachineHandoffOrchestrator";
 import { requireGitBranch, requireGitOutput, requireHandoffId } from "./crossMachineHandoffSource";
 import { landHandoffGitBundle, validateHandoffGitBundle } from "./handoffGitBundle";
+import { BRAND } from "../../../shared/brand";
 
 /** The destination's own transaction for one accepted handoff, keyed by handoffId. */
 export type CrossMachineHandoffRecord = {
@@ -156,7 +157,7 @@ export function crossMachineScheduledWorkIds(capsule: AgentChatCrossMachineHando
 }
 
 const primaryCheckoutRefusal = (laneName: string, branchRef: string): string =>
-  `'${branchRef}' is checked out in this machine's primary checkout ('${laneName}'), and ADE never writes moved work into it. Switch that checkout to another branch, then retry the move.`;
+  `'${branchRef}' is checked out in this machine's primary checkout ('${laneName}'), and ${BRAND.NAME} never writes moved work into it. Switch that checkout to another branch, then retry the move.`;
 
 type RunGit = (args: string[], opts: GitRunOptions) => Promise<GitRunResult>;
 
@@ -426,7 +427,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
         existingLane: lane,
         fetchEnv: await deps.gitEnv(),
         importLane: async () => {
-          throw new Error("An existing lane is reused here; ADE never imports another.");
+          throw new Error(`An existing lane is reused here; ${BRAND.NAME} never imports another.`);
         },
         deleteLane: async () => {},
         onLaneImported: (laneId) => args.onLaneBound?.(laneId),
@@ -951,7 +952,7 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
           if (writes) {
             return refuse(
               "original_lane_primary",
-              `The original chat's lane is this machine's primary checkout ('${lane.name}'), and ADE never writes moved work into it`,
+              `The original chat's lane is this machine's primary checkout ('${lane.name}'), and ${BRAND.NAME} never writes moved work into it`,
             );
           }
         }

@@ -53,6 +53,7 @@ import type {
   CrossMachineMoveCaller,
   CrossMachineSourceInspection,
 } from "./crossMachineHandoffOrchestrator";
+import { BRAND } from "../../../shared/brand";
 
 export type CrossMachineBatchChat = {
   sessionId: string;
@@ -533,13 +534,13 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         args: makePreflightArgs(mode),
       });
       if (preflight.batchMoveSupport !== 1) {
-        throw new Error(`${machine.name} needs an ADE update to preserve batch lane trees, chat parents, scheduled work, and arrival instructions.`);
+        throw new Error(`${machine.name} needs a ${BRAND.NAME} update to preserve batch lane trees, chat parents, scheduled work, and arrival instructions.`);
       }
       if (hasBundle && preflight.gitBundleSupport !== true) {
-        throw new Error(`${machine.name} needs an ADE update to take uncommitted changes. Update it, or move without them.`);
+        throw new Error(`${machine.name} needs a ${BRAND.NAME} update to take uncommitted changes. Update it, or move without them.`);
       }
       if (chat.cliToolType && preflight.cliMoveSupport !== 1) {
-        throw new Error(`${machine.name} needs an ADE update to take a CLI session ('${chat.title ?? chat.sessionId}'). Update ADE there, then move it again.`);
+        throw new Error(`${machine.name} needs a ${BRAND.NAME} update to take a CLI session ('${chat.title ?? chat.sessionId}'). Update ${BRAND.NAME} there, then move it again.`);
       }
       if (mode === "fork" && preflight.forkHandoffSupport?.supported === false) {
         fallbackReason = preflight.forkHandoffSupport.reason ?? "This provider cannot move its full history between machines.";
@@ -551,7 +552,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
           args: makePreflightArgs(mode),
         });
       } else if (mode === "fork" && preflight.forkHandoffSupport?.supported !== true) {
-        throw new Error(`${machine.name} needs an ADE update to check whether this chat can move as a fork.`);
+        throw new Error(`${machine.name} needs a ${BRAND.NAME} update to check whether this chat can move as a fork.`);
       }
       if (preflight.blockingErrors.length) {
         throw new Error(`Chat '${chat.title ?? chat.sessionId}': ${preflight.blockingErrors.join(" ")}`);
@@ -586,10 +587,10 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         },
       });
       if (preflight.batchMoveSupport !== 1) {
-        throw new Error(`${machine.name} needs an ADE update to preserve the selected lane tree.`);
+        throw new Error(`${machine.name} needs a ${BRAND.NAME} update to preserve the selected lane tree.`);
       }
       if (hasBundle && preflight.gitBundleSupport !== true) {
-        throw new Error(`${machine.name} needs an ADE update to take changes from lane '${lane.name}'.`);
+        throw new Error(`${machine.name} needs a ${BRAND.NAME} update to take changes from lane '${lane.name}'.`);
       }
       if (preflight.blockingErrors.length) {
         throw new Error(`Lane '${lane.name}': ${preflight.blockingErrors.join(" ")}`);

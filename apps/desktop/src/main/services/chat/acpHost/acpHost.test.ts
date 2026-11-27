@@ -1325,7 +1325,7 @@ describe("unsupervised session invariant", () => {
     expect(notices(harness)[0]).toMatchObject({
       type: "system_notice",
       severity: "warning",
-      message: "Grok changed files here without asking ADE to approve. ADE's approval cards can't gate this chat.",
+      message: "Grok changed files here without asking Daex to approve. Daex's approval cards can't gate this chat.",
     });
     expect(session.unsupervised).toBe(true);
   });
@@ -1342,7 +1342,7 @@ describe("unsupervised session invariant", () => {
     const notice = notices(harness)[0];
     const message = notice?.type === "system_notice" ? notice.message : "";
     expect(message).not.toMatch(/approved its own/i);
-    expect(message).toContain("without asking ADE to approve");
+    expect(message).toContain("without asking Daex to approve");
     const detail = notice?.type === "system_notice" ? notice.detail : undefined;
     expect(typeof detail === "string" && detail).toContain("already granted");
     expect(typeof detail === "string" && detail).toContain("is approving the work itself");
@@ -1401,7 +1401,7 @@ describe("unsupervised session invariant", () => {
     const session = await withDeadline("open", harness.open({ permissionMode: "default" }));
     await withDeadline("turn", session.prompt({ turnId: "t1", blocks: [textPromptBlock("go")] }));
     expect(notices(harness)[0]).toMatchObject({
-      message: "Grok ran commands here without asking ADE to approve. ADE's approval cards can't gate this chat.",
+      message: "Grok ran commands here without asking Daex to approve. Daex's approval cards can't gate this chat.",
     });
   });
 

@@ -42,6 +42,7 @@ import {
   gzipToBase64,
 } from "./crossMachineForkTransport";
 import { CLI_CARRIED_CONVERSATION_PROVIDERS } from "../../../shared/crossMachineHandoff";
+import { BRAND } from "../../../shared/brand";
 
 
 const PROVIDER_NAME: Record<string, string> = {
@@ -119,7 +120,7 @@ export function cliFreshReason(provider: string, conversationId: string | null):
       : `${cliProviderName(provider)} keeps its conversation on this machine, so the CLI starts fresh there with a brief of the conversation.`;
   }
   if (!conversationId) {
-    return `ADE doesn't know this ${cliProviderName(provider)} CLI's conversation id, so it starts fresh there with a brief of the conversation.`;
+    return `${BRAND.NAME} doesn't know this ${cliProviderName(provider)} CLI's conversation id, so it starts fresh there with a brief of the conversation.`;
   }
   return null;
 }
@@ -147,7 +148,7 @@ export function packageCliConversation(args: {
   };
   if (args.provider === "claude") {
     const found = args.findClaudeTranscript(args.conversationId, args.laneWorktreePath, args.configHome);
-    if (!found) return { conversation: null, reason: `ADE couldn't find this ${name} conversation's file, so the CLI starts fresh there with a brief.` };
+    if (!found) return { conversation: null, reason: `${BRAND.NAME} couldn't find this ${name} conversation's file, so the CLI starts fresh there with a brief.` };
     const sideFiles = args.collectClaudeSideFiles(args.conversationId, found.transcriptPath);
     return {
       sourcePath: found.transcriptPath,
@@ -162,7 +163,7 @@ export function packageCliConversation(args: {
   }
   if (args.provider === "codex") {
     const sourcePath = args.findCodexRollout(args.conversationId, args.configHome);
-    if (!sourcePath) return { conversation: null, reason: `ADE couldn't find this ${name} conversation's file, so the CLI starts fresh there with a brief.` };
+    if (!sourcePath) return { conversation: null, reason: `${BRAND.NAME} couldn't find this ${name} conversation's file, so the CLI starts fresh there with a brief.` };
     if (sourcePath.endsWith(".zst")) {
       return { conversation: null, reason: `This ${name} conversation is stored compressed, so the CLI starts fresh there with a brief.` };
     }

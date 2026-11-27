@@ -80,6 +80,7 @@ import {
   grokSubagentConfigTomlLines,
   type HarnessSubagentLaunch,
 } from "../../../shared/harnessSubagentLaunch";
+import { BRAND } from "../../../shared/brand";
 
 /** Header OpenCode Go routes and caches by. */
 export const OPENCODE_SESSION_HEADER = "x-opencode-session";
@@ -325,7 +326,7 @@ type ProxyTarget = {
 
 const PROXY_NOT_READY: RouteUnsupported = {
   status: "unsupported",
-  unsupported: "ADE's proxy is not running. It starts on demand; try the launch again.",
+  unsupported: `${BRAND.NAME}'s proxy is not running. It starts on demand; try the launch again.`,
   reasonCode: "proxy-not-ready",
 };
 
@@ -386,7 +387,7 @@ function proxyTarget(args: {
     } catch (error) {
       return {
         status: "unsupported",
-        unsupported: `ADE could not configure its proxy for this model: ${error instanceof Error ? error.message : String(error)}`,
+        unsupported: `${BRAND.NAME} could not configure its proxy for this model: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
   }

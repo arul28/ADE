@@ -74,6 +74,7 @@ import {
 } from "./shared";
 import { readKimiAccount } from "./acpAccounts";
 import { pinnedToolSelfUpdateEnv } from "../../../../../shared/pinnedToolSpawnEnv";
+import { BRAND } from "../../../../../shared/brand";
 
 export const KIMI_WINDOWS_DEGRADATION_NOTE =
   "Kimi needs Git for Windows on this machine, because Git Bash is its shell.";
@@ -88,7 +89,7 @@ function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
   if (context.permissionMode === "yolo") args.push("--yolo");
   else if (context.permissionMode === "auto") args.push("--auto");
   else if (context.permissionMode === "auto-edit") {
-    throw new Error("Kimi ACP cannot honor ADE's auto-edit permission mode; choose a supported Kimi mode.");
+    throw new Error(`Kimi ACP cannot honor ${BRAND.NAME}'s auto-edit permission mode; choose a supported Kimi mode.`);
   }
   else if (context.permissionMode === "plan") args.push("--plan");
   args.push("acp");

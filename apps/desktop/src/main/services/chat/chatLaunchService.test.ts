@@ -647,7 +647,7 @@ describe("chatLaunchService", () => {
 
     const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
     expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("failed");
-    expect(reloaded.get({ launchId: LAUNCH_ID })?.error).toMatch(/interrupted when ADE restarted/);
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.error).toMatch(/interrupted when Daex restarted/);
     reloaded.dispose();
   });
 

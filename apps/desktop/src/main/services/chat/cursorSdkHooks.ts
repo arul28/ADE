@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils";
 import { isEmbeddedAdeRuntime } from "../shared/processExecution";
+import { BRAND } from "../../../shared/brand";
 
 const ADE_HOOK_SCRIPT_NAME = "ade-tool-gate.cjs";
 const ADE_HOOK_SHELL_COMMAND_NAME = "ade-tool-gate.sh";
@@ -115,7 +116,7 @@ export const CURSOR_HOOK_SCRIPT_NAMES: readonly string[] = [ADE_HOOK_SCRIPT_NAME
  */
 export async function runCursorHookScript(scriptPath: string | undefined): Promise<void> {
   if (!scriptPath || !path.isAbsolute(scriptPath) || !CURSOR_HOOK_SCRIPT_NAMES.includes(path.basename(scriptPath))) {
-    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ADE's Cursor hook scripts.\n`);
+    process.stderr.write(`ade: ${CURSOR_HOOK_RUNNER_COMMAND} runs only ${BRAND.NAME}'s Cursor hook scripts.\n`);
     process.exitCode = 2;
     return;
   }
@@ -180,22 +181,22 @@ function readHooksFile(filePath: string): CursorHooksConfig {
     parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch (error) {
     throw new Error(
-      `Cannot install ADE Cursor hook because ${filePath} is not valid JSON: ${getErrorMessage(error)}`,
+      `Cannot install ${BRAND.NAME} Cursor hook because ${filePath} is not valid JSON: ${getErrorMessage(error)}`,
     );
   }
   const config = readObject(parsed);
   if (!config) {
-    throw new Error(`Cannot install ADE Cursor hook because ${filePath} must contain a JSON object.`);
+    throw new Error(`Cannot install ${BRAND.NAME} Cursor hook because ${filePath} must contain a JSON object.`);
   }
   if (config.hooks !== undefined && !readObject(config.hooks)) {
-    throw new Error(`Cannot install ADE Cursor hook because ${filePath}.hooks must be a JSON object.`);
+    throw new Error(`Cannot install ${BRAND.NAME} Cursor hook because ${filePath}.hooks must be a JSON object.`);
   }
   const hooks = readObject(config.hooks) ?? {};
   // `preToolUse` is the permission gate, so a shape ADE cannot extend is fatal.
   // `preCompact` is telemetry only: `ensureCursorSdkUserHook` leaves an
   // unexpected value alone and skips ADE's entry instead.
   if (hooks.preToolUse !== undefined && !Array.isArray(hooks.preToolUse)) {
-    throw new Error(`Cannot install ADE Cursor hook because ${filePath}.hooks.preToolUse must be an array.`);
+    throw new Error(`Cannot install ${BRAND.NAME} Cursor hook because ${filePath}.hooks.preToolUse must be an array.`);
   }
   return config;
 }
@@ -464,7 +465,7 @@ type HookWrapperRules = Pick<
   "guardEnv" | "requiredEnv" | "unsetAnswer" | "noRunnerAnswer"
 >;
 
-const GATE_NO_NODE_MESSAGE = "ADE Cursor policy gate requires Node.js for ADE-managed Cursor sessions.";
+const GATE_NO_NODE_MESSAGE = `${BRAND.NAME} Cursor policy gate requires Node.js for ${BRAND.NAME}-managed Cursor sessions.`;
 
 /** The tool gate lets non-ADE Cursor sessions through and fails closed for ADE's own. */
 const GATE_WRAPPER: HookWrapperRules = {

@@ -827,7 +827,7 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.event.type === "system_notice"
-          && event.event.message === "Goal limit removed. ADE keeps goals unlimited."
+          && event.event.message === "Goal limit removed. Daex keeps goals unlimited."
         )).toBe(true);
       });
       expect(events.some((event) =>

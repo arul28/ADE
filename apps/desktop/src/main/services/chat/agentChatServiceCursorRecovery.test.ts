@@ -778,7 +778,7 @@ describe("createAgentChatService", () => {
       const errorEvents = events.filter((event) => event.event.type === "error");
       expect(errorEvents).toHaveLength(1);
       expect(errorEvents[0]?.event).toMatchObject({
-        message: "Cursor's session expired. ADE reconnected and retried, but Cursor rejected the request "
+        message: "Cursor's session expired. Daex reconnected and retried, but Cursor rejected the request "
           + "again — sign in to Cursor again in Settings, then resend.",
         errorInfo: { category: "auth", provider: "Cursor" },
       });
@@ -1948,7 +1948,7 @@ describe("createAgentChatService", () => {
         expect(cancelNotices).toHaveLength(1);
         expect(cancelNotices[0]?.event).toMatchObject({
           type: "system_notice",
-          message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+          message: "Queued message cancelled because Daex recycled the Cursor thread — resend it if still needed.",
         });
       } finally {
         vi.useRealTimers();

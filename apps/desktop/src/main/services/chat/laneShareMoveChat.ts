@@ -27,6 +27,7 @@ import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { parseMessageAuthor } from "../../../shared/messageAuthor";
 import { landHandoffGitBundle } from "./handoffGitBundle";
 import { storeLaneShareMoveBundle, type LaneShareMoveOutgoingBundle } from "./laneShareMoveTransfer";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Moving a chat to a machine of the other person of a lane share.
@@ -350,7 +351,7 @@ export function createLaneShareMoveChat(deps: LaneShareMoveChatDeps) {
       `Moved from ${fromName}'s machine.`,
       drafted
         ? `${fromName}'s brief is in Drafts in the composer, marked as theirs. Read it, then send it.`
-        : "ADE could not save the brief as a draft on this computer.",
+        : `${BRAND.NAME} could not save the brief as a draft on this computer.`,
       "This chat is in plan mode (read only) and uses this computer's sign-ins only. Switch the mode when you trust the brief.",
       input.hookFiles.length
         ? `This work changes git hooks: ${input.hookFiles.join(", ")}. Read them before you commit in this lane.`
@@ -399,7 +400,7 @@ export function createLaneShareMoveChat(deps: LaneShareMoveChatDeps) {
     let branchName = payload.branchName;
     if (!(await branchFree(branchName))) {
       branchName = `${payload.branchName}-moved-${payload.moveId.slice(4, 10)}`;
-      if (!(await branchFree(branchName))) throw new Error("ADE could not find a free branch name for the moved work here.");
+      if (!(await branchFree(branchName))) throw new Error(`${BRAND.NAME} could not find a free branch name for the moved work here.`);
     }
 
     const fetchEnv = await deps.destinationGitEnv();
@@ -442,7 +443,7 @@ export function createLaneShareMoveChat(deps: LaneShareMoveChatDeps) {
       }
       // Create only: never moves a branch that appeared meanwhile.
       const created = await runGit(["update-ref", `refs/heads/${branchName}`, payload.headSha, ""], { cwd: projectRoot, timeoutMs: 15_000 });
-      if (created.exitCode !== 0) throw new Error("ADE could not create the branch for the moved work here.");
+      if (created.exitCode !== 0) throw new Error(`${BRAND.NAME} could not create the branch for the moved work here.`);
       try {
         lane = await importLane({ branchRef: branchName, name: payload.laneName, description: `Received from ${fromName}'s machine` });
       } catch (error) {

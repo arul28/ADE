@@ -53,6 +53,7 @@
  */
 
 import type { AgentChatEvent } from "../../../../shared/types";
+import { BRAND } from "../../../../shared/brand";
 
 /**
  * Whether a permission mode promises the user a prompt.
@@ -123,7 +124,7 @@ export function acpUnsupervisedNoticeMessage(providerLabel: string, sawExecute: 
     : sawExecute
       ? "ran commands"
       : "changed files";
-  return `${providerLabel} ${what} here without asking ADE to approve. ADE's approval cards can't gate this chat.`;
+  return `${providerLabel} ${what} here without asking ${BRAND.NAME} to approve. ${BRAND.NAME}'s approval cards can't gate this chat.`;
 }
 
 /**
@@ -132,11 +133,11 @@ export function acpUnsupervisedNoticeMessage(providerLabel: string, sawExecute: 
  */
 export function acpUnsupervisedNoticeDetail(providerLabel: string): string {
   return [
-    `ADE received no approval request for this turn, so its approval cards had nothing to gate.`,
+    `${BRAND.NAME} received no approval request for this turn, so its approval cards had nothing to gate.`,
     ``,
-    `Two things cause that, and ADE cannot tell them apart from here:`,
+    `Two things cause that, and ${BRAND.NAME} cannot tell them apart from here:`,
     `• ${providerLabel} is approving the work itself.`,
-    `• You already granted an "always allow" for this project. ${providerLabel} remembers those outside ADE, including grants made in its own terminal UI.`,
+    `• You already granted an "always allow" for this project. ${providerLabel} remembers those outside ${BRAND.NAME}, including grants made in its own terminal UI.`,
     ``,
     `Run \`${providerLabel.toLowerCase()} inspect\` in this folder to see which permissions it loaded.`,
   ].join("\n");
@@ -144,7 +145,7 @@ export function acpUnsupervisedNoticeDetail(providerLabel: string): string {
 
 /** Copy for the case ADE could not verify in advance. Never claims it happened. */
 export function acpUnverifiedNoticeMessage(providerLabel: string): string {
-  return `ADE could not confirm that ${providerLabel} will ask before it edits files here. It may approve its own changes.`;
+  return `${BRAND.NAME} could not confirm that ${providerLabel} will ask before it edits files here. It may approve its own changes.`;
 }
 
 function notice(message: string, detail: string | null, turnId: string | null): AgentChatEvent {

@@ -27,6 +27,7 @@ import { laneDisplayName } from "../../../shared/laneDisplayName";
 import { hasTable, openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { assertStorageAnswering } from "../state/unansweringRoots";
 import { createDeletedChatLocator, type DeletedChatSource, type LoggerLike } from "./deletedChatLocator";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Settings › Recently deleted. Deleting a chat removes ADE's own files for it,
@@ -736,7 +737,7 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
   ): Promise<DeletedChatReopenResult> => {
     if (!deps.reopenCli) throw new Error("CLI sessions can't be reopened on this machine.");
     const snapshot = parseCliSnapshot(row);
-    if (!snapshot) throw new Error("ADE no longer knows how this CLI was launched, so it can't be reopened.");
+    if (!snapshot) throw new Error(`${BRAND.NAME} no longer knows how this CLI was launched, so it can't be reopened.`);
     if (reopening.has(row.id)) throw new Error("This CLI session is already being reopened.");
     reopening.add(row.id);
     try {
@@ -774,7 +775,7 @@ export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
             ? `Started a new ${label} CLI: its conversation is already open in a chat.`
             : row.externalId
               ? `Started a new ${label} CLI: ${label} no longer has its conversation.`
-              : `Started a new ${label} CLI: ADE never learned its conversation id, so it couldn't resume.`
+              : `Started a new ${label} CLI: ${BRAND.NAME} never learned its conversation id, so it couldn't resume.`
         : null);
       return {
         chatSessionId: result.sessionId,

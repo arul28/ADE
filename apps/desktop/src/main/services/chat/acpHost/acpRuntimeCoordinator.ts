@@ -29,6 +29,7 @@ import {
 import type { AcpPendingPermission } from "./acpPermissionBridge";
 import type { AcpSessionConfigOption } from "./acpProtocolTypes";
 import { behaviorOf, type AcpBackgroundWork, type AcpDialect, type AcpSlashCommand, type AcpSpawnPlan } from "./acpHostTypes";
+import { BRAND } from "../../../../shared/brand";
 
 export type AcpRuntimeState<TSteer = unknown> = {
   kind: "acp";
@@ -267,7 +268,7 @@ function recordConfigChange<TSteer>(
  */
 export class AcpModeUnsupportedError extends Error {
   constructor(displayName: string, cause: unknown) {
-    super(`This ${displayName} build cannot switch its permission mode, so ADE did not start it. Update ${displayName}, then try again.`, { cause });
+    super(`This ${displayName} build cannot switch its permission mode, so ${BRAND.NAME} did not start it. Update ${displayName}, then try again.`, { cause });
     this.name = "AcpModeUnsupportedError";
     markExpected(this, "environment");
   }

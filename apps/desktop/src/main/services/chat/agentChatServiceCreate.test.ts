@@ -1414,14 +1414,14 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           cwd: tmpRoot,
           fork: false,
-        })).rejects.toThrow("Grok sessions can't be continued as an ADE chat. Open a copy instead.");
+        })).rejects.toThrow("Grok sessions can't be continued as a Daex chat. Open a copy instead.");
         await expect(service.importExternalChatSession({
           provider: "cursor",
           externalSessionId: "cursor-session-1",
           laneId: "lane-1",
           cwd: tmpRoot,
           fork: false,
-        })).rejects.toThrow("Cursor sessions can't be continued as an ADE chat. Open a copy instead.");
+        })).rejects.toThrow("Cursor sessions can't be continued as a Daex chat. Open a copy instead.");
 
         expect(vi.mocked(loadExternalSessionEvents)).not.toHaveBeenCalled();
         expect(sessionService.get("test-uuid-1")).toBeNull();

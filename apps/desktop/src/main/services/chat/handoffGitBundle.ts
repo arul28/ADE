@@ -9,6 +9,7 @@ import type {
 import { runGit, runGitOrThrow } from "../git/git";
 import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES } from "./crossMachineForkTransport";
+import { BRAND } from "../../../shared/brand";
 
 /**
  * Moves a branch's unpublished work between machines as one `git bundle`: the
@@ -514,7 +515,7 @@ export async function applyHandoffGitBundle(args: {
     }
     // From another person: the one head must be the handoff ref the packer writes, nothing else.
     if (args.untrusted && !/^refs\/ade-handoff\/[0-9a-f]{32}\/head$/.test(heads[0]![1] ?? "")) {
-      throw new Error("The moved work carries a branch ADE did not expect.");
+      throw new Error(`The moved work carries a branch ${BRAND.NAME} did not expect.`);
     }
     // Deleted in `finally`, success or not.
     await gitOut(projectRoot, g(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", bundlePath, `+${heads[0]![1]}:${tempRef}`]));
@@ -805,6 +806,6 @@ async function landHandoffGitBundleNow<Lane extends HandoffBundleLane>(
       },
     },
   });
-  if (!imported) throw new Error("ADE could not create the destination lane for the handed-off changes.");
+  if (!imported) throw new Error(`${BRAND.NAME} could not create the destination lane for the handed-off changes.`);
   return imported;
 }

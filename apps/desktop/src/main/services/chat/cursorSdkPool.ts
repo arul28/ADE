@@ -29,6 +29,7 @@ import type {
   CursorSdkWorkerRequest,
   CursorSdkWorkerResponse,
 } from "./cursorSdkProtocol";
+import { BRAND } from "../../../shared/brand";
 
 type PendingRpc = {
   resolve: (value: unknown) => void;
@@ -921,7 +922,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
             ? await bridge.onHookRequest(message.request)
             : {
               permission: "deny" as const,
-              user_message: "ADE is not ready to approve Cursor tool calls.",
+              user_message: `${BRAND.NAME} is not ready to approve Cursor tool calls.`,
               agent_message: "ADE is not ready to approve Cursor tool calls.",
             };
         } catch (err) {
@@ -1463,7 +1464,7 @@ export async function runCursorSdkLocalPrompt(args: {
     // default, which reads as a transient fault the model may retry.
     pooled.bridge.onHookRequest = async () => ({
       permission: "deny" as const,
-      user_message: "ADE one-shot tasks do not run tools.",
+      user_message: `${BRAND.NAME} one-shot tasks do not run tools.`,
       agent_message: "Tools are unavailable for this task. Answer from the prompt text alone.",
     });
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
