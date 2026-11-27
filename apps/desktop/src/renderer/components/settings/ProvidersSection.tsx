@@ -1152,7 +1152,7 @@ function MachineProvidersSection({
           // (`Action 'ai.runAcpProviderDoctor' is not callable.`, `Unknown ADE action: …`).
           const message = error instanceof Error ? error.message : String(error);
           const unknownAction = message.includes("ai.runAcpProviderDoctor")
-            && (isUnsupportedAdeActionError(error) || message.includes("Unknown ADE action: ai.runAcpProviderDoctor"));
+            && (isUnsupportedAdeActionError(error) || /Unknown (?:ADE|Daex) action: ai\.runAcpProviderDoctor/.test(message));
           if (!isAdeAvailable(read) || !unknownAction) throw error;
           console.warn("[providers] doctor fell back to the older diagnostics action", { provider, message });
           result = await read({ provider, runDoctor: true }, pin);

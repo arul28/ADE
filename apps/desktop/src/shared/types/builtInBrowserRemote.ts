@@ -8,6 +8,7 @@
  * desktops already subscribe to, and a desktop holding a remote pin for that
  * lane opens the URL in ITS browser through a port-forward.
  */
+import { BRAND } from "../brand";
 
 export const BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT = "built_in_browser_remote_request" as const;
 
@@ -319,9 +320,11 @@ export type BuiltInBrowserHostNote = {
 
 /** A browser error, with the machine whose browser refused, for the agent to read. */
 export function builtInBrowserErrorOnMachine(message: string, machine: string, userComputer: boolean): string {
-  if (message.startsWith("ADE browser on ")) return message;
+  // Older machines still say "ADE browser"; both names count as the browser's own lead.
+  if (/^(?:ADE|Daex) browser on /.test(message)) return message;
   const where = `${machine}${userComputer ? " (the user's computer)" : ""}`;
-  return message.startsWith("ADE browser ")
-    ? `ADE browser on ${where} ${message.slice("ADE browser ".length)}`
-    : `ADE browser on ${where}: ${message}`;
+  const lead = /^(?:ADE|Daex) browser /.exec(message)?.[0];
+  return lead
+    ? `${BRAND.NAME} browser on ${where} ${message.slice(lead.length)}`
+    : `${BRAND.NAME} browser on ${where}: ${message}`;
 }

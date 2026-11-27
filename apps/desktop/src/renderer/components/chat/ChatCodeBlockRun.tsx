@@ -232,7 +232,7 @@ async function startRun(args: {
     // A lane folder that is gone, or a host too old for the hosted client's
     // launch, is the person's state and the block says so; anything else is
     // ours to hear about.
-    if (!/worktree is unavailable|Update ADE on this machine/i.test(errorText(error))) {
+    if (!/worktree is unavailable|Update (?:ADE|Daex) on this machine/i.test(errorText(error))) {
       captureError(error, { fingerprint: ["chat-code-block-run", "start-failed"], level: "warning", handled: true });
     }
     updateRun(key, id, { status: "failed", error: plainErrorText(error, `${BRAND.NAME} couldn't run that code.`) });

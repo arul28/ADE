@@ -457,7 +457,7 @@ export function formatLastSeen(value: number | null): string {
 }
 
 export function isVersionSkewWarning(warning: string): boolean {
-  return /Remote ADE service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
+  return /Remote (?:ADE|Daex) service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
     warning,
   );
 }

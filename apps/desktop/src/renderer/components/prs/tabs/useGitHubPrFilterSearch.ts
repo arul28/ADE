@@ -55,7 +55,7 @@ export function forgetGitHubPrSearchResults(): void {
 /** An older host answers a new action with "not callable" / "not exposed". */
 function isMissingActionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /is not callable|not exposed through ADE actions|cannot search GitHub yet|no handler registered/i.test(message);
+  return /is not callable|not exposed through (?:ADE|Daex) actions|cannot search GitHub yet|no handler registered/i.test(message);
 }
 
 /**

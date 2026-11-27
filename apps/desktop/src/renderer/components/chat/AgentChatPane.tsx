@@ -18150,7 +18150,7 @@ export function AgentChatPane({
         : message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
-        /ade chat could not authenticate/i.test(message)
+        /(?:ade|daex) chat could not authenticate/i.test(message)
         || /not authenticated/i.test(message)
         || /login required/i.test(message)
       ) {

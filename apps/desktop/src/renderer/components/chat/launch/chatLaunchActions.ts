@@ -56,8 +56,8 @@ export function isChatLaunchUnsupportedError(error: unknown): boolean {
   if (isUnsupportedAdeActionError(error)) return true;
   const parsed = parseCodedErrorMessage(error);
   if (parsed.code && UNSUPPORTED_ACTION_CODES.has(parsed.code)) return true;
-  return /^Unknown ADE action\b/i.test(parsed.message)
-    || /\bis unavailable on the connected ADE host\b/i.test(parsed.message);
+  return /^Unknown (?:ADE|Daex) action\b/i.test(parsed.message)
+    || /\bis unavailable on the connected (?:ADE|Daex) host\b/i.test(parsed.message);
 }
 
 export type StartChatLaunchOutcome = "started" | "failed" | "unsupported";

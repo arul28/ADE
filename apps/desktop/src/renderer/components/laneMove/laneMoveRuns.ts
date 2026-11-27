@@ -240,7 +240,7 @@ function isMissingSourceCheck(error: unknown): boolean {
   // ADE Web's own answer for a command the host doesn't list (`UnsupportedRemoteCommandError`).
   const code = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
   if (code === "unsupported_action") return true;
-  return /unknown ade action|unsupported remote command|no handler registered|not callable|not exposed|is unavailable on the connected ade host/i.test(message);
+  return /unknown (?:ade|daex) action|unsupported remote command|no handler registered|not callable|not exposed|is unavailable on the connected (?:ade|daex) host/i.test(message);
 }
 
 /** What the lane's files on the source are since the batch carried them. */
