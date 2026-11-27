@@ -2772,7 +2772,7 @@ private struct WorkNewChatTopBackButton: ViewModifier {
     if !shown {
       content
     } else {
-      #if compiler(>=6.4)
+      #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
       if #available(iOS 27.1, *) {
         content.toolbar {
           ToolbarItem(placement: .topBarLeading) { button }

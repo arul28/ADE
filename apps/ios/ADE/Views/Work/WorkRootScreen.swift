@@ -1380,7 +1380,7 @@ struct WorkRootListScreen: View, Equatable {
 
   @ToolbarContentBuilder
   private var duoBoardHeaderItem: some ToolbarContent {
-    #if compiler(>=6.4)
+    #if compiler(>=6.4) && !ADE_IOS_SDK_27_0
     if #available(iOS 27.1, *) {
       ToolbarItem(placement: .topBarLeading) { duoBoardHeader }
         .sharedBackgroundVisibility(.hidden)

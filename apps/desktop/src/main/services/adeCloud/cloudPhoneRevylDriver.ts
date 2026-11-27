@@ -35,6 +35,9 @@ const BUILD_WAIT_MS = 15 * 60_000;
 const BUILD_POLL_MS = 2_000;
 /** While a build runs, the phone is touched this often so its idle stop doesn't come first. */
 const BUILD_KEEP_AWAKE_MS = 60_000;
+/** A failed build's log is read in pages this big (a full Xcode build is about 1,000 lines), at most this many. */
+const BUILD_LOG_PAGE = 1000;
+const BUILD_LOG_PAGES = 5;
 /** The device can still be connecting for a few seconds after the phone reads ready. */
 const CONNECT_WAIT_MS = 20_000;
 /** `wait` and `gone` read the screen this often, for at most this long. */
@@ -390,15 +393,29 @@ export function createRevylDriver(ctx: CloudPhoneDriverContext): CloudPhoneDrive
 
   /** A failed build's own error lines, as Xcode wrote them. */
   async function buildErrors(phone: CloudPhoneHeld, job: string, status: Record<string, unknown>): Promise<string> {
-    const logs = await callJson(phone, "build.logs", { job }).catch((error: unknown) => {
-      ctx.logger?.warn?.("cloud_phone.build_logs_failed", { error: error instanceof Error ? error.message : String(error) });
-      return {} as Record<string, unknown>;
-    });
-    const lines = Array.isArray(logs.events)
-      ? (logs.events as Array<Record<string, unknown>>).map((event) => (typeof event.message === "string" ? event.message : "")).filter(Boolean)
-      : [];
+    // Revyl answers the log's tail a page at a time; the compiler's errors sit well before the
+    // "BUILD FAILED" tail, so read big pages and walk back to the start.
+    const lines: string[] = [];
+    let cursor: string | null = null;
+    let lastFirst: unknown;
+    for (let page = 0; page < BUILD_LOG_PAGES; page += 1) {
+      const logs = await callJson(phone, "build.logs", { job }, { query: { limit: String(BUILD_LOG_PAGE), ...(cursor ? { cursor } : {}) } }).catch((error: unknown) => {
+        ctx.logger?.warn?.("cloud_phone.build_logs_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      });
+      const events = Array.isArray(logs?.events) ? (logs.events as Array<Record<string, unknown>>) : [];
+      // A cursor Revyl didn't take answers the same page again: stop rather than repeat it.
+      if (!events.length || (page > 0 && events[0]?.message === lastFirst)) break;
+      lastFirst = events[0]?.message;
+      lines.unshift(...events.map((event) => (typeof event.message === "string" ? event.message : "")).filter(Boolean));
+      const previous = logs?.has_more_before === true && typeof logs.previous_cursor === "string" ? logs.previous_cursor : null;
+      if (!previous) break;
+      cursor = previous;
+    }
+    const compiler = [...new Set(lines.filter((line) => /:\d+(:\d+)?: (fatal )?error:/.test(line)))];
+    // The first compiler errors are the cause; without any, the tail says what stopped the build.
     const errors = lines.filter((line) => /error:|\berror\b|failed|No (Xcode|scheme)/i.test(line) && !/^\s*builtin-/.test(line));
-    const shown = (errors.length ? errors : lines).slice(-40);
+    const shown = compiler.length ? compiler.slice(0, 40) : (errors.length ? errors : lines).slice(-40);
     const why = [status.error, status.suggested_fix].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
     return ["The build failed.", ...why, ...(shown.length ? ["", ...shown] : [])].join("\n");
   }

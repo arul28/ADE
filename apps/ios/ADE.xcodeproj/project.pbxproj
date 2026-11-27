@@ -3053,6 +3053,8 @@
 		6169CDD9AF6361CC072E89A6 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"OTHER_SWIFT_FLAGS[sdk=iphoneos27.0]" = "$(inherited) -DADE_IOS_SDK_27_0";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator27.0]" = "$(inherited) -DADE_IOS_SDK_27_0";
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -3108,6 +3110,8 @@
 		6F9FFB55E81BF5AB8D53523C /* Beta */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"OTHER_SWIFT_FLAGS[sdk=iphoneos27.0]" = "$(inherited) -DADE_IOS_SDK_27_0";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator27.0]" = "$(inherited) -DADE_IOS_SDK_27_0";
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
@@ -3225,6 +3229,8 @@
 		DAF8C4B384487A39D1EDC7A8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				"OTHER_SWIFT_FLAGS[sdk=iphoneos27.0]" = "$(inherited) -DADE_IOS_SDK_27_0";
+				"OTHER_SWIFT_FLAGS[sdk=iphonesimulator27.0]" = "$(inherited) -DADE_IOS_SDK_27_0";
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
