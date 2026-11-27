@@ -4,7 +4,7 @@ description: "Where proof artifacts are stored, how long they last, and how to t
 icon: "sliders"
 ---
 
-Proof artifacts live with the project, under its `.ade/` directory on the machine that owns the project. Files sit on disk; their owners, review state, captions, and kind live in ADE's project database. The pairing is what lets an artifact still know which PR and chat it belongs to even though the file on disk is just an image or video.
+Proof artifacts live with the project, under its `.ade/` directory on the machine that owns the project. Files sit on disk; their owners, review state, captions, and kind live in Daex's project database. The pairing is what lets an artifact still know which PR and chat it belongs to even though the file on disk is just an image or video.
 
 ## Storage
 
@@ -29,19 +29,19 @@ For a project opened on a **remote runtime**, proof is stored on the remote host
   <Accordion title="Retention and cleanup" icon="broom">
     There is no automatic retention policy — captures persist until the project is cleaned up. Disk is the budget; nothing ages out on its own.
 
-    Dismiss or remove proof through ADE rather than deleting files directly from `.ade/artifacts/computer-use/` — deleting on disk leaves database rows pointing at missing files. Removing through ADE clears the metadata too.
+    Dismiss or remove proof through Daex rather than deleting files directly from `.ade/artifacts/computer-use/` — deleting on disk leaves database rows pointing at missing files. Removing through Daex clears the metadata too.
   </Accordion>
 
   <Accordion title="Screenshots are blank" icon="image">
-    Grant **Screen Recording** permission to ADE in **System Settings → Privacy & Security**, then quit and relaunch ADE. macOS only applies the permission to a fresh launch.
+    Grant **Screen Recording** permission to Daex in **System Settings → Privacy & Security**, then quit and relaunch Daex. macOS only applies the permission to a fresh launch.
   </Accordion>
 
   <Accordion title="Capture is unavailable" icon="circle-question">
-    Run `ade proof status --text` and confirm capture is reported as available. Capture relies on the macOS built-in `screencapture`; on unsupported platforms, including [Windows](/getting-started/windows), the command exits non-zero. If status looks wrong, relaunch ADE.
+    Run `daex proof status --text` and confirm capture is reported as available. Capture relies on the macOS built-in `screencapture`; on unsupported platforms, including [Windows](/getting-started/windows), the command exits non-zero. If status looks wrong, relaunch Daex.
   </Accordion>
 
   <Accordion title="A capture has no owner" icon="link-slash">
-    `ade proof capture` exits non-zero when it can't resolve an owner and no `--owner-kind`/`--owner-id` flags were passed — an un-owned proof has no home in the UI. Run it from inside an ADE chat or lane session, or pass the owner explicitly.
+    `daex proof capture` exits non-zero when it can't resolve an owner and no `--owner-kind`/`--owner-id` flags were passed — an un-owned proof has no home in the UI. Run it from inside a Daex chat or lane session, or pass the owner explicitly.
   </Accordion>
 
   <Accordion title="Ingest is rejected" icon="triangle-exclamation">
@@ -51,9 +51,9 @@ For a project opened on a **remote runtime**, proof is stored on the remote host
 
 <CardGroup cols={2}>
   <Card title="Capture proof" icon="terminal" href="/computer-use/setup">
-    The `ade proof` capture, attach, and ingest commands.
+    The `daex proof` capture, attach, and ingest commands.
   </Card>
   <Card title="Configuration overview" icon="folder-tree" href="/configuration/overview">
-    Where ADE keeps the rest of your project state.
+    Where Daex keeps the rest of your project state.
   </Card>
 </CardGroup>

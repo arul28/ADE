@@ -4,38 +4,38 @@ description: "Talk to a coding agent that reads, edits, runs commands, and opens
 icon: "comments"
 ---
 
-Agent chat is ADE's interactive coding surface. You open a chat in a lane, describe the task, and the agent reads and edits files, runs commands, inspects diffs, commits, and opens PRs — all inside that lane's git worktree. Every tool call streams into the transcript and is expandable, so you can inspect each edit or command before you trust it.
+Agent chat is Daex's interactive coding surface. You open a chat in a lane, describe the task, and the agent reads and edits files, runs commands, inspects diffs, commits, and opens PRs — all inside that lane's git worktree. Every tool call streams into the transcript and is expandable, so you can inspect each edit or command before you trust it.
 
 <Frame caption="Agent chat on the desktop — transcript, streaming tool calls, and live diffs in one place.">
-  <img src="/media/current/work-chat.jpg" alt="Agent chat on the ADE desktop" />
+  <img src="/media/current/work-chat.jpg" alt="Agent chat on the Daex desktop" />
 </Frame>
 
 ## Lane-scoped by design
 
-Every chat binds to a lane — a git worktree and branch — and that worktree is the agent's boundary. The lane's branch and working directory are injected into the agent's context, so it always knows where it is. File edits and mutating commands stay inside the lane's worktree; the agent can read outside it for context when it needs to, but it writes only inside the lane unless ADE relaunches it elsewhere.
+Every chat binds to a lane — a git worktree and branch — and that worktree is the agent's boundary. The lane's branch and working directory are injected into the agent's context, so it always knows where it is. File edits and mutating commands stay inside the lane's worktree; the agent can read outside it for context when it needs to, but it writes only inside the lane unless Daex relaunches it elsewhere.
 
 Because work is isolated per lane, several agents can run in the same repository at once without writing over each other or your main checkout.
 
 ## Start a chat or a CLI session
 
-From an empty Work composer you can launch into an existing lane, or let ADE auto-create a worktree from your prompt. In a lane you can start either an **agent chat** (the streaming, tool-aware surface) or a provider **CLI session** (the provider's own terminal client) — both run scoped to the lane's worktree.
+From an empty Work composer you can launch into an existing lane, or let Daex auto-create a worktree from your prompt. In a lane you can start either an **agent chat** (the streaming, tool-aware surface) or a provider **CLI session** (the provider's own terminal client) — both run scoped to the lane's worktree.
 
 ## Pick a provider and model per session
 
-ADE runs thirteen provider runtimes against the same lane. Pick the provider and model that fits the task when you start the session, and switch within the same family mid-session when you want a different model.
+Daex runs thirteen provider runtimes against the same lane. Pick the provider and model that fits the task when you start the session, and switch within the same family mid-session when you want a different model.
 
 | Provider | Runtime |
 |----------|---------|
-| **Claude Code** | The Claude Agent SDK with ADE's own copy of Claude Code — no separate install needed. |
-| **Codex** | The `codex` app-server, from ADE's own copy of Codex. |
+| **Claude Code** | The Claude Agent SDK with Daex's own copy of Claude Code — no separate install needed. |
+| **Codex** | The `codex` app-server, from Daex's own copy of Codex. |
 | **Cursor** | The official `@cursor/sdk`, authenticated through the SDK. |
-| **Factory Droid** | The official `@factory/droid-sdk`, driving ADE's own copy of the `droid` CLI. |
+| **Factory Droid** | The official `@factory/droid-sdk`, driving Daex's own copy of the `droid` CLI. |
 | **OpenCode** | The OpenCode server runtime, routing your provider API keys, OpenRouter, or a local model (Ollama, LM Studio). |
 
 Plus Pi, GitHub Copilot, Qwen, Kimi, Grok, Devin, and Antigravity. The full list and each runtime's credential model is in [Agents and models](/concepts/agents-and-models).
 
 <Note>
-Add a provider key or subscription in **Settings** before its models appear in the picker. ADE downloads its own copy of each agent for the machine that runs the chat, the first time it is needed; it never runs a CLI from your PATH. When an agent is not downloaded yet or not signed in, an inline card in the chat offers Download / Retry or a sign-in, on the chat's machine.
+Add a provider key or subscription in **Settings** before its models appear in the picker. Daex downloads its own copy of each agent for the machine that runs the chat, the first time it is needed; it never runs a CLI from your PATH. When an agent is not downloaded yet or not signed in, an inline card in the chat offers Download / Retry or a sign-in, on the chat's machine.
 </Note>
 
 ## Set a Codex goal
@@ -44,13 +44,13 @@ Codex chats can keep an explicit goal on the session, so a long-running task has
 
 ## Follow long-running work
 
-ADE keeps background chat activity visible instead of hiding it inside provider logs. Claude wake, cron, scheduled-work, and background-stream updates appear as activity in the chat timeline and Chat Info surfaces; Codex and Cursor recovery events surface as structured status or error cards when a runtime needs attention.
+Daex keeps background chat activity visible instead of hiding it inside provider logs. Claude wake, cron, scheduled-work, and background-stream updates appear as activity in the chat timeline and Chat Info surfaces; Codex and Cursor recovery events surface as structured status or error cards when a runtime needs attention.
 
-When a provider compacts context, ADE shows a compaction marker in the transcript and keeps the follow-up turn attached to the same session. You can keep working from the same chat, inspect the earlier turn history, or start a fresh lane-scoped chat with a summary when the task needs a clean reset.
+When a provider compacts context, Daex shows a compaction marker in the transcript and keeps the follow-up turn attached to the same session. You can keep working from the same chat, inspect the earlier turn history, or start a fresh lane-scoped chat with a summary when the task needs a clean reset.
 
 ## See every tool call
 
-Chat is not a black box. As the agent works, ADE streams each step into the transcript so you can follow — and stop — what it does:
+Chat is not a black box. As the agent works, Daex streams each step into the transcript so you can follow — and stop — what it does:
 
 - Streaming assistant text and reasoning.
 - Tool calls and shell commands, grouped into an expandable work log so you can read each file edit or command and its result.
@@ -64,17 +64,17 @@ Approval gates depend on the session's permission mode: a read-only **plan** mod
 
 Chat sessions are owned by the machine's runtime, not by any one client. A chat you start on the desktop is the same conversation on the web client and on your phone — the renderer, the web client, and the iOS app are all clients of the same session.
 
-Provider-native sessions can also be recovered into ADE when possible. Claude and Codex history imports seed a normal ADE chat, preserving provenance while keeping future turns lane-scoped and visible in the same transcript UI.
+Provider-native sessions can also be recovered into Daex when possible. Claude and Codex history imports seed a normal Daex chat, preserving provenance while keeping future turns lane-scoped and visible in the same transcript UI.
 
 <Tabs>
   <Tab title="Desktop">
     <Frame caption="Agent chat in the macOS app.">
-      <img src="/media/current/work-chat.jpg" alt="Agent chat on the ADE desktop" />
+      <img src="/media/current/work-chat.jpg" alt="Agent chat on the Daex desktop" />
     </Frame>
   </Tab>
   <Tab title="iOS">
     <Frame caption="Pick up the chat from your phone.">
-      <img src="/assets/readme/phone.webp" alt="Agent chat on the ADE iOS app" width="300" />
+      <img src="/assets/readme/phone.webp" alt="Agent chat on the Daex iOS app" width="300" />
     </Frame>
   </Tab>
 </Tabs>

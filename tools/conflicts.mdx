@@ -4,13 +4,13 @@ description: "Predict, simulate, and resolve merge conflicts between lanes befor
 icon: "code-merge"
 ---
 
-ADE surfaces integration risk before it becomes a merge-time emergency. A single engine predicts conflicts, computes pairwise risk, runs pre-flight merge simulations, and drives AI-assisted resolution — so you can reorder, rebase, or fix a collision while work is still in progress.
+Daex surfaces integration risk before it becomes a merge-time emergency. A single engine predicts conflicts, computes pairwise risk, runs pre-flight merge simulations, and drives AI-assisted resolution — so you can reorder, rebase, or fix a collision while work is still in progress.
 
 There's no standalone "Conflicts" tab; the signal is projected into the surfaces where it matters: lane status badges, the lane's catch-up menu, and PR merge readiness.
 
 ## Pre-flight detection
 
-ADE compares your active lanes — against each other and against their base — by running `git merge-tree` on the host that owns the worktrees. It predicts whether a merge or rebase *would* conflict without actually performing one, then caches the result and surfaces it as a status.
+Daex compares your active lanes — against each other and against their base — by running `git merge-tree` on the host that owns the worktrees. It predicts whether a merge or rebase *would* conflict without actually performing one, then caches the result and surfaces it as a status.
 
 | Status | Meaning |
 |--------|---------|
@@ -25,7 +25,7 @@ Predictions older than five minutes are marked **stale** and shown with a clock 
 
 ## Risk levels
 
-For each lane pair, ADE derives a risk level from how many files overlap and whether a real conflict is predicted.
+For each lane pair, Daex derives a risk level from how many files overlap and whether a real conflict is predicted.
 
 | Level | Meaning |
 |-------|---------|
@@ -34,11 +34,11 @@ For each lane pair, ADE derives a risk level from how many files overlap and whe
 | **Medium** | Several shared files; review before merging. |
 | **High** | Marker-level conflicts predicted, or heavy overlap — expect manual resolution. |
 
-ADE also keeps a project-wide **risk matrix** that scores every lane pair at once. There is no matrix view in the app. Agents and scripts read it through the conflicts tools and actions: the CTO `getConflictRiskMatrix` tool, and the `conflicts.getRiskMatrix` and `conflicts.getBatchAssessment` actions.
+Daex also keeps a project-wide **risk matrix** that scores every lane pair at once. There is no matrix view in the app. Agents and scripts read it through the conflicts tools and actions: the CTO `getConflictRiskMatrix` tool, and the `conflicts.getRiskMatrix` and `conflicts.getBatchAssessment` actions.
 
 ## Live merge simulation
 
-Agents can run a one-shot **merge simulation** (the CTO `simulateMerge` tool or the `conflicts.simulateMerge` action) between two lanes (or a lane and its base). ADE computes the merge base, runs `git merge-tree`, and returns one of:
+Agents can run a one-shot **merge simulation** (the CTO `simulateMerge` tool or the `conflicts.simulateMerge` action) between two lanes (or a lane and its base). Daex computes the merge base, runs `git merge-tree`, and returns one of:
 
 - **Clean** — no conflicts; the merged file list and diff stat.
 - **Conflict** — the conflicting files, each with rendered conflict-marker previews.
@@ -48,18 +48,18 @@ This is the same primitive that backs the PR merge-readiness check, so a simulat
 
 ## Rebase when a lane drifts
 
-When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — the open PR's base branch, or the project default branch when there is no open PR.
+When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. Daex resolves the right comparison ref for you — the open PR's base branch, or the project default branch when there is no open PR.
 
 ## AI-assisted resolution
 
-When a conflict needs more than a reorder, ADE can resolve it for you in two ways:
+When a conflict needs more than a reorder, Daex can resolve it for you in two ways:
 
 <CardGroup cols={2}>
   <Card title="Proposal flow" icon="wand-magic-sparkles">
-    ADE builds a bounded context for the specific conflict, asks a model for a patch, and lets you apply it unstaged, staged, or as a commit — with one-click undo. If required file context is incomplete, it refuses to guess and tells you why.
+    Daex builds a bounded context for the specific conflict, asks a model for a patch, and lets you apply it unstaged, staged, or as a commit — with one-click undo. If required file context is incomplete, it refuses to guess and tells you why.
   </Card>
   <Card title="External CLI resolver" icon="terminal">
-    For bigger merges, ADE spawns a Codex or Claude CLI session in the lane's worktree (or a dedicated merge lane), captures the changes, and commits them as an explicit, reviewable step.
+    For bigger merges, Daex spawns a Codex or Claude CLI session in the lane's worktree (or a dedicated merge lane), captures the changes, and commits them as an explicit, reviewable step.
   </Card>
 </CardGroup>
 

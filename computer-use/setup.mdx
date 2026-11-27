@@ -1,27 +1,27 @@
 ---
 title: "Capture proof"
-description: "Capture evidence from the CLI with the real `ade proof` commands — capture, attach, list, and status."
+description: "Capture evidence from the CLI with the real `daex proof` commands — capture, attach, list, and status."
 icon: "terminal"
 ---
 
-On macOS, ADE captures screenshots and short recordings with the system's built-in tools — no extra install. The first capture may ask for **Screen Recording** permission in **System Settings → Privacy & Security**; grant it to ADE, then quit and relaunch.
+On macOS, Daex captures screenshots and short recordings with the system's built-in tools — no extra install. The first capture may ask for **Screen Recording** permission in **System Settings → Privacy & Security**; grant it to Daex, then quit and relaunch.
 
 <Note>
-OS-level screenshot and recording capture is macOS-only. On [Windows](/getting-started/windows), `ade proof capture` is unavailable and reports that capture is not supported; browser traces, console logs, and `ade proof attach <path>` work normally.
+OS-level screenshot and recording capture is macOS-only. On [Windows](/getting-started/windows), `daex proof capture` is unavailable and reports that capture is not supported; browser traces, console logs, and `daex proof attach <path>` work normally.
 </Note>
 
-Both you and agents capture proof the same way, through the `ade proof` CLI. Captures are intentional — you run a command when a moment deserves evidence. Each capture is scoped to the chat or lane it runs in: agents launched inside ADE pick up the right owner automatically from the session they're running in, so most captures need no owner flags at all.
+Both you and agents capture proof the same way, through the `daex proof` CLI. Captures are intentional — you run a command when a moment deserves evidence. Each capture is scoped to the chat or lane it runs in: agents launched inside Daex pick up the right owner automatically from the session they're running in, so most captures need no owner flags at all.
 
 ## Capture, then it's filed
 
 <Steps>
   <Step title="Capture or attach">
-    Run `ade proof capture` to screenshot the current state, or `ade proof attach <path>` to promote a file you already produced.
+    Run `daex proof capture` to screenshot the current state, or `daex proof attach <path>` to promote a file you already produced.
   </Step>
-  <Step title="ADE files it">
+  <Step title="Daex files it">
     The file is copied under `.ade/artifacts/computer-use/` and a row is written to the project database with its owner link.
   </Step>
-  <Step title="Review in ADE">
+  <Step title="Review in Daex">
     The proof appears in the chat drawer and at lane / PR review, where you can accept it, request more, or dismiss it.
   </Step>
 </Steps>
@@ -29,12 +29,12 @@ Both you and agents capture proof the same way, through the `ade proof` CLI. Cap
 ## Command reference
 
 <AccordionGroup>
-  <Accordion title="ade proof capture — screenshot the current state" icon="camera">
+  <Accordion title="daex proof capture — screenshot the current state" icon="camera">
     Take a screenshot now and file it as proof for the current session.
 
     ```bash
-    ade proof capture --caption "logged in as admin"
-    ade proof capture --caption "order #1234 submitted, confirmation visible"
+    daex proof capture --caption "logged in as admin"
+    daex proof capture --caption "order #1234 submitted, confirmation visible"
     ```
 
     | Flag | Use |
@@ -46,41 +46,41 @@ Both you and agents capture proof the same way, through the `ade proof` CLI. Cap
     The owner is inferred from the session you're in. If no owner can be resolved and no flags are passed, the command exits non-zero — an un-owned proof has no home in the UI.
   </Accordion>
 
-  <Accordion title="ade proof attach — promote an existing file" icon="file-import">
+  <Accordion title="daex proof attach — promote an existing file" icon="file-import">
     Promote an image, video, or browser-trace file you produced out-of-band — a headless-browser screenshot, a Playwright trace rendered as PNG, anything on disk.
 
     ```bash
-    ade proof attach /tmp/playwright-run/checkout-success.png \
+    daex proof attach /tmp/playwright-run/checkout-success.png \
       --caption "checkout flow completes on Firefox"
     ```
 
-    The proof kind is inferred from the file extension: images become **screenshots**, `.mov`/`.mp4`/`.webm` become **recordings**, `.zip`/`.har` become **browser traces**. The original file is left in place; ADE copies it into `.ade/artifacts/computer-use/`.
+    The proof kind is inferred from the file extension: images become **screenshots**, `.mov`/`.mp4`/`.webm` become **recordings**, `.zip`/`.har` become **browser traces**. The original file is left in place; Daex copies it into `.ade/artifacts/computer-use/`.
   </Accordion>
 
-  <Accordion title="ade proof list — see what you've captured" icon="list">
+  <Accordion title="daex proof list — see what you've captured" icon="list">
     Print the proof set for the current session as JSON. Primarily for agents to see what they've already captured.
 
     ```bash
-    ade proof list --text
-    ade proof list --owner-kind lane --owner-id <id> --limit 20
+    daex proof list --text
+    daex proof list --owner-kind lane --owner-id <id> --limit 20
     ```
   </Accordion>
 
-  <Accordion title="ade proof status — check capture capabilities" icon="circle-check">
+  <Accordion title="daex proof status — check capture capabilities" icon="circle-check">
     Report whether the runtime can capture (`screencapture` availability, OS support).
 
     ```bash
-    ade proof status --text
+    daex proof status --text
     ```
 
-    `ade proof record --seconds <n>` records a short video proof where supported.
+    `daex proof record --seconds <n>` records a short video proof where supported.
   </Accordion>
 
-  <Accordion title="ade proof ingest — bring in evidence from another tool" icon="arrows-to-dot">
+  <Accordion title="daex proof ingest — bring in evidence from another tool" icon="arrows-to-dot">
     Ingest externally produced artifacts directly through the proof broker, with owners set in one call. Owner kinds are `chat` (alias for `chat_session`), `lane`, `pr` (alias for `github_pr`), `linear_issue`, and `automation_run`.
 
     ```bash
-    ade proof ingest --input-json '{
+    daex proof ingest --input-json '{
       "backend": { "name": "playwright" },
       "inputs": [
         { "kind": "browser_trace", "title": "checkout flow", "path": "/tmp/trace.zip" },
@@ -97,11 +97,11 @@ Both you and agents capture proof the same way, through the `ade proof` CLI. Cap
 </AccordionGroup>
 
 <Note>
-Run `ade help proof` for the complete, current flag list. The `ade proof` commands print a JSON summary on success and exit non-zero on failure.
+Run `daex help proof` for the complete, current flag list. The `daex proof` commands print a JSON summary on success and exit non-zero on failure.
 </Note>
 
 <Tip>
-If screenshots come out blank, grant Screen Recording permission to ADE and relaunch — macOS only applies the permission to a fresh launch.
+If screenshots come out blank, grant Screen Recording permission to Daex and relaunch — macOS only applies the permission to a fresh launch.
 </Tip>
 
 <CardGroup cols={2}>

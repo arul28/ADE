@@ -7,7 +7,7 @@ icon: "server"
 Worktree isolation already keeps each lane's files, branch, and git operations separate. **Lane runtime** isolation goes further: it makes a lane a complete parallel dev environment, so two agents can each run the app — with its own ports, its own preview URL, and its own auth — without colliding.
 
 <Note>
-This is advanced and mostly automatic. ADE leases ports and routes previews for you; most users never open a single setting here. Reach for the manual pieces only when a lane needs custom environment setup.
+This is advanced and mostly automatic. Daex leases ports and routes previews for you; most users never open a single setting here. Reach for the manual pieces only when a lane needs custom environment setup.
 </Note>
 
 ## What's isolated per lane
@@ -29,17 +29,17 @@ This is advanced and mostly automatic. ADE leases ports and routes previews for 
 
 ## Ports and previews are automatic
 
-When you create a lane, ADE leases it a port range and can route a `<slug>.localhost` hostname to whatever your dev server binds inside that range. Start your app in the **Run** tab or a lane terminal, and the preview URL resolves to that lane's server. Because browsers scope cookies by hostname, `feat-auth.localhost` and `bugfix.localhost` never share a session — auth isolation comes for free.
+When you create a lane, Daex leases it a port range and can route a `<slug>.localhost` hostname to whatever your dev server binds inside that range. Start your app in the **Run** tab or a lane terminal, and the preview URL resolves to that lane's server. Because browsers scope cookies by hostname, `feat-auth.localhost` and `bugfix.localhost` never share a session — auth isolation comes for free.
 
 The **Run** tab's lane runtime bar shows the live state at a glance: a health dot, the responding port, proxy and preview status, and the OAuth callback URL for the selected lane.
 
 <Tip>
-Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. Archiving a lane also brings down the Docker Compose services its env init started, and unarchiving starts them again — the whole env-init sequence when ADE had to recreate the worktree, and just the Docker step when it did not, so your env files and installed dependencies are left alone. Use **Init env** only when you want the full sequence re-run. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
+Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. Archiving a lane also brings down the Docker Compose services its env init started, and unarchiving starts them again — the whole env-init sequence when Daex had to recreate the worktree, and just the Docker step when it did not, so your env files and installed dependencies are left alone. Use **Init env** only when you want the full sequence re-run. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
 </Tip>
 
 ## Per-lane environment init
 
-For lanes that need more than a running server, ADE can run an **env-init** sequence when the lane is created and show each step's progress right inside the create dialog. Every step validates its paths against the worktree root, so setup can't escape the lane.
+For lanes that need more than a running server, Daex can run an **env-init** sequence when the lane is created and show each step's progress right inside the create dialog. Every step validates its paths against the worktree root, so setup can't escape the lane.
 
 <AccordionGroup>
   <Accordion title="Env-init steps" icon="list-check">
@@ -74,7 +74,7 @@ For lanes that need more than a running server, ADE can run an **env-init** sequ
 
 ## Health and fallback
 
-ADE aggregates port, proxy, and process signals into a per-lane health status (`healthy`, `degraded`, `unhealthy`, `unknown`) and surfaces fixes — reassign a conflicting port, restart the proxy, re-init env. If isolation itself fails, ADE prompts you to enable **fallback mode** for that lane rather than switching silently, because fallback drops the per-hostname cookie isolation and that's a contract worth opting into deliberately.
+Daex aggregates port, proxy, and process signals into a per-lane health status (`healthy`, `degraded`, `unhealthy`, `unknown`) and surfaces fixes — reassign a conflicting port, restart the proxy, re-init env. If isolation itself fails, Daex prompts you to enable **fallback mode** for that lane rather than switching silently, because fallback drops the per-hostname cookie isolation and that's a contract worth opting into deliberately.
 
 <Warning>
 Never paste production secrets into lane env files or templates. Lane runtime is for local, disposable dev environments — point lanes at test databases and feature flags, not live credentials.

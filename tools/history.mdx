@@ -30,7 +30,7 @@ Right-click any commit (or use the actions strip in the detail panel) for a full
 A search box above the graph supports bare text plus prefixed keys — `message:`, `author:` (or `@`), `commit:` (or `#`), `branch:`, `parent:`, and filters like `is:merge`, `is:local`, `is:pushed`. The Commits toolbar also carries a **lane git actions** menu for fetch, pull, push, rename, archive, rebase, and other lane-scoped operations without leaving History.
 
 <Tip>
-The Commits view also exposes per-lane **undo / redo** for the last HEAD-changing operation. ADE re-reads HEAD before it touches git and refuses if the branch moved since, so a reset never clobbers work you did afterward.
+The Commits view also exposes per-lane **undo / redo** for the last HEAD-changing operation. Daex re-reads HEAD before it touches git and refuses if the branch moved since, so a reset never clobbers work you did afterward.
 </Tip>
 
 ## Activity
@@ -53,18 +53,18 @@ Synthesized chat and CTO rows are rebuilt on every refresh for display only — 
 
 ## Export
 
-Export the operations history to **CSV or JSON** with the current lane and status filters applied. ADE returns the rows and the desktop writes the file through a native save dialog.
+Export the operations history to **CSV or JSON** with the current lane and status filters applied. Daex returns the rows and the desktop writes the file through a native save dialog.
 
 <AccordionGroup>
   <Accordion title="Browse history from the terminal" icon="terminal">
-    History is also available from the `ade` CLI:
+    History is also available from the `daex` CLI:
 
     ```bash
-    ade history list                 # recent operations in the active project
-    ade history list --lane <id>     # scope to one lane's timeline
+    daex history list                 # recent operations in the active project
+    daex history list --lane <id>     # scope to one lane's timeline
     ```
 
-    Run `ade history --help` to see every filter and flag.
+    Run `daex history --help` to see every filter and flag.
   </Accordion>
 </AccordionGroup>
 

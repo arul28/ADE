@@ -1,6 +1,6 @@
 ---
 title: "Quickstart"
-description: "Ten lines to an ADE chat sidecar: createAdeChat, open a durable thread, send, listen, dispose."
+description: "Ten lines to a Daex chat sidecar: createAdeChat, open a durable thread, send, listen, dispose."
 icon: "rocket"
 ---
 
@@ -45,7 +45,7 @@ const thread = await ade.threads.open("ops", {
 
 `"always-allow"` maps to each provider's full-auto create args — `bypassPermissions` on Claude, `danger-full-access` on Codex.
 
-`"default"` leaves each provider's own handling in place, and that is not one behavior: on Claude, ADE installs no gate at all and the Agent SDK decides non-interactively; on Codex, an approval request **parks the turn until something answers it**.
+`"default"` leaves each provider's own handling in place, and that is not one behavior: on Claude, Daex installs no gate at all and the Agent SDK decides non-interactively; on Codex, an approval request **parks the turn until something answers it**.
 
 For anything in between, pass a policy instead of a preset:
 

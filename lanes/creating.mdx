@@ -17,10 +17,10 @@ Your repo root is always the **main checkout** — it exists from the moment you
     Branch a fresh worktree from your default branch — or any other branch. The default, and the safest place for agent work.
   </Card>
   <Card title="Import an existing branch" icon="download">
-    Pull a branch you already have — local or remote — into a worktree ADE manages.
+    Pull a branch you already have — local or remote — into a worktree Daex manages.
   </Card>
   <Card title="Attach an external worktree" icon="link">
-    Already made a `git worktree` outside ADE? Attach its path and ADE tracks it without ever moving or cleaning it.
+    Already made a `git worktree` outside Daex? Attach its path and Daex tracks it without ever moving or cleaning it.
   </Card>
 </CardGroup>
 
@@ -33,13 +33,13 @@ This is the default path. Open the **New lane** dialog, name the task, and choos
     Click **New lane** in the Lanes view.
   </Step>
   <Step title="Name the task">
-    Use a short, outcome-shaped name like `fix-auth-redirect` or `add-health-endpoint`. The name becomes the branch and the worktree folder slug. ADE picks an unused accent color for the lane; click the colored dot inside the name field to change it.
+    Use a short, outcome-shaped name like `fix-auth-redirect` or `add-health-endpoint`. The name becomes the branch and the worktree folder slug. Daex picks an unused accent color for the lane; click the colored dot inside the name field to change it.
   </Step>
   <Step title="Choose the base">
     Choose **Start from**: the project default branch, the main checkout's branch, or another branch. Under **Bring**, choose pushed commits, local commits, or uncommitted changes. Uncommitted changes are copied, including staged, unstaged, and untracked files; the source stays unchanged.
   </Step>
   <Step title="Create">
-    Click **Create lane**. ADE runs `git worktree add`, checks the new branch out under `.ade/worktrees/`, and the lane appears in the list.
+    Click **Create lane**. Daex runs `git worktree add`, checks the new branch out under `.ade/worktrees/`, and the lane appears in the list.
   </Step>
 </Steps>
 
@@ -55,12 +55,12 @@ Every branch or lane choice opens an inline popover above the form. The popover 
 
 The two modes sit under the name field, and each has a tooltip that explains it. Two more rows appear as needed:
 
-- **Machine** appears only when more than one machine is connected. **Least loaded** lets ADE pick the least-loaded machine right now; otherwise choose a specific machine. Each one shows its free disk and repo path. Machines without the repository are disabled, and **Connect another machine…** is at the bottom of the list.
+- **Machine** appears only when more than one machine is connected. **Least loaded** lets Daex pick the least-loaded machine right now; otherwise choose a specific machine. Each one shows its free disk and repo path. Machines without the repository are disabled, and **Connect another machine…** is at the bottom of the list.
 - **Extras** holds **Attach Linear issue** and **Use a template**. Attaching an issue shows a card with its identifier, title, and branch name. While an issue is attached, **As existing branch** is unavailable. **Use a template** chooses the lane template that sets up env files, installs, and services, or **No template**; it also links to **Manage templates…** or **Create a template…**.
 
 ### Auto-create from a task or Linear issue
 
-You don't have to fill in the dialog by hand. Hand ADE a task — or attach a Linear issue — and it derives the branch name, names the lane, and attaches the issue as context so the agent starts with the right spec.
+You don't have to fill in the dialog by hand. Hand Daex a task — or attach a Linear issue — and it derives the branch name, names the lane, and attaches the issue as context so the agent starts with the right spec.
 
 <Tip>
 Attaching a Linear issue derives the branch name from the issue identifier and title (`IDENT-title-slug`), or uses Linear's own branch name when it provides one. If that branch already exists locally or on the remote, the issue card warns and **Create lane** stays disabled until you detach the issue, so you don't accidentally collide with existing work.
@@ -68,7 +68,7 @@ Attaching a Linear issue derives the branch name from the issue identifier and t
 
 ## Import an existing branch
 
-Have a branch already, local or remote, that you want ADE to manage as a worktree? Choose **As existing branch** in the New lane dialog, pick the branch, and click **Import branch**. ADE creates a managed worktree checked out to that branch, and the lane works on it directly; no new branch is made. The checked-out branch is listed first, then the rest by most recent commit. Picking a branch fills in the lane name if the name is empty or still auto-filled.
+Have a branch already, local or remote, that you want Daex to manage as a worktree? Choose **As existing branch** in the New lane dialog, pick the branch, and click **Import branch**. Daex creates a managed worktree checked out to that branch, and the lane works on it directly; no new branch is made. The checked-out branch is listed first, then the rest by most recent commit. Picking a branch fills in the lane name if the name is empty or still auto-filled.
 
 <Note>
 The same popover search that backs new worktrees powers import — search by name, filter to your own branches (`mine` or `author:me`), or jump straight to a PR number (`#NNN`). The PR pills come from GitHub and are fail-soft: if the PR lookup errors, the list still works, just without pills.
@@ -76,11 +76,11 @@ The same popover search that backs new worktrees powers import — search by nam
 
 ## Copy uncommitted work
 
-Choose a new branch, select the source branch, and choose **Uncommitted** under **Bring**. ADE copies changes from the folder with that branch checked out and leaves the source untouched.
+Choose a new branch, select the source branch, and choose **Uncommitted** under **Bring**. Daex copies changes from the folder with that branch checked out and leaves the source untouched.
 
 ## Create a lane from a commit
 
-In the **History** tab, the **Create lane here** action on any commit branches a new lane starting from exactly that commit, instead of from a branch head. ADE verifies the ref and uses the resolved commit as the worktree's start point.
+In the **History** tab, the **Create lane here** action on any commit branches a new lane starting from exactly that commit, instead of from a branch head. Daex verifies the ref and uses the resolved commit as the worktree's start point.
 
 ## Rename, archive, or delete
 
@@ -88,17 +88,17 @@ Open a lane's manage dialog to change it once work is underway or done.
 
 | Action | Use it when |
 |--------|-------------|
-| **Rename** | The task name is unclear. This updates ADE's lane metadata. |
+| **Rename** | The task name is unclear. This updates Daex's lane metadata. |
 | **Recolor** | You want a different accent dot. Colors already used by other active lanes are disabled. |
 | **Archive** | The work may matter later but should leave the active list. The worktree stays on disk and **unarchive** brings it back. |
 | **Delete** | The lane is done. This tears the lane down — see below. |
 
 ### What delete tears down
 
-Delete isn't just `rm -rf`. ADE runs an ordered teardown and shows live progress for each step: it stops the lane's processes, terminals, and file watchers, cleans up lane environment resources, releases the lane's leased port range, removes the git worktree, and only then clears ADE's rows. You can optionally also delete the local branch (and the remote branch). Before you confirm, ADE surfaces a preflight check — dirty files, unpushed commits, running processes, and whether a remote branch exists.
+Delete isn't just `rm -rf`. Daex runs an ordered teardown and shows live progress for each step: it stops the lane's processes, terminals, and file watchers, cleans up lane environment resources, releases the lane's leased port range, removes the git worktree, and only then clears Daex's rows. You can optionally also delete the local branch (and the remote branch). Before you confirm, Daex surfaces a preflight check — dirty files, unpushed commits, running processes, and whether a remote branch exists.
 
 <Warning>
-Deleting a managed worktree removes its working directory, including uncommitted changes. ADE warns you about dirty state and unpushed commits first, but commit or push anything you want to keep before you confirm. Once a delete starts it runs to completion — it can't be cancelled.
+Deleting a managed worktree removes its working directory, including uncommitted changes. Daex warns you about dirty state and unpushed commits first, but commit or push anything you want to keep before you confirm. Once a delete starts it runs to completion — it can't be cancelled.
 </Warning>
 
 ## Good cleanup habits
@@ -110,15 +110,15 @@ Deleting a managed worktree removes its working directory, including uncommitted
 
 <AccordionGroup>
   <Accordion title="Manage lanes from the terminal" icon="terminal">
-    Every lane action is also available from the `ade` CLI:
+    Every lane action is also available from the `daex` CLI:
 
     ```bash
-    ade lanes list --text                 # list lanes in the active project
-    ade lanes create --name fix-checkout-flow  # branch a new worktree lane
-    ade lanes delete <lane-id> --force    # tear down a merged or abandoned lane
+    daex lanes list --text                 # list lanes in the active project
+    daex lanes create --name fix-checkout-flow  # branch a new worktree lane
+    daex lanes delete <lane-id> --force    # tear down a merged or abandoned lane
     ```
 
-    Run `ade lanes --help` to see every command and flag.
+    Run `daex lanes --help` to see every command and flag.
   </Accordion>
 </AccordionGroup>
 

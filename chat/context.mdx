@@ -17,7 +17,7 @@ A new chat opens with its working context already set from the lane: the lane's 
 
 ## Attach the spec
 
-When a task has acceptance criteria, attach the Linear issue from the composer so the agent works from the real spec instead of your paraphrase. ADE writes the issue into a per-session context file the agent can read, and — when the chat is on a lane — links the issue so it shows up in the next PR's "Linked Linear issues" block.
+When a task has acceptance criteria, attach the Linear issue from the composer so the agent works from the real spec instead of your paraphrase. Daex writes the issue into a per-session context file the agent can read, and — when the chat is on a lane — links the issue so it shows up in the next PR's "Linked Linear issues" block.
 
 You can also attach images directly to a message — screenshots, mockups, or diagrams the agent should match or debug.
 
@@ -25,7 +25,7 @@ You can also attach images directly to a message — screenshots, mockups, or di
 
 Everything the agent draws — messages, reasoning, tool calls, commands, file changes, plans, and questions — is one stream of events that the UI renders as the transcript. Each exchange is a **turn**: your message, the agent's work, and a final marker that records the model, token usage, and (on a lane) a per-turn diff summary.
 
-The transcript persists to disk, so a session survives an app restart. When you resume a chat, ADE rehydrates the provider's own session and injects a continuity summary, so the next turn picks up where you left off instead of starting cold.
+The transcript persists to disk, so a session survives an app restart. When you resume a chat, Daex rehydrates the provider's own session and injects a continuity summary, so the next turn picks up where you left off instead of starting cold.
 
 ## The context window
 
@@ -40,7 +40,7 @@ The ring next to the send button shows how much of the model's window the chat u
 Each compaction is one quiet row in the transcript:
 
 - **Running:** `Compacting context · 481k tokens`. The chat's row in the sidebar and on the Work tab shows **Compacting…**.
-- **Done:** `Context compacted · 481k → 6k · 28 s`, and who started it: `you asked`, `automatic`, or `ADE (near limit)`. Click the row to read the summary when the provider gives one.
+- **Done:** `Context compacted · 481k → 6k · 28 s`, and who started it: `you asked`, `automatic`, or `Daex (near limit)`. Click the row to read the summary when the provider gives one.
 - **Failed:** `Compaction failed · weekly limit on Work`, with **Retry**. A failed compaction does not change the meter.
 
 ### Set when a provider compacts
@@ -63,7 +63,7 @@ On a 1M-token Claude model, Claude compacts late by default. Each step of a turn
 
 ### Compact first after an hour away
 
-Claude keeps a chat's context in a cache for one hour. After that, your next message sends the whole context again. When a Claude chat has been idle for an hour and holds 100k tokens or more, a **Compact first** pill appears next to the context meter. Turn it on, and ADE compacts the chat first and then sends your message. If the compaction fails, ADE does not send the message.
+Claude keeps a chat's context in a cache for one hour. After that, your next message sends the whole context again. When a Claude chat has been idle for an hour and holds 100k tokens or more, a **Compact first** pill appears next to the context meter. Turn it on, and Daex compacts the chat first and then sends your message. If the compaction fails, Daex does not send the message.
 
 In **Settings → Providers → Claude**, **After an hour idle** sets the pill to **Ask** (the default), **Always compact first**, or **Never**.
 
@@ -82,7 +82,7 @@ Compaction and summaries are useful, but they are not exact memory. Restate any 
 
 ## Recover old context
 
-Use **History** to reopen past transcripts, inspect their tool calls, and recover proof or PR links from earlier sessions. Claude and Codex provider-native histories can also be imported or forked into ADE when available; after import, future turns use the normal ADE chat transcript, diff, and lane boundaries.
+Use **History** to reopen past transcripts, inspect their tool calls, and recover proof or PR links from earlier sessions. Claude and Codex provider-native histories can also be imported or forked into Daex when available; after import, future turns use the normal Daex chat transcript, diff, and lane boundaries.
 
 A summary pulled from a finished session is the cleanest way to seed a new one in the same lane.
 

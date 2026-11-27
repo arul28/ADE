@@ -1,10 +1,10 @@
 ---
 title: "Files"
-description: "ADE's review workbench — a lane-scoped file tree, Monaco editor, diffs, conflict resolution, and a Git panel for staging, committing, and pushing."
+description: "Daex's review workbench — a lane-scoped file tree, Monaco editor, diffs, conflict resolution, and a Git panel for staging, committing, and pushing."
 icon: "file-code"
 ---
 
-**Files** is ADE's review workbench: the place you read exactly what an agent changed, fix anything that's off, and turn a reviewed diff into a commit. It pairs a lane-scoped file tree and a full Monaco editor with diff and conflict views and a Git panel for staging, committing, stashing, and pushing — all without leaving the tab.
+**Files** is Daex's review workbench: the place you read exactly what an agent changed, fix anything that's off, and turn a reviewed diff into a commit. It pairs a lane-scoped file tree and a full Monaco editor with diff and conflict views and a Git panel for staging, committing, stashing, and pushing — all without leaving the tab.
 
 ## What Files is for
 
@@ -30,7 +30,7 @@ The file tree is scoped to one **workspace** at a time. A workspace is a directo
 | **Lane worktree** | The isolated worktree behind a lane, under `.ade/worktrees/`. |
 | **Attached** | An external worktree path you linked in. |
 
-ADE shows the active workspace name prominently so you never edit the main checkout when you meant to edit a lane. Switching workspaces changes the tree, diffs, and Git panel together — confirm the selector before you save.
+Daex shows the active workspace name prominently so you never edit the main checkout when you meant to edit a lane. Switching workspaces changes the tree, diffs, and Git panel together — confirm the selector before you save.
 
 <Frame caption="Files: the active workspace, its file tree, and the open file with Preview or Source.">
   <img src="/media/current/files.jpg" alt="The Files tab with a workspace tree and an open README" />
@@ -47,7 +47,7 @@ The file tree itself carries Git status decorations, so changed, added, and dele
 
 ## Edit in Monaco
 
-Files opens in a real Monaco editor with syntax highlighting and read/write semantics. Saves are **atomic** — ADE writes to a temp file and renames it into place — so a dev server watching the file never catches a half-written save. Markdown files add a per-tab preview toggle that swaps the editor for a rendered view.
+Files opens in a real Monaco editor with syntax highlighting and read/write semantics. Saves are **atomic** — Daex writes to a temp file and renames it into place — so a dev server watching the file never catches a half-written save. Markdown files add a per-tab preview toggle that swaps the editor for a rendered view.
 
 <Note>
 Read-only workspaces are enforced end to end: the editor opens read-only and the create, rename, and delete controls are disabled, so you can browse a protected worktree without risking an accidental write.

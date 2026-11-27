@@ -1,12 +1,12 @@
 ---
-title: "ADE SDK"
-description: "Embed ADE chat in your own app. A sidecar runtime, durable named threads, and optional React UI — published as @ade-dev/sdk and @ade-dev/chat-ui."
+title: "Daex SDK"
+description: "Embed Daex chat in your own app. A sidecar runtime, durable named threads, and optional React UI — published as @ade-dev/sdk and @ade-dev/chat-ui."
 icon: "cube"
 ---
 
-The ADE SDK is how a **third-party app** embeds ADE chat. Your process owns a slim ADE runtime as a child, talks to it over JSON-RPC, and presents chat as durable named threads. The runtime is a guest: isolated home, sync off, no machine-brain authority. It dies with your process.
+The Daex SDK is how a **third-party app** embeds Daex chat. Your process owns a slim Daex runtime as a child, talks to it over JSON-RPC, and presents chat as durable named threads. The runtime is a guest: isolated home, sync off, no machine-brain authority. It dies with your process.
 
-This is not ADE desktop or personal chats in the ADE app. Those stay first-party. Use the SDK when *your* product needs an agent chat sidecar.
+This is not Daex desktop or personal chats in the Daex app. Those stay first-party. Use the SDK when *your* product needs an agent chat sidecar.
 
 <CardGroup cols={2}>
   <Card title="Install" icon="download" href="/sdk/install">
@@ -33,7 +33,7 @@ This is not ADE desktop or personal chats in the ADE app. Those stay first-party
 | [`@ade-dev/sdk`](https://www.npmjs.com/package/@ade-dev/sdk) | Node / Electron-main client. Spawns and owns the sidecar. Zero runtime dependencies. |
 | [`@ade-dev/chat-ui`](https://www.npmjs.com/package/@ade-dev/chat-ui) | React components. React is a peer; the SDK is an optional peer used for types. No lanes, projects, or worktrees in any prop. |
 
-Both packages are MIT. The runtime binary and ADE itself are AGPL-3.0-only, and an embedding exception lets a proprietary app ship an unmodified runtime binary. See [License](/sdk/license) for the per-artifact table and the exact conditions.
+Both packages are MIT. The runtime binary and Daex itself are AGPL-3.0-only, and an embedding exception lets a proprietary app ship an unmodified runtime binary. See [License](/sdk/license) for the per-artifact table and the exact conditions.
 
 ## How it fits
 
@@ -96,7 +96,7 @@ SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move a
 - **Bridge.** `openOptions` gets `{ exists, summary }`, so a host can tell a resume from a create. `allowThreadKey` and `allowModel` can be async. `thread.send` options are filtered. `threads.get`, `forget(key)`, and `checkAdeBridge` for a hand-copied preload. See [Electron](/sdk/electron).
 - **Client.** `threads.get(key)`, `models.onChange`, `models.defaultModel`, `pickDefaultModel`, the `threadLifecycle` event, and `final` on `restart`. See [Reference](/sdk/reference).
 - **Chat UI.** Controlled draft, `onSend`, a render prop and `threadRef` on `<AdeChat>`; `ThreadState.update`, `retry` and `editLast`; a reload after a runtime restart or a retry. See [Chat UI](/sdk/chat-ui#host-control-of-the-composer).
-- **Runtime.** Codex no longer shows a `computer_use` tool call that never ends, and the Computer Use server is not started for a thread whose policy does not allow it. `update({ title: null })` clears the title. `--version` reports the runtime's own version. No `canUseTool` warning on every Claude turn. The `doctor().runtime.version` probe of the SDK also works on a 1.2.81 binary started from inside ADE.
+- **Runtime.** Codex no longer shows a `computer_use` tool call that never ends, and the Computer Use server is not started for a thread whose policy does not allow it. `update({ title: null })` clears the title. `--version` reports the runtime's own version. No `canUseTool` warning on every Claude turn. The `doctor().runtime.version` probe of the SDK also works on a 1.2.81 binary started from inside Daex.
 
 ### Breaking changes
 
@@ -128,8 +128,8 @@ SDK 0.5.1 supports runtime `>=1.2.82 <2.0.0`. The lower bound did **not** move a
 
 ## What this is not
 
-- Not a hosted ADE cloud API. The sidecar runs on the same machine as your app.
-- Not ADE desktop IPC. The SDK speaks the machine JSON-RPC surface.
+- Not a hosted Daex cloud API. The sidecar runs on the same machine as your app.
+- Not Daex desktop IPC. The SDK speaks the machine JSON-RPC surface.
 - Not a way to drive lanes, PRs, or the Work tab from a third-party renderer.
 
 ## Next

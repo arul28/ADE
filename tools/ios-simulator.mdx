@@ -4,10 +4,10 @@ description: "A macOS-only drawer in Work that builds, launches, mirrors, inspec
 icon: "mobile"
 ---
 
-The **iOS Simulator** drawer drives the system iOS Simulator from inside ADE's Work tab. It discovers your launchable iOS targets, builds and launches the app, mirrors the running Simulator window into the drawer, and turns drawer gestures into either simulator input or context for the active chat. When you tap a SwiftUI view in inspect mode, the agent gets the element's **source file and line** — not a guess from stale code.
+The **iOS Simulator** drawer drives the system iOS Simulator from inside Daex's Work tab. It discovers your launchable iOS targets, builds and launches the app, mirrors the running Simulator window into the drawer, and turns drawer gestures into either simulator input or context for the active chat. When you tap a SwiftUI view in inspect mode, the agent gets the element's **source file and line** — not a guess from stale code.
 
 <Note>
-The local drawer is **macOS-only**; from Windows, Linux or a Mac without Xcode, use the [ADE Cloud iPhone](#the-ade-cloud-iphone). `xcrun`, `xcodebuild`, and Simulator.app must be available on the runtime host. `idb` and `idb_companion` are optional but unlock direct tap, drag, text, and accessibility-backed inspection.
+The local drawer is **macOS-only**; from Windows, Linux or a Mac without Xcode, use the [Daex Cloud iPhone](#the-daex-cloud-iphone). `xcrun`, `xcodebuild`, and Simulator.app must be available on the runtime host. `idb` and `idb_companion` are optional but unlock direct tap, drag, text, and accessibility-backed inspection.
 </Note>
 
 ## What the drawer does
@@ -17,7 +17,7 @@ The local drawer is **macOS-only**; from Windows, Linux or a Mac without Xcode, 
     Discover Xcode projects, DerivedData app bundles, and installed simulator apps, then build, install, and launch the one you pick.
   </Card>
   <Card title="Mirror the live view" icon="display">
-    Stream the real Simulator.app window into the drawer, parked behind ADE so it stays out of your way.
+    Stream the real Simulator.app window into the drawer, parked behind Daex so it stays out of your way.
   </Card>
   <Card title="Inspect & select" icon="crosshairs">
     Tap an element to capture it as chat context — with its component id, source file, and line when the app is annotated.
@@ -29,16 +29,16 @@ The local drawer is **macOS-only**; from Windows, Linux or a Mac without Xcode, 
 
 ## Source-anchored inspection
 
-The magic of the drawer is **ADE Inspector**, a debug-only Swift kit that lives inside the iOS app under inspection. When you annotate a view with `.adeInspectable("settingsButton")`, the kit publishes a per-frame JSON snapshot of every annotated view's frame, component id, and source location into the app's data container.
+The magic of the drawer is **Daex Inspector**, a debug-only Swift kit that lives inside the iOS app under inspection. When you annotate a view with `.adeInspectable("settingsButton")`, the kit publishes a per-frame JSON snapshot of every annotated view's frame, component id, and source location into the app's data container.
 
-When you tap in inspect mode, ADE correlates that snapshot with a fresh screenshot and attaches the matched element to your chat as a context chip carrying the component id, the source file and line, and a screenshot of the hit. The agent reasons about *that* view at *that* line, not the surrounding container.
+When you tap in inspect mode, Daex correlates that snapshot with a fresh screenshot and attaches the matched element to your chat as a context chip carrying the component id, the source file and line, and a screenshot of the hit. The agent reasons about *that* view at *that* line, not the surrounding container.
 
 <Steps>
   <Step title="Annotate the views you care about">
     Wrap buttons, list rows, and headline labels with `.adeInspectable("componentId")` and mount `.adeInspectorHost()` once near the root. The kit is `#if DEBUG`-only — release builds compile it to a no-op.
   </Step>
   <Step title="Launch the app in the drawer">
-    ADE builds and launches your selected target, then mirrors the Simulator window into Work.
+    Daex builds and launches your selected target, then mirrors the Simulator window into Work.
   </Step>
   <Step title="Tap in inspect mode">
     A tap resolves the SwiftUI view under your finger and produces a context item.
@@ -54,14 +54,14 @@ Annotate selectively. The snapshot already drops zero-area and off-screen frames
 
 ## When the app isn't annotated
 
-ADE Inspector is opt-in, and inspection degrades gracefully:
+Daex Inspector is opt-in, and inspection degrades gracefully:
 
 - **Accessibility fallback** — with `idb` installed, a tap falls through to the OS accessibility tree, so the agent still gets labels and roles (just no source file or line).
-- **Coordinate fallback** — without `idb`, ADE still attaches the screenshot and the hit coordinates, so the agent can reason about the region.
+- **Coordinate fallback** — without `idb`, Daex still attaches the screenshot and the hit coordinates, so the agent can reason about the region.
 
 ## Preview Lab
 
-Beyond a running app, the drawer can render SwiftUI **previews**. It discovers nearby `#Preview` and `PreviewProvider` definitions, ranks the best match for your selected source file or last-tapped element, opens Xcode when needed, and renders the preview into ADE's Preview drawer — a one-shot bridge from "the view I just selected" to "show me what it looks like."
+Beyond a running app, the drawer can render SwiftUI **previews**. It discovers nearby `#Preview` and `PreviewProvider` definitions, ranks the best match for your selected source file or last-tapped element, opens Xcode when needed, and renders the preview into Daex's Preview drawer — a one-shot bridge from "the view I just selected" to "show me what it looks like."
 
 ## One owner per session
 
@@ -69,38 +69,38 @@ Each launched simulator session has one owning chat or lane. If a second chat tr
 
 ## A simulator on another Mac
 
-A chat can use the simulator on another of your Macs without moving there. `ade apple launch --machine "Mac Studio"` with no lane builds the chat's work copy on that Mac (see [remote machines](/tools/remote-machines#use-another-machine-from-the-chat-you-are-in)) and runs it on a simulator that Mac already has and no lane holds. ADE creates a new simulator only when none is free, and never deletes one it borrowed. The drawer then offers **Simulator · Mac Studio** beside **This lane**, so you can switch between them.
+A chat can use the simulator on another of your Macs without moving there. `daex apple launch --machine "Mac Studio"` with no lane builds the chat's work copy on that Mac (see [remote machines](/tools/remote-machines#use-another-machine-from-the-chat-you-are-in)) and runs it on a simulator that Mac already has and no lane holds. Daex creates a new simulator only when none is free, and never deletes one it borrowed. The drawer then offers **Simulator · Mac Studio** beside **This lane**, so you can switch between them.
 
-## The ADE Cloud iPhone
+## The Daex Cloud iPhone
 
-On accounts that have it, the **ADE Cloud iPhone** is an iPhone simulator that runs in the cloud, so a chat on any machine (Windows, Linux, a Mac without Xcode) can build and drive an iOS app. Pick **ADE Cloud** in the drawer's **Runs on** row, or have the agent run `ade devices use ios@cloud`; every `ade apple` command then goes to it.
+On accounts that have it, the **Daex Cloud iPhone** is an iPhone simulator that runs in the cloud, so a chat on any machine (Windows, Linux, a Mac without Xcode) can build and drive an iOS app. Pick **Daex Cloud** in the drawer's **Runs on** row, or have the agent run `daex devices use ios@cloud`; every `daex apple` command then goes to it.
 
 - One phone per account: every chat that uses `ios@cloud` drives the same one.
 - It stops after 5 minutes with no command or input, and after 2 hours at most. The drawer shows the credits left and the idle stop while it runs, with **Keep on** in the last 90 seconds; the top bar shows a phone icon with the same details.
 - The chat whose agent started it gets a line when it starts and when it stops.
-- It uses the account's ADE Cloud credits, one a minute (Settings › ADE Cloud).
-- A machine with an ADE older than 1.2.131 can't reach it; the drawer and `ade devices` say to update ADE there.
+- It uses the account's Daex Cloud credits, one a minute (Settings › Daex Cloud).
+- A machine with a Daex older than 1.2.131 can't reach it; the drawer and `daex devices` say to update Daex there.
 
 ## Drive it from the CLI
 
-Everything the drawer does is also available from the `ade apple` command group (`ade ios-sim` is an older name for it), so an agent can build, launch, inspect, and control the simulator headlessly. Use `--socket` so the CLI and the desktop drawer share the same live session, selection, and proof state.
+Everything the drawer does is also available from the `daex apple` command group (`daex ios-sim` is an older name for it), so an agent can build, launch, inspect, and control the simulator headlessly. Use `--socket` so the CLI and the desktop drawer share the same live session, selection, and proof state.
 
 <AccordionGroup>
-  <Accordion title="ade apple commands" icon="terminal">
+  <Accordion title="daex apple commands" icon="terminal">
     ```bash
-    ade --socket apple status --text          # tool readiness checklist
-    ade --socket apple devices --text         # list simulators
-    ade --socket apple apps --text             # list launch targets
-    ade --socket apple launch --target <id> --text
-    ade --socket apple live-start --text       # start the mirrored window stream
-    ade --socket apple snapshot --text         # capture screen + elements
-    ade --socket apple select --x 120 --y 420 --text   # tap → chat context
-    ade --socket apple tap --x 120 --y 420 --text      # tap as input (needs idb)
-    ade --socket apple preview-current --text  # render the selected element's preview
-    ade --socket apple shutdown --text
+    daex --socket apple status --text          # tool readiness checklist
+    daex --socket apple devices --text         # list simulators
+    daex --socket apple apps --text             # list launch targets
+    daex --socket apple launch --target <id> --text
+    daex --socket apple live-start --text       # start the mirrored window stream
+    daex --socket apple snapshot --text         # capture screen + elements
+    daex --socket apple select --x 120 --y 420 --text   # tap → chat context
+    daex --socket apple tap --x 120 --y 420 --text      # tap as input (needs idb)
+    daex --socket apple preview-current --text  # render the selected element's preview
+    daex --socket apple shutdown --text
     ```
 
-    A `no-context` result from a preview command means ADE has no selected source-backed element yet — `select` one first rather than guessing the screen.
+    A `no-context` result from a preview command means Daex has no selected source-backed element yet — `select` one first rather than guessing the screen.
   </Accordion>
 </AccordionGroup>
 
@@ -114,7 +114,7 @@ Everything the drawer does is also available from the `ade apple` command group 
     Install `idb` and `idb_companion` — they back direct input and accessibility inspection. Without them you still get the mirrored live view.
   </Accordion>
   <Accordion title="A launch is blocked by another owner" icon="lock">
-    Run `ade --socket apple shutdown --force --text`, or use the drawer's takeover action.
+    Run `daex --socket apple shutdown --force --text`, or use the drawer's takeover action.
   </Accordion>
 </AccordionGroup>
 

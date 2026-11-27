@@ -1,10 +1,10 @@
 ---
-title: "ADE Cloud"
-description: "ADE Cloud is a machine every account has: work with no computer of your own, see what it uses, and manage your plan."
+title: "Daex Cloud"
+description: "Daex Cloud is a machine every account has: work with no computer of your own, see what it uses, and manage your plan."
 icon: "cloud"
 ---
 
-ADE Cloud is one machine that every ADE account always has. You don't need a computer of your own: sign in on the web or the iPhone, connect GitHub, pick a repository, and work. ADE Cloud shows in every machine list and every **Run on** menu, next to any computers you have.
+Daex Cloud is one machine that every Daex account always has. You don't need a computer of your own: sign in on the web or the iPhone, connect GitHub, pick a repository, and work. Daex Cloud shows in every machine list and every **Run on** menu, next to any computers you have.
 
 Each cloud lane gets its own computer underneath. The lane, its chats and its terminals run there, so your laptop can sleep while agents keep working, and you can follow along from the desktop app, the web app or your phone. You never manage these computers: one sleeps when nothing runs on it and wakes when you or an agent send it work.
 
@@ -12,55 +12,55 @@ Each cloud lane gets its own computer underneath. The lane, its chats and its te
 
 - **Reading never wakes a computer.** Saved chats, CLI sessions and shells (the last 5,000 lines), the lane's branch and changed files, files and history from GitHub, pull requests, the CTO, automations, Linear and Jira come from your account or from GitHub.
 - **Doing wakes it.** Sending a message, running a command, opening a changed file or a Git action wakes the lane's computer. The screen never waits: you can leave, and the action finishes when the computer is up.
-- **A message to an asleep chat** waits on ADE's server and is delivered once, even if you close the tab.
-- **Work is saved before a computer rests.** ADE saves each lane's work (its branch and changes, and its chats) to your account before the computer sleeps. So cleanups never wake a computer, and a new computer gets that work back.
-- **If ADE refuses to wake a computer** (out of hours for a bigger size, or all your plan's computers in use), the chat shows why. You can still read everything.
+- **A message to an asleep chat** waits on Daex's server and is delivered once, even if you close the tab.
+- **Work is saved before a computer rests.** Daex saves each lane's work (its branch and changes, and its chats) to your account before the computer sleeps. So cleanups never wake a computer, and a new computer gets that work back.
+- **If Daex refuses to wake a computer** (out of hours for a bigger size, or all your plan's computers in use), the chat shows why. You can still read everything.
 - **Commits** on a cloud computer use your GitHub noreply address, unless you set your own Git identity.
 
-Your API keys, Passwords and secrets, provider sign-ins, launch defaults and quick slots follow your account to ADE Cloud.
+Your API keys, Passwords and secrets, provider sign-ins, launch defaults and quick slots follow your account to Daex Cloud.
 
-To bring a cloud lane to your own computer, open the machine label in one of its chats and pick **Move this lane to**. A review lists each chat, the unpushed work and the files git ignores before anything moves. An asleep lane whose work is all saved moves without a wake; otherwise ADE offers **Wake and move**. Moving a lane from your computer onto ADE Cloud is not available yet.
+To bring a cloud lane to your own computer, open the machine label in one of its chats and pick **Move this lane to**. A review lists each chat, the unpushed work and the files git ignores before anything moves. An asleep lane whose work is all saved moves without a wake; otherwise Daex offers **Wake and move**. Moving a lane from your computer onto Daex Cloud is not available yet.
 
-## Start a lane on ADE Cloud
+## Start a lane on Daex Cloud
 
 <Steps>
   <Step title="Open a new chat">
-    In the ADE app, start a new chat as you would for any lane.
+    In the Daex app, start a new chat as you would for any lane.
   </Step>
-  <Step title="Pick ADE Cloud under Run on">
+  <Step title="Pick Daex Cloud under Run on">
     Choose a size. Small is enough for most work; Large and X-Large are full computers for heavier work, such as an Android emulator.
   </Step>
   <Step title="Send the first message">
-    ADE makes the computer, gets the repository from GitHub, sets the lane up and starts the agent there. The lane starts from the pushed copy of its branch, so push what the agent needs first.
+    Daex makes the computer, gets the repository from GitHub, sets the lane up and starts the agent there. The lane starts from the pushed copy of its branch, so push what the agent needs first.
   </Step>
 </Steps>
 
-From a terminal, or from an agent in an ADE chat:
+From a terminal, or from an agent in a Daex chat:
 
 ```bash
-ade chat create --machine cloud --prompt "Fix the flaky login test"
+daex chat create --machine cloud --prompt "Fix the flaky login test"
 ```
 
-Add `--size small|medium|large|xlarge` to pick a size; without it ADE uses the size you saved for new lanes. An agent asks you in its chat before it starts a cloud lane, unless you let agents do it alone in **Settings › ADE Cloud › What agents may do**.
+Add `--size small|medium|large|xlarge` to pick a size; without it Daex uses the size you saved for new lanes. An agent asks you in its chat before it starts a cloud lane, unless you let agents do it alone in **Settings › Daex Cloud › What agents may do**.
 
 <Tip>
-`ade cloud status` shows your plan, the credits left, your cloud computers, every cloud lane, and whether a new lane can start right now.
+`daex cloud status` shows your plan, the credits left, your cloud computers, every cloud lane, and whether a new lane can start right now.
 </Tip>
 
 ## Computers and credits
 
 - **Small computers are unlimited.** They use no credits, on every plan.
-- **Cloud computers.** Each plan has a number of cloud computers, asleep or not: one per cloud lane. When all of them are in use, ADE shows three ways to make room: free up a computer from another lane, delete a lane, or the next plan up.
+- **Cloud computers.** Each plan has a number of cloud computers, asleep or not: one per cloud lane. When all of them are in use, Daex shows three ways to make room: free up a computer from another lane, delete a lane, or the next plan up.
 - **Credits.** Each plan comes with credits each month: Free 50, Plus 100, Pro 600 and Max 2,000. A Medium computer uses 1 credit an hour, a Large 2.5 and an X-Large 4. A computer that sleeps uses none. When the credits run out, bigger computers stop and Small computers keep working.
-- **When credits run out.** On a paid plan, pick **Keep going** in **Settings › ADE Cloud** to keep using bigger computers at 4¢ a credit, or **Pause** to stop them. You pay only for the extra credits you use.
-- **Unused computers** are cleaned up after a while: 3 days idle on the Free plan, 10 days on a paid plan. ADE warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and **New computer** makes a new computer on the same branch that continues the same chat.
+- **When credits run out.** On a paid plan, pick **Keep going** in **Settings › Daex Cloud** to keep using bigger computers at 4¢ a credit, or **Pause** to stop them. You pay only for the extra credits you use.
+- **Unused computers** are cleaned up after a while: 3 days idle on the Free plan, 10 days on a paid plan. Daex warns you first, in the lane's chats, with **Keep it**. It pushes the lane's work to its branch and saves each chat. The lane stays, and **New computer** makes a new computer on the same branch that continues the same chat.
 
 ## Free a lane's computer
 
 You can free a lane's computer yourself to make room for another lane. Open **Manage lane** for the lane and pick **Free computer**, or pick **Free up a computer** on the card that shows when all your computers are in use.
 
-1. ADE pushes the lane's work to GitHub.
-2. ADE removes the computer. This can take a few minutes, and a toast shows the progress.
+1. Daex pushes the lane's work to GitHub.
+2. Daex removes the computer. This can take a few minutes, and a toast shows the progress.
 3. The lane, its branch and its chats stay.
 
 A lane with no computer shows in Work and in Lanes, with **New computer**. It makes a new computer on the same branch, and the lane's chats come back with it. A message you send to that lane also makes a new computer. If the branch never reached GitHub, the new computer starts it again from the repository's default branch and says so.
@@ -71,9 +71,9 @@ The plans are Free ($0, 2 cloud computers), Plus ($5 a month, 3), Pro ($20, 10) 
 
 ## Manage your plan and billing
 
-Open **Settings › ADE Cloud** in the ADE app:
+Open **Settings › Daex Cloud** in the Daex app:
 
-- **The plan cards** move you between plans. A bigger plan applies at once; a smaller one waits for the end of the period. If a smaller plan allows fewer computers than you have now, ADE asks which computers to free before it changes the plan, or lets you clean up yourself.
+- **The plan cards** move you between plans. A bigger plan applies at once; a smaller one waits for the end of the period. If a smaller plan allows fewer computers than you have now, Daex asks which computers to free before it changes the plan, or lets you clean up yourself.
 - **Manage billing** opens Stripe's billing page, where you change your card, see invoices and cancel. A cancelled plan stays until the end of the period you paid for.
 
-After you buy a plan, the page Stripe returns you to has an **Open ADE** button that takes you straight to **Settings › ADE Cloud**, where the new plan shows within a moment.
+After you buy a plan, the page Stripe returns you to has an **Open Daex** button that takes you straight to **Settings › Daex Cloud**, where the new plan shows within a moment.

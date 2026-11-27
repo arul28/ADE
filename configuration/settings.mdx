@@ -1,10 +1,10 @@
 ---
 title: "Settings"
-description: "How ADE Settings is organized, a recommended first pass, and the first-run setup that detects your stack."
+description: "How Daex Settings is organized, a recommended first pass, and the first-run setup that detects your stack."
 icon: "sliders"
 ---
 
-Settings is where you connect providers, link GitHub and Linear, tune how ADE looks and behaves, and shape how lanes are created. It's organized by the kind of thing you're changing, not by which service backs it.
+Settings is where you connect providers, link GitHub and Linear, tune how Daex looks and behaves, and shape how lanes are created. It's organized by the kind of thing you're changing, not by which service backs it.
 
 ## The pages
 
@@ -12,25 +12,25 @@ Settings opens on **General**. The sidebar groups the rest by what they belong t
 
 <CardGroup cols={2}>
   <Card title="General" icon="sliders">
-    Anything that needs attention, cards for you and this machine, and ADE itself: version, update track, automatic updates, and an update row for every machine.
+    Anything that needs attention, cards for you and this machine, and Daex itself: version, update track, automatic updates, and an update row for every machine.
   </Card>
   <Card title="You" icon="user">
     **Account** (sign-in, connections, your computers) and **Usage** (spend and pacing across your providers and machines).
   </Card>
   <Card title="App" icon="window">
-    **Chat**, **Providers** (one list, with a machine picker in its title, and the **Custom** section), **MCP servers**, **ADE MCP**, **Notifications**, **Appearance**, **Behaviour**, **Keyboard**, **Passwords & Secrets**, and **Apple devices** on macOS.
+    **Chat**, **Providers** (one list, with a machine picker in its title, and the **Custom** section), **MCP servers**, **Daex MCP**, **Notifications**, **Appearance**, **Behaviour**, **Keyboard**, **Passwords & Secrets**, and **Apple devices** on macOS.
   </Card>
   <Card title="Project" icon="folder-tree">
     **Lanes**, **Agents**, **Deleted & Archived**, **Disk space**, **Location**, and **Integrations** (GitHub, Linear, and Jira) for the open project.
   </Card>
   <Card title="System" icon="server">
-    **Machines**, with a page per machine (its load, its **New work** preference, and the work it keeps for chats on other machines), and **Advanced** (the background service, the `ade` command, reports, database copies, and reset).
+    **Machines**, with a page per machine (its load, its **New work** preference, and the work it keeps for chats on other machines), and **Advanced** (the background service, the `daex` command, reports, database copies, and reset).
   </Card>
 </CardGroup>
 
-**Settings › Account › Delete account** deletes your ADE account and its ADE Cloud data, from the desktop, ADE Web or the iPhone. When a build of ADE is too old to keep working, ADE shows **Update ADE to keep working** with a button that installs the update; your lanes, chats and saved work stay where they are.
+**Settings › Account › Delete account** deletes your Daex account and its Daex Cloud data, from the desktop, Daex Web or the iPhone. When a build of Daex is too old to keep working, Daex shows **Update Daex to keep working** with a button that installs the update; your lanes, chats and saved work stay where they are.
 
-**Settings › Keyboard** rebinds any shortcut, saved on this computer, and sets up nine Quick slots: hold ⌥⌘ (Ctrl+Shift on Windows) and tap 1–9 to run one. Quick slots and your launch defaults (provider, model, mode) follow your ADE account to every machine. **Settings › Deleted & Archived › Recently deleted** lists the lanes and chats you deleted, from every computer, while their agent still has its copy. **Reopen** brings a chat back with its history, and **Restore** brings a lane back with its chats.
+**Settings › Keyboard** rebinds any shortcut, saved on this computer, and sets up nine Quick slots: hold ⌥⌘ (Ctrl+Shift on Windows) and tap 1–9 to run one. Quick slots and your launch defaults (provider, model, mode) follow your Daex account to every machine. **Settings › Deleted & Archived › Recently deleted** lists the lanes and chats you deleted, from every computer, while their agent still has its copy. **Reopen** brings a chat back with its history, and **Restore** brings a lane back with its chats.
 
 **Continue chats after restarts** is one setting per machine, in **Settings › Chat › Restarts**. Old Settings links still land on the right page.
 
@@ -40,17 +40,17 @@ A few controls live in the **top bar**, not in Settings: live provider quota win
 
 ## Passwords & Secrets
 
-**Settings › Passwords & Secrets** holds your logins, 2FA codes, passkeys and secrets (such as API keys). It is on by default. It follows your ADE account to every computer you sign in to, ADE Cloud included. A secret can also be kept on this computer only.
+**Settings › Passwords & Secrets** holds your logins, 2FA codes, passkeys and secrets (such as API keys). It is on by default. It follows your Daex account to every computer you sign in to, Daex Cloud included. A secret can also be kept on this computer only.
 
-Agents use these values but never see them. An agent signs in with a saved login and fills a 2FA code. It runs commands with your secrets in the environment (`ade secrets exec`) and sees only masked output. To show or copy a value, you confirm with Touch ID or Windows Hello. Your old project Secrets move into this page without a prompt.
+Agents use these values but never see them. An agent signs in with a saved login and fills a 2FA code. It runs commands with your secrets in the environment (`daex secrets exec`) and sees only masked output. To show or copy a value, you confirm with Touch ID or Windows Hello. Your old project Secrets move into this page without a prompt.
 
 To bring logins over, choose **Import a CSV**. Chrome, Safari, 1Password and Bitwarden export this format.
 
-To reuse another project's secrets, run `ade secrets copy --from <folder or owner/repo>` in this project. It copies every secret of that project, or only the ones `--names` lists. A secret with the same name is kept unless you add `--overwrite`. Only you can run it: an agent's request is refused.
+To reuse another project's secrets, run `daex secrets copy --from <folder or owner/repo>` in this project. It copies every secret of that project, or only the ones `--names` lists. A secret with the same name is kept unless you add `--overwrite`. Only you can run it: an agent's request is refused.
 
 ## First-run setup
 
-When you open a project for the first time, ADE shows a setup dashboard — a single page of status cards rather than a blocking step-by-step wizard. It detects your stack and suggests config so you don't have to write it by hand:
+When you open a project for the first time, Daex shows a setup dashboard — a single page of status cards rather than a blocking step-by-step wizard. It detects your stack and suggests config so you don't have to write it by hand:
 
 - **Developer tools** — checks for `git` and the GitHub CLI.
 - **Stack detection** — looks for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, a `Makefile`, `docker-compose`, and `.github/workflows/`, then suggests processes, test commands, and stacks.
@@ -84,13 +84,13 @@ Only the first step is required to start running agents — the rest unlock GitH
 
 ## Shared vs. local config
 
-ADE splits project configuration into two files: shared, version-controlled team config (`.ade/ade.yaml`) and a per-user, gitignored overlay (`.ade/local.yaml`). Saving shared config triggers a trust confirmation, since shared settings can introduce commands that run on every teammate's machine. Anything with a secret — provider keys, GitHub and Linear tokens — stays in a local encrypted store and is never committed.
+Daex splits project configuration into two files: shared, version-controlled team config (`.ade/ade.yaml`) and a per-user, gitignored overlay (`.ade/local.yaml`). Saving shared config triggers a trust confirmation, since shared settings can introduce commands that run on every teammate's machine. Anything with a secret — provider keys, GitHub and Linear tokens — stays in a local encrypted store and is never committed.
 
 <CardGroup cols={2}>
   <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
     Connect each agent, set permission presets, and control cost.
   </Card>
   <Card title="Project configuration" icon="folder-tree" href="/configuration/overview">
-    Where ADE stores local state and what to keep out of Git.
+    Where Daex stores local state and what to keep out of Git.
   </Card>
 </CardGroup>

@@ -1,23 +1,23 @@
 ---
 title: "Cursor"
-description: "Run Cursor as an agent provider in ADE through the Cursor SDK — one of ADE's five agents, scoped to a lane."
+description: "Run Cursor as an agent provider in Daex through the Cursor SDK — one of Daex's five agents, scoped to a lane."
 icon: "arrow-pointer"
 ---
 
-[Cursor](https://cursor.com) runs inside ADE as one of its thirteen provider runtimes, alongside Claude Code, Codex, Factory Droid, OpenCode, Pi, and others. ADE drives Cursor's agent through the official **Cursor SDK** — ADE owns the lane scope, permissions, and system prompt; the SDK owns the model and tool execution.
+[Cursor](https://cursor.com) runs inside Daex as one of its thirteen provider runtimes, alongside Claude Code, Codex, Factory Droid, OpenCode, Pi, and others. Daex drives Cursor's agent through the official **Cursor SDK** — Daex owns the lane scope, permissions, and system prompt; the SDK owns the model and tool execution.
 
 ## Connect Cursor
 
-Cursor chat authenticates with an API key. Add a Cursor API key in **Settings → AI**, or set `CURSOR_API_KEY` in the environment ADE launches from — ADE accepts either.
+Cursor chat authenticates with an API key. Add a Cursor API key in **Settings → AI**, or set `CURSOR_API_KEY` in the environment Daex launches from — Daex accepts either.
 
-Once connected, ADE discovers Cursor's available models and they appear in the model picker alongside every other provider. Pick one in any chat header to route that session through Cursor.
+Once connected, Daex discovers Cursor's available models and they appear in the model picker alongside every other provider. Pick one in any chat header to route that session through Cursor.
 
 <AccordionGroup>
   <Accordion title="How the SDK provider works" icon="gear">
-    When a Cursor key is configured, ADE runs the official `@cursor/sdk` in a Node worker pool. The worker creates or resumes a Cursor SDK agent with the selected model in the active lane's worktree, and routes chat turns through SDK runs. Sessions are pooled and reused, SDK events map to ADE's chat event model, and interrupts cancel the run. Because the `ade` CLI is on `PATH`, Cursor agents can call ADE's lane, git, PR, and action tools.
+    When a Cursor key is configured, Daex runs the official `@cursor/sdk` in a Node worker pool. The worker creates or resumes a Cursor SDK agent with the selected model in the active lane's worktree, and routes chat turns through SDK runs. Sessions are pooled and reused, SDK events map to Daex's chat event model, and interrupts cancel the run. Because the `daex` CLI is on `PATH`, Cursor agents can call Daex's lane, git, PR, and action tools.
   </Accordion>
   <Accordion title="Connection status" icon="signal">
-    ADE shows Cursor's status in **Settings → AI**:
+    Daex shows Cursor's status in **Settings → AI**:
 
     | Status | Meaning |
     |--------|---------|
@@ -25,21 +25,21 @@ Once connected, ADE discovers Cursor's available models and they appear in the m
     | **Not authenticated** (amber) | Cursor API key is missing or invalid. |
   </Accordion>
   <Accordion title="Cursor Agent CLI in the Work tab" icon="terminal">
-    You can also launch the `cursor-agent` CLI as a tracked terminal session in the Work tab. ADE probes `cursor-agent` for CLI-only models and merges them into the picker, so the chat-vs-CLI distinction stays clear. ADE downloads its own copy of the Cursor CLI for the machine the first time it is needed; you do not install `cursor-agent` yourself, and one on your `PATH` is not used.
+    You can also launch the `cursor-agent` CLI as a tracked terminal session in the Work tab. Daex probes `cursor-agent` for CLI-only models and merges them into the picker, so the chat-vs-CLI distinction stays clear. Daex downloads its own copy of the Cursor CLI for the machine the first time it is needed; you do not install `cursor-agent` yourself, and one on your `PATH` is not used.
   </Accordion>
   <Accordion title="Cursor Cloud agents" icon="cloud">
-    Kick off Cursor's hosted cloud agents from ADE and follow them in a lane:
+    Kick off Cursor's hosted cloud agents from Daex and follow them in a lane:
 
     ```bash
-    ade cursor cloud agents list --text
-    ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
+    daex cursor cloud agents list --text
+    daex cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
     ```
 
-    The chat panel can open a cloud agent as an ADE chat (replies still run in the cloud) or jump to it on cursor.com.
+    The chat panel can open a cloud agent as a Daex chat (replies still run in the cloud) or jump to it on cursor.com.
   </Accordion>
   <Accordion title="Troubleshooting" icon="circle-question">
-    - **Authentication failed** — add a Cursor API key in **Settings → AI**, or set `CURSOR_API_KEY` in ADE's launch environment.
-    - **Models not appearing** — discovery serves last-known-good rows and revalidates in the background. If Cursor was just connected, restart ADE or refresh in **Settings → AI**.
+    - **Authentication failed** — add a Cursor API key in **Settings → AI**, or set `CURSOR_API_KEY` in Daex's launch environment.
+    - **Models not appearing** — discovery serves last-known-good rows and revalidates in the background. If Cursor was just connected, restart Daex or refresh in **Settings → AI**.
     - **Session errors** — confirm the key is valid and the selected model is available; check developer logs at **Settings → Developer → Log file**.
   </Accordion>
 </AccordionGroup>

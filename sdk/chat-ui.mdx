@@ -325,13 +325,13 @@ Composer rule: submitting during a running turn dispatches `onSteer`, never a se
 `<ProviderCard>` reads `ProviderStatus.source` before it says anything about the machine.
 
 - **`source: "probed"`** — a runtime looked at the filesystem. `installed: false` renders "Not installed", and `binaryPath` and `version` are real.
-- **`source: "derived"`** — nobody looked; `installed` is "ADE knows models for this provider". The card renders **"Not detected"** instead, because telling someone to install a CLI they already have is worse than saying you are not sure.
+- **`source: "derived"`** — nobody looked; `installed` is "Daex knows models for this provider". The card renders **"Not detected"** instead, because telling someone to install a CLI they already have is worse than saying you are not sure.
 
 `<ProviderCards>` shows only providers that need attention by default. Pass `onlyNeedsAttention={false}` to list every provider, for example in a settings page: a signed-in provider renders as one line (status dot, name, "Ready") with no command.
 
 `showDetail` adds a line with the probed version and a truncated binary path. It is off by default, and the basename is never cut — "…/claude" identifies the binary where a head-first truncation would not.
 
-`commandHints` is now an **override**, not the source. A probing runtime already supplies `installCommand`, `loginCommand` and `docsUrl`; use hints to change ADE's wording, not to supply it. A host that set them in 0.1.x sees exactly the copy it had.
+`commandHints` is now an **override**, not the source. A probing runtime already supplies `installCommand`, `loginCommand` and `docsUrl`; use hints to change Daex's wording, not to supply it. A host that set them in 0.1.x sees exactly the copy it had.
 
 ```tsx
 <ProviderCards

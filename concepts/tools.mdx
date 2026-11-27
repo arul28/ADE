@@ -1,10 +1,10 @@
 ---
 title: "Tools"
-description: "Every chat gets a small set of universal tools, plus the ADE surfaces it can reach through the ade CLI."
+description: "Every chat gets a small set of universal tools, plus the Daex surfaces it can reach through the daex CLI."
 icon: "toolbox"
 ---
 
-A chat agent is not a chatbot with a text box. It is a process with tools. ADE gives every chat the same core set, then adds what the session's runtime and role allow.
+A chat agent is not a chatbot with a text box. It is a process with tools. Daex gives every chat the same core set, then adds what the session's runtime and role allow.
 
 There are four layers. Most questions about "what can an agent do?" are really questions about which layer is in play.
 
@@ -25,20 +25,20 @@ Available to every agent — regular chat, personal chat, and the CTO — in eve
 
 These are real tool calls, not prompt instructions. Each one produces an event in the transcript, which is why you can inspect every edit and command after the fact.
 
-## 2. ADE surfaces through the CLI
+## 2. Daex surfaces through the CLI
 
-The agent's shell has the `ade` command. That is how a chat reaches ADE itself:
+The agent's shell has the `daex` command. That is how a chat reaches Daex itself:
 
 ```bash
-ade lanes create "try-the-new-cache"     # start another lane
-ade prs create --lane <lane> --base main # open a pull request
-ade browser open http://localhost:5173   # drive the built-in browser
-ade proof attach ./shot.png              # file evidence
-ade linear issue view ADE-123            # read a linked issue
-ade chat scheduled-work create ...       # schedule its own wake-up
+daex lanes create "try-the-new-cache"     # start another lane
+daex prs create --lane <lane> --base main # open a pull request
+daex browser open http://localhost:5173   # drive the built-in browser
+daex proof attach ./shot.png              # file evidence
+daex linear issue view ADE-123            # read a linked issue
+daex chat scheduled-work create ...       # schedule its own wake-up
 ```
 
-You do not install this separately: the same binary that runs the machine is on the agent's path, and the agent's system prompt explains how to discover the rest with `ade help`.
+You do not install this separately: the same binary that runs the machine is on the agent's path, and the agent's system prompt explains how to discover the rest with `daex help`.
 
 <Note>
 This is why "create a lane", "open a PR", and "capture proof" are not separate tool rows. They are commands, so they compose, work from any provider, and stay identical to what you would type.
@@ -46,7 +46,7 @@ This is why "create a lane", "open a PR", and "capture proof" are not separate t
 
 ## 3. Provider-native tools
 
-Each runtime also brings its own tools, and ADE preserves them rather than flattening them into the universal set:
+Each runtime also brings its own tools, and Daex preserves them rather than flattening them into the universal set:
 
 - **Claude Code** brings its native `AskUserQuestion` tool, its own subagent tool, and its own web tools.
 - **Codex** brings its web, MCP/connector, and image capabilities.

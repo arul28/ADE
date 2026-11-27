@@ -1,10 +1,10 @@
 ---
 title: "GitHub"
-description: "Connect GitHub so ADE can open, review, and merge pull requests for your lanes — without leaving the app."
+description: "Connect GitHub so Daex can open, review, and merge pull requests for your lanes — without leaving the app."
 icon: "github"
 ---
 
-Connecting GitHub turns a finished lane into a reviewable, mergeable pull request inside ADE. Once connected, ADE opens PRs from your lanes, pulls in CI status and review comments, and merges — so you never leave for a browser tab.
+Connecting GitHub turns a finished lane into a reviewable, mergeable pull request inside Daex. Once connected, Daex opens PRs from your lanes, pulls in CI status and review comments, and merges — so you never leave for a browser tab.
 
 <CardGroup cols={2}>
   <Card title="Open PRs from a lane" icon="code-pull-request" href="/tools/pull-requests">
@@ -17,24 +17,24 @@ Connecting GitHub turns a finished lane into a reviewable, mergeable pull reques
 
 ## Connect GitHub
 
-Open **Settings → Integrations → GitHub** and authenticate. ADE stores the token in your machine's encrypted credential store — it's never written into project files or committed.
+Open **Settings → Integrations → GitHub** and authenticate. Daex stores the token in your machine's encrypted credential store — it's never written into project files or committed.
 
 <Steps>
   <Step title="Add a token">
-    Authenticate in the GitHub section of Settings. A token that can read and write the repositories you work in is all ADE needs.
+    Authenticate in the GitHub section of Settings. A token that can read and write the repositories you work in is all Daex needs.
   </Step>
-  <Step title="Let ADE verify it">
-    ADE probes access to the active repository and reports a single connection state (below). Hit **Refresh** after changing permissions on github.com to re-check immediately.
+  <Step title="Let Daex verify it">
+    Daex probes access to the active repository and reports a single connection state (below). Hit **Refresh** after changing permissions on github.com to re-check immediately.
   </Step>
 </Steps>
 
 <Tip>
-You can also connect from a chat. When an agent needs GitHub, it shows a connect card in the chat. Paste a token there: ADE checks it with GitHub and saves it. The agent never sees it.
+You can also connect from a chat. When an agent needs GitHub, it shows a connect card in the chat. Paste a token there: Daex checks it with GitHub and saves it. The agent never sees it.
 </Tip>
 
 ## Connection states
 
-ADE reduces GitHub auth to one "is it usable here" signal, shown the same way in Settings and in the app banner.
+Daex reduces GitHub auth to one "is it usable here" signal, shown the same way in Settings and in the app banner.
 
 <CardGroup cols={3}>
   <Card title="Connected" icon="circle-check">
@@ -53,7 +53,7 @@ ADE reduces GitHub auth to one "is it usable here" signal, shown the same way in
 </Note>
 
 <Tip>
-GitHub is optional. ADE runs fine without it — you just won't get in-app PRs until it's connected. Everything else (lanes, chat, diffs, history) works regardless.
+GitHub is optional. Daex runs fine without it — you just won't get in-app PRs until it's connected. Everything else (lanes, chat, diffs, history) works regardless.
 </Tip>
 
 <CardGroup cols={2}>

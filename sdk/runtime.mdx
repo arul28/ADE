@@ -1,10 +1,10 @@
 ---
 title: "Runtime"
-description: "The embedded ADE sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, exit events and autoRestart, version compatibility, and doctor()."
+description: "The embedded Daex sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, exit events and autoRestart, version compatibility, and doctor()."
 icon: "server"
 ---
 
-The SDK does not embed ADE as a library. It **spawns** `ade runtime run --socket <path> --profile embedded` as a child.
+The SDK does not embed Daex as a library. It **spawns** `ade runtime run --socket <path> --profile embedded` as a child.
 
 ```
 your process
@@ -24,7 +24,7 @@ your process
 - **Sync is forced off.** The sidecar is not a machine peer.
 - **No machine authority.** `machine.updateAndRestart` and power transitions are withheld, not merely role-gated.
 - **Parent-death watchdog.** POSIX does not kill orphans on parent death. The runtime polls `ADE_EMBEDDED_PARENT_PID` and shuts itself down if the host is gone.
-- **Host `ADE_*` env is scrubbed** before spawn so a developer ADE install cannot leak into the guest.
+- **Host `ADE_*` env is scrubbed** before spawn so a developer Daex install cannot leak into the guest.
 - **Provider logins can be isolated.** With `ADE_EMBEDDED_PROVIDER_LOGINS=isolated`, the runtime points each supported CLI at `<ADE_HOME>/provider-homes/<provider>/default`, overriding inherited config-home variables. The unset or `machine` mode keeps the machine login behavior. Providers without a config-home override report `isolation: "shared"`.
 
 ## Runtime wire capabilities
@@ -41,7 +41,7 @@ capabilities: {
 }
 ```
 
-The `providerAccounts.call`, `credentials.call`, and `presets.call` methods use the runtime machine's account stores. On a regular ADE runtime they require the CTO role; the embedded runtime trusts its sole host client. `credentials.call { action: "store" }` accepts a key but every response contains only credential summaries, never key values. The embedded credential backend uses macOS Keychain or Windows DPAPI; Linux keeps credential files private under the embedded `ADE_HOME`.
+The `providerAccounts.call`, `credentials.call`, and `presets.call` methods use the runtime machine's account stores. On a regular Daex runtime they require the CTO role; the embedded runtime trusts its sole host client. `credentials.call { action: "store" }` accepts a key but every response contains only credential summaries, never key values. The embedded credential backend uses macOS Keychain or Windows DPAPI; Linux keeps credential files private under the embedded `ADE_HOME`.
 
 Each `providers.status` record includes `capabilities` for permission modes, reasoning efforts, Fast mode, account count support, sign-in, keys, presets, and MCP, plus its `isolation` state.
 

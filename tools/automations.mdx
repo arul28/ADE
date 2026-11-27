@@ -13,7 +13,7 @@ The **Automations** tab is rolling out. In production builds it currently shows 
 </Note>
 
 <Frame caption="The automation builder: a trigger, its execution surface, and the guardrails that gate it.">
-  <img src="/media/current/automations.jpg" alt="The Automations builder in ADE" />
+  <img src="/media/current/automations.jpg" alt="The Automations builder in Daex" />
 </Frame>
 
 ## Anatomy of a rule
@@ -23,7 +23,7 @@ The **Automations** tab is rolling out. In production builds it currently shows 
     What starts the rule — a cron schedule, an action event, or an inbound webhook.
   </Card>
   <Card title="Execution surface" icon="play">
-    Either an `agent-session` (a scoped AI chat) or `built-in` (deterministic ADE actions).
+    Either an `agent-session` (a scoped AI chat) or `built-in` (deterministic Daex actions).
   </Card>
   <Card title="Guardrails" icon="shield-halved">
     Confidence threshold, human review, path/lane allowlists, and optional agent time limits.
@@ -66,7 +66,7 @@ Choosing the surface is the key decision — it sets how much orchestration a ru
     A scoped AI chat thread with the rule's prompt and allowed tools. Best for reviews, audits, and short summaries. Appears in run history as a thread.
   </Card>
   <Card title="built-in" icon="list-check">
-    A sequence of deterministic ADE actions — create a lane, run a command, run tests, predict conflicts, or dispatch an allowlisted ADE action. No AI in the loop; sandboxed to the target lane's worktree.
+    A sequence of deterministic Daex actions — create a lane, run a command, run tests, predict conflicts, or dispatch an allowlisted Daex action. No AI in the loop; sandboxed to the target lane's worktree.
   </Card>
 </CardGroup>
 
@@ -115,7 +115,7 @@ Runs that need a human land in a queue with statuses like **pending review**, **
 
 You can write a rule from a free-text brief — a planner turns the brief into a draft rule (triggers plus actions) that you review before saving — or build it directly in the rule editor by picking a trigger, an execution surface, and guardrails. Templates seed a new draft to start from.
 
-An unsaved rule is kept as one draft per repository on this computer, with its **Runs on** choice, through tab switches and restarts. When the rule runs on another computer, anything that computer's ADE can't run yet is greyed out with the version it needs.
+An unsaved rule is kept as one draft per repository on this computer, with its **Runs on** choice, through tab switches and restarts. When the rule runs on another computer, anything that computer's Daex can't run yet is greyed out with the version it needs.
 
 A **Send notification** step can open what the run made: its chat, its lane or the run's history. On the iPhone the link opens the run's chat.
 
@@ -128,6 +128,6 @@ Use the **simulate** path to dry-run a rule against a synthetic trigger before e
     The persistent project-level operator with durable memory.
   </Card>
   <Card title="Linear" icon="layers" href="/integrations/linear">
-    Attach issues, link PRs, and read issues from ADE.
+    Attach issues, link PRs, and read issues from Daex.
   </Card>
 </CardGroup>

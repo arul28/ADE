@@ -9,7 +9,7 @@ Every thread gates tool use one of three ways: the `"default"` preset, the `"alw
 SDK 0.7 also accepts the provider-native `permissionMode` on `threads.open()`.
 Use `client.providers.capabilities(provider)` to see which modes that provider
 advertises; when capability data is available, an unsupported mode is rejected
-before the thread opens. This is separate from ADE's `permissions` policy below.
+before the thread opens. This is separate from Daex's `permissions` policy below.
 Provider accounts and login isolation are covered in [Accounts](/sdk/accounts).
 
 <Warning>
@@ -22,9 +22,9 @@ It is not one behavior. `"default"` leaves each provider's own handling in place
 
 | Provider | `permissions: "default"`, no policy |
 |---|---|
-| claude | ADE installs no gate at all. The decision belongs to the Claude Agent SDK running non-interactively with no `canUseTool` callback and no terminal, which returns a refusal to the model as a tool error. You get no `approval_request`. |
+| claude | Daex installs no gate at all. The decision belongs to the Claude Agent SDK running non-interactively with no `canUseTool` callback and no terminal, which returns a refusal to the model as a tool error. You get no `approval_request`. |
 | codex | An approval request **parks the turn** until something answers it. Shell commands, file patches and MCP tool calls all do this. |
-| cursor · droid · opencode · pi | The provider's own non-interactive behavior. No ADE gate. |
+| cursor · droid · opencode · pi | The provider's own non-interactive behavior. No Daex gate. |
 
 If you want a gate you can actually see and answer, pass a policy.
 
@@ -73,11 +73,11 @@ The check is literal membership of that list, never a substring. It cannot reach
 
 Name a built-in in `deniedTools` to override the exemption, or use `fallback: "deny"`, under which nothing unmatched runs at all.
 
-`deniedTools` outranks everything, including a tool that would otherwise let itself through. Claude's `AskUserQuestion` and ADE's own `ask_user` normally skip the card, because each carries its own answer UI and a generic "Allow this tool?" card would hide the real question behind an extra click. Naming either in `deniedTools` still refuses it. The mirror also holds: an `allowedTools` entry means a tool may run, not that it skips its own machinery — allow-listing `AskUserQuestion` lets it ask, it does not answer for the user.
+`deniedTools` outranks everything, including a tool that would otherwise let itself through. Claude's `AskUserQuestion` and Daex's own `ask_user` normally skip the card, because each carries its own answer UI and a generic "Allow this tool?" card would hide the real question behind an extra click. Naming either in `deniedTools` still refuses it. The mirror also holds: an `allowedTools` entry means a tool may run, not that it skips its own machinery — allow-listing `AskUserQuestion` lets it ask, it does not answer for the user.
 
-### When Claude asks ADE's gate
+### When Claude asks Daex's gate
 
-ADE measured this on 2026-09-28 against the pinned Agent SDK 0.3.280 (Claude Code 2.1.280), with permission mode `"default"` and `settingSources: "none"`:
+Daex measured this on 2026-09-28 against the pinned Agent SDK 0.3.280 (Claude Code 2.1.280), with permission mode `"default"` and `settingSources: "none"`:
 
 | Tool call | `canUseTool` fires |
 |---|---|
@@ -130,12 +130,12 @@ A tool is never gated because of what its name contains. `mcp:studio:edit_clip` 
 | Provider | Policy level | What it means |
 |---|---|---|
 | claude, `fallback: "deny"` | **enforced**, or best-effort when an allow entry names one MCP tool | The tool lists and the MCP scope, both applied up front. See [above](#what-fallback-deny-does-on-claude). |
-| claude, `fallback: "ask"` | best-effort | The same two lists, plus a `canUseTool` callback. Residual: the ask verdict needs the Agent SDK to call ADE's gate. On 0.3.280 it does for MCP tools and for commands that change things, but not for a command that Claude Code classifies as read-only, which runs without an approval. A Claude setting loaded through `settingSources` (`permissions.allow`, or `permissions.defaultMode: auto`) can also approve an unlisted tool before the gate runs. |
+| claude, `fallback: "ask"` | best-effort | The same two lists, plus a `canUseTool` callback. Residual: the ask verdict needs the Agent SDK to call Daex's gate. On 0.3.280 it does for MCP tools and for commands that change things, but not for a command that Claude Code classifies as read-only, which runs without an approval. A Claude setting loaded through `settingSources` (`permissions.allow`, or `permissions.defaultMode: auto`) can also approve an unlisted tool before the gate runs. |
 | codex | best-effort | `approvalPolicy: on-request` with a `workspace-write` sandbox. The policy governs sandbox **escapes** and **MCP tool calls**. An escape needs a `sandboxRoot` to be auto-accepted. An MCP tool call is judged on its tool name. See [below](#codex-mcp-tool-calls). |
 | cursor | unsupported | The Cursor SDK takes a mode preset, not a rule set. |
 | droid | unsupported | The Factory SDK takes an autonomy level, not a rule set. |
 | opencode | unsupported | OpenCode takes an agent profile, not a rule set. |
-| pi | unsupported | The Pi SDK takes a tool policy ADE derives from the session mode. |
+| pi | unsupported | The Pi SDK takes a tool policy Daex derives from the session mode. |
 
 Read the thread's own report rather than the table, which is a summary. On Claude the level follows the policy's shape, not just the provider:
 

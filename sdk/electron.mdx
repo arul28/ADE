@@ -162,7 +162,7 @@ webPreferences: {
 
 `@ade-dev/sdk/electron/preload-auto` is one CommonJS file whose only `require` is `"electron"`. It calls `exposeAdeBridge` with the default key `ade` and the default channel prefix `ade`. There is no build step.
 
-If you need another key or prefix, or your own channels next to ADE's, write your own preload. Copy this file as it is. It is the whole preload half of the bridge:
+If you need another key or prefix, or your own channels next to Daex's, write your own preload. Copy this file as it is. It is the whole preload half of the bridge:
 
 ```js
 // preload.js — safe under sandbox: true. Requires nothing but "electron".

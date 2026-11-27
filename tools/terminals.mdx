@@ -15,7 +15,7 @@ Every Work session is the same kind of tracked record under the hood, which is w
     A chat backed by a provider SDK — Claude Code, Codex, Cursor, Factory Droid, or OpenCode. Streams tool calls and diffs, with approval gates.
   </Card>
   <Card title="Provider CLI" icon="robot">
-    The provider's CLI running inside ADE in a tracked terminal. It runs ADE's own downloaded copy of the CLI, with your existing sign-in; open a plain shell to run a CLI you installed yourself. ADE knows how to resume it, so an ended CLI session can be continued.
+    The provider's CLI running inside Daex in a tracked terminal. It runs Daex's own downloaded copy of the CLI, with your existing sign-in; open a plain shell to run a CLI you installed yourself. Daex knows how to resume it, so an ended CLI session can be continued.
   </Card>
   <Card title="Shell" icon="rectangle-terminal">
     A plain interactive shell (a PTY) in the lane's worktree, for running commands by hand. Pick the shell new ones start with in Settings › App › Behaviour.
@@ -28,7 +28,7 @@ Each Work session belongs to a lane and runs in that lane's worktree, with that 
 
 ## Tracked, not anonymous
 
-Every session is a row that ADE keeps so you can revisit it later. A session record carries:
+Every session is a row that Daex keeps so you can revisit it later. A session record carries:
 
 - **Identity** — the lane, the tool type, and (for terminals owned by a chat) the parent chat.
 - **Intent** — a title and goal, often auto-derived from the first prompt.
@@ -38,9 +38,9 @@ Every session is a row that ADE keeps so you can revisit it later. A session rec
 
 A shell code block in an agent's reply can be run from the chat: **Run** opens a new terminal in the chat's tools pane, and **Send output to the agent** sends the result back. See [run a command from a reply](/chat/capabilities#run-a-command-from-a-reply). When a chat runs commands on another machine, those commands join the chat's terminal list with that machine's logo.
 
-An agent can watch a terminal (`ade terminal watch`) and is woken when it prints something new; the terminal's Watching pane lists every watcher, with Stop.
+An agent can watch a terminal (`daex terminal watch`) and is woken when it prints something new; the terminal's Watching pane lists every watcher, with Stop.
 
-Tracked provider CLI sessions also store enough resume metadata that, after one exits, you can **Resume** the TUI or send a follow-up prompt and ADE rebuilds the right `claude --resume`, `codex resume`, or equivalent command — continuing in the same durable session.
+Tracked provider CLI sessions also store enough resume metadata that, after one exits, you can **Resume** the TUI or send a follow-up prompt and Daex rebuilds the right `claude --resume`, `codex resume`, or equivalent command — continuing in the same durable session.
 
 ## Organize the list, tile the grid
 
@@ -56,5 +56,5 @@ A right-edge sidebar follows the active lane and Work session, with tabs for **G
 
 ## Recovery
 
-If ADE restarts, it reconciles each session against the process that owns it: live sessions owned by another window or the daemon are left alone, while genuinely orphaned ones are marked detached. The durable row and transcript always remain, so even a session whose process is gone stays readable in [History](/tools/history).
+If Daex restarts, it reconciles each session against the process that owns it: live sessions owned by another window or the daemon are left alone, while genuinely orphaned ones are marked detached. The durable row and transcript always remain, so even a session whose process is gone stays readable in [History](/tools/history).
 

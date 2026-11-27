@@ -4,7 +4,7 @@ description: "The `.ade/` directory, the shared-vs-local trust model, and what s
 icon: "folder-tree"
 ---
 
-ADE keeps project state local. Everything ADE creates for a project lives under `.ade/` at the repository root, alongside your source tree but outside Git's control. Your code stays under normal version control; ADE's runtime bookkeeping stays out of it.
+Daex keeps project state local. Everything Daex creates for a project lives under `.ade/` at the repository root, alongside your source tree but outside Git's control. Your code stays under normal version control; Daex's runtime bookkeeping stays out of it.
 
 ```text
 .ade/
@@ -13,13 +13,13 @@ ADE keeps project state local. Everything ADE creates for a project lives under 
   local.yaml    # per-user overrides (gitignored)
   worktrees/    # managed lane worktrees (one directory per lane)
   artifacts/    # proof artifacts (screenshots, recordings, traces)
-  cache/        # derived data ADE can rebuild
+  cache/        # derived data Daex can rebuild
   secrets/      # encrypted, machine-local credentials
 ```
 
 ## Shared vs. local config
 
-ADE splits configuration into two files, both merged into one effective config at read time:
+Daex splits configuration into two files, both merged into one effective config at read time:
 
 | File | Scope | In Git? | Holds |
 |------|-------|---------|-------|
@@ -36,15 +36,15 @@ Keep secrets and machine-specific paths in local config. Shared config is visibl
 | Worktrees | The isolated working copy for each lane. |
 | Artifacts | Proof captures — screenshots, recordings, and traces. |
 | Secrets | Encrypted, machine-local credentials. |
-| Cache | Derived data ADE can regenerate on demand. |
+| Cache | Derived data Daex can regenerate on demand. |
 
 ## Trust model
 
-Commands saved as shared project defaults can run on developer machines. ADE treats those definitions as sensitive: when the shared config changes, it requires a local trust confirmation before the new version can spawn processes. Review such changes the same way you'd review a CI script or Dockerfile. Local config isn't trust-gated — you only need to trust your own overrides.
+Commands saved as shared project defaults can run on developer machines. Daex treats those definitions as sensitive: when the shared config changes, it requires a local trust confirmation before the new version can spawn processes. Review such changes the same way you'd review a CI script or Dockerfile. Local config isn't trust-gated — you only need to trust your own overrides.
 
 ## What's committed, and what isn't
 
-ADE manages this for you. It writes a `.ade/.gitignore` that ignores everything under `.ade/` by default and allowlists only the authored files meant to travel with the repo — `ade.yaml`, lane templates, skills, and project icons. Runtime files (the database, worktrees, artifacts, cache, and secrets) stay out of Git automatically, so you don't have to maintain ignore rules by hand.
+Daex manages this for you. It writes a `.ade/.gitignore` that ignores everything under `.ade/` by default and allowlists only the authored files meant to travel with the repo — `ade.yaml`, lane templates, skills, and project icons. Runtime files (the database, worktrees, artifacts, cache, and secrets) stay out of Git automatically, so you don't have to maintain ignore rules by hand.
 
 <Warning>
 Never put provider keys, tokens, or other secrets in `.ade/ade.yaml` or any committed file. Secrets belong in the local encrypted store or `.ade/local.yaml`, both of which stay off the shared path.

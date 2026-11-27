@@ -1,10 +1,10 @@
 ---
 title: "Lanes"
-description: "A lane is one git worktree and branch for one task — the unit of parallel work in ADE."
+description: "A lane is one git worktree and branch for one task — the unit of parallel work in Daex."
 icon: "code-branch"
 ---
 
-A **lane** is ADE's name for a git worktree: an isolated branch and working copy for one piece of work, usually under `.ade/worktrees/<lane-name>/`. It is the unit of parallel work.
+A **lane** is Daex's name for a git worktree: an isolated branch and working copy for one piece of work, usually under `.ade/worktrees/<lane-name>/`. It is the unit of parallel work.
 
 Because the lane is a real worktree, agents can run in the same repository at the same time without writing over each other or over your main checkout. There is no stashing and no branch juggling.
 
@@ -19,7 +19,7 @@ Because the lane is a real worktree, agents can run in the same repository at th
 - Its **diff**, file changes, test runs, and proof artifacts.
 - The **pull request** created from it.
 
-Everything in ADE is scoped to a lane, which is what makes "what is running, where, and why" answerable.
+Everything in Daex is scoped to a lane, which is what makes "what is running, where, and why" answerable.
 
 ## One task, one lane
 
@@ -48,6 +48,6 @@ When work is merged, archive the lane to keep its worktree and history available
     The creation flow, base branch, and naming.
   </Card>
   <Card title="Repositories and worktrees" icon="folder-tree" href="/lanes/overview#repos-projects-and-worktrees">
-    How ADE maps repositories to projects and worktrees to lanes.
+    How Daex maps repositories to projects and worktrees to lanes.
   </Card>
 </CardGroup>

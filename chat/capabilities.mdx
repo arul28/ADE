@@ -4,7 +4,7 @@ description: "The tools a chat agent can use inside a lane — read and edit fil
 icon: "toolbox"
 ---
 
-A chat agent works like a teammate who has the lane checked out. ADE gives every agent a set of tools scoped to its role, so a regular lane chat can do real work — read and edit files, run commands, create lanes and PRs, pull in Linear context, and capture proof — without reaching the elevated control-plane tools reserved for the CTO.
+A chat agent works like a teammate who has the lane checked out. Daex gives every agent a set of tools scoped to its role, so a regular lane chat can do real work — read and edit files, run commands, create lanes and PRs, pull in Linear context, and capture proof — without reaching the elevated control-plane tools reserved for the CTO.
 
 ## Universal tools
 
@@ -46,7 +46,7 @@ Chat agents also get the tools that turn a conversation into shipped work.
     When a chat is launched to fix a PR, it can refresh checks, re-run failed CI, reply to review threads, and resolve them.
   </Card>
   <Card title="Capture proof" icon="camera">
-    Screenshot the environment and file the result to the proof drawer (macOS), or attach an existing image with `ade proof attach`.
+    Screenshot the environment and file the result to the proof drawer (macOS), or attach an existing image with `daex proof attach`.
   </Card>
   <Card title="Report completion" icon="flag-checkered">
     Persist a structured closeout — status, summary, artifacts, and any blocker — as a card in the transcript.
@@ -66,7 +66,7 @@ Some capabilities depend on the provider runtime behind the chat.
 
 <CardGroup cols={2}>
   <Card title="Codex goals" icon="bullseye">
-    Codex sessions can keep a visible goal that you set, update, complete, or clear from ADE without turning the goal into prompt text.
+    Codex sessions can keep a visible goal that you set, update, complete, or clear from Daex without turning the goal into prompt text.
   </Card>
   <Card title="Scheduled work" icon="clock">
     Every chat runtime can schedule durable self-resume with `chat.createScheduledWork`; wake, cron, and background events stay inspectable in the transcript and Chat Info.
@@ -75,12 +75,12 @@ Some capabilities depend on the provider runtime behind the chat.
     Codex and Cursor runtime failures surface as structured recovery cards or errors instead of collapsing into silent transcript gaps.
   </Card>
   <Card title="History handoff" icon="code-fork">
-    Claude and Codex sessions can be imported or forked into ADE when provider-native history is available, then continued as lane-scoped chats.
+    Claude and Codex sessions can be imported or forked into Daex when provider-native history is available, then continued as lane-scoped chats.
   </Card>
 </CardGroup>
 
 Scheduled chat work resumes one chat at a turn boundary. For event-triggered,
-rule-based workflows across ADE, use [automations](/tools/automations).
+rule-based workflows across Daex, use [automations](/tools/automations).
 
 ## Run a command from a reply
 

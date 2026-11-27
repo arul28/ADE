@@ -122,7 +122,7 @@ Submitting during a running turn is a **steer**, not a second send. `steer()` is
 `steer()` takes `{ attachments }` with the same rules as `send()`. It needs text, at least one attachment, or both. A steer with attachments and empty text is allowed. It resolves when the runtime accepts the steer, not when the agent reads it.
 
 `interrupt({ queue: "keep" })` stops the active turn and preserves queued
-messages; `queue: "drop"` clears them. A `mode` option can select one of ADE's
+messages; `queue: "drop"` clears them. A `mode` option can select one of Daex's
 full stop modes and takes precedence over `queue`.
 
 ## Queue and recovery controls
@@ -150,7 +150,7 @@ await thread.respond(requestId, {
 });
 ```
 
-Plan approvals use an explicit decision, matching ADE's plan card: `accept`
+Plan approvals use an explicit decision, matching Daex's plan card: `accept`
 approves the plan and `decline` keeps planning. The SDK never guesses from
 option labels. The response may also include `responseText`, and its decision
 may be `accept_for_session` or `cancel` where the runtime supports them.
@@ -179,7 +179,7 @@ thread.on("event", ({ event }) => {
 console.log(thread.usage());
 ```
 
-`usage()` returns cumulative `inputTokens`, `outputTokens` and `totalTokens`, plus `contextWindow` when the runtime reports it. `costUsd` is present only when a provider explicitly reports a dollar cost; ADE list-price estimates are excluded. `complete` is false if the SDK could not read the existing transcript to seed its totals. Without a budget, the snapshot then covers only events the SDK observed; with a budget, new turns are refused until the SDK can load history.
+`usage()` returns cumulative `inputTokens`, `outputTokens` and `totalTokens`, plus `contextWindow` when the runtime reports it. `costUsd` is present only when a provider explicitly reports a dollar cost; Daex list-price estimates are excluded. `complete` is false if the SDK could not read the existing transcript to seed its totals. Without a budget, the snapshot then covers only events the SDK observed; with a budget, new turns are refused until the SDK can load history.
 
 The budget is stored with the thread key, so it continues across restarts and resumes. When reported cumulative tokens or provider cost reaches a limit, the SDK emits `budget_exceeded` and interrupts the active turn. If the cost limit has no provider-reported cost to compare, only the token limit can trigger. On resume, the stored budget wins over a different `budget` option.
 
@@ -257,11 +257,11 @@ const thread = await ade.threads.open("assistant", {
 });
 ```
 
-- `{ mode: "append", text }` keeps ADE's own personal-chat prompt and adds yours after it. Use this when you want ADE's safety framing.
-- `{ mode: "replace", text }` uses your text alone. Use this when the chat is branded as your assistant and must not mention ADE.
+- `{ mode: "append", text }` keeps Daex's own personal-chat prompt and adds yours after it. Use this when you want Daex's safety framing.
+- `{ mode: "replace", text }` uses your text alone. Use this when the chat is branded as your assistant and must not mention Daex.
 - A bare string is shorthand for `{ mode: "append", text }`.
 
-Append appends to **ADE's personal-chat prompt**, not to Claude Code's own preset. Passing `instructions` at the client level sets a default for every thread; a per-thread value replaces it rather than being merged with it.
+Append appends to **Daex's personal-chat prompt**, not to Claude Code's own preset. Passing `instructions` at the client level sets a default for every thread; a per-thread value replaces it rather than being merged with it.
 
 | Provider | Level | Mechanism |
 |---|---|---|
@@ -269,10 +269,10 @@ Append appends to **ADE's personal-chat prompt**, not to Claude Code's own prese
 | codex | applied | `developerInstructions` on `thread/start` |
 | opencode | applied | the wire `system` field |
 | pi | applied | `systemPromptOverride` |
-| cursor | best-effort | merged into the system text ADE already prefixes to the first turn |
-| droid | best-effort | merged into the harness prompt ADE prefixes on every turn |
+| cursor | best-effort | merged into the system text Daex already prefixes to the first turn |
+| droid | best-effort | merged into the harness prompt Daex prefixes on every turn |
 
-`best-effort` means ADE reuses a channel it already owns rather than a first-class one the provider offers. The text reaches the model; it shares a prompt with ADE's own.
+`best-effort` means Daex reuses a channel it already owns rather than a first-class one the provider offers. The text reaches the model; it shares a prompt with Daex's own.
 
 ```ts
 if (thread.instructionsCapability?.level !== "applied") {
@@ -320,11 +320,11 @@ Which on-disk configuration the provider loads. `"none"` is the default and is w
 
 | Provider | What happens |
 |---|---|
-| claude | Applied. The value is set explicitly in all four cases, so the behavior is ADE's rather than a dependency's default. |
+| claude | Applied. The value is set explicitly in all four cases, so the behavior is Daex's rather than a dependency's default. |
 | codex | Best-effort for `"project"` and `"all"`: Codex reads `AGENTS.md` from `cwd`, and always also reads `~/.codex/AGENTS.md`. Ignored for `"none"` and `"user"` — Codex has no switch to stop reading `AGENTS.md`. |
-| cursor | Ignored. ADE pins the Cursor SDK's own `settingSources` from the session permission policy, because dropping the user layer would also drop ADE's tool-gate hook. |
+| cursor | Ignored. Daex pins the Cursor SDK's own `settingSources` from the session permission policy, because dropping the user layer would also drop Daex's tool-gate hook. |
 | droid | Ignored. The Factory SDK resolves `~/.factory/settings.json` itself and offers no per-session override. |
-| opencode | Ignored. ADE runs a dedicated OpenCode server with an ADE-authored config and project config disabled. There is no per-session switch. |
+| opencode | Ignored. Daex runs a dedicated OpenCode server with a Daex-authored config and project config disabled. There is no per-session switch. |
 | pi | Ignored. The Pi SDK exposes no configuration-layer switch. |
 
 Read `thread.settingSourcesCapability` for the answer on the thread you actually got.
@@ -470,7 +470,7 @@ The file must still be readable when you send. Copy a file yourself only when it
 | Claude, `type: "image"` | 10 MB, and only JPEG, PNG, GIF or WebP. A larger image, or another format, goes as a path hint. The turn still runs. |
 | Codex, `type: "image"` or `"file"` | No size cap. Codex copies the whole file to a staging directory before the turn, unless `hydrate: false`. |
 | Claude, `type: "file"` | No read. The model gets a path hint. |
-| OpenCode | ADE sets no cap. OpenCode gets a file URL and reads the file itself, unless `hydrate: false`. |
+| OpenCode | Daex sets no cap. OpenCode gets a file URL and reads the file itself, unless `hydrate: false`. |
 | Droid, Pi, Cursor, ACP providers, text inline | 512 KB. A larger file goes as a path hint. |
 | Any provider, `hydrate: false` | No read. The model gets a path hint. |
 

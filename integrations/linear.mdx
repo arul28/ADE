@@ -4,7 +4,7 @@ description: "Connect a Linear workspace to browse and search issues, attach the
 icon: "layers"
 ---
 
-Connect Linear when your planning and review loop already runs through Linear issues. Once connected, you can browse and search issues from inside ADE, attach an issue to a lane or a chat, and let ADE carry that link through the branch name, commit messages, and the PR — so Linear links the work back to the issue. An optional live-status round-trip reflects an agent's progress back into Linear.
+Connect Linear when your planning and review loop already runs through Linear issues. Once connected, you can browse and search issues from inside Daex, attach an issue to a lane or a chat, and let Daex carry that link through the branch name, commit messages, and the PR — so Linear links the work back to the issue. An optional live-status round-trip reflects an agent's progress back into Linear.
 
 ## What the integration does
 
@@ -13,13 +13,13 @@ Connect Linear when your planning and review loop already runs through Linear is
     Open the issue browser from the top bar to search, filter, read comments, and see cycle and sub-issue detail.
   </Card>
   <Card title="Attach issues" icon="paperclip">
-    Connect a Linear issue to a lane or chat. ADE derives the lane and branch name and attaches the issue as context.
+    Connect a Linear issue to a lane or chat. Daex derives the lane and branch name and attaches the issue as context.
   </Card>
   <Card title="Commit & PR linkbacks" icon="code-pull-request">
     Connected lanes prefix commits with the issue reference and seed the PR title and body so Linear links the work back — and closes the issue on merge if you choose.
   </Card>
   <Card title="Live status (optional)" icon="arrow-right-arrow-left">
-    When enabled, ADE moves the issue to In Progress on launch, comments the PR link, and marks it Done on merge.
+    When enabled, Daex moves the issue to In Progress on launch, comments the PR link, and marks it Done on merge.
   </Card>
 </CardGroup>
 
@@ -29,7 +29,7 @@ Connect from **Settings &rarr; Integrations**, or from the CTO's Settings sheet.
 
 <Steps>
   <Step title="Sign in with Linear (OAuth)">
-    The primary path. ADE opens a Linear sign-in and stores the resulting token, refreshing it for you. The sign-in session is short-lived, so finish it promptly.
+    The primary path. Daex opens a Linear sign-in and stores the resulting token, refreshing it for you. The sign-in session is short-lived, so finish it promptly.
   </Step>
   <Step title="Personal API key">
     The alternative — paste a key that doesn't expire. Good for headless or automated setups.
@@ -40,11 +40,11 @@ Connect from **Settings &rarr; Integrations**, or from the CTO's Settings sheet.
 </Steps>
 
 <Frame caption="The Linear quick view: issues, projects, and a one-click agent launch.">
-  <img src="/media/current/linear.jpg" alt="The Linear quick view in ADE" />
+  <img src="/media/current/linear.jpg" alt="The Linear quick view in Daex" />
 </Frame>
 
 <Tip>
-You can also connect from a chat. When an agent needs Linear, it shows a connect card in the chat with the same two paths. ADE checks the key with Linear and saves it for the project. The agent never sees it.
+You can also connect from a chat. When an agent needs Linear, it shows a connect card in the chat with the same two paths. Daex checks the key with Linear and saves it for the project. The agent never sees it.
 </Tip>
 
 <Note>
@@ -57,7 +57,7 @@ The everyday flow starts with an issue and ends with a linked PR.
 
 <Steps>
   <Step title="Attach an issue">
-    Create a lane from an issue (or attach one to an existing lane or chat). ADE derives the lane name and branch name from the issue and attaches it as context.
+    Create a lane from an issue (or attach one to an existing lane or chat). Daex derives the lane name and branch name from the issue and attaches it as context.
   </Step>
   <Step title="Work in the lane">
     The agent implements in its worktree. Commit messages are auto-prefixed with the issue reference.
@@ -66,7 +66,7 @@ The everyday flow starts with an issue and ends with a linked PR.
     The PR title and body are seeded from the issue, with a `Fixes` or `Refs` magic word so Linear links — and optionally closes — the issue on merge.
   </Step>
   <Step title="Live status (optional)">
-    With the live-status round-trip enabled, ADE moves the issue to In Progress on launch, comments the PR link, and marks it Done on merge.
+    With the live-status round-trip enabled, Daex moves the issue to In Progress on launch, comments the PR link, and marks it Done on merge.
   </Step>
 </Steps>
 

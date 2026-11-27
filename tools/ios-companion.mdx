@@ -1,18 +1,18 @@
 ---
 title: "iOS companion"
-description: "Pair the ADE iOS app with your Mac over a live WebSocket and mirror lanes, chats, and PRs in real time — start chats, review and merge PRs, all from your phone."
+description: "Pair the Daex iOS app with your Mac over a live WebSocket and mirror lanes, chats, and PRs in real time — start chats, review and merge PRs, all from your phone."
 icon: "mobile-screen"
 ---
 
-The ADE iOS app is a client for your Mac. It pairs over a live WebSocket and mirrors your lanes, chats, and PRs in real time. Start or continue a chat, review and merge a PR, or browse a lane's diff — from your phone. Your source code never leaves the Mac. The phone is a thin client; the agents run on the desktop runtime.
+The Daex iOS app is a client for your Mac. It pairs over a live WebSocket and mirrors your lanes, chats, and PRs in real time. Start or continue a chat, review and merge a PR, or browse a lane's diff — from your phone. Your source code never leaves the Mac. The phone is a thin client; the agents run on the desktop runtime.
 
 <Card title="Download for iOS" icon="mobile-screen" href="https://testflight.apple.com/join/ZSdJGKPy" horizontal>
-  Install ADE Mobile from TestFlight, then pair it with your Mac.
+  Install Daex Mobile from TestFlight, then pair it with your Mac.
 </Card>
 
 <CardGroup cols={2}>
   <Frame caption="Chat with agents from your phone">
-    <img src="/assets/readme/phone.webp" alt="Agent chat on the ADE iOS app" width="300" />
+    <img src="/assets/readme/phone.webp" alt="Agent chat on the Daex iOS app" width="300" />
   </Frame>
   </CardGroup>
 
@@ -38,14 +38,14 @@ The ADE iOS app is a client for your Mac. It pairs over a live WebSocket and mir
 Pairing links the app to your Mac's runtime with a one-time PIN. Generate the PIN on the desktop (or from the CLI), enter it on the phone, and the app connects.
 
 <Steps>
-  <Step title="Install ADE Mobile">
-    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile.
+  <Step title="Install Daex Mobile">
+    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install Daex Mobile.
   </Step>
   <Step title="Generate a PIN on the Mac">
-    Open the desktop **Mobile** control and generate a pairing PIN, or run `ade brain pin generate` from any shell.
+    Open the desktop **Mobile** control and generate a pairing PIN, or run `daex brain pin generate` from any shell.
   </Step>
   <Step title="Enter the PIN on iOS">
-    Open the ADE app on your iPhone and type the PIN to pair with your machine.
+    Open the Daex app on your iPhone and type the PIN to pair with your machine.
   </Step>
   <Step title="Confirm the connection">
     The phone shows your project catalog and current lanes; the desktop lists the device as paired. From here, lanes, chats, and PRs stream live.
@@ -54,16 +54,16 @@ Pairing links the app to your Mac's runtime with a one-time PIN. Generate the PI
 
 <AccordionGroup>
   <Accordion title="Pair from the terminal" icon="terminal">
-    The pairing PIN is owned by the machine's ADE brain, so you can manage it without the desktop UI:
+    The pairing PIN is owned by the machine's Daex brain, so you can manage it without the desktop UI:
 
     ```bash
-    ade brain pin generate   # generate a one-time phone pairing PIN
-    ade brain pin set 123456  # set an explicit PIN
-    ade brain pin clear       # invalidate the current PIN
-    ade brain status --text   # endpoint, service, and sync state
+    daex brain pin generate   # generate a one-time phone pairing PIN
+    daex brain pin set 123456  # set an explicit PIN
+    daex brain pin clear       # invalidate the current PIN
+    daex brain status --text   # endpoint, service, and sync state
     ```
 
-    Run `ade brain --help` to see every flag.
+    Run `daex brain --help` to see every flag.
   </Accordion>
 </AccordionGroup>
 
@@ -85,7 +85,7 @@ A PR your agents opened shows up on the phone with its diff, CI status, and comm
 - Large artifacts and diffs load on demand.
 - Source and project data stay tied to the paired Mac. The phone holds no checkout.
 - A machine that runs a beta build shows a **Beta** chip.
-- Beta iPhone builds go to a separate TestFlight app, **ADE Beta**, with an orange icon ([join the public beta](https://testflight.apple.com/join/SsxDjqbF), [more about ADE Beta](/getting-started/ade-beta)). It installs beside the normal app with its own data and pairings, and either app connects to Stable and Beta machines. Web links and the pairing QR from the camera open the normal app; pair ADE Beta with its own scanner.
+- Beta iPhone builds go to a separate TestFlight app, **Daex Beta**, with an orange icon ([join the public beta](https://testflight.apple.com/join/SsxDjqbF), [more about Daex Beta](/getting-started/ade-beta)). It installs beside the normal app with its own data and pairings, and either app connects to Stable and Beta machines. Web links and the pairing QR from the camera open the normal app; pair Daex Beta with its own scanner.
 
 <Note>
 If the app looks connected but updates do not arrive, check the desktop **Mobile** control first, then confirm both devices can reach each other on the network.
@@ -93,6 +93,6 @@ If the app looks connected but updates do not arrive, check the desktop **Mobile
 
 <CardGroup cols={2}>
   <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
-    How PRs are created, reviewed, and merged in ADE.
+    How PRs are created, reviewed, and merged in Daex.
   </Card>
 </CardGroup>

@@ -1,20 +1,20 @@
 ---
 title: "OpenCode & Windsurf"
-description: "Run OpenCode as a managed agent provider inside ADE — and keep using Windsurf as your editor on the same worktrees."
+description: "Run OpenCode as a managed agent provider inside Daex — and keep using Windsurf as your editor on the same worktrees."
 icon: "water"
 ---
 
-This page covers two things: **OpenCode**, one of ADE's five agent providers, and how to keep using **Windsurf** as your editor next to ADE.
+This page covers two things: **OpenCode**, one of Daex's five agent providers, and how to keep using **Windsurf** as your editor next to Daex.
 
 ## OpenCode as a provider
 
-[OpenCode](https://opencode.ai) is one of ADE's five agents, alongside Claude Code, Codex, Cursor, and Factory Droid. ADE runs it as a local server and routes chat and worker turns through it like any other provider. OpenCode gives you the broadest model reach — back it with a provider API key, OpenRouter, or a local model (Ollama, LM Studio, vLLM).
+[OpenCode](https://opencode.ai) is one of Daex's five agents, alongside Claude Code, Codex, Cursor, and Factory Droid. Daex runs it as a local server and routes chat and worker turns through it like any other provider. OpenCode gives you the broadest model reach — back it with a provider API key, OpenRouter, or a local model (Ollama, LM Studio, vLLM).
 
 ### Setup
 
 <Steps>
   <Step title="Open Settings → AI → OpenCode">
-    Turn OpenCode on. ADE downloads the binary if needed and starts the local server.
+    Turn OpenCode on. Daex downloads the binary if needed and starts the local server.
   </Step>
   <Step title="Configure the backend">
     | Mode | Config |
@@ -29,11 +29,11 @@ This page covers two things: **OpenCode**, one of ADE's five agent providers, an
 </Steps>
 
 <AccordionGroup>
-  <Accordion title="How ADE manages OpenCode" icon="gear">
-    ADE owns the full lifecycle:
+  <Accordion title="How Daex manages OpenCode" icon="gear">
+    Daex owns the full lifecycle:
     - **Binary manager** — downloads and verifies the OpenCode binary and checks for updates.
     - **Server manager** — starts and monitors the local server process, detects crashes, and restarts it.
-    - **Runtime** — handles session lifecycle, model discovery, and event routing into ADE's chat model.
+    - **Runtime** — handles session lifecycle, model discovery, and event routing into Daex's chat model.
   </Accordion>
   <Accordion title="Permission modes" icon="shield-halved">
     OpenCode uses its own permission modes:
@@ -48,19 +48,19 @@ This page covers two things: **OpenCode**, one of ADE's five agent providers, an
   </Accordion>
 </AccordionGroup>
 
-## Using Windsurf alongside ADE
+## Using Windsurf alongside Daex
 
-ADE doesn't run [Windsurf](https://windsurf.com) as an agent runtime — ADE runs thirteen provider runtimes, and Windsurf is not one of them. But you can still use Windsurf as your editor on the same code, because a lane is just a git worktree on disk.
+Daex doesn't run [Windsurf](https://windsurf.com) as an agent runtime — Daex runs thirteen provider runtimes, and Windsurf is not one of them. But you can still use Windsurf as your editor on the same code, because a lane is just a git worktree on disk.
 
 <Steps>
   <Step title="Find the lane's worktree path">
-    Open the lane in ADE; its worktree path is shown in the lane detail header (under `.ade/worktrees/`).
+    Open the lane in Daex; its worktree path is shown in the lane detail header (under `.ade/worktrees/`).
   </Step>
   <Step title="Open that folder in Windsurf">
     Open the worktree directory in Windsurf the way you normally open any project — from Windsurf, or with `windsurf <path>` if its CLI is on your `PATH`.
   </Step>
-  <Step title="Edit, and ADE keeps up">
-    ADE watches the worktree, so edits you save in Windsurf show up in the lane's diff, Files view, and Git status in real time. Use Windsurf's own AI features in the editor; ADE doesn't route requests through Windsurf.
+  <Step title="Edit, and Daex keeps up">
+    Daex watches the worktree, so edits you save in Windsurf show up in the lane's diff, Files view, and Git status in real time. Use Windsurf's own AI features in the editor; Daex doesn't route requests through Windsurf.
   </Step>
 </Steps>
 

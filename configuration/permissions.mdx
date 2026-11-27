@@ -1,10 +1,10 @@
 ---
 title: "Permissions and security"
-description: "How ADE keeps agent work scoped to a lane, makes shared config trusted before it runs, and keeps secrets local."
+description: "How Daex keeps agent work scoped to a lane, makes shared config trusted before it runs, and keeps secrets local."
 icon: "shield-check"
 ---
 
-ADE agents edit files and run commands, so permissions matter. The goal is simple: keep each agent's work scoped to the right lane, make shared config trusted before it can run on your machine, and keep secrets off disk in plaintext.
+Daex agents edit files and run commands, so permissions matter. The goal is simple: keep each agent's work scoped to the right lane, make shared config trusted before it can run on your machine, and keep secrets off disk in plaintext.
 
 ## Main controls
 
@@ -13,10 +13,10 @@ ADE agents edit files and run commands, so permissions matter. The goal is simpl
     Sessions run inside the selected lane's worktree under `.ade/worktrees/`, isolated from your main checkout and from other lanes.
   </Card>
   <Card title="Provider permission modes" icon="robot">
-    Each provider runtime exposes its own approval modes; ADE maps them to a common set.
+    Each provider runtime exposes its own approval modes; Daex maps them to a common set.
   </Card>
   <Card title="Shared-config trust" icon="lock">
-    Shared config that can spawn processes requires a trust confirmation before ADE will run it.
+    Shared config that can spawn processes requires a trust confirmation before Daex will run it.
   </Card>
   <Card title="Secrets" icon="key">
     Provider keys and credentials stay in local encrypted stores or gitignored files — never in shared config.
@@ -34,7 +34,7 @@ Each agent runs with a permission mode that governs how freely it can edit files
 ## Provider permission modes
 
 <Accordion title="How provider modes map" icon="sliders">
-  Permission names vary by provider, but ADE groups them into a common set:
+  Permission names vary by provider, but Daex groups them into a common set:
 
   | Mode | Meaning |
   |------|---------|
@@ -48,7 +48,7 @@ Each agent runs with a permission mode that governs how freely it can edit files
 
 ## The trust model for shared config
 
-ADE splits project configuration into shared, version-controlled `.ade/ade.yaml` and a per-user, gitignored `.ade/local.yaml`. Shared config can introduce new commands — processes, stacks, test suites — that you haven't approved. ADE treats that as sensitive: when the shared config changes, it must be **trusted** again before ADE will return an executable config that spawns processes. Cloning a repo and opening it requires confirming trust on its shared config the first time.
+Daex splits project configuration into shared, version-controlled `.ade/ade.yaml` and a per-user, gitignored `.ade/local.yaml`. Shared config can introduce new commands — processes, stacks, test suites — that you haven't approved. Daex treats that as sensitive: when the shared config changes, it must be **trusted** again before Daex will return an executable config that spawns processes. Cloning a repo and opening it requires confirming trust on its shared config the first time.
 
 Local config isn't trust-gated — you only need to trust your own overrides. Treat a shared-config change the same way you'd review a CI script or Dockerfile.
 
@@ -72,7 +72,7 @@ Be extra careful with:
 - Networked deployment or release commands.
 
 <Warning>
-ADE helps enforce boundaries, but agents still run tools on your machine. Review what they ask to do, especially in new repositories and the first time you open a teammate's shared config.
+Daex helps enforce boundaries, but agents still run tools on your machine. Review what they ask to do, especially in new repositories and the first time you open a teammate's shared config.
 </Warning>
 
 <CardGroup cols={2}>
