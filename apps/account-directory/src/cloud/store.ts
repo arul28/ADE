@@ -785,6 +785,8 @@ export function deleteLogStatement(
 
 /** A launch whose computer was deleted before it finished: it ends with this error, and Retry makes a new computer. */
 export const LAUNCH_COMPUTER_DELETED = "This launch's Daex Cloud computer was deleted before it finished. Retry makes a new one.";
+/** The same ending as rows saved before the rename hold it; compare stored errors with both. */
+export const LEGACY_LAUNCH_COMPUTER_DELETED = "This launch's ADE Cloud computer was deleted before it finished. Retry makes a new one.";
 
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {

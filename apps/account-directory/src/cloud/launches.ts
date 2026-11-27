@@ -45,6 +45,7 @@ import { noteComputerJoin } from "./sponsoredSmall";
 import { FILE_ID, handleGetFile, handlePutFile, r2KeyOf, r2PrefixOf } from "./launchFiles";
 import {
   LAUNCH_COMPUTER_DELETED,
+  LEGACY_LAUNCH_COMPUTER_DELETED,
   deleteComputer,
   isOutOfHoursFor,
   listComputers,
@@ -1252,7 +1253,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
-      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?) or ? = 'failed')
+      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?, ?) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -1260,7 +1261,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
-    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, LEGACY_LAUNCH_COMPUTER_DELETED, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1588,7 +1589,8 @@ const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
 /** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
-const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED || error === LAUNCH_COMPUTER_DELETED;
+const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED
+  || error === LAUNCH_COMPUTER_DELETED || error === LEGACY_LAUNCH_COMPUTER_DELETED;
 
 /**
  * Launches whose computer never signed in, past the join window and a grace:
