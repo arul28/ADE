@@ -1,3 +1,4 @@
+import { BRAND } from "../shared/brand";
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -40,7 +41,7 @@ type Seed = {
 
 const SEEDS: Seed[] = [
   { provider: "claude", id: "bf585b75-48d8-43b7-8f8a-7e3dccc71123", title: "Apple sim preview and live stream", laneHint: "apple", ageMs: 13 * MINUTE, prompts: 1100, sizeBytes: 40_300_000, model: "claude-opus-5-5", live: true, opening: "The Apple pane shows a stuck loader after the device boots. Find out why." },
-  { provider: "claude", id: "04af504d-9e07-488b-9188-764c8bbd0f04", title: "ADE mobile-first environment for Apple device development", laneHint: "apple", ageMs: 1 * DAY + 3 * HOUR, prompts: 1586, sizeBytes: 37_300_000, model: "claude-opus-5-5", opening: "Plan the mobile-first Apple device environment." },
+  { provider: "claude", id: "04af504d-9e07-488b-9188-764c8bbd0f04", title: `${BRAND.NAME} mobile-first environment for Apple device development`, laneHint: "apple", ageMs: 1 * DAY + 3 * HOUR, prompts: 1586, sizeBytes: 37_300_000, model: "claude-opus-5-5", opening: "Plan the mobile-first Apple device environment." },
   { provider: "codex", id: "019a1c3e-0000-7000-8000-00000000c0de", title: "Tighten PR detail header on iOS", laneHint: "pr", ageMs: 42 * MINUTE, prompts: 23, sizeBytes: 2_100_000, model: "gpt-6-sol", opening: "The PR detail header wraps on small phones." },
   { provider: "cursor", id: "5d1f2c9a-3b7e-4c1d-9a8e-2f6b7c8d9e0f", title: "Lane sidebar keyboard navigation", laneHint: "lane", ageMs: 3 * HOUR, prompts: 14, sizeBytes: 640_000, model: "composer-2", opening: "Arrow keys skip archived lanes in the sidebar." },
   { provider: "grok", id: "0199f3a2-7c41-7d2e-9b1a-6f0e5d4c3b2a", title: "Audit relay reconnect backoff", laneHint: "primary", ageMs: 5 * HOUR, prompts: 9, sizeBytes: 380_000, model: "grok-5", opening: "The relay reconnect loop hammers the server after sleep." },

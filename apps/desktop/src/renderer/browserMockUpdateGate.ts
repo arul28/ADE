@@ -13,6 +13,8 @@
  * Without the flag nothing here runs.
  */
 
+import { BRAND } from "../shared/brand";
+
 type AnyApi = Record<string, any>;
 
 function scenario(): string | null {
@@ -134,7 +136,7 @@ function applyOldStudio(ade: AnyApi, deps: { lanes: any[]; sessions: any[] }): v
     currentVersion: oldVersion,
     targetVersion: targetVersion ?? null,
     steps: [],
-    message: "Studio Mac did not answer the update request (its ADE is too old).",
+    message: `Studio Mac did not answer the update request (its ${BRAND.NAME} is too old).`,
   });
   const lane = deps.lanes.find((entry) => entry.laneType !== "primary") ?? deps.lanes[0];
   const chat = deps.sessions.find((entry) => /chat/.test(String(entry.toolType ?? "")));

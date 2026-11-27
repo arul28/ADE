@@ -1,3 +1,4 @@
+import { BRAND } from "../shared/brand";
 import {
   RECOVERY_COPY,
   REPAIR_STEPS,
@@ -86,11 +87,11 @@ const IS_WINDOWS = urlParam("adePlatform") === "win32";
 const INSTALL_FAILURE = IS_WINDOWS
   ? {
       failureStep: "replacement_pid",
-      message: "ADE service handover failed because the scheduled task did not report a replacement pid (old none, new none).",
+      message: `${BRAND.NAME} service handover failed because the scheduled task did not report a replacement pid (old none, new none).`,
     }
   : {
       failureStep: "replacement_pid",
-      message: "ADE service handover failed because launchd did not report a distinct replacement pid (old none, new none).",
+      message: `${BRAND.NAME} service handover failed because launchd did not report a distinct replacement pid (old none, new none).`,
     };
 
 /** A plausible diagnosis fold for each state, raw codes included. */
@@ -150,16 +151,16 @@ const MOCK_PLAN: MachineResetPlan = {
     },
   ],
   items: [
-    { kind: "process", label: "Running ADE process", target: "4121 /Applications/ADE.app/Contents/MacOS/ADE" },
+    { kind: "process", label: `Running ${BRAND.NAME} process`, target: "4121 /Applications/ADE.app/Contents/MacOS/ADE" },
     { kind: "background_service", label: "Background service", target: "~/Library/LaunchAgents/com.ade.runtime.plist" },
     { kind: "background_service", label: "Background service", target: "~/Library/LaunchAgents/com.ade.watchdog.plist" },
-    { kind: "directory", label: "ADE's data folder", target: "~/.ade" },
-    { kind: "directory", label: "ADE folder", target: "~/Library/Application Support/ade-desktop" },
-    { kind: "directory", label: "ADE folder", target: "~/Library/Caches/ade-desktop-updater" },
+    { kind: "directory", label: `${BRAND.NAME}'s data folder`, target: "~/.ade" },
+    { kind: "directory", label: `${BRAND.NAME} folder`, target: "~/Library/Application Support/ade-desktop" },
+    { kind: "directory", label: `${BRAND.NAME} folder`, target: "~/Library/Caches/ade-desktop-updater" },
     { kind: "directory", label: "Project data", target: "/Users/you/code/web-app/.ade" },
     { kind: "directory", label: "Project data", target: "/Users/you/code/api/.ade" },
     { kind: "keychain", label: "Keychain items", target: "com.ade.desktop.api-keys.v1" },
-    { kind: "config_entry", label: "PATH line ADE added", target: "~/.zshrc" },
+    { kind: "config_entry", label: `PATH line ${BRAND.NAME} added`, target: "~/.zshrc" },
     { kind: "directory", label: "Temporary files", target: "$TMPDIR/ade-* (41)" },
   ],
   lanesWithWork: 2,
@@ -208,7 +209,7 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
         chatsNeedingAttention: null,
         filesRemoved: 0,
         failureCode: "brain_crash_looping",
-        nextAction: "Restart ADE next. It starts the background service fresh.",
+        nextAction: `Restart ${BRAND.NAME} next. It starts the background service fresh.`,
       };
     }
     current = "healthy";
@@ -281,9 +282,9 @@ let brainDownRecovered = false;
 
 /** The update copy main sends (`UPDATE_TRANSACTION_FAILURE_COPY`). */
 const BRAIN_DOWN_FAILURE_MESSAGE: Record<"service" | "restart" | "health", string> = {
-  service: "ADE's background service didn't start after the update",
-  restart: "ADE's background service didn't restart after the update",
-  health: "ADE's background service isn't responding after the update",
+  service: `${BRAND.NAME}'s background service didn't start after the update`,
+  restart: `${BRAND.NAME}'s background service didn't restart after the update`,
+  health: `${BRAND.NAME}'s background service isn't responding after the update`,
 };
 
 function brainDownTransaction(scenario: BrainDownScenario): UpdateTransactionResult | null {
@@ -300,7 +301,7 @@ function brainDownTransaction(scenario: BrainDownScenario): UpdateTransactionRes
       detail: index === 0
         ? "Running 1.2.94."
         : index === failedAt
-          ? (scenario === "background_blocked" ? "ADE is switched off under Allow in the Background." : INSTALL_FAILURE.message)
+          ? (scenario === "background_blocked" ? `${BRAND.NAME} is switched off under Allow in the Background.` : INSTALL_FAILURE.message)
           : index > failedAt ? "Skipped after an earlier step failed." : "",
     })),
     failureMessage: BRAIN_DOWN_FAILURE_MESSAGE[failed],
@@ -321,7 +322,7 @@ function brainDownRuntimeStatus(scenario: BrainDownScenario, base: LocalRuntimeS
       state: "failed",
       attempted: true,
       path: IS_WINDOWS ? null : "/Users/you/Library/LaunchAgents/com.ade.runtime.plist",
-      message: blocked ? "macOS did not start the ADE background service: Allow in the Background is off." : INSTALL_FAILURE.message,
+      message: blocked ? `macOS did not start the ${BRAND.NAME} background service: Allow in the Background is off.` : INSTALL_FAILURE.message,
       exitCode: 1,
       updatedAt: new Date().toISOString(),
       failureStep: blocked ? "background_item_blocked" : INSTALL_FAILURE.failureStep,
@@ -706,12 +707,12 @@ export function browserMockReportScenario(): ReportScenario | null {
 }
 
 const MOCK_REPORT_TEXT = [
-  "# ADE diagnostic report",
+  `# ${BRAND.NAME} diagnostic report`,
   "",
   "- Generated: 2026-11-13T18:42:07.311Z",
   "- Surface: toast",
   "- What went wrong: Couldn't push the lane",
-  "- ADE version: 1.2.130-beta.21 (beta)",
+  `- ${BRAND.NAME} version: 1.2.130-beta.21 (beta)`,
   "- Platform: darwin arm64 (macOS 26.1)",
   "- Install id: 6f3c…e21a",
   "",

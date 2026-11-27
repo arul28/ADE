@@ -12,6 +12,7 @@
  * - `arm`: a Windows-on-Arm host, which Google has no emulator for.
  */
 
+import { BRAND } from "../shared/brand";
 import type {
   AndroidEmulatorEvent,
   AndroidEmulatorSetupPreloadApi,
@@ -103,7 +104,7 @@ export function createMockAndroidSetup(deps: {
       downloadBytes: cliInstalled || which === "arm" ? 0 : 3.7e6,
       installedBytes: cliInstalled || which === "arm" ? 0 : 160e6,
       licenseId: "android-cli-terms",
-      detail: cliInstalled ? "Installed by ADE" : which === "arm" ? "Not available for this computer" : "Optional · UI tree, Compose previews",
+      detail: cliInstalled ? `Installed by ${BRAND.NAME}` : which === "arm" ? "Not available for this computer" : "Optional · UI tree, Compose previews",
     });
     return list;
   };
@@ -125,7 +126,7 @@ export function createMockAndroidSetup(deps: {
     const downloadBytes = missing.reduce((sum, part) => sum + part.downloadBytes, 0);
     return {
       hostSupported: which !== "arm",
-      unsupportedReason: which === "arm" ? "Google publishes no Android emulator for Windows on Arm. ADE cannot set up Android on this machine." : null,
+      unsupportedReason: which === "arm" ? `Google publishes no Android emulator for Windows on Arm. ${BRAND.NAME} cannot set up Android on this machine.` : null,
       sdkRoot,
       sdkRootSource: chosen ? "chosen" : sdk.found ? "found" : "default",
       existingSdkRoot: sdk.found && sdk.root === sdkRoot ? sdk.root : null,
