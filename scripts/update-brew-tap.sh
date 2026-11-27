@@ -84,6 +84,11 @@ cask "ade" do
   depends_on macos: :ventura
 
   app "ADE.app"
+  # \`daex\` is the command's name; \`ade\` stays its alias. The app puts \`ade\`
+  # on PATH itself (~/.local/bin, adeCliAutoInstall.ts), so only \`daex\` is
+  # linked here. Releases before the rename have no bin/daex: do not point
+  # this script at one.
+  binary "#{appdir}/ADE.app/Contents/Resources/ade-cli/bin/daex"
 
   zap trash: [
     "~/Library/Application Support/ADE",
