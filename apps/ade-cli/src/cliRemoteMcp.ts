@@ -187,7 +187,7 @@ export function formatRemoteMcpResult(value: unknown): string {
       const route = typeof entry.forwardedTo === "string"
         ? `  → ${entry.forwardedTo}`
         : typeof entry.via === "string" ? `  via ${entry.via}` : "";
-      const what = typeof entry.tool === "string" && !entry.command ? entry.tool : `ade ${String(entry.command)}`;
+      const what = typeof entry.tool === "string" && !entry.command ? entry.tool : `${BRAND.CLI} ${String(entry.command)}`;
       return `${String(entry.at)}  ${String(entry.label)}  ${String(entry.outcome)}${exit}  ${what}${route}${detail}`;
     }).join("\n");
   }
