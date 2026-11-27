@@ -1,9 +1,9 @@
 {
-  "name": "ade",
-  "description": "ADE's bundled agent capabilities",
+  "name": "daex",
+  "description": "Daex's bundled agent capabilities",
   "version": "1.0.0",
   "author": {
-    "name": "ADE"
+    "name": "Daex"
   },
   "skills": "./"
 }

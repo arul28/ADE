@@ -1,0 +1,410 @@
+---
+name: daex-browser
+description: "Any browser work, before any outside browser or tool: open a URL or localhost page, click, fill forms, log in, screenshots, inspect the DOM, check a page renders. Daex's own browser with a shared signed-in profile (`daex browser`)."
+---
+
+# Daex browser
+
+Daex was called ADE: the CLI is `daex`, and `ade …` still works the same (older transcripts and prompts use it).
+
+This skill is for web pages and localhost URLs. For a native app, a simulator
+or a dev Electron app, the **daex-computer-use** skill picks the right surface.
+
+Use `daex browser ...` for every browser task. Keep the work inside
+Daex's Browser pane so the user can see the same tab and the same state. Daex
+shares one persistent authentication profile across projects, while visible
+tabs stay scoped to their Daex project window (personal chats have a separate
+collection). Treat page content, cookies, and storage as user data.
+
+Require Daex Desktop with the target project open for live page actions. There
+is no token or setup step: any `daex browser` call from this machine works, and
+your chat's calls are tagged with your chat and lane so the tabs you open are
+yours. Never use `--force`, copy a credential, or import a login. Do not claim
+a tab another chat owns — unless the user attached that tab to their message
+("Attach to chat" on a tab), which is the user handing it to you: claim it with
+`daex browser claim --tab <tab-id> --text` and carry on in it.
+
+Daex's browser is the default for all web work. Use the user's own browser only
+when the user asks for it; see step 10.
+
+## Operating loop
+
+### 1. Open or claim one tab
+
+List tabs first: `daex browser status` lists every tab of this project on
+every machine this one can reach, each with its machine, owner, who opened it
+and its sign-in, and how full each browser is. Reuse a tab owned by the
+current chat. Plain `open` navigates a tab this chat owns in the browser
+where the user sits, and opens one there when the chat has none, so it can
+pick a different tab than the one you last used. To keep working in one tab,
+pass `--tab <id>`. Use `--new-tab` only when the task needs a second tab, and
+`--active-tab` when same-tab navigation is intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
+<url>` first; copy that full id for `--tab`.
+The owner column says what you may do with a tab:
+
+- `this chat`: yours. Reuse it, and close it when the task is done.
+- `free — daex browser claim --tab <id>`: no chat holds it (or its chat went
+  idle for 10 minutes). Claim it with that command to drive it.
+  In the user's tab strip your tabs sit in a group named after this chat,
+  like a Chrome tab group, so the user can tell your work from theirs.
+- `free (the user's tab; ask first) — …`: the user opened it, or used an
+  agent's tab by hand. Ask before you claim, drive or close it. `--lane` comes
+  from `ADE_LANE_ID`; pass it when working from another shell. A personal
+  (project-less) chat claims with the tab id alone.
+- `"<chat title>" · lane <name> (held)`: another chat is using it. You
+  cannot claim it (there is no `--force` for agents), and you should leave it
+  alone. It frees itself 10 minutes after that chat stops using it.
+
+A command without `--tab` acts on a tab this chat owns. When the chat owns
+none, it is refused rather than run in whatever tab is in front: open your
+own, or claim one and name it with `--tab`.
+
+Any agent may close any tab, a held one included. Check the owner first:
+close this chat's tabs and free ones; close a held tab only when the task
+needs it; never close a tab the user opened or kept (`opened by the user`, or
+`the user's tab`) without asking them. `close`
+prints whose tab it closed. An agent's tab is not brought back after Daex
+restarts; a tab the user opened or used keeps its id across a restart.
+
+Your tabs clean themselves up, so do not keep one open "just in case":
+- Daex closes this chat's tabs 15 minutes after the chat goes idle, and at once
+  when the chat ends or its lane is archived or deleted. A new turn, or any
+  browser command from this chat, stops the countdown.
+- A tab the user clicked or typed in, navigated, attached to a chat, or
+  pressed Keep on is theirs: Daex never closes it, and you should not either.
+- A tab on screen, recording, being watched or being signed in on waits until
+  it is not, then closes.
+- An agent tab nobody touched for 2 hours closes even without word from its
+  chat.
+Still close your tab yourself when the task is done; the cleanup is the
+backstop, not the plan.
+
+A background tab nobody used for 30 minutes may be asleep (`sleeping` in
+status): its page was dropped to save memory. Any command on it wakes it with
+its history first, so just use it.
+
+Treat a tab as a workspace, not a log: reuse your own tab for follow-up work
+instead of opening a second one, and close it with
+`daex browser close --tab <id>` when done so the next agent does not inherit
+it. When a browser is full, the error names the machine and lists only your
+tabs and free agent tabs: close one of those. When it lists none, ask the user
+to close a tab or raise "Tabs per project" in Settings › Browser.
+
+```bash
+daex browser tabs --text
+daex browser claim --tab <tab-id> --lane <lane-id> --text
+daex browser open https://example.com --text
+```
+
+By default every agent may use the Daex browser without asking. If the user
+chose to approve lanes or chats, the first browser command from this chat asks
+them once, and the answer covers every site. The command waits up to two
+minutes and prints `waiting for the user to allow this chat to use the Daex
+browser` once; do not re-issue it meanwhile. A Block fails with
+`approval_blocked`; do not retry, ask the user. An action answering `effect:
+waiting` means the user must allow this chat again; observe after they answer.
+
+Use `--panel` only when the user should see the Browser tool opened. Use
+`--no-panel` when preparing a tab without taking the user's focus. Close your
+tab when finished with `daex browser close --tab <tab-id> --text`; the
+internal release and handoff paths also clear the claim.
+
+### 2. Observe before acting
+
+Observe after opening, navigating, switching tabs, or a meaningful UI change.
+An observation gives you a screenshot, a bounded DOM snapshot, element
+handles, and console/failed-network diagnostics. Add `--map` for a numbered
+visual element map. Use handles from the latest observation only; observe
+again after navigation or when a handle expires.
+
+Start a lightweight browser session for repeated actions. Wait for a readiness
+selector or network idle after navigation. To read what a page says (an
+article, docs, a long thread), use `text`: it returns the rendered text of the
+page's main content, 20,000 characters at a time, with the `--offset` to read
+on; `--selector` reads one element. Observations do not carry prose. Use `find` to locate page text and
+`find-stop` to clear its highlight; the first find result is usable immediately
+and later results may refine it. Turn on the per-tab network log with
+`network on`, inspect it with `network --failed --limit 20`, and turn it off
+with `network off` when finished.
+
+```bash
+daex browser session start --tab <tab-id> --text
+daex browser observe --browser-session <session-id> --map --text
+daex browser session wait <session-id> --network-idle --text
+daex browser text --browser-session <session-id> --text
+daex browser find --browser-session <session-id> "checkout" --text
+daex browser network on --browser-session <session-id> --text
+daex browser network --browser-session <session-id> --failed --limit 20 --text
+```
+
+### 3. Act from the current observation
+
+Prefer `--handle`, `--selector`, `--text-match`, `--test-id`, or `--element`.
+Use viewport `--x`/`--y` only when no stable element target exists. Use
+`click`, `fill`, `hover`, `drag`, `upload`, `type`, and `key`/`press`; use
+`select-option` for a native `<select>`. `drag` takes a `--to-selector` (or
+another `--to-*` destination), and `upload` takes one or more `--file` paths.
+`upload` reaches two kinds of page: `--selector` sets files on a file input that
+is already in the DOM, and `--trigger` clicks the button that opens the picker
+and hands the files to the chooser it opens. Use `--trigger` whenever the
+input is built on demand (X's media button is the shape), because there is no
+input for `--selector` to point at. A page whose only control is a dropzone
+gets `drop --selector <zone> --file <path>`: it runs the page's own
+dragenter/dragover/drop with the file in the `DataTransfer`. Use
+`fill --value ""` when an empty value is intentional. Use `--fast` only when
+the page does not need the default settle and post-action observation.
+
+```bash
+daex browser click --browser-session <session-id> --handle obs-...:e:1 --text
+daex browser fill --browser-session <session-id> --selector "input[name=email]" "me@example.com" --text
+daex browser drag --browser-session <session-id> --handle obs-...:e:1 --to-selector ".dropzone" --text
+daex browser upload --browser-session <session-id> --selector "input[type=file]" --file ./shot.png --text
+daex browser upload --browser-session <session-id> --trigger "button[aria-label='Add photos or video']" --file ./clip.mp4 --text
+daex browser drop --browser-session <session-id> --selector "#dropzone" --file ./report.pdf --text
+daex browser downloads wait --browser-session <session-id> --timeout-ms 30000 --text
+daex browser clipboard --text
+daex browser paste --selector "#editor" --text
+daex browser key --browser-session <session-id> Enter --text
+```
+
+`clipboard` reads the machine's clipboard (`--text` output; HTML flavor when
+present) and `clipboard write --value "<text>"` sets it. `paste` focuses the
+target and sends the real paste command, so a rich-text editor or a page
+listening for `paste` sees it the way a person's ⌘V would — `type` only inserts
+text and skips those handlers.
+
+Dialogs are answered while an agent action runs, so a page that calls
+`alert`, `confirm` or `beforeunload` cannot hang the tab: `alert` and
+`beforeunload` are accepted, `confirm` and `prompt` are dismissed. Every answer
+is logged with the dialog's text. Nothing more is needed from the agent.
+
+Downloads go to the user's Downloads folder, as they always have. `downloads`
+lists them with the saved path and `downloads wait` waits for the next
+completion (a file that finished in the last few seconds counts), so the agent
+can name the file it just triggered instead of guessing.
+
+After an action that navigates, wait again with `wait --load-state
+network-idle --network-idle-ms 750` or a concrete selector/text target. Use
+`reload`, `back`, `forward`, and `stop` when the page state calls for them.
+
+### 4. Verify, then choose proof deliberately
+
+Use `screenshot` to inspect a result yourself; it writes scratch evidence and
+does not enter the proof drawer. File reviewer-visible evidence only with
+`proof` and a concise `--caption`. Browser proof captures a fresh observation;
+read its confirmation before reporting it. Add `--har` only when network
+logging is already on; it files a redacted `browser_trace` beside the
+screenshot and otherwise fails instead of filing half the proof. Use `trace`
+when an action is stuck.
+
+```bash
+daex browser screenshot --browser-session <session-id> --text
+daex browser proof --browser-session <session-id> --caption "Checkout confirmation is visible" --text
+```
+
+Use `inspect-start`, `select`, `select-current`, and `clear-selection` when a
+DOM-backed context item belongs in the chat rather than in proof.
+
+### 5. Sign in with Passwords, or hand off a login to the human
+
+When a page asks you to sign in, try `daex browser signin` first. It types a
+login saved in Passwords into the page itself; you never see the password.
+Prefer it over typing credentials you were given, and never ask the person to
+paste a password in chat. If Passwords has no login for the site, the command
+asks the person in your chat with a secure sign-in card and waits: they save a
+login (Daex fills it and the command finishes signed in), or they choose to type
+it themselves (the command says so; then run `daex browser handoff` to wait for
+them). On a page that asks for an authenticator code, run `daex browser signin`
+again: it fills the saved login's current code. Otherwise `daex code wait --site
+<host> --text` returns the saved authenticator code, or the next code texted
+to the person's Mac (when Messages is connected). For an email one-time code,
+open Gmail or Outlook in the Daex browser (it is already signed in) and read the
+newest code. Passkeys saved in Daex work by themselves in Daex's browser: the
+person confirms each use with Touch ID.
+
+```bash
+daex browser signin --tab <tab-id> --text
+daex browser signin --tab <tab-id> --account me@example.com --text
+```
+
+To create an account, fill the email or username yourself, then run `daex
+browser signup` on the sign-up form. Daex makes a strong password, types it
+into the password and confirm boxes, and saves the login to Passwords once the
+form holds all of it; you never see it. Submit the form yourself. From then on `daex browser signin`
+uses that login.
+
+```bash
+daex browser signup --tab <tab-id> --text
+daex browser signup --tab <tab-id> --account me@example.com --text
+```
+
+Stop when a page needs a CAPTCHA, HTTP/proxy
+authentication, or a client-certificate choice. Hand off the exact tab with an
+actionable `--reason`.
+
+```bash
+daex browser handoff --browser-session <session-id> --reason "Sign in to staging" --timeout 5m --text
+```
+
+The handoff makes the tab human-owned, raises the Work row, sends a phone push,
+and shows an amber bar with **Hand back**. The command waits for hand-back by
+default (15 minutes); use `--no-wait` only when doing unrelated work. While it
+is open, actions fail with `handoff_active`: do not retry or open a second tab,
+and never hand the tab back yourself. Daex stops recording and network logging
+for the handoff; re-arm them explicitly after hand-back if still needed.
+
+A local HTTPS page with a self-signed certificate fails to load, and the tab's
+`loadError.certificate` names the host and fingerprint. Only the person can
+trust it (Daex shows **Trust and reload** above the page); agents cannot. Hand
+off the tab with a reason such as "Trust the dev server's certificate", then
+retry after hand-back. A public site's certificate error is never trustable.
+
+### 6. Sign in as a test account in an isolated tab
+
+A normal tab uses the user's own sign-ins. Signing in there as another
+account (a test user, a second role) signs the user out of that site, and on
+localhost that means every port. Open an isolated tab instead: it has its own
+cookies and storage, kept in memory and wiped when its last tab closes. It
+opens in the same browser as your other tabs, so when the user sits at
+another computer it opens there, and they see it in their Browser pane,
+marked with a detective icon. Its proof files like any other tab's. (If their
+Daex is too old to keep an isolated sign-in for a `localhost` page, the tab
+opens on your machine instead and the first output line says so.)
+
+```bash
+daex browser open localhost:3000/login --profile owner --text
+daex browser open localhost:3000/login --profile viewer --text
+```
+
+`--profile <name>` picks the sign-in; each chat gets its own set of names,
+so two chats saying "viewer" stay apart. `--isolated` alone uses one sign-in
+named `default`. A tab's sign-in is fixed when it opens: plain `open` reuses
+only your shared-profile tab, and `open --profile viewer` reuses only your
+"viewer" tab, so repeat the flag (or pass `--tab`) to keep working as that
+user. The result line `sign-in:` says which one a tab uses. Close the tabs
+when the test is done to throw the sign-ins away.
+
+Use the shared profile only for the user's own account. Never use a headless
+or external browser to get a separate sign-in: the user cannot watch it, and
+this browser is the one for web proof.
+
+### 7. Handle remote lanes and loopback URLs
+
+The user may be on another machine (a Mac Studio driving a chat that runs on
+this Windows PC). Then your browser is the one on THEIR computer: every
+`daex browser` command runs in the Daex browser where they sit, they watch your
+tab in their own pane, the page uses their sign-ins, and a tab they attach is
+one you can claim. You do nothing different; the first line of `--text` output
+says where the command ran:
+
+- `browser: on <machine>, the computer the user sits at.` The normal case.
+- `browser: on this machine. The user drives this chat from another computer…`
+  Their computer did not answer (asleep, closed, or they are on the phone), or
+  the tab you named is here. You are working in a browser they cannot see.
+  Say so if they ask what you see.
+- `browser: on <machine>, whose browser holds this tab.` A tab on a third
+  machine, reached because you named it.
+
+One task stays on one machine: a command with `--tab` or `--browser-session`
+goes to the machine whose browser holds that tab, wherever the chat's route
+points now. `daex browser status` prints the route: which browser `open` uses,
+why, and when the user's computer last did not answer. Every error names the
+machine whose browser refused (`Daex browser on <machine> …`).
+
+The page is the size of the user's browser pane, open or closed. When that is
+under 640 px wide, `observe` adds a `note:` line (`narrowPageHint` in JSON):
+the site may show its mobile layout, which is what the user sees. Work with it
+when you can. When the task needs the desktop layout, run
+`daex browser emulate --tab <id> --width 1280 --height 800`, and
+`daex browser emulate --tab <id> --off` when you finish; the user sees that
+change in their pane.
+
+Add `--here` to use the browser on the machine you run on: to test a page on
+this OS, and for `upload`, `har` and `record`, which read or write a file here
+and are refused while your browser is on the user's computer. `--here` needs
+Daex Desktop open on your machine; without it the command fails and tells you
+so.
+
+To show them a page, use `daex browser open <url> --panel`. Writing
+`http://localhost:<port>` in a reply is fine too: their click opens this
+machine's port in their Daex browser. A `localhost` page you open reaches their
+browser through a tunnel, and the first use of a port asks them to allow it.
+Dev servers you start are found on their own, even in the background:
+`daex browser dev-servers --text` lists them, and
+`daex browser dev-servers stop <port>` stops one this chat started
+(it refuses anything else on the port).
+
+On a machine without Daex Desktop, and with no desktop connected to this chat,
+only `open`, `new-tab`, and `panel` can still land on a Desktop with this lane
+pinned; page actions such as `observe`, `click`, `fill`, `signin`, and
+`screenshot` have no browser to run in. Do not retry a page action after that
+failure.
+
+```bash
+daex browser open localhost:5173 --new-tab --text
+```
+
+For a forwarded response, recognize `status: "forwarded_to_desktop"`. When
+`awaitingApproval: true`, `--text` says `waiting for approval on <desktop> —
+reaching this port needs a yes in Daex`; the command exits 0 because the request
+is waiting for the human, so do not open it again. Success says `on <desktop>
+via tunnel`. If nobody answers, it says `no desktop is attached to this
+machine; open Daex Desktop with this lane pinned`; that also exits 0.
+
+### 8. Record only when a video helps
+
+Run `daex browser record start --tab <tab-id> --fps 60 --caption "Flow"`
+and stop it with `daex browser record stop --tab <tab-id>`. Use 30 or
+60 fps. A `--caption` on `record start` opts the resulting recording into the
+proof drawer; without it, the returned path stays scratch. Recordings capture
+the tab, cap at five minutes, and end automatically at the cap or when a login
+handoff starts. Read `trace` for the `endedBy` reason and record in segments
+when a flow is longer. When it stops, a recording becomes a demo (still time
+cut, page loads sped up, zoom to each click, a pointer, under 10 MB); mark each step with `daex proof step "<what happens next>"`, and
+pass `--plain` only when the user asks for the recording as it was recorded.
+Showcase proof: **daex-proof-artifacts**.
+
+### 9. Let presence explain the work
+
+Do not set browser presence yourself. Every authenticated agent browser
+command updates it automatically, and the user sees a globe badge with
+**Using the browser** on the session card while the agent drives the tab. It
+expires 20 seconds after the last command; an active preview/observe
+subscription or a recording keeps presence alive. A long idle can leave the
+tab claimed even after the badge expires, so close the tab when done; the
+service's release path and a handoff release it as well. No presence command
+is needed.
+
+### 10. Use the user's own browser only when they ask
+
+When the user asks you to look at or use their own browser ("look at the tab I
+have open", "use my Chrome"), attach to it. Their request is the permission;
+never attach on your own initiative, and never to get around a sign-in in Daex's
+browser.
+
+```bash
+daex browser attach --text                   # the tab they are looking at
+daex browser attach --tab "Stripe" --text    # a tab by title or URL text
+daex browser detach --text
+```
+
+Attach runs on the machine this chat runs on. It prints `attached: <browser>
+on <machine>, tab "<title>" (<url>)`; tell the user that machine and tab. If
+several tabs could be the one, it lists them: ask the user, then pass `--tab`.
+`--browser chrome|edge|brave|arc|helium|chromium` picks the browser.
+
+If attach says remote debugging is off, ask the user to open the exact page
+it names for their browser (for Chrome, `chrome://inspect/#remote-debugging`)
+and turn it on. The browser then asks them once to allow the connection.
+
+While attached, this chat's `observe`, `click`, `fill`, `clear`, `type`,
+`key`, `scroll`, `hover`, `wait`, `open`, `reload`, `back`, `forward`,
+`screenshot`, `proof` and `trace` act in that tab, with the same `hit:` and
+`effect:` lines. Each prints `target: your <browser> on <machine>` first.
+Other commands (new tabs, handoff, recording, network, drag, upload) work only
+in Daex's browser and say so. These are the user's real accounts: do only what
+they asked. Run `daex browser detach` when you are done. If the tab closes or
+the browser quits, the next command says so and the chat is back on Daex's
+browser.
+
+Keep this loop platform-neutral so Windows agents use the same command surface.
