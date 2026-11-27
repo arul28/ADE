@@ -46,7 +46,7 @@
   var createPlayer = function (opts) {
     if (player) return;
     player = new window.Spotify.Player({
-      name: opts.name || "ADE",
+      name: opts.name || "Daex",
       volume: typeof opts.volume === "number" ? opts.volume : 0.8,
       getOAuthToken: function (cb) {
         tokenWaiters.push(cb);

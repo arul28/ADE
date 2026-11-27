@@ -255,7 +255,7 @@
           // does not have, so the macOS host played every song at 64 kbps.
           // Start at HIGH; on Chromium a slow measured link still lowers it.
           bitrate: MusicKit.PlaybackBitrate ? MusicKit.PlaybackBitrate.HIGH : 256,
-          app: { name: "ADE", build: c.appBuild || "1.0.0", icon: location.origin + "/ade-icon.png" },
+          app: { name: "Daex", build: c.appBuild || "1.0.0", icon: location.origin + "/ade-icon.png" },
         });
         // In case a MusicKit release ignores the option: WebKit has no link
         // measurement to defer to, so set it directly there.
